@@ -183,7 +183,7 @@ You are above the chain. From Admiralty you can:
 
 | Event | What `nimitz` does |
 | --- | --- |
-| A ship stopped and is needed | Resume the newest session of its lineage (`claude --bg --resume <id>`, same flags). Claude Code gives a new session id (probe 2c, `source: fork`); the hook adds it to the lineage. Then remove the old job row (`claude rm`, native binary) and check that one row remains. |
+| A ship stopped and is needed | Resume it with the **native** binary and **no flags**, from its folder: `<native claude> --bg --resume <id>`. Claude Code continues the same session id with its saved name, permission mode and labels (probe 2c1, both builds; SessionStart `source: resume`). Any flag, or the ACME wrapper on PATH, makes a copy instead. Only a deliberate relaunch (new labels or settings) adds a new id to the lineage; then `nimitz` removes the old job row and checks that one row remains. |
 | A name differs from the identity | Mark it. A hook title does not change the name (probe 4). The fix is a relaunch with `--name`. |
 | Two live sessions have one identity | Mark it red. Do not stop either one without you. |
 | An admiral or commodore is now a background session | Mark it. You attach to it and keep it in a terminal. |
@@ -193,8 +193,8 @@ You are above the chain. From Admiralty you can:
 
 ## 7. What is still open
 
-1. **The public build.** The home machine runs the P0 probes now. The design
-   uses only what both builds do.
+1. **Done: the public build.** Both builds agree once the ACME wrapper's added flags are
+   taken into account (`docs/probes/README.md`).
 2. **P0.6:** do env labels reach the Bash tool's processes? (needed for 5.1)
 3. **P0.7:** the PreToolUse input for `SendMessage`. (needed for 5.2)
 4. **P0.8:** does `claude -c` keep the same session id for an interactive
