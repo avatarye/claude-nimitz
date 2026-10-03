@@ -146,17 +146,15 @@ The session file shows both.
 
 **How `nimitz` knows the caller.** A commodore starts a ship by running
 `nimitz launch` with its Bash tool. That process inherits the commodore's env,
-so `nimitz` reads `NIMITZ_ROLE` and `NIMITZ_ID` from it. With no labels, the
-caller is you. **(unverified: probe P0.6 — do `--settings` env labels reach the
-Bash tool's processes?)**
+so `nimitz` reads `NIMITZ_ROLE` and `NIMITZ_ID` from it (probe P0.6: the
+labels reach the Bash tool's processes). With no labels, the caller is you.
 
 ### 5.2 Who may signal whom
 
 Sessions send signals with Claude Code's own `SendMessage`. The plugin's
 **PreToolUse** hook sees each `SendMessage` before it goes, with the sender's
-labels and the target name, and blocks a signal that the rules forbid.
-**(unverified: probe P0.7 — the tool name and the target field in PreToolUse
-input for `SendMessage`.)**
+labels and the target name, and blocks a signal that the rules forbid (probe P0.7: tool name `SendMessage`,
+target in `tool_input.to`; a `deny` decision blocks the call).
 
 | From | May signal |
 | --- | --- |
@@ -195,10 +193,8 @@ You are above the chain. From Admiralty you can:
 
 1. **Done: the public build.** Both builds agree once the ACME wrapper's added flags are
    taken into account (`docs/probes/README.md`).
-2. **P0.6:** do env labels reach the Bash tool's processes? (needed for 5.1)
-3. **P0.7:** the PreToolUse input for `SendMessage`. (needed for 5.2)
-4. **P0.8:** does `claude -c` keep the same session id for an interactive
-   session? (seen once: the ARGOS lead kept its id across a restart)
+2. **Done on ACME, to run on the public build:** P0.6 (labels reach Bash), P0.7
+   (`SendMessage` in PreToolUse; deny blocks), P0.8 (`claude -c` keeps the id).
 
 ## 8. Questions
 

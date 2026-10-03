@@ -21,6 +21,9 @@ every call; that is the only difference found (`findings-acme-2.1.288.md`).
 | 3. labels reach hooks in `--bg` | yes; SessionStart, UserPromptSubmit, Stop, SessionEnd | yes; same hooks (Notification only when idle long enough) |
 | 4. hook `sessionTitle` changes the address | no (title only) | no (title only) |
 | 5. two live `--bg` with one name | allowed | allowed |
+| P0.6 labels reach Bash-tool processes | yes | _to run_ (`p0_probe2.py`) |
+| P0.7 PreToolUse sees and can deny `SendMessage` | yes (`to`/`recipient`/`message`; deny blocks) | _to run_ |
+| P0.8 interactive `claude -c` keeps the id | yes (`startup`, then `resume`) | _to run_ |
 
 ## Rule for nimitz
 
