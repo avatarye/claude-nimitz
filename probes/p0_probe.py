@@ -2,7 +2,9 @@
 
 Starts throwaway background sessions under $NIMITZ_PROBE_DIR (default ~/.cache/nimitz-probe) and one in /tmp, named nimitz-probe-*,
 with one-line prompts; stops and removes all of them at the end. Writes
-results.json in that folder.
+results.json in that folder. $NIMITZ_PROBE_DIR must be trusted (run `claude` in it once).
+
+Resume probes run each case with and without flags: `--bg --resume` with any flag starts a copy.
 """
 import glob, json, os, shutil, subprocess, time, uuid
 from pathlib import Path
@@ -83,6 +85,13 @@ def launch(name, label, cwd, extra, prompt, title=None):
     return {"cmd": " ".join(a if " " not in a else "<json>" for a in args[:-1]) + " <prompt>", "rc": rc, "out": out[-400:]}
 
 
+def resume_plain(cwd, sid, prompt, flags=()):
+    """`claude --bg --resume <sid> [flags] <prompt>` with none of launch()'s flags, so saved options apply."""
+    args = ["claude", "--bg", "--resume", sid] + list(flags) + [prompt]
+    rc, out = run(args, cwd=str(cwd))
+    return {"cmd": " ".join(args[:-1]) + " <prompt>", "rc": rc, "out": out[-400:]}
+
+
 def main():
     BASE.mkdir(exist_ok=True)
     EV.unlink(missing_ok=True)
@@ -120,39 +129,85 @@ def main():
         "events_seen": sorted({e["event"] for e in events("label-a")}),
     }
 
-    # 2. resume: what id comes back? can we choose it?
-    l2 = launch("nimitz-probe-a", "label-a2", BASE / "a", ["--resume", u1], "Reply with the single word AGAIN.")
-    wait_for(lambda: [e for e in events("label-a2") if e["event"] == "Stop"])
-    u2 = str(uuid.uuid4())
-    l2b = launch("nimitz-probe-a", "label-a3", BASE / "a", ["--resume", u1, "--session-id", u2], "Reply with the single word THIRD.")
-    wait_for(lambda: [e for e in events("label-a3") if e["event"] == "Stop"], secs=60)
-    ra = [r for r in rows() if r.get("name", "").startswith("nimitz-probe-a")]
-    results["probes"]["2_resume_ids"] = {
-        "plain_resume": l2, "resume_with_session_id": l2b, "requested_resume_id": u2,
-        "hook_session_ids_resume": sorted({e["session_id"] for e in events("label-a2") if e["session_id"]}),
-        "hook_session_ids_resume_with_id": sorted({e["session_id"] for e in events("label-a3") if e["session_id"]}),
-        "resume_sources": sorted({str(e["source"]) for e in events("label-a2") if e["event"] == "SessionStart"}),
+    # 2. resume. The CLI starts a COPY when flags are passed to `--bg --resume` ("background session X keeps its
+    # own saved options, so the flags you passed started a copy"), so each case is probed with and without flags.
+    a_rows = [r for r in rows() if r.get("name") == "nimitz-probe-a" and r.get("pid")]
+    a_sid = a_rows[0]["sessionId"] if a_rows else None
+
+    # 2a. --resume <uuid that names no session>: does --bg create a session with exactly that id?
+    ua = str(uuid.uuid4())
+    l2a = launch("nimitz-probe-n", "label-n", BASE / "n", ["--resume", ua], "Reply with the single word OK.")
+    wait_for(lambda: [e for e in events("label-n") if e["event"] == "Stop"])
+    rn = [r for r in rows() if r.get("name") == "nimitz-probe-n"]
+    results["probes"]["2a_resume_unknown_id"] = {
+        "launch": l2a, "requested_id": ua,
+        "hook_session_ids": sorted({e["session_id"] for e in events("label-n") if e["session_id"]}),
+        "session_start_sources": sorted({str(e["source"]) for e in events("label-n") if e["event"] == "SessionStart"}),
+        "events_seen": [e["event"] for e in events("label-n")],
+        "hooks_saw_requested_id": any(e["session_id"] == ua for e in events("label-n")),
+        "ran_a_turn": any(e["event"] == "Stop" for e in events("label-n")),
+        "rows_now": [{k: r.get(k) for k in ("id", "sessionId", "name", "pid", "status", "state")} for r in rn],
+    }
+
+    # 2b. resume a LIVE session WITHOUT flags (only the prompt): same session, or a copy?
+    n0 = len(events())
+    l2b = resume_plain(BASE / "a", a_sid, "Reply with the single word AGAIN.") if a_sid else {"rc": None, "out": "no live row for nimitz-probe-a"}
+    wait_for(lambda: [e for e in events()[n0:] if e["event"] == "Stop" and e["label"] == "label-a"], secs=60)
+    new_b = [e for e in events()[n0:] if e["label"] == "label-a"]  # a copy started without flags carries no labels
+    ra = [r for r in rows() if str(r.get("cwd", "")).rstrip("/").endswith("/a")]
+    results["probes"]["2b_live_resume_no_flags"] = {
+        "target_session_id": a_sid, "resume": l2b,
+        "hook_session_ids": sorted({e["session_id"] for e in new_b if e["session_id"]}),
+        "session_start_sources": sorted({str(e["source"]) for e in new_b if e["event"] == "SessionStart"}),
+        "events_seen": [e["event"] for e in new_b],
+        "same_id": bool(new_b) and all(e["session_id"] == a_sid for e in new_b if e["session_id"]),
         "rows_now": [{k: r.get(k) for k in ("id", "sessionId", "name", "pid", "status", "state")} for r in ra],
     }
 
-    # 2c. resume a STOPPED session (the normal fleet case): same id or a new one?
+    # 2. resume a LIVE session WITH flags (--name, --settings): the original probe, kept for comparison
+    l2 = launch("nimitz-probe-a", "label-a2", BASE / "a", ["--resume", a_sid or "x"], "Reply with the single word THIRD.")
+    wait_for(lambda: [e for e in events("label-a2") if e["event"] == "Stop"])
+    ra = [r for r in rows() if r.get("name", "").startswith("nimitz-probe-a")]
+    results["probes"]["2_live_resume_with_flags"] = {
+        "target_session_id": a_sid, "resume": l2,
+        "hook_session_ids": sorted({e["session_id"] for e in events("label-a2") if e["session_id"]}),
+        "session_start_sources": sorted({str(e["source"]) for e in events("label-a2") if e["event"] == "SessionStart"}),
+        "same_id": any(e["session_id"] == a_sid for e in events("label-a2")),
+        "rows_now": [{k: r.get(k) for k in ("id", "sessionId", "name", "pid", "status", "state")} for r in ra],
+    }
+
+    # 2c. resume a STOPPED session (the normal fleet relaunch), three ways: no flags, --name only, all flags
     l6 = launch("nimitz-probe-c", "label-c", BASE / "c", [], "Reply with the single word OK.")
     wait_for(lambda: [e for e in events("label-c") if e["event"] == "Stop"])
     rc_rows = [r for r in rows() if r.get("name") == "nimitz-probe-c"]
     c_sid = rc_rows[0]["sessionId"] if rc_rows else None
-    c_id = rc_rows[0].get("id") if rc_rows else None
-    stop_out = run([NATIVE, "stop", c_id]) if c_id else (None, "no row")
-    wait_for(lambda: not [r for r in rows() if r.get("name") == "nimitz-probe-c" and r.get("pid")], secs=30)
-    l6b = launch("nimitz-probe-c", "label-c2", BASE / "c", ["--resume", c_sid or "x"], "Reply with the single word RESUMED.")
-    wait_for(lambda: [e for e in events("label-c2") if e["event"] == "Stop"])
-    rc2 = [r for r in rows() if r.get("name") == "nimitz-probe-c"]
-    results["probes"]["2c_resume_after_stop"] = {
-        "first_session_id": c_sid, "stop": stop_out, "resume": l6b,
-        "hook_session_ids_after_resume": sorted({e["session_id"] for e in events("label-c2") if e["session_id"]}),
-        "session_start_sources": sorted({str(e["source"]) for e in events("label-c2") if e["event"] == "SessionStart"}),
-        "same_id": any(e["session_id"] == c_sid for e in events("label-c2")),
-        "rows_now": [{k: r.get(k) for k in ("id", "sessionId", "name", "pid", "status", "state")} for r in rc2],
-    }
+    results["probes"]["2c_resume_after_stop"] = {"first_session_id": c_sid, "launch": l6}
+    variants = [("2c1_no_flags", None), ("2c2_name_only", ["--name", "nimitz-probe-c"]),
+                ("2c3_all_flags", "launch")]
+    for key, flags in variants:
+        live = [r for r in rows() if r.get("name") == "nimitz-probe-c" and r.get("pid")]
+        stops = [run([NATIVE, "stop", r["id"]]) for r in live if r.get("id")]
+        wait_for(lambda: not [r for r in rows() if r.get("name") == "nimitz-probe-c" and r.get("pid")], secs=30)
+        n0 = len(events())
+        word = key.split("_", 1)[0].upper()
+        if flags == "launch":
+            res = launch("nimitz-probe-c", "label-" + key, BASE / "c", ["--resume", c_sid or "x"], f"Reply with the single word {word}.")
+        else:
+            res = resume_plain(BASE / "c", c_sid or "x", f"Reply with the single word {word}.", flags or [])
+        mine = ("label-c", "label-" + key)
+        wait_for(lambda: [e for e in events()[n0:] if e["event"] == "Stop" and e["label"] in mine], secs=60)
+        new_c = [e for e in events()[n0:] if e["label"] in mine]
+        new_rows = [r for r in rows() if r.get("name") == "nimitz-probe-c" and r.get("sessionId") != c_sid and r.get("pid")]
+        rc2 = [r for r in rows() if r.get("name") == "nimitz-probe-c"]
+        results["probes"]["2c_resume_after_stop"][key] = {
+            "stopped_first": stops, "resume": res,
+            "hook_session_ids": sorted({e["session_id"] for e in new_c if e["session_id"]}),
+            "session_start_sources": sorted({str(e["source"]) for e in new_c if e["event"] == "SessionStart"}),
+            "labels_in_hooks": sorted({str(e["label"]) for e in new_c}),
+            "same_id": bool(new_c) and all(e["session_id"] == c_sid for e in new_c if e["session_id"]),
+            "copy_rows": [r.get("sessionId") for r in new_rows],
+            "rows_now": [{k: r.get(k) for k in ("id", "sessionId", "name", "pid", "status", "state")} for r in rc2],
+        }
 
     # 4. hook sessionTitle vs the messaging name
     l4 = launch("nimitz-probe-b", "label-b", BASE / "b", [], "Reply with the single word OK.", title="nimitz-probe-b-retitled")
