@@ -41,7 +41,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), area);
     let [top, body, bottom] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)]).areas(area);
-    f.render_widget(Paragraph::new(top_line(app)).style(Style::new().bg(mono::BG_HI)), top);
+    f.render_widget(Paragraph::new(top_line(app, top.width as usize)).style(Style::new().bg(mono::BG_HI)), top);
     let (left, right, _) = body_areas(app, body);
     draw_list(app, f, left);
     let compact = right.height < 16;
@@ -73,13 +73,46 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     }
 }
 
-fn top_line(app: &App) -> Line<'static> {
+fn top_line(app: &App, width: usize) -> Line<'static> {
     let Some(b) = &app.bundle else { return Line::from(vec![badge("ADMIRALTY", mono::GOLD), Span::raw("  loading ...")]) };
+    // the longest form whose essentials fit: words, then short words, then
+    // letters; optional pieces follow while whole ones fit, never cut mid-word
+    let w = |v: &[Span]| v.iter().map(|s| s.content.width()).sum::<usize>();
+    let level = (0..3).find(|l| w(&top_spans(app, b, *l).0) <= width).unwrap_or(2);
+    let (essential, optional) = top_spans(app, b, level);
+    let mut out = vec![];
+    let mut used = 0;
+    for sp in essential {
+        let n = sp.content.width();
+        if used + n > width {
+            break;
+        }
+        used += n;
+        out.push(sp);
+    }
+    for sp in optional {
+        let n = sp.content.width();
+        if used + n <= width {
+            used += n;
+            out.push(sp);
+        }
+    }
+    Line::from(out)
+}
+
+/// The top bar at a level of detail (0 words, 1 short words, 2 letters), as
+/// (what always shows, what shows when there is room).
+fn top_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let (fleets, live, need, errors, warns) = app.counts();
+    let pick = |full: String, short: String, tiny: String| match level {
+        0 => full,
+        1 => short,
+        _ => tiny,
+    };
     // what decides what you can do comes first, so a narrow window keeps it
     let mut v = vec![badge(&format!("{} ADMIRALTY", app.icons.fleet), mono::GOLD)];
     if app.monitor_only() {
-        v.push(badge("MONITOR-ONLY", mono::ORANGE));
+        v.push(badge(if level == 2 { "NO MUX" } else { "MONITOR-ONLY" }, mono::ORANGE));
     } else {
         v.push(Span::styled(format!(" mux {}", b.mux_name), bold(mono::CYAN)));
     }
@@ -87,41 +120,45 @@ fn top_line(app: &App) -> Line<'static> {
         v.push(Span::raw(" "));
         v.push(badge("DEMO", mono::PURPLE));
     }
-    v.push(Span::raw(format!("  {fleets} fleets  {live} live  ")));
+    v.push(Span::raw(pick(format!("  {fleets} fleets  {live} live  "), format!(" {fleets} fleets {live} live "), format!(" {fleets}f {live} live "))));
     // sessions labelled for a fleet whose config does not load: not lost, just not listed
     let unlisted = crate::view::all_issues(&b.snap).iter().filter(|i| i.code == "config.invalid" && i.message.contains("which no config declares")).count();
     if unlisted > 0 {
-        v.push(Span::styled(format!("+{unlisted} outside the config  "), bold(mono::ORANGE)));
+        v.push(Span::styled(pick(format!("+{unlisted} outside the config  "), format!("+{unlisted} unlisted  "), format!("+{unlisted}? ")), bold(mono::ORANGE)));
     }
-    v.push(Span::styled(format!("{need} need you"), if need > 0 { bold(mono::PINK) } else { st(mono::COMMENT) }));
-    v.push(Span::raw("  "));
+    v.push(Span::styled(pick(format!("{need} need you"), format!("{need} need you"), format!("{need}!")), if need > 0 { bold(mono::PINK) } else { st(mono::COMMENT) }));
+    v.push(Span::raw(if level == 0 { "  " } else { " " }));
     if errors + warns == 0 {
-        v.push(Span::styled("no issues", st(mono::GREEN)));
+        v.push(Span::styled(pick("no issues".into(), "no issues".into(), "ok".into()), st(mono::GREEN)));
     } else {
         if errors > 0 {
-            v.push(Span::styled(format!("{} {errors} errors", app.icons.issue), bold(mono::PINK)));
-            v.push(Span::raw("  "));
+            v.push(Span::styled(pick(format!("{} {errors} errors", app.icons.issue), format!("{} {errors} err", app.icons.issue), format!("{errors}e")), bold(mono::PINK)));
+            v.push(Span::raw(if level == 0 { "  " } else { " " }));
         }
         if warns > 0 {
-            v.push(Span::styled(format!("{warns} warnings"), bold(mono::ORANGE)));
+            v.push(Span::styled(pick(format!("{warns} warnings"), format!("{warns} warn"), format!("{warns}w")), bold(mono::ORANGE)));
         }
-        v.push(Span::styled(" (i)", st(mono::COMMENT)));
+        if level == 0 {
+            v.push(Span::styled(" (i)", st(mono::COMMENT)));
+        }
     }
-    if !b.snap.compat_ok {
-        let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
-        v.push(Span::styled(format!("   Claude Code {ver} outside the supported range"), bold(mono::ORANGE)));
-    }
+    let mut opt = vec![];
+    // filters first: they change what the list shows
     if !app.filter.is_empty() {
-        v.push(Span::styled(format!("   filter: {}", app.filter), st(mono::YELLOW)));
+        opt.push(Span::styled(format!("   filter: {}", app.filter), st(mono::YELLOW)));
     }
     if app.flagged_only {
-        v.push(Span::styled("   flagged only", st(mono::PURPLE)));
+        opt.push(Span::styled("   flagged only", st(mono::PURPLE)));
     }
     if app.fleet_states.iter().any(|on| !on) {
         let shown: Vec<&str> = FleetState::ALL.iter().filter(|x| app.fleet_states[x.index()]).map(|x| x.label()).collect();
-        v.push(Span::styled(format!("   fleets: {}", if shown.is_empty() { "none".into() } else { shown.join(", ") }), st(mono::ORANGE)));
+        opt.push(Span::styled(format!("   fleets: {}", if shown.is_empty() { "none".into() } else { shown.join(", ") }), st(mono::ORANGE)));
     }
-    Line::from(v)
+    if !b.snap.compat_ok {
+        let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
+        opt.push(Span::styled(pick(format!("   Claude Code {ver} outside the supported range"), format!("   CC {ver} unsupported"), " CC!".into()), bold(mono::ORANGE)));
+    }
+    (v, opt)
 }
 
 fn bottom_line(app: &App, width: usize) -> Line<'static> {
@@ -477,7 +514,8 @@ fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {
         Line::styled(format!("Message {}", plan.to), bold(mono::FG)),
         Line::styled(how, st(mono::COMMENT)),
         Line::raw(""),
-        Line::from(vec![Span::styled("> ", bold(mono::ORANGE)), Span::styled(text.to_string(), st(mono::FG)), Span::styled("\u{2588}", st(mono::ORANGE))]),
+        // what is typed is shown as it will be sent: no control characters
+        Line::from(vec![Span::styled("> ", bold(mono::ORANGE)), Span::styled(nimitz_mux::sanitize_text(text), st(mono::FG)), Span::styled("\u{2588}", st(mono::ORANGE))]),
         Line::raw(""),
         Line::from(vec![Span::styled("command  ", st(mono::COMMENT)), Span::styled(crate::actions::signal_command(plan, if text.is_empty() { "..." } else { text }), bold(mono::CYAN))]),
         keys_line(&[("enter", "send"), ("esc", "cancel"), ("ctrl-u", "clear")]),

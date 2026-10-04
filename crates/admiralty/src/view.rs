@@ -159,12 +159,15 @@ pub fn fleet_issues(f: &Fleet) -> Vec<&Issue> {
     v
 }
 
-/// Every issue in the snapshot, member issues included, worst first.
+/// Every issue in the snapshot, member issues included, each once (core may
+/// put one finding on a squadron and on each of its members), worst first.
 pub fn all_issues(snap: &Snapshot) -> Vec<&Issue> {
     let mut v: Vec<&Issue> = snap.issues.iter().collect();
     for f in &snap.fleets {
         v.extend(fleet_issues(f));
     }
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|i| seen.insert((i.code.clone(), i.id.clone(), i.message.clone())));
     v.sort_by(|a, b| b.severity.cmp(&a.severity));
     v
 }

@@ -701,3 +701,41 @@ fn a_ship_cannot_take_the_commodores_address() {
     f.validate(&fixtures::demo_env(), &fixtures::demo_snapshot());
     assert!(f.fields.iter().find(|x| x.key == "ship").unwrap().error.as_deref().unwrap_or("").contains("address"));
 }
+
+#[test]
+fn bug43_messages_are_sanitised_in_preview_command_and_send_and_empty_ones_refused() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN");
+    let plan = t.app.message_plan().unwrap();
+    let raw = "\u{1b}[31mhello\u{1b}[0m\nthere\u{7}\u{1b}]0;title\u{7}";
+    t.app.modal = Some(Modal::Message { plan: plan.clone(), text: raw.into() });
+    let s = screen(&mut t.app, 200, 50);
+    assert!(s.contains("> hello there"), "preview shows what will be sent:\n{s}");
+    assert!(s.contains("nimitz signal MAIN 'hello there'"), "and so does the command");
+    press(&mut t.app, KeyCode::Enter);
+    assert_eq!(t.mux.calls.lock().unwrap().as_slice(), ["type p1 hello there"]);
+    // nothing left after cleaning: refused, the box stays open
+    t.app.modal = Some(Modal::Message { plan, text: "\u{1b}[2J\n\t \u{7}".into() });
+    press(&mut t.app, KeyCode::Enter);
+    assert!(matches!(t.app.modal, Some(Modal::Message { .. })));
+    assert!(toast(&t.app).contains("empty"));
+    assert_eq!(t.mux.calls.lock().unwrap().len(), 1, "nothing more was typed");
+}
+
+#[test]
+fn the_header_shortens_counts_instead_of_cutting_words() {
+    for w in [200u16, 120, 100, 80, 60, 50] {
+        let mut t = demo();
+        let top = lines(&draw(&mut t.app, w, 24))[0].clone();
+        assert!(!top.contains("warni ") && !top.trim_end().ends_with("warni"), "{w}: {top}");
+        let words: Vec<&str> = top.split_whitespace().collect();
+        let last = words.last().copied().unwrap_or("");
+        assert!(
+            ["warnings", "warn", "(i)", "range", "unsupported", "CC!"].iter().any(|x| last.ends_with(x)) || last.ends_with('w') || last.ends_with('e') || last.ends_with('!'),
+            "{w}: the header ends on a whole piece, not a cut word: {top:?}"
+        );
+    }
+    let mut t = demo();
+    let top80 = lines(&draw(&mut t.app, 80, 24))[0].clone();
+    assert!(top80.contains("6 warn") || top80.contains("6w"), "80 columns keep the warning count: {top80}");
+}

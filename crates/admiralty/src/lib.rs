@@ -5,6 +5,7 @@
 //! terminal loop. No Claude Code file parsing here: core does that.
 
 pub mod actions;
+pub mod backend;
 pub mod app;
 pub mod data;
 pub mod detail;
