@@ -163,6 +163,16 @@ fn unwritable(env: &Env) -> Option<String> {
     probe(&env.state).or_else(|| env.registry_path().is_file().then(|| probe(&env.registry_path())).flatten())
 }
 
+/// This machine's label as `nimitz init --label` saved it in NIMITZ_STATE (per
+/// machine, so it outlives every fleet). None before `init`: a registry that
+/// is not on disk has only the hostname as a placeholder.
+pub fn machine_label(env: &Env) -> Option<String> {
+    if !env.registry_path().is_file() {
+        return None;
+    }
+    Some(load(env).machine).filter(|m| !m.is_empty())
+}
+
 /// Atomic save under an exclusive lock.
 pub fn save(env: &Env, r: &Registry) -> std::io::Result<()> {
     let _lock = lock(env)?;
@@ -282,6 +292,16 @@ mod tests {
         let h = health(&env);
         std::fs::set_permissions(&env.state, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(h.iter().any(|i| i.code == "registry.readonly"), "{h:?}");
+    }
+
+    #[test]
+    fn the_machine_label_lives_in_state_not_in_a_fleet() {
+        let (_td, env) = test_env();
+        assert_eq!(machine_label(&env), None, "no label before init");
+        update(&env, |r| r.machine = "west-mac".into()).unwrap();
+        crate::config::tests::make_fleet(&env);
+        std::fs::remove_dir_all(env.fleet_dir("MAIN")).unwrap(); // every fleet gone
+        assert_eq!(machine_label(&env).as_deref(), Some("west-mac"));
     }
 
     #[test]
