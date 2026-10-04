@@ -616,3 +616,43 @@ fn bug50_a_folder_nothing_trusts_is_an_error() {
     assert!(untrusted_line(&c.out).is_some_and(|l| l.contains("[ERROR]")), "{}", c.out);
     assert_ne!(c.code, 0);
 }
+
+#[test]
+#[ignore = "BUG-54"]
+fn bug54_a_stopped_impostor_row_can_be_removed_with_the_fix() {
+    // A session with FRESH's labels in STOPPED's folder, stopped: check blames it and offers `nimitz rm`.
+    let sb = Sb::new(false);
+    let settings = r#"{"env":{"NIMITZ_FLEET":"MAIN","NIMITZ_SQUADRON":"ARGOS","NIMITZ_ROLE":"ship","NIMITZ_ID":"MAIN/ARGOS/FRESH"}}"#;
+    let out = sb.claude(&sb.dir("dirs/main/stopped"), &["--bg", "--name", "impostor", "--settings", settings, "hi"]);
+    let short = out.split_whitespace().find(|w| w.len() == 8 && w.chars().all(|c| c.is_ascii_hexdigit())).unwrap_or("").to_string();
+    sb.claude(&sb.dir("dirs/main/stopped"), &["stop", &short]);
+    let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
+    let fix = c.out.lines().find(|l| l.contains("fix:") && l.contains("nimitz rm")).map(|l| l.split("fix:").nth(1).unwrap().trim().to_string());
+    if let Some(fix) = fix {
+        let args: Vec<&str> = fix.split_whitespace().skip(1).take_while(|a| !a.starts_with('#')).collect();
+        let mut a = args.clone();
+        a.push("--yes");
+        let r = sb.run(&a);
+        assert_eq!(r.code, 0, "the fix `{fix}` refuses:\n{}", r.out);
+    }
+}
+
+#[test]
+#[ignore = "BUG-50"]
+fn bug50_a_git_repo_under_a_trusted_parent_is_not_just_info() {
+    // Real Claude Code 2.1.288 refuses `--bg` in a git repository covered only by a trusted parent.
+    let sb = Sb::new(false);
+    let repo = sb.dir("dirs/main/fresh");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    // trust only the parent, not the repo
+    for f in [sb.dir("claude_home/.claude.json"), sb.dir("claude_home.json")] {
+        let mut v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        v["projects"].as_object_mut().unwrap().remove(repo.to_str().unwrap());
+        v["projects"][sb.dir("dirs/main").to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
+        std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    }
+    let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
+    let line = c.out.lines().find(|l| l.contains("git repository")).unwrap_or("").to_string();
+    assert!(!line.starts_with("[INFO]"), "a repo Claude Code will refuse is only Info:\n{}", c.out);
+}
