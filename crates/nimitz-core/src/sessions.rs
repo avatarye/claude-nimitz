@@ -48,18 +48,38 @@ pub fn id_from_name(name: &str) -> Option<Id> {
     }
 }
 
+/// The identity a caller gets when its labels are partial or disagree: no
+/// authority at all (BUG-06, fail closed). It is a tender id, so every
+/// authority rule refuses it.
+pub const UNVERIFIED: &str = "?/?/~unverified-labels";
+
 /// Who is asking, from the caller's env (labels reach the Bash tool's
-/// processes, probe P0.6). No labels, or half of them: the user.
+/// processes, probe P0.6). No labels at all (`NIMITZ_HOME` alone is none): the
+/// user. Labels that are partial (`NIMITZ_ID` or `NIMITZ_ROLE` missing), that
+/// disagree, or that name no valid identity: an unverified caller with no
+/// authority, never the user.
 pub fn caller_from_env(vars: &HashMap<String, String>) -> Caller {
     let get = |k: &str| vars.get(k).filter(|v| !v.is_empty());
+    let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Tender };
     match (get("NIMITZ_ID"), get("NIMITZ_ROLE")) {
+        (None, None) => Caller::User,
         (Some(id), Some(role)) => {
             let id = Id(id.clone());
+            let shape_ok = id.parts().iter().all(|p| crate::config::valid_name(p.trim_start_matches('~')) || p.starts_with('~'))
+                && id.name() != id.0;
             // the role label must agree with the id's shape; otherwise distrust both
-            if id.role().as_str() == role { Caller::Member { role: id.role(), id } } else { Caller::User }
+            if shape_ok && id.role().as_str() == role {
+                Caller::Member { role: id.role(), id }
+            } else {
+                unverified
+            }
         }
-        _ => Caller::User,
+        _ => unverified,
     }
+}
+
+fn caller_name(id: &Id) -> String {
+    if id.0 == UNVERIFIED { "a caller with partial or inconsistent NIMITZ_* labels".into() } else { id.name() }
 }
 
 // ------------------------------------------------------------------ issues
@@ -126,14 +146,36 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
             out.push(issue(
                 "role.background",
                 Severity::Error,
-                format!("{} (an {}) is a background session", m.id, m.role.as_str()),
-                Some(format!(
-                    "{} attach {}  # and keep it in a terminal",
-                    env.native_claude_bin,
-                    p.short_id.as_deref().unwrap_or(&p.session_id)
-                )),
+                format!("{} is a background session; a {} must stay interactive", m.id, m.role.as_str()),
+                Some(format!("nimitz open {}  # attach it, and keep it in a terminal", m.id)),
                 id.clone(),
             ));
+        }
+    }
+    // The session's saved folder is not the member's folder any more (moved, or
+    // `ship set --dir`): Claude Code resumes in the saved folder, so a resume
+    // fails when that folder is gone or untrusted (BUG-31).
+    if let (Some(p), Some(want)) = (m.session.as_ref().filter(|p| p.pid.is_none() && !p.cwd.is_empty()), m.cwd.as_deref()) {
+        let same = p.cwd.trim_end_matches('/') == want.trim_end_matches('/')
+            || std::fs::canonicalize(&p.cwd).ok() == std::fs::canonicalize(want).ok() && std::path::Path::new(&p.cwd).exists();
+        if !same {
+            let gone = !std::path::Path::new(&p.cwd).is_dir();
+            let untrusted = !gone && !crate::evidence::folder_trusted(env, &mut crate::evidence::FileCache::default(), &p.cwd);
+            if gone || untrusted {
+                out.push(issue(
+                    "folder.moved",
+                    Severity::Error,
+                    format!(
+                        "{}'s session {} was saved in {}, which is {}; its folder is now {want}, and a resume would run in the old one",
+                        m.id,
+                        p.short_id.as_deref().unwrap_or(&p.session_id),
+                        p.cwd,
+                        if gone { "gone" } else { "not trusted" }
+                    ),
+                    Some(format!("nimitz relaunch {}  # a labelled copy in the new folder", m.id)),
+                    id.clone(),
+                ));
+            }
         }
     }
     if !m.extra_rows.is_empty() {
@@ -232,13 +274,13 @@ pub fn name_taken_issue(m: &Member, others: &[SessionInfo]) -> Option<Issue> {
 
 /// May `caller` start (or stop, relaunch) `target`? Plan-v3 section 5.5: you
 /// start anything; a commodore its own ships and tenders; everyone else nothing.
-fn may_start(caller: &Caller, target: &Id) -> Result<(), String> {
+fn may_start(caller: &Caller, target: &Id, verb: &str) -> Result<(), String> {
     match caller {
         Caller::User => Ok(()),
         Caller::Member { id, role: Role::Commodore } if target.parent().as_ref() == Some(id) => Ok(()),
         Caller::Member { id, .. } => Err(format!(
-            "{} may not start {target}: only you start admirals and commodores; a commodore starts its own ships and tenders",
-            Id(id.0.clone()).name()
+            "{} may not {verb} {target}: only you {verb} admirals and commodores; a commodore may {verb} its own ships and tenders",
+            caller_name(id)
         )),
     }
 }
@@ -292,7 +334,7 @@ fn refuse_legacy(plan: &mut Plan, m: &Member) -> bool {
 /// One member's action per contracts.md section 8. Appends steps or refusals.
 fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: bool) {
     let Some((fleet, m)) = member(snap, id) else {
-        refuse(plan, "config.invalid", format!("{id} is not in any fleet config"), None, Some(id.clone()));
+        refuse(plan, "member.unknown", format!("{id} is not in any fleet config"), Some("nimitz status  # the ids that exist".into()), Some(id.clone()));
         return;
     };
     let fod = match crate::config::load_fleet(env, fleet.id.fleet()) {
@@ -304,11 +346,30 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
     };
     let cwd = m.cwd.clone().or_else(|| crate::config::member_dir(env, &fod, id).map(|p| p.to_string_lossy().into_owned()));
     let Some(cwd) = cwd else {
-        refuse(plan, "config.invalid", format!("{id} has no folder on this machine"), None, Some(id.clone()));
+        refuse(plan, "folder.missing", format!("{id} has no folder on this machine"), Some(format!("nimitz ship set {id} --dir <folder|managed>")), Some(id.clone()));
         return;
     };
     let mode = crate::config::permission_mode(&fod, id);
     if refuse_legacy(plan, m) {
+        return;
+    }
+    // What the whole-world view found and no row of the table fixes: a job row
+    // that does not parse, this identity's labels on a session in another
+    // folder, its name held by another live session.
+    if let Some(e) = m.issues.iter().find(|i| i.severity == Severity::Error && ["job.unreadable", "labels.mismatch", "name.taken"].contains(&i.code.as_str())) {
+        plan.refusals.push(e.clone());
+        return;
+    }
+    // A session file that cannot be read: the process may be live, and a live
+    // session is never resumed (BUG-13).
+    if let Some(p) = m.session.as_ref().filter(|p| p.pid.is_none() && p.status.as_deref() == Some("unreadable")) {
+        refuse(
+            plan,
+            "session.unreadable",
+            format!("{id}'s session file for {} cannot be read; its process may be live", p.short_id.as_deref().unwrap_or(&p.session_id)),
+            Some(format!("nimitz status  # read it again in a moment; if it stays so: nimitz stop {id}")),
+            Some(id.clone()),
+        );
         return;
     }
     let session_errs = session_issues(env, m);
@@ -394,9 +455,19 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
         }
         None => {
             let olds = legacy_rows(snap, &fod, id, &cwd);
+            // the registry's current session lost its job row but kept its
+            // transcript (BUG-12): `--resume <id>` with every flag continues it
+            let current = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.current.clone());
+            let kept = current.filter(|sid| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(&cwd), sid).is_some());
             // no row: an interactive member continues its transcript with `-c` (row 6)
             if m.role.interactive() && !crate::evidence::transcripts_in(env, &cwd).is_empty() {
                 plan.steps.push(step(id, crate::claude::interactive(env, id, &mode, true), "continue the interactive session in a pane"));
+            } else if let (false, Some(sid)) = (m.role.interactive(), kept) {
+                plan.steps.push(step(
+                    id,
+                    crate::claude::relaunch_bg(env, id, &mode, &sid),
+                    &format!("resume {} from its transcript with every flag (its job row is gone; Claude Code keeps the id)", &sid[..sid.len().min(8)]),
+                ));
             } else if let (Role::Ship, Some(newest)) = (m.role, olds.first()) {
                 // a migrated ship keeps its history: continue the old fleet's newest
                 // stopped session the row-5 way (a labelled copy); the old rows stay
@@ -464,7 +535,7 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
         ),
         Role::Ship => {
             let Some(prompt) = crate::config::ship_prompt(fod, id) else {
-                refuse(plan, "config.invalid", format!("{id} has no prompt (prompt or prompt_file) in squadron.toml"), None, Some(id.clone()));
+                refuse(plan, "prompt.missing", format!("{id} has no prompt (prompt or prompt_file) in squadron.toml"), Some(format!("nimitz ship set {id} --prompt <text>")), Some(id.clone()));
                 return;
             };
             plan.steps.push(Step {
@@ -506,8 +577,11 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
             None => issue(
                 "cc.version",
                 Severity::Error,
-                format!("Claude Code {} is outside the supported range", snap.cc_version.as_deref().unwrap_or("(not found)")),
-                Some("`--force` overrides launches".into()),
+                match snap.cc_version.as_deref() {
+                    Some(v) => format!("Claude Code {v} is outside the supported range"),
+                    None => format!("Claude Code's version is unknown (`{} --version` gave no version)", env.native_claude_bin),
+                },
+                Some("re-run the same nimitz command with --force (read-only commands work as they are)".into()),
                 None,
             ),
         };
@@ -554,7 +628,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
                 continue;
             }
         }
-        if let Err(why) = may_start(caller, &link) {
+        if let Err(why) = may_start(caller, &link, "start") {
             refuse(&mut plan, "authority", why, None, Some(link.clone()));
             continue;
         }
@@ -580,11 +654,11 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
         return plan;
     }
     let Some(f) = snap.fleets.iter().find(|f| f.id.fleet() == fleet) else {
-        refuse(&mut plan, "config.invalid", format!("no fleet {fleet} in the config"), None, None);
+        refuse(&mut plan, "member.unknown", format!("no fleet {fleet} in the config"), None, None);
         return plan;
     };
     if f.machine.is_none() {
-        refuse(&mut plan, "config.invalid", format!("fleet {fleet} does not run on this machine"), None, None);
+        refuse(&mut plan, "machine.missing", format!("fleet {fleet} does not run on this machine"), Some(format!("nimitz machine add {fleet} <label>")), None);
         return plan;
     }
     gate(env, &mut plan, snap, Some(&f.id), false);
@@ -661,22 +735,22 @@ fn dedup_issues(plan: &mut Plan) {
 
 pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("stop {id}"), ..Default::default() };
-    if let Err(why) = may_start(caller, id) {
+    if let Err(why) = may_start(caller, id, "stop") {
         refuse(&mut plan, "authority", why, None, Some(id.clone()));
         return plan;
     }
     let Some((_, m)) = member(snap, id) else {
-        refuse(&mut plan, "config.invalid", format!("{id} is not in any fleet config"), None, Some(id.clone()));
+        refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
         return plan;
     };
     let Some(p) = m.session.as_ref().filter(|p| p.pid.is_some()) else {
-        refuse(&mut plan, "config.invalid", format!("{id} is not live"), None, Some(id.clone()));
+        refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
         return plan;
     };
     if m.role.interactive() && p.kind != "background" {
         refuse(
             &mut plan,
-            "config.invalid",
+            "session.interactive",
             format!("{id} is an interactive session; end it in its own terminal"),
             Some("type /exit in its pane".into()),
             Some(id.clone()),
@@ -684,7 +758,7 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         return plan;
     }
     let Some(short) = &p.short_id else {
-        refuse(&mut plan, "config.invalid", format!("{id}'s session {} has no job id to stop", p.session_id), None, Some(id.clone()));
+        refuse(&mut plan, "session.none", format!("{id}'s session {} has no job id to stop", p.session_id), None, Some(id.clone()));
         return plan;
     };
     plan.steps.push(Step {
@@ -699,12 +773,12 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
 /// A deliberate relaunch: new id, every flag, old row removed (contracts.md section 8).
 pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("relaunch {id} (new session id, labels restored)"), ..Default::default() };
-    if let Err(why) = may_start(caller, id) {
+    if let Err(why) = may_start(caller, id, "relaunch") {
         refuse(&mut plan, "authority", why, None, Some(id.clone()));
         return plan;
     }
     let Some((fleet, m)) = member(snap, id) else {
-        refuse(&mut plan, "config.invalid", format!("{id} is not in any fleet config"), None, Some(id.clone()));
+        refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
         return plan;
     };
     let fod = match crate::config::load_fleet(env, fleet.id.fleet()) {
@@ -719,9 +793,19 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
     if refuse_legacy(&mut plan, m) {
         return plan;
     }
+    // a relaunch makes a new live session: not while the name is held by
+    // another live session, or the session file says nothing reliable (BUG-10)
+    if let Some(e) = m.issues.iter().find(|i| i.severity == Severity::Error && ["name.taken", "job.unreadable", "labels.mismatch"].contains(&i.code.as_str()) && !(i.code == "labels.mismatch" && m.session.as_ref().map(|p| i.message.contains(&p.session_id)).unwrap_or(false))) {
+        plan.refusals.push(e.clone());
+        return plan;
+    }
+    if m.session.as_ref().map(|p| p.pid.is_none() && p.status.as_deref() == Some("unreadable")).unwrap_or(false) {
+        refuse(&mut plan, "session.unreadable", format!("{id}'s session file cannot be read; its process may be live"), Some("nimitz status  # read it again in a moment".into()), Some(id.clone()));
+        return plan;
+    }
     if m.role.interactive() {
         if m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
-            refuse(&mut plan, "config.invalid", format!("{id} is live; end it in its pane first"), Some("type /exit in its pane".into()), Some(id.clone()));
+            refuse(&mut plan, "session.interactive", format!("{id} is live; end it in its pane first"), Some("type /exit in its pane".into()), Some(id.clone()));
             return plan;
         }
         plan.steps.push(Step {
@@ -733,7 +817,7 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         return plan;
     }
     let Some(p) = &m.session else {
-        refuse(&mut plan, "config.invalid", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
+        refuse(&mut plan, "session.none", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
         return plan;
     };
     if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
@@ -752,7 +836,7 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         match &p.short_id {
             Some(short) => plan.steps.push(step(crate::claude::stop(env, short), "a live session is never resumed; stop it first")),
             None => {
-                refuse(&mut plan, "config.invalid", format!("{id} is live with no job id; cannot stop it"), None, Some(id.clone()));
+                refuse(&mut plan, "session.none", format!("{id} is live with no job id; cannot stop it"), None, Some(id.clone()));
                 return plan;
             }
         }
@@ -791,15 +875,15 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         .chain(snap.stowaways.iter())
         .collect();
     let Some(row) = all.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target) else {
-        refuse(&mut plan, "config.invalid", format!("{target} names no identity and no job row"), None, None);
+        refuse(&mut plan, "session.unknown", format!("{target} names no identity and no job row"), None, None);
         return plan;
     };
     if row.pid.is_some() {
         refuse(
             &mut plan,
-            "config.invalid",
+            "session.live",
             format!("session {} is live; stop it first", row.session_id),
-            Some(format!("{} stop {}", env.native_claude_bin, row.short_id.as_deref().unwrap_or(&row.session_id))),
+            Some(format!("nimitz stop {}", row.short_id.as_deref().unwrap_or(&row.session_id))),
             None,
         );
         return plan;
@@ -808,7 +892,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
     if current {
         refuse(
             &mut plan,
-            "config.invalid",
+            "lineage.current",
             format!("session {} is an identity's current session; removing it breaks the lineage", row.session_id),
             Some("nimitz relaunch <id>  # if you mean to replace it".into()),
             None,
@@ -816,7 +900,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         return plan;
     }
     let Some(short) = &row.short_id else {
-        refuse(&mut plan, "config.invalid", format!("session {} has no job row to remove", row.session_id), None, None);
+        refuse(&mut plan, "session.none", format!("session {} has no job row to remove", row.session_id), None, None);
         return plan;
     };
     plan.steps.push(Step { id: None, cmd: crate::claude::rm(env, short), cwd: None, why: "remove the job row; the transcript stays".into() });
@@ -851,7 +935,12 @@ fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
 /// any scope; a commodore, its own squadron only (its tenders and the stale
 /// rows of its own ships); everyone else nothing.
 pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) -> Plan {
-    let mut plan = Plan { summary: format!("sweep {}", id.map(|i| i.0.clone()).unwrap_or("everything".into())), ..Default::default() };
+    let scope = match (id, caller) {
+        (Some(i), _) => i.0.clone(),
+        (None, Caller::Member { id: me, role: Role::Commodore }) => me.0.clone(),
+        (None, _) => "everything".into(),
+    };
+    let mut plan = Plan { summary: format!("sweep {scope}"), ..Default::default() };
     let under = |m: &Id, t: &Id| m == t || m.0.starts_with(&format!("{}/", t.0));
     let mine: Box<dyn Fn(&Id) -> bool> = match caller {
         Caller::User => Box::new(|_| true),
@@ -872,7 +961,7 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
     };
     if let Some(t) = id {
         if !members(snap).iter().any(|(_, m)| under(&m.id, t)) {
-            refuse(&mut plan, "config.invalid", format!("{t} names no fleet member"), Some("nimitz status".into()), Some(t.clone()));
+            refuse(&mut plan, "member.unknown", format!("{t} names no fleet member"), Some("nimitz status".into()), Some(t.clone()));
             return plan;
         }
     }
@@ -903,7 +992,7 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
 pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, prompt: &str, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("tender {commodore}/{task}"), ..Default::default() };
     if commodore.role() != Role::Commodore {
-        refuse(&mut plan, "config.invalid", format!("{commodore} is not a commodore"), None, Some(commodore.clone()));
+        refuse(&mut plan, "tender.invalid", format!("{commodore} is not a commodore"), None, Some(commodore.clone()));
         return plan;
     }
     let ok = match caller {
@@ -916,11 +1005,11 @@ pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, promp
         return plan;
     }
     if task.is_empty() || !task.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        refuse(&mut plan, "config.invalid", format!("task {task:?} must be [A-Za-z0-9_-]+"), None, Some(commodore.clone()));
+        refuse(&mut plan, "tender.invalid", format!("task {task:?} must be [A-Za-z0-9_-]+"), None, Some(commodore.clone()));
         return plan;
     }
     if prompt.trim().is_empty() {
-        refuse(&mut plan, "config.invalid", "a tender needs a prompt (its one job)".into(), None, Some(commodore.clone()));
+        refuse(&mut plan, "tender.invalid", "a tender needs a prompt (its one job)".into(), None, Some(commodore.clone()));
         return plan;
     }
     let id = Id::tender(commodore.fleet(), commodore.squadron().unwrap_or_default(), task);
@@ -931,11 +1020,11 @@ pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, promp
         }
     }
     let Some((_, cm)) = member(snap, commodore) else {
-        refuse(&mut plan, "config.invalid", format!("{commodore} is not in any fleet config"), None, Some(commodore.clone()));
+        refuse(&mut plan, "member.unknown", format!("{commodore} is not in any fleet config"), None, Some(commodore.clone()));
         return plan;
     };
     let Some(cwd) = cm.cwd.clone() else {
-        refuse(&mut plan, "config.invalid", format!("{commodore} has no folder on this machine"), None, Some(commodore.clone()));
+        refuse(&mut plan, "folder.missing", format!("{commodore} has no folder on this machine"), None, Some(commodore.clone()));
         return plan;
     };
     let mode = crate::config::load_fleet(env, commodore.fleet()).map(|f| crate::config::permission_mode(&f, &id)).unwrap_or_default();
@@ -961,7 +1050,7 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
     let Some(row) = snap.stowaways.iter().find(|r| r.session_id == session_id || r.short_id.as_deref() == Some(session_id)) else {
         refuse(
             &mut plan,
-            "config.invalid",
+            "session.unknown",
             format!("{session_id} is not a stowaway (only unlabelled sessions in fleet scope are adopted)"),
             None,
             Some(id.clone()),
@@ -969,7 +1058,7 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
         return plan;
     };
     let Some((_, m)) = member(snap, id) else {
-        refuse(&mut plan, "config.invalid", format!("{id} is not in any fleet config; add it first"), Some("nimitz ship new ...".into()), Some(id.clone()));
+        refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config; add it first"), Some("nimitz ship new ...".into()), Some(id.clone()));
         return plan;
     };
     if m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
@@ -1013,7 +1102,7 @@ pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan
                 // a fleet or squadron is removed only with nothing live in it
                 refuse(
                     &mut plan,
-                    "config.invalid",
+                    "session.live",
                     format!("{} is live; {id} is removed only with nothing live in it", m.id),
                     Some(if r.kind == "background" { format!("nimitz stop {}", m.id) } else { "type /exit in its pane".into() }),
                     Some(m.id.clone()),
@@ -1214,7 +1303,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         out.ran.push((step.clone(), rc, text.clone()));
         if rc != 0 {
             out.issues.push(issue(
-                "config.invalid",
+                "step.failed",
                 Severity::Error,
                 format!("step failed ({rc}): {} -> {text}", step.cmd.join(" ")),
                 None,
@@ -1312,9 +1401,15 @@ mod tests {
             caller_from_env(&m(&[("NIMITZ_ID", "F/SQ"), ("NIMITZ_ROLE", "commodore")])),
             Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore }
         );
-        // a role label that disagrees with the id's shape is distrusted
-        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/S"), ("NIMITZ_ROLE", "commodore")])), Caller::User);
-        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/S")])), Caller::User);
+        // partial or disagreeing labels: an unverified caller with no authority, never the user
+        let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Tender };
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/S"), ("NIMITZ_ROLE", "commodore")])), unverified);
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/S")])), unverified);
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ROLE", "ship")])), unverified);
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "not an id"), ("NIMITZ_ROLE", "admiral")])), unverified);
+        // NIMITZ_HOME alone is no label at all
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_HOME", "/h")])), Caller::User);
+        assert!(may_start(&unverified, &Id::ship("F", "SQ", "S"), "start").unwrap_err().contains("partial or inconsistent"));
     }
 
     #[test]
@@ -1323,12 +1418,12 @@ mod tests {
         let own = Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore };
         let other = Caller::Member { id: Id::commodore("F", "ZZ"), role: Role::Commodore };
         let admiral = Caller::Member { id: Id::admiral("F"), role: Role::Admiral };
-        assert!(may_start(&Caller::User, &ship).is_ok());
-        assert!(may_start(&own, &ship).is_ok());
-        assert!(may_start(&own, &Id::tender("F", "SQ", "t")).is_ok());
-        assert!(may_start(&other, &ship).is_err());
-        assert!(may_start(&admiral, &ship).is_err());
-        assert!(may_start(&own, &Id::commodore("F", "SQ")).is_err());
+        assert!(may_start(&Caller::User, &ship, "start").is_ok());
+        assert!(may_start(&own, &ship, "start").is_ok());
+        assert!(may_start(&own, &Id::tender("F", "SQ", "t"), "start").is_ok());
+        assert!(may_start(&other, &ship, "start").is_err());
+        assert!(may_start(&admiral, &ship, "start").is_err());
+        assert!(may_start(&own, &Id::commodore("F", "SQ"), "start").is_err());
     }
 
     #[test]
