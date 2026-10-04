@@ -20,7 +20,7 @@ starting/opening interactive members and to Admiralty's pane actions.
 
 | Var | Default | Meaning |
 | --- | --- | --- |
-| `NIMITZ_HOME` | `~/.claude-nimitz` | data root (fleets) |
+| `NIMITZ_HOME` | `~/.claude-nimitz` | data root (fleets); may be a symlink (e.g. to `~/Dropbox/claude-nimitz`). Paths are shown as written; every comparison with a session's cwd, every trust check and the stowaway scope use real paths (Claude Code records real paths) |
 | `NIMITZ_STATE` | `~/.local/state/nimitz` | per-machine registry and events; never synced |
 | `NIMITZ_CLAUDE_HOME` | `~/.claude` | Claude Code's home (sessions/, jobs/, projects/) |
 | `NIMITZ_CLAUDE_BIN` | `claude` on PATH | cold launches (on ACME the wrapper, which adds Bedrock settings) |

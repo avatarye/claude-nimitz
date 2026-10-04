@@ -482,11 +482,22 @@ pub fn project_dir_name(cwd: &str) -> String {
     cwd.trim_end_matches('/').chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
+/// The project-dir names a folder's transcripts may live under: Claude Code
+/// names it after the real path, so a symlinked folder has two candidates.
+fn project_dirs(cwd: &str) -> Vec<String> {
+    let mut v = vec![project_dir_name(cwd)];
+    let real = project_dir_name(&crate::env::canon(Path::new(cwd)).to_string_lossy());
+    if real != v[0] {
+        v.push(real);
+    }
+    v
+}
+
 /// The transcript of a session: under its folder's project dir first, then anywhere.
 pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str) -> Option<PathBuf> {
     let projects = env.claude_home.join("projects");
-    if let Some(c) = cwd {
-        let p = projects.join(project_dir_name(c)).join(format!("{sid}.jsonl"));
+    for c in cwd.map(project_dirs).unwrap_or_default() {
+        let p = projects.join(c).join(format!("{sid}.jsonl"));
         if p.is_file() {
             return Some(p);
         }
@@ -508,16 +519,22 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
 
 /// Transcripts in a folder's project dir, newest first: (last write, session id).
 pub fn transcripts_in(env: &Env, cwd: &str) -> Vec<(f64, String)> {
-    let proj = env.claude_home.join("projects").join(project_dir_name(cwd));
-    let mut out: Vec<(f64, String)> = fs::read_dir(&proj)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-                .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut out: Vec<(f64, String)> = vec![];
+    for name in project_dirs(cwd) {
+        let proj = env.claude_home.join("projects").join(name);
+        out.extend(
+            fs::read_dir(&proj)
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
+                        .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        );
+    }
+    out.dedup_by(|a, b| a.1 == b.1);
     out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     out
 }

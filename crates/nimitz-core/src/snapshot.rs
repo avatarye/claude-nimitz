@@ -269,20 +269,23 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     // under NIMITZ_HOME (the fleets' own folders), in a member's folder itself
     // (a user project folder is not a scope: a ship at `~` must not claim every
     // session on the machine), or named by a fleet's legacy map.
-    let mut scope_trees: Vec<std::path::PathBuf> = fleets_cfg.iter().map(|f| f.dir.clone()).collect();
-    scope_trees.push(env.home.clone());
+    // Claude Code records real paths (`~/.claude-nimitz` may be a symlink), so
+    // every comparison is on real paths; what the user sees stays as written.
+    let mut scope_trees: Vec<std::path::PathBuf> = fleets_cfg.iter().map(|f| crate::env::canon(&f.dir)).collect();
+    scope_trees.push(crate::env::canon(&env.home));
     let mut folder_of: Vec<(String, Id)> = vec![];
     for f in &snap.fleets {
         for m in all_members(f) {
             if let Some(c) = &m.cwd {
-                folder_of.push((c.trim_end_matches('/').to_string(), m.id.clone()));
+                folder_of.push((norm_dir(c), m.id.clone()));
             }
         }
     }
     let in_scope = |r: &SessionRow| {
-        let c = std::path::Path::new(&r.cwd);
+        let c = crate::env::canon(std::path::Path::new(&r.cwd));
+        let cn = norm_dir(&r.cwd);
         scope_trees.iter().any(|d| !d.as_os_str().is_empty() && c.starts_with(d))
-            || folder_of.iter().any(|(d, _)| d == r.cwd.trim_end_matches('/'))
+            || folder_of.iter().any(|(d, _)| *d == cn)
             || legacy_names.contains_key(&r.name)
     };
     for r in rows.iter().filter(|r| !claimed.contains(&r.session_id)) {
@@ -300,7 +303,8 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let mut legacy: Vec<Issue> = vec![];
     for st in &snap.stowaways {
         let by_name = legacy_names.get(&st.name).cloned();
-        let by_folder = folder_of.iter().find(|(d, _)| d == st.cwd.trim_end_matches('/')).map(|(_, id)| id.clone());
+        let stn = norm_dir(&st.cwd);
+        let by_folder = folder_of.iter().find(|(d, _)| *d == stn).map(|(_, id)| id.clone());
         let Some(id) = by_name.clone().or(by_folder.filter(|_| st.pid.is_some())) else { continue };
         let short = st.short_id.as_deref().unwrap_or(&st.session_id);
         let whose = if by_name.is_some() { "belongs to the old fleet" } else { "has no labels and runs in its folder" };
@@ -372,10 +376,11 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     snap
 }
 
-/// A folder as a comparable string (no trailing slash; the realpath when it exists).
-fn norm_dir(d: &str) -> String {
+/// A folder as a comparable string: the real path (of its longest existing
+/// prefix), no trailing slash.
+pub(crate) fn norm_dir(d: &str) -> String {
     let t = d.trim_end_matches('/');
-    std::fs::canonicalize(t).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| t.to_string())
+    crate::env::canon(std::path::Path::new(t)).to_string_lossy().trim_end_matches('/').to_string()
 }
 
 fn same_dir(a: &str, b: &str) -> bool {
