@@ -62,10 +62,8 @@ pub fn ran_here(env: &Env, dir: &Path) -> bool {
 /// - trusted: inside NIMITZ_HOME (nimitz init trusts it); a trust entry on the
 ///   folder's repository itself (git root or below); Claude Code ran a session
 ///   in this exact folder; or, outside git, the folder or a parent accepted.
-/// - a git worktree (`.git` is a file) covered only by a parent's trust: Warn,
-///   it may not be trusted (real Claude Code refused one under ~/.cache).
-/// - an ordinary git repository covered only by a parent's trust: Info (real
-///   Claude Code ran ships in such Monorepo packages).
+/// - a git repository or worktree covered only by a parent's trust: Warn, it
+///   may not be trusted (real Claude Code refused both, with no session there).
 /// - nothing accepts it: Error.
 ///
 /// Keys are compared as given and as real paths (/tmp is /private/tmp). An
@@ -98,21 +96,19 @@ fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
         id: Some(id.clone()),
     };
     match (root, by_parent) {
-        (Some(root), Some(parent)) if crate::env::is_git_worktree(&root) => Some(mk(
-            Severity::Warn,
-            format!(
-                "{id}'s folder {} may not be trusted (git worktree {}): only the parent {} is trusted, and Claude Code may want the worktree's own trust",
-                real.display(),
-                root.display(),
-                parent.display()
-            ),
-            &root,
-        )),
-        (Some(root), Some(parent)) => Some(mk(
-            Severity::Info,
-            format!("{id}'s folder {} is a git repository ({}) trusted through the parent {}", real.display(), root.display(), parent.display()),
-            &root,
-        )),
+        (Some(root), Some(parent)) => {
+            let kind = if crate::env::is_git_worktree(&root) { "git worktree" } else { "git repository" };
+            Some(mk(
+                Severity::Warn,
+                format!(
+                    "{id}'s folder {} may not be trusted ({kind} {}): only the parent {} is trusted, and Claude Code wants the repository's own trust",
+                    real.display(),
+                    root.display(),
+                    parent.display()
+                ),
+                &root,
+            ))
+        }
         (_, Some(_)) => None,
         (root, None) => {
             let at = root.clone().unwrap_or_else(|| real.clone());

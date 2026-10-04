@@ -581,15 +581,17 @@ fn bug50_a_git_worktree_under_a_trusted_home_warns() {
 }
 
 #[test]
-fn bug50_an_ordinary_repo_under_a_trusted_home_is_at_most_info() {
+fn bug50_an_ordinary_repo_under_a_trusted_home_warns_like_a_worktree() {
+    // Real Claude Code refused `--bg` in a plain repo covered only by the home's trust.
     let sb = Sb::new(false);
     let home = sb.dir("home");
     let repo = home.join("ws/Pkg");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     trust_entry(&sb, &home, true);
     let c = check_fresh_at(&sb, &repo);
-    assert!(untrusted_line(&c.out).is_none_or(|l| l.contains("[INFO]")), "{}", c.out);
-    assert_eq!(c.code, 0, "{}", c.out);
+    let line = untrusted_line(&c.out).unwrap_or_default();
+    assert!(line.contains("[WARN]") && line.contains("may not be trusted (git repository"), "{}", c.out);
+    assert!(c.out.contains(&format!("run `claude` once in {}", repo.display())), "{}", c.out);
 }
 
 #[test]
@@ -637,7 +639,6 @@ fn bug54_a_stopped_impostor_row_can_be_removed_with_the_fix() {
 }
 
 #[test]
-#[ignore = "BUG-50"]
 fn bug50_a_git_repo_under_a_trusted_parent_is_not_just_info() {
     // Real Claude Code 2.1.288 refuses `--bg` in a git repository covered only by a trusted parent.
     let sb = Sb::new(false);

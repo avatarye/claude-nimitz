@@ -5,7 +5,10 @@ Found by the adversarial tester on ACME 2.1.288 (BUG-53):
      -> a new session id and NO history.
   B  `claude rm <row>` first, then the same resume with flags
      -> the same id, the new name and labels, and the history kept.
-This script checks both on the build it runs on.
+  A2 the same fork as A but with NO prompt, stopped before its first turn,
+     then resumed (no flags) with the question -> the tester found the history
+     lost: a fork writes its transcript only at its first turn.
+This script checks all three on the build it runs on.
 
 Throwaway sessions named nimitz-probe9-*, in $NIMITZ_PROBE_DIR/p9 (default
 ~/.cache/nimitz-probe/p9); all stopped and removed at the end. Touches no other
@@ -144,6 +147,25 @@ def main() -> dict[str, Any]:
             if r:
                 run([NATIVE, "rm", r["id"]])
 
+        # A2: fork with flags and no prompt, stop it before any turn, then ask
+        rc, out = run([LAUNCH, "--bg", "--resume", sid0, "--name", "nimitz-probe9-A2",
+                       "--permission-mode", "default", "--settings", settings("A2")])
+        st = wait_for(lambda: [e for e in events("A2") if e["event"] == "SessionStart"])
+        a2: dict[str, Any] = {"rc": rc, "session_id": st[0]["session_id"] if st else None}
+        if a2["session_id"]:
+            time.sleep(5)
+            stop(a2["session_id"])
+            n = len(events("A2"))
+            run([NATIVE, "--bg", "--resume", a2["session_id"], ASK])
+            wait_for(lambda: [e for e in events("A2")[n:] if e["event"] == "Stop"])
+            a2["answer"] = answer(a2["session_id"])
+            a2["kept_history"] = bool(a2["answer"]) and WORD in a2["answer"].upper()
+            stop(a2["session_id"])
+            r = row_of(a2["session_id"])
+            if r:
+                run([NATIVE, "rm", r["id"]])
+        res["A2_flags_no_prompt_stopped"] = a2
+
         # B: rm the row first, then resume with flags
         r0 = row_of(sid0)
         res["rm_rc"] = run([NATIVE, "rm", r0["id"]])[0] if r0 else "no row"
@@ -168,5 +190,7 @@ if __name__ == "__main__":
     print(json.dumps(out, indent=2))
     a, b = out.get("A_flags_row_exists", {}), out.get("B_rm_then_flags", {})
     print(f"[{'OK' if not a.get('kept_history') else 'WARN'}] A (flags, row exists): same_id={a.get('same_id')} kept_history={a.get('kept_history')}")
+    a2 = out.get("A2_flags_no_prompt_stopped", {})
+    print(f"[INFO] A2 (flags, no prompt, stopped before a turn): kept_history={a2.get('kept_history')}")
     print(f"[{'OK' if b.get('same_id') and b.get('kept_history') else 'ERROR'}] B (rm, then flags): same_id={b.get('same_id')} kept_history={b.get('kept_history')}")
     print(f"[{'OK' if not out.get('left_over_rows') else 'ERROR'}] left over rows: {out.get('left_over_rows')}")
