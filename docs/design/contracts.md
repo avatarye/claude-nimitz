@@ -155,7 +155,7 @@ Each finding is an `Issue` with a stable `code`:
 | `lineage.broken` | registry's current session id has no job row and no transcript |
 | `role.background` | an admiral or commodore is a background session |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
-| `cc.version` | Claude Code outside `compat.toml` |
+| `cc.version` | Claude Code outside `compat.toml` (a pre-release such as `2.1.288-beta` is outside unless `prerelease = [...]` lists it; Error) |
 | `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
 | `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
 | `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |

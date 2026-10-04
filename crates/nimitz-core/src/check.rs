@@ -211,6 +211,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
         let range = format!("the supported range {} - {}", c.min, c.max);
         let (sev, message) = match snap.cc_version.as_deref() {
             None => (Severity::Error, format!("Claude Code's version could not be read (`{} --version` gave none); {range}", env.native_claude_bin)),
+            Some(v) if v.contains('-') => (Severity::Error, format!("Claude Code {v} is a pre-release that compat.toml does not list; {range}")),
             Some(v) => match crate::compat::position(&c, v) {
                 1 => (Severity::Warn, format!("Claude Code {v} is above {range}")),
                 -1 => (Severity::Error, format!("Claude Code {v} is below {range}")),
