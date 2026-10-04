@@ -410,9 +410,10 @@ fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {
         Line::raw(""),
         Line::from(vec![Span::styled("> ", bold(mono::ORANGE)), Span::styled(text.to_string(), st(mono::FG)), Span::styled("\u{2588}", st(mono::ORANGE))]),
         Line::raw(""),
+        Line::from(vec![Span::styled("command  ", st(mono::COMMENT)), Span::styled(crate::actions::signal_command(plan, if text.is_empty() { "..." } else { text }), bold(mono::CYAN))]),
         keys_line(&[("enter", "send"), ("esc", "cancel"), ("ctrl-u", "clear")]),
     ];
-    let r = centered(area, 96, 9);
+    let r = centered(area, 96, 10);
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(modal_block("message".into(), mono::ORANGE)), r);
 }

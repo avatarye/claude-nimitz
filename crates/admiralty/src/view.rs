@@ -207,6 +207,8 @@ pub struct Node {
     /// worst severity among this row's own issues
     pub worst: Option<Severity>,
     pub issue_count: usize,
+    /// a `legacy` issue (a session of the old fleet-skill fleets) and no error
+    pub legacy: bool,
     /// the multiplexer pane hosting this row's session, and its state
     pub pane_id: Option<String>,
     pub pane_state: Option<String>,
@@ -237,6 +239,7 @@ impl Node {
             detail: vec![],
             worst: None,
             issue_count: 0,
+            legacy: false,
             pane_id: None,
             pane_state: None,
             frame: None,
@@ -258,6 +261,8 @@ pub struct View<'a> {
     pub panes: &'a [Pane],
     pub icons: &'a Icons,
     pub now: f64,
+    /// count cells every band shows (`count_slots`)
+    pub slots: [bool; 7],
 }
 
 fn worst_of(issues: &[Issue]) -> Option<Severity> {
@@ -340,10 +345,31 @@ fn extra_row_node(parent: &str, s: &SessionInfo, now: f64, icons: &Icons) -> Nod
     n
 }
 
+/// A row marked legacy: it has a `legacy` issue and no error.
+pub fn is_legacy(issues: &[&Issue]) -> bool {
+    issues.iter().any(|i| i.code == "legacy") && !issues.iter().any(|i| i.severity == Severity::Error)
+}
+
+/// The snapshot-level issues about one stowaway (by its name or short id in the message or fix).
+pub fn stowaway_issues<'a>(snap: &'a Snapshot, s: &SessionInfo) -> Vec<&'a Issue> {
+    let short = s.short_id.clone().unwrap_or_else(|| s.session_id.chars().take(8).collect());
+    snap.issues
+        .iter()
+        .filter(|i| i.id.is_none() || i.code == "legacy")
+        .filter(|i| {
+            (!s.name.is_empty() && i.message.contains(&format!("`{}`", s.name)))
+                || i.fix.as_deref().map(|f| f.split_whitespace().any(|w| w == short || w == s.session_id)).unwrap_or(false)
+        })
+        .collect()
+}
+
 /// Issue markers for a member's DETAIL cell: `⚠ code, code` in the worst colour.
 fn issue_spans(issues: &[Issue], icons: &Icons) -> Vec<Span<'static>> {
     let Some(w) = worst_of(issues) else { return vec![] };
     let codes: Vec<&str> = issues.iter().map(|i| i.code.as_str()).collect();
+    if is_legacy(&issues.iter().collect::<Vec<_>>()) {
+        return vec![Span::styled(format!("{} {}  ", icons.legacy, codes.join(", ")), bold(mono::ORANGE))];
+    }
     vec![Span::styled(format!("{} {}  ", icons.issue, codes.join(", ")), bold(theme::severity_color(w)))]
 }
 
@@ -367,6 +393,7 @@ fn member_node(m: &Member, v: &View) -> Node {
     n.kind_text = m.role.as_str().into();
     n.worst = worst_of(&m.issues);
     n.issue_count = m.issues.len();
+    n.legacy = is_legacy(&m.issues.iter().collect::<Vec<_>>());
     if let Some(p) = m.pane.as_deref().and_then(|id| v.panes.iter().find(|p| p.pane.pane_id == id)) {
         n.pane_id = Some(p.pane.pane_id.clone());
         n.pane_state = Some(p.state.clone());
@@ -396,31 +423,47 @@ fn member_node(m: &Member, v: &View) -> Node {
     n
 }
 
-/// `icon n / icon n` + an issue badge, for a band's right side.
-pub fn status_counts(members: &[&Member], issues: usize, worst: Option<Severity>, icons: &Icons) -> Vec<Span<'static>> {
-    let mut out: Vec<Span<'static>> = vec![];
-    if issues > 0 {
-        let c = theme::severity_color(worst.unwrap_or(Severity::Warn));
-        out.push(Span::styled(format!("{} {issues}", icons.issue), bold(c)));
-    }
-    for (status, icon) in [
-        (Status::NeedsYou, icons.s_needs),
-        (Status::Busy, icons.s_busy),
-        (Status::Idle, icons.s_idle),
-        (Status::Stopped, icons.s_stopped),
-        (Status::NotStarted, icons.s_off),
-        (Status::Unknown, icons.s_unknown),
-    ] {
+/// `icon n / icon n` for a band's right side: issues, then each status. Each
+/// kind in `slots` (the kinds present anywhere on screen) has a fixed cell,
+/// blank when zero, so the counts of every band line up in columns.
+pub fn status_counts(members: &[&Member], issues: usize, worst: Option<Severity>, icons: &Icons, slots: &[bool; 7]) -> Vec<Span<'static>> {
+    let c = theme::severity_color(worst.unwrap_or(Severity::Warn));
+    let mut cells: Vec<Option<Span<'static>>> = vec![(issues > 0).then(|| Span::styled(format!("{} {issues:<2}", icons.issue), bold(c)))];
+    for status in SLOT_STATUSES {
         let n = members.iter().filter(|m| m.status == status).count();
-        if n == 0 {
-            continue;
+        cells.push((n > 0).then(|| Span::styled(format!("{} {n:<2}", icons.status(status)), status_style(status).add_modifier(Modifier::BOLD))));
+    }
+    let cells: Vec<Option<Span<'static>>> = cells.into_iter().zip(slots.iter()).filter(|(_, on)| **on).map(|(c, _)| c).collect();
+    let mut out: Vec<Span<'static>> = vec![];
+    let n = cells.len();
+    for (i, cell) in cells.iter().enumerate() {
+        let shown = cell.is_some();
+        out.push(cell.clone().unwrap_or_else(|| Span::raw(" ".repeat(SLOT_W))));
+        if i + 1 < n {
+            // a slash only between this count and a later one that is shown
+            let later = cells[i + 1..].iter().any(|c| c.is_some());
+            out.push(Span::styled(if shown && later { " / " } else { "   " }, st(mono::DIM)));
         }
-        if !out.is_empty() {
-            out.push(Span::styled(" / ", st(mono::COMMENT)));
-        }
-        out.push(Span::styled(format!("{icon} {n}"), status_style(status).add_modifier(Modifier::BOLD)));
     }
     out
+}
+
+const SLOT_STATUSES: [Status; 6] = [Status::NeedsYou, Status::Busy, Status::Idle, Status::Stopped, Status::NotStarted, Status::Unknown];
+/// `icon nn`: counts up to 99 keep the columns
+const SLOT_W: usize = 4;
+
+/// Which count cells any band needs: issues, then each status in `SLOT_STATUSES`.
+pub fn count_slots(snap: &Snapshot) -> [bool; 7] {
+    let mut on = [false; 7];
+    on[0] = !all_issues(snap).is_empty();
+    for f in &snap.fleets {
+        for m in fleet_members(f) {
+            if let Some(i) = SLOT_STATUSES.iter().position(|s| *s == m.status) {
+                on[i + 1] = true;
+            }
+        }
+    }
+    on
 }
 
 fn comms_text(c: &Comms) -> String {
@@ -460,7 +503,7 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
     if let Some(i) = sq.issues.first() {
         n.detail.push(Span::styled(format!("   {} {}", v.icons.issue, i.code), bold(theme::severity_color(i.severity))));
     }
-    n.title_right = status_counts(&members, own_issues.len(), worst, v.icons);
+    n.title_right = status_counts(&members, own_issues.len(), worst, v.icons, &v.slots);
     n.children = shown.iter().map(|m| member_node(m, v)).collect();
     Some(n)
 }
@@ -484,14 +527,17 @@ fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
         n.pane_id = Some(p.pane.pane_id.clone());
         n.pane_state = Some(p.state.clone());
     }
-    // the matching snapshot-level stowaway issue carries the fix
-    let fix = snap
-        .issues
-        .iter()
-        .filter(|i| i.code == "stowaway")
-        .find(|i| i.message.contains(&s.name) || s.short_id.as_deref().map(|sid| i.message.contains(sid)).unwrap_or(false))
-        .and_then(|i| i.fix.clone());
-    n.detail = vec![Span::styled(format!("no labels  {}", s.cwd), st(mono::SOFT))];
+    // the snapshot-level issues about this stowaway carry the fix
+    let issues = stowaway_issues(snap, s);
+    n.worst = issues.iter().map(|i| i.severity).max();
+    n.issue_count = issues.len();
+    n.legacy = is_legacy(&issues);
+    let fix = issues.iter().find_map(|i| i.fix.clone());
+    n.detail = vec![];
+    if n.legacy {
+        n.detail.push(Span::styled(format!("{} legacy  ", v.icons.legacy), bold(mono::ORANGE)));
+    }
+    n.detail.push(Span::styled(format!("no labels  {}", s.cwd), st(mono::SOFT)));
     if let Some(fx) = fix {
         n.detail.push(Span::styled(format!("   fix: {fx}"), st(mono::CYAN)));
     }
@@ -539,7 +585,7 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
             Span::styled(state.label().to_string(), bold(state.color())),
             Span::styled(format!("   {place}   {}", f.dir), st(mono::SOFT)),
         ];
-        n.title_right = status_counts(&fleet_members(f), issues.len(), worst, v.icons);
+        n.title_right = status_counts(&fleet_members(f), issues.len(), worst, v.icons, &v.slots);
         if matches(&f.admiral) {
             n.children.push(member_node(&f.admiral, v));
         }
