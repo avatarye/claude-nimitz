@@ -408,6 +408,13 @@ fn crud_round_trip() {
     assert!(sq_toml().contains("plan"));
     assert!(r.out.contains("next relaunch"), "{}", r.out);
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/NOPE", "--mode", "plan", "--yes"]).code, 1);
+    // `--dir <label>=<x>` is the machine-add form: a usage error with the right form
+    let r = sb.run(&["ship", "new", "TOP/SQ/S3", "--dir", "sandbox-host=managed", "--prompt", "x", "--yes"]);
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert!(r.out.contains("use --dir managed --machine sandbox-host"), "{}", r.out);
+    // a relative folder is stored absolute, and the stored path is printed
+    let r = raw(&sb.vars, &["ship", "new", "TOP/SQ/S3", "--dir", "rel/./s3", "--prompt", "x", "--plan"], &[], None);
+    assert!(r.out.contains("folder for sandbox-host: /"), "{}", r.out);
     // an empty --dir is a usage error; removing a folder is explicit
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--dir", "", "--yes"]).code, 2);
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--no-dir", "nowhere", "--yes"]).code, 2);
