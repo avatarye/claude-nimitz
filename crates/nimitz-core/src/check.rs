@@ -22,10 +22,11 @@ fn trust_file(env: &Env) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.json", env.claude_home.display()))
 }
 
-/// Trusted = inside NIMITZ_HOME (nimitz init trusts it), or the folder (or a
-/// parent) has `hasTrustDialogAccepted` in the trust file, as given or as its
-/// real path (Claude Code records the real path: /tmp is /private/tmp on macOS).
-/// An unreadable trust file is unknown, not untrusted: `None`.
+/// Trusted = inside NIMITZ_HOME (nimitz init trusts it), or one of
+/// `env::trust_keys(dir)` has `hasTrustDialogAccepted` in the trust file: the
+/// folder or a parent, as given or as its real path (Claude Code records real
+/// paths: /tmp is /private/tmp on macOS), and inside a git repository only up
+/// to its root. An unreadable trust file is unknown, not untrusted: `None`.
 fn trusted(env: &Env, dir: &Path) -> Option<bool> {
     let real = crate::env::canon(dir);
     if dir.starts_with(&env.home) || real.starts_with(crate::env::canon(&env.home)) {
@@ -42,7 +43,7 @@ fn trusted(env: &Env, dir: &Path) -> Option<bool> {
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
     };
-    Some(dir.ancestors().any(accepted) || real.ancestors().any(accepted))
+    Some(crate::env::trust_keys(dir).iter().any(|k| accepted(k)))
 }
 
 /// `folder.missing` / `folder.untrusted` for a member's folder, if either applies.
@@ -58,13 +59,21 @@ pub fn folder_issue(env: &Env, id: &Id, cwd: &str) -> Option<Issue> {
         });
     }
     if trusted(env, dir) == Some(false) {
-        // Claude Code records the real path when the prompt is accepted; name that one.
+        // Claude Code records the real path when the prompt is accepted; name
+        // that one, and inside a git repository its root (the folder it asks about).
         let real = crate::env::canon(dir);
+        let (at, why) = match crate::env::git_root(dir) {
+            Some(root) => {
+                let why = format!(" (it is in the git repository {}, which needs its own trust; a parent folder's does not count)", root.display());
+                (root, why)
+            }
+            None => (real.clone(), String::new()),
+        };
         return Some(Issue {
             code: "folder.untrusted".into(),
             severity: Severity::Error,
-            message: format!("{id}'s folder {} is not trusted by Claude Code", real.display()),
-            fix: Some(format!("run `claude` once in {} and accept the trust prompt", real.display())),
+            message: format!("{id}'s folder {} is not trusted by Claude Code{why}", real.display()),
+            fix: Some(format!("run `claude` once in {} and accept the trust prompt", at.display())),
             id: Some(id.clone()),
         });
     }
@@ -287,6 +296,32 @@ pub(crate) mod tests {
         }
         let other = Id::commodore("MAIN", "OTHER");
         assert!(check_tree(&env, &snap, Some(&other)).is_empty());
+    }
+
+    #[test]
+    fn a_git_repo_under_a_trusted_home_needs_its_own_trust() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let home = td.path().canonicalize().unwrap().join("home");
+        let wt = home.join(".cache/wt");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
+        let trust = format!("{}.json", env.claude_home.display());
+        let set = |dirs: &[&Path]| {
+            let p: serde_json::Map<String, serde_json::Value> = dirs.iter().map(|d| (d.display().to_string(), serde_json::json!({"hasTrustDialogAccepted": true}))).collect();
+            std::fs::write(&trust, serde_json::json!({ "projects": p }).to_string()).unwrap();
+        };
+        let id = Id::ship("MAIN", "ARGOS", "S4");
+        set(&[&home]);
+        let i = folder_issue(&env, &id, wt.join("src").to_str().unwrap()).expect("home trust does not cover a git root");
+        assert_eq!(i.code, "folder.untrusted");
+        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt", wt.display()).as_str()));
+        set(&[&wt]);
+        assert!(folder_issue(&env, &id, wt.join("src").to_str().unwrap()).is_none());
+        // outside git, the home's trust still covers it
+        std::fs::create_dir_all(home.join("plain")).unwrap();
+        set(&[&home]);
+        assert!(folder_issue(&env, &id, home.join("plain").to_str().unwrap()).is_none());
     }
 
     #[test]
