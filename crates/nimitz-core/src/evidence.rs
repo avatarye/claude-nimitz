@@ -86,6 +86,7 @@ pub struct FileCache {
     json: HashMap<PathBuf, (SystemTime, Value)>,
     session_dirs: HashMap<String, PathBuf>,
     titles: HashMap<PathBuf, (SystemTime, Option<String>)>,
+    trust: HashMap<PathBuf, (SystemTime, Vec<PathBuf>)>,
     events: EventTail,
 }
 
@@ -175,11 +176,13 @@ pub fn events_cached(env: &Env, cache: &mut FileCache) -> Vec<Event> {
     t.rows.clone()
 }
 
-/// Labels per session id, from the newest SessionStart that carried any.
+/// Labels per session id, from the newest event that carried any. A session's
+/// labels never change (a copy gets a new id), so any event will do when the
+/// SessionStart line was lost.
 pub fn labels_by_session(events: &[Event]) -> HashMap<String, BTreeMap<String, String>> {
     let mut out = HashMap::new();
     for e in events {
-        if e.event == "SessionStart" && !e.labels.is_empty() {
+        if !e.labels.is_empty() {
             if let Some(sid) = &e.session_id {
                 out.insert(sid.clone(), e.labels.clone());
             }
@@ -533,8 +536,9 @@ pub fn read_tasks(env: &Env, cache: &mut FileCache, team: &str) -> Vec<Task> {
 
 /// Whether Claude Code trusts `dir` (it or a parent has `hasTrustDialogAccepted`),
 /// from `<claude_home>/.claude.json` (the `CLAUDE_CONFIG_DIR` layout) and, when
-/// the Claude home is `~/.claude`, from `~/.claude.json`.
-pub fn folder_trusted(env: &Env, dir: &str) -> bool {
+/// the Claude home is `~/.claude`, from `~/.claude.json`. The trusted roots are
+/// cached by mtime (the real file is megabytes).
+pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
     let mut files = vec![env.claude_home.join(".claude.json")];
     if env.claude_home.file_name().map(|n| n == ".claude").unwrap_or(false) {
         if let Some(parent) = env.claude_home.parent() {
@@ -542,16 +546,31 @@ pub fn folder_trusted(env: &Env, dir: &str) -> bool {
         }
     }
     let want = Path::new(dir.trim_end_matches('/'));
-    for f in files {
-        let Some(v) = fs::read(&f).ok().and_then(|b| first_json(&b)) else { continue };
-        let Some(projects) = v.get("projects").and_then(|p| p.as_object()) else { continue };
-        for (k, p) in projects {
-            if p.get("hasTrustDialogAccepted").and_then(|x| x.as_bool()) == Some(true) && want.starts_with(Path::new(k.trim_end_matches('/'))) {
-                return true;
-            }
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root)))
+}
+
+fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {
+    let Some(m) = mtime(f) else { return vec![] };
+    if let Some((t, roots)) = cache.trust.get(f) {
+        if *t == m {
+            return roots.clone();
         }
     }
-    false
+    let roots: Vec<PathBuf> = fs::read(f)
+        .ok()
+        .and_then(|b| first_json(&b))
+        .and_then(|v| {
+            v.get("projects").and_then(|p| p.as_object()).map(|projects| {
+                projects
+                    .iter()
+                    .filter(|(_, p)| p.get("hasTrustDialogAccepted").and_then(|x| x.as_bool()) == Some(true))
+                    .map(|(k, _)| PathBuf::from(k.trim_end_matches('/')))
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    cache.trust.insert(f.to_path_buf(), (m, roots.clone()));
+    roots
 }
 
 #[cfg(test)]

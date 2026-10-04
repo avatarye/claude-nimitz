@@ -90,25 +90,9 @@ pub fn agents(env: &Env) -> Result<Vec<Row>, String> {
         .collect())
 }
 
-/// The native binary's version, e.g. "2.1.288" (from "2.1.288 (Claude Code)"
-/// or "claude 2.1.288.1000 (ACME Claude Code, ...)": the first x.y.z, three parts).
+/// The native binary's version, e.g. "2.1.288".
 pub fn version(env: &Env) -> Option<String> {
-    let (rc, out) = run(&[env.native_claude_bin.clone(), "--version".into()], None);
-    if rc != 0 {
-        return None;
-    }
-    parse_version(&out)
-}
-
-pub fn parse_version(out: &str) -> Option<String> {
-    out.split_whitespace().find_map(|w| {
-        let parts: Vec<&str> = w.split('.').collect();
-        if parts.len() >= 3 && parts.iter().take(3).all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
-            Some(parts[..3].join("."))
-        } else {
-            None
-        }
-    })
+    crate::compat::installed(env)
 }
 
 // ------------------------------------------------------------------ labels and argv
@@ -203,9 +187,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn versions() {
-        assert_eq!(parse_version("2.1.288 (Claude Code)").as_deref(), Some("2.1.288"));
-        assert_eq!(parse_version("claude 2.1.288.1000 (ACME Claude Code, channel stable)").as_deref(), Some("2.1.288"));
-        assert_eq!(parse_version("no version here"), None);
+    fn launch_argv_carries_name_mode_labels_and_no_isolation() {
+        let vars = [("NIMITZ_HOME", "/h"), ("NIMITZ_CLAUDE_BIN", "claude"), ("NIMITZ_NATIVE_CLAUDE_BIN", "/n/claude")];
+        let env = Env::from_vars(&vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
+        let id = Id::ship("F", "SQ", "S");
+        let c = launch_bg(&env, &id, "auto", Some("go"));
+        assert_eq!(&c[..4], &["claude", "--bg", "--name", "[F.SQ]-S"]);
+        assert_eq!(&c[4..6], &["--permission-mode", "auto"]);
+        let v: serde_json::Value = serde_json::from_str(&c[7]).unwrap();
+        assert_eq!(v["env"]["NIMITZ_ID"], "F/SQ/S");
+        assert_eq!(v["worktree"]["bgIsolation"], "none");
+        assert_eq!(c.last().unwrap(), "go");
+        // resume: native binary, no flags at all
+        assert_eq!(resume_bg(&env, "sid"), vec!["/n/claude", "--bg", "--resume", "sid"]);
+        // tenders carry their parent; interactive sessions have no worktree key
+        let t = Id::tender("F", "SQ", "fix");
+        assert_eq!(labels_for(&env, &t).get("NIMITZ_PARENT").map(String::as_str), Some("F/SQ"));
+        let i = interactive(&env, &Id::commodore("F", "SQ"), "", true);
+        assert_eq!(&i[..4], &["claude", "-c", "--name", "[F.SQ]-COMMODORE"]);
+        assert!(!i[5].contains("worktree"));
     }
 }
