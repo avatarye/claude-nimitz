@@ -154,7 +154,25 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `lineage.pending` | a pane was opened but its session did not bind in time |
 | `config.pending` | a config change is waiting for a relaunch |
 | `layout.skip` | a member has no place in the layout |
-| `authority` | the caller may not do this (plan-v3 5.5) |
+| `authority` | the caller may not do this (plan-v3 5.5); partial or inconsistent `NIMITZ_*` labels make a caller with no authority, never the user |
+| `member.unknown` | the id names no member of any fleet config (or a tender's commodore does not exist) |
+| `prompt.missing` | a ship's cold launch needs a prompt and the config has none |
+| `machine.missing` | the fleet does not run on this machine |
+| `session.unknown` | the target names no member's session, no stowaway and no holder of a fleet name |
+| `session.none` | the action needs a (live, background) session and there is none |
+| `session.live` | the action needs the session stopped first (`rm`, retire) |
+| `session.interactive` | an interactive member is ended in its own pane, not by nimitz |
+| `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
+| `lineage.current` | `rm` of an identity's current session (it would break the lineage) |
+| `tender.invalid` | a tender's commodore, task name or prompt is wrong |
+| `step.failed` | a step of an applied plan failed (or a lock could not be taken); nothing after it ran |
+
+Session codes from the snapshot, besides section 7's: `job.unreadable` (a job
+row's `state.json` does not parse; start refuses), `folder.moved` (the
+session's saved folder is gone or untrusted while the member's folder moved;
+fix `nimitz relaunch <id>`), `labels.mismatch` also for a session carrying an
+identity's labels in another folder (it is not that identity's session).
+Every fix is a `nimitz` command (or "type /exit in its pane"), never a raw `claude`.
 
 ## 8. Relaunch state table (core; each row is a sandbox test)
 

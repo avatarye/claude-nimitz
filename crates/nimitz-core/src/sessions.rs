@@ -770,6 +770,43 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     plan
 }
 
+/// `nimitz stop <short>`: stop one live background session by its job id or
+/// session id. Yours alone. Allowed: a member's row (one of two live copies), a
+/// stowaway, or a session anywhere that holds a fleet member's name (the
+/// `name.taken` fix, BUG-08); never an unrelated session.
+pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Plan {
+    let mut plan = Plan { summary: format!("stop session {target}"), ..Default::default() };
+    if *caller != Caller::User {
+        refuse(&mut plan, "authority", "stopping a session by its id is yours alone".into(), None, None);
+        return plan;
+    }
+    let is = |r: &&SessionInfo| r.short_id.as_deref() == Some(target) || r.session_id == target;
+    let all = members(snap);
+    let mut hit: Option<(Option<Id>, SessionInfo, String)> = all
+        .iter()
+        .find_map(|(_, m)| m.session.iter().chain(m.extra_rows.iter()).find(is).map(|r| (Some(m.id.clone()), r.clone(), format!("stop this one session of {}; the others stay", m.id))))
+        .or_else(|| snap.stowaways.iter().find(is).map(|r| (None, r.clone(), format!("stop the unlabelled session {:?}", r.name))));
+    if hit.is_none() {
+        // a session outside fleet scope that holds a member's address
+        let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+        if let Some(r) = rows.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target) {
+            if let Some((_, m)) = all.iter().find(|(_, m)| m.expected_name == r.name) {
+                hit = Some((None, r.info(Default::default()), format!("stop the session in {} that holds {}'s name {:?}", r.cwd, m.id, r.name)));
+            }
+        }
+    }
+    let Some((owner, row, why)) = hit else {
+        refuse(&mut plan, "session.unknown", format!("{target} names no fleet member's session, no stowaway and no holder of a fleet name"), Some("nimitz status".into()), None);
+        return plan;
+    };
+    let Some(short) = row.short_id.clone().filter(|_| row.pid.is_some()) else {
+        refuse(&mut plan, "session.none", format!("session {} is not a live background session", row.session_id), None, owner);
+        return plan;
+    };
+    plan.steps.push(Step { id: owner, cmd: crate::claude::stop(env, &short), cwd: None, why });
+    plan
+}
+
 /// A deliberate relaunch: new id, every flag, old row removed (contracts.md section 8).
 pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("relaunch {id} (new session id, labels restored)"), ..Default::default() };
@@ -1057,11 +1094,24 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
         );
         return plan;
     };
-    let Some((_, m)) = member(snap, id) else {
-        refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config; add it first"), Some("nimitz ship new ...".into()), Some(id.clone()));
+    // A tender is not declared: adopting as `F/SQ/~task` creates the identity,
+    // under a commodore that exists (BUG-19).
+    let found = member(snap, id);
+    if found.is_none() && id.role() == Role::Tender {
+        let task = id.parts().get(2).map(|t| t.trim_start_matches('~').to_string()).unwrap_or_default();
+        if task.is_empty() || !task.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            refuse(&mut plan, "tender.invalid", format!("task {task:?} must be [A-Za-z0-9_-]+"), None, Some(id.clone()));
+            return plan;
+        }
+        if id.parent().and_then(|c| member(snap, &c)).is_none() {
+            refuse(&mut plan, "member.unknown", format!("{id}'s commodore is not in any fleet config"), Some("nimitz status  # the ids that exist".into()), Some(id.clone()));
+            return plan;
+        }
+    } else if found.is_none() {
+        refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config; add it first"), Some(format!("nimitz ship new {id} --dir <folder|managed> --prompt <text>")), Some(id.clone()));
         return plan;
-    };
-    if m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
+    }
+    if found.map(|(_, m)| m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)).unwrap_or(false) {
         refuse(&mut plan, "dup.live", format!("{id} already has a live session"), None, Some(id.clone()));
         return plan;
     }
@@ -1266,9 +1316,42 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         out.issues = plan.refusals.clone();
         return out;
     }
+    // One start at a time per identity (BUG-02/03): hold each identity's lock
+    // through launch, bind and verify. A second `nimitz start` waits here, then
+    // finds the member live and does nothing.
+    let mut lock_ids: Vec<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).collect();
+    lock_ids.sort();
+    lock_ids.dedup();
+    let _locks: Vec<IdLock> = match lock_ids.iter().map(|id| lock_identity(env, id)).collect::<Result<Vec<_>, _>>() {
+        Ok(l) => l,
+        Err(e) => {
+            out.issues.push(issue("step.failed", Severity::Error, format!("cannot take the identity lock: {e}"), Some("nimitz doctor".into()), None));
+            return out;
+        }
+    };
+    let mut skipped: Vec<Id> = vec![];
     let mut started: Vec<(Id, String)> = vec![]; // (identity, session id) to verify again at the end
     for step in &plan.steps {
         let kind = classify(step);
+        if step.id.as_ref().map(|i| skipped.contains(i)).unwrap_or(false) {
+            out.ran.push((step.clone(), 0, "skipped: a concurrent start already brought this member up".into()));
+            continue;
+        }
+        // Re-plan under the lock: a launch for a member that is live by now, or a
+        // resume of a session that is live by now, would make a second agent.
+        if matches!(kind, Kind::Launch | Kind::Relaunch | Kind::Resume { .. }) {
+            if let Some(id) = &step.id {
+                let live_now = match &kind {
+                    Kind::Resume { session_id } => live_row(env, |r| &r.session_id == session_id).is_some() || live_session_of(env, id).is_some(),
+                    _ => live_session_of(env, id).is_some(),
+                };
+                if live_now {
+                    skipped.push(id.clone());
+                    out.ran.push((step.clone(), 0, format!("skipped: {id} is live already (a concurrent start); nothing to do")));
+                    continue;
+                }
+            }
+        }
         if kind == Kind::Interactive {
             out.ran.push((step.clone(), 0, "pane: open this command in a terminal pane, then bind_started".into()));
             continue;
@@ -1349,6 +1432,36 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     }
     out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() == plan.steps.len();
     out
+}
+
+/// An identity's start lock (flock on `NIMITZ_STATE/locks/<id>.lock`); released on drop.
+pub struct IdLock(#[allow(dead_code)] std::fs::File);
+
+pub fn lock_identity(env: &Env, id: &Id) -> std::io::Result<IdLock> {
+    use std::os::unix::io::AsRawFd;
+    let dir = env.state.join("locks");
+    std::fs::create_dir_all(&dir)?;
+    let name: String = id.0.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(format!("{name}.lock")))?;
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(IdLock(f))
+}
+
+fn live_row(env: &Env, pick: impl Fn(&crate::evidence::SessionRow) -> bool) -> Option<crate::evidence::SessionRow> {
+    let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+    rows.into_iter().find(|r| (r.live() || r.unreadable) && pick(r))
+}
+
+/// A live session of `id` right now: its registry current, or a row with its labels.
+fn live_session_of(env: &Env, id: &Id) -> Option<crate::evidence::SessionRow> {
+    let current = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.current.clone());
+    let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+    let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
+    rows.into_iter().find(|r| {
+        (r.live() || r.unreadable) && (Some(&r.session_id) == current.as_ref() || labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0))
+    })
 }
 
 /// A ship whose folder is shared between machines (one under `NIMITZ_HOME`, so
