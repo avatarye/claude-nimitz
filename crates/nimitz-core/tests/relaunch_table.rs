@@ -1447,3 +1447,43 @@ fn a_plan_that_repairs_labels_says_will_repair() {
     assert_eq!(i.severity, Severity::Info);
     assert!(i.message.starts_with("will repair: "), "{}", i.message);
 }
+
+#[test]
+fn the_fake_refuses_a_plain_git_repo_covered_only_by_a_parent() {
+    let w = world();
+    let fresh = w.member(&w.snap(), &w.ship("FRESH")).cwd.unwrap();
+    let repo = std::path::Path::new(&fresh).join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "x".into()], repo.to_str());
+    assert_ne!(rc, 0);
+    assert!(out.contains("Workspace not trusted"), "{out}");
+    // an entry at the repo root trusts it
+    for f in ["claude_home/.claude.json", "claude_home.json"].iter().map(|f| w.base.join(f)) {
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        v["projects"][repo.canonicalize().unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
+        std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    }
+    let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "x".into()], repo.to_str());
+    assert_eq!(rc, 0, "{out}");
+}
+
+#[test]
+fn no_plan_forks_a_session() {
+    // every plan the world can make: a resume with flags only after the rm of its row
+    let w = world();
+    let snap = w.snap();
+    for f in &snap.fleets {
+        let mut ids = vec![f.admiral.id.clone()];
+        for sq in &f.squadrons {
+            ids.push(sq.commodore.id.clone());
+            ids.extend(sq.ships.iter().chain(sq.tenders.iter()).map(|m| m.id.clone()));
+        }
+        for id in ids {
+            for force in [false, true] {
+                assert!(sessions::no_fork(&snap, &sessions::plan_start(&w.env, &snap, &id, &Caller::User, force)), "start {id}");
+            }
+            assert!(sessions::no_fork(&snap, &sessions::plan_relaunch(&w.env, &snap, &id, &Caller::User)), "relaunch {id}");
+        }
+        assert!(sessions::no_fork(&snap, &sessions::plan_up(&w.env, &snap, f.id.fleet(), &Caller::User)));
+    }
+}

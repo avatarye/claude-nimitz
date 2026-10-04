@@ -108,10 +108,10 @@ fn trusted(base: &Path, cwd: &str) -> bool {
         return true;
     }
     // Like real Claude Code: a parent's trust covers a folder, except inside a
-    // git worktree (`.git` is a file), which needs an entry at its root or below
-    // (BUG-50).
+    // git repository (a `.git` folder or file), which needs an entry at its root
+    // or below (BUG-50, seen for worktrees and plain repos).
     let real = crate::env::canon(Path::new(cwd));
-    let floor = crate::env::git_root(&real).filter(|r| crate::env::is_git_worktree(r));
+    let floor = crate::env::git_root(&real);
     trust_files(base).iter().any(|f| {
         read_json(f)
             .and_then(|v| v.get("projects").and_then(|p| p.as_object()).cloned())

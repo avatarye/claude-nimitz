@@ -646,6 +646,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
     plan.warnings.retain(|i| i.code != "legacy" || i.id.as_ref().map(|x| acting.contains(x)).unwrap_or(true));
     dedup_issues(&mut plan);
     mark_repairs(&mut plan);
+    debug_assert!(no_fork(snap, &plan), "a plan would fork a session: {:?}", plan.steps);
     plan
 }
 
@@ -701,6 +702,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
     }
     dedup_issues(&mut plan);
     mark_repairs(&mut plan);
+    debug_assert!(no_fork(snap, &plan), "a plan would fork a session: {:?}", plan.steps);
     plan
 }
 
@@ -732,6 +734,30 @@ fn in_dependency_order(ids: Vec<Id>, deps: &[(String, Vec<String>)]) -> Vec<Id> 
 /// member) instead of running itself? `apply` never runs these.
 pub fn is_pane_step(step: &Step) -> bool {
     classify(step) == Kind::Interactive
+}
+
+/// The fork rule (BUG-53, probe P0.9 case A2): a `--resume <id>` with flags
+/// while <id>'s job row exists makes a fork, which keeps the history only after
+/// its first turn. Every such step in a plan must come after the `rm` of that
+/// row, or <id> must have no row at all. Checked on every plan in debug builds;
+/// `apply` refuses the step at run time as well.
+pub fn no_fork(snap: &Snapshot, plan: &Plan) -> bool {
+    let rows: Vec<&SessionInfo> = members(snap)
+        .into_iter()
+        .flat_map(|(_, m)| m.session.iter().chain(m.extra_rows.iter()))
+        .chain(snap.stowaways.iter())
+        .collect();
+    plan.steps.iter().enumerate().all(|(at, st)| {
+        if classify(st) != Kind::Relaunch {
+            return true;
+        }
+        let Some(sid) = resumed_id(st) else { return true };
+        let row = rows.iter().find(|r| r.session_id == sid && r.short_id.is_some());
+        match row.and_then(|r| r.short_id.as_deref()) {
+            None => true,
+            Some(short) => plan.steps[..at].iter().any(|p| classify(p) == Kind::Rm { short: short.to_string() }),
+        }
+    })
 }
 
 /// An issue the plan's own steps repair reads as such: `[INFO] will repair:`
@@ -910,6 +936,7 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         return plan;
     }
     plan.steps.extend(relabel_steps(env, id, &mode, p, &cwd));
+    debug_assert!(no_fork(snap, &plan), "a relaunch would fork a session: {:?}", plan.steps);
     plan
 }
 
