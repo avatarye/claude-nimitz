@@ -372,3 +372,21 @@ fn bug33_the_ship_form_refuses_label_equals_folder_and_relative_folders() {
         assert!(f.fields.iter().find(|x| x.key == "dir").unwrap().error.is_none(), "{good:?} is fine");
     }
 }
+
+#[test]
+fn the_issues_view_lists_a_broken_squadron_once() {
+    let w = world();
+    let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]);
+    let t = base.join("main/squadrons/argos/squadron.toml");
+    let s = std::fs::read_to_string(&t).unwrap();
+    std::fs::write(&t, s + "\nname = \"oops\n").unwrap();
+    let app = app_on(&w, TestMux::default());
+    let issues = app.issues();
+    let parse: Vec<_> = issues.iter().filter(|i| i.message.contains("does not parse")).collect();
+    assert_eq!(parse.len(), 1, "{parse:?}");
+    let mut keys: Vec<_> = issues.iter().map(|i| (i.code.clone(), i.id.clone(), i.message.clone())).collect();
+    let n = keys.len();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), n, "every issue once");
+}

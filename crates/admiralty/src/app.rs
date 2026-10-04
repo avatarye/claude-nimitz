@@ -963,10 +963,11 @@ impl App {
             Modal::Message { plan, mut text } => match k.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
-                    if text.trim().is_empty() {
+                    if nimitz_mux::sanitize_text(&text).is_empty() {
+                        self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::YELLOW));
                         self.modal = Some(Modal::Message { plan, text });
                     } else {
-                        self.send_message(&plan, text.trim());
+                        self.send_message(&plan, &text);
                     }
                 }
                 KeyCode::Backspace => {
@@ -1017,7 +1018,7 @@ impl App {
         let body = actions::message_text(plan, text);
         match self.ctx.mux.type_text(&plan.pane, &body) {
             Ok(()) => {
-                actions::log(&self.ctx.env, "message", &format!("{} via {}: {text}", plan.to, plan.via));
+                actions::log(&self.ctx.env, "message", &format!("{} via {}: {}", plan.to, plan.via, nimitz_mux::sanitize_text(text)));
                 let how = if plan.relay { format!(" (relayed by {})", plan.via) } else { String::new() };
                 self.notify(format!("Sent to {}{how}", plan.to), st(mono::GREEN));
             }
