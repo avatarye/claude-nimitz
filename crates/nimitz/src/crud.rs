@@ -114,7 +114,7 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
 
 // ------------------------------------------------------------------ ship
 
-const SHIP_FLAGS: &[&str] = &["--dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--edit"];
+const SHIP_FLAGS: &[&str] = &["--dir", "--no-dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--edit"];
 
 /// `$VISUAL`, else `$EDITOR`, else vi.
 fn editor(ctx: &Ctx) -> String {
@@ -158,11 +158,18 @@ fn prompt_from_editor(ctx: &Ctx, current: Option<&str>, new: bool) -> Result<Opt
 }
 
 /// Apply the ship flags to a definition, for the machine `label`.
-fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str) {
+fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str) -> Result<(), String> {
+    for l in ctx.args.values("--no-dir") {
+        if def.dirs.remove(&l).is_none() {
+            return Err(format!("{} has no folder for machine {l:?}", def.name));
+        }
+        def.permission_mode.remove(&l); // no folder there, so no mode either
+    }
     if let Some(d) = ctx.args.value("--dir") {
-        if d.is_empty() {
-            def.dirs.remove(label);
-        } else {
+        if d.trim().is_empty() {
+            return Err("--dir needs a folder or `managed`; to remove a machine's folder use --no-dir <label>".into());
+        }
+        {
             let d = if d == "managed" || d.starts_with('/') || d.starts_with('~') {
                 d.to_string()
             } else {
@@ -189,6 +196,7 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str) {
     if let Some(d) = ctx.args.value("--depends") {
         def.depends_on = d.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect();
     }
+    Ok(())
 }
 
 pub fn ship(ctx: &Ctx) -> Result<i32, String> {
@@ -216,7 +224,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 return Err("ship new needs --dir <folder|managed>".into());
             }
             let mut def = ShipDef { name: name.into(), ..Default::default() };
-            edit_ship(ctx, &mut def, &label);
+            edit_ship(ctx, &mut def, &label)?;
             if let Some(p) = prompt_from_editor(ctx, None, true)? {
                 def.prompt = Some(p);
             }
@@ -233,7 +241,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 Some(mut def) => {
                     let before = def.clone();
                     let current = config::ship_prompt(&f, &id);
-                    edit_ship(ctx, &mut def, &label);
+                    edit_ship(ctx, &mut def, &label)?;
                     if let Some(p) = prompt_from_editor(ctx, current.as_deref(), false)? {
                         def.prompt = Some(p);
                         def.prompt_file = None;

@@ -91,7 +91,7 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         out::json(&snap);
         return Ok(0);
     }
-    let cc = snap.cc_version.clone().unwrap_or("(not found)".into());
+    let cc = snap.cc_version.clone().unwrap_or_else(|| format!("unknown (`{} --version` gave no version)", ctx.env.native_claude_bin));
     let machine = snap.machine.clone().unwrap_or("(no label)".into());
     if snap.compat_ok {
         out::ok(&format!("machine {machine}; Claude Code {cc} (supported)"));
@@ -197,7 +197,7 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
         plan.refusals.push(refusal(
             "mux.none",
             "`nimitz up` runs a whole fleet and needs a multiplexer for its admiral and commodores".into(),
-            Some("run nimitz inside Herdr (HERDR_ENV=1)".into()),
+            Some(nimitz_mux::missing_mux_fix(&ctx.vars)),
             None,
         ));
     }
@@ -343,7 +343,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         plan.refusals.push(refusal(
             "mux.none",
             format!("typing to {} needs a multiplexer that can type ({})", via.id, mux.name()),
-            Some("run nimitz inside Herdr (HERDR_ENV=1)".into()),
+            Some(nimitz_mux::missing_mux_fix(&ctx.vars)),
             Some(via.id.clone()),
         ));
         return Ok(finish_plan(ctx, &plan));
@@ -400,7 +400,7 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
         return Ok(finish_plan(ctx, &plan));
     };
     if !mux.caps().open {
-        plan.refusals.push(refusal("mux.none", format!("opening {id} needs a multiplexer ({})", mux.name()), Some("run nimitz inside Herdr (HERDR_ENV=1)".into()), Some(id)));
+        plan.refusals.push(refusal("mux.none", format!("opening {id} needs a multiplexer ({})", mux.name()), Some(nimitz_mux::missing_mux_fix(&ctx.vars)), Some(id)));
         return Ok(finish_plan(ctx, &plan));
     }
     if let Some(pane) = m.session.as_ref().and_then(|s| run::pane_of(mux.as_ref(), &s.session_id)) {
@@ -468,7 +468,7 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
     let mux = ctx.mux();
     let mut plan = Plan { summary: format!("layout herdr {}", only.as_ref().map(|i| i.0.as_str()).unwrap_or("(every fleet here)")), ..Default::default() };
     if mux.name() != "herdr" || !mux.caps().layout {
-        plan.refusals.push(refusal("mux.none", format!("`layout herdr` needs Herdr (multiplexer here: {})", mux.name()), Some("run nimitz inside Herdr (HERDR_ENV=1)".into()), None));
+        plan.refusals.push(refusal("mux.none", format!("`layout herdr` needs Herdr (multiplexer here: {})", mux.name()), Some(nimitz_mux::missing_mux_fix(&ctx.vars)), None));
         return Ok(finish_plan(ctx, &plan));
     }
     if ctx.caller != Caller::User {
