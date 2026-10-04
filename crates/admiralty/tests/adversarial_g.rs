@@ -64,7 +64,6 @@ fn bug34_monitor_only_still_starts_a_ship() {
 }
 
 #[test]
-#[ignore = "BUG-35"]
 fn bug35_a_broken_squadron_toml_keeps_the_fleet_on_screen() {
     let w = world();
     let t = w.base.join("nimitz/main/squadrons/argos/squadron.toml");
@@ -87,7 +86,6 @@ fn bug36_at_80x24_the_issue_code_quit_and_help_are_visible() {
 }
 
 #[test]
-#[ignore = "BUG-38"]
 fn bug38_a_ship_start_does_not_warn_about_the_commodore_folder() {
     // The stowaway in ARGOS's commodore folder has nothing to do with starting STOPPED.
     let w = world();
