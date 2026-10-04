@@ -61,7 +61,9 @@ home-server = "managed"
 [ships.permission_mode]             # optional per machine
 ```
 
-A ship with no `dirs` entry for this machine does not run here. Ship names
+A ship with no `dirs` entry for this machine does not run here. A `dirs` value
+is `managed`, an absolute path or `~/...` (`config::normalize_ship_dir`; empty,
+relative and `<label>=<folder>` values are refused, for every front end). Ship names
 `COMMODORE` and `ADMIRAL` (and anything starting `COMMODORE/`) are reserved: they
 would take a role's address. Folders are compared as real paths (symlinks
 resolved, as Claude Code records them); one folder holds one member.
