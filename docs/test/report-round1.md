@@ -79,3 +79,38 @@ Totals with G: 18 PASS, 14 PARTIAL, 8 FAIL.
 | 40 | cosmetic | Keys pressed during the ~3 s startup "loading" are dropped. |
 
 Also: the form accepts a ship named COMMODORE (BUG-26); the demo's role.background fix says `nimitz open FORGE` while core says `claude attach <short>`.
+
+# Re-test of round 1 and round 2 (dev 45f627f)
+
+Real Claude Code: ACME 2.1.288.1000, `~/.cache/nimitz-e2e/nimitz-e2e-adv2`, fleet
+`NIMITZ_E2E_ADV2`; 22 real sessions, all stopped and removed.
+
+## Re-test of round 1
+
+27 of 31 FIXED. Partly open on 45f627f: 07 (idle resumed ship says "job row left a
+question"; `2.1.288-beta` counts as 2.1.288), 15 (fixed later on dev), 30 (fix
+`nimitz stop` refuses: BUG-52), 33 (CLI `--dir sandbox=managed`; fixed later in a4fff05).
+
+## Round 2: passed
+
+Prompt injection (quotes, backticks, `$()`, newlines; real); unicode and spaces in
+folders (real); 40 ships + 51 sessions (status/check ~50 ms, hook ~6 ms); session
+ending right after start (real); nimitz from a ship's Bash tool (authority refused);
+odd version strings; clock skew; full disk for NIMITZ_STATE (start refuses, registry
+valid); ctrl-c during bind; migration flow (real; history lost, BUG-53).
+
+## Round 2: bugs
+
+| Bug | Severity | Area | Finding |
+| --- | --- | --- | --- |
+| 42 | unclear message | core-sessions | Legacy warning about a stray in the commodore folder shows in every start; its adopt fix would adopt a background session as the commodore. (passes on dev 8fd6f8d) |
+| 43 | wrong state | cli/mux | `nimitz signal` types newlines, ctrl-C and ESC sequences into `herdr agent prompt`. |
+| 44 | performance | core-sessions | events.jsonl never rotated; at 200k lines status takes 0.57 s. |
+| 45 | cosmetic | core | `2.1.288-rc.1+build` reads as no version; `-beta` counts as release; absurd timestamp age "2073…". |
+| 47 | makes it worse | cli/mux | Repeated start while an admiral/commodore pane has not bound opens another pane each time. |
+| 48 | wrong state | core-sessions | Symlinked NIMITZ_HOME: transcript and stowaway missed. (passes on dev 8fd6f8d) |
+| 49 | low | core | Full disk: the hook leaves a partial line; the next event is glued onto it. |
+| 50 | wrong state (real) | core-config | Home-folder trust does not cover a git repo root or worktree; check green, start fails "Workspace not trusted". |
+| 51 | cosmetic | cli | A ship running `nimitz start <live ship> --plan` gets "nothing to do" and a user-only fix. |
+| 52 | fix does not run (real) | core-sessions | BUG-30's fix `nimitz stop <short>` refuses for a session with a member's labels in the wrong folder. |
+| 53 | makes it worse (real), HIGH | core-sessions | relaunch / relabel / adopt+start / migration run `--resume <id>` with flags while the old job row exists: a new id with NO history. Verified fix: stop, `claude rm <row>`, then `--bg --resume <id>` with all flags: same id, new labels, history kept. |

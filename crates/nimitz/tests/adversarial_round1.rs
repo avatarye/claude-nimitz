@@ -483,7 +483,6 @@ fn bug33_the_command_admiralty_shows_for_a_new_ship_does_what_it_says() {
 // ------------------------------------------------------------------ round 2 (BUG-42 onward)
 
 #[test]
-#[ignore = "BUG-42"]
 fn bug42_the_legacy_fix_does_not_adopt_a_stowaway_as_the_commodore() {
     let sb = Sb::new(false);
     let c = sb.run(&["check", "MAIN/ARGOS/STOPPED"]);
@@ -521,7 +520,6 @@ fn bug47_a_second_start_does_not_open_a_second_admiral_pane() {
 }
 
 #[test]
-#[ignore = "BUG-48"]
 fn bug48_a_symlinked_nimitz_home_sees_the_same_world() {
     let sb = Sb::new(false);
     let link = sb.dir("home/nzlink");
