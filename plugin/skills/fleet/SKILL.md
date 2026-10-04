@@ -39,12 +39,12 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 | Caller | May start |
 | --- | --- |
 | the user (no labels) | everything; `nimitz up` |
-| commodore | one of its own ships that it needs now; its own tenders |
+| commodore | one of its own ships that it needs now; its own tenders; a sweep of its own squadron |
 | admiral, ship, tender | nothing |
 
 `nimitz` reads the caller from the session's labels. It refuses what the table
-does not allow. CRUD, `up`, `rm`, `sweep`, `adopt`, `layout` and `init` are the
-user's alone.
+does not allow. CRUD, `up`, `rm`, `adopt`, `layout` and `init` are the user's alone.
+`sweep` is the user's, or a commodore's for its own squadron.
 
 ## Who may signal whom
 
@@ -72,7 +72,7 @@ types the text into the commodore's pane.
 | Find problems | `nimitz check [<id>]` |
 | New fleet | `nimitz fleet new <F> [--machine <label>]` |
 | New squadron | `nimitz squadron new <F/SQ> --brief "<text>" [--comms open\|commodore-only\|allow:F/SQ/SHIP,...]` |
-| New ship | `nimitz ship new <F/SQ/SHIP> --dir <folder\|managed> --prompt "<text>" [--mode <permission mode>] [--depends A,B]` |
+| New ship | `nimitz ship new <F/SQ/SHIP> --dir <folder\|managed> [--prompt "<text>"] [--mode <permission mode>] [--depends A,B]` (no prompt flag on a terminal: `$EDITOR` opens) |
 | Change a ship | `nimitz ship set <F/SQ/SHIP> [same flags]` (takes effect at its next relaunch) |
 | Retire a ship | `nimitz ship rm <F/SQ/SHIP>` (stops it, removes job rows, keeps transcripts) |
 | Delete a squadron or fleet | `nimitz squadron rm <F/SQ>`, `nimitz fleet rm <F>` (only when empty and not live) |
@@ -81,7 +81,7 @@ types the text into the commodore's pane.
 | Start one member | `nimitz start <id>` (admiral and commodore open in a Herdr tab) |
 | Stop one member | `nimitz stop <id>`; one copy of two: `nimitz stop <short id>` |
 | New session id, labels restored | `nimitz relaunch <id>` |
-| Remove stale rows | `nimitz sweep [<id>]`, or one row: `nimitz rm <short id>` |
+| Remove stale rows | `nimitz sweep [<id>]` (a commodore: `nimitz sweep <F/SQ>`), or one row: `nimitz rm <short id>` |
 | One-off job | `nimitz tender <F/SQ> <task> "<prompt>"` |
 | A session with no labels | `nimitz adopt <session> <id>`, or `nimitz rm <session>` |
 | Show a member | `nimitz open <id>` |
