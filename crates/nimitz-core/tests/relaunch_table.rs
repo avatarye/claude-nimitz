@@ -1157,3 +1157,133 @@ fn layout_spec_lays_out_leads_and_attaches_live_ships() {
     let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
     assert!(has(&layout::plan(&w.env, &snap, None, false, &own, false).plan.refusals, "authority"));
 }
+
+// ------------------------------------------------------------------ a symlinked NIMITZ_HOME
+
+/// The user's real home is `~/.claude-nimitz -> ~/Dropbox/claude-nimitz`, and
+/// Claude Code records real paths. Start, check, stowaways and trust must all
+/// match a session's real cwd with the member folder written through the link.
+#[test]
+fn a_symlinked_nimitz_home_starts_checks_finds_stowaways_and_trusts() {
+    let w = world();
+    let link = w.env.home.clone();
+    let base = link.parent().unwrap().to_path_buf();
+    let real = base.join("dropbox-nimitz");
+    std::fs::rename(&link, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    assert_eq!(w.env.home, link, "the env keeps the path as written");
+
+    // a managed ship: its folder is under the link
+    let ship = ShipDef { name: "MUD".into(), prompt: Some("hi".into()), dirs: [("sandbox".to_string(), "managed".to_string())].into(), ..Default::default() };
+    let p = nimitz_core::config::plan_ship_new(&w.env, "MAIN", "ARGOS", ship);
+    assert!(nimitz_core::config::apply_config_plan(&w.env, &p).verified, "{:?}", p.refusals);
+    let id = w.ship("MUD");
+    let snap = w.snap();
+    let m = w.member(&snap, &id);
+    assert!(m.cwd.as_deref().unwrap().starts_with(link.to_str().unwrap()), "shown as written: {:?}", m.cwd);
+
+    // start: the fake claude records the real cwd, as Claude Code does
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let row = w.rows().into_iter().find(|r| r.name == id.name()).unwrap();
+    assert!(row.cwd.starts_with(real.to_str().unwrap()), "real cwd recorded: {}", row.cwd);
+
+    // check: the live ship is its member's session, with nothing to say
+    let snap = w.snap();
+    let m = w.member(&snap, &id);
+    assert_eq!(m.session.as_ref().map(|s| s.session_id.clone()), Some(row.session_id.clone()));
+    assert!(m.issues.is_empty(), "{:?}", m.issues);
+    let issues = nimitz_core::check::check(&w.env, &snap, Some(&id));
+    assert!(issues.iter().all(|i| i.severity != Severity::Error), "{issues:?}");
+    assert!(!snap.stowaways.iter().any(|s| s.session_id == row.session_id));
+    // a start again: nothing (live and clean)
+    assert!(w.start(&snap, &id, false).steps.iter().all(|s| s.id.as_ref() != Some(&id)));
+
+    // a stowaway made by hand in the commodore's folder (real path) is found
+    let sq_real = real.join("main/squadrons/argos");
+    let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "by hand".into(), "x".into()], Some(sq_real.to_str().unwrap()));
+    assert_eq!(rc, 0, "{out}");
+    assert!(w.snap().stowaways.iter().any(|s| s.name == "by hand"), "a real-path session under the linked home is in fleet scope");
+
+    // trust: a folder trusted under its real path is trusted through the link too
+    let t = base.join("trusted-real");
+    std::fs::create_dir_all(&t).unwrap();
+    let tl = base.join("trusted-link");
+    std::os::unix::fs::symlink(&t, &tl).unwrap();
+    let f = base.join("claude_home/.claude.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+    v["projects"][t.canonicalize().unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
+    std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(evidence::folder_trusted(&w.env, &mut evidence::FileCache::default(), tl.to_str().unwrap()));
+}
+
+// ------------------------------------------------------------------ strays in a ship's folder
+
+/// The real-config regression: other agents the user started in a ship's
+/// folder are not the ship. A named stray, an unnamed stray with no fork link,
+/// and an old legacy row: start, sweep and relaunch never touch the strays, and
+/// the ship gets no labels.missing, copy.rows or dup.live from them.
+#[test]
+fn strays_in_a_ship_folder_are_never_the_ship() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let m = w.member(&w.snap(), &id);
+    let cwd = m.cwd.clone().unwrap();
+    let own_sid = m.session.as_ref().unwrap().session_id.clone();
+    std::fs::write(w.env.fleet_dir("MAIN").join("legacy.toml"), "[names]\n\"[ARGOS]-STOPPED\" = \"MAIN/ARGOS/STOPPED\"\n").unwrap();
+    let run = |args: &[&str]| {
+        let mut c = vec![w.env.native_claude_bin.clone()];
+        c.extend(args.iter().map(|s| s.to_string()));
+        let (rc, out) = claude::run(&c, Some(&cwd));
+        assert_eq!(rc, 0, "{out}");
+        out.trim().to_string()
+    };
+    let named = run(&["--bg", "--name", "publish plan draft spec", "x"]);
+    let ragtime = run(&["--bg", "--name", "[ARGOS]-RAGTIME", "x"]);
+    let unnamed = run(&["--bg", "x"]);
+    let old = run(&["--bg", "--name", "[ARGOS]-STOPPED", "x"]);
+    run(&["stop", &old]);
+    let strays = [named.clone(), ragtime.clone(), unnamed.clone()];
+
+    let snap = w.snap();
+    let m = w.member(&snap, &id);
+    assert_eq!(m.session.as_ref().map(|s| s.session_id.clone()), Some(own_sid.clone()), "the ship's own session stays current");
+    assert!(m.extra_rows.is_empty(), "no stray is a copy: {:?}", m.extra_rows.iter().map(|r| &r.name).collect::<Vec<_>>());
+    for code in ["labels.missing", "copy.rows", "dup.live"] {
+        assert!(!has(&m.issues, code), "{code}: {:?}", m.issues);
+    }
+    for s in &strays {
+        assert!(snap.stowaways.iter().any(|x| x.short_id.as_deref() == Some(s.as_str())), "{s} is a stowaway");
+    }
+    let touches = |p: &Plan| p.steps.iter().any(|s| strays.iter().any(|x| s.cmd.contains(x)));
+    let start = w.start(&snap, &id, false);
+    assert!(start.ok(), "{:?}", start.refusals);
+    assert!(!touches(&start), "{:?}", start.steps);
+    let relaunch = sessions::plan_relaunch(&w.env, &snap, &id, &Caller::User);
+    assert!(!touches(&relaunch), "{:?}", relaunch.steps);
+    let sweep = sessions::plan_sweep(&w.env, &snap, Some(&id), &Caller::User);
+    assert!(!touches(&sweep), "{:?}", sweep.steps);
+    assert!(sweep.steps.iter().any(|s| s.cmd.contains(&old)), "the old legacy row is offered: {:?}", sweep.steps);
+    // and after the start ran, the strays are as they were
+    assert!(sessions::apply(&w.env, &start).verified);
+    for s in &strays {
+        assert!(w.rows().iter().any(|r| r.short_id.as_deref() == Some(s.as_str()) && r.live()), "{s} untouched");
+    }
+
+    // a real copy still is one: an unnamed fork of the ship's own session
+    let own = w.member(&w.snap(), &id).session.unwrap().session_id;
+    let fork = run(&["--bg", "--resume", &own, "--settings", "{}"]);
+    let fork = fork.split_whitespace().last().unwrap().to_string();
+    let m = w.member(&w.snap(), &id);
+    assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(fork.as_str())), "named <name>-w-w: {:?}", m.extra_rows);
+    // with no name at all, the job row's fork link alone ties it to the ship
+    for f in [w.base.join("claude_home/jobs").join(&fork).join("state.json"), w.base.join("claude_home/sessions").join(format!("{fork}.json"))] {
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        v["name"] = serde_json::json!("");
+        std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    }
+    let m = w.member(&w.snap(), &id);
+    assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(fork.as_str()) && r.name.is_empty()), "unnamed fork: {:?}", m.extra_rows);
+}

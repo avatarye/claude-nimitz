@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{find_member, Act, Target};
 use crate::app::App;
-use crate::frames::{pad, truncate_spans};
+use crate::frames::{pad, truncate_spans, wrap};
 use crate::theme::{age, art, bold, mono, pane_color, pane_dot, severity_color, severity_word, st, status_style, status_word, Art};
 use crate::view::{fleet_issues, fleet_members, squadron_members, FleetState, Kind, Node};
 
@@ -33,6 +33,7 @@ pub fn art_for(n: &Node) -> Art {
         Kind::SquadronBand => Art::Squadron,
         Kind::StowBand | Kind::Stowaway => Art::Stowaway,
         Kind::ExtraRow => Art::StaleRow,
+        Kind::Note => Art::Issue,
         Kind::Crew if n.kind_text == "teammate" => Art::Teammate,
         Kind::Crew => Art::Crew,
         Kind::Task if n.status.0 == "completed" => Art::TaskDone,
@@ -48,8 +49,13 @@ pub fn art_for(n: &Node) -> Art {
 }
 
 /// The pane's lines with the picture beside the first ones.
-pub fn detail_with_art(app: &App, width: usize) -> Vec<Line<'static>> {
-    let lines = detail_lines(app);
+/// `compact`: a short pane gets no picture and no blank lines, so the reasons
+/// and the fixes come first.
+pub fn detail_with_art(app: &App, width: usize, compact: bool) -> Vec<Line<'static>> {
+    let lines = detail_lines(app, width);
+    if compact {
+        return lines.into_iter().filter(|l| !l.spans.iter().all(|s| s.content.trim().is_empty())).collect();
+    }
     let Some(r) = app.current() else { return lines };
     let pic = art(art_for(&r.node));
     let art_w = pic.iter().map(|l| l.width()).max().unwrap_or(0) + 3;
@@ -74,27 +80,31 @@ pub fn detail_with_art(app: &App, width: usize) -> Vec<Line<'static>> {
     out
 }
 
-pub fn detail_lines(app: &App) -> Vec<Line<'static>> {
+pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let (Some(r), Some(b)) = (app.current(), &app.bundle) else { return vec![Line::styled("loading ...", st(mono::COMMENT))] };
     let snap = &b.snap;
     let now = app.now();
     let mut v = match (&r.node.kind, app.target()) {
         (Kind::FleetBand, Target::Fleet(id)) => match snap.fleets.iter().find(|f| f.id == id) {
-            Some(f) => fleet_detail(f, now),
+            Some(f) => fleet_detail(f, now, width),
+            None => broken_detail(snap, &id, width),
+        },
+        (Kind::Note, _) => match &r.node.member {
+            Some(id) => broken_detail(snap, id, width),
             None => vec![],
         },
         (Kind::SquadronBand, Target::Squadron(id)) => {
             match snap.fleets.iter().flat_map(|f| f.squadrons.iter().map(move |s| (f, s))).find(|(_, s)| s.id == id) {
-                Some((f, sq)) => squadron_detail(f, sq),
-                None => vec![],
+                Some((f, sq)) => squadron_detail(f, sq, width),
+                None => broken_detail(snap, &id, width),
             }
         }
         (Kind::Member(_), Target::Member(id)) => match find_member(snap, &id) {
-            Some(m) => member_detail(app, m, now),
+            Some(m) => member_detail(app, m, now, width),
             None => vec![],
         },
         (Kind::Stowaway, Target::Stowaway(sid)) => match snap.stowaways.iter().find(|s| s.session_id == sid) {
-            Some(s) => stowaway_detail(snap, s, now),
+            Some(s) => stowaway_detail(snap, s, now, width),
             None => vec![],
         },
         (Kind::ExtraRow, Target::ExtraRow { owner, session_id }) => {
@@ -137,6 +147,38 @@ pub fn detail_lines(app: &App) -> Vec<Line<'static>> {
     v
 }
 
+/// A fleet or squadron whose config does not load: the errors in full.
+fn broken_detail(snap: &Snapshot, id: &nimitz_core::Id, width: usize) -> Vec<Line<'static>> {
+    let fleet = id.role() == nimitz_core::Role::Admiral;
+    let errs: Vec<&Issue> = crate::view::all_issues(snap)
+        .into_iter()
+        .filter(|i| i.code == "config.invalid" && !i.message.contains("which no config declares"))
+        .filter(|i| i.id.as_ref().map(|x| x == id || (fleet && x.fleet() == id.fleet())).unwrap_or(false))
+        .collect();
+    let mut v = vec![
+        Line::styled(format!("{} {}", if fleet { "FLEET" } else { "SQUADRON" }, id.0), bold(mono::PINK)),
+        blank(),
+        Line::styled("Its config does not load, so nimitz cannot show or start its members.", st(mono::SOFT)),
+        Line::styled("Their sessions keep running; fix the file and the frame comes back.", st(mono::SOFT)),
+        blank(),
+        heading(&format!("CONFIG ERRORS ({})", errs.len())),
+    ];
+    for e in &errs {
+        for l in e.message.lines() {
+            v.extend(wrap(vec![Span::raw("  "), Span::styled(l.to_string(), st(mono::FG))], width, 2));
+        }
+        if let Some(fx) = &e.fix {
+            v.extend(wrap(vec![Span::styled("  fix  ", st(mono::COMMENT)), Span::styled(fx.clone(), bold(mono::CYAN))], width, 7));
+        }
+    }
+    let n = crate::view::unlisted_sessions(snap, id);
+    if n > 0 {
+        v.push(blank());
+        v.push(Line::styled(format!("{n} session(s) are labelled for {} but outside the config; `i` lists them.", id.0), bold(mono::ORANGE)));
+    }
+    v
+}
+
 fn comms_text(c: &Comms) -> String {
     match c {
         Comms::Mode(m) => m.clone(),
@@ -144,7 +186,7 @@ fn comms_text(c: &Comms) -> String {
     }
 }
 
-fn issues_block(title: &str, issues: &[&Issue]) -> Vec<Line<'static>> {
+fn issues_block(title: &str, issues: &[&Issue], width: usize) -> Vec<Line<'static>> {
     if issues.is_empty() {
         return vec![];
     }
@@ -155,15 +197,15 @@ fn issues_block(title: &str, issues: &[&Issue]) -> Vec<Line<'static>> {
             Span::styled(format!("  {:<6}", severity_word(i.severity).to_uppercase()), bold(c)),
             Span::styled(i.code.clone(), bold(c)),
         ]));
-        v.push(Line::from(vec![Span::raw(" ".repeat(8)), Span::styled(i.message.clone(), st(mono::FG))]));
+        v.extend(wrap(vec![Span::raw(" ".repeat(4)), Span::styled(i.message.clone(), st(mono::FG))], width, 4));
         if let Some(fx) = &i.fix {
-            v.push(Line::from(vec![Span::raw(" ".repeat(8)), Span::styled("fix  ", st(mono::COMMENT)), Span::styled(fx.clone(), bold(mono::CYAN))]));
+            v.extend(wrap(vec![Span::raw(" ".repeat(4)), Span::styled("fix  ", st(mono::COMMENT)), Span::styled(fx.clone(), bold(mono::CYAN))], width, 9));
         }
     }
     v
 }
 
-fn fleet_detail(f: &Fleet, now: f64) -> Vec<Line<'static>> {
+fn fleet_detail(f: &Fleet, now: f64, width: usize) -> Vec<Line<'static>> {
     let state = FleetState::of(f);
     let members = fleet_members(f);
     let live = members.iter().filter(|m| crate::view::member_live(m)).count();
@@ -177,7 +219,7 @@ fn fleet_detail(f: &Fleet, now: f64) -> Vec<Line<'static>> {
         kv("squadrons", f.squadrons.iter().map(|s| s.id.squadron().unwrap_or("?").to_string()).collect::<Vec<_>>().join(", ")),
         kv("members", format!("{} declared, {live} live", members.len())),
     ];
-    v.extend(issues_block("FLEET ISSUES", &f.issues.iter().collect::<Vec<_>>()));
+    v.extend(issues_block("FLEET ISSUES", &f.issues.iter().collect::<Vec<_>>(), width));
     let all = fleet_issues(f);
     if all.len() > f.issues.len() {
         v.push(blank());
@@ -186,7 +228,7 @@ fn fleet_detail(f: &Fleet, now: f64) -> Vec<Line<'static>> {
     v
 }
 
-fn squadron_detail(f: &Fleet, sq: &Squadron) -> Vec<Line<'static>> {
+fn squadron_detail(f: &Fleet, sq: &Squadron, width: usize) -> Vec<Line<'static>> {
     let state = FleetState::of_squadron(f, sq);
     let mut v = vec![
         Line::styled(format!("SQUADRON {}", sq.id.0), bold(mono::FG)),
@@ -199,7 +241,7 @@ fn squadron_detail(f: &Fleet, sq: &Squadron) -> Vec<Line<'static>> {
     if !sq.tenders.is_empty() {
         v.push(kv("tenders", sq.tenders.iter().map(|s| s.id.parts().last().unwrap_or(&"?").trim_start_matches('~').to_string()).collect::<Vec<_>>().join(", ")));
     }
-    v.extend(issues_block("SQUADRON ISSUES", &sq.issues.iter().collect::<Vec<_>>()));
+    v.extend(issues_block("SQUADRON ISSUES", &sq.issues.iter().collect::<Vec<_>>(), width));
     let member_issues: usize = squadron_members(sq).iter().map(|m| m.issues.len()).sum();
     if member_issues > 0 {
         v.push(blank());
@@ -243,7 +285,7 @@ fn session_lines(s: &SessionInfo, now: f64, expected_name: Option<&str>) -> Vec<
     v
 }
 
-fn member_detail(app: &App, m: &Member, now: f64) -> Vec<Line<'static>> {
+fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'static>> {
     let mut v = vec![
         Line::styled(m.expected_name.clone(), bold(mono::FG)),
         blank(),
@@ -266,10 +308,10 @@ fn member_detail(app: &App, m: &Member, now: f64) -> Vec<Line<'static>> {
         v.push(blank());
         v.push(heading("WHY THIS STATUS"));
         for r in &m.reasons {
-            v.push(Line::from(vec![Span::styled("  \u{00b7} ", st(mono::COMMENT)), Span::styled(r.clone(), st(mono::SOFT))]));
+            v.extend(wrap(vec![Span::styled("  \u{00b7} ", st(mono::COMMENT)), Span::styled(r.clone(), st(mono::SOFT))], width, 4));
         }
     }
-    v.extend(issues_block("ISSUES", &m.issues.iter().collect::<Vec<_>>()));
+    v.extend(issues_block("ISSUES", &m.issues.iter().collect::<Vec<_>>(), width));
     if let Some(s) = &m.session {
         v.push(blank());
         v.push(heading("SESSION"));
@@ -314,7 +356,7 @@ fn member_detail(app: &App, m: &Member, now: f64) -> Vec<Line<'static>> {
     v
 }
 
-fn stowaway_detail(snap: &Snapshot, s: &SessionInfo, now: f64) -> Vec<Line<'static>> {
+fn stowaway_detail(snap: &Snapshot, s: &SessionInfo, now: f64, width: usize) -> Vec<Line<'static>> {
     let mut v = vec![
         Line::styled(if s.name.is_empty() { s.session_id.clone() } else { s.name.clone() }, bold(mono::PINK)),
         blank(),
@@ -328,7 +370,7 @@ fn stowaway_detail(snap: &Snapshot, s: &SessionInfo, now: f64) -> Vec<Line<'stat
     if issues.iter().any(|i| i.code == "legacy") {
         v.push(Line::styled("Its name says it belongs to an old fleet-skill fleet: adopt it to bring it under nimitz.", st(mono::ORANGE)));
     }
-    v.extend(issues_block("ISSUES", &issues));
+    v.extend(issues_block("ISSUES", &issues, width));
     v.push(blank());
     v.push(heading("SESSION"));
     v.extend(session_lines(s, now, None));

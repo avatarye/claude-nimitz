@@ -41,6 +41,7 @@ impl Row {
             waiting_for: None,
             job_labels: Default::default(),
             unreadable: false,
+            forked_from: None,
         }
     }
 }

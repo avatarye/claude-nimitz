@@ -280,6 +280,8 @@ pub struct SessionRow {
     /// a session file for this row exists but cannot be read (caught mid-write):
     /// its process may be live, so the row is neither live nor stopped
     pub unreadable: bool,
+    /// the session this one was forked from, when the job row records it
+    pub forked_from: Option<String>,
 }
 
 impl SessionRow {
@@ -355,6 +357,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             waiting_for: None,
             job_labels: job_labels(&d),
             unreadable: false,
+            forked_from: ["forkedFrom", "forkedFromSessionId", "parentSessionId", "resumedFrom"].iter().find_map(|k| s(&d, k)),
         });
     }
     for p in list(&sess_dir) {
@@ -392,6 +395,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             waiting_for: if status.as_deref() == Some("waiting") { Some(s(&d, "waitingFor").unwrap_or("input".into())) } else { None },
             job_labels: BTreeMap::new(),
             unreadable: false,
+            forked_from: None,
         };
         match by_sid.get(&sid) {
             // a live background process: its job row gains pid and status
@@ -406,7 +410,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
                 }
             }
             // an interactive process on a session that also has a row: the live one wins
-            Some(&i) => rows[i] = SessionRow { job_labels: std::mem::take(&mut rows[i].job_labels), ..live },
+            Some(&i) => {
+                rows[i] = SessionRow { job_labels: std::mem::take(&mut rows[i].job_labels), forked_from: rows[i].forked_from.take(), ..live }
+            }
             None => {
                 by_sid.insert(sid, rows.len());
                 rows.push(live)
@@ -452,6 +458,7 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         waiting_for: None,
                         job_labels: BTreeMap::new(),
                         unreadable: false,
+                        forked_from: None,
                     })
                 })
                 .collect()
@@ -482,11 +489,22 @@ pub fn project_dir_name(cwd: &str) -> String {
     cwd.trim_end_matches('/').chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
+/// The project-dir names a folder's transcripts may live under: Claude Code
+/// names it after the real path, so a symlinked folder has two candidates.
+fn project_dirs(cwd: &str) -> Vec<String> {
+    let mut v = vec![project_dir_name(cwd)];
+    let real = project_dir_name(&crate::env::canon(Path::new(cwd)).to_string_lossy());
+    if real != v[0] {
+        v.push(real);
+    }
+    v
+}
+
 /// The transcript of a session: under its folder's project dir first, then anywhere.
 pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str) -> Option<PathBuf> {
     let projects = env.claude_home.join("projects");
-    if let Some(c) = cwd {
-        let p = projects.join(project_dir_name(c)).join(format!("{sid}.jsonl"));
+    for c in cwd.map(project_dirs).unwrap_or_default() {
+        let p = projects.join(c).join(format!("{sid}.jsonl"));
         if p.is_file() {
             return Some(p);
         }
@@ -508,16 +526,22 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
 
 /// Transcripts in a folder's project dir, newest first: (last write, session id).
 pub fn transcripts_in(env: &Env, cwd: &str) -> Vec<(f64, String)> {
-    let proj = env.claude_home.join("projects").join(project_dir_name(cwd));
-    let mut out: Vec<(f64, String)> = fs::read_dir(&proj)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-                .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut out: Vec<(f64, String)> = vec![];
+    for name in project_dirs(cwd) {
+        let proj = env.claude_home.join("projects").join(name);
+        out.extend(
+            fs::read_dir(&proj)
+                .map(|rd| {
+                    rd.filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
+                        .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        );
+    }
+    out.dedup_by(|a, b| a.1 == b.1);
     out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
@@ -644,8 +668,10 @@ pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
             files.push(parent.join(".claude.json"));
         }
     }
+    // Claude Code records real paths (/private/tmp for /tmp): try both forms
     let want = Path::new(dir.trim_end_matches('/'));
-    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root)))
+    let real = crate::env::canon(want);
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root) || real.starts_with(root)))
 }
 
 fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {

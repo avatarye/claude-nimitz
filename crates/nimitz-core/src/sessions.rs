@@ -517,7 +517,7 @@ fn legacy_rows<'a>(snap: &'a Snapshot, fod: &FleetOnDisk, id: &Id, cwd: &str) ->
         .stowaways
         .iter()
         .filter(|s| s.pid.is_none() && s.short_id.is_some() && s.state.as_deref() != Some("failed"))
-        .filter(|s| names.contains(&s.name) && s.cwd.trim_end_matches('/') == cwd.trim_end_matches('/'))
+        .filter(|s| names.contains(&s.name) && crate::snapshot::norm_dir(&s.cwd) == crate::snapshot::norm_dir(cwd))
         .collect();
     let at = |s: &SessionInfo| s.status_since.or(s.started_at).unwrap_or(0.0);
     v.sort_by(|a, b| at(b).partial_cmp(&at(a)).unwrap_or(std::cmp::Ordering::Equal));
@@ -637,6 +637,10 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
         }
         start_member(env, &mut plan, snap, &link, force);
     }
+    // A `legacy` warning is about starting that member; a running parent left
+    // alone does not make the target's start a second agent anywhere (BUG-38).
+    let acting: Vec<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).chain(std::iter::once(id.clone())).collect();
+    plan.warnings.retain(|i| i.code != "legacy" || i.id.as_ref().map(|x| acting.contains(x)).unwrap_or(true));
     dedup_issues(&mut plan);
     plan
 }
@@ -1468,7 +1472,7 @@ fn live_session_of(env: &Env, id: &Id) -> Option<crate::evidence::SessionRow> {
 /// it travels with the data root) leaves a lock naming this machine, so another
 /// machine's `check` sees `ship.elsewhere` instead of starting a second copy.
 fn claim_folder(env: &Env, id: &Id, cwd: Option<&str>, session_id: &str) {
-    let Some(cwd) = cwd.filter(|c| id.role() == Role::Ship && std::path::Path::new(c).starts_with(&env.home)) else { return };
+    let Some(cwd) = cwd.filter(|c| id.role() == Role::Ship && crate::env::canon(std::path::Path::new(c)).starts_with(crate::env::canon(&env.home))) else { return };
     let mut cache = crate::evidence::FileCache::default();
     let pid = crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.session_id == session_id).and_then(|r| r.pid);
     let line = serde_json::json!({"machine": env.hostname, "id": id.0, "session_id": session_id, "pid": pid, "at": crate::evidence::now()});

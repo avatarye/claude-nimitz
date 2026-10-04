@@ -16,6 +16,9 @@ pub struct Bundle {
     /// "herdr" | "none" | fixture name
     pub mux_name: String,
     pub mux_caps: Caps,
+    /// a quick first look (session files only, no `claude agents`); the full
+    /// snapshot follows at once
+    pub partial: bool,
 }
 
 /// One refresh at a time; the loader thread owns the source (it is built there,
@@ -93,6 +96,7 @@ pub fn load_fixture_file(path: &PathBuf) -> Result<Bundle, String> {
         panes: f.panes.into_iter().map(Pane::from).collect(),
         mux_name: f.mux_name.unwrap_or_else(|| "fixture".into()),
         mux_caps: Caps { open: f.mux_open, focus: f.mux_focus, type_text: f.mux_type_text, layout: f.mux_layout },
+        partial: false,
     })
 }
 
@@ -103,6 +107,8 @@ pub struct CoreSource {
     pub env: nimitz_core::env::Env,
     pub cache: nimitz_core::snapshot::Cache,
     pub mux: Box<dyn Mux>,
+    /// the next load is the first: make it quick
+    pub first: bool,
 }
 
 impl CoreSource {
@@ -111,6 +117,7 @@ impl CoreSource {
             env: nimitz_core::env::Env::from_vars(vars),
             cache: nimitz_core::snapshot::Cache::default(),
             mux: nimitz_mux::detect(vars),
+            first: false,
         }
     }
 }
@@ -154,6 +161,16 @@ pub fn merge_check(snap: &mut Snapshot, found: Vec<nimitz_core::Issue>) {
 
 impl DataSource for CoreSource {
     fn load(&mut self) -> Bundle {
+        if std::mem::take(&mut self.first) {
+            // `claude agents` (the slow part: it starts the CLI) is skipped: a
+            // throwaway cache and no binary, so the real cache is untouched
+            let mut quick = self.env.clone();
+            quick.native_claude_bin = "/nonexistent/claude".into();
+            quick.claude_bin = "/nonexistent/claude".into();
+            let mut snap = nimitz_core::snapshot::snapshot(&quick, &mut nimitz_core::snapshot::Cache::default());
+            snap.compat_ok = true; // not known yet: no warning until it is
+            return Bundle { snap, panes: self.mux.panes(), mux_name: self.mux.name().to_string(), mux_caps: self.mux.caps(), partial: true };
+        }
         let mut snap = nimitz_core::snapshot::snapshot(&self.env, &mut self.cache);
         let mut found = nimitz_core::check::check(&self.env, &snap, None);
         for f in &snap.fleets {
@@ -167,6 +184,7 @@ impl DataSource for CoreSource {
             panes: self.mux.panes(),
             mux_name: self.mux.name().to_string(),
             mux_caps: self.mux.caps(),
+            partial: false,
         }
     }
 }

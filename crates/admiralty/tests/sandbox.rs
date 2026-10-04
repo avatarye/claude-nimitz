@@ -274,3 +274,76 @@ fn layout_goes_to_the_multiplexer_from_cores_plan() {
     assert!(calls.contains(&"layout MAIN.ARGOS/CLEAN".to_string()), "{calls:?}");
     assert!(toast(&app).starts_with("layout:"), "{}", toast(&app));
 }
+
+#[test]
+fn bug38_a_legacy_warning_stays_in_its_own_members_dialog() {
+    let w = world();
+    let mut app = app_on(&w, TestMux::default());
+    app.bundle.as_mut().unwrap().mux_caps = nimitz_mux::Caps { open: true, focus: true, type_text: true, layout: true };
+    for row in ["M:MAIN/ARGOS/STOPPED", "M:MAIN/ARGOS/NOLABEL"] {
+        goto(&mut app, row);
+        keys(&mut app, "a");
+        if let Some(Modal::Confirm(p)) = app.modal.take() {
+            let id = Id(row.trim_start_matches("M:").into());
+            assert!(p.plan.warnings.iter().all(|i| i.code != "legacy" || i.id.as_ref() == Some(&id)), "{row}: {:?}", p.plan.warnings);
+        }
+    }
+}
+
+#[test]
+fn bug39_sandbox_with_a_fake_herdr_uses_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let sb = dir.path().join("sb");
+    let bin = env!("CARGO_BIN_EXE_admiralty");
+    let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    let env = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
+    assert!(env.contains("export NIMITZ_MUX=herdr") && env.contains("bin/herdr"), "{env}");
+    // and the TUI's own dump runs against it with the mux, not monitor-only
+    let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for l in env.lines() {
+        let (k, v) = l.trim_start_matches("export ").split_once('=').unwrap();
+        vars.insert(k.into(), v.into());
+    }
+    let src = CoreSource::detect(&vars).load();
+    assert_eq!(src.mux_name, "herdr");
+    assert!(src.mux_caps.open);
+}
+
+#[test]
+fn bug40_the_first_look_is_quick_and_the_full_one_follows() {
+    let w = world();
+    let mut vars = w.vars.clone();
+    // a `claude agents` that takes 3 s, like the real one
+    let slow = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(slow.path(), "#!/bin/sh\nsleep 3\necho '[]'\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(slow.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let slow = slow.into_temp_path();
+    vars.insert("NIMITZ_NATIVE_CLAUDE_BIN".into(), slow.to_string_lossy().into_owned());
+    let mut src = CoreSource { first: true, ..CoreSource::detect(&vars) };
+    let t = std::time::Instant::now();
+    let b = src.load();
+    assert!(b.partial && t.elapsed() < std::time::Duration::from_millis(1500), "first look took {:?}", t.elapsed());
+    assert!(b.snap.fleets.iter().any(|f| f.id.0 == "MAIN"), "live sessions already show");
+    let b = src.load();
+    assert!(!b.partial);
+}
+
+#[test]
+fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
+    let w = world();
+    let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]);
+    let t = base.join("main/squadrons/argos/squadron.toml");
+    let s = std::fs::read_to_string(&t).unwrap();
+    std::fs::write(&t, s + "\nname = \"oops\n").unwrap();
+    let mut app = app_on(&w, TestMux::default());
+    let buf = draw(&mut app, 200, 60);
+    let ls = lines(&buf);
+    assert!(ls.iter().any(|l| l.contains("[MAIN]")), "the fleet stays on screen");
+    let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).expect("the squadron stays on screen");
+    assert_eq!(buf[(1, y as u16)].fg, admiralty::theme::mono::PINK, "its frame is red");
+    let all = ls.join("\n");
+    assert!(all.contains("squadron.toml") && all.contains("164:13"), "the file and line, in full:\n{all}");
+    assert!(all.contains("invalid basic string"), "the parse error's own words");
+}

@@ -103,7 +103,8 @@ fn trust(base: &Path, dirs: &[String]) {
 fn trusted(base: &Path, cwd: &str) -> bool {
     // NIMITZ_HOME is trusted by `nimitz init`; anything else needs the trust file.
     let home = base.join("nimitz");
-    if Path::new(cwd).starts_with(&home) {
+    let real_home = home.canonicalize().unwrap_or_else(|_| home.clone());
+    if Path::new(cwd).starts_with(&home) || Path::new(cwd).starts_with(&real_home) {
         return true;
     }
     trust_files(base).iter().any(|f| {
@@ -660,6 +661,15 @@ fn copy_name(base: &Path, of: &str) -> String {
     format!("{of}-{}-{}", WORDS[n % 8], WORDS[(n / 8) % 8])
 }
 
+/// A copy's job row records the session it was forked from.
+fn record_fork(base: &Path, short: &str, from: &str) {
+    let p = claude_home(base).join("jobs").join(short).join("state.json");
+    if let Some(mut j) = read_json(&p) {
+        j["forkedFrom"] = json!(from);
+        write_json(&p, &j);
+    }
+}
+
 fn transcript_exists(base: &Path, sid: &str) -> bool {
     fs::read_dir(claude_home(base).join("projects"))
         .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().join(format!("{sid}.jsonl")).is_file()))
@@ -798,7 +808,8 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
 
     match &a.resume {
         None => {
-            let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
+            // no --name: the sandbox leaves the name empty (an unnamed agent)
+            let name = a.name.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "startup", a.settings.is_some());
             println!("{short}");
             0
@@ -838,6 +849,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 // auto-generated name without --name); with no --settings it fires no hooks
                 let name = a.name.clone().unwrap_or_else(|| copy_name(&base, saved_name.as_deref().unwrap_or(&row.name)));
                 let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
+                record_fork(&base, &short, &row.session_id);
                 println!("session {} is already running in the background, so this started a copy as {short}", row.session_id);
                 return 0;
             }
@@ -866,6 +878,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             let name = a.name.clone().unwrap_or_else(|| copy_name(&base, saved_name.as_deref().unwrap_or(&row.name)));
             let mode = a.mode.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
+            record_fork(&base, &short, &row.session_id);
             println!("the flags you passed started a copy as {short}");
             0
         }
