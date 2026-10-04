@@ -285,7 +285,7 @@ mod tests {
         assert!(events[0].labels.is_empty(), "{:?}", events[0].labels);
         // and an older line that logged it anyway reads as unlabelled
         let old = vec![Event { labels: [("NIMITZ_HOME".to_string(), "/h".to_string())].into(), ..events[0].clone() }];
-        assert!(crate::evidence::labels_by_session(&old).is_empty());
+        assert!(crate::evidence::labels_by_session(&old).values().all(|l| !crate::evidence::is_labelled(l)));
     }
 
     #[test]

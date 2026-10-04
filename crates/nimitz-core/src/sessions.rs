@@ -148,13 +148,20 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     }
     // A managed ship folder in use on another machine leaves a lock file.
     if m.role == Role::Ship {
-        if let Some(l) = m.cwd.as_deref().and_then(lock_holder) {
-            if !env.matches_hostname(&l) {
+        if let Some(l) = m.cwd.as_deref().and_then(read_lock) {
+            if !env.matches_hostname(&l.machine) {
+                let age = l.at.map(|t| format!(", locked {:.0} min ago", ((crate::evidence::now() - t) / 60.0).max(0.0))).unwrap_or_default();
+                let by = l.session_id.as_deref().map(|s| format!(" by session {}", &s[..s.len().min(8)])).unwrap_or_default();
                 out.push(issue(
                     "ship.elsewhere",
                     Severity::Error,
-                    format!("{}'s folder is in use on {l:?} (lock file)", m.id),
-                    Some(format!("stop the ship there first, or remove {}", ship_lock_path(m.cwd.as_deref().unwrap_or("")).display())),
+                    format!("{}'s folder is in use on {:?}{by}{age} (lock file)", m.id, l.machine),
+                    Some(format!(
+                        "on {}: nimitz stop {}  # if that machine is gone for good: rm {}",
+                        l.machine,
+                        m.id,
+                        ship_lock_path(m.cwd.as_deref().unwrap_or("")).display()
+                    )),
                     id.clone(),
                 ));
             }
@@ -163,11 +170,30 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     out
 }
 
-/// The machine named in a folder's ship lock, if the lock exists and parses.
-pub fn lock_holder(cwd: &str) -> Option<String> {
+/// A managed ship folder's lock: which machine runs the ship there, and as
+/// which session (BUG-21: enough to tell a stale lock from a live one).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShipLock {
+    pub machine: String,
+    pub session_id: Option<String>,
+    pub pid: Option<i64>,
+    pub at: Option<f64>,
+}
+
+pub fn read_lock(cwd: &str) -> Option<ShipLock> {
     let raw = std::fs::read(ship_lock_path(cwd)).ok()?;
     let v = crate::evidence::first_json(&raw)?;
-    v.get("machine").and_then(|m| m.as_str()).map(str::to_string)
+    Some(ShipLock {
+        machine: v.get("machine").and_then(|m| m.as_str())?.to_string(),
+        session_id: v.get("session_id").and_then(|m| m.as_str()).map(str::to_string),
+        pid: v.get("pid").and_then(|m| m.as_i64()),
+        at: v.get("at").or_else(|| v.get("since")).and_then(|m| m.as_f64()),
+    })
+}
+
+/// The machine named in a folder's ship lock, if the lock exists and parses.
+pub fn lock_holder(cwd: &str) -> Option<String> {
+    read_lock(cwd).map(|l| l.machine)
 }
 
 /// Issues that need the registry: lineage.broken (the current session id has no
@@ -1241,7 +1267,9 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
 /// machine's `check` sees `ship.elsewhere` instead of starting a second copy.
 fn claim_folder(env: &Env, id: &Id, cwd: Option<&str>, session_id: &str) {
     let Some(cwd) = cwd.filter(|c| id.role() == Role::Ship && std::path::Path::new(c).starts_with(&env.home)) else { return };
-    let line = serde_json::json!({"machine": env.hostname, "id": id.0, "session_id": session_id, "at": crate::evidence::now()});
+    let mut cache = crate::evidence::FileCache::default();
+    let pid = crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.session_id == session_id).and_then(|r| r.pid);
+    let line = serde_json::json!({"machine": env.hostname, "id": id.0, "session_id": session_id, "pid": pid, "at": crate::evidence::now()});
     let _ = std::fs::write(ship_lock_path(cwd), line.to_string());
 }
 
