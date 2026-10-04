@@ -34,7 +34,7 @@ fn trusted(env: &Env, dir: &Path) -> Option<bool> {
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
     };
-    Some(dir.ancestors().any(|p| accepted(p)))
+    Some(dir.ancestors().any(accepted))
 }
 
 /// All issues for one identity (and its parents), or for everything when `id` is None.

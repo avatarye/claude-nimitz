@@ -31,6 +31,7 @@ pub fn update<T>(env: &Env, f: impl FnOnce(&mut Registry) -> T) -> std::io::Resu
 }
 
 /// Record a new current session for an identity (appends to lineage).
+#[allow(clippy::too_many_arguments)] // one flat row of session facts
 pub fn bind(r: &mut Registry, id: &Id, role: Role, name: &str, cwd: &str, session_id: &str, via: &str, now: f64) {
     let rec = r.identities.entry(id.0.clone()).or_insert_with(|| IdentityRecord {
         role,
