@@ -457,7 +457,7 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
 /// squadron (commodore). A member that is not running gets a tab that starts it
 /// (the step `nimitz start` would run); a running one is left where it is.
 pub fn layout(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&[])?;
+    ctx.args.allow(&["--ships"])?;
     ctx.args.at_most(2)?;
     let which = ctx.args.need(0, "multiplexer (herdr)")?;
     if which != "herdr" {
@@ -508,6 +508,14 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
                 }
             }
         }
+        if ctx.args.flag("--ships") {
+            let panes = mux.panes();
+            for sq in &f.squadrons {
+                for m in &sq.ships {
+                    ship_tab(ctx, mux.as_ref(), &panes, m, &mut lp, &mut plan);
+                }
+            }
+        }
     }
     match ctx.gate(&plan) {
         out::Go::Exit(code) => Ok(code),
@@ -522,6 +530,36 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
             }
         },
     }
+}
+
+/// `--ships`: a tab that attaches a live ship, in its squadron's workspace.
+/// Attaching changes no session; a ship that is not live, or already in a pane, is skipped.
+fn ship_tab(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, panes: &[nimitz_mux::Pane], m: &Member, lp: &mut LayoutPlan, plan: &mut Plan) {
+    let id = &m.id;
+    if !mux.caps().open {
+        plan.warnings.push(warn_issue(id, format!("{} cannot open panes; no tab for {id}", mux.name())));
+        return;
+    }
+    let Some(s) = m.session.as_ref().filter(|_| live(m)) else {
+        plan.warnings.push(warn_issue(id, format!("{id} is not live; no tab (`nimitz start {id}` first)")));
+        return;
+    };
+    if panes.iter().any(|p| p.session_id.as_deref() == Some(s.session_id.as_str())) {
+        plan.warnings.push(warn_issue(id, format!("{id} already has a pane; `nimitz open {id}` shows it")));
+        return;
+    }
+    let Some(short) = &s.short_id else {
+        plan.warnings.push(warn_issue(id, format!("{id} has no job id to attach to")));
+        return;
+    };
+    let cmd = nimitz_core::claude::attach(&ctx.env, short);
+    let cwd = PathBuf::from(m.cwd.clone().unwrap_or_else(|| ".".into()));
+    let (ws, tab) = (run::workspace_of(id), run::tab_of(id));
+    match lp.workspaces.iter_mut().find(|(w, _)| *w == ws) {
+        Some((_, tabs)) => tabs.push((tab.clone(), cmd.clone(), cwd.clone())),
+        None => lp.workspaces.push((ws.clone(), vec![(tab.clone(), cmd.clone(), cwd.clone())])),
+    }
+    plan.steps.push(Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string_lossy().into_owned()), why: format!("tab {tab} in workspace {ws}: attach; detaching leaves it running") });
 }
 
 fn warn_issue(id: &Id, message: String) -> Issue {

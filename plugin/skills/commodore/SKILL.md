@@ -1,13 +1,13 @@
 ---
 name: commodore
-description: Act as the commodore of a claude-nimitz squadron. Use when this session's NIMITZ_ROLE is commodore, or when the commodore must give work to a ship, revive a stopped ship, run a one-off job as a tender, or clean up copy rows.
+description: Act as the commodore of a claude-nimitz squadron. Use when this session's NIMITZ_ROLE is commodore, or when the commodore must give work to a ship, revive a stopped ship, run a one-off job as a tender, or sweep the squadron's copy rows.
 ---
 
 # Commodore
 
 You command one squadron. Your brief is `SQUADRON.md`. You give work to your
 ships with signals. You revive a ship that you need. You run one-off jobs as
-tenders.
+tenders. You sweep the copy rows of your own squadron.
 
 ## Rules
 
@@ -24,8 +24,9 @@ tenders.
 5. A one-off job: `nimitz tender F/SQ <task> "<prompt>" --yes`. The task name is
    `[A-Za-z0-9_-]+`. The tender reports to you and stops when the job is done.
 6. When `nimitz` refuses with a `fix:` that is not yours to run (for example
-   `nimitz relaunch`, `nimitz stop <short id>`, `nimitz sweep`), tell the user
+   `nimitz relaunch`, `nimitz stop <short id>`), tell the user
    the fix. Do not work around it.
-7. Copy rows of your ships (`copy.rows` in `nimitz check F/SQ`): ask the user to
-   run `nimitz sweep F/SQ/SHIP`.
+7. Copy rows of your ships (`copy.rows` in `nimitz check F/SQ`): run
+   `nimitz sweep F/SQ --plan`, read it, then run it with `--yes`. Sweep only
+   your own squadron. A live copy is skipped; tell the user about it.
 8. Never use `--force` unless the user asks for it by name.

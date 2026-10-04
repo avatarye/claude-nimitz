@@ -408,6 +408,12 @@ fn crud_round_trip() {
     assert!(sq_toml().contains("plan"));
     assert!(r.out.contains("next relaunch"), "{}", r.out);
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/NOPE", "--mode", "plan", "--yes"]).code, 1);
+    // --edit opens $EDITOR on the current prompt
+    let ed = "sh -c 'printf \" Be brief.\" >> \"$1\"' ed";
+    let r = raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--yes"], &[("EDITOR", ed)], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sq_toml().contains("You are S1. Be brief."), "{}", sq_toml());
+    assert_eq!(raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--prompt", "x", "--yes"], &[("EDITOR", ed)], None).code, 2);
     assert_eq!(sb.run(&["ship", "new", "TOP/SQ/S2", "--yes"]).code, 2, "--dir is required");
 
     let r = sb.run(&["machine", "add", "TOP", "box2", "--dir", "TOP/SQ/S1=managed", "--yes"]);
@@ -496,6 +502,12 @@ fn layout_herdr() {
     let r = sb.run(&["layout", "herdr", "MAIN", "--plan"]);
     assert!(r.out.contains("running already"), "live members are left alone:\n{}", r.out);
     assert_eq!(sb.run_as("MAIN/ARGOS", &["layout", "herdr", "--yes"]).code, 1);
+    // --ships: attach tabs for live ships; stopped ones are skipped
+    let r = sb.run(&["layout", "herdr", "MAIN", "--ships", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("tab CLEAN in workspace MAIN.ARGOS"), "{}", r.out);
+    assert!(r.out.contains("MAIN/ARGOS/STOPPED is not live; no tab"), "{}", r.out);
+    assert!(sb.calls().contains(" attach "), "{}", sb.calls());
 }
 
 // ------------------------------------------------------------------ hook

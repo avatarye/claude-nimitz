@@ -129,7 +129,48 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
 
 // ------------------------------------------------------------------ ship
 
-const SHIP_FLAGS: &[&str] = &["--dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends"];
+const SHIP_FLAGS: &[&str] = &["--dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--edit"];
+
+/// `$VISUAL`, else `$EDITOR`, else vi.
+fn editor(ctx: &Ctx) -> String {
+    ["VISUAL", "EDITOR"].iter().find_map(|k| ctx.vars.get(*k).filter(|v| !v.trim().is_empty()).cloned()).unwrap_or_else(|| "vi".into())
+}
+
+/// Open `editor` on a temp file that holds `initial`; return the saved text, trimmed.
+/// The editor command may carry its own arguments (`code -w`).
+pub fn edit_text(editor: &str, initial: &str) -> Result<String, String> {
+    let path = std::env::temp_dir().join(format!("nimitz-prompt-{}.md", std::process::id()));
+    std::fs::write(&path, initial).map_err(|e| e.to_string())?;
+    let status = std::process::Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("sh").arg(&path).status();
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string());
+    let _ = std::fs::remove_file(&path);
+    match status {
+        Ok(s) if s.success() => Ok(text?.trim().to_string()),
+        Ok(s) => Err(format!("{editor} exited with {s}")),
+        Err(e) => Err(format!("{editor}: {e}")),
+    }
+}
+
+/// The prompt from `$EDITOR`: on `ship new` at a terminal with no prompt flag,
+/// or on `ship set --edit`. None when the editor is not wanted.
+fn prompt_from_editor(ctx: &Ctx, current: Option<&str>, new: bool) -> Result<Option<String>, String> {
+    use std::io::IsTerminal;
+    let flags = ctx.args.value("--prompt").is_some() || ctx.args.value("--prompt-file").is_some();
+    let wanted = ctx.args.flag("--edit") || (new && !flags && std::io::stdin().is_terminal());
+    if !wanted {
+        return Ok(None);
+    }
+    if flags {
+        return Err("--edit and --prompt/--prompt-file do not mix".into());
+    }
+    let initial = current.map(str::to_string).unwrap_or_else(|| "You are the ship ... Your job is ...\n".into());
+    let text = edit_text(&editor(ctx), &initial)?;
+    if text.is_empty() {
+        out::warn("the prompt is empty; the ship has no prompt (a cold launch refuses)");
+        return Ok(None);
+    }
+    Ok(Some(text))
+}
 
 /// Apply the ship flags to a definition, for the machine `label`.
 fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str) {
@@ -191,6 +232,9 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
             }
             let mut def = ShipDef { name: name.into(), ..Default::default() };
             edit_ship(ctx, &mut def, &label);
+            if let Some(p) = prompt_from_editor(ctx, None, true)? {
+                def.prompt = Some(p);
+            }
             config::plan_ship_new(&ctx.env, fleet, sq, def)
         }
         "set" => {
@@ -203,7 +247,12 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 },
                 Some(mut def) => {
                     let before = def.clone();
+                    let current = config::ship_prompt(&f, &id);
                     edit_ship(ctx, &mut def, &label);
+                    if let Some(p) = prompt_from_editor(ctx, current.as_deref(), false)? {
+                        def.prompt = Some(p);
+                        def.prompt_file = None;
+                    }
                     let mut p = config::plan_ship_set(&ctx.env, &id, def.clone());
                     if def == before {
                         p.steps.clear();
@@ -314,6 +363,14 @@ pub fn migrate(ctx: &Ctx) -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_editor_returns_what_it_saved() {
+        // a stand-in editor: append a line to the file it is given
+        let got = edit_text("sh -c 'printf \"\\nmore\" >> \"$1\"' ed", "first").unwrap();
+        assert_eq!(got, "first\nmore");
+        assert!(edit_text("false", "x").is_err());
+    }
 
     #[test]
     fn comms_forms() {
