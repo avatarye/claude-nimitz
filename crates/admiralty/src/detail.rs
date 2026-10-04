@@ -153,9 +153,9 @@ fn issues_block(title: &str, issues: &[&Issue]) -> Vec<Line<'static>> {
         let c = severity_color(i.severity);
         v.push(Line::from(vec![
             Span::styled(format!("  {:<6}", severity_word(i.severity).to_uppercase()), bold(c)),
-            Span::styled(format!("{:<16}", i.code), bold(c)),
-            Span::styled(i.message.clone(), st(mono::FG)),
+            Span::styled(i.code.clone(), bold(c)),
         ]));
+        v.push(Line::from(vec![Span::raw(" ".repeat(8)), Span::styled(i.message.clone(), st(mono::FG))]));
         if let Some(fx) = &i.fix {
             v.push(Line::from(vec![Span::raw(" ".repeat(8)), Span::styled("fix  ", st(mono::COMMENT)), Span::styled(fx.clone(), bold(mono::CYAN))]));
         }
@@ -356,19 +356,20 @@ fn extra_detail(owner: &str, s: &SessionInfo, now: f64) -> Vec<Line<'static>> {
 /// The ACTIONS block: each key, and what it does here or why it will not.
 fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     let mut v = vec![blank(), heading("ACTIONS")];
-    let line = |key: &str, r: Result<String, String>| -> Line<'static> {
-        match r {
-            Ok(t) => Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::YELLOW)), Span::styled(t, st(mono::FG))]),
-            Err(why) => Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::DIM)), Span::styled(why, st(mono::COMMENT))]),
-        }
+    // keys closed only for want of a multiplexer are listed once, at the end
+    let mut no_mux: Vec<String> = vec![];
+    let mut line = |v: &mut Vec<Line<'static>>, key: &str, r: Result<String, String>| match r {
+        Ok(t) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::YELLOW)), Span::styled(t, st(mono::FG))])),
+        Err(why) if why == crate::actions::MONITOR_ONLY => no_mux.push(key.to_string()),
+        Err(why) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::DIM)), Span::styled(why, st(mono::COMMENT))])),
     };
     let jump = match (&n.pane_id, app.bundle.as_ref().map(|b| b.mux_caps.focus).unwrap_or(false)) {
         (Some(p), true) => Ok(format!("jump to its pane {p}")),
-        (Some(_), false) | (None, false) if matches!(n.kind, Kind::Member(_) | Kind::Stowaway) => Err(crate::actions::MONITOR_ONLY.to_string()),
+        (_, false) if matches!(n.kind, Kind::Member(_) | Kind::Stowaway) => Err(crate::actions::MONITOR_ONLY.to_string()),
         (None, true) if matches!(n.kind, Kind::Member(_) | Kind::Stowaway) => Err("no pane hosts this session".into()),
         _ => Err("fold / unfold".into()),
     };
-    v.push(line("\u{23ce}", jump));
+    line(&mut v, "\u{23ce}", jump);
     let mut acts: Vec<Act> = vec![Act::Start, Act::Open, Act::Stop, Act::Relaunch, Act::Sweep, Act::Rm, Act::Adopt];
     if matches!(n.kind, Kind::FleetBand) {
         acts.insert(0, Act::Up);
@@ -377,15 +378,21 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     for a in acts {
         let r = app.available(a);
         if r.is_ok() || (member_like && matches!(a, Act::Start | Act::Open)) {
-            v.push(line(&a.key().to_string(), r.map(|_| a.label().to_string())));
+            line(&mut v, &a.key().to_string(), r.map(|_| a.label().to_string()));
         }
     }
-    if matches!(n.kind, Kind::Member(_) | Kind::FleetBand | Kind::SquadronBand) {
+    if member_like {
         match app.message_plan() {
-            Ok(p) if p.relay => v.push(line("m", Ok(format!("message {} (relayed by {})", p.to, p.via)))),
-            Ok(p) => v.push(line("m", Ok(format!("message {} in its pane", p.to)))),
-            Err(why) => v.push(line("m", Err(why))),
+            Ok(p) if p.relay => line(&mut v, "m", Ok(format!("message {} (relayed by {})", p.to, p.via))),
+            Ok(p) => line(&mut v, "m", Ok(format!("message {} in its pane", p.to))),
+            Err(why) => line(&mut v, "m", Err(why)),
         }
+    }
+    if !no_mux.is_empty() {
+        v.push(Line::from(vec![
+            Span::styled(format!("  {:<4}", no_mux.join(" ")), bold(mono::DIM)),
+            Span::styled(format!("  {}", crate::actions::MONITOR_ONLY), st(mono::ORANGE)),
+        ]));
     }
     v.push(Line::styled("  x   all actions   c create   e edit ship   D remove from config", st(mono::COMMENT)));
     v

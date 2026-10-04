@@ -386,13 +386,14 @@ fn draw_menu(f: &mut Frame, area: Rect, title: &str, items: &[MenuItem], sel: us
         };
         let mut spans = vec![Span::styled(format!("  {}   ", it.key), ks), Span::styled(pad(&it.label, 46), ls)];
         if let Err(why) = &it.enabled {
-            spans.push(Span::styled(why.clone(), st(mono::COMMENT)));
+            let why = if why == crate::actions::MONITOR_ONLY { "monitor-only: no multiplexer".to_string() } else { why.clone() };
+            spans.push(Span::styled(why, st(mono::COMMENT)));
         }
         lines.push(selectable(Line::from(spans), i == sel));
     }
     lines.push(Line::raw(""));
     lines.push(keys_line(&[("key or enter", "choose (each confirms first)"), ("esc", "close")]));
-    let r = centered(area, 120, lines.len() as u16 + 2);
+    let r = centered(area, 104, lines.len() as u16 + 2);
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(lines).block(modal_block(title.to_string(), mono::YELLOW)), r);
 }
