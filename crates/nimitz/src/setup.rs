@@ -156,13 +156,37 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
 
     // The native binary and the supported range.
     let range = nimitz_core::compat::supported();
-    match nimitz_core::compat::installed(env) {
+    let native_v = nimitz_core::compat::installed(env);
+    match &native_v {
         None => r.err(&format!("native claude {} does not answer --version", env.native_claude_bin), Some("set NIMITZ_NATIVE_CLAUDE_BIN")),
-        Some(v) => match nimitz_core::compat::position(&range, &v) {
-            0 => r.ok(&format!("native claude {} is {v} (supported {} - {})", env.native_claude_bin, range.min, range.max)),
+        Some(v) => match nimitz_core::compat::position(&range, v) {
+            0 => r.ok(&format!("native claude {} is {v} (supported {} - {})", resolved(&env.native_claude_bin), range.min, range.max)),
             1 => r.warn(&format!("Claude Code {v} is newer than the tested range {} - {}: launches refuse", range.min, range.max), Some("--force on a launch, or wait for the range to widen")),
             _ => r.err(&format!("Claude Code {v} is older than the supported floor {}", range.min), Some("update Claude Code")),
         },
+    }
+    // The launch binary (cold launches, interactive members): NIMITZ_CLAUDE_BIN or `claude` on PATH.
+    let launch = resolved(&env.claude_bin);
+    let launch_v = std::process::Command::new(&env.claude_bin)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| nimitz_core::compat::parse_version(&String::from_utf8_lossy(&o.stdout)));
+    let from = if ctx.vars.contains_key("NIMITZ_CLAUDE_BIN") { "NIMITZ_CLAUDE_BIN" } else { "first `claude` on PATH" };
+    match &launch_v {
+        None => r.err(&format!("launch claude {launch} ({from}) does not answer --version"), Some("set NIMITZ_CLAUDE_BIN")),
+        Some(v) => {
+            r.ok(&format!("launch claude {launch} ({from}) is {v}"));
+            if is_shim(&env.claude_bin) || is_shim(&launch) {
+                r.warn(&format!("launch claude {launch} is a version-manager shim; its version can change with the folder"), Some("set NIMITZ_CLAUDE_BIN to the real binary"));
+            }
+            if let Some(n) = &native_v {
+                if !same_version(v, n) {
+                    r.warn(&format!("launch claude is {v} but the native claude is {n}: launches and resumes run different builds"), Some("set NIMITZ_CLAUDE_BIN / NIMITZ_NATIVE_CLAUDE_BIN to one install"));
+                }
+            }
+        }
     }
 
     // Hooks: the plugin, or nimitz hook commands in the user settings.
@@ -181,7 +205,7 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     } else {
         r.err(
             &format!("hooks: the nimitz plugin is not enabled in {}", settings_path(ctx).display()),
-            Some("claude plugin marketplace add <claude-nimitz>/plugin && claude plugin install nimitz@claude-nimitz"),
+            Some(&plugin_install_fix()),
         );
     }
     if nimitz_core::env::which("nimitz").is_none() {
@@ -263,6 +287,37 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     }
 }
 
+/// The marketplace to add: this build's repo when it is still on disk, else GitHub.
+pub fn plugin_install_fix() -> String {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let source = match repo.canonicalize() {
+        Ok(r) if r.join(".claude-plugin/marketplace.json").is_file() => out::quote(&r.to_string_lossy()),
+        _ => "avatarye/claude-nimitz".to_string(),
+    };
+    format!("claude plugin marketplace add {source} && claude plugin install nimitz@claude-nimitz")
+}
+
+/// Where a binary is: its path, and `-> <target>` when that is a symlink.
+fn resolved(bin: &str) -> String {
+    let Some(p) = (if bin.contains('/') { Some(PathBuf::from(bin)) } else { nimitz_core::env::which(bin).map(PathBuf::from) }) else {
+        return bin.to_string();
+    };
+    match p.canonicalize() {
+        Ok(real) if real != p => format!("{} -> {}", p.display(), real.display()),
+        _ => p.to_string_lossy().into_owned(),
+    }
+}
+
+/// A version-manager shim (mise, asdf, ...) rather than a real install.
+fn is_shim(path: &str) -> bool {
+    path.contains("/shims/") || path.contains("/mise/") || path.contains("/.asdf/")
+}
+
+/// `2.1.288.1000` (ACME) and `2.1.288` name one build.
+fn same_version(a: &str, b: &str) -> bool {
+    a == b || a.starts_with(&format!("{b}.")) || b.starts_with(&format!("{a}."))
+}
+
 fn lacks(p: &Path, fields: &[&str], bad: &mut Vec<String>) {
     match read_json(p) {
         None => bad.push(format!("{} is not JSON", p.display())),
@@ -272,5 +327,24 @@ fn lacks(p: &Path, fields: &[&str], bad: &mut Vec<String>) {
                 bad.push(format!("{} lacks {}", p.display(), miss.join(", ")));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn versions_shims_and_the_plugin_source() {
+        assert!(same_version("2.1.288.1000", "2.1.288"));
+        assert!(same_version("2.1.288", "2.1.288"));
+        assert!(!same_version("2.1.289", "2.1.288"));
+        assert!(!same_version("2.1.2881", "2.1.288"));
+        assert!(is_shim("/Users/x/.local/share/mise/shims/claude"));
+        assert!(is_shim("/Users/x/.asdf/shims/claude"));
+        assert!(!is_shim("/Users/x/.localtools/bin/claude"));
+        let fix = plugin_install_fix();
+        assert!(fix.starts_with("claude plugin marketplace add ") && fix.ends_with("claude plugin install nimitz@claude-nimitz"), "{fix}");
+        assert!(!fix.contains('<'), "no placeholder: {fix}");
     }
 }

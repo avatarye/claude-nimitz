@@ -78,6 +78,29 @@ fn step_text(s: &Step) -> String {
     }
 }
 
+/// A step in a few words: file steps as in the plan; a command as its program
+/// name and its leading words, up to the first flag (`claude stop 1a2b3c4d`,
+/// `claude --bg`). The plan above already showed the full command.
+fn brief(s: &Step) -> String {
+    match s.cmd.first().map(String::as_str) {
+        Some("write") | Some("mkdir") | Some("archive") | Some("bind") | None => step_text(s),
+        Some(prog) => {
+            let name = std::path::Path::new(prog).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| prog.to_string());
+            let mut words = vec![name];
+            for a in s.cmd.iter().skip(1) {
+                if a.starts_with('-') {
+                    if a == "--bg" {
+                        words.push(a.clone());
+                    }
+                    break;
+                }
+                words.push(quote(a));
+            }
+            words.join(" ")
+        }
+    }
+}
+
 pub fn plan(p: &Plan) {
     line(&format!("[PLAN] {}", p.summary));
     for (n, s) in p.steps.iter().enumerate() {
@@ -145,13 +168,15 @@ pub fn gate(p: &Plan, plan_only: bool, yes: bool) -> Go {
 
 /// Print what ran and what the re-read found. Exit code 0 only when verified.
 pub fn outcome(o: &Outcome) -> i32 {
+    // The plan above already showed each full command; here one short line per step.
     for (s, rc, text) in &o.ran {
         let text = text.trim();
         let detail = if text.is_empty() || text.starts_with("[OK]") { String::new() } else { format!(" -> {}", first_line(text)) };
+        let who = s.id.as_ref().map(|i| format!("{i}: ")).unwrap_or_default();
         if *rc == 0 {
-            ok(&format!("{}{detail}", step_text(s)));
+            ok(&format!("{who}{}{detail}", brief(s)));
         } else {
-            error(&format!("{} (exit {rc}){detail}", step_text(s)));
+            error(&format!("{who}{} (exit {rc}){detail}", brief(s)));
         }
     }
     for i in &o.issues {

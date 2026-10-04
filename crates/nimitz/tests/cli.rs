@@ -166,6 +166,24 @@ fn status_human_and_json() {
 }
 
 #[test]
+fn status_columns_line_up_with_long_ids() {
+    let sb = Sb::new(false);
+    for a in [vec!["fleet", "new", "UPS", "--yes"], vec!["squadron", "new", "UPS/SQUADRON_WITH_A_LONG_NAME", "--yes"]] {
+        assert_eq!(sb.run(&a).code, 0);
+    }
+    let r = sb.run(&["ship", "new", "UPS/SQUADRON_WITH_A_LONG_NAME/SHIP_LONG", "--dir", "managed", "--prompt", "hi", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let out = sb.run(&["status"]).out;
+    let cols: Vec<usize> = out
+        .lines()
+        .take_while(|l| !l.starts_with("stowaways"))
+        .filter(|l| l.starts_with("  ") && !l.trim_start().starts_with('['))
+        .filter_map(|l| ["not-started", "stopped", "idle", "busy", "needs-you", "unknown"].iter().filter_map(|w| l.find(&format!(" {w} "))).min())
+        .collect();
+    assert!(cols.len() > 5 && cols.iter().all(|c| *c == cols[0]), "status column moves: {cols:?}\n{out}");
+}
+
+#[test]
 fn check_reports_errors_and_scopes_to_an_id() {
     let sb = Sb::new(false);
     let all = sb.run(&["check"]);
@@ -394,6 +412,7 @@ fn start_is_top_down_admiral_commodore_ship() {
     let (oa, oc, os) = (r.out.find("[TOP]-ADMIRAL").unwrap(), r.out.find("[TOP.SQ]-COMMODORE").unwrap(), r.out.find("[TOP.SQ]-S1").unwrap());
     assert!(oa < oc && oc < os, "top-down in the run:\n{}", r.out);
     assert!(live(&sb.member("TOP/SQ/S1")));
+    assert_eq!(r.out.matches("[TOP]-ADMIRAL").count(), 1, "the launch line is printed once (in the plan):\n{}", r.out);
     // the panes never bound (the fake runs nothing): a second start focuses them, --force opens anew
     let r = sb.run(&["start", "TOP", "--yes"]);
     assert!(r.out.contains("already opening in pane"), "{}", r.out);
