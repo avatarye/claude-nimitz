@@ -101,3 +101,28 @@ fn real_old_fleets_migrate_check_clean_and_idempotent() {
     assert!(plan2.steps.is_empty(), "second import planned: {:?}", plan2.steps);
     assert!(report2.iter().filter(|l| l.contains("no changes")).count() == old.len(), "{report2:?}");
 }
+
+/// On the other Mac (the hostname in the fixtures), GENERAL/HOME's folder is the
+/// home folder and holds the other ships' folders: that is fine (contracts.md
+/// section 7), and the old session names are recorded for the `legacy` rule.
+#[test]
+fn on_the_west_mac_a_home_folder_ship_is_not_a_layout_error_and_old_names_map() {
+    let td = tempfile::tempdir().unwrap();
+    let mut env = test_env(td.path());
+    env.hostname = "3f2c1d0e9b7a".into();
+    let (plan, _) = plan_from_fleet_skill(&env, &fixtures(), "MAIN");
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert!(config::apply_config_plan(&env, &plan).verified);
+    let f = config::load_fleet(&env, "MAIN").unwrap();
+    let layout_errors: Vec<_> =
+        config::validate(&env, &f).into_iter().filter(|i| i.code == "config.layout" && i.severity == Severity::Error).collect();
+    assert!(layout_errors.is_empty(), "{layout_errors:?}");
+
+    let legacy = config::legacy_map(&f);
+    assert_eq!(legacy.get("[GENERAL]-HOME").map(|i| i.0.as_str()), Some("MAIN/GENERAL/HOME"));
+    assert_eq!(legacy.get("[ARGOS]-ARGOS").map(|i| i.0.as_str()), Some("MAIN/ARGOS/ARGOS"));
+    assert_eq!(legacy.get("[ARGOS]-LEAD").map(|i| i.0.as_str()), Some("MAIN/ARGOS"));
+    // a second import changes nothing, the legacy map included
+    let (again, _) = plan_from_fleet_skill(&env, &fixtures(), "MAIN");
+    assert!(again.steps.is_empty(), "{:?}", again.steps.iter().map(|s| &s.why).collect::<Vec<_>>());
+}

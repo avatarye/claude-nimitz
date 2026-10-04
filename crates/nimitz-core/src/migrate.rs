@@ -153,6 +153,8 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
     // the same old fleets plans nothing the second time.
     let mut taken: Vec<String> = vec![];
     let mut squads: Vec<(SquadronConfig, Option<String>)> = vec![]; // config + FLEET.md body
+    // old session names -> identities, so the old fleet's running sessions are recognised
+    let mut legacy: BTreeMap<String, Id> = existing.as_ref().map(config::legacy_map).unwrap_or_default();
 
     for dir in old_dirs {
         let cfg_path = dir.join("FLEET_CONFIG.json");
@@ -195,6 +197,8 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         // Agents -> ships; an agent named LEAD is the old interactive lead, whose
         // place the squadron's commodore takes.
         let mut ships: Vec<ShipDef> = vec![];
+        // the old lead ran as `[OLD]-LEAD` (started with `ccl`), listed as an agent or not
+        legacy.insert(format!("[{old_name}]-LEAD"), Id::commodore(into, &sq_name));
         for a in v.get("agents").and_then(|a| a.as_array()).map(|a| a.as_slice()).unwrap_or_default() {
             let Some(ship) = ship_from_agent(env, &old_name, a, &merge, &label_map, &mut report) else {
                 report.push(format!("[WARN] {old_name}: an agent with no name was skipped"));
@@ -208,6 +212,8 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
                 report.push(format!("[WARN] {old_name}: duplicate agent {:?} skipped", ship.name));
                 continue;
             }
+            let raw = s(a, "name").unwrap_or_default();
+            legacy.insert(format!("[{old_name}]-{raw}"), Id::ship(into, &sq_name, &ship.name));
             ships.push(ship);
         }
         for ship in &ships {
@@ -265,6 +271,11 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
     };
     if existing.as_ref().map(|f| f.config != fleet_config).unwrap_or(true) {
         plan.steps.push(step_write(Some(fid.clone()), &fleet_dir.join("fleet.toml"), toml_out(&fleet_config), "merged machine labels"));
+    }
+    let old_legacy = existing.as_ref().map(config::legacy_map).unwrap_or_default();
+    if legacy != old_legacy {
+        report.push(format!("[OK] {} old session name(s) recorded in {}/legacy.toml", legacy.len(), into.to_lowercase()));
+        plan.steps.push(step_write(Some(fid.clone()), &fleet_dir.join("legacy.toml"), config::legacy_toml(&legacy), "old session names -> identities"));
     }
     for (sq, fleet_md) in squads {
         let sqid = Id::commodore(into, &sq.squadron);

@@ -1,6 +1,7 @@
-//! Fleet and squadron config: load, validate, save, CRUD (contracts.md section 3). Owner: core-config.
+//! Fleet and squadron config: load, validate, save, CRUD (contracts.md section 3). Owner: core-sessions (was core-config).
 use crate::env::Env;
 use crate::types::*;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn issue(code: &str, severity: Severity, message: String, fix: Option<String>, id: Option<Id>) -> Issue {
@@ -691,6 +692,44 @@ pub fn plan_machine_add(env: &Env, fleet: &str, label: &str, dirs: Vec<(Id, Stri
         }
     }
     plan
+}
+
+// ------------------------------------------------------------------ legacy names
+
+/// `<fleet>/legacy.toml`: old fleet-skill session names and the identity each
+/// became (written by `nimitz migrate fleet-skill`):
+///
+/// ```toml
+/// [names]
+/// "[GENERAL]-HOME" = "MAIN/GENERAL/HOME"
+/// "[GENERAL]-LEAD" = "MAIN/GENERAL"
+/// ```
+pub fn legacy_path(f: &FleetOnDisk) -> PathBuf {
+    f.dir.join("legacy.toml")
+}
+
+/// The fleet's legacy map (empty when there is none or it does not parse).
+pub fn legacy_map(f: &FleetOnDisk) -> BTreeMap<String, Id> {
+    let raw = std::fs::read_to_string(legacy_path(f)).unwrap_or_default();
+    let v: toml::Value = toml::from_str(&raw).unwrap_or(toml::Value::Table(Default::default()));
+    v.get("names")
+        .and_then(|n| n.as_table())
+        .map(|t| {
+            t.iter()
+                .filter_map(|(k, v)| Some((k.clone(), Id(v.as_str()?.to_string()))))
+                .filter(|(_, id)| id.fleet() == f.config.fleet)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The legacy map as file contents.
+pub fn legacy_toml(map: &BTreeMap<String, Id>) -> String {
+    let mut out = String::from("# Old fleet-skill session names and the nimitz identity each became.\n# Written by `nimitz migrate fleet-skill`; a live session with one of these\n# names belongs to the old fleet (issue `legacy`).\n[names]\n");
+    for (k, id) in map {
+        out.push_str(&format!("{} = {}\n", toml::Value::String(k.clone()), toml::Value::String(id.0.clone())));
+    }
+    out
 }
 
 /// Claude Code's permission modes (`--permission-mode`).
