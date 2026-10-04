@@ -280,6 +280,8 @@ pub struct SessionRow {
     /// a session file for this row exists but cannot be read (caught mid-write):
     /// its process may be live, so the row is neither live nor stopped
     pub unreadable: bool,
+    /// the session this one was forked from, when the job row records it
+    pub forked_from: Option<String>,
 }
 
 impl SessionRow {
@@ -355,6 +357,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             waiting_for: None,
             job_labels: job_labels(&d),
             unreadable: false,
+            forked_from: ["forkedFrom", "forkedFromSessionId", "parentSessionId", "resumedFrom"].iter().find_map(|k| s(&d, k)),
         });
     }
     for p in list(&sess_dir) {
@@ -392,6 +395,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             waiting_for: if status.as_deref() == Some("waiting") { Some(s(&d, "waitingFor").unwrap_or("input".into())) } else { None },
             job_labels: BTreeMap::new(),
             unreadable: false,
+            forked_from: None,
         };
         match by_sid.get(&sid) {
             // a live background process: its job row gains pid and status
@@ -406,7 +410,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
                 }
             }
             // an interactive process on a session that also has a row: the live one wins
-            Some(&i) => rows[i] = SessionRow { job_labels: std::mem::take(&mut rows[i].job_labels), ..live },
+            Some(&i) => {
+                rows[i] = SessionRow { job_labels: std::mem::take(&mut rows[i].job_labels), forked_from: rows[i].forked_from.take(), ..live }
+            }
             None => {
                 by_sid.insert(sid, rows.len());
                 rows.push(live)
@@ -452,6 +458,7 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         waiting_for: None,
                         job_labels: BTreeMap::new(),
                         unreadable: false,
+                        forked_from: None,
                     })
                 })
                 .collect()

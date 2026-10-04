@@ -1218,3 +1218,72 @@ fn a_symlinked_nimitz_home_starts_checks_finds_stowaways_and_trusts() {
     std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
     assert!(evidence::folder_trusted(&w.env, &mut evidence::FileCache::default(), tl.to_str().unwrap()));
 }
+
+// ------------------------------------------------------------------ strays in a ship's folder
+
+/// The real-config regression: other agents the user started in a ship's
+/// folder are not the ship. A named stray, an unnamed stray with no fork link,
+/// and an old legacy row: start, sweep and relaunch never touch the strays, and
+/// the ship gets no labels.missing, copy.rows or dup.live from them.
+#[test]
+fn strays_in_a_ship_folder_are_never_the_ship() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let m = w.member(&w.snap(), &id);
+    let cwd = m.cwd.clone().unwrap();
+    let own_sid = m.session.as_ref().unwrap().session_id.clone();
+    std::fs::write(w.env.fleet_dir("MAIN").join("legacy.toml"), "[names]\n\"[ARGOS]-STOPPED\" = \"MAIN/ARGOS/STOPPED\"\n").unwrap();
+    let run = |args: &[&str]| {
+        let mut c = vec![w.env.native_claude_bin.clone()];
+        c.extend(args.iter().map(|s| s.to_string()));
+        let (rc, out) = claude::run(&c, Some(&cwd));
+        assert_eq!(rc, 0, "{out}");
+        out.trim().to_string()
+    };
+    let named = run(&["--bg", "--name", "publish plan draft spec", "x"]);
+    let ragtime = run(&["--bg", "--name", "[ARGOS]-RAGTIME", "x"]);
+    let unnamed = run(&["--bg", "x"]);
+    let old = run(&["--bg", "--name", "[ARGOS]-STOPPED", "x"]);
+    run(&["stop", &old]);
+    let strays = [named.clone(), ragtime.clone(), unnamed.clone()];
+
+    let snap = w.snap();
+    let m = w.member(&snap, &id);
+    assert_eq!(m.session.as_ref().map(|s| s.session_id.clone()), Some(own_sid.clone()), "the ship's own session stays current");
+    assert!(m.extra_rows.is_empty(), "no stray is a copy: {:?}", m.extra_rows.iter().map(|r| &r.name).collect::<Vec<_>>());
+    for code in ["labels.missing", "copy.rows", "dup.live"] {
+        assert!(!has(&m.issues, code), "{code}: {:?}", m.issues);
+    }
+    for s in &strays {
+        assert!(snap.stowaways.iter().any(|x| x.short_id.as_deref() == Some(s.as_str())), "{s} is a stowaway");
+    }
+    let touches = |p: &Plan| p.steps.iter().any(|s| strays.iter().any(|x| s.cmd.contains(x)));
+    let start = w.start(&snap, &id, false);
+    assert!(start.ok(), "{:?}", start.refusals);
+    assert!(!touches(&start), "{:?}", start.steps);
+    let relaunch = sessions::plan_relaunch(&w.env, &snap, &id, &Caller::User);
+    assert!(!touches(&relaunch), "{:?}", relaunch.steps);
+    let sweep = sessions::plan_sweep(&w.env, &snap, Some(&id), &Caller::User);
+    assert!(!touches(&sweep), "{:?}", sweep.steps);
+    assert!(sweep.steps.iter().any(|s| s.cmd.contains(&old)), "the old legacy row is offered: {:?}", sweep.steps);
+    // and after the start ran, the strays are as they were
+    assert!(sessions::apply(&w.env, &start).verified);
+    for s in &strays {
+        assert!(w.rows().iter().any(|r| r.short_id.as_deref() == Some(s.as_str()) && r.live()), "{s} untouched");
+    }
+
+    // a real copy still is one: an unnamed fork of the ship's own session
+    let own = w.member(&w.snap(), &id).session.unwrap().session_id;
+    let fork = run(&["--bg", "--resume", &own, "--settings", "{}"]);
+    let fork = fork.split_whitespace().last().unwrap().to_string();
+    let m = w.member(&w.snap(), &id);
+    assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(fork.as_str())), "named <name>-w-w: {:?}", m.extra_rows);
+    // with no name at all, the job row's fork link alone ties it to the ship
+    for f in [w.base.join("claude_home/jobs").join(&fork).join("state.json"), w.base.join("claude_home/sessions").join(format!("{fork}.json"))] {
+        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        v["name"] = serde_json::json!("");
+        std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    }
+    let m = w.member(&w.snap(), &id);
+    assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(fork.as_str()) && r.name.is_empty()), "unnamed fork: {:?}", m.extra_rows);
+}

@@ -146,10 +146,10 @@ Each finding is an `Issue` with a stable `code`:
 | `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted |
 | `name.drift` | live session's name differs from the expected name |
 | `name.taken` | the expected name is held by a live session of another identity |
-| `labels.missing` | the identity's current session has no labels (e.g. resumed with flags, legacy) |
+| `labels.missing` | the identity's current session has no labels (e.g. resumed with flags, legacy). Only a session in its lineage (or its registry current) can be its current session; an unlabelled row outside the lineage never is |
 | `labels.mismatch` | labels name another identity |
 | `dup.live` | two live sessions for one identity |
-| `copy.rows` | extra job rows of the identity (copies, stale rows) |
+| `copy.rows` | extra job rows of the identity: its own stale rows, and copies. An unlabelled row is a copy only when named exactly `<expected name>-<word>-<word>` (or a legacy name plus two words), or unnamed with its job row recording a fork of a lineage session. Any other row in a member's folder is a stowaway (or `legacy` by name), never copy.rows, dup.live or labels.missing |
 | `lineage.broken` | registry's current session id has no job row and no transcript |
 | `role.background` | an admiral or commodore is a background session |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
@@ -157,7 +157,7 @@ Each finding is an `Issue` with a stable `code`:
 | `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
 | `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
 | `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
-| `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`), or any live unlabelled session in a member's folder. Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |
+| `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`). The name alone decides (another agent in a member's folder is a stowaway). Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |
 
 Refusal-only codes (in `Plan.refusals`, not from `check`):
 
