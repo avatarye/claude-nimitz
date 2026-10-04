@@ -29,6 +29,19 @@ pub fn normalize_label(label: &str) -> String {
     t.chars().filter(|c| !matches!(c, '[' | ']')).collect::<String>().to_uppercase()
 }
 
+/// POSIX shell quoting: safe words stay bare, the rest go in single quotes
+/// (`'` becomes `'\''`). Works in sh, bash and zsh.
+pub fn shell_join(cmd: &[String]) -> String {
+    cmd.iter()
+        .map(|a| {
+            let safe = !a.is_empty()
+                && a.chars().all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
+            if safe { a.clone() } else { format!("'{}'", a.replace('\'', "'\\''")) }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
 }
@@ -135,10 +148,10 @@ impl Herdr {
         Ok((tab, pane))
     }
 
+    /// `herdr pane run` joins its arguments with spaces and types the line
+    /// into the pane's shell, so the command goes over as one quoted line.
     fn pane_run(&self, pane_id: &str, cmd: &[String]) -> Result<(), MuxError> {
-        let mut args = vec!["pane", "run", pane_id];
-        args.extend(cmd.iter().map(String::as_str));
-        self.run(&args).map(|_| ())
+        self.run(&["pane", "run", pane_id, &shell_join(cmd)]).map(|_| ())
     }
 
     /// The workspace whose label loosely matches, else a new one; `fresh_tab`
@@ -192,7 +205,7 @@ impl Mux for Herdr {
                 (pane, tab, ws)
             }
             Place::Split { next_to } => {
-                let v = self.run(&["pane", "split", &next_to.pane_id, "--cwd", &cwd])?;
+                let v = self.run(&["pane", "split", &next_to.pane_id, "--direction", "right", "--cwd", &cwd, "--no-focus"])?;
                 let p = v.pointer("/result/pane").cloned().unwrap_or(Value::Null);
                 let pane = s(&p, "pane_id");
                 if pane.is_empty() {
@@ -263,7 +276,17 @@ impl Mux for Herdr {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_label;
+    use super::{normalize_label, shell_join};
+
+    #[test]
+    fn shell_join_quotes_only_what_needs_it() {
+        let v = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(shell_join(&v(&["ccl"])), "ccl");
+        assert_eq!(shell_join(&v(&["sh", "-c", "sleep 30"])), "sh -c 'sleep 30'");
+        assert_eq!(shell_join(&v(&["tail", "-f", "/a/x.log"])), "tail -f /a/x.log");
+        assert_eq!(shell_join(&v(&["echo", "it's", ""])), "echo 'it'\\''s' ''");
+        assert_eq!(shell_join(&v(&["claude", "--name", "[LUX]-LEAD"])), "claude --name '[LUX]-LEAD'");
+    }
 
     #[test]
     fn normalize_order_is_fleet_then_brackets_then_upcase() {

@@ -257,7 +257,8 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                     if !p["ran"].is_array() {
                         p["ran"] = json!([]);
                     }
-                    p["ran"].as_array_mut().expect("ran").push(json!(cmd));
+                    // like herdr: the arguments joined with spaces, as typed into the shell
+                    p["ran"].as_array_mut().expect("ran").push(json!(cmd.join(" ")));
                     hit = true;
                 }
             }
@@ -272,6 +273,10 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             let Some(p) = find(&panes, "pane_id", target) else {
                 return err("pane:split", "pane_not_found", &format!("pane {target} not found"));
             };
+            // like herdr 0.9: --direction is required
+            if !matches!(o.get("direction").map(String::as_str), Some("right" | "down")) {
+                return err("pane:split", "usage", "usage: herdr pane split <pane_id> --direction right|down");
+            }
             let (ws, tab) = (s(p, "workspace_id"), s(p, "tab_id"));
             let pane = new_pane(world, &ws, &tab, o.get("cwd").map(String::as_str).unwrap_or(""));
             ok("pane:split", json!({"type": "pane_created", "pane": pane}))

@@ -238,7 +238,7 @@ fn open_workspace() {
         .open(&cmdv(&["sh", "-c", "sleep 30"]), Path::new("/work/x"), Place::Workspace { label: "[NEW]-FLEET".into() })
         .expect("open");
     assert_eq!(r, pane_ref("w2:p1", "w2:t1", "w2"));
-    assert_eq!(w.pane("w2:p1")["ran"], json!([["sh", "-c", "sleep 30"]]));
+    assert_eq!(w.pane("w2:p1")["ran"], json!(["sh -c 'sleep 30'"]));
     assert_eq!(w.pane("w2:p1")["cwd"], "/work/x");
     let ws = w.world()["workspaces"].as_array().expect("ws").last().cloned().expect("new ws");
     assert_eq!(ws["label"], "[NEW]-FLEET");
@@ -257,7 +257,7 @@ fn open_tab_existing_ws() {
     assert_eq!(r, pane_ref("w1:p3", "w1:t2", "w1")); // w1 already has 2 panes, 1 tab
     assert!(!w.calls().iter().any(|c| c[..2] == ["workspace".to_string(), "create".to_string()]),
         "must reuse the ADMIRALTY workspace: {:?}", w.calls());
-    assert_eq!(w.pane("w1:p3")["ran"], json!([["yazi"]]));
+    assert_eq!(w.pane("w1:p3")["ran"], json!(["yazi"]));
     let tab = w.world()["tabs"].as_array().expect("tabs").iter().find(|t| t["tab_id"] == "w1:t2").cloned().expect("tab");
     assert_eq!(tab["label"], "Yazi");
 }
@@ -278,7 +278,7 @@ fn open_tab_missing_ws() {
         w.world()["tabs"].as_array().expect("tabs").iter().filter(|t| t["workspace_id"] == "w2").cloned().collect();
     assert_eq!(tabs.len(), 1, "{tabs:?}");
     assert_eq!(tabs[0]["label"], "[BOLT]-LEAD");
-    assert_eq!(w.pane("w2:p1")["ran"], json!([["ccl"]]));
+    assert_eq!(w.pane("w2:p1")["ran"], json!(["ccl"]));
 }
 
 fn open_split() {
@@ -289,7 +289,7 @@ fn open_split() {
         .open(&cmdv(&["htop"]), Path::new("/work/x"), Place::Split { next_to })
         .expect("open");
     assert_eq!(r, pane_ref("w1:p3", "w1:t1", "w1"));
-    assert_eq!(w.pane("w1:p3")["ran"], json!([["htop"]]));
+    assert_eq!(w.pane("w1:p3")["ran"], json!(["htop"]));
 }
 
 fn open_no_focus() {
@@ -342,9 +342,9 @@ fn layout_fresh() {
     let tabs: Vec<String> =
         world["tabs"].as_array().expect("tabs").iter().map(|t| t["label"].as_str().unwrap_or("").into()).collect();
     assert_eq!(tabs, vec!["[ARGOS]-LEAD", "Yazi", "[BOLT]-LEAD"]);
-    assert_eq!(w.pane("w2:p1")["ran"], json!([["ccl"]]));
-    assert_eq!(w.pane("w2:p2")["ran"], json!([["yazi"]]));
-    assert_eq!(w.pane("w3:p1")["ran"], json!([["ccl"]]));
+    assert_eq!(w.pane("w2:p1")["ran"], json!(["ccl"]));
+    assert_eq!(w.pane("w2:p2")["ran"], json!(["yazi"]));
+    assert_eq!(w.pane("w3:p1")["ran"], json!(["ccl"]));
 }
 
 fn layout_idempotent() {
@@ -356,7 +356,7 @@ fn layout_idempotent() {
     let after = w.world();
     assert_eq!(before["workspaces"], after["workspaces"], "no duplicate workspaces");
     assert_eq!(before["tabs"], after["tabs"], "no duplicate tabs");
-    assert_eq!(w.pane("w2:p1")["ran"], json!([["ccl"]]), "a reused tab's command must not run again");
+    assert_eq!(w.pane("w2:p1")["ran"], json!(["ccl"]), "a reused tab's command must not run again");
 }
 
 fn layout_partial() {
@@ -373,7 +373,7 @@ fn layout_partial() {
         .map(|t| t["label"].as_str().unwrap_or("").into())
         .collect();
     assert_eq!(tabs, vec!["[ARGOS]-LEAD", "Yazi", "Logs"]);
-    assert_eq!(w.pane("w2:p3")["ran"], json!([["tail", "-f", "x.log"]]));
+    assert_eq!(w.pane("w2:p3")["ran"], json!(["tail -f x.log"]));
 }
 
 fn layout_loose_labels() {
@@ -497,6 +497,23 @@ fn e2e_body(bin: &str, sock: &Path, tmp: &Path) {
         .map(|x| x["label"].as_str().unwrap_or("").to_string())
         .collect();
     assert!(labels.contains(&"[NIMITZ-E2E]-FLEET".to_string()), "{labels:?}");
+
+    // the command really ran with its arguments intact (herdr types one shell line)
+    let marked = cmdv(&["sh", "-c", "echo NIMITZ E2E MARK; sleep 30"]);
+    let r0 = m.open(&marked, &cwd, Place::Split { next_to: r1.clone() }).expect("open split");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let out = Command::new(bin)
+            .args(["pane", "read", &r0.pane_id, "--source", "recent-unwrapped", "--lines", "20"])
+            .output()
+            .expect("pane read");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        if text.lines().any(|l| l.trim() == "NIMITZ E2E MARK") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "marker never printed; pane shows: {text}");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
 
     // open: a tab into that workspace by loose label
     let r2 = m
