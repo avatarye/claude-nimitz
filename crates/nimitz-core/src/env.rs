@@ -1,6 +1,6 @@
 //! Paths and overrides (contracts.md section 2). Owner: core-config.
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
 pub struct Env {
@@ -23,10 +23,10 @@ fn home_dir(v: &HashMap<String, String>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn expand(p: &str, home: &PathBuf) -> PathBuf {
+fn expand(p: &str, home: &Path) -> PathBuf {
     match p.strip_prefix("~/") {
         Some(rest) => home.join(rest),
-        None if p == "~" => home.clone(),
+        None if p == "~" => home.to_path_buf(),
         None => PathBuf::from(p),
     }
 }
@@ -41,7 +41,7 @@ pub fn which(name: &str) -> Option<String> {
 }
 
 /// Newest `~/.localtools/tools/claude-code/<version>/claude`, else None (ACME).
-fn localtools_claude(home: &PathBuf) -> Option<String> {
+fn localtools_claude(home: &Path) -> Option<String> {
     let dir = home.join(".localtools/tools/claude-code");
     let mut vs: Vec<(Vec<u64>, PathBuf)> = std::fs::read_dir(dir)
         .ok()?

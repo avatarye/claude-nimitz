@@ -148,10 +148,10 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
     for (label, m) in &merge.machines.clone() {
         merge.by_hostname.insert(m.hostname.to_lowercase(), label.clone());
     }
-    let mut taken: Vec<String> = existing
-        .as_ref()
-        .map(|f| f.squadrons.iter().map(|(_, s)| s.squadron.clone()).collect())
-        .unwrap_or_default();
+    // Within-run duplicates refuse; a squadron already on disk is compared
+    // instead (identical -> no steps, different -> refuse), so a re-import of
+    // the same old fleets plans nothing the second time.
+    let mut taken: Vec<String> = vec![];
     let mut squads: Vec<(SquadronConfig, Option<String>)> = vec![]; // config + FLEET.md body
 
     for dir in old_dirs {
@@ -169,7 +169,7 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         };
         let sq_name = upname(&old_name, "old fleet", &mut report);
         if taken.contains(&sq_name) {
-            refuse(&mut plan, format!("squadron {sq_name} already exists in {into} (old fleet {})", dir.display()));
+            refuse(&mut plan, format!("two old fleets both become squadron {sq_name} (second: {})", dir.display()));
             continue;
         }
         taken.push(sq_name.clone());
@@ -224,17 +224,24 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         if fleet_md.is_none() {
             report.push(format!("[WARN] {old_name}: no {brief_file} to copy; SQUADRON.md starts from the template"));
         }
-        report.push(format!("[OK] {old_name}: becomes squadron {into}/{sq_name} with {} ship(s)", ships.len()));
-        squads.push((
-            SquadronConfig {
-                squadron: sq_name,
-                brief: Some("SQUADRON.md".into()),
-                comms: Comms::default(),
-                permission_mode: None,
-                ships,
-            },
-            fleet_md,
-        ));
+        let sq = SquadronConfig {
+            squadron: sq_name.clone(),
+            brief: Some("SQUADRON.md".into()),
+            comms: Comms::default(),
+            permission_mode: None,
+            ships,
+        };
+        // Already migrated? Identical means nothing to plan; different refuses.
+        if let Some(prev) = existing.as_ref().and_then(|f| f.squadrons.iter().find(|(_, s)| s.squadron == sq_name)) {
+            if prev.1 == sq {
+                report.push(format!("[OK] {old_name}: already migrated as {into}/{sq_name}; no changes"));
+            } else {
+                refuse(&mut plan, format!("squadron {sq_name} already exists in {into} with different content (old fleet {})", dir.display()));
+            }
+            continue;
+        }
+        report.push(format!("[OK] {old_name}: becomes squadron {into}/{sq_name} with {} ship(s)", sq.ships.len()));
+        squads.push((sq, fleet_md));
     }
     if !plan.ok() {
         return (plan, report);
@@ -256,7 +263,9 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         machines: merge.machines,
         admiral: existing.as_ref().map(|f| f.config.admiral.clone()).unwrap_or_default(),
     };
-    plan.steps.push(step_write(Some(fid.clone()), &fleet_dir.join("fleet.toml"), toml_out(&fleet_config), "merged machine labels"));
+    if existing.as_ref().map(|f| f.config != fleet_config).unwrap_or(true) {
+        plan.steps.push(step_write(Some(fid.clone()), &fleet_dir.join("fleet.toml"), toml_out(&fleet_config), "merged machine labels"));
+    }
     for (sq, fleet_md) in squads {
         let sqid = Id::commodore(into, &sq.squadron);
         let sd = fleet_dir.join("squadrons").join(sq.squadron.to_lowercase());
@@ -373,9 +382,16 @@ mod tests {
         old_fleet(&a, BOLT, None);
         let (plan, _) = plan_from_fleet_skill(&env, &[a.clone()], "MAIN");
         apply_ok(&env, &plan);
-        // The same squadron again: refused, nothing applied.
-        let (plan2, _) = plan_from_fleet_skill(&env, &[a], "MAIN");
-        assert!(!plan2.ok());
+        // The same old fleet again: idempotent, nothing planned.
+        let (plan2, report2) = plan_from_fleet_skill(&env, &[a.clone()], "MAIN");
+        assert!(plan2.ok(), "{:?}", plan2.refusals);
+        assert!(plan2.steps.is_empty(), "{:?}", plan2.steps);
+        assert!(report2.join("\n").contains("no changes"));
+        // The same name with different content: refused.
+        old_fleet(&a, &BOLT.replace("You are BOLT.", "You are not BOLT."), None);
+        let (plan2b, _) = plan_from_fleet_skill(&env, &[a.clone()], "MAIN");
+        assert!(!plan2b.ok());
+        old_fleet(&a, BOLT, None); // restore
         // A different one: merged alongside.
         let b = td.path().join("old/brim-fleet");
         old_fleet(&b, BRIM, None);
@@ -400,47 +416,15 @@ mod tests {
         assert!(!plan.ok());
         let (plan, _) = plan_from_fleet_skill(&env, &[], "bad name");
         assert!(!plan.ok());
+        // Two old fleets that would become the same squadron, in one run.
+        let c = td.path().join("old/bolt-copy");
+        old_fleet(&c, BOLT, None);
+        let d = td.path().join("old/bolt-fleet");
+        old_fleet(&d, BOLT, None);
+        let (plan, _) = plan_from_fleet_skill(&env, &[c, d], "MAIN");
+        assert!(!plan.ok());
     }
 
-    /// Dry-run against copies of the real old fleets, when they exist on this
-    /// machine. Prints the migration report; run with `--nocapture` to read it.
-    #[test]
-    fn report_for_the_real_old_fleets() {
-        let real = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-            .join("Dropbox/claude-orchestrators");
-        if !real.is_dir() {
-            return; // not this machine; nothing to dry-run
-        }
-        let (td, env) = test_env();
-        let mut copies = vec![];
-        let mut names: Vec<_> = std::fs::read_dir(&real)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.join("FLEET_CONFIG.json").is_file())
-            .collect();
-        names.sort();
-        for src in names {
-            let dst = td.path().join("old").join(src.file_name().unwrap());
-            std::fs::create_dir_all(&dst).unwrap();
-            std::fs::copy(src.join("FLEET_CONFIG.json"), dst.join("FLEET_CONFIG.json")).unwrap();
-            if src.join("FLEET.md").is_file() {
-                std::fs::copy(src.join("FLEET.md"), dst.join("FLEET.md")).unwrap();
-            }
-            copies.push(dst);
-        }
-        let (plan, report) = plan_from_fleet_skill(&env, &copies, "MAIN");
-        println!("== migration report for {} old fleet(s) ==", copies.len());
-        for line in &report {
-            println!("{line}");
-        }
-        for r in &plan.refusals {
-            println!("[REFUSED] {}", r.message);
-        }
-        apply_ok(&env, &plan);
-        let f = config::load_fleet(&env, "MAIN").unwrap();
-        assert_eq!(f.squadrons.len(), copies.len());
-        let issues = config::validate(&env, &f);
-        assert!(issues.iter().all(|i| i.severity == Severity::Warn), "{issues:?}");
-    }
+    // The real old fleets are exercised from fixture copies in
+    // tests/migrate_old_fleets.rs (load_all + check + idempotence).
 }
