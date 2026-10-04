@@ -56,26 +56,36 @@ pub fn git_root(dir: &Path) -> Option<PathBuf> {
     canon(dir).ancestors().find(|a| a.join(".git").exists()).map(Path::to_path_buf)
 }
 
-/// The folders whose `hasTrustDialogAccepted` entry makes Claude Code trust
-/// `dir`: `dir` and its parents, as given and as real paths, but inside a git
-/// repository only up to the repository root (Claude Code wants trust on the
-/// root itself; a parent of the repository does not count, BUG-50).
-pub fn trust_keys(dir: &Path) -> Vec<PathBuf> {
+/// `dir` and its parents, as given and as real paths, without duplicates: the
+/// trust-file keys that may cover `dir`.
+pub fn trust_ancestors(dir: &Path) -> Vec<PathBuf> {
     let real = canon(dir);
-    let root = git_root(dir);
-    let within = |a: &Path| root.as_ref().is_none_or(|r| canon(a).starts_with(r));
     let mut keys: Vec<PathBuf> = vec![];
     for a in dir.ancestors().chain(real.ancestors()) {
-        if a.as_os_str().is_empty() || !within(a) {
+        if a.as_os_str().is_empty() {
             continue;
         }
-        let a = PathBuf::from(a.to_string_lossy().trim_end_matches('/'));
-        let a = if a.as_os_str().is_empty() { PathBuf::from("/") } else { a };
+        let t = a.to_string_lossy().trim_end_matches('/').to_string();
+        let a = if t.is_empty() { PathBuf::from("/") } else { PathBuf::from(t) };
         if !keys.contains(&a) {
             keys.push(a);
         }
     }
     keys
+}
+
+/// `trust_ancestors`, cut at the git root when `dir` is in a repository: the
+/// keys that are the repository's own trust (the root or below it).
+pub fn trust_keys(dir: &Path) -> Vec<PathBuf> {
+    match git_root(dir) {
+        Some(root) => trust_ancestors(dir).into_iter().filter(|a| canon(a).starts_with(&root)).collect(),
+        None => trust_ancestors(dir),
+    }
+}
+
+/// A git worktree root: `.git` is a file (`gitdir: ...`), not a folder.
+pub fn is_git_worktree(root: &Path) -> bool {
+    root.join(".git").is_file()
 }
 
 /// First `name` on PATH that is a file.
