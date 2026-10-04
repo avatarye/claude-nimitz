@@ -284,10 +284,10 @@ pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
 // Steps use cmd ["mkdir", <dir>] | ["write", <path>, <contents>] | ["archive", <path>]
 // and run only through `apply_config_plan`.
 
-fn step_mkdir(id: Option<Id>, dir: &Path, why: &str) -> Step {
+pub(crate) fn step_mkdir(id: Option<Id>, dir: &Path, why: &str) -> Step {
     Step { id, cmd: vec!["mkdir".into(), dir.to_string_lossy().into_owned()], cwd: None, why: why.into() }
 }
-fn step_write(id: Option<Id>, path: &Path, contents: String, why: &str) -> Step {
+pub(crate) fn step_write(id: Option<Id>, path: &Path, contents: String, why: &str) -> Step {
     Step { id, cmd: vec!["write".into(), path.to_string_lossy().into_owned(), contents], cwd: None, why: why.into() }
 }
 fn step_archive(id: Option<Id>, path: &Path, why: &str) -> Step {
@@ -298,11 +298,11 @@ fn refuse(plan: &mut Plan, code: &str, msg: String, fix: Option<String>, id: Opt
     plan.refusals.push(issue(code, Severity::Error, msg, fix, id));
 }
 
-fn toml_out<T: serde::Serialize>(v: &T) -> String {
+pub(crate) fn toml_out<T: serde::Serialize>(v: &T) -> String {
     toml::to_string_pretty(v).unwrap_or_default()
 }
 
-fn admiral_claude_md(fleet: &str) -> String {
+pub(crate) fn admiral_claude_md(fleet: &str) -> String {
     format!(
         "# [{fleet}]-ADMIRAL\n\n\
          You are the admiral of fleet {fleet}. You watch the fleet and talk to its\n\
@@ -311,7 +311,7 @@ fn admiral_claude_md(fleet: &str) -> String {
     )
 }
 
-fn commodore_claude_md(fleet: &str, sq: &str) -> String {
+pub(crate) fn commodore_claude_md(fleet: &str, sq: &str) -> String {
     format!(
         "# [{fleet}.{sq}]-COMMODORE\n\n\
          You are the commodore of squadron {sq} in fleet {fleet}. Your brief is\n\
@@ -321,7 +321,7 @@ fn commodore_claude_md(fleet: &str, sq: &str) -> String {
     )
 }
 
-fn squadron_md(fleet: &str, sq: &str, brief: &str) -> String {
+pub(crate) fn squadron_md(fleet: &str, sq: &str, brief: &str) -> String {
     let body = if brief.is_empty() { "(no brief yet)" } else { brief };
     format!("# Squadron {sq} ({fleet})\n\n{body}\n")
 }
