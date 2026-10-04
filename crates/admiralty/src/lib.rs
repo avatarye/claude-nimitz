@@ -1,10 +1,17 @@
-//! admiralty-watch: live tree view of Claude Code fleets on this machine.
+//! Admiralty: watch and control every claude-nimitz fleet on this machine.
+//!
+//! snapshot (nimitz-core) + panes (nimitz-mux) -> `view` node tree -> flat rows
+//! -> `frames` lines; `app` holds state and keys, `render` draws, `run` is the
+//! terminal loop. No Claude Code file parsing here: core does that.
 
 pub mod actions;
-pub mod env;
-pub mod herdr;
-pub mod model;
-pub mod present;
-pub mod sandbox;
-pub mod sources;
-pub mod ui;
+pub mod app;
+pub mod data;
+pub mod detail;
+pub mod fixtures;
+pub mod forms;
+pub mod frames;
+pub mod render;
+pub mod run;
+pub mod theme;
+pub mod view;

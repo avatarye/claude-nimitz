@@ -255,6 +255,14 @@ fn chain(id: &Id) -> Vec<Id> {
 
 // ------------------------------------------------------------------ the relaunch state table
 
+/// A live old-fleet or unlabelled session in the member's folder (issue
+/// `legacy`, Warn while live): any start would make a second agent there.
+fn refuse_legacy(plan: &mut Plan, m: &Member) -> bool {
+    let Some(i) = m.issues.iter().find(|i| i.code == "legacy" && i.severity == Severity::Warn) else { return false };
+    plan.refusals.push(Issue { severity: Severity::Error, ..i.clone() });
+    true
+}
+
 /// One member's action per contracts.md section 8. Appends steps or refusals.
 fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: bool) {
     let Some((fleet, m)) = member(snap, id) else {
@@ -274,6 +282,9 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
         return;
     };
     let mode = crate::config::permission_mode(&fod, id);
+    if refuse_legacy(plan, m) {
+        return;
+    }
     let session_errs = session_issues(env, m);
     let step = |id: &Id, cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.clone()), why: why.into() };
 
@@ -356,11 +367,31 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
             return;
         }
         None => {
+            let olds = legacy_rows(snap, &fod, id, &cwd);
             // no row: an interactive member continues its transcript with `-c` (row 6)
             if m.role.interactive() && !crate::evidence::transcripts_in(env, &cwd).is_empty() {
                 plan.steps.push(step(id, crate::claude::interactive(env, id, &mode, true), "continue the interactive session in a pane"));
+            } else if let (Role::Ship, Some(newest)) = (m.role, olds.first()) {
+                // a migrated ship keeps its history: continue the old fleet's newest
+                // stopped session the row-5 way (a labelled copy); the old rows stay
+                // (Info `legacy`, for `sweep` to offer)
+                let short = newest.short_id.as_deref().unwrap_or(&newest.session_id);
+                plan.steps.push(step(
+                    id,
+                    crate::claude::relaunch_bg(env, id, &mode, &newest.session_id),
+                    &format!("{MIGRATE_WHY} {short} (newest of {})", olds.len()),
+                ));
             } else {
                 cold_launch(env, plan, &fod, id, m.role, &mode, &cwd); // row 7
+                if m.role.interactive() {
+                    if let Some(old) = legacy_names_of(&fod, id).first() {
+                        if let Some(last) = plan.steps.last_mut() {
+                            last.why = format!(
+                                "first launch in a pane: the old {old} ran in another folder, and Claude Code resumes a conversation only in its own folder"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -370,6 +401,30 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
             plan.steps.push(step(id, crate::claude::rm(env, short), "drop a stale copy row"));
         }
     }
+}
+
+/// The `why` that marks a step continuing an old fleet's session; `apply`
+/// records such a binding with `via: migrate`.
+pub const MIGRATE_WHY: &str = "continue the old fleet's session";
+
+/// Old names (from `<fleet>/legacy.toml`) that map to `id`.
+fn legacy_names_of(fod: &FleetOnDisk, id: &Id) -> Vec<String> {
+    crate::config::legacy_map(fod).into_iter().filter(|(_, v)| v == id).map(|(k, _)| k).collect()
+}
+
+/// Stopped old-fleet sessions of `id` in its own folder (stowaways named in the
+/// legacy map), newest first (job `updatedAt`, else `startedAt`).
+fn legacy_rows<'a>(snap: &'a Snapshot, fod: &FleetOnDisk, id: &Id, cwd: &str) -> Vec<&'a SessionInfo> {
+    let names = legacy_names_of(fod, id);
+    let mut v: Vec<&SessionInfo> = snap
+        .stowaways
+        .iter()
+        .filter(|s| s.pid.is_none() && s.short_id.is_some() && s.state.as_deref() != Some("failed"))
+        .filter(|s| names.contains(&s.name) && s.cwd.trim_end_matches('/') == cwd.trim_end_matches('/'))
+        .collect();
+    let at = |s: &SessionInfo| s.status_since.or(s.started_at).unwrap_or(0.0);
+    v.sort_by(|a, b| at(b).partial_cmp(&at(a)).unwrap_or(std::cmp::Ordering::Equal));
+    v
 }
 
 fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Role, mode: &str, cwd: &str) {
@@ -635,6 +690,9 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
     };
     let mode = crate::config::permission_mode(&fod, id);
     let cwd = m.cwd.clone().unwrap_or_default();
+    if refuse_legacy(&mut plan, m) {
+        return plan;
+    }
     if m.role.interactive() {
         if m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
             refuse(&mut plan, "config.invalid", format!("{id} is live; end it in its pane first"), Some("type /exit in its pane".into()), Some(id.clone()));
@@ -797,6 +855,21 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
             sweep_member(env, &mut plan, m);
         }
     }
+    // Stopped rows of the old fleet (Info `legacy`): offered here, never removed
+    // by a start. The transcripts stay.
+    let (fleets, _) = crate::config::load_all(env);
+    let legacy: HashMap<String, Id> = fleets.iter().flat_map(crate::config::legacy_map).collect();
+    for st in snap.stowaways.iter().filter(|s| s.pid.is_none()) {
+        let (Some(owner), Some(short)) = (legacy.get(&st.name), st.short_id.as_ref()) else { continue };
+        if id.map(|t| under(owner, t)).unwrap_or(true) && mine(owner) && member(snap, owner).is_some() {
+            plan.steps.push(Step {
+                id: Some(owner.clone()),
+                cmd: crate::claude::rm(env, short),
+                cwd: None,
+                why: format!("the old fleet's stopped row {short} ({}) of {owner}; its transcript stays", st.name),
+            });
+        }
+    }
     plan
 }
 
@@ -839,7 +912,7 @@ pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, promp
         refuse(&mut plan, "config.invalid", format!("{commodore} has no folder on this machine"), None, Some(commodore.clone()));
         return plan;
     };
-    let mode = crate::config::load_fleet(env, commodore.fleet()).map(|f| crate::config::permission_mode(&f, &id)).unwrap_or("default".into());
+    let mode = crate::config::load_fleet(env, commodore.fleet()).map(|f| crate::config::permission_mode(&f, &id)).unwrap_or_default();
     plan.steps.push(Step {
         id: Some(id.clone()),
         cmd: crate::claude::launch_bg(env, &id, &mode, Some(prompt)),
@@ -1075,6 +1148,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 let (expect, via) = match &kind {
                     Kind::Resume { session_id } => (Some(session_id.as_str()), "resume"),
                     Kind::Launch => (None, "launch"),
+                    _ if step.why.starts_with(MIGRATE_WHY) => (None, "migrate"),
                     _ => (None, "relaunch"),
                 };
                 match bind_started(env, id, step.cwd.as_deref(), since, expect, via, BIND_TIMEOUT_S) {

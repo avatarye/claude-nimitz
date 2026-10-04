@@ -1,4 +1,4 @@
-//! `nimitz check`: integrity before every start (contracts.md section 7). Owner: core-config.
+//! `nimitz check`: integrity before every start (contracts.md section 7). Owner: core-sessions (was core-config).
 //! Session-level issues ride in on `Member::issues` (snapshot fills them).
 use crate::env::Env;
 use crate::types::*;
@@ -122,12 +122,22 @@ pub fn check(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
 
     // Stowaways only matter for the whole-world check.
     if id.is_none() {
-        for s in &snap.stowaways {
+        // A stowaway named in a legacy map is an old fleet's session: its member
+        // carries the `legacy` issue instead.
+        let legacy: std::collections::BTreeSet<String> = fleets.iter().flat_map(|f| crate::config::legacy_map(f).into_keys()).collect();
+        for s in snap.stowaways.iter().filter(|s| !legacy.contains(&s.name)) {
+            let short = s.short_id.as_deref().unwrap_or(&s.session_id);
+            // never offer rm for a live session (contracts.md section 7)
+            let fix = if s.pid.is_some() {
+                format!("nimitz adopt {} <id>  # or nimitz stop {short} first, then nimitz rm {short}", s.session_id)
+            } else {
+                format!("nimitz adopt {} <id>  # or nimitz rm {short}", s.session_id)
+            };
             out.push(Issue {
                 code: "stowaway".into(),
                 severity: Severity::Warn,
-                message: format!("session {} ({}) sits in fleet scope with no labels", s.session_id, s.name),
-                fix: Some(format!("nimitz adopt {} <id>  # or nimitz rm {}", s.session_id, s.session_id)),
+                message: format!("session {} ({}) sits in fleet scope with no labels{}", s.session_id, s.name, if s.pid.is_some() { " (live)" } else { "" }),
+                fix: Some(fix),
                 id: None,
             });
         }

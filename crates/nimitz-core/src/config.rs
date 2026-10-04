@@ -1,6 +1,7 @@
-//! Fleet and squadron config: load, validate, save, CRUD (contracts.md section 3). Owner: core-config.
+//! Fleet and squadron config: load, validate, save, CRUD (contracts.md section 3). Owner: core-sessions (was core-config).
 use crate::env::Env;
 use crate::types::*;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn issue(code: &str, severity: Severity, message: String, fix: Option<String>, id: Option<Id>) -> Issue {
@@ -184,31 +185,58 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         }
     }
 
-    // Layout: no session folder inside another session folder (on this machine).
-    let mut folders: Vec<(Id, PathBuf)> = vec![(fid.clone(), f.dir.join("admiral"))];
+    // Layout: a session folder inside another session folder (on this machine),
+    // judged by `nesting` (contracts.md section 7).
+    let mut folders: Vec<(Id, PathBuf, bool)> = vec![(fid.clone(), f.dir.join("admiral"), true)];
     for (sd, sq) in &f.squadrons {
-        folders.push((Id::commodore(&c.fleet, &sq.squadron), sd.clone()));
+        folders.push((Id::commodore(&c.fleet, &sq.squadron), sd.clone(), true));
         for ship in &sq.ships {
             let shid = Id::ship(&c.fleet, &sq.squadron, &ship.name);
             if let Some(d) = member_dir(env, f, &shid) {
-                folders.push((shid, d));
+                let managed = f.machine.as_ref().and_then(|m| ship.dirs.get(m)).map(|v| v == "managed").unwrap_or(false);
+                folders.push((shid, d, managed));
             }
         }
     }
-    for (a, pa) in &folders {
-        for (b, pb) in &folders {
+    for (a, pa, a_managed) in &folders {
+        for (b, pb, _) in &folders {
             if a != b && pa != pb && pb.starts_with(pa) {
-                out.push(issue(
-                    "config.layout",
-                    Severity::Error,
-                    format!("{b}'s folder {} is inside {a}'s folder {} (nested CLAUDE.md scope)", pb.display(), pa.display()),
-                    None,
-                    Some(b.clone()),
-                ));
+                if let Some(sev) = nesting(pa, *a_managed) {
+                    out.push(issue(
+                        "config.layout",
+                        sev,
+                        format!("{b}'s folder {} is inside {a}'s folder {} ({})", pb.display(), pa.display(), nesting_why(*a_managed)),
+                        None,
+                        Some(b.clone()),
+                    ));
+                }
             }
         }
     }
     out
+}
+
+/// How bad is a member folder inside `outer` (contracts.md section 7)? An
+/// error when `outer` is nimitz-managed (admiral, commodore, managed ship): its
+/// CLAUDE.md is a role's instructions. A warning when `outer` is a user project
+/// folder with a CLAUDE.md (the inner member inherits it). Nothing otherwise: a
+/// ship whose folder is the home folder is fine.
+pub fn nesting(outer: &Path, outer_managed: bool) -> Option<Severity> {
+    if outer_managed {
+        Some(Severity::Error)
+    } else if outer.join("CLAUDE.md").is_file() {
+        Some(Severity::Warn)
+    } else {
+        None
+    }
+}
+
+fn nesting_why(outer_managed: bool) -> &'static str {
+    if outer_managed {
+        "a nimitz-managed folder: its role's CLAUDE.md would apply"
+    } else {
+        "that folder's CLAUDE.md would apply to it too"
+    }
 }
 
 fn find_ship<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<(&'a PathBuf, &'a SquadronConfig, &'a ShipDef)> {
@@ -261,9 +289,11 @@ pub fn ship_prompt(f: &FleetOnDisk, id: &Id) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// Permission mode for a member on this machine.
+/// Permission mode for a member on this machine. Empty when nothing sets one:
+/// then no `--permission-mode` is passed and Claude Code's own default (or the
+/// user's settings) applies, as it did for the old fleet's leads and ships.
 pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
-    let fallback = "default".to_string();
+    let fallback = String::new();
     let squadron_mode = || {
         id.squadron()
             .and_then(|sq| f.squadrons.iter().find(|(_, s)| s.squadron == sq))
@@ -409,29 +439,53 @@ fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, sq: SquadronConfig, id: &Id, 
             );
         }
         if d != "managed" {
-            // Refuse a session folder inside another session folder.
+            // A session folder inside another session folder, both ways, judged by `nesting`.
             let dir = expand_dir(d);
-            let nests_with = |p: &Path| dir.starts_with(p) || p.starts_with(&dir);
-            let mut others = vec![f.dir.join("admiral"), f.dir.join("squadrons")];
+            let mut others: Vec<(PathBuf, bool)> = vec![(f.dir.join("admiral"), true), (f.dir.join("squadrons"), true)];
             for (osd, osq) in &f.squadrons {
-                others.push(osd.clone());
+                others.push((osd.clone(), true));
                 for oship in &osq.ships {
                     if oship.name != ship.name || osq.squadron != sq.squadron {
-                        if let Some(od) = oship.dirs.get(label).filter(|v| *v != "managed") {
-                            others.push(expand_dir(od));
+                        match oship.dirs.get(label).map(String::as_str) {
+                            Some("managed") => others.push((f.dir.join("ships").join(osq.squadron.to_lowercase()).join(oship.name.to_lowercase()), true)),
+                            Some(od) => others.push((expand_dir(od), false)),
+                            None => {}
                         }
                     }
                 }
             }
             let _ = sq_dir; // the squadron dir is already in `others` via f.squadrons
-            if others.iter().any(|p| nests_with(p)) {
-                refuse(
+            let sevs: Vec<Severity> = others
+                .iter()
+                .filter_map(|(p, managed)| {
+                    if &dir == p {
+                        Some(Severity::Error) // two members in one folder
+                    } else if dir.starts_with(p) {
+                        nesting(p, *managed)
+                    } else if p.starts_with(&dir) {
+                        nesting(&dir, false) // the new folder is a user project folder
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let worst = if sevs.contains(&Severity::Error) { Some(Severity::Error) } else { sevs.first().copied() };
+            match worst {
+                Some(Severity::Error) => refuse(
                     plan,
                     "config.layout",
-                    format!("{id}: folder {} nests with another session folder", dir.display()),
+                    format!("{id}: folder {} nests with a nimitz-managed folder (or another member's folder)", dir.display()),
                     None,
                     Some(id.clone()),
-                );
+                ),
+                Some(sev) => plan.warnings.push(issue(
+                    "config.layout",
+                    sev,
+                    format!("{id}: folder {} nests with a project folder that has a CLAUDE.md", dir.display()),
+                    None,
+                    Some(id.clone()),
+                )),
+                None => {}
             }
         }
     }
@@ -638,6 +692,44 @@ pub fn plan_machine_add(env: &Env, fleet: &str, label: &str, dirs: Vec<(Id, Stri
         }
     }
     plan
+}
+
+// ------------------------------------------------------------------ legacy names
+
+/// `<fleet>/legacy.toml`: old fleet-skill session names and the identity each
+/// became (written by `nimitz migrate fleet-skill`):
+///
+/// ```toml
+/// [names]
+/// "[GENERAL]-HOME" = "MAIN/GENERAL/HOME"
+/// "[GENERAL]-LEAD" = "MAIN/GENERAL"
+/// ```
+pub fn legacy_path(f: &FleetOnDisk) -> PathBuf {
+    f.dir.join("legacy.toml")
+}
+
+/// The fleet's legacy map (empty when there is none or it does not parse).
+pub fn legacy_map(f: &FleetOnDisk) -> BTreeMap<String, Id> {
+    let raw = std::fs::read_to_string(legacy_path(f)).unwrap_or_default();
+    let v: toml::Value = toml::from_str(&raw).unwrap_or(toml::Value::Table(Default::default()));
+    v.get("names")
+        .and_then(|n| n.as_table())
+        .map(|t| {
+            t.iter()
+                .filter_map(|(k, v)| Some((k.clone(), Id(v.as_str()?.to_string()))))
+                .filter(|(_, id)| id.fleet() == f.config.fleet)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The legacy map as file contents.
+pub fn legacy_toml(map: &BTreeMap<String, Id>) -> String {
+    let mut out = String::from("# Old fleet-skill session names and the nimitz identity each became.\n# Written by `nimitz migrate fleet-skill`; a live session with one of these\n# names belongs to the old fleet (issue `legacy`).\n[names]\n");
+    for (k, id) in map {
+        out.push_str(&format!("{} = {}\n", toml::Value::String(k.clone()), toml::Value::String(id.0.clone())));
+    }
+    out
 }
 
 /// Claude Code's permission modes (`--permission-mode`).
@@ -965,7 +1057,31 @@ pub(crate) mod tests {
             .dirs
             .insert("test-mac".into(), f2.dir.join("admiral/sub").to_string_lossy().into_owned());
         let issues = validate(&env, &f2);
-        assert!(issues.iter().any(|i| i.code == "config.layout"), "{issues:?}");
+        assert!(issues.iter().any(|i| i.code == "config.layout" && i.severity == Severity::Error), "{issues:?}");
+    }
+
+    #[test]
+    fn a_home_folder_ship_may_hold_other_ships_folders() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let home = env.home.parent().unwrap().join("home");
+        let proj = home.join("Projects/thing");
+        std::fs::create_dir_all(&proj).unwrap();
+        for (name, dir) in [("HOME", &home), ("THING", &proj)] {
+            let ship = ShipDef { name: name.into(), prompt: Some("p".into()), dirs: [("test-mac".to_string(), dir.to_string_lossy().into_owned())].into(), ..Default::default() };
+            let plan = plan_ship_new(&env, "MAIN", "ARGOS", ship);
+            assert!(plan.ok(), "{name}: {:?}", plan.refusals);
+            assert!(plan.warnings.iter().all(|i| i.code != "config.layout"), "{:?}", plan.warnings);
+            apply_ok(&env, &plan);
+        }
+        let layout = |env: &Env| -> Vec<Issue> { validate(env, &load_fleet(env, "MAIN").unwrap()).into_iter().filter(|i| i.code == "config.layout").collect() };
+        assert!(layout(&env).is_empty(), "a home-folder ship is fine: {:?}", layout(&env));
+        // a CLAUDE.md in the outer project folder: a warning, never a refusal
+        std::fs::write(home.join("CLAUDE.md"), "mine").unwrap();
+        let issues = layout(&env);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].severity, Severity::Warn);
+        assert_eq!(issues[0].id, Some(Id::ship("MAIN", "ARGOS", "THING")));
     }
 
     #[test]
@@ -1011,13 +1127,13 @@ pub(crate) mod tests {
         make_fleet(&env);
         let mut f = load_fleet(&env, "MAIN").unwrap();
         let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
-        assert_eq!(permission_mode(&f, &ship), "default");
+        assert_eq!(permission_mode(&f, &ship), "");
         f.squadrons[0].1.permission_mode = Some("bypassPermissions".into());
         assert_eq!(permission_mode(&f, &ship), "bypassPermissions");
         assert_eq!(permission_mode(&f, &Id::commodore("MAIN", "ARGOS")), "bypassPermissions");
         f.squadrons[0].1.ships[0].permission_mode.insert("test-mac".into(), "plan".into());
         assert_eq!(permission_mode(&f, &ship), "plan");
-        assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "default");
+        assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "");
         f.config.admiral.permission_mode = Some("auto".into());
         assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "auto");
     }

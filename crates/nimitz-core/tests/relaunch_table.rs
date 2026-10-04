@@ -254,7 +254,8 @@ fn row6_no_row_but_a_transcript_continues_with_c_in_a_pane() {
     assert!(plan.ok(), "{:?}", plan.refusals);
     let steps = w.steps_of(&plan, &id);
     assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].cmd, claude::interactive(&w.env, &id, "default", true));
+    assert_eq!(steps[0].cmd, claude::interactive(&w.env, &id, "", true));
+    assert!(!steps[0].cmd.contains(&"--permission-mode".to_string()), "no mode set: Claude Code's own default");
     assert_eq!(steps[0].cwd.as_deref(), m.cwd.as_deref());
     // core never starts an interactive member: apply leaves it to the CLI's pane
     let out = sessions::apply(&w.env, &plan);
@@ -939,4 +940,152 @@ fn apply_refuses_to_run_a_refused_plan_and_reports_a_failed_step() {
     assert_eq!(out.ran.len(), 1);
     assert_ne!(out.ran[0].1, 0);
     assert!(out.issues[0].message.contains("no job"), "{:?}", out.issues);
+}
+
+// ------------------------------------------------------------------ legacy (old fleet) sessions
+
+#[test]
+fn legacy_old_fleet_session_refuses_then_adopt_stop_start_relaunches_with_labels() {
+    let w = world();
+    let id = w.ship("FRESH");
+    let cwd = w.member(&w.snap(), &id).cwd.unwrap();
+    // the migration's map, and the old fleet's [ARGOS]-FRESH running in the folder
+    let fleet_dir = w.env.fleet_dir("MAIN");
+    std::fs::write(fleet_dir.join("legacy.toml"), "[names]\n\"[ARGOS]-FRESH\" = \"MAIN/ARGOS/FRESH\"\n").unwrap();
+    let old = vec![w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
+    let (rc, out) = claude::run(&old, Some(&cwd));
+    assert_eq!(rc, 0, "{out}");
+    let snap = w.snap();
+    let row = snap.stowaways.iter().find(|s| s.name == "[ARGOS]-FRESH").expect("still a stowaway (unlabelled)").clone();
+
+    // check: a `legacy` issue on the member, no `stowaway` line, and no rm offered while live
+    let issues = nimitz_core::check::check(&w.env, &snap, None);
+    let leg = issues.iter().find(|i| i.code == "legacy" && i.id.as_ref() == Some(&id)).expect("legacy issue");
+    assert!(leg.message.contains("old fleet"), "{}", leg.message);
+    assert!(leg.fix.as_deref().unwrap().contains(&format!("nimitz adopt {} {id}", row.session_id)));
+    assert!(!leg.fix.as_deref().unwrap().contains("rm"), "never rm a live session: {:?}", leg.fix);
+    assert!(!issues.iter().any(|i| i.code == "stowaway" && i.message.contains(&row.session_id)));
+
+    // start and up refuse: a second agent in the folder
+    let plan = w.start(&snap, &id, false);
+    assert!(has(&plan.refusals, "legacy"), "{:?}", plan.refusals);
+    assert!(w.steps_of(&plan, &id).is_empty());
+    let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
+    assert!(up.steps.iter().all(|s| s.id.as_ref() != Some(&id)), "up starts no second FRESH");
+
+    // adopt, then stop: the identity owns an unlabelled, stopped session
+    let out = sessions::apply(&w.env, &sessions::plan_adopt(&w.env, &snap, &row.session_id, &id, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    let snap = w.snap();
+    assert_eq!(w.member(&snap, &id).session.as_ref().map(|p| p.session_id.clone()), Some(row.session_id.clone()));
+    let out = sessions::apply(&w.env, &sessions::plan_stop(&w.env, &snap, &id, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+
+    // the next start is row 5: relaunch with every flag (a labelled copy), rm the old row
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let steps = w.steps_of(&plan, &id);
+    assert!(steps[0].cmd.contains(&"--resume".to_string()) && steps[0].cmd.contains(&"--settings".to_string()), "{:?}", steps[0].cmd);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.member(&w.snap(), &id);
+    let s = after.session.unwrap();
+    assert_ne!(s.session_id, row.session_id);
+    assert_eq!(s.name, id.name());
+    assert_eq!(s.labels.get("NIMITZ_ID"), Some(&id.0));
+    assert!(!w.rows().iter().any(|r| r.session_id == row.session_id), "the old fleet's row is gone");
+    assert!(after.issues.is_empty(), "{:?}", after.issues);
+}
+
+#[test]
+fn a_stowaway_fix_offers_rm_only_once_it_is_stopped() {
+    let w = world();
+    let snap = w.snap();
+    let live = snap.stowaways.iter().find(|s| s.name == "quick look at the logs").unwrap().clone();
+    let fix = |snap: &Snapshot| {
+        nimitz_core::check::check(&w.env, snap, None)
+            .into_iter()
+            .find(|i| i.code == "stowaway" && i.message.contains(&live.session_id))
+            .and_then(|i| i.fix)
+            .unwrap()
+    };
+    let f = fix(&snap);
+    assert!(f.contains("stop") && f.find("stop") < f.find("rm"), "{f}");
+    let (rc, out) = claude::run(&claude::stop(&w.env, live.short_id.as_deref().unwrap()), None);
+    assert_eq!(rc, 0, "{out}");
+    let f = fix(&w.snap());
+    assert!(!f.contains("stop") && f.contains("nimitz rm"), "{f}");
+}
+
+#[test]
+fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
+    let w = world();
+    let id = w.ship("FRESH");
+    let cwd = w.member(&w.snap(), &id).cwd.unwrap();
+    std::fs::write(w.env.fleet_dir("MAIN").join("legacy.toml"), "[names]\n\"[ARGOS]-FRESH\" = \"MAIN/ARGOS/FRESH\"\n\"[ARGOS]-LEAD\" = \"MAIN/ARGOS\"\n").unwrap();
+    // three stopped sessions of the old [ARGOS]-FRESH in its folder
+    let mut olds = vec![];
+    for _ in 0..3 {
+        let old = vec![w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
+        let (rc, out) = claude::run(&old, Some(&cwd));
+        assert_eq!(rc, 0, "{out}");
+        let short = out.trim().to_string();
+        let (rc, out) = claude::run(&claude::stop(&w.env, &short), None);
+        assert_eq!(rc, 0, "{out}");
+        olds.push(short);
+    }
+    // the first one was used last: its job row has the newest updatedAt
+    let job = w.base.join("claude_home/jobs").join(&olds[0]).join("state.json");
+    let mut j: serde_json::Value = serde_json::from_slice(&std::fs::read(&job).unwrap()).unwrap();
+    j["updatedAt"] = serde_json::json!(((evidence::now() + 60.0) * 1000.0) as i64);
+    std::fs::write(&job, serde_json::to_vec(&j).unwrap()).unwrap();
+    let newest = w.rows().into_iter().find(|r| r.short_id.as_deref() == Some(olds[0].as_str())).unwrap();
+
+    let snap = w.snap();
+    assert!(w.member(&snap, &id).issues.iter().filter(|i| i.code == "legacy").all(|i| i.severity == Severity::Info));
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let steps = w.steps_of(&plan, &id);
+    assert_eq!(steps.len(), 1, "no rm of the old rows: {:?}", steps);
+    assert_eq!(steps[0].cmd, claude::relaunch_bg(&w.env, &id, "", &newest.session_id));
+    assert_eq!(steps[0].why, format!("continue the old fleet's session {} (newest of 3)", olds[0]));
+    // up plans the same, not a cold launch
+    let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
+    assert!(up.steps.iter().any(|s| s.id.as_ref() == Some(&id) && s.cmd.contains(&"--resume".to_string())));
+
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.snap();
+    let m = w.member(&after, &id);
+    let s = m.session.as_ref().unwrap();
+    assert!(s.pid.is_some() && s.labels.get("NIMITZ_ID") == Some(&id.0) && s.name == id.name());
+    assert!(!olds.contains(s.short_id.as_ref().unwrap()), "a labelled copy, not the old row");
+    let rec = &nimitz_core::registry::load(&w.env).identities[&id.0];
+    assert_eq!(rec.lineage.last().unwrap().via, "migrate");
+    for o in &olds {
+        assert!(w.rows().iter().any(|r| r.short_id.as_deref() == Some(o.as_str())), "old row {o} stays");
+    }
+    assert_eq!(m.issues.iter().filter(|i| i.code == "legacy" && i.severity == Severity::Info).count(), 3, "{:?}", m.issues);
+
+    // sweep offers them (it is a plan you confirm), and removes them when applied
+    let sweep = sessions::plan_sweep(&w.env, &after, Some(&id), &Caller::User);
+    let rms: Vec<&Step> = sweep.steps.iter().filter(|s| s.why.contains("old fleet")).collect();
+    assert_eq!(rms.len(), 3, "{:?}", sweep.steps);
+    assert!(sessions::apply(&w.env, &sweep).verified);
+    assert!(olds.iter().all(|o| !w.rows().iter().any(|r| r.short_id.as_deref() == Some(o.as_str()))));
+}
+
+#[test]
+fn a_commodore_whose_old_lead_ran_elsewhere_says_why_it_starts_fresh() {
+    let w = world();
+    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default());
+    assert!(nimitz_core::config::apply_config_plan(&w.env, &plan).verified);
+    std::fs::write(w.env.fleet_dir("MAIN").join("legacy.toml"), "[names]\n\"[NEWSQ]-LEAD\" = \"MAIN/NEWSQ\"\n").unwrap();
+    let id = Id::commodore("MAIN", "NEWSQ");
+    let plan = w.start(&w.snap(), &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let step = w.steps_of(&plan, &id)[0].clone();
+    assert!(sessions::is_pane_step(&step));
+    assert!(step.why.contains("[NEWSQ]-LEAD") && step.why.contains("another folder"), "{}", step.why);
 }

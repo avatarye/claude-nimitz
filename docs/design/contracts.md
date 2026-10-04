@@ -128,7 +128,7 @@ Each finding is an `Issue` with a stable `code`:
 | Code | Condition |
 | --- | --- |
 | `config.invalid` | TOML does not parse or breaks a schema rule (names, duplicates, unknown keys) |
-| `config.layout` | a session folder inside another session folder; a `CLAUDE.md` in `<fleet>/` |
+| `config.layout` | a `CLAUDE.md` in `<fleet>/` (Error); a member folder inside a nimitz-managed folder (admiral, commodore, managed ship) (Error); a member folder inside a user project folder that has a `CLAUDE.md` (Warn). A member folder inside a user folder without one (e.g. a ship at `~`) is fine |
 | `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted |
 | `name.drift` | live session's name differs from the expected name |
 | `name.taken` | the expected name is held by a live session of another identity |
@@ -140,7 +140,8 @@ Each finding is an `Issue` with a stable `code`:
 | `role.background` | an admiral or commodore is a background session |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml` |
-| `stowaway` | a session in a fleet folder with no labels (an inherited `NIMITZ_HOME` alone is not a label) |
+| `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
+| `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`), or any live unlabelled session in a member's folder. Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |
 
 Refusal-only codes (in `Plan.refusals`, not from `check`):
 
@@ -168,6 +169,7 @@ target. For each member, one action from this table:
 | stopped (job row, no pid), labels right | resume: native binary, **no flags**, from its folder |
 | stopped, labels missing (resumed with flags earlier) | relaunch: native resume would keep no labels; cold launch with `--resume <id>` and all flags (copy, `source: fork`), then record the new id and `rm` the old row |
 | no row, transcript exists (interactive member) | `claude -c` in its folder with the name and labels |
+| no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): cold launch `--resume <it>` with all flags (copy, `source: fork`), lineage `via: migrate`; the old rows stay as Info `legacy`, removed only by `sweep`. An interactive member whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
 | no row, no transcript | cold launch (ship: prompt from config; tender: refuse) |
 | row `failed` / unknown id | mark lineage broken; cold launch only with `--force` |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
@@ -175,6 +177,7 @@ target. For each member, one action from this table:
 | admiral/commodore is a background session | refuse; fix: attach and keep it in a terminal |
 | Claude Code version out of range | refuse launches (read-only still works); `--force` overrides |
 | session file has extra bytes | read the first JSON value; not an issue |
+| a live old-fleet or unlabelled session in the member's folder (`legacy`) | refuse; fix: stop it in the old fleet, or adopt it (then stop + start = the labels-missing row) |
 
 Rules that hold in every row: never resume a live session; never pass flags to
 a resume that must keep the id; `stop`/`rm` through the native binary and verify
@@ -212,7 +215,7 @@ clear message. Admiralty runs anywhere; without a mux it is monitor-only.
 `sweep [<id>]`, `tender <F/SQ> <task>`, `adopt <session> <id>`, `signal <id> <text>`,
 `open <id>`, `layout herdr [<fleet>]`, `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
-`__fake-herdr`. Every command exits non-zero on failure and prints `[OK]`,
+`__fake-herdr`. Every command exits non-zero on failure and prints `[OK]`, `[INFO]`,
 `[WARN]`, `[ERROR]` lines (no emoji). Mutating commands support `--plan` (print,
 do nothing).
 
