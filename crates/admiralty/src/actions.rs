@@ -1,361 +1,501 @@
-//! Control actions: activate (resume or cold-launch) a fleet agent, and attach to one.
-//!
-//! The launch recipe mirrors the fleet skill (`launch / restore`) so the two
-//! cannot drift: resume the newest background row for (name, dir); cold-launch
-//! with the config prompt plus the lead line only when no such row exists.
-//! Leads are never launched from here; only the user starts a lead.
-//!
-//! Every action is planned first (a refusal or the exact command), confirmed by
-//! the user, then run and logged.
+//! What a key does to a row: the target it names, whether the action is open
+//! here (and why not), the core plan it would run, and running it. Plans come
+//! from nimitz-core (`sessions::plan_*`, `config::plan_*`); panes from nimitz-mux.
+//! Admiralty adds no rules of its own beyond "no multiplexer: monitor-only".
 
-use serde_json::json;
-use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
-use std::process::{Command, Stdio};
+use std::path::{Path, PathBuf};
 
-use crate::env::Env;
-use crate::model::{Agent, Status};
+use nimitz_core::env::Env;
+use nimitz_core::{Caller, Id, Member, Outcome, Plan, Role, Snapshot, Step};
+use nimitz_mux::{Caps, Mux, Pane, PaneRef, Place};
 
-pub const SETTINGS_NO_ISOLATION: &str = r#"{"worktree":{"bgIsolation":"none"}}"#;
+/// Everything an action needs from the outside world.
+pub struct Ctx {
+    pub env: Env,
+    pub mux: Box<dyn Mux>,
+    /// false: fixture data; plans are shown, nothing runs
+    pub live: bool,
+    pub exit_after_jump: bool,
+}
 
+/// What the selected row is about.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Target {
+    Fleet(Id),
+    Squadron(Id),
+    Member(Id),
+    /// a stowaway, by session id
+    Stowaway(String),
+    /// an extra job row of an identity
+    ExtraRow { owner: Id, session_id: String },
+    /// crew, tasks, the stowaway group: nothing to act on
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Act {
+    Start,
+    Up,
+    Stop,
+    Relaunch,
+    Sweep,
+    Rm,
+    Adopt,
+    Open,
+    ConfigRm,
+    /// a create or edit form's config change
+    Save,
+}
+
+impl Act {
+    /// The order the action menu lists them in.
+    pub const MENU: [Act; 9] = [Act::Start, Act::Up, Act::Open, Act::Stop, Act::Relaunch, Act::Sweep, Act::Rm, Act::Adopt, Act::ConfigRm];
+
+    pub fn key(self) -> char {
+        match self {
+            Act::Start => 'a',
+            Act::Up => 'u',
+            Act::Open => 'A',
+            Act::Stop => 's',
+            Act::Relaunch => 'r',
+            Act::Sweep => 'w',
+            Act::Rm => 'x',
+            Act::Adopt => 'd',
+            Act::ConfigRm => 'D',
+            Act::Save => 'c',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Act::Start => "start (top-down: admiral, commodore, then this)",
+            Act::Up => "up: start everything this fleet runs here",
+            Act::Open => "open: attach in a new pane",
+            Act::Stop => "stop",
+            Act::Relaunch => "relaunch (new session, labels and name right)",
+            Act::Sweep => "sweep stale job rows",
+            Act::Rm => "rm job rows (transcripts kept)",
+            Act::Adopt => "adopt as a ship or tender",
+            Act::ConfigRm => "remove from the config",
+            Act::Save => "save the config change",
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Act::Start => "start",
+            Act::Up => "up",
+            Act::Open => "open",
+            Act::Stop => "stop",
+            Act::Relaunch => "relaunch",
+            Act::Sweep => "sweep",
+            Act::Rm => "rm",
+            Act::Adopt => "adopt",
+            Act::ConfigRm => "remove",
+            Act::Save => "save",
+        }
+    }
+
+    fn needs_mux(self) -> bool {
+        matches!(self, Act::Start | Act::Up | Act::Relaunch | Act::Open)
+    }
+}
+
+pub const MONITOR_ONLY: &str = "monitor-only: no multiplexer here (run Admiralty inside Herdr to start or open sessions)";
+
+/// A plan ready for the confirm dialog.
 #[derive(Clone, Debug)]
-pub struct Plan {
-    pub action: String,
-    pub agent: String,
-    pub ok: bool,
-    pub summary: String,
-    pub cmd: Vec<String>,
-    pub cwd: Option<String>,
-    pub details: Vec<(String, String)>,
-    /// further commands run after `cmd`, in order (e.g. one `rm` per job row)
-    pub more: Vec<Vec<String>>,
+pub struct Pending {
+    pub act: Act,
+    /// the `nimitz` command that does the same
+    pub command: String,
+    pub plan: Plan,
+    /// a config plan (apply with `config::apply_config_plan`)
+    pub config: bool,
+    /// steps the multiplexer opens as panes (interactive members), with where
+    pub panes: Vec<(Step, Place)>,
 }
 
-impl Plan {
-    fn refuse(action: &str, a: &Agent, why: impl Into<String>) -> Plan {
-        Plan { action: action.into(), agent: a.name.clone(), ok: false, summary: why.into(), cmd: vec![], cwd: None, details: vec![], more: vec![] }
-    }
+// ------------------------------------------------------------------ lookups
 
-    pub fn shell(&self) -> String {
-        let join = |c: &Vec<String>| c.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ");
-        let line = std::iter::once(&self.cmd).chain(self.more.iter()).map(join).collect::<Vec<_>>().join("; ");
-        match &self.cwd {
-            Some(c) => format!("(cd {} && {line})", shell_quote(c)),
-            None => line,
+pub fn find_member<'a>(snap: &'a Snapshot, id: &Id) -> Option<&'a Member> {
+    for f in &snap.fleets {
+        if &f.admiral.id == id {
+            return Some(&f.admiral);
+        }
+        for sq in &f.squadrons {
+            if &sq.commodore.id == id {
+                return Some(&sq.commodore);
+            }
+            if let Some(m) = sq.ships.iter().chain(sq.tenders.iter()).find(|m| &m.id == id) {
+                return Some(m);
+            }
         }
     }
+    None
 }
 
-pub fn shell_quote(s: &str) -> String {
-    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c)) {
-        s.to_string()
+fn live(m: &Member) -> bool {
+    m.session.as_ref().map(|s| s.pid.is_some()).unwrap_or(false)
+}
+
+fn short_of(s: &nimitz_core::SessionInfo) -> String {
+    s.short_id.clone().unwrap_or_else(|| s.session_id.chars().take(8).collect())
+}
+
+/// Shell-quote one argument only when it needs it.
+pub fn quote(a: &str) -> String {
+    if !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,@%+~[]".contains(c)) {
+        a.to_string()
     } else {
-        format!("'{}'", s.replace('\'', "'\"'\"'"))
+        format!("'{}'", a.replace('\'', "'\\''"))
     }
 }
 
-pub fn lead_line(fleet: &str) -> String {
-    format!("Your fleet lead is [{fleet}]-LEAD. Report completion and blockers to it by that name with SendMessage.")
+pub fn shell(cmd: &[String]) -> String {
+    cmd.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
 }
 
-pub fn plan_activate(env: &Env, a: &Agent) -> Plan {
-    let act = "activate";
-    if a.fleet == crate::model::HUB_TAG {
-        return Plan::refuse(act, a, "The hub is started by you with `ccl` in the admiralty directory, never from here.");
-    }
-    if a.fleet == "OTHER" {
-        return Plan::refuse(act, a, "Not a fleet agent.");
-    }
-    if a.is_lead {
-        return Plan::refuse(act, a, "Leads are started by you with `ccl` in the fleet directory, never from here.");
-    }
-    if !matches!(a.status, Status::Stopped | Status::NotRunning) {
-        return Plan::refuse(act, a, format!("{} is already running.", a.name));
-    }
-    let d = a.declared.as_ref();
-    let Some(dir) = d.and_then(|d| d.dir.clone()).or_else(|| a.primary.as_ref().map(|p| p.cwd.clone())) else {
-        return Plan::refuse(act, a, "No directory for this agent on this machine in FLEET_CONFIG.json.");
-    };
-    if !Path::new(&dir).is_dir() {
-        return Plan::refuse(act, a, format!("Directory does not exist: {dir}"));
-    }
-    let mut rows: Vec<_> = a
-        .primary
-        .iter()
-        .chain(a.stale.iter())
-        .filter(|r| r.kind == "background" && r.cwd.trim_end_matches('/') == dir.trim_end_matches('/'))
-        .collect();
-    rows.sort_by(|x, y| x.started_at.partial_cmp(&y.started_at).unwrap_or(std::cmp::Ordering::Equal));
-    let mode = d.map(|d| d.permission_mode.clone()).unwrap_or("bypassPermissions".into());
-    let mut cmd = vec![env.claude_bin.clone(), "--bg".into(), "--name".into(), a.name.clone(), "--permission-mode".into(), mode.clone()];
-    let mut details = vec![("dir".to_string(), dir.clone()), ("permission".to_string(), mode)];
-    let summary;
-    let mut prompt = None;
-    if let Some(last) = rows.last() {
-        cmd.extend(["--resume".into(), last.session_id.clone()]);
-        details.push(("resume".into(), format!("{}  (newest row for this name and dir)", last.session_id)));
-        summary = format!("Resume {} from its last session", a.name);
-    } else {
-        let Some(p) = d.and_then(|d| d.prompt.clone()) else {
-            return Plan::refuse(
-                act,
-                a,
-                "No prior session and no prompt recorded in FLEET_CONFIG.json; a cold launch needs one. Ask the fleet lead.",
-            );
-        };
-        details.push(("prompt".into(), "from FLEET_CONFIG.json + lead line (cold launch, no prior session)".into()));
-        summary = format!("Cold-launch {} (no prior session found)", a.name);
-        prompt = Some(format!("{p}\n\n{}", lead_line(&a.fleet)));
-    }
-    if !d.map(|d| d.bg_isolation).unwrap_or(false) {
-        cmd.extend(["--settings".into(), SETTINGS_NO_ISOLATION.into()]);
-    }
-    if let Some(p) = prompt {
-        cmd.push(p);
-    }
-    Plan { action: act.into(), agent: a.name.clone(), ok: true, summary, cmd, cwd: Some(dir), details, more: vec![] }
-}
+// ------------------------------------------------------------------ availability
 
-/// Deleting a session = removing its background job rows with `claude rm <id>`.
-/// Only dead sessions that are not fleet agents qualify. `rm` is job-mutating and
-/// goes through the native Claude Code binary: on an Acme (ACME) box the
-/// `claude` wrapper on PATH swallows `rm` as a chat prompt and changes nothing.
-pub fn plan_delete(env: &Env, a: &Agent) -> Plan {
-    let act = "delete";
-    if a.fleet == crate::model::HUB_TAG {
-        return Plan::refuse(act, a, "The hub is never deleted from here.");
+/// Is `act` open for `target`? `Err` carries the reason shown to the user.
+pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Result<(), String> {
+    if act.needs_mux() && !caps.open {
+        return Err(MONITOR_ONLY.into());
     }
-    if a.is_lead {
-        return Plan::refuse(act, a, "Leads are fleet agents and are never deleted from here.");
-    }
-    if a.declared.is_some() {
-        return Plan::refuse(act, a, format!("{} is a fleet agent (declared in FLEET_CONFIG.json); it is never deleted from here.", a.name));
-    }
-    let rows: Vec<&crate::sources::SessionRow> = a.primary.iter().chain(a.stale.iter()).collect();
-    if rows.iter().any(|r| r.live()) {
-        return Plan::refuse(act, a, format!("{} is live. Only stopped sessions can be deleted.", a.name));
-    }
-    let ids: Vec<String> = rows.iter().filter(|r| r.kind == "background").filter_map(|r| r.short_id.clone()).collect();
-    if ids.is_empty() {
-        return Plan::refuse(act, a, "Nothing to delete: this session left no background job row, only its transcript.");
-    }
-    let bin = env.native_claude_bin.clone();
-    let mut cmds: Vec<Vec<String>> = ids.iter().map(|id| vec![bin.clone(), "rm".into(), id.clone()]).collect();
-    let first = cmds.remove(0);
-    Plan {
-        action: act.into(),
-        agent: a.name.clone(),
-        ok: true,
-        summary: format!("Delete {} ({} job row{})", a.name, ids.len(), if ids.len() == 1 { "" } else { "s" }),
-        cmd: first,
-        cwd: None,
-        details: vec![
-            ("job rows".into(), ids.join(" ")),
-            ("binary".into(), bin),
-            ("keeps".into(), "the transcripts (`claude --resume <session>` still works)".into()),
-        ],
-        more: cmds,
-    }
-}
-
-pub fn plan_attach(env: &Env, a: &Agent, in_tmux: bool) -> Plan {
-    let act = "attach";
-    let Some(p) = a.primary.as_ref().filter(|p| p.live()) else {
-        return Plan::refuse(act, a, format!("{} is not running. Activate it first (a).", a.name));
-    };
-    let Some(short) = p.short_id.clone().filter(|_| p.kind == "background") else {
-        return Plan::refuse(
-            act,
-            a,
-            format!(
-                "{} is an interactive session: go to its own terminal. Claude Code has no supported command to message it from outside.",
-                a.name
-            ),
-        );
-    };
-    let attach = vec![env.claude_bin.clone(), "attach".into(), short.clone()];
-    let (cmd, how) = if in_tmux {
-        let line = attach.iter().map(|x| shell_quote(x)).collect::<Vec<_>>().join(" ");
-        (vec!["tmux".into(), "split-window".into(), "-h".into(), line], "new tmux pane")
-    } else {
-        (attach, "this terminal (admiralty-watch suspends until you detach)")
-    };
-    Plan {
-        action: act.into(),
-        agent: a.name.clone(),
-        ok: true,
-        summary: format!("Attach to {} in a terminal", a.name),
-        cmd,
-        cwd: None,
-        details: vec![("session".into(), short), ("opens in".into(), how.into())],
-        more: vec![],
-    }
-}
-
-fn stamp() -> String {
-    // local time via libc, `YYYY-MM-DDTHH:MM:SS`
-    unsafe {
-        let t = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        libc::localtime_r(&t, &mut tm);
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-            tm.tm_year + 1900,
-            tm.tm_mon + 1,
-            tm.tm_mday,
-            tm.tm_hour,
-            tm.tm_min,
-            tm.tm_sec
-        )
-    }
-}
-
-pub fn log(env: &Env, plan: &Plan, rc: i32, out: &str) {
-    if let Some(dir) = env.action_log.parent() {
-        let _ = fs::create_dir_all(dir);
-    }
-    let tail: String = out.chars().rev().take(2000).collect::<Vec<_>>().into_iter().rev().collect();
-    let rec = json!({"at": stamp(), "action": plan.action, "agent": plan.agent, "cwd": plan.cwd,
-                     "cmd": plan.cmd, "rc": rc, "out": tail});
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&env.action_log) {
-        let _ = writeln!(f, "{rec}");
-    }
-}
-
-/// Run a planned command that returns on its own (`claude --bg`, `tmux split`).
-pub fn run_detached(env: &Env, plan: &Plan) -> (i32, String) {
-    let (mut rc, mut out) = (0, String::new());
-    for cmd in std::iter::once(&plan.cmd).chain(plan.more.iter()) {
-        let mut c = Command::new(&cmd[0]);
-        c.args(&cmd[1..]).stdin(Stdio::null());
-        if let Some(d) = &plan.cwd {
-            c.current_dir(d);
+    match (act, target) {
+        (Act::Save, _) => Ok(()),
+        (_, Target::None) => Err("nothing to act on here".into()),
+        (Act::Start, Target::Member(id)) => {
+            let m = find_member(snap, id).ok_or("not in the snapshot")?;
+            if live(m) && m.issues.is_empty() {
+                Err("already running".into())
+            } else {
+                Ok(())
+            }
         }
-        let (r, o) = match c.output() {
-            Ok(o) => (
-                o.status.code().unwrap_or(-1),
-                format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string(),
-            ),
-            Err(e) => (-1, e.to_string()),
-        };
-        if r != 0 && rc == 0 {
-            rc = r;
-        }
-        if !o.is_empty() {
-            out = if out.is_empty() { o } else { format!("{out}\n{o}") };
-        }
-    }
-    log(env, plan, rc, &out);
-    (rc, out)
-}
-
-/// Run in the user's terminal (attach without tmux). The caller leaves the TUI first.
-pub fn run_foreground(env: &Env, plan: &Plan) -> i32 {
-    let mut c = Command::new(&plan.cmd[0]);
-    c.args(&plan.cmd[1..]);
-    if let Some(d) = &plan.cwd {
-        c.current_dir(d);
-    }
-    let rc = c.status().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
-    log(env, plan, rc, "");
-    rc
-}
-
-// ------------------------------------------------------------------ messages
-
-/// Where a message typed in the TUI goes. Leads (and the hub) get it straight
-/// into their Herdr pane; an agent gets it through its fleet lead, which relays
-/// it with SendMessage. Delivery is `herdr agent prompt <pane> <text>`, which
-/// Herdr refuses while the target is blocked on an approval.
-#[derive(Clone, Debug)]
-pub struct MessagePlan {
-    pub ok: bool,
-    /// the agent the user means to reach
-    pub to: String,
-    /// the session that actually receives the text (the agent itself, or its lead)
-    pub via: String,
-    pub relay: bool,
-    pub pane: Option<crate::herdr::Pane>,
-    pub summary: String,
-}
-
-pub fn plan_message(env: &Env, a: &Agent, lead: Option<&Agent>, pane_of: &dyn Fn(&str) -> Option<crate::herdr::Pane>) -> MessagePlan {
-    let refuse = |why: String| MessagePlan { ok: false, to: a.name.clone(), via: String::new(), relay: false, pane: None, summary: why };
-    if env.herdr_bin.is_none() {
-        return refuse("Messages go through Herdr; not running inside Herdr (HERDR_ENV is not 1).".into());
-    }
-    if !a.live() {
-        return refuse(format!("{} is not running. Activate it first (a).", a.name));
-    }
-    let direct = a.is_lead || a.fleet == crate::model::HUB_TAG;
-    if direct {
-        return match pane_of(&a.key) {
-            Some(p) => MessagePlan {
-                ok: true,
-                to: a.name.clone(),
-                via: a.name.clone(),
-                relay: false,
-                summary: format!("to {} in Herdr pane {}", a.name, p.pane_id),
-                pane: Some(p),
-            },
-            None => refuse(format!("No Herdr pane hosts {}; there is no other supported way to type into it.", a.name)),
-        };
-    }
-    if a.fleet == "OTHER" {
-        return refuse("Not a fleet agent: there is no lead to relay through.".into());
-    }
-    let Some(lead) = lead.filter(|l| l.live()) else {
-        return refuse(format!("[{}]-LEAD is not running, so nothing can relay to {}.", a.fleet, a.name));
-    };
-    match pane_of(&lead.key) {
-        Some(p) => MessagePlan {
-            ok: true,
-            to: a.name.clone(),
-            via: lead.name.clone(),
-            relay: true,
-            summary: format!("to {} via {} (Herdr pane {}), which relays it", a.name, lead.name, p.pane_id),
-            pane: Some(p),
+        (Act::Start, Target::Squadron(id)) => available(caps, snap, &Target::Member(id.clone()), act),
+        (Act::Start, Target::Fleet(id)) => available(caps, snap, &Target::Member(id.clone()), act),
+        (Act::Start, _) => Err("start names a member".into()),
+        (Act::Up, Target::Fleet(id)) => match snap.fleets.iter().find(|f| &f.id == id) {
+            Some(f) if f.machine.is_some() => Ok(()),
+            Some(_) => Err("this fleet does not run on this machine".into()),
+            None => Err("not in the snapshot".into()),
         },
-        None => refuse(format!("No Herdr pane hosts {}, so the message cannot be handed to it.", lead.name)),
+        (Act::Up, _) => Err("up is for a fleet (select its band)".into()),
+        (Act::Open, Target::Member(id)) => {
+            let m = find_member(snap, id).ok_or("not in the snapshot")?;
+            let s = m.session.as_ref().filter(|s| s.pid.is_some()).ok_or("not running; `a` starts it")?;
+            if s.kind != "background" {
+                return Err(if m.pane.is_some() {
+                    "interactive: enter jumps to its pane".into()
+                } else {
+                    "interactive: it lives in the terminal that started it".into()
+                });
+            }
+            Ok(())
+        }
+        (Act::Open, Target::Stowaway(sid)) => match snap.stowaways.iter().find(|s| &s.session_id == sid) {
+            Some(s) if s.pid.is_some() && s.kind == "background" => Ok(()),
+            Some(s) if s.pid.is_some() => Err("interactive: it lives in the terminal that started it".into()),
+            _ => Err("not running".into()),
+        },
+        (Act::Open, _) => Err("open names a running session".into()),
+        (Act::Stop, Target::Member(id)) => {
+            let m = find_member(snap, id).ok_or("not in the snapshot")?;
+            if live(m) || m.extra_rows.iter().any(|r| r.pid.is_some()) {
+                Ok(())
+            } else {
+                Err("not running".into())
+            }
+        }
+        (Act::Stop, _) => Err("stop names a member".into()),
+        (Act::Relaunch, Target::Member(id)) => {
+            let m = find_member(snap, id).ok_or("not in the snapshot")?;
+            if m.session.is_some() {
+                Ok(())
+            } else {
+                Err("no session to relaunch; `a` starts it".into())
+            }
+        }
+        (Act::Relaunch, _) => Err("relaunch names a member".into()),
+        (Act::Sweep, Target::Member(id)) => {
+            let m = find_member(snap, id).ok_or("not in the snapshot")?;
+            if m.extra_rows.is_empty() {
+                Err("no stale job rows".into())
+            } else {
+                Ok(())
+            }
+        }
+        (Act::Sweep, Target::Fleet(_)) => Ok(()),
+        (Act::Sweep, _) => Err("sweep names a member or a fleet".into()),
+        (Act::Rm, Target::Stowaway(sid)) => match snap.stowaways.iter().find(|s| &s.session_id == sid) {
+            Some(s) if s.pid.is_none() => Ok(()),
+            Some(_) => Err("live: stop it first".into()),
+            None => Err("not in the snapshot".into()),
+        },
+        (Act::Rm, Target::ExtraRow { owner, session_id }) => {
+            let m = find_member(snap, owner).ok_or("not in the snapshot")?;
+            match m.extra_rows.iter().find(|r| &r.session_id == session_id) {
+                Some(r) if r.pid.is_none() => Ok(()),
+                Some(_) => Err("a live copy: stop it first (see the issue's fix)".into()),
+                None => Err("not in the snapshot".into()),
+            }
+        }
+        (Act::Rm, Target::Member(id)) => available(caps, snap, &Target::Member(id.clone()), Act::Sweep),
+        (Act::Rm, _) => Err("rm names a job row, a stowaway or a member".into()),
+        (Act::Adopt, Target::Stowaway(_)) => Ok(()),
+        (Act::Adopt, _) => Err("adopt is for stowaways".into()),
+        (Act::ConfigRm, Target::Member(id)) if id.role() == Role::Ship => Ok(()),
+        (Act::ConfigRm, Target::Squadron(_) | Target::Fleet(_)) => Ok(()),
+        (Act::ConfigRm, _) => Err("remove names a fleet, a squadron or a ship".into()),
     }
 }
 
-/// The text the receiving session gets.
-pub fn message_text(plan: &MessagePlan, text: &str) -> String {
-    if plan.relay {
-        format!(
-            "[admiralty-watch] Message from the user for {}. Relay it to {} with SendMessage, unchanged:\n\n{}",
-            plan.to, plan.to, text
-        )
+// ------------------------------------------------------------------ plans
+
+fn member_id(target: &Target) -> Option<Id> {
+    match target {
+        Target::Member(id) | Target::Squadron(id) | Target::Fleet(id) => Some(id.clone()),
+        Target::ExtraRow { owner, .. } => Some(owner.clone()),
+        _ => None,
+    }
+}
+
+/// The pane a member opens in: a tab in its fleet's workspace, labelled with its name.
+pub fn place_for(id: &Id) -> Place {
+    Place::Tab { workspace: id.fleet().to_string(), label: id.name() }
+}
+
+fn with_panes(act: Act, command: String, plan: Plan) -> Pending {
+    let panes = plan
+        .steps
+        .iter()
+        .filter(|s| nimitz_core::sessions::is_pane_step(s))
+        .map(|s| (s.clone(), place_for(s.id.as_ref().unwrap_or(&Id("ADMIRALTY".into())))))
+        .collect();
+    Pending { act, command, plan, config: false, panes }
+}
+
+/// Build the core plan for `act` on `target`; `caps` are what the loader's
+/// multiplexer reported; `adopt_as` names the identity for adopt.
+pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act, adopt_as: Option<&Id>) -> Result<Pending, String> {
+    available(caps, snap, target, act)?;
+    let env = &ctx.env;
+    let user = Caller::User;
+    let p = match (act, target) {
+        (Act::Start, _) => {
+            let id = member_id(target).ok_or("no member")?;
+            with_panes(act, format!("nimitz start {id}"), nimitz_core::sessions::plan_start(env, snap, &id, &user, false))
+        }
+        (Act::Up, Target::Fleet(id)) => with_panes(act, format!("nimitz up {id}"), nimitz_core::sessions::plan_up(env, snap, id.fleet(), &user)),
+        (Act::Stop, _) => {
+            let id = member_id(target).ok_or("no member")?;
+            with_panes(act, format!("nimitz stop {id}"), nimitz_core::sessions::plan_stop(env, snap, &id, &user))
+        }
+        (Act::Relaunch, _) => {
+            let id = member_id(target).ok_or("no member")?;
+            with_panes(act, format!("nimitz relaunch {id}"), nimitz_core::sessions::plan_relaunch(env, snap, &id, &user))
+        }
+        (Act::Sweep, Target::Fleet(_)) => with_panes(act, "nimitz sweep".into(), nimitz_core::sessions::plan_sweep(env, snap, None, &user)),
+        (Act::Sweep, _) => {
+            let id = member_id(target).ok_or("no member")?;
+            with_panes(act, format!("nimitz sweep {id}"), nimitz_core::sessions::plan_sweep(env, snap, Some(&id), &user))
+        }
+        (Act::Rm, Target::Stowaway(sid)) => {
+            let short = snap.stowaways.iter().find(|s| &s.session_id == sid).map(short_of).unwrap_or(sid.clone());
+            with_panes(act, format!("nimitz rm {short}"), nimitz_core::sessions::plan_rm(env, snap, &short, &user))
+        }
+        (Act::Rm, Target::ExtraRow { owner, session_id }) => {
+            let short = find_member(snap, owner)
+                .and_then(|m| m.extra_rows.iter().find(|r| &r.session_id == session_id))
+                .map(short_of)
+                .unwrap_or(session_id.clone());
+            with_panes(act, format!("nimitz rm {short}"), nimitz_core::sessions::plan_rm(env, snap, &short, &user))
+        }
+        (Act::Rm, Target::Member(id)) => with_panes(act, format!("nimitz rm {id}"), nimitz_core::sessions::plan_rm(env, snap, &id.0, &user)),
+        (Act::Adopt, Target::Stowaway(sid)) => {
+            let id = adopt_as.ok_or("adopt needs an identity")?;
+            let short = snap.stowaways.iter().find(|s| &s.session_id == sid).map(short_of).unwrap_or(sid.clone());
+            with_panes(act, format!("nimitz adopt {short} {id}"), nimitz_core::sessions::plan_adopt(env, snap, sid, id, &user))
+        }
+        (Act::Open, _) => plan_open(ctx, snap, target)?,
+        (Act::ConfigRm, _) => {
+            let id = member_id(target).ok_or("no member")?;
+            let command = match id.role() {
+                Role::Admiral => format!("nimitz fleet rm {id}"),
+                Role::Commodore => format!("nimitz squadron rm {} {}", id.fleet(), id.squadron().unwrap_or("")),
+                _ => format!("nimitz ship rm {id}"),
+            };
+            Pending { act, command, plan: nimitz_core::config::plan_rm(env, &id), config: true, panes: vec![] }
+        }
+        _ => return Err(format!("{} does not apply here", act.word())),
+    };
+    Ok(p)
+}
+
+/// `open`: attach to a running background session in a new pane.
+fn plan_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<Pending, String> {
+    let (id, s) = match target {
+        Target::Member(id) => {
+            let m = find_member(snap, id).ok_or("not in the snapshot")?;
+            (id.clone(), m.session.clone().ok_or("no session")?)
+        }
+        Target::Stowaway(sid) => {
+            let s = snap.stowaways.iter().find(|s| &s.session_id == sid).cloned().ok_or("not in the snapshot")?;
+            (Id(format!("stowaway {}", short_of(&s))), s)
+        }
+        _ => return Err("open names a running session".into()),
+    };
+    let short = short_of(&s);
+    let step = Step {
+        id: Some(id.clone()),
+        cmd: nimitz_core::claude::attach(&ctx.env, &short),
+        cwd: Some(s.cwd.clone()),
+        why: format!("attach to {} in a new pane; detaching leaves it running", s.name),
+    };
+    let place = match target {
+        Target::Member(id) => place_for(id),
+        _ => Place::Tab { workspace: "STOWAWAYS".into(), label: s.name.clone() },
+    };
+    let plan = Plan { summary: format!("open {}", s.name), steps: vec![step.clone()], ..Default::default() };
+    let command = match target {
+        Target::Member(id) => format!("nimitz open {id}"),
+        _ => shell(&step.cmd),
+    };
+    Ok(Pending { act: Act::Open, command, plan, config: false, panes: vec![(step, place)] })
+}
+
+// ------------------------------------------------------------------ running
+
+/// Open the plan's pane steps in the multiplexer (main thread: the adapter lives here).
+pub fn open_panes(ctx: &Ctx, p: &Pending) -> Result<Vec<PaneRef>, String> {
+    let mut out = vec![];
+    for (step, place) in &p.panes {
+        let cwd = PathBuf::from(step.cwd.clone().unwrap_or_else(|| ".".into()));
+        match ctx.mux.open(&step.cmd, &cwd, place.clone()) {
+            Ok(r) => out.push(r),
+            Err(e) => return Err(format!("{}: {e}", step.id.as_ref().map(|i| i.0.as_str()).unwrap_or("pane"))),
+        }
+    }
+    Ok(out)
+}
+
+/// Run the non-pane part of the plan (any thread). Core skips pane steps itself.
+pub fn apply(env: &Env, p: &Pending) -> Outcome {
+    if p.act == Act::Open {
+        return Outcome { verified: true, ..Default::default() };
+    }
+    if p.config {
+        nimitz_core::config::apply_config_plan(env, &p.plan)
+    } else {
+        nimitz_core::sessions::apply(env, &p.plan)
+    }
+}
+
+/// One line for the footer: what happened.
+pub fn outcome_text(p: &Pending, o: &Outcome) -> (bool, String) {
+    let failed = o.ran.iter().find(|(_, rc, _)| *rc != 0);
+    if let Some(i) = o.issues.first() {
+        let fix = i.fix.as_ref().map(|f| format!("  fix: {f}")).unwrap_or_default();
+        return (false, format!("{}: {} [{}] {}{fix}", p.act.word(), p.plan.summary, i.code, i.message));
+    }
+    if let Some((s, rc, text)) = failed {
+        return (false, format!("{}: step failed (exit {rc}): {} {}", p.act.word(), shell(&s.cmd), text.lines().last().unwrap_or("")));
+    }
+    let checked = if o.verified || p.config { "verified" } else { "done" };
+    (true, format!("{}: {} ({} steps, {checked})", p.act.word(), p.plan.summary, o.ran.len()))
+}
+
+/// Append one line to the action log (never fails the action).
+pub fn log(env: &Env, what: &str, detail: &str) {
+    let path = env.state.join("admiralty-actions.log");
+    if let Some(d) = path.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let line = serde_json::json!({"ts": nimitz_core::evidence::now(), "what": what, "detail": detail});
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+// ------------------------------------------------------------------ panes, messages
+
+pub fn pane_ref(panes: &[Pane], pane_id: &str) -> Option<PaneRef> {
+    panes.iter().find(|p| p.pane.pane_id == pane_id).map(|p| p.pane.clone())
+}
+
+/// Where `enter` jumps: the row's pane, if the multiplexer can focus it.
+pub fn jump_target(caps: Caps, pane_id: Option<&str>, panes: &[Pane]) -> Result<PaneRef, String> {
+    if !caps.focus {
+        return Err(MONITOR_ONLY.into());
+    }
+    let id = pane_id.ok_or("no pane hosts this session")?;
+    pane_ref(panes, id).ok_or_else(|| format!("pane {id} is gone"))
+}
+
+/// Who `m` reaches and through which pane.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MessagePlan {
+    /// the member the message is for
+    pub to: String,
+    /// whose pane it is typed into
+    pub via: String,
+    pub pane: PaneRef,
+    /// true: typed to the commodore, who relays it with SendMessage
+    pub relay: bool,
+}
+
+pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target) -> Result<MessagePlan, String> {
+    if !caps.type_text {
+        return Err(MONITOR_ONLY.into());
+    }
+    let Target::Member(id) = target else {
+        return Err(match target {
+            Target::Stowaway(_) => "a stowaway has no chain of command; adopt it first".into(),
+            Target::Fleet(id) | Target::Squadron(id) => return plan_message(caps, snap, panes, &Target::Member(id.clone())),
+            _ => "message names a member".into(),
+        });
+    };
+    let m = find_member(snap, id).ok_or("not in the snapshot")?;
+    let (via_m, relay) = match m.role {
+        Role::Admiral | Role::Commodore => (m, false),
+        Role::Ship | Role::Tender => {
+            let sq = id.parent().ok_or("no squadron")?;
+            (find_member(snap, &sq).ok_or("its commodore is not in the snapshot")?, true)
+        }
+    };
+    if !live(via_m) {
+        return Err(if relay {
+            format!("its commodore {} is not running; relay goes through it", via_m.expected_name)
+        } else {
+            "not running".into()
+        });
+    }
+    let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into", via_m.expected_name))?;
+    let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone"))?;
+    if relay && !live(m) {
+        return Err(format!("{} is not running", m.expected_name));
+    }
+    Ok(MessagePlan { to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, relay })
+}
+
+/// The text typed into the pane.
+pub fn message_text(p: &MessagePlan, text: &str) -> String {
+    if p.relay {
+        format!("Message from the user for {}. Relay it to them with SendMessage, word for word: {text}", p.to)
     } else {
         text.to_string()
     }
 }
 
-pub fn send_message(env: &Env, plan: &MessagePlan, text: &str) -> (i32, String) {
-    let (Some(bin), Some(pane)) = (env.herdr_bin.as_ref(), plan.pane.as_ref()) else {
-        return (-1, plan.summary.clone());
-    };
-    let body = message_text(plan, text);
-    let cmd = vec![bin.clone(), "agent".into(), "prompt".into(), pane.pane_id.clone(), body];
-    let (rc, out) = match Command::new(&cmd[0]).args(&cmd[1..]).stdin(Stdio::null()).output() {
-        Ok(o) => (
-            o.status.code().unwrap_or(-1),
-            format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string(),
-        ),
-        Err(e) => (-1, e.to_string()),
-    };
-    let logged = Plan {
-        action: "message".into(),
-        agent: plan.to.clone(),
-        ok: true,
-        summary: plan.summary.clone(),
-        cmd,
-        cwd: None,
-        details: vec![],
-        more: vec![],
-    };
-    log(env, &logged, rc, &out);
-    (rc, out)
+/// Write a file atomically (temp + rename).
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path)
 }
