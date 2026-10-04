@@ -133,6 +133,11 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         if let Some(owner) = owner {
             by_identity.entry(owner.to_string()).or_default().push(r.clone());
             claimed.insert(r.session_id.clone());
+            // another identity's session carrying these labels: an impostor of
+            // the labelled one, too (BUG-55)
+            if let Some(o) = by_labels.filter(|o| *o != owner && r.live()) {
+                misplaced.push((o.to_string(), r.clone()));
+            }
         } else if let Some(o) = by_labels {
             misplaced.push((o.to_string(), r.clone()));
             claimed.insert(r.session_id.clone());

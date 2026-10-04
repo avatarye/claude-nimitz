@@ -1487,3 +1487,54 @@ fn no_plan_forks_a_session() {
         assert!(sessions::no_fork(&snap, &sessions::plan_up(&w.env, &snap, f.id.fleet(), &Caller::User)));
     }
 }
+
+#[test]
+fn bug55_an_impostor_with_the_labels_never_counts_as_the_member() {
+    let w = world();
+    let id = w.ship("CLEAN");
+    let elsewhere = w.member(&w.snap(), &w.ship("STOPPED")).cwd.unwrap();
+    let impostor = |w: &World| {
+        let (rc, out) = claude::run(
+            &[w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "impostor".into(), "--settings".into(), claude::settings_json(&w.env, &id, true), "hi".into()],
+            Some(&elsewhere),
+        );
+        assert_eq!(rc, 0, "{out}");
+        out.trim().to_string()
+    };
+    // a plan made before the impostor appears still runs to the end: the
+    // impostor neither skips the resume as "live already" nor binds
+    let plan = sessions::plan_relaunch(&w.env, &w.snap(), &id, &Caller::User);
+    let imp = impostor(&w);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?} {:?}", out.ran.iter().map(|r| &r.2).collect::<Vec<_>>(), out.issues);
+    assert!(!out.ran.iter().any(|r| r.2.starts_with("skipped")), "{:?}", out.ran);
+    let s = w.member(&w.snap(), &id).session.unwrap();
+    assert!(s.pid.is_some() && s.cwd.ends_with("clean"), "{s:?}");
+    // with the impostor live, start and relaunch refuse before any stop or rm
+    let snap = w.snap();
+    let p = sessions::plan_relaunch(&w.env, &snap, &id, &Caller::User);
+    assert!(!p.ok() && has(&p.refusals, "labels.mismatch"), "{:?}", p.refusals);
+    assert_eq!(p.refusals.iter().find(|i| i.code == "labels.mismatch").unwrap().fix.as_deref(), Some(format!("nimitz stop {imp}").as_str()));
+    assert!(sessions::apply(&w.env, &p).ran.is_empty(), "nothing ran");
+}
+
+#[test]
+fn name_taken_by_a_hand_copy_in_the_folder_offers_only_stop() {
+    let w = world();
+    let snap = w.snap();
+    // TAKEN's holder runs in TAKEN's own folder: stop, not adopt
+    let i = w.member(&snap, &w.ship("TAKEN")).issues.into_iter().find(|i| i.code == "name.taken").unwrap();
+    assert!(!i.fix.as_deref().unwrap().contains("adopt"), "{:?}", i.fix);
+    // a holder elsewhere may be adopted
+    let rand = w.base.join("elsewhere");
+    std::fs::create_dir_all(&rand).unwrap();
+    let f = w.base.join("claude_home/.claude.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+    v["projects"][rand.canonicalize().unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
+    std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    let id = w.ship("FRESH");
+    let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), id.name(), "x".into()], rand.to_str());
+    assert_eq!(rc, 0, "{out}");
+    let i = w.member(&w.snap(), &id).issues.into_iter().find(|i| i.code == "name.taken").unwrap();
+    assert!(i.fix.as_deref().unwrap().contains("or adopt it"), "{:?}", i.fix);
+}

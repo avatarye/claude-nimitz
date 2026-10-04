@@ -265,7 +265,12 @@ pub fn name_taken_issue(m: &Member, others: &[SessionInfo]) -> Option<Issue> {
         "name.taken",
         Severity::Error,
         format!("{}'s name {:?} is held by live session {} in {}", m.id, m.expected_name, holder.session_id, holder.cwd),
-        Some(format!("nimitz stop {}  # or adopt it", holder.short_id.as_deref().unwrap_or(&holder.session_id))),
+        // a hand copy in the member's own folder may hold no history (a fork
+        // stopped before its first turn, P0.9 A2): stop it, never adopt it
+        Some(match m.cwd.as_deref().filter(|c| same_folder(c, &holder.cwd)) {
+            Some(_) => format!("nimitz stop {}", holder.short_id.as_deref().unwrap_or(&holder.session_id)),
+            None => format!("nimitz stop {}  # or adopt it", holder.short_id.as_deref().unwrap_or(&holder.session_id)),
+        }),
         Some(m.id.clone()),
     ))
 }
@@ -1315,13 +1320,19 @@ pub const BIND_TIMEOUT_S: f64 = 15.0;
 
 /// Wait for the SessionStart event that binds `id` to a session, appended at or
 /// after `since`. Returns the session id.
-fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64) -> Option<String> {
+fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64, cwd: Option<&str>) -> Option<String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(timeout_s);
     let mut cache = crate::evidence::FileCache::default();
     loop {
+        let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+        // an impostor starting elsewhere with the same labels does not bind (BUG-55)
+        let elsewhere = |sid: &str| match (cwd, rows.iter().find(|r| r.session_id == sid)) {
+            (Some(c), Some(r)) => !same_folder(&r.cwd, c),
+            _ => false,
+        };
         for e in crate::evidence::events_cached(env, &mut cache).iter().rev() {
             if e.ts >= since && e.event == "SessionStart" && e.labels.get("NIMITZ_ID") == Some(&id.0) {
-                if let Some(sid) = &e.session_id {
+                if let Some(sid) = e.session_id.as_ref().filter(|s| !elsewhere(s)) {
                     return Some(sid.clone());
                 }
             }
@@ -1348,7 +1359,7 @@ pub fn bind_started(
     via: &str,
     timeout_s: f64,
 ) -> Result<String, Vec<Issue>> {
-    let Some(sid) = wait_for_binding(env, id, since, timeout_s) else {
+    let Some(sid) = wait_for_binding(env, id, since, timeout_s, cwd) else {
         return Err(vec![issue(
             "lineage.broken",
             Severity::Error,
@@ -1372,12 +1383,12 @@ pub fn bind_started(
         return Err(vec![issue("lineage.broken", Severity::Error, format!("registry write failed: {e}"), None, Some(id.clone()))]);
     }
     claim_folder(env, id, cwd, &sid);
-    let problems = verify_live(env, id, &sid);
+    let problems = verify_live(env, id, &sid, cwd);
     if problems.is_empty() { Ok(sid) } else { Err(problems) }
 }
 
 /// Re-read the files: `sid` is live, carries `id`'s name and `id`'s labels.
-fn verify_live(env: &Env, id: &Id, sid: &str) -> Vec<Issue> {
+fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
     let mut out = vec![];
     let mut cache = crate::evidence::FileCache::default();
     let rows = crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default();
@@ -1387,6 +1398,15 @@ fn verify_live(env: &Env, id: &Id, sid: &str) -> Vec<Issue> {
     };
     if !row.live() {
         out.push(issue("lineage.broken", Severity::Error, format!("{id}'s new session {sid} is not live"), None, Some(id.clone())));
+    }
+    if let Some(c) = cwd.filter(|c| !same_folder(&row.cwd, c)) {
+        out.push(issue(
+            "labels.mismatch",
+            Severity::Error,
+            format!("{id}'s session {sid} runs in {}, not its folder {c}", row.cwd),
+            Some(format!("nimitz stop {}", row.short_id.as_deref().unwrap_or(sid))),
+            Some(id.clone()),
+        ));
     }
     if row.name != id.name() {
         out.push(issue(
@@ -1452,13 +1472,13 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     // labelled and named right, redoing stop, rm and resume would only undo the
     // other one's work: skip it ("already relaunched").
     for id in &waited {
-        let done = live_session_of(env, id).map(|r| r.name == id.name()).unwrap_or(false);
+        let done = live_session_of(env, id, step_folder(plan, id)).map(|r| r.name == id.name()).unwrap_or(false);
         let relaunching = plan.steps.iter().any(|s| s.id.as_ref() == Some(id) && matches!(classify(s), Kind::Relaunch | Kind::Stop { .. } | Kind::Rm { .. }));
         if done && relaunching {
             skipped.push(id.clone());
         }
     }
-    let mut started: Vec<(Id, String)> = vec![]; // (identity, session id) to verify again at the end
+    let mut started: Vec<(Id, String, Option<String>)> = vec![]; // (identity, session id, folder) to verify again
     for (at, step) in plan.steps.iter().enumerate() {
         let kind = classify(step);
         if step.id.as_ref().map(|i| skipped.contains(i)).unwrap_or(false) {
@@ -1470,8 +1490,8 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         if matches!(kind, Kind::Launch | Kind::Relaunch | Kind::Resume { .. }) {
             if let Some(id) = &step.id {
                 let live_now = match &kind {
-                    Kind::Resume { session_id } => live_row(env, |r| &r.session_id == session_id).is_some() || live_session_of(env, id).is_some(),
-                    _ => live_session_of(env, id).is_some(),
+                    Kind::Resume { session_id } => live_row(env, |r| &r.session_id == session_id).is_some() || live_session_of(env, id, step.cwd.as_deref()).is_some(),
+                    _ => live_session_of(env, id, step.cwd.as_deref()).is_some(),
                 };
                 if live_now {
                     skipped.push(id.clone());
@@ -1559,7 +1579,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 match bind_started(env, id, step.cwd.as_deref(), since, expect, via, BIND_TIMEOUT_S) {
                     Ok(sid) => {
                         clear_pending(env, id);
-                        started.push((id.clone(), sid))
+                        started.push((id.clone(), sid, step.cwd.clone()))
                     }
                     Err(mut issues) => {
                         // real Claude Code may print "Workspace not trusted ..." and
@@ -1591,8 +1611,8 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         }
     }
     // Verify again once every step ran (an rm must not have hit the new row).
-    for (id, sid) in &started {
-        out.issues.extend(verify_live(env, id, sid));
+    for (id, sid, cwd) in &started {
+        out.issues.extend(verify_live(env, id, sid, cwd.as_deref()));
     }
     out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() == plan.steps.len();
     out
@@ -1644,13 +1664,27 @@ fn live_row(env: &Env, pick: impl Fn(&crate::evidence::SessionRow) -> bool) -> O
 }
 
 /// A live session of `id` right now: its registry current, or a row with its labels.
-fn live_session_of(env: &Env, id: &Id) -> Option<crate::evidence::SessionRow> {
+/// A live session of `id` right now: its registry current, or a row with its
+/// labels **in its own folder** (`cwd`). A session carrying the labels in
+/// another folder is an impostor (BUG-30) and never counts (BUG-55).
+fn live_session_of(env: &Env, id: &Id, cwd: Option<&str>) -> Option<crate::evidence::SessionRow> {
     let current = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.current.clone());
     let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
     let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
+    let here = |r: &crate::evidence::SessionRow| cwd.map(|c| same_folder(&r.cwd, c)).unwrap_or(true);
     rows.into_iter().find(|r| {
-        (r.live() || r.unreadable) && (Some(&r.session_id) == current.as_ref() || labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0))
+        (r.live() || r.unreadable)
+            && (Some(&r.session_id) == current.as_ref() || (labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
     })
+}
+
+fn same_folder(a: &str, b: &str) -> bool {
+    crate::snapshot::norm_dir(a) == crate::snapshot::norm_dir(b)
+}
+
+/// The folder a plan runs `id`'s session steps in (its member folder).
+fn step_folder<'a>(plan: &'a Plan, id: &Id) -> Option<&'a str> {
+    plan.steps.iter().filter(|s| s.id.as_ref() == Some(id) && !matches!(classify(s), Kind::Stop { .. } | Kind::Rm { .. } | Kind::Config | Kind::Bind)).find_map(|s| s.cwd.as_deref())
 }
 
 /// A ship whose folder is shared between machines (one under `NIMITZ_HOME`, so

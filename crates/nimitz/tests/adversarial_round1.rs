@@ -658,7 +658,6 @@ fn bug50_a_git_repo_under_a_trusted_parent_is_not_just_info() {
 }
 
 #[test]
-#[ignore = "BUG-55"]
 fn bug55_relaunch_is_not_skipped_because_an_impostor_carries_the_labels() {
     // MISLABEL's live session carries CLEAN's labels (another folder). Relaunch of CLEAN removed its
     // row, then skipped the resume as "live already": CLEAN is left down while nimitz says OK.

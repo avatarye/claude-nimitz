@@ -502,7 +502,7 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
                 w.session(&id.name(), &cwd, bg(true, None));
             }
             "MISLABEL" => {
-                let other = Id::ship("MAIN", "ARGOS", "CLEAN");
+                let other = Id::ship("MAIN", "ARGOS", "TAKEN"); // an identity already in trouble, so CLEAN stays clean
                 let (_, sid) = w.session(&id.name(), &cwd, S { labels_of: Some(&other), ..bg(true, Some(&id)) });
                 w.bind(&id, &cwd, &sid, "launch");
             }
