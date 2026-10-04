@@ -645,6 +645,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
     let acting: Vec<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).chain(std::iter::once(id.clone())).collect();
     plan.warnings.retain(|i| i.code != "legacy" || i.id.as_ref().map(|x| acting.contains(x)).unwrap_or(true));
     dedup_issues(&mut plan);
+    mark_repairs(&mut plan);
     plan
 }
 
@@ -699,6 +700,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
         }
     }
     dedup_issues(&mut plan);
+    mark_repairs(&mut plan);
     plan
 }
 
@@ -730,6 +732,29 @@ fn in_dependency_order(ids: Vec<Id>, deps: &[(String, Vec<String>)]) -> Vec<Id> 
 /// member) instead of running itself? `apply` never runs these.
 pub fn is_pane_step(step: &Step) -> bool {
     classify(step) == Kind::Interactive
+}
+
+/// An issue the plan's own steps repair reads as such: `[INFO] will repair:`
+/// rather than an error about the very thing the plan is about to fix.
+fn mark_repairs(plan: &mut Plan) {
+    let relabels = |id: &Id| plan.steps.iter().any(|s| s.id.as_ref() == Some(id) && classify(s) == Kind::Relaunch);
+    let removes = |id: &Id| plan.steps.iter().any(|s| s.id.as_ref() == Some(id) && matches!(classify(s), Kind::Rm { .. }));
+    let fixed: Vec<bool> = plan
+        .warnings
+        .iter()
+        .map(|i| match (i.code.as_str(), &i.id) {
+            ("labels.missing" | "name.drift" | "folder.moved", Some(id)) => relabels(id),
+            ("copy.rows", Some(id)) => removes(id),
+            _ => false,
+        })
+        .collect();
+    for (i, f) in plan.warnings.iter_mut().zip(fixed) {
+        if f && !i.message.starts_with("will repair: ") {
+            i.severity = Severity::Info;
+            i.message = format!("will repair: {}", i.message);
+            i.fix = None;
+        }
+    }
 }
 
 fn dedup_issues(plan: &mut Plan) {
@@ -933,7 +958,17 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         .flat_map(|(_, m)| m.session.iter().chain(m.extra_rows.iter()))
         .chain(snap.stowaways.iter())
         .collect();
-    let Some(row) = all.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target) else {
+    // also a session carrying a member's labels in another folder (BUG-54: the
+    // labels.mismatch fix): not that member's row, so not in the lists above
+    let misplaced: Option<SessionInfo> = {
+        let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+        let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
+        rows.iter()
+            .find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target)
+            .filter(|r| labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(|o| binding.iter().any(|(_, m)| &m.id.0 == o)).unwrap_or(false))
+            .map(|r| r.info(Default::default()))
+    };
+    let Some(row) = all.iter().copied().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target).or(misplaced.as_ref()) else {
         refuse(&mut plan, "session.unknown", format!("{target} names no identity and no job row"), None, None);
         return plan;
     };
@@ -1227,6 +1262,21 @@ fn classify(step: &Step) -> Kind {
     }
 }
 
+/// The fix for a failed launch, resume or relaunch: the trust prompt when
+/// Claude Code said the folder is not trusted (its text: "Workspace not
+/// trusted. Run `claude` in <dir> once"); after an `rm` of the row, the start
+/// that resumes from the transcript.
+fn failure_fix(step: &Step, text: &str, after_rm: bool) -> Option<String> {
+    let t = text.to_lowercase();
+    let trust = (t.contains("workspace not trusted") || t.contains("not trusted"))
+        .then(|| crate::check::untrusted_fix(std::path::Path::new(step.cwd.as_deref().unwrap_or("."))));
+    let resume = step.id.as_ref().filter(|_| after_rm).map(|id| format!("nimitz start {id}  # resumes from its transcript"));
+    match (trust, resume) {
+        (Some(t), Some(r)) => Some(format!("{t}; then {r}")),
+        (t, r) => t.or(r),
+    }
+}
+
 /// The session id a `--resume <id>` step continues.
 fn resumed_id(step: &Step) -> Option<String> {
     let i = step.cmd.iter().position(|a| a == "--resume")?;
@@ -1350,7 +1400,19 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     let mut lock_ids: Vec<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).collect();
     lock_ids.sort();
     lock_ids.dedup();
-    let _locks: Vec<IdLock> = match lock_ids.iter().map(|id| lock_identity(env, id)).collect::<Result<Vec<_>, _>>() {
+    let mut waited: Vec<Id> = vec![];
+    let _locks: Vec<IdLock> = match lock_ids
+        .iter()
+        .map(|id| {
+            lock_identity(env, id).map(|(l, w)| {
+                if w {
+                    waited.push(id.clone());
+                }
+                l
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+    {
         Ok(l) => l,
         Err(e) => {
             out.issues.push(issue("step.failed", Severity::Error, format!("cannot take the identity lock: {e}"), Some("nimitz doctor".into()), None));
@@ -1358,11 +1420,22 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         }
     };
     let mut skipped: Vec<Id> = vec![];
+    // Re-plan under the lock: when another nimitz held an identity's lock, it
+    // may have started or relaunched it meanwhile. If that member is now live,
+    // labelled and named right, redoing stop, rm and resume would only undo the
+    // other one's work: skip it ("already relaunched").
+    for id in &waited {
+        let done = live_session_of(env, id).map(|r| r.name == id.name()).unwrap_or(false);
+        let relaunching = plan.steps.iter().any(|s| s.id.as_ref() == Some(id) && matches!(classify(s), Kind::Relaunch | Kind::Stop { .. } | Kind::Rm { .. }));
+        if done && relaunching {
+            skipped.push(id.clone());
+        }
+    }
     let mut started: Vec<(Id, String)> = vec![]; // (identity, session id) to verify again at the end
     for (at, step) in plan.steps.iter().enumerate() {
         let kind = classify(step);
         if step.id.as_ref().map(|i| skipped.contains(i)).unwrap_or(false) {
-            out.ran.push((step.clone(), 0, "skipped: a concurrent start already brought this member up".into()));
+            out.ran.push((step.clone(), 0, "skipped: already relaunched (or started) by a concurrent nimitz".into()));
             continue;
         }
         // Re-plan under the lock: a launch for a member that is live by now, or a
@@ -1435,15 +1508,13 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         let since = crate::evidence::now() - 0.001;
         let (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
         out.ran.push((step.clone(), rc, text.clone()));
+        let after_rm = at > 0 && plan.steps.get(at - 1).map(|p| matches!(classify(p), Kind::Rm { .. }) && p.id == step.id).unwrap_or(false);
         if rc != 0 {
-            // real Claude Code refuses an untrusted folder at launch (BUG-50)
-            let fix = (text.contains("Workspace not trusted") || text.contains("not trusted"))
-                .then(|| crate::check::untrusted_fix(std::path::Path::new(step.cwd.as_deref().unwrap_or("."))));
             out.issues.push(issue(
                 "step.failed",
                 Severity::Error,
                 format!("step failed ({rc}): {} -> {text}", step.cmd.join(" ")),
-                fix,
+                failure_fix(step, &text, after_rm),
                 step.id.clone(),
             ));
             return out; // a failed step stops the plan; nothing after it is safe
@@ -1463,9 +1534,16 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         clear_pending(env, id);
                         started.push((id.clone(), sid))
                     }
-                    Err(issues) => {
+                    Err(mut issues) => {
+                        // real Claude Code may print "Workspace not trusted ..." and
+                        // exit 0; then only the missing SessionStart shows it
+                        if let Some(f) = failure_fix(step, &text, after_rm) {
+                            for i in issues.iter_mut() {
+                                i.fix = Some(f.clone());
+                            }
+                        }
                         out.issues.extend(issues);
-                        return out; // the next steps (rm of the old row) assume this one worked
+                        return out; // the next steps assume this one worked
                     }
                 }
             }
@@ -1519,16 +1597,18 @@ pub fn pending_relaunch(env: &Env, id: &Id) -> Option<String> {
 /// An identity's start lock (flock on `NIMITZ_STATE/locks/<id>.lock`); released on drop.
 pub struct IdLock(#[allow(dead_code)] std::fs::File);
 
-pub fn lock_identity(env: &Env, id: &Id) -> std::io::Result<IdLock> {
+/// Take `id`'s start lock; the flag says whether another nimitz held it first.
+pub fn lock_identity(env: &Env, id: &Id) -> std::io::Result<(IdLock, bool)> {
     use std::os::unix::io::AsRawFd;
     let dir = env.state.join("locks");
     std::fs::create_dir_all(&dir)?;
     let name: String = id.0.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(format!("{name}.lock")))?;
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+    let waited = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0;
+    if waited && unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
-    Ok(IdLock(f))
+    Ok((IdLock(f), waited))
 }
 
 fn live_row(env: &Env, pick: impl Fn(&crate::evidence::SessionRow) -> bool) -> Option<crate::evidence::SessionRow> {

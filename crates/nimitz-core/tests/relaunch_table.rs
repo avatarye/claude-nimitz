@@ -1331,6 +1331,16 @@ fn bug52_the_labels_mismatch_fix_stops_a_session_in_the_wrong_folder() {
     assert!(plan.ok(), "the fix must run: {:?}", plan.refusals);
     assert!(sessions::apply(&w.env, &plan).verified);
     assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(short.as_str()) && r.live()));
+    // BUG-54: stopped, it is a Warn (no start in the fleet is blocked) whose fix `nimitz rm` runs
+    let snap = w.snap();
+    let i = w.member(&snap, &id).issues.into_iter().find(|i| i.code == "labels.mismatch").expect("still reported");
+    assert_eq!(i.severity, Severity::Warn);
+    assert_eq!(i.fix.as_deref(), Some(format!("nimitz rm {short}").as_str()));
+    assert!(w.start(&snap, &w.ship("STOPPED"), false).ok());
+    let rm = sessions::plan_rm(&w.env, &snap, &short, &Caller::User);
+    assert!(rm.ok(), "{:?}", rm.refusals);
+    assert!(sessions::apply(&w.env, &rm).verified);
+    assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(short.as_str())));
 }
 
 #[test]
@@ -1386,6 +1396,8 @@ fn an_interrupted_relaunch_is_recovered_with_the_same_id() {
     let out = sessions::apply(&w.env, &plan);
     assert!(!out.verified);
     assert!(!w.rows().iter().any(|r| r.session_id == old.session_id), "the row is gone");
+    let fix = out.issues.iter().find(|i| i.code == "step.failed").and_then(|i| i.fix.clone()).expect("a fix line");
+    assert!(fix.contains("run `claude` once in") && fix.contains(&format!("nimitz start {id}  # resumes from its transcript")), "{fix}");
     for (f, b) in trust.iter().zip(saved) {
         std::fs::write(f, b).unwrap();
     }
@@ -1403,4 +1415,35 @@ fn an_interrupted_relaunch_is_recovered_with_the_same_id() {
     assert_eq!(s.session_id, old.session_id, "same id, history kept");
     assert_eq!(s.labels.get("NIMITZ_ID"), Some(&id.0));
     assert!(sessions::pending_relaunch(&w.env, &id).is_none(), "the marker is cleared after the bind");
+}
+
+#[test]
+fn two_concurrent_relaunches_do_the_work_once() {
+    let w = world();
+    let id = w.ship("NOLABEL");
+    let snap = w.snap();
+    let old = w.member(&snap, &id).session.unwrap().session_id;
+    let plan = sessions::plan_relaunch(&w.env, &snap, &id, &Caller::User);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let outs: Vec<Outcome> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..2).map(|_| s.spawn(|| sessions::apply(&w.env, &plan))).collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let skipped = outs.iter().filter(|o| o.ran.iter().all(|(_, _, t)| t.starts_with("skipped: already relaunched"))).count();
+    assert_eq!(skipped, 1, "{:?}", outs.iter().map(|o| o.ran.iter().map(|r| r.2.clone()).collect::<Vec<_>>()).collect::<Vec<_>>());
+    assert!(outs.iter().all(|o| o.verified), "{:?}", outs.iter().map(|o| &o.issues).collect::<Vec<_>>());
+    let m = w.member(&w.snap(), &id);
+    let s = m.session.unwrap();
+    assert_eq!(s.session_id, old);
+    assert!(s.pid.is_some() && s.labels.get("NIMITZ_ID") == Some(&id.0));
+}
+
+#[test]
+fn a_plan_that_repairs_labels_says_will_repair() {
+    let w = world();
+    let snap = w.snap();
+    let plan = w.start(&snap, &w.ship("BARE"), false);
+    let i = plan.warnings.iter().find(|i| i.code == "labels.missing").expect("the reason is shown");
+    assert_eq!(i.severity, Severity::Info);
+    assert!(i.message.starts_with("will repair: "), "{}", i.message);
 }

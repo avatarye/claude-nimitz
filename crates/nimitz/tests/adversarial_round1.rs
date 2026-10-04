@@ -618,7 +618,6 @@ fn bug50_a_folder_nothing_trusts_is_an_error() {
 }
 
 #[test]
-#[ignore = "BUG-54"]
 fn bug54_a_stopped_impostor_row_can_be_removed_with_the_fix() {
     // A session with FRESH's labels in STOPPED's folder, stopped: check blames it and offers `nimitz rm`.
     let sb = Sb::new(false);

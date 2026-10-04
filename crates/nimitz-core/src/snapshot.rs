@@ -335,7 +335,9 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         let want = dir_of.get(owner).cloned().unwrap_or_default();
         legacy.push(Issue {
             code: "labels.mismatch".into(),
-            severity: Severity::Error,
+            // live, it answers to the identity's labels: an error; stopped, a row
+            // to remove, which must not block every start in the fleet (BUG-54)
+            severity: if r.pid.is_some() { Severity::Error } else { Severity::Warn },
             message: format!("session {short} ({}) carries {owner}'s labels but runs in folder {}, not {want}", r.name, r.cwd),
             fix: Some(if r.pid.is_some() { format!("nimitz stop {short}") } else { format!("nimitz rm {short}") }),
             id: Some(Id(owner.clone())),
