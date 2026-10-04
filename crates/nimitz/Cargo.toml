@@ -1,0 +1,16 @@
+[package]
+name = "nimitz"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "claude-nimitz command line and hook binary"
+
+[[bin]]
+name = "nimitz"
+path = "src/main.rs"
+
+[dependencies]
+nimitz-core = { path = "../nimitz-core" }
+nimitz-mux = { path = "../nimitz-mux" }
+serde.workspace = true
+serde_json.workspace = true

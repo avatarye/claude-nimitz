@@ -1,0 +1,29 @@
+id = "admiralty-watch"
+name = "Admiralty Watch"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Call up the admiralty-watch fleet tree over the current tab; the same key puts it away."
+platforms = ["macos", "linux"]
+
+# One action. Bind it to a key in config.toml (see README). bin/toggle.sh closes the
+# watch when it is open in this tab and opens it otherwise. Herdr resolves the
+# explicit relative program against $HERDR_PLUGIN_ROOT.
+[[actions]]
+id = "toggle"
+title = "Admiralty watch: toggle"
+description = "Open the admiralty-watch overlay in this tab, or close it if it is already open here."
+contexts = ["global"]
+command = ["./bin/toggle.sh"]
+
+# The watch itself. It closes when admiralty-watch exits: q, or right after enter
+# jumps to an agent's pane (bin/watch.sh turns on --exit-after-jump).
+# Overlay, not popup: a popup is session-modal, so Herdr's keys (this toggle
+# included) never fire while it is up, and `plugin pane open` returns no pane id
+# for it, so nothing can close it but its own process. An overlay is an ordinary
+# plugin pane covering the tab: it has an id, Herdr keys still work, and it
+# closes when its process exits. Overlay takes no width/height.
+[[panes]]
+id = "watch"
+title = "Admiralty Watch"
+placement = "overlay"
+command = ["./bin/watch.sh"]

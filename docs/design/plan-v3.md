@@ -1,6 +1,7 @@
 # Plan v3: claude-nimitz
 
-Date: 2026-10-04. Status: v3 for review. Replaces `plan-v2.md`.
+Date: 2026-10-04. Status: v3.1 (review answers applied). Replaces `plan-v2.md`.
+Build contracts: `contracts.md`.
 Related: `cc-control-model.md` (how `nimitz` controls Claude Code sessions),
 `docs/probes/` (the facts, on two builds).
 
@@ -306,3 +307,18 @@ id: notes
 type: text
 question: Anything else to change?
 ```
+
+## 13. v3.1: decisions from the v3 review
+
+| Topic | Decision |
+| --- | --- |
+| Multiplexer | **Required to run a fleet**: starting or opening an admiral or a commodore, `nimitz up`, `open`, `layout`. Not required for ships (daemon), `status`, CRUD, `check`, `doctor`, hooks, CI. Admiralty runs anywhere; with no mux it is monitor-only and says why. Adapter interface kept; only Herdr is built now. |
+| Restart order | Top-down, always: admiral, then commodore, then the target ship. `nimitz start <id>` brings up each missing parent first. |
+| Integrity | `nimitz check` runs before every start and refuses on an error, with a fix command (`contracts.md` section 7). It finds manual changes: renames, moved folders, edited configs, copies, missing labels. |
+| Relaunch | Every session shape has one action (`contracts.md` section 8, the relaunch state table); each row is a sandbox test. |
+| comms default | `open`. |
+| `up` in a plain shell | Refuse; ask for a multiplexer. |
+| Supported Claude Code | Floor 2.1.288. |
+| CI tier 2 | Self-hosted runner on the home machine from the start. |
+| You to a ship | Relay through its commodore by default. |
+| Branches | `docs`: documents. `dev`: code. `main`: releases. |
