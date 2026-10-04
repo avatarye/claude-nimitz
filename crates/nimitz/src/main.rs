@@ -43,7 +43,9 @@ impl Ctx {
     }
     /// The gate, with this command's `--plan` / `--yes`.
     pub fn gate(&self, p: &nimitz_core::Plan) -> out::Go {
-        out::gate(p, self.plan_only(), self.yes())
+        let mut shown = p.clone();
+        run::fixes_for(&self.caller, &mut shown);
+        out::gate(&shown, self.plan_only(), self.yes())
     }
 }
 

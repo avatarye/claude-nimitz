@@ -50,6 +50,44 @@ pub fn canon(p: &Path) -> PathBuf {
     }
 }
 
+/// The git repository (or worktree) root holding `dir`: the nearest folder,
+/// walking up the real path, with a `.git` folder or file.
+pub fn git_root(dir: &Path) -> Option<PathBuf> {
+    canon(dir).ancestors().find(|a| a.join(".git").exists()).map(Path::to_path_buf)
+}
+
+/// `dir` and its parents, as given and as real paths, without duplicates: the
+/// trust-file keys that may cover `dir`.
+pub fn trust_ancestors(dir: &Path) -> Vec<PathBuf> {
+    let real = canon(dir);
+    let mut keys: Vec<PathBuf> = vec![];
+    for a in dir.ancestors().chain(real.ancestors()) {
+        if a.as_os_str().is_empty() {
+            continue;
+        }
+        let t = a.to_string_lossy().trim_end_matches('/').to_string();
+        let a = if t.is_empty() { PathBuf::from("/") } else { PathBuf::from(t) };
+        if !keys.contains(&a) {
+            keys.push(a);
+        }
+    }
+    keys
+}
+
+/// `trust_ancestors`, cut at the git root when `dir` is in a repository: the
+/// keys that are the repository's own trust (the root or below it).
+pub fn trust_keys(dir: &Path) -> Vec<PathBuf> {
+    match git_root(dir) {
+        Some(root) => trust_ancestors(dir).into_iter().filter(|a| canon(a).starts_with(&root)).collect(),
+        None => trust_ancestors(dir),
+    }
+}
+
+/// A git worktree root: `.git` is a file (`gitdir: ...`), not a folder.
+pub fn is_git_worktree(root: &Path) -> bool {
+    root.join(".git").is_file()
+}
+
 /// First `name` on PATH that is a file.
 pub fn which(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
@@ -233,6 +271,24 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         assert_eq!(canon(&link), real);
         assert_eq!(canon(&link.join("not/yet")), real.join("not/yet"));
+    }
+
+    #[test]
+    fn trust_inside_a_git_repo_stops_at_its_root() {
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path().canonicalize().unwrap();
+        let repo = base.join("home/repo");
+        let wt = base.join("home/.cache/wt");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("sub")).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        assert_eq!(git_root(&repo.join("sub")), Some(repo.clone()));
+        assert_eq!(trust_keys(&repo.join("sub")), vec![repo.join("sub"), repo.clone()]);
+        assert_eq!(trust_keys(&wt), vec![wt.clone()], "a worktree (.git file) is a root too");
+        let plain = base.join("home/plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(trust_keys(&plain).contains(&base.join("home")), "outside git every parent counts");
     }
 
     #[test]

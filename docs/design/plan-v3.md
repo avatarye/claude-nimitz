@@ -52,7 +52,7 @@ multiplexers, and compatibility with Claude Code versions.
 | --- | --- |
 | `--bg` ignores `--session-id`; `--resume <unknown id>` never runs. | `nimitz` cannot choose ids. The SessionStart hook binds identity to the session id through the labels. |
 | Labels in `--settings` env reach every hook and the Bash tool's processes. | Binding works; `nimitz` can see which role calls it. |
-| `--bg --resume <id>` with **no flags**, after a stop, keeps the id, name, mode and labels. Any flag makes a copy. | Resume = native binary, no flags, from the ship's folder. A ship keeps one id for life. |
+| `--bg --resume <id>` with **no flags**, after a stop, keeps the id, name, mode and labels. Any flag makes a copy **while its job row exists**, and the copy has **no history**; with the row removed (`claude rm`), `--resume <id>` with flags keeps the id and the history and takes the new flags (adversarial tester, 2026-10-04). | Resume = native binary, no flags, from the ship's folder. A ship keeps one id for life. New labels or name: stop, `rm` the row, then resume with every flag (same id). |
 | On ACME, `claude` on PATH is a wrapper that adds `--settings`. | Resume, `stop` and `rm` use the native binary. Cold launches use the PATH `claude` (it carries Bedrock settings). |
 | Resume of a live session makes a copy. | Never resume a live ship. |
 | Two live `--bg` sessions can have one name. | `nimitz` checks names itself. |

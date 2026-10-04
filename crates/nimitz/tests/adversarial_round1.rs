@@ -492,7 +492,6 @@ fn bug42_the_legacy_fix_does_not_adopt_a_stowaway_as_the_commodore() {
 }
 
 #[test]
-#[ignore = "BUG-43"]
 fn bug43_signal_text_is_not_typed_with_control_characters() {
     let sb = Sb::new(true);
     let w = sb.dir("herdr/world.json");
@@ -508,7 +507,6 @@ fn bug43_signal_text_is_not_typed_with_control_characters() {
 }
 
 #[test]
-#[ignore = "BUG-47"]
 fn bug47_a_second_start_does_not_open_a_second_admiral_pane() {
     let sb = Sb::new(true);
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
@@ -531,7 +529,6 @@ fn bug48_a_symlinked_nimitz_home_sees_the_same_world() {
 }
 
 #[test]
-#[ignore = "BUG-53"]
 fn bug53_relaunch_keeps_the_session_id_and_its_history() {
     // Real Claude Code: `--bg --resume <id> --name --settings` while the row exists starts a copy
     // with NO conversation; after `claude rm <row>` the same command continues <id> with history.
@@ -541,4 +538,81 @@ fn bug53_relaunch_keeps_the_session_id_and_its_history() {
     let rm = lines.iter().position(|l| l.contains(" rm "));
     let resume = lines.iter().position(|l| l.contains("--resume"));
     assert!(matches!((rm, resume), (Some(a), Some(b)) if a < b), "the old row must go before the labelled resume, or the ship loses its history:\n{}", p.out);
+}
+
+// ------------------------------------------------------------------ round 2
+
+/// Set (or add) one trust entry in both of the sandbox's trust files.
+fn trust_entry(sb: &Sb, dir: &Path, accepted: bool) {
+    for f in [sb.dir("claude_home/.claude.json"), sb.dir("claude_home.json")] {
+        let mut v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
+        v["projects"][dir.to_string_lossy().as_ref()] = serde_json::json!({"hasTrustDialogAccepted": accepted});
+        std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    }
+}
+
+/// Point FRESH at `dir` and return `nimitz check MAIN/ARGOS/FRESH`.
+fn check_fresh_at(sb: &Sb, dir: &Path) -> Run {
+    assert_eq!(sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", dir.to_str().unwrap(), "--yes"]).code, 0);
+    sb.run(&["check", "MAIN/ARGOS/FRESH"])
+}
+
+fn untrusted_line(out: &str) -> Option<String> {
+    out.lines().find(|l| l.contains("folder.untrusted")).map(str::to_string)
+}
+
+#[test]
+fn bug50_a_git_worktree_under_a_trusted_home_warns() {
+    // Real Claude Code refused a worktree (`.git` file) under a trusted home: a warning, with the fix.
+    let sb = Sb::new(false);
+    let home = sb.dir("home");
+    let wt = home.join("cache/wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
+    trust_entry(&sb, &home, true);
+    let c = check_fresh_at(&sb, &wt);
+    let line = untrusted_line(&c.out).unwrap_or_default();
+    assert!(line.contains("[WARN]") && line.contains("may not be trusted (git worktree"), "{}", c.out);
+    assert!(c.out.contains(&format!("run `claude` once in {}", wt.display())), "the fix names the worktree root:\n{}", c.out);
+    let p = sb.run(&["start", "MAIN/ARGOS/FRESH", "--plan"]);
+    assert!(!p.out.lines().any(|l| l.contains("[ERROR]") && l.contains("folder.untrusted")), "a warning, not a refusal:\n{}", p.out);
+    trust_entry(&sb, &wt, true);
+    assert!(untrusted_line(&sb.run(&["check", "MAIN/ARGOS/FRESH"]).out).is_none());
+}
+
+#[test]
+fn bug50_an_ordinary_repo_under_a_trusted_home_is_at_most_info() {
+    let sb = Sb::new(false);
+    let home = sb.dir("home");
+    let repo = home.join("ws/Pkg");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    trust_entry(&sb, &home, true);
+    let c = check_fresh_at(&sb, &repo);
+    assert!(untrusted_line(&c.out).is_none_or(|l| l.contains("[INFO]")), "{}", c.out);
+    assert_eq!(c.code, 0, "{}", c.out);
+}
+
+#[test]
+fn bug50_the_real_shape_a_repo_with_an_entry_false_and_a_transcript_is_trusted() {
+    // A Monorepo package: its own git repo, `hasTrustDialogAccepted: false`, sessions ran there.
+    let sb = Sb::new(false);
+    let repo = sb.dir("home/ws/Monorepo/src/Pkg");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    trust_entry(&sb, &repo, false);
+    let proj: String = repo.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let pd = sb.dir("claude_home/projects").join(proj);
+    std::fs::create_dir_all(&pd).unwrap();
+    std::fs::write(pd.join("0b1d2c3e-0000-4000-8000-000000000000.jsonl"), "{}\n").unwrap();
+    let c = check_fresh_at(&sb, &repo);
+    assert!(untrusted_line(&c.out).is_none(), "Claude Code already ran here:\n{}", c.out);
+}
+
+#[test]
+fn bug50_a_folder_nothing_trusts_is_an_error() {
+    let sb = Sb::new(false);
+    let lone = sb.dir("elsewhere/lone");
+    std::fs::create_dir_all(&lone).unwrap();
+    let c = check_fresh_at(&sb, &lone);
+    assert!(untrusted_line(&c.out).is_some_and(|l| l.contains("[ERROR]")), "{}", c.out);
+    assert_ne!(c.code, 0);
 }

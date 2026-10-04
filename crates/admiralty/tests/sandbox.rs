@@ -347,3 +347,28 @@ fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
     assert!(all.contains("squadron.toml") && all.contains("164:13"), "the file and line, in full:\n{all}");
     assert!(all.contains("invalid basic string"), "the parse error's own words");
 }
+
+#[test]
+fn bug33_the_ship_form_refuses_label_equals_folder_and_relative_folders() {
+    let w = world();
+    let app = app_on(&w, TestMux::default());
+    let snap = app.bundle.as_ref().unwrap().snap.clone();
+    for bad in ["sandbox=managed", "sandbox=/work/x", "relative/dir", "./x"] {
+        let mut f = Form::new_ship("MAIN", "ARGOS", "sandbox");
+        f.set("ship", "X33");
+        f.set("prompt", "p");
+        f.set("dir", bad);
+        f.validate(&app.ctx.env, &snap);
+        assert!(!f.ok(), "{bad:?} must be refused");
+        assert!(f.fields.iter().find(|x| x.key == "dir").unwrap().error.is_some(), "{bad:?}: the dir field says why");
+        // and nothing reaches the config: the confirm dialog is never offered
+    }
+    for good in ["managed", "/work/x33", "~/work/x33"] {
+        let mut f = Form::new_ship("MAIN", "ARGOS", "sandbox");
+        f.set("ship", "X33");
+        f.set("prompt", "p");
+        f.set("dir", good);
+        f.validate(&app.ctx.env, &snap);
+        assert!(f.fields.iter().find(|x| x.key == "dir").unwrap().error.is_none(), "{good:?} is fine");
+    }
+}

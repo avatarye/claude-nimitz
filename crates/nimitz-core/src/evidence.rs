@@ -37,13 +37,15 @@ pub(crate) fn s(v: &Value, k: &str) -> Option<String> {
     }
 }
 
-/// Epoch milliseconds (number) or an ISO-8601 string, to epoch seconds.
+/// Epoch milliseconds (number) or an ISO-8601 string, to epoch seconds. An
+/// absurd stamp (before 2001, or more than a day ahead) is no stamp (BUG-45).
 fn ts(v: &Value, k: &str) -> Option<f64> {
-    match v.get(k)? {
+    let t = match v.get(k)? {
         Value::Number(n) => n.as_f64().map(|ms| ms / 1000.0),
         Value::String(x) => parse_iso(x),
         _ => None,
-    }
+    }?;
+    (t.is_finite() && t > 1.0e9 && t < now() + 86400.0).then_some(t)
 }
 
 /// Minimal `YYYY-MM-DDTHH:MM:SS[.fff]Z` parser (UTC), enough for Claude Code's stamps.
@@ -93,6 +95,8 @@ pub struct FileCache {
 #[derive(Default)]
 struct EventTail {
     path: PathBuf,
+    /// the file's inode: a compaction (BUG-44) replaces the file
+    ino: u64,
     offset: u64,
     rows: Vec<Event>,
 }
@@ -159,6 +163,12 @@ pub fn events_cached(env: &Env, cache: &mut FileCache) -> Vec<Event> {
         return vec![];
     };
     let size = f.seek(SeekFrom::End(0)).unwrap_or(0);
+    let ino = { use std::os::unix::fs::MetadataExt; f.metadata().map(|m| m.ino()).unwrap_or(0) };
+    if ino != t.ino {
+        t.ino = ino;
+        t.offset = 0;
+        t.rows.clear();
+    }
     if size < t.offset {
         t.offset = 0;
         t.rows.clear();

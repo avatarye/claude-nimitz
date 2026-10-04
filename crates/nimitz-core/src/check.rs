@@ -2,7 +2,7 @@
 //! Session-level issues ride in on `Member::issues` (snapshot fills them).
 use crate::env::Env;
 use crate::types::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Is `member` the target or one of the target's parents?
 fn in_scope(member: &Id, target: Option<&Id>) -> bool {
@@ -22,27 +22,112 @@ fn trust_file(env: &Env) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.json", env.claude_home.display()))
 }
 
-/// Trusted = inside NIMITZ_HOME (nimitz init trusts it), or the folder (or a
-/// parent) has `hasTrustDialogAccepted` in the trust file, as given or as its
-/// real path (Claude Code records the real path: /tmp is /private/tmp on macOS).
-/// An unreadable trust file is unknown, not untrusted: `None`.
-fn trusted(env: &Env, dir: &Path) -> Option<bool> {
-    let real = crate::env::canon(dir);
-    if dir.starts_with(&env.home) || real.starts_with(crate::env::canon(&env.home)) {
-        return Some(true);
-    }
+/// The `projects` table of Claude Code's trust file, or None when it cannot be read.
+fn trust_projects(env: &Env) -> Option<serde_json::Map<String, serde_json::Value>> {
     let raw = std::fs::read_to_string(trust_file(env)).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let projects = v.get("projects")?.as_object()?;
-    let accepted = |p: &Path| {
+    v.get("projects")?.as_object().cloned()
+}
+
+/// Has Claude Code already run a session in exactly this folder? A transcript
+/// folder for it under `projects/`, or a job row or session file with that cwd.
+/// Then it accepted the folder, whatever the trust file says.
+pub fn ran_here(env: &Env, dir: &Path) -> bool {
+    let cwd = dir.to_string_lossy();
+    if !crate::evidence::transcripts_in(env, &cwd).is_empty() {
+        return true;
+    }
+    let want = [dir.to_path_buf(), crate::env::canon(dir)];
+    let cwd_of = |p: PathBuf| -> Option<PathBuf> {
+        let v = crate::evidence::first_json(&std::fs::read(p).ok()?)?;
+        Some(PathBuf::from(v.get("cwd")?.as_str()?.trim_end_matches('/')))
+    };
+    let rows = |sub: &str, file: Option<&str>| -> bool {
+        std::fs::read_dir(env.claude_home.join(sub))
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| match file {
+                        Some(f) => e.path().join(f),
+                        None => e.path(),
+                    })
+                    .filter_map(cwd_of)
+                    .any(|c| want.contains(&c))
+            })
+            .unwrap_or(false)
+    };
+    rows("jobs", Some("state.json")) || rows("sessions", None)
+}
+
+/// How Claude Code will treat `dir` (BUG-50; evidence over prediction):
+/// - trusted: inside NIMITZ_HOME (nimitz init trusts it); a trust entry on the
+///   folder's repository itself (git root or below); Claude Code ran a session
+///   in this exact folder; or, outside git, the folder or a parent accepted.
+/// - a git worktree (`.git` is a file) covered only by a parent's trust: Warn,
+///   it may not be trusted (real Claude Code refused one under ~/.cache).
+/// - an ordinary git repository covered only by a parent's trust: Info (real
+///   Claude Code ran ships in such Monorepo packages).
+/// - nothing accepts it: Error.
+///
+/// Keys are compared as given and as real paths (/tmp is /private/tmp). An
+/// unreadable trust file is unknown, not untrusted: no issue.
+fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
+    let real = crate::env::canon(dir);
+    if dir.starts_with(&env.home) || real.starts_with(crate::env::canon(&env.home)) {
+        return None;
+    }
+    let projects = trust_projects(env)?;
+    let accepted = |p: &PathBuf| {
+        let k = p.to_string_lossy();
         projects
-            .get(p.to_string_lossy().trim_end_matches('/'))
-            .or_else(|| projects.get(&p.to_string_lossy().into_owned()))
+            .get(k.as_ref())
+            .or_else(|| projects.get(&format!("{k}/")))
             .and_then(|e| e.get("hasTrustDialogAccepted"))
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
     };
-    Some(dir.ancestors().any(accepted) || real.ancestors().any(accepted))
+    if crate::env::trust_keys(dir).iter().any(accepted) || ran_here(env, dir) {
+        return None;
+    }
+    let by_parent = crate::env::trust_ancestors(dir).into_iter().find(|a| accepted(a));
+    let root = crate::env::git_root(dir);
+    let mk = |severity: Severity, message: String, at: &Path| Issue {
+        code: "folder.untrusted".into(),
+        severity,
+        message,
+        fix: Some(untrusted_fix(at)),
+        id: Some(id.clone()),
+    };
+    match (root, by_parent) {
+        (Some(root), Some(parent)) if crate::env::is_git_worktree(&root) => Some(mk(
+            Severity::Warn,
+            format!(
+                "{id}'s folder {} may not be trusted (git worktree {}): only the parent {} is trusted, and Claude Code may want the worktree's own trust",
+                real.display(),
+                root.display(),
+                parent.display()
+            ),
+            &root,
+        )),
+        (Some(root), Some(parent)) => Some(mk(
+            Severity::Info,
+            format!("{id}'s folder {} is a git repository ({}) trusted through the parent {}", real.display(), root.display(), parent.display()),
+            &root,
+        )),
+        (_, Some(_)) => None,
+        (root, None) => {
+            let at = root.clone().unwrap_or_else(|| real.clone());
+            let why = root.map(|r| format!(" (git repository {})", r.display())).unwrap_or_default();
+            Some(mk(Severity::Error, format!("{id}'s folder {} is not trusted by Claude Code{why}", real.display()), &at))
+        }
+    }
+}
+
+/// The fix for an untrusted folder: Claude Code records the real path, and
+/// inside a git repository asks about its root. Also used when a launch fails
+/// with "Workspace not trusted".
+pub fn untrusted_fix(dir: &Path) -> String {
+    let at = crate::env::git_root(dir).unwrap_or_else(|| crate::env::canon(dir));
+    format!("run `claude` once in {} and accept the trust prompt", at.display())
 }
 
 /// `folder.missing` / `folder.untrusted` for a member's folder, if either applies.
@@ -57,18 +142,7 @@ pub fn folder_issue(env: &Env, id: &Id, cwd: &str) -> Option<Issue> {
             id: Some(id.clone()),
         });
     }
-    if trusted(env, dir) == Some(false) {
-        // Claude Code records the real path when the prompt is accepted; name that one.
-        let real = crate::env::canon(dir);
-        return Some(Issue {
-            code: "folder.untrusted".into(),
-            severity: Severity::Error,
-            message: format!("{id}'s folder {} is not trusted by Claude Code", real.display()),
-            fix: Some(format!("run `claude` once in {} and accept the trust prompt", real.display())),
-            id: Some(id.clone()),
-        });
-    }
-    None
+    trust_issue(env, id, dir)
 }
 
 /// `nimitz check [<id>]`: the target, every member under it (a fleet's
@@ -287,6 +361,32 @@ pub(crate) mod tests {
         }
         let other = Id::commodore("MAIN", "OTHER");
         assert!(check_tree(&env, &snap, Some(&other)).is_empty());
+    }
+
+    #[test]
+    fn a_git_repo_under_a_trusted_home_needs_its_own_trust() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let home = td.path().canonicalize().unwrap().join("home");
+        let wt = home.join(".cache/wt");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        std::fs::write(wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
+        let trust = format!("{}.json", env.claude_home.display());
+        let set = |dirs: &[&Path]| {
+            let p: serde_json::Map<String, serde_json::Value> = dirs.iter().map(|d| (d.display().to_string(), serde_json::json!({"hasTrustDialogAccepted": true}))).collect();
+            std::fs::write(&trust, serde_json::json!({ "projects": p }).to_string()).unwrap();
+        };
+        let id = Id::ship("MAIN", "ARGOS", "S4");
+        set(&[&home]);
+        let i = folder_issue(&env, &id, wt.join("src").to_str().unwrap()).expect("home trust does not cover a git root");
+        assert_eq!(i.code, "folder.untrusted");
+        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt", wt.display()).as_str()));
+        set(&[&wt]);
+        assert!(folder_issue(&env, &id, wt.join("src").to_str().unwrap()).is_none());
+        // outside git, the home's trust still covers it
+        std::fs::create_dir_all(home.join("plain")).unwrap();
+        set(&[&home]);
+        assert!(folder_issue(&env, &id, home.join("plain").to_str().unwrap()).is_none());
     }
 
     #[test]
