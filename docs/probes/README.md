@@ -31,3 +31,12 @@ Resume a stopped ship with the **native** binary and **no flags**, from the ship
 folder: `<native claude> --bg --resume <session id> [prompt]`. Both builds then keep
 the same session id and its saved name, permission mode and labels. Never resume
 a live ship.
+
+## Found by the adversarial tester, 2026-10-04 (real ACME 2.1.288)
+
+`--bg --resume <id>` with flags (`--name`, `--settings`, ...) while the session's
+job row still exists starts a **copy with a new id and no conversation history**
+(verified twice, with code words PINEAPPLE and MANGO). After `claude rm <row>`
+(native), the same command **continues <id> itself**: same id, its history, and
+the new name and labels. So nimitz relabels by stop, `rm`, then resume with every
+flag.
