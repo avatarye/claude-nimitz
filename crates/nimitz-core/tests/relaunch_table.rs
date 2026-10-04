@@ -196,6 +196,25 @@ fn row4_stopped_with_labels_resumes_with_no_flags_and_keeps_the_id() {
     assert_eq!(rec.lineage.last().unwrap().via, "resume");
 }
 
+#[test]
+fn row4_a_live_copy_of_a_stopped_member_refuses_instead_of_making_two() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let m = w.member(&w.snap(), &id);
+    let sid = m.session.as_ref().unwrap().session_id.clone();
+    // someone forked it by hand: a labelled copy, never bound in the registry
+    let (rc, out) = claude::run(&claude::relaunch_bg(&w.env, &id, "default", &sid), m.cwd.as_deref());
+    assert_eq!(rc, 0, "{out}");
+    let snap = w.snap();
+    let m = w.member(&snap, &id);
+    assert_eq!(m.session.as_ref().unwrap().session_id, sid, "the registry's current stays the primary");
+    assert!(m.extra_rows.iter().any(|r| r.pid.is_some()));
+    let plan = w.start(&snap, &id, false);
+    assert!(!plan.ok());
+    assert!(has(&plan.refusals, "dup.live"), "{:?}", plan.refusals);
+    assert!(plan.steps.iter().all(|s| s.id.as_ref() != Some(&id)), "nothing runs for it");
+}
+
 // ------------------------------------------------------------------ row 5
 
 #[test]

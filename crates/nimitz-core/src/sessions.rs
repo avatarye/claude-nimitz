@@ -285,6 +285,19 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
         }
         return;
     }
+    // The current session is stopped but a copy of the identity is live: a start
+    // would make two. Never start a second live session (row 3's rule).
+    if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
+        let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+        refuse(
+            plan,
+            "dup.live",
+            format!("{id}'s current session is stopped, but its copy {short} ({}) is live", r.name),
+            Some(format!("nimitz stop {short}  # or nimitz adopt {} {id} to keep the copy", r.session_id)),
+            Some(id.clone()),
+        );
+        return;
+    }
     // A stopped member: name drift and missing labels are what rows 5 and 9 fix,
     // so they do not refuse. Everything else about the session still does.
     const ROW_FIXES: [&str; 3] = ["name.drift", "labels.missing", "copy.rows"];
@@ -639,6 +652,17 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "config.invalid", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
         return plan;
     };
+    if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
+        let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+        refuse(
+            &mut plan,
+            "dup.live",
+            format!("{id} has another live session {short}; a relaunch would leave two"),
+            Some(format!("nimitz stop {short}  # for the one you drop")),
+            Some(id.clone()),
+        );
+        return plan;
+    }
     let step = |cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.clone()), why: why.into() };
     if p.pid.is_some() {
         match &p.short_id {
