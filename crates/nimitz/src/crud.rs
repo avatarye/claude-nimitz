@@ -20,7 +20,7 @@ fn toml_of<T: serde::Serialize>(v: &T) -> Result<String, String> {
 /// Config changes are yours: a session's own labels never edit the fleet.
 fn user_only(ctx: &Ctx, plan: &mut Plan) {
     if ctx.caller != Caller::User {
-        plan.refusals.insert(0, refusal("config.invalid", "config changes are yours alone; ask the user".into(), None, None));
+        plan.refusals.insert(0, refusal("authority", "config changes are yours alone; ask the user".into(), None, None));
     }
 }
 

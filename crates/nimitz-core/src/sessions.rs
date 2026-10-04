@@ -464,7 +464,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
         if let Caller::Member { id: me, .. } = caller {
             if link != *id && chain(me).contains(&link) {
                 plan.warnings.push(issue(
-                    "config.invalid",
+                    "authority",
                     Severity::Info,
                     format!("{link} is not running clean; only you start it"),
                     Some(format!("nimitz start {link}")),
@@ -474,7 +474,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
             }
         }
         if let Err(why) = may_start(caller, &link) {
-            refuse(&mut plan, "config.invalid", why, None, Some(link.clone()));
+            refuse(&mut plan, "authority", why, None, Some(link.clone()));
             continue;
         }
         if already_refused(&plan, &link) {
@@ -495,7 +495,7 @@ fn already_refused(plan: &Plan, id: &Id) -> bool {
 pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("up {fleet}: reconcile the config with the running sessions"), ..Default::default() };
     if *caller != Caller::User {
-        refuse(&mut plan, "config.invalid", "`nimitz up` is yours alone; members start nothing fleet-wide".into(), None, None);
+        refuse(&mut plan, "authority", "`nimitz up` is yours alone; members start nothing fleet-wide".into(), None, None);
         return plan;
     }
     let Some(f) = snap.fleets.iter().find(|f| f.id.fleet() == fleet) else {
@@ -581,7 +581,7 @@ fn dedup_issues(plan: &mut Plan) {
 pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("stop {id}"), ..Default::default() };
     if let Err(why) = may_start(caller, id) {
-        refuse(&mut plan, "config.invalid", why, None, Some(id.clone()));
+        refuse(&mut plan, "authority", why, None, Some(id.clone()));
         return plan;
     }
     let Some((_, m)) = member(snap, id) else {
@@ -619,7 +619,7 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
 pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("relaunch {id} (new session id, labels restored)"), ..Default::default() };
     if let Err(why) = may_start(caller, id) {
-        refuse(&mut plan, "config.invalid", why, None, Some(id.clone()));
+        refuse(&mut plan, "authority", why, None, Some(id.clone()));
         return plan;
     }
     let Some((fleet, m)) = member(snap, id) else {
@@ -688,7 +688,7 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
 pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("rm {target}"), ..Default::default() };
     if *caller != Caller::User {
-        refuse(&mut plan, "config.invalid", "`nimitz rm` is yours alone".into(), None, None);
+        refuse(&mut plan, "authority", "`nimitz rm` is yours alone".into(), None, None);
         return plan;
     }
     // An identity: its stale rows (same as sweep <id>).
@@ -762,15 +762,38 @@ fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
     }
 }
 
-/// Drop every stale copy row, fleet-wide or for one identity.
+/// Drop every stale copy row: everything, a fleet, a squadron or one identity
+/// (`id` and every member under it). Authority (contracts.md section 8): you,
+/// any scope; a commodore, its own squadron only (its tenders and the stale
+/// rows of its own ships); everyone else nothing.
 pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("sweep {}", id.map(|i| i.0.clone()).unwrap_or("everything".into())), ..Default::default() };
-    if *caller != Caller::User {
-        refuse(&mut plan, "config.invalid", "`nimitz sweep` is yours alone".into(), None, None);
-        return plan;
+    let under = |m: &Id, t: &Id| m == t || m.0.starts_with(&format!("{}/", t.0));
+    let mine: Box<dyn Fn(&Id) -> bool> = match caller {
+        Caller::User => Box::new(|_| true),
+        Caller::Member { id: me, role: Role::Commodore } => {
+            let me = me.clone();
+            let target_ok = id.map(|t| t == &me || t.parent().as_ref() == Some(&me)).unwrap_or(true);
+            if !target_ok {
+                let t = id.map(|t| t.0.clone()).unwrap_or_default();
+                refuse(&mut plan, "authority", format!("{} may sweep only its own squadron, not {t}", me.name()), None, id.cloned());
+                return plan;
+            }
+            Box::new(move |m: &Id| m.parent().as_ref() == Some(&me))
+        }
+        Caller::Member { id: me, .. } => {
+            refuse(&mut plan, "authority", format!("{} may not sweep; you or its commodore do", me.name()), None, id.cloned());
+            return plan;
+        }
+    };
+    if let Some(t) = id {
+        if !members(snap).iter().any(|(_, m)| under(&m.id, t)) {
+            refuse(&mut plan, "config.invalid", format!("{t} names no fleet member"), Some("nimitz status".into()), Some(t.clone()));
+            return plan;
+        }
     }
     for (_, m) in members(snap) {
-        if id.map(|t| t == &m.id).unwrap_or(true) {
+        if id.map(|t| under(&m.id, t)).unwrap_or(true) && mine(&m.id) {
             sweep_member(env, &mut plan, m);
         }
     }
@@ -790,7 +813,7 @@ pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, promp
         _ => false,
     };
     if !ok {
-        refuse(&mut plan, "config.invalid", format!("only you or {commodore} itself may start its tenders"), None, Some(commodore.clone()));
+        refuse(&mut plan, "authority", format!("only you or {commodore} itself may start its tenders"), None, Some(commodore.clone()));
         return plan;
     }
     if task.is_empty() || !task.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -833,7 +856,7 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
     let _ = env;
     let mut plan = Plan { summary: format!("adopt {session_id} as {id}"), ..Default::default() };
     if *caller != Caller::User {
-        refuse(&mut plan, "config.invalid", "`nimitz adopt` is yours alone".into(), None, Some(id.clone()));
+        refuse(&mut plan, "authority", "`nimitz adopt` is yours alone".into(), None, Some(id.clone()));
         return plan;
     }
     let Some(row) = snap.stowaways.iter().find(|r| r.session_id == session_id || r.short_id.as_deref() == Some(session_id)) else {

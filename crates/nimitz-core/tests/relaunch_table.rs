@@ -379,6 +379,51 @@ fn sweep_removes_stale_rows_without_starting_anything() {
     assert_eq!(after.status, Status::Stopped, "sweep starts nothing");
 }
 
+#[test]
+fn sweep_authority_you_any_scope_a_commodore_its_own_squadron() {
+    let w = world();
+    // give the tender a stale copy row: a labelled fork, then stopped
+    let tender = Id::tender("MAIN", "ARGOS", "fixci");
+    let tm = w.member(&w.snap(), &tender);
+    let tsid = tm.session.as_ref().unwrap().session_id.clone();
+    let (rc, out) = claude::run(&claude::relaunch_bg(&w.env, &tender, "default", &tsid), tm.cwd.as_deref());
+    assert_eq!(rc, 0, "{out}");
+    let copy = w.member(&w.snap(), &tender).extra_rows.into_iter().find(|r| r.pid.is_some()).expect("the copy");
+    let (rc, out) = claude::run(&claude::stop(&w.env, copy.short_id.as_deref().unwrap()), None);
+    assert_eq!(rc, 0, "{out}");
+
+    let snap = w.snap();
+    let argos = Id::commodore("MAIN", "ARGOS");
+    let own = Caller::Member { id: argos.clone(), role: Role::Commodore };
+    let plan = sessions::plan_sweep(&w.env, &snap, None, &own);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let ids: std::collections::BTreeSet<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).collect();
+    assert!(ids.contains(&w.ship("COPIES")) && ids.contains(&tender), "{ids:?}");
+    assert!(ids.iter().all(|i| i.parent().as_ref() == Some(&argos)), "only its own ships and tenders: {ids:?}");
+    // its own squadron by name, or one of its ships: fine
+    assert!(sessions::plan_sweep(&w.env, &snap, Some(&argos), &own).ok());
+    assert!(sessions::plan_sweep(&w.env, &snap, Some(&w.ship("COPIES")), &own).ok());
+    // another squadron, the fleet, or any other caller: refused with `authority`
+    for (target, caller) in [
+        (Some(Id::commodore("MAIN", "BOREAL")), own.clone()),
+        (Some(Id::admiral("MAIN")), own.clone()),
+        (None, Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral }),
+        (None, Caller::Member { id: w.ship("CLEAN"), role: Role::Ship }),
+        (None, Caller::Member { id: tender.clone(), role: Role::Tender }),
+    ] {
+        let p = sessions::plan_sweep(&w.env, &snap, target.as_ref(), &caller);
+        assert!(has(&p.refusals, "authority"), "{target:?} {caller:?}: {:?}", p.refusals);
+        assert!(p.steps.is_empty());
+    }
+    // you: a squadron id sweeps everything under it
+    let plan = sessions::plan_sweep(&w.env, &snap, Some(&argos), &Caller::User);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.snap();
+    assert!(w.member(&after, &w.ship("COPIES")).extra_rows.is_empty());
+    assert!(w.member(&after, &tender).extra_rows.is_empty());
+}
+
 // ------------------------------------------------------------------ row 10
 
 #[test]

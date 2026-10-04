@@ -228,7 +228,7 @@ pub fn stop(ctx: &Ctx) -> Result<i32, String> {
 fn plan_stop_row(ctx: &Ctx, snap: &Snapshot, target: &str) -> Plan {
     let mut plan = Plan { summary: format!("stop session {target}"), ..Default::default() };
     if ctx.caller != Caller::User {
-        plan.refusals.push(refusal("config.invalid", "stopping a session by its id is yours alone".into(), None, None));
+        plan.refusals.push(refusal("authority", "stopping a session by its id is yours alone".into(), None, None));
         return plan;
     }
     let is = |r: &&nimitz_core::SessionInfo| r.short_id.as_deref() == Some(target) || r.session_id == target;
@@ -472,7 +472,7 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
         return Ok(finish_plan(ctx, &plan));
     }
     if ctx.caller != Caller::User {
-        plan.refusals.push(refusal("config.invalid", "`nimitz layout` is yours alone".into(), None, None));
+        plan.refusals.push(refusal("authority", "`nimitz layout` is yours alone".into(), None, None));
         return Ok(finish_plan(ctx, &plan));
     }
     let mut lp = LayoutPlan::default();
