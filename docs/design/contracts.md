@@ -220,8 +220,10 @@ do nothing).
 
 1. Tests use the sandbox (fake `claude`, fake `herdr`) and the env overrides in
    section 2. Never point a test at the real `~/.claude` or `~/.claude-nimitz`.
-2. Real Claude Code sessions only in the e2e harness: names `nimitz-e2e-*`, under
-   `~/.cache/nimitz-e2e/`, stopped and removed at the end, verified.
+2. Real Claude Code sessions only in the e2e harness: folders `~/.cache/nimitz-e2e/nimitz-e2e-*/`,
+   fleet names starting `NIMITZ_E2E` (so session names are `[NIMITZ_E2E...]-*`),
+   stopped and removed at the end, verified. Their transcript folders under
+   `~/.claude/projects/` stay; the user removes them.
 3. Never stop, resume, message or rename any session you did not start.
 4. Never touch the user's Herdr session; Herdr tests use a private server (temp
    `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, all `HERDR_*` unset).
