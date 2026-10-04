@@ -9,18 +9,10 @@ use nimitz_core::config;
 use nimitz_core::{Caller, Comms, FleetOnDisk, Id, Plan, Role, ShipDef, Step};
 use std::path::{Path, PathBuf};
 
-fn write_step(id: &Id, path: &Path, contents: String, why: &str) -> Step {
-    Step { id: Some(id.clone()), cmd: vec!["write".into(), path.to_string_lossy().into_owned(), contents], cwd: None, why: why.into() }
-}
-
-fn toml_of<T: serde::Serialize>(v: &T) -> Result<String, String> {
-    toml::to_string_pretty(v).map_err(|e| e.to_string())
-}
-
 /// Config changes are yours: a session's own labels never edit the fleet.
 fn user_only(ctx: &Ctx, plan: &mut Plan) {
     if ctx.caller != Caller::User {
-        plan.refusals.insert(0, refusal("config.invalid", "config changes are yours alone; ask the user".into(), None, None));
+        plan.refusals.insert(0, refusal("authority", "config changes are yours alone; ask the user".into(), None, None));
     }
 }
 
@@ -81,20 +73,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
         }
         "set" => {
             ctx.args.allow(&["--admiral-mode"])?;
-            match load(ctx, fleet) {
-                Err(p) => p,
-                Ok(f) => {
-                    let mut c = f.config.clone();
-                    if let Some(m) = ctx.args.value("--admiral-mode") {
-                        c.admiral.permission_mode = if m.is_empty() { None } else { Some(m.into()) };
-                    }
-                    let mut p = Plan { summary: format!("update fleet {fleet}"), ..Default::default() };
-                    if c != f.config {
-                        p.steps.push(write_step(&id, &f.dir.join("fleet.toml"), toml_of(&c)?, "fleet settings"));
-                    }
-                    p
-                }
-            }
+            config::plan_fleet_set(&ctx.env, fleet, ctx.args.value("--admiral-mode"))
         }
         "rm" => {
             ctx.args.allow(&[])?;
@@ -111,11 +90,6 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
 
 // ------------------------------------------------------------------ squadron
 
-fn squadron_md(fleet: &str, sq: &str, brief: &str) -> String {
-    let body = if brief.is_empty() { "(no brief yet)" } else { brief };
-    format!("# Squadron {sq} ({fleet})\n\n{body}\n")
-}
-
 pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "new|set|rm")?;
     let id = parse_id(ctx.args.need(1, "squadron id F/SQ")?)?;
@@ -130,33 +104,8 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
         }
         "set" => {
             ctx.args.allow(&["--brief", "--comms", "--mode"])?;
-            match load(ctx, fleet) {
-                Err(p) => p,
-                Ok(f) => {
-                    let mut p = Plan { summary: format!("update squadron {id}"), ..Default::default() };
-                    match f.squadrons.iter().find(|(_, s)| s.squadron == sq) {
-                        None => p.refusals.push(refusal("config.invalid", format!("no squadron {id}"), Some(format!("nimitz squadron new {id}")), Some(id.clone()))),
-                        Some((dir, s)) => {
-                            let mut c = s.clone();
-                            if let Some(v) = ctx.args.value("--comms") {
-                                c.comms = parse_comms(v)?;
-                            }
-                            if let Some(m) = ctx.args.value("--mode") {
-                                c.permission_mode = if m.is_empty() { None } else { Some(m.into()) };
-                            }
-                            if let Some(b) = ctx.args.value("--brief") {
-                                let file = c.brief.clone().unwrap_or_else(|| "SQUADRON.md".into());
-                                c.brief = Some(file.clone());
-                                p.steps.push(write_step(&id, &dir.join(file), squadron_md(fleet, sq, b), "the brief"));
-                            }
-                            if &c != s {
-                                p.steps.insert(0, write_step(&id, &dir.join("squadron.toml"), toml_of(&c)?, "squadron settings"));
-                            }
-                        }
-                    }
-                    p
-                }
-            }
+            let comms = ctx.args.value("--comms").map(parse_comms).transpose()?;
+            config::plan_squadron_set(&ctx.env, &id, ctx.args.value("--brief"), comms, ctx.args.value("--mode"))
         }
         "rm" => {
             ctx.args.allow(&[])?;
@@ -378,38 +327,11 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
         }
         "rm" => {
             ctx.args.allow(&[])?;
-            match load(ctx, fleet) {
-                Err(p) => p,
-                Ok(f) => plan_machine_rm(&f, fleet, label)?,
-            }
+            config::plan_machine_rm(&ctx.env, fleet, label)
         }
         v => return Err(format!("machine {v}: use add or rm")),
     };
     Ok(config_plan(ctx, plan))
-}
-
-/// Remove a label from fleet.toml and from every ship's folders and modes.
-fn plan_machine_rm(f: &FleetOnDisk, fleet: &str, label: &str) -> Result<Plan, String> {
-    let fid = Id::admiral(fleet);
-    let mut p = Plan { summary: format!("remove machine {label} from {fleet}"), ..Default::default() };
-    if !f.config.machines.contains_key(label) {
-        p.refusals.push(refusal("config.invalid", format!("machine {label} is not in {fleet}"), None, Some(fid)));
-        return Ok(p);
-    }
-    let mut c = f.config.clone();
-    c.machines.remove(label);
-    p.steps.push(write_step(&fid, &f.dir.join("fleet.toml"), toml_of(&c)?, "fleet settings without the machine"));
-    for (dir, s) in &f.squadrons {
-        let mut ns = s.clone();
-        for ship in &mut ns.ships {
-            ship.dirs.remove(label);
-            ship.permission_mode.remove(label);
-        }
-        if &ns != s {
-            p.steps.push(write_step(&Id::commodore(fleet, &s.squadron), &dir.join("squadron.toml"), toml_of(&ns)?, "ship folders without the machine"));
-        }
-    }
-    Ok(p)
 }
 
 // ------------------------------------------------------------------ migrate

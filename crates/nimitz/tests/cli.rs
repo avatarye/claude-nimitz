@@ -282,7 +282,6 @@ fn stop_relaunch_sweep_rm() {
 }
 
 #[test]
-#[ignore = "core: a stopped stowaway's SessionEnd logs NIMITZ_HOME as a label, so it stops being a stowaway (reported to core-sessions)"]
 fn rm_removes_a_stopped_stowaway() {
     let sb = Sb::new(false);
     // rm refuses a live stowaway, then removes it once stopped
@@ -329,9 +328,12 @@ fn a_commodore_starts_its_own_ship_only() {
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
     assert_eq!(sb.run_as("MAIN/ARGOS", &["start", "BETA", "--yes"]).code, 1, "never an admiral");
-    for verb in [vec!["sweep", "--yes"], vec!["up", "MAIN", "--yes"], vec!["fleet", "new", "ZED", "--yes"]] {
+    for verb in [vec!["sweep", "MAIN/BOREAL", "--yes"], vec!["up", "MAIN", "--yes"], vec!["fleet", "new", "ZED", "--yes"]] {
         assert_eq!(sb.run_as("MAIN/ARGOS", &verb).code, 1, "{verb:?} is the user's");
     }
+    // a commodore sweeps its own squadron (contracts.md section 8)
+    let r = sb.run_as("MAIN/ARGOS", &["sweep", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
 }
 
 #[test]

@@ -184,7 +184,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         fleet_dirs.iter().any(|d| !d.is_empty() && c.starts_with(d))
     };
     for r in rows.iter().filter(|r| !claimed.contains(&r.session_id)) {
-        if labels.get(&r.session_id).map(|l| !l.is_empty()).unwrap_or(false) {
+        if labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false) {
             continue; // labelled but unconfigured: reported above
         }
         if in_scope(&r.cwd) {

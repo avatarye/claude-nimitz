@@ -33,7 +33,7 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
     let label = ctx.args.value("--label").map(str::to_string).unwrap_or_else(|| crate::crud::machine_label(ctx));
     let mut plan = Plan { summary: format!("init nimitz on this machine as {label}"), ..Default::default() };
     if ctx.caller != nimitz_core::Caller::User {
-        plan.refusals.push(refusal("config.invalid", "`nimitz init` is yours alone".into(), None, None));
+        plan.refusals.push(refusal("authority", "`nimitz init` is yours alone".into(), None, None));
     }
     if !nimitz_core::config::valid_label(&label) {
         plan.refusals.push(refusal("config.invalid", format!("machine label {label:?} is not [a-z0-9._-]+"), Some("nimitz init --label <label>".into()), None));
