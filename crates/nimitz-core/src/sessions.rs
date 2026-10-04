@@ -463,11 +463,19 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
         return plan;
     }
     gate(env, &mut plan, snap, Some(&f.id), false);
+    let fod = crate::config::load_fleet(env, fleet).ok();
     let mut ids = vec![f.admiral.id.clone()];
     for sq in &f.squadrons {
         ids.push(sq.commodore.id.clone());
-        // ships with a folder on this machine; tenders are one job, `up` leaves them
-        ids.extend(sq.ships.iter().filter(|s| s.cwd.is_some()).map(|s| s.id.clone()));
+        // ships with a folder on this machine, in depends_on order; tenders are
+        // one job, so `up` leaves them alone
+        let here: Vec<Id> = sq.ships.iter().filter(|s| s.cwd.is_some()).map(|s| s.id.clone()).collect();
+        let deps = fod
+            .as_ref()
+            .and_then(|f| f.squadrons.iter().find(|(_, s)| Some(s.squadron.as_str()) == sq.id.squadron()))
+            .map(|(_, s)| s.ships.iter().map(|sh| (sh.name.clone(), sh.depends_on.clone())).collect::<Vec<_>>())
+            .unwrap_or_default();
+        ids.extend(in_dependency_order(here, &deps));
     }
     for id in ids {
         let clean_live = member(snap, &id)
@@ -486,6 +494,36 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
     }
     dedup_issues(&mut plan);
     plan
+}
+
+/// Ships before the ships that declare them in `depends_on`. A cycle or an
+/// unknown name never drops a ship: it keeps its place (`check` reports it).
+fn in_dependency_order(ids: Vec<Id>, deps: &[(String, Vec<String>)]) -> Vec<Id> {
+    let dep_of = |id: &Id| -> Vec<String> {
+        let name = id.parts().get(2).map(|s| s.to_string()).unwrap_or_default();
+        deps.iter().find(|(n, _)| *n == name).map(|(_, d)| d.clone()).unwrap_or_default()
+    };
+    let name_of = |id: &Id| id.parts().get(2).map(|s| s.to_string()).unwrap_or_default();
+    let mut out: Vec<Id> = vec![];
+    let mut left = ids;
+    while !left.is_empty() {
+        let ready: Vec<Id> = left
+            .iter()
+            .filter(|id| dep_of(id).iter().all(|d| out.iter().any(|o| &name_of(o) == d) || !left.iter().any(|l| &name_of(l) == d)))
+            .cloned()
+            .collect();
+        // a cycle: take what is left in its config order rather than dropping it
+        let take = if ready.is_empty() { left.clone() } else { ready };
+        left.retain(|id| !take.iter().any(|t| t == id));
+        out.extend(take);
+    }
+    out
+}
+
+/// Is this step one the CLI must open in a multiplexer pane (an interactive
+/// member) instead of running itself? `apply` never runs these.
+pub fn is_pane_step(step: &Step) -> bool {
+    classify(step) == Kind::Interactive
 }
 
 fn dedup_issues(plan: &mut Plan) {
@@ -909,9 +947,11 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     out.issues.push(issue("lineage.broken", Severity::Error, format!("registry write failed: {e}"), None, Some(id.clone())));
                     return out;
                 }
+                claim_folder(env, id, step.cwd.as_deref(), &sid);
                 started.push((id.clone(), sid));
             }
             Kind::Stop { short } => {
+                release_folder(env, step.id.as_ref(), step.cwd.as_deref());
                 if find_row(env, &short).map(|r| r.live()).unwrap_or(false) {
                     out.issues.push(issue("dup.live", Severity::Error, format!("stop {short} ran but the session is still live"), None, step.id.clone()));
                 } // no row at all after a stop is fine too
@@ -952,6 +992,23 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     }
     out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() == plan.steps.len();
     out
+}
+
+/// A ship whose folder is shared between machines (one under `NIMITZ_HOME`, so
+/// it travels with the data root) leaves a lock naming this machine, so another
+/// machine's `check` sees `ship.elsewhere` instead of starting a second copy.
+fn claim_folder(env: &Env, id: &Id, cwd: Option<&str>, session_id: &str) {
+    let Some(cwd) = cwd.filter(|c| id.role() == Role::Ship && std::path::Path::new(c).starts_with(&env.home)) else { return };
+    let line = serde_json::json!({"machine": env.hostname, "id": id.0, "session_id": session_id, "at": crate::evidence::now()});
+    let _ = std::fs::write(ship_lock_path(cwd), line.to_string());
+}
+
+/// Release it on a stop, but never another machine's lock.
+fn release_folder(env: &Env, id: Option<&Id>, cwd: Option<&str>) {
+    let Some(cwd) = cwd.filter(|_| id.map(|i| i.role() == Role::Ship).unwrap_or(false)) else { return };
+    if lock_holder(cwd).map(|m| env.matches_hostname(&m)).unwrap_or(false) {
+        let _ = std::fs::remove_file(ship_lock_path(cwd));
+    }
 }
 
 fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {

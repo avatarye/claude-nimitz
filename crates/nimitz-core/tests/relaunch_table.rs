@@ -498,10 +498,49 @@ fn issue_ship_elsewhere() {
     let issues = sessions::session_issues(&w.env, &m);
     assert!(has(&issues, "ship.elsewhere"), "{:?}", codes(&issues));
     assert!(has(&w.start(&snap, &id, false).refusals, "ship.elsewhere"));
-    // once the other machine releases the folder, the ship starts here
-    std::fs::remove_file(sessions::ship_lock_path(m.cwd.as_deref().unwrap())).unwrap();
+    // once the other machine releases the folder, the ship starts here and takes
+    // the lock itself; stopping it gives the folder back
+    let lock = sessions::ship_lock_path(m.cwd.as_deref().unwrap());
+    std::fs::remove_file(&lock).unwrap();
     let snap = w.snap();
-    assert!(w.start(&snap, &id, false).ok());
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    assert_eq!(sessions::lock_holder(m.cwd.as_deref().unwrap()).as_deref(), Some(sandbox::HOST));
+    assert!(sessions::session_issues(&w.env, &w.member(&w.snap(), &id)).is_empty(), "our own lock is not an issue");
+
+    let snap = w.snap();
+    let out = sessions::apply(&w.env, &sessions::plan_stop(&w.env, &snap, &id, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(!lock.exists(), "a stop releases the folder");
+}
+
+#[test]
+fn up_starts_ships_in_depends_on_order() {
+    let w = world();
+    // FRESH depends on STOPPED, so STOPPED comes first even though F sorts before S
+    let sq = w.env.fleet_dir("MAIN").join("squadrons/argos/squadron.toml");
+    let raw = std::fs::read_to_string(&sq).unwrap();
+    let at = raw.find("name = \"FRESH\"").expect("the FRESH ship");
+    let (head, tail) = raw.split_at(at);
+    std::fs::write(&sq, format!("{head}{}", tail.replacen("depends_on = []", "depends_on = [\"STOPPED\"]", 1))).unwrap();
+
+    let snap = w.snap();
+    let plan = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
+    let order: Vec<String> = plan.steps.iter().filter_map(|s| s.id.as_ref().map(|i| i.0.clone())).collect();
+    let pos = |id: &str| order.iter().position(|o| o == id);
+    assert!(pos("MAIN/ARGOS/STOPPED").is_some() && pos("MAIN/ARGOS/STOPPED") < pos("MAIN/ARGOS/FRESH"), "{order:?}");
+}
+
+#[test]
+fn an_interactive_step_is_marked_for_a_pane_and_a_background_one_is_not() {
+    let w = world();
+    let snap = w.snap();
+    let beta = sessions::plan_start(&w.env, &snap, &Id::admiral("BETA"), &Caller::User, false);
+    assert!(sessions::is_pane_step(&beta.steps[0]), "an admiral opens in a pane");
+    let fresh = w.start(&snap, &w.ship("FRESH"), false);
+    assert!(!sessions::is_pane_step(&fresh.steps[0]), "a ship is a background session");
 }
 
 // ------------------------------------------------------------------ the other commands

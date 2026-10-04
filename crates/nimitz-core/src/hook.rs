@@ -176,9 +176,7 @@ mod tests {
         let argos = Id::commodore("MAIN", "ARGOS");
         let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
         let tender = Id::tender("MAIN", "ARGOS", "fix");
-        let boreal = Id::commodore("MAIN", "BOREAL");
         let one = Id::ship("MAIN", "BOREAL", "ONE");
-        let two = Id::ship("MAIN", "BOREAL", "TWO");
 
         // an admiral signals its own commodores and nothing else
         assert!(!denied(&send(&env, &adm, &argos.name())));
