@@ -254,7 +254,8 @@ fn row6_no_row_but_a_transcript_continues_with_c_in_a_pane() {
     assert!(plan.ok(), "{:?}", plan.refusals);
     let steps = w.steps_of(&plan, &id);
     assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].cmd, claude::interactive(&w.env, &id, "default", true));
+    assert_eq!(steps[0].cmd, claude::interactive(&w.env, &id, "", true));
+    assert!(!steps[0].cmd.contains(&"--permission-mode".to_string()), "no mode set: Claude Code's own default");
     assert_eq!(steps[0].cwd.as_deref(), m.cwd.as_deref());
     // core never starts an interactive member: apply leaves it to the CLI's pane
     let out = sessions::apply(&w.env, &plan);

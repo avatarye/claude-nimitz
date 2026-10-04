@@ -839,7 +839,7 @@ pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, promp
         refuse(&mut plan, "config.invalid", format!("{commodore} has no folder on this machine"), None, Some(commodore.clone()));
         return plan;
     };
-    let mode = crate::config::load_fleet(env, commodore.fleet()).map(|f| crate::config::permission_mode(&f, &id)).unwrap_or("default".into());
+    let mode = crate::config::load_fleet(env, commodore.fleet()).map(|f| crate::config::permission_mode(&f, &id)).unwrap_or_default();
     plan.steps.push(Step {
         id: Some(id.clone()),
         cmd: crate::claude::launch_bg(env, &id, &mode, Some(prompt)),

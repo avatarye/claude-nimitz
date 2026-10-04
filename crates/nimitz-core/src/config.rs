@@ -288,9 +288,11 @@ pub fn ship_prompt(f: &FleetOnDisk, id: &Id) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// Permission mode for a member on this machine.
+/// Permission mode for a member on this machine. Empty when nothing sets one:
+/// then no `--permission-mode` is passed and Claude Code's own default (or the
+/// user's settings) applies, as it did for the old fleet's leads and ships.
 pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
-    let fallback = "default".to_string();
+    let fallback = String::new();
     let squadron_mode = || {
         id.squadron()
             .and_then(|sq| f.squadrons.iter().find(|(_, s)| s.squadron == sq))
@@ -1086,13 +1088,13 @@ pub(crate) mod tests {
         make_fleet(&env);
         let mut f = load_fleet(&env, "MAIN").unwrap();
         let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
-        assert_eq!(permission_mode(&f, &ship), "default");
+        assert_eq!(permission_mode(&f, &ship), "");
         f.squadrons[0].1.permission_mode = Some("bypassPermissions".into());
         assert_eq!(permission_mode(&f, &ship), "bypassPermissions");
         assert_eq!(permission_mode(&f, &Id::commodore("MAIN", "ARGOS")), "bypassPermissions");
         f.squadrons[0].1.ships[0].permission_mode.insert("test-mac".into(), "plan".into());
         assert_eq!(permission_mode(&f, &ship), "plan");
-        assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "default");
+        assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "");
         f.config.admiral.permission_mode = Some("auto".into());
         assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "auto");
     }
