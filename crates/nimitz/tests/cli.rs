@@ -348,6 +348,10 @@ fn a_ship_and_an_admiral_start_nothing() {
     }
     assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
     assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
+    // a member never gets a fix only the user may run
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/DRIFT", "--plan"]);
+    assert!(r.out.contains("fix: ask the user to run: nimitz relaunch MAIN/ARGOS/DRIFT"), "{}", r.out);
+    assert!(!r.out.lines().any(|l| l.trim_start().starts_with("fix: nimitz relaunch")), "{}", r.out);
 }
 
 // ------------------------------------------------------------------ CRUD and top-down
@@ -387,6 +391,13 @@ fn start_is_top_down_admiral_commodore_ship() {
     let (oa, oc, os) = (r.out.find("[TOP]-ADMIRAL").unwrap(), r.out.find("[TOP.SQ]-COMMODORE").unwrap(), r.out.find("[TOP.SQ]-S1").unwrap());
     assert!(oa < oc && oc < os, "top-down in the run:\n{}", r.out);
     assert!(live(&sb.member("TOP/SQ/S1")));
+    // the panes never bound (the fake runs nothing): a second start focuses them, --force opens anew
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.out.contains("already opening in pane"), "{}", r.out);
+    let n = |c: &str| c.lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("[TOP]-ADMIRAL")).count();
+    assert_eq!(n(&sb.calls()), 1, "{}", sb.calls());
+    sb.run(&["start", "TOP", "--yes", "--force"]);
+    assert_eq!(n(&sb.calls()), 2, "{}", sb.calls());
 }
 
 #[test]

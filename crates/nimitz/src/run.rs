@@ -3,7 +3,7 @@
 //! order, so the chain still comes up top-down.
 use crate::{out, Ctx};
 use nimitz_core::sessions::is_pane_step;
-use nimitz_core::{Id, Issue, Outcome, Plan, Severity, Step};
+use nimitz_core::{Id, Issue, Outcome, Plan, Role, Severity, Step};
 use nimitz_mux::{Mux, PaneRef, Place};
 use std::path::Path;
 
@@ -28,6 +28,22 @@ pub fn pane_of(mux: &dyn Mux, session_id: &str) -> Option<PaneRef> {
 
 pub fn refusal(code: &str, message: String, fix: Option<String>, id: Option<Id>) -> Issue {
     Issue { code: code.into(), severity: Severity::Error, message, fix, id }
+}
+
+/// A member caller sees only fixes it may run itself; any other fix becomes
+/// "ask the user to run: ..." (BUG-51). The user sees every fix as is.
+pub fn fixes_for(caller: &nimitz_core::Caller, plan: &mut Plan) {
+    let nimitz_core::Caller::Member { role, .. } = caller else { return };
+    let mine = |f: &str| {
+        let read_only = f.starts_with("nimitz status") || f.starts_with("nimitz check");
+        let commodore = *role == Role::Commodore && ["nimitz start ", "nimitz tender ", "nimitz sweep "].iter().any(|p| f.starts_with(p));
+        read_only || commodore
+    };
+    for i in plan.refusals.iter_mut().chain(plan.warnings.iter_mut()) {
+        if let Some(f) = i.fix.take() {
+            i.fix = Some(if mine(&f) { f } else { format!("ask the user to run: {f}") });
+        }
+    }
 }
 
 /// A plan with pane steps needs a multiplexer that can open panes.
@@ -96,9 +112,28 @@ fn open_step(ctx: &Ctx, mux: &dyn Mux, step: &Step, all: &mut Outcome) -> bool {
         return false;
     };
     let cwd = step.cwd.clone().unwrap_or_else(|| ".".into());
+    // A pane opened earlier that has not bound yet (a trust prompt, a slow start):
+    // show it again instead of opening a second one (BUG-47). --force opens anew.
+    if !ctx.force() {
+        if let Some(p) = pending_pane(ctx, &id) {
+            let _ = mux.focus(&p);
+            all.ran.push((step.clone(), 0, format!("already opening in pane {}; it has not bound yet (trust prompt?)", p.pane_id)));
+            all.issues.push(Issue {
+                code: "lineage.pending".into(),
+                severity: Severity::Warn,
+                message: format!("already opening in pane {}; it has not bound yet (trust prompt?); focused it", p.pane_id),
+                fix: Some(format!("answer it in pane {}, or nimitz start {id} --force for a new pane", p.pane_id)),
+                id: Some(id),
+            });
+            return true;
+        }
+    }
     let since = nimitz_core::evidence::now() - 0.001;
     match mux.open(&step.cmd, Path::new(&cwd), place_for(&id)) {
-        Ok(p) => all.ran.push((step.clone(), 0, format!("opened in {} pane {}", mux.name(), p.pane_id))),
+        Ok(p) => {
+            mark_pending(ctx, &id, &p);
+            all.ran.push((step.clone(), 0, format!("opened in {} pane {}", mux.name(), p.pane_id)))
+        }
         Err(e) => {
             all.ran.push((step.clone(), 1, e.to_string()));
             all.issues.push(refusal("mux.failed", format!("could not open {id}: {e}"), None, Some(id)));
@@ -118,6 +153,7 @@ fn open_step(ctx: &Ctx, mux: &dyn Mux, step: &Step, all: &mut Outcome) -> bool {
     }
     match nimitz_core::sessions::bind_started(&ctx.env, &id, Some(&cwd), since, None, "launch", 2.0) {
         Ok(sid) => {
+            clear_pending(ctx, &id);
             all.ran.push((step.clone(), 0, format!("bound {sid} to {id}")));
             true
         }
@@ -126,6 +162,39 @@ fn open_step(ctx: &Ctx, mux: &dyn Mux, step: &Step, all: &mut Outcome) -> bool {
             false
         }
     }
+}
+
+/// How long a pane that has not bound counts as "still opening".
+const PENDING_TTL_S: f64 = 600.0;
+
+fn pending_path(ctx: &Ctx, id: &Id) -> std::path::PathBuf {
+    ctx.env.state.join("pending").join(format!("{}.json", id.0.replace('/', "%2F")))
+}
+
+/// Record the pane an interactive member is opening in, until it binds.
+fn mark_pending(ctx: &Ctx, id: &Id, p: &PaneRef) {
+    let path = pending_path(ctx, id);
+    let v = serde_json::json!({"pane_id": p.pane_id, "tab_id": p.tab_id, "workspace_id": p.workspace_id, "at": nimitz_core::evidence::now()});
+    if let Some(d) = path.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(path, v.to_string());
+}
+
+fn clear_pending(ctx: &Ctx, id: &Id) {
+    let _ = std::fs::remove_file(pending_path(ctx, id));
+}
+
+/// The pane of an earlier open for `id`, if it is younger than the TTL.
+fn pending_pane(ctx: &Ctx, id: &Id) -> Option<PaneRef> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(pending_path(ctx, id)).ok()?).ok()?;
+    let at = v.get("at")?.as_f64()?;
+    if nimitz_core::evidence::now() - at > PENDING_TTL_S {
+        clear_pending(ctx, id);
+        return None;
+    }
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    Some(PaneRef { pane_id: s("pane_id")?, tab_id: s("tab_id"), workspace_id: s("workspace_id") })
 }
 
 /// Seconds to wait for an interactive member's SessionStart (`NIMITZ_BIND_TIMEOUT`, default 10).

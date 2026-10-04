@@ -492,7 +492,6 @@ fn bug42_the_legacy_fix_does_not_adopt_a_stowaway_as_the_commodore() {
 }
 
 #[test]
-#[ignore = "BUG-43"]
 fn bug43_signal_text_is_not_typed_with_control_characters() {
     let sb = Sb::new(true);
     let w = sb.dir("herdr/world.json");
@@ -508,7 +507,6 @@ fn bug43_signal_text_is_not_typed_with_control_characters() {
 }
 
 #[test]
-#[ignore = "BUG-47"]
 fn bug47_a_second_start_does_not_open_a_second_admiral_pane() {
     let sb = Sb::new(true);
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
