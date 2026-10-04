@@ -215,3 +215,103 @@ fn split_undoes_quote() {
         assert_eq!(split(&format!("nimitz {}", actions::quote(s))), vec!["nimitz".to_string(), s.to_string()], "{s:?}");
     }
 }
+
+/// The config under NIMITZ_HOME (folders, .toml, .md), path relative, the
+/// sandbox's own path removed.
+fn config_tree(w: &World) -> std::collections::BTreeMap<String, String> {
+    let home = PathBuf::from(&w.vars["NIMITZ_HOME"]);
+    let base = home.parent().unwrap().to_string_lossy().into_owned();
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![home.clone()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.insert(format!("{}/", p.strip_prefix(&home).unwrap().display()), String::new());
+                stack.push(p);
+            } else if p.extension().map(|x| x == "toml" || x == "md").unwrap_or(false) {
+                let text = std::fs::read_to_string(&p).unwrap_or_default().replace(&base, "<sandbox>");
+                out.insert(p.strip_prefix(&home).unwrap().display().to_string(), text);
+            }
+        }
+    }
+    out
+}
+
+/// BUG-33: what the CLI stores for the command a form shows is what the form
+/// itself stores. Each form runs in one fresh sandbox, its command in another.
+#[test]
+fn each_form_command_stores_what_the_form_stores() {
+    let bin = nimitz();
+    type Fill = fn(&nimitz_core::env::Env) -> Form;
+    let forms: Vec<(&str, Fill)> = vec![
+        ("new fleet", |env| {
+            let mut f = Form::new_fleet(env);
+            f.set("fleet", "NEWF");
+            f.set("machine", "sandbox");
+            f
+        }),
+        ("new squadron", |_| {
+            let mut f = Form::new_squadron("MAIN");
+            f.set("squadron", "CIRRUS");
+            f.set("comms", "allow:MAIN/ARGOS/CLEAN");
+            f.set("brief", "Clouds, with 'quotes'.");
+            f
+        }),
+        ("new ship, managed", |_| {
+            let mut f = Form::new_ship("MAIN", "ARGOS", "sandbox");
+            f.set("ship", "NEWSHIP");
+            f.set("prompt", "You build the importer.\nTwo lines.");
+            f.set("mode", "auto");
+            f.set("depends", "CLEAN");
+            f
+        }),
+        ("new ship, own folder", |_| {
+            let mut f = Form::new_ship("MAIN", "ARGOS", "sandbox");
+            f.set("ship", "OWNDIR");
+            f.set("dir", "/work/owndir");
+            f.set("prompt", "Own folder.");
+            f
+        }),
+        ("edit ship", |env| {
+            let mut f = Form::edit_ship(env, &Id("MAIN/ARGOS/CLEAN".into()), "sandbox").unwrap();
+            f.set("mode", "plan");
+            f.set("prompt", "A new prompt.");
+            f
+        }),
+        ("edit squadron", |env| {
+            let mut f = Form::edit_squadron(env, &Id("MAIN/ARGOS".into())).unwrap();
+            f.set("comms", "commodore-only");
+            f.set("brief", "New brief.");
+            f.set("mode", "auto");
+            f
+        }),
+        ("edit fleet", |env| {
+            let mut f = Form::edit_fleet(env, "MAIN").unwrap();
+            f.set("mode", "acceptEdits");
+            f
+        }),
+        ("remove machine", |_| Form::machine_rm("MAIN", "sandbox")),
+    ];
+    for (what, fill) in forms {
+        let ours = world();
+        let app = app_on(&ours);
+        let mut f = fill(&app.ctx.env);
+        f.validate(&app.ctx.env, &app.bundle.as_ref().unwrap().snap);
+        assert!(f.ok(), "{what}: {:?}", f.problems);
+        let o = actions::apply(&app.ctx.env, &f.pending());
+        assert!(o.issues.is_empty(), "{what}: {:?}", o.issues);
+
+        let theirs = world();
+        let other = app_on(&theirs);
+        // the command names sandbox A's folders; in B they are B's
+        let base = |w: &World| PathBuf::from(&w.vars["NIMITZ_HOME"]).parent().unwrap().to_string_lossy().into_owned();
+        let argv: Vec<String> = split(&f.command).into_iter().map(|a| a.replace(&base(&ours), &base(&theirs))).collect();
+        let out = actions::cli_command(&other.ctx.env, &bin.to_string_lossy()).args(&argv[1..]).arg("--yes").output().unwrap();
+        assert!(out.status.success(), "{what}: `{}` failed: {}", f.command, String::from_utf8_lossy(&out.stderr));
+        let (a, b) = (config_tree(&ours), config_tree(&theirs));
+        for k in a.keys().chain(b.keys()).collect::<std::collections::BTreeSet<_>>() {
+            assert_eq!(a.get(k), b.get(k), "{what}: `{}` stores {k} differently from the form", f.command);
+        }
+    }
+}

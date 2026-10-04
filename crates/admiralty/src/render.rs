@@ -10,12 +10,13 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{shell, MessagePlan, Pending};
 use crate::app::{App, MenuItem, Modal, NeedItem, Split, HELP};
 use crate::detail::{badge, detail_with_art};
 use crate::forms::{FieldKind, Form};
-use crate::frames::{frame_lines, header_line, list_max_width, pad, selectable, truncate};
+use crate::frames::{frame_lines, header_line, list_max_width, pad, selectable, wrap};
 use crate::theme::{bold, mono, severity_color, severity_word, st};
 use crate::view::FleetState;
 
@@ -43,19 +44,24 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     f.render_widget(Paragraph::new(top_line(app)).style(Style::new().bg(mono::BG_HI)), top);
     let (left, right, _) = body_areas(app, body);
     draw_list(app, f, left);
-    let detail = detail_with_art(app, right.width.saturating_sub(2) as usize);
+    let compact = right.height < 16;
+    let detail = detail_with_art(app, right.width.saturating_sub(2) as usize, compact);
+    let room = right.height.saturating_sub(2) as usize;
+    app.detail_scroll = app.detail_scroll.min(detail.len().saturating_sub(room));
+    let more = detail.len() > room + app.detail_scroll;
+    let title = if more || app.detail_scroll > 0 { " detail  ctrl-e/ctrl-y scroll " } else { " detail " };
     f.render_widget(
-        Paragraph::new(detail).wrap(Wrap { trim: false }).block(
+        Paragraph::new(detail).scroll((app.detail_scroll as u16, 0)).wrap(Wrap { trim: false }).block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
                 .border_style(st(mono::PURPLE))
-                .title(Span::styled(" detail ", bold(mono::PURPLE))),
+                .title(Span::styled(title, bold(mono::PURPLE))),
         ),
         right,
     );
-    f.render_widget(Paragraph::new(bottom_line(app)).style(Style::new().bg(mono::BG_HI)), bottom);
+    f.render_widget(Paragraph::new(bottom_line(app, bottom.width as usize)).style(Style::new().bg(mono::BG_HI)), bottom);
     match &app.modal {
-        Some(Modal::Help) => draw_help(f, area),
+        Some(Modal::Help { scroll }) => draw_help(f, area, *scroll),
         Some(Modal::Confirm(p)) => draw_confirm(f, area, p, app.ctx.live),
         Some(Modal::Needs { items, sel }) => draw_needs(f, area, items, *sel),
         Some(Modal::Issues { sel }) => draw_issues(app, f, area, *sel),
@@ -70,9 +76,25 @@ pub fn draw(app: &mut App, f: &mut Frame) {
 fn top_line(app: &App) -> Line<'static> {
     let Some(b) = &app.bundle else { return Line::from(vec![badge("ADMIRALTY", mono::GOLD), Span::raw("  loading ...")]) };
     let (fleets, live, need, errors, warns) = app.counts();
-    let mut v = vec![badge("\u{2693} ADMIRALTY", mono::GOLD), Span::raw(format!("  {fleets} fleets  {live} live  "))];
+    // what decides what you can do comes first, so a narrow window keeps it
+    let mut v = vec![badge(&format!("{} ADMIRALTY", app.icons.fleet), mono::GOLD)];
+    if app.monitor_only() {
+        v.push(badge("MONITOR-ONLY", mono::ORANGE));
+    } else {
+        v.push(Span::styled(format!(" mux {}", b.mux_name), bold(mono::CYAN)));
+    }
+    if !app.ctx.live {
+        v.push(Span::raw(" "));
+        v.push(badge("DEMO", mono::PURPLE));
+    }
+    v.push(Span::raw(format!("  {fleets} fleets  {live} live  ")));
+    // sessions labelled for a fleet whose config does not load: not lost, just not listed
+    let unlisted = crate::view::all_issues(&b.snap).iter().filter(|i| i.code == "config.invalid" && i.message.contains("which no config declares")).count();
+    if unlisted > 0 {
+        v.push(Span::styled(format!("+{unlisted} outside the config  "), bold(mono::ORANGE)));
+    }
     v.push(Span::styled(format!("{need} need you"), if need > 0 { bold(mono::PINK) } else { st(mono::COMMENT) }));
-    v.push(Span::raw("   "));
+    v.push(Span::raw("  "));
     if errors + warns == 0 {
         v.push(Span::styled("no issues", st(mono::GREEN)));
     } else {
@@ -83,17 +105,7 @@ fn top_line(app: &App) -> Line<'static> {
         if warns > 0 {
             v.push(Span::styled(format!("{warns} warnings"), bold(mono::ORANGE)));
         }
-        v.push(Span::styled("  (i)", st(mono::COMMENT)));
-    }
-    v.push(Span::raw("   "));
-    if app.monitor_only() {
-        v.push(badge("MONITOR-ONLY: no multiplexer", mono::ORANGE));
-    } else {
-        v.push(Span::styled(format!("mux {}", b.mux_name), st(mono::CYAN)));
-    }
-    if !app.ctx.live {
-        v.push(Span::raw(" "));
-        v.push(badge("DEMO DATA", mono::PURPLE));
+        v.push(Span::styled(" (i)", st(mono::COMMENT)));
     }
     if !b.snap.compat_ok {
         let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
@@ -112,7 +124,7 @@ fn top_line(app: &App) -> Line<'static> {
     Line::from(v)
 }
 
-fn bottom_line(app: &App) -> Line<'static> {
+fn bottom_line(app: &App, width: usize) -> Line<'static> {
     if app.editing_filter {
         return Line::from(vec![
             Span::styled(" /", bold(mono::YELLOW)),
@@ -129,6 +141,10 @@ fn bottom_line(app: &App) -> Line<'static> {
             return Line::from(Span::styled(format!(" {}", t.msg), t.style));
         }
     }
+    let key = |k: &str, d: &str| vec![Span::styled(format!(" {k} "), bold(mono::YELLOW)), Span::styled(format!("{d} "), st(mono::SOFT))];
+    // help and quit always show, at the right; the rest fills what is left
+    let right: Vec<Span<'static>> = [key("?", "help"), key("q", "quit")].concat();
+    let right_w: usize = right.iter().map(|s| s.content.width()).sum();
     let keys = [
         ("j/k", "move"),
         ("h/l", "fold"),
@@ -143,14 +159,20 @@ fn bottom_line(app: &App) -> Line<'static> {
         ("f/F", "filters"),
         ("I", "stowaways"),
         ("v/s", "split"),
-        ("?", "help"),
-        ("q", "quit"),
     ];
-    let mut v = vec![];
+    let mut v: Vec<Span<'static>> = vec![];
+    let mut used = 0;
     for (k, d) in keys {
-        v.push(Span::styled(format!(" {k} "), bold(mono::YELLOW)));
-        v.push(Span::styled(format!("{d} "), st(mono::SOFT)));
+        let item = key(k, d);
+        let w: usize = item.iter().map(|s| s.content.width()).sum();
+        if used + w + right_w > width {
+            break;
+        }
+        used += w;
+        v.extend(item);
     }
+    v.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w))));
+    v.extend(right);
     Line::from(v)
 }
 
@@ -205,20 +227,26 @@ fn keys_line(pairs: &[(&str, &str)]) -> Line<'static> {
     Line::from(v)
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
-    let mut lines = vec![Line::styled("Keys (vim style)", bold(mono::FG)), Line::raw("")];
+fn draw_help(f: &mut Frame, area: Rect, scroll: usize) {
+    let r = centered(area, 90, HELP.len() as u16 + 6);
+    let width = r.width.saturating_sub(2) as usize;
+    let mut lines = vec![Line::styled("Keys (vim style)   j/k scroll, esc closes", bold(mono::FG)), Line::raw("")];
     for (k, d) in HELP {
-        lines.push(Line::from(vec![Span::styled(format!("  {k:<18}"), bold(mono::CYAN)), Span::styled(d.to_string(), st(mono::FG))]));
+        lines.extend(wrap(vec![Span::styled(format!("  {k:<18}"), bold(mono::CYAN)), Span::styled(d.to_string(), st(mono::FG))], width, 20));
     }
     lines.push(Line::raw(""));
-    lines.push(Line::styled("  Pane dots: yellow working, red blocked, teal done, green idle, grey unknown.", st(mono::COMMENT)));
-    let r = centered(area, 86, lines.len() as u16 + 2);
+    lines.extend(wrap(vec![Span::styled("  Pane dots: yellow working, red blocked, teal done, green idle, grey unknown.", st(mono::COMMENT))], width, 2));
+    let room = r.height.saturating_sub(2) as usize;
+    let scroll = scroll.min(lines.len().saturating_sub(room));
+    let more = lines.len() > room + scroll;
+    let shown: Vec<Line> = lines.into_iter().skip(scroll).take(room).collect();
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).block(modal_block("help".into(), mono::CYAN)), r);
+    let title = if more { "help (j for more)".to_string() } else { "help".to_string() };
+    f.render_widget(Paragraph::new(shown).block(modal_block(title, mono::CYAN)), r);
 }
 
-/// One plan step: what runs, where, and why.
-pub fn step_lines(s: &Step, pane: bool) -> Vec<Line<'static>> {
+/// One plan step: what runs, where, and why (wrapped to `width`, indent kept).
+pub fn step_lines(s: &Step, pane: bool, width: usize) -> Vec<Line<'static>> {
     let what = match s.cmd.first().map(String::as_str) {
         Some("write") => format!("write {}  ({} lines)", s.cmd.get(1).cloned().unwrap_or_default(), s.cmd.get(2).map(|c| c.lines().count()).unwrap_or(0)),
         Some("mkdir" | "archive" | "bind") => s.cmd.join(" "),
@@ -229,30 +257,31 @@ pub fn step_lines(s: &Step, pane: bool) -> Vec<Line<'static>> {
         first.push(Span::styled("[pane] ", bold(mono::CYAN)));
     }
     first.push(Span::styled(what, st(mono::FG)));
-    let mut v = vec![Line::from(first)];
+    let mut v = wrap(first, width, 6);
     let mut meta = vec![Span::raw("      "), Span::styled(s.why.clone(), st(mono::COMMENT))];
     if let Some(c) = &s.cwd {
         meta.push(Span::styled(format!("   in {c}"), st(mono::DIM)));
     }
-    v.push(Line::from(meta));
+    v.extend(wrap(meta, width, 6));
     v
 }
 
-pub fn plan_lines(p: &Plan, pane_steps: &[Step]) -> Vec<Line<'static>> {
+/// A plan as lines `width` wide: refusals with fixes, warnings, steps.
+pub fn plan_lines(p: &Plan, pane_steps: &[Step], width: usize) -> Vec<Line<'static>> {
     let mut v = vec![];
     if !p.refusals.is_empty() {
         v.push(Line::styled("REFUSED", bold(mono::PINK)));
         for i in &p.refusals {
-            v.push(Line::from(vec![Span::styled(format!("  {:<16}", i.code), bold(mono::PINK)), Span::styled(i.message.clone(), st(mono::FG))]));
+            v.extend(wrap(vec![Span::styled(format!("  {:<16} ", i.code), bold(mono::PINK)), Span::styled(i.message.clone(), st(mono::FG))], width, 19));
             if let Some(fx) = &i.fix {
-                v.push(Line::from(vec![Span::raw("      fix  "), Span::styled(fx.clone(), bold(mono::CYAN))]));
+                v.extend(wrap(vec![Span::raw("      fix  "), Span::styled(fx.clone(), bold(mono::CYAN))], width, 11));
             }
         }
         v.push(Line::raw(""));
     }
     if !p.warnings.is_empty() {
         for i in &p.warnings {
-            v.push(Line::from(vec![Span::styled(format!("  warn {:<11}", i.code), bold(mono::ORANGE)), Span::styled(i.message.clone(), st(mono::SOFT))]));
+            v.extend(wrap(vec![Span::styled(format!("  warn {:<12}", i.code), bold(mono::ORANGE)), Span::styled(i.message.clone(), st(mono::SOFT))], width, 19));
         }
         v.push(Line::raw(""));
     }
@@ -261,19 +290,19 @@ pub fn plan_lines(p: &Plan, pane_steps: &[Step]) -> Vec<Line<'static>> {
         v.push(Line::styled("  nothing to do", st(mono::COMMENT)));
     }
     for s in &p.steps {
-        v.extend(step_lines(s, pane_steps.contains(s)));
+        v.extend(step_lines(s, pane_steps.contains(s), width));
     }
     v
 }
 
 fn draw_confirm(f: &mut Frame, area: Rect, p: &Pending, live: bool) {
-    let mut lines = vec![
-        Line::styled(format!("{}?", p.plan.summary), bold(mono::FG)),
-        Line::from(vec![Span::styled("command  ", st(mono::COMMENT)), Span::styled(p.command.clone(), bold(mono::CYAN))]),
-        Line::raw(""),
-    ];
+    let w = 110u16.min(area.width.saturating_sub(2));
+    let width = w.saturating_sub(2) as usize;
+    let mut lines = vec![Line::styled(format!("{}?", p.plan.summary), bold(mono::FG))];
+    lines.extend(wrap(vec![Span::styled("command  ", st(mono::COMMENT)), Span::styled(p.command.clone(), bold(mono::CYAN))], width, 9));
+    lines.push(Line::raw(""));
     let pane_steps: Vec<Step> = p.panes.iter().map(|(s, _)| s.clone()).collect();
-    lines.extend(plan_lines(&p.plan, &pane_steps));
+    lines.extend(plan_lines(&p.plan, &pane_steps, width));
     lines.push(Line::raw(""));
     if !p.plan.ok() {
         lines.push(keys_line(&[("esc", "close (core refuses this plan; the fixes are above)")]));
@@ -283,10 +312,18 @@ fn draw_confirm(f: &mut Frame, area: Rect, p: &Pending, live: bool) {
         lines.push(keys_line(&[("y", "run"), ("n", "cancel")]));
     }
     let color = if p.plan.ok() { mono::YELLOW } else { mono::PINK };
-    let h = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
-    let r = centered(area, 110, h);
+    let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let r = centered(area, w, h);
+    // keep the keys line on screen when the plan is long
+    let room = r.height.saturating_sub(2) as usize;
+    if lines.len() > room && room > 2 {
+        let keys = lines.pop().unwrap();
+        lines.truncate(room - 2);
+        lines.push(Line::styled("  ... (the rest of the plan does not fit; widen the window)", st(mono::COMMENT)));
+        lines.push(keys);
+    }
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(modal_block(p.act.word().to_string(), color)), r);
+    f.render_widget(Paragraph::new(lines).block(modal_block(p.act.word().to_string(), color)), r);
 }
 
 fn draw_fleet_filter(f: &mut Frame, area: Rect, on: &[bool; 7], sel: usize) {
@@ -332,42 +369,45 @@ fn draw_needs(f: &mut Frame, area: Rect, items: &[NeedItem], sel: usize) {
 
 fn draw_issues(app: &App, f: &mut Frame, area: Rect, sel: usize) {
     let issues = app.issues();
-    let r = centered(area, area.width.saturating_sub(6), area.height.saturating_sub(4));
+    let r = centered(area, area.width.saturating_sub(4).max(40), area.height.saturating_sub(2));
     let inner_h = r.height.saturating_sub(2) as usize;
-    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "go to the row"), ("y", "yank the fix"), ("esc", "back")]), Line::raw("")];
+    let width = r.width.saturating_sub(2) as usize;
+    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "go"), ("y", "yank fix"), ("esc", "back")]), Line::raw("")];
     if issues.is_empty() {
         lines.push(Line::styled("  No issues. Every fleet's shape matches its config.", st(mono::GREEN)));
     }
-    let width = r.width.saturating_sub(4) as usize;
     let mut body: Vec<Line<'static>> = vec![];
-    let mut sel_line = 0;
+    let (mut sel_from, mut sel_to) = (0, 0);
     for (i, is) in issues.iter().enumerate() {
-        if i == sel {
-            sel_line = body.len();
-        }
+        let start = body.len();
         let c = severity_color(is.severity);
-        let wh = is.id.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| if is.code == "stowaway" { "stowaways".into() } else { "this machine".into() });
-        let mut l = Line::from(vec![
+        let wh = is.id.as_ref().map(|x| x.0.clone()).unwrap_or_else(|| if is.code == "stowaway" || is.code == "legacy" { "stowaways".into() } else { "this machine".into() });
+        let mut block = vec![Line::from(vec![
             Span::styled(format!(" {:<6}", severity_word(is.severity).to_uppercase()), bold(c)),
             Span::styled(format!("{:<18}", is.code), bold(c)),
-            Span::styled(format!("{:<22}", truncate(&wh, 21)), st(mono::YELLOW)),
-            Span::styled(truncate(&is.message, width.saturating_sub(47)), st(mono::FG)),
-        ]);
-        let mut fx = Line::from(vec![
-            Span::raw(" ".repeat(25)),
-            Span::styled("fix  ", st(mono::COMMENT)),
-            match &is.fix {
-                Some(x) => Span::styled(x.clone(), bold(mono::CYAN)),
-                None => Span::styled("no command; see the message".to_string(), st(mono::COMMENT)),
-            },
-        ]);
-        l = selectable(l, i == sel);
-        fx = selectable(fx, i == sel);
-        body.push(l);
-        body.push(fx);
+            Span::styled(wh, st(mono::YELLOW)),
+        ])];
+        block.extend(wrap(vec![Span::raw("   "), Span::styled(is.message.clone(), st(mono::FG))], width, 3));
+        block.extend(wrap(
+            vec![
+                Span::styled("   fix  ", st(mono::COMMENT)),
+                match &is.fix {
+                    Some(x) => Span::styled(x.clone(), bold(mono::CYAN)),
+                    None => Span::styled("no command; see the message".to_string(), st(mono::COMMENT)),
+                },
+            ],
+            width,
+            8,
+        ));
+        for l in block {
+            body.push(selectable(l, i == sel));
+        }
+        if i == sel {
+            (sel_from, sel_to) = (start, body.len());
+        }
     }
     let room = inner_h.saturating_sub(lines.len());
-    let start = (sel_line + 2).saturating_sub(room);
+    let start = if sel_to > room { (sel_to - room).max(0).min(sel_from) } else { 0 };
     lines.extend(body.into_iter().skip(start).take(room));
     let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
     f.render_widget(Clear, r);
@@ -463,7 +503,7 @@ fn draw_form(f: &mut Frame, area: Rect, form: &Form) {
         lines.push(Line::styled(format!("  warn {w}"), st(mono::ORANGE)));
     }
     if form.ok() {
-        lines.extend(plan_lines(&form.plan, &[]));
+        lines.extend(plan_lines(&form.plan, &[], 110));
         lines.push(Line::raw(""));
     }
     lines.push(keys_line(&[("tab/\u{2191}\u{2193}", "field"), ("\u{2190}\u{2192}", "choose"), ("ctrl-e", "$EDITOR"), ("ctrl-s / enter on last", "save"), ("esc", "cancel")]));

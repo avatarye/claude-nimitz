@@ -399,6 +399,9 @@ impl Form {
             FormKind::NewShip | FormKind::EditShip(_) => {
                 if let Some(e) = name_err(self.get("ship"), "ship") {
                     errs.insert("ship", e);
+                } else if matches!(self.get("ship").trim(), "COMMODORE" | "ADMIRAL") {
+                    // [F.SQ]-COMMODORE is the commodore's address (BUG-26)
+                    errs.insert("ship", "COMMODORE and ADMIRAL are addresses, not ship names".into());
                 }
                 if let Some(e) = label_err(self.get("machine")) {
                     errs.insert("machine", e);

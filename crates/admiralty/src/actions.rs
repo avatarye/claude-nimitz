@@ -112,11 +112,11 @@ impl Act {
     }
 
     fn needs_mux(self) -> bool {
-        matches!(self, Act::Start | Act::Up | Act::Relaunch | Act::Open | Act::Layout | Act::LayoutShips)
+        matches!(self, Act::Up | Act::Open | Act::Layout | Act::LayoutShips)
     }
 }
 
-pub const MONITOR_ONLY: &str = "monitor-only: no multiplexer here (run Admiralty inside Herdr to start or open sessions)";
+pub const MONITOR_ONLY: &str = "monitor-only: no multiplexer here (run Admiralty inside Herdr to start an admiral or commodore, or to open, jump or type)";
 
 /// A plan ready for the confirm dialog.
 #[derive(Clone, Debug)]
@@ -218,6 +218,7 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
         },
         (Act::Layout | Act::LayoutShips, _) => Err("layout is for a fleet (select its band)".into()),
         (_, Target::None) => Err("nothing to act on here".into()),
+        (Act::Start | Act::Relaunch, Target::Member(id)) if id.role().interactive() && !caps.open => Err(MONITOR_ONLY.into()),
         (Act::Start, Target::Member(id)) => {
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
             if live(m) && m.issues.is_empty() {
@@ -329,6 +330,30 @@ pub fn place_for(id: &Id) -> Place {
     Place::Tab { workspace, label }
 }
 
+/// Without a multiplexer a plan that must open a pane (an admiral or commodore
+/// to start first) cannot run: say which, as a refusal.
+fn need_panes(caps: Caps, p: &mut Pending) {
+    if caps.open || p.panes.is_empty() {
+        return;
+    }
+    for (s, _) in &p.panes {
+        let who = s.id.as_ref().map(|i| i.0.clone()).unwrap_or_default();
+        p.plan.refusals.push(nimitz_core::Issue {
+            code: "mux.none".into(),
+            severity: nimitz_core::Severity::Error,
+            message: format!("{who} must start first, in a pane; there is no multiplexer here"),
+            fix: Some("run Admiralty inside Herdr (or start it there yourself)".into()),
+            id: s.id.clone(),
+        });
+    }
+}
+
+/// A `legacy` warning belongs to the member it names: keep it only in that
+/// member's own dialog.
+fn only_own_legacy(p: &mut Pending, target: Option<&Id>) {
+    p.plan.warnings.retain(|w| w.code != "legacy" || w.id.as_ref() == target);
+}
+
 fn with_panes(act: Act, command: String, plan: Plan) -> Pending {
     let panes = plan
         .steps
@@ -393,6 +418,11 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
         }
         _ => return Err(format!("{} does not apply here", act.word())),
     };
+    let mut p = p;
+    need_panes(caps, &mut p);
+    if matches!(act, Act::Start | Act::Relaunch | Act::Stop) {
+        only_own_legacy(&mut p, member_id(target).as_ref());
+    }
     Ok(p)
 }
 

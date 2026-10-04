@@ -186,6 +186,8 @@ pub enum Kind {
     /// an extra job row of the identity (copy, stale row)
     ExtraRow,
     Stowaway,
+    /// a line of text across the frame (a config error, in full)
+    Note,
 }
 
 #[derive(Clone, Debug)]
@@ -544,6 +546,97 @@ fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
     n
 }
 
+/// A config error that stops a fleet or squadron loading (as opposed to a
+/// session labelled for an identity the config lacks).
+fn is_load_error(i: &Issue) -> bool {
+    i.code == "config.invalid" && !i.message.contains("which no config declares")
+}
+
+/// Sessions labelled for identities under `id` that the config does not declare.
+pub fn unlisted_sessions(snap: &Snapshot, id: &nimitz_core::Id) -> usize {
+    all_issues(snap)
+        .iter()
+        .filter(|i| i.code == "config.invalid" && i.message.contains("which no config declares"))
+        .filter(|i| i.id.as_ref().map(|x| x == id || x.0.starts_with(&format!("{}/", id.0))).unwrap_or(false))
+        .count()
+}
+
+/// Fleets named by load errors that are not in the snapshot.
+pub fn broken_fleets(snap: &Snapshot) -> Vec<nimitz_core::Id> {
+    let mut out: Vec<nimitz_core::Id> = vec![];
+    for i in snap.issues.iter().filter(|i| is_load_error(i)) {
+        let Some(id) = &i.id else { continue };
+        let f = nimitz_core::Id::admiral(id.fleet());
+        if !snap.fleets.iter().any(|x| x.id == f) && !out.contains(&f) {
+            out.push(f);
+        }
+    }
+    out
+}
+
+/// Squadrons of `f` named by load errors that the fleet does not have.
+fn broken_squadrons(snap: &Snapshot, f: &Fleet) -> Vec<nimitz_core::Id> {
+    let mut out: Vec<nimitz_core::Id> = vec![];
+    for i in snap.issues.iter().chain(f.issues.iter()).filter(|i| is_load_error(i)) {
+        let Some(id) = &i.id else { continue };
+        let Some(sq) = id.squadron() else { continue };
+        let sid = nimitz_core::Id::commodore(id.fleet(), sq);
+        if id.fleet() == f.id.fleet() && !f.squadrons.iter().any(|s| s.id == sid) && !out.contains(&sid) {
+            out.push(sid);
+        }
+    }
+    out
+}
+
+/// A fleet or squadron whose config does not load: a purple frame with the
+/// error in full, line by line, and how many sessions now run outside it.
+fn broken_band(snap: &Snapshot, id: &nimitz_core::Id, v: &View) -> Node {
+    let fleet = id.role() == Role::Admiral;
+    let mut n = Node::new(format!("{}:{}", if fleet { "F" } else { "SQ" }, id.0), if fleet { Kind::FleetBand } else { Kind::SquadronBand });
+    n.member = Some(id.clone());
+    n.default_expand = true;
+    n.icon = if fleet { v.icons.fleet } else { v.icons.squadron };
+    n.icon_style = bold(mono::PINK);
+    n.name = if fleet { format!("[{}]", id.0) } else { id.squadron().unwrap_or("?").to_string() };
+    n.name_style = bold(mono::PINK);
+    n.kind_text = if fleet { "fleet".into() } else { "squadron".into() };
+    n.frame = Some(mono::PINK);
+    n.band_bg = Some(mono::T_PURPLE);
+    n.worst = Some(Severity::Error);
+    n.detail = vec![Span::styled("config does not load", bold(mono::PINK))];
+    let errors: Vec<&Issue> = all_issues(snap)
+        .into_iter()
+        .filter(|i| is_load_error(i) && i.id.as_ref().map(|x| x == id || (fleet && x.fleet() == id.fleet())).unwrap_or(false))
+        .collect();
+    n.issue_count = errors.len();
+    n.title_right = vec![Span::styled(format!("{} {}", v.icons.issue, errors.len()), bold(mono::PINK))];
+    let mut k = 0;
+    let mut note = |text: String, style: Style| {
+        let mut c = Node::new(format!("N:{}:{k}", id.0), Kind::Note);
+        c.member = Some(id.clone());
+        c.name = text;
+        c.name_style = style;
+        k += 1;
+        c
+    };
+    for e in &errors {
+        for line in e.message.lines().filter(|l| !l.trim().is_empty()) {
+            n.children.push(note(line.to_string(), st(mono::FG)));
+        }
+        if let Some(fx) = &e.fix {
+            n.children.push(note(format!("fix: {fx}"), bold(mono::CYAN)));
+        }
+    }
+    let unlisted = unlisted_sessions(snap, id);
+    if unlisted > 0 {
+        n.children.push(note(
+            format!("{unlisted} session(s) labelled for {} keep running outside the config (i lists them)", id.0),
+            bold(mono::ORANGE),
+        ));
+    }
+    n
+}
+
 pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
     let q = v.filter.trim().to_lowercase();
     let matches = |m: &Member| -> bool {
@@ -594,7 +687,17 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
                 n.children.push(sn);
             }
         }
+        // squadrons the config names but could not load: a broken frame each
+        for sq in broken_squadrons(snap, f) {
+            n.children.push(broken_band(snap, &sq, v));
+        }
         out.push(n);
+    }
+    // fleets whose config does not load: core leaves them out; show them broken
+    if q.is_empty() {
+        for fid in broken_fleets(snap) {
+            out.push(broken_band(snap, &fid, v));
+        }
     }
     if v.show_stowaways && !snap.stowaways.is_empty() && q.is_empty() && !v.flagged_only {
         let live = snap.stowaways.iter().filter(|s| s.pid.is_some()).count();

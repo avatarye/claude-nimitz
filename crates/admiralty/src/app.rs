@@ -58,7 +58,7 @@ pub struct MenuItem {
 }
 
 pub enum Modal {
-    Help,
+    Help { scroll: usize },
     /// `f`: which fleet states are shown
     FleetFilter { sel: usize },
     Needs { items: Vec<NeedItem>, sel: usize },
@@ -118,6 +118,9 @@ pub struct App {
     pub state_path: Option<PathBuf>,
     /// an action running on the worker thread
     pub busy: Option<String>,
+    /// lines the detail pane is scrolled down (ctrl-e / ctrl-y); 0 on a new row
+    pub detail_scroll: usize,
+    detail_for: Option<String>,
     pub page: usize,
     last_g: Option<Instant>,
     last_saved: Option<Saved>,
@@ -128,6 +131,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("h / l", "fold or go to parent / unfold or go to first child"),
     ("gg / G", "top / bottom"),
     ("ctrl-d / ctrl-u", "half page down / up"),
+    ("ctrl-e / ctrl-y", "scroll the detail pane"),
     ("space", "fold / unfold"),
     ("/  n / N", "filter by name; next / previous match"),
     ("enter", "jump to the row's pane (else fold / unfold)"),
@@ -169,6 +173,8 @@ impl App {
             fixed_now: None,
             state_path,
             busy: None,
+            detail_scroll: 0,
+            detail_for: None,
             page: 20,
             last_g: None,
             last_saved: None,
@@ -694,6 +700,11 @@ impl App {
     pub fn on_key(&mut self, k: KeyEvent) -> Option<Effect> {
         let effect = self.handle_key(k);
         self.persist();
+        let now = self.current().map(|r| r.node.id.clone());
+        if now != self.detail_for {
+            self.detail_for = now;
+            self.detail_scroll = 0;
+        }
         effect
     }
 
@@ -743,6 +754,8 @@ impl App {
             (KeyCode::Char('l') | KeyCode::Right, _) => self.unfold(),
             (KeyCode::Char('G') | KeyCode::End, _) => self.cursor = last,
             (KeyCode::Home, _) => self.cursor = 0,
+            (KeyCode::Char('e'), true) => self.detail_scroll += 1,
+            (KeyCode::Char('y'), true) => self.detail_scroll = self.detail_scroll.saturating_sub(1),
             (KeyCode::Char('d'), true) | (KeyCode::PageDown, _) => self.cursor = (self.cursor + self.page / 2).min(last),
             (KeyCode::Char('u'), true) | (KeyCode::PageUp, _) => self.cursor = self.cursor.saturating_sub(self.page / 2),
             (KeyCode::Char(' '), _) => self.toggle(),
@@ -780,7 +793,7 @@ impl App {
             }
             (KeyCode::Char('!'), _) => self.modal = Some(Modal::Needs { items: self.needs(), sel: 0 }),
             (KeyCode::Char('i'), _) => self.modal = Some(Modal::Issues { sel: 0 }),
-            (KeyCode::Char('?'), _) => self.modal = Some(Modal::Help),
+            (KeyCode::Char('?'), _) => self.modal = Some(Modal::Help { scroll: 0 }),
             (KeyCode::Char('I'), _) => {
                 self.show_stowaways = !self.show_stowaways;
                 self.rebuild();
@@ -829,11 +842,12 @@ impl App {
         let down = matches!(k.code, KeyCode::Char('j') | KeyCode::Down);
         let up = matches!(k.code, KeyCode::Char('k') | KeyCode::Up);
         match m {
-            Modal::Help => {
-                if !matches!(k.code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?')) {
-                    self.modal = Some(Modal::Help);
-                }
-            }
+            Modal::Help { scroll } => match k.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {}
+                _ if down => self.modal = Some(Modal::Help { scroll: scroll + 1 }),
+                _ if up => self.modal = Some(Modal::Help { scroll: scroll.saturating_sub(1) }),
+                _ => self.modal = Some(Modal::Help { scroll }),
+            },
             Modal::FleetFilter { mut sel } => match k.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('f') | KeyCode::Char('q') => {}
                 _ if down => {
@@ -1059,7 +1073,8 @@ impl App {
     /// Counts for the top bar: (fleets, live, need you, errors, warnings).
     pub fn counts(&self) -> (usize, usize, usize, usize, usize) {
         let Some(b) = &self.bundle else { return (0, 0, 0, 0, 0) };
-        let mut live = 0;
+        // stowaways are live sessions too
+        let mut live = b.snap.stowaways.iter().filter(|s| s.pid.is_some()).count();
         let mut need = 0;
         for f in &b.snap.fleets {
             for m in crate::view::fleet_members(f) {

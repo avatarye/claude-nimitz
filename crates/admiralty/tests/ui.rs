@@ -453,10 +453,17 @@ fn no_multiplexer_means_monitor_only_with_the_reason_shown() {
     let mut t = fixture_app(fixtures::demo_monitor_only(), false);
     let s = screen(&mut t.app, 200, 50);
     assert!(s.contains("MONITOR-ONLY"));
+    // a ship needs no pane: its start opens the confirm dialog
     goto(&mut t.app, "M:MAIN/KITS/DOCS");
+    keys(&mut t.app, "a");
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "{}", toast(&t.app));
+    press(&mut t.app, KeyCode::Esc);
+    // a commodore does: refused, with the reason
+    goto(&mut t.app, "M:FORGE/MOLD");
     keys(&mut t.app, "a");
     assert!(t.app.modal.is_none());
     assert!(toast(&t.app).contains("monitor-only"), "{}", toast(&t.app));
+    goto(&mut t.app, "M:MAIN/KITS/DOCS");
     keys(&mut t.app, "A");
     assert!(toast(&t.app).contains("monitor-only"));
     keys(&mut t.app, "m");
@@ -606,4 +613,63 @@ fn sweep_from_a_band_is_scoped_to_that_band() {
     keys(&mut t.app, "w");
     let Some(Modal::Confirm(p)) = &t.app.modal else { panic!() };
     assert_eq!(p.command, "nimitz sweep FORGE");
+}
+
+// ------------------------------------------------------------------ 80x24 (BUG-36)
+
+#[test]
+fn at_80x24_the_essentials_stay_on_screen() {
+    let mut t = fixture_app(fixtures::demo_monitor_only(), false);
+    goto(&mut t.app, "M:FORGE/IRON/ANVIL");
+    let ls = lines(&draw(&mut t.app, 80, 24));
+    assert!(ls[0].contains("MONITOR-ONLY"), "header keeps the mux state: {}", ls[0]);
+    assert!(ls[23].contains("? help") && ls[23].contains("q quit"), "footer keeps help and quit: {}", ls[23]);
+    let row = ls.iter().find(|l| l.contains("[FORGE.IRON]-AN") && l.contains("ship")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
+    assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
+    let s = ls.join("\n");
+    assert!(s.contains("WHY THIS STATUS"), "a short detail pane still shows the reasons:\n{s}");
+    // and ctrl-e scrolls it to the fix
+    for _ in 0..12 {
+        ctrl(&mut t.app, 'e');
+    }
+    let s = screen(&mut t.app, 80, 24);
+    assert!(s.contains("fix  nimitz"), "the fix is reachable by scrolling:\n{s}");
+}
+
+#[test]
+fn at_80x24_the_issues_view_wraps_and_help_scrolls() {
+    let mut t = demo();
+    keys(&mut t.app, "i");
+    let s = screen(&mut t.app, 80, 24);
+    assert!(s.contains("expected [FORGE.IRON]-ANVIL") || s.contains("[FORGE.IRON]-ANVIL-2,"), "messages wrap, not cut:\n{s}");
+    press(&mut t.app, KeyCode::Esc);
+    keys(&mut t.app, "?");
+    let first = screen(&mut t.app, 80, 24);
+    assert!(first.contains("j for more"), "help says it scrolls:\n{first}");
+    for _ in 0..30 {
+        keys(&mut t.app, "j");
+    }
+    let last = screen(&mut t.app, 80, 24);
+    assert!(last.contains("Pane dots"), "help scrolls to its end:\n{last}");
+}
+
+#[test]
+fn wrapped_text_keeps_its_indent() {
+    use admiralty::frames::wrap;
+    use ratatui::text::Span;
+    let ls = wrap(vec![Span::raw("  warn legacy      "), Span::raw("a long message that has to wrap onto a second line here")], 40, 19);
+    assert!(ls.len() >= 2);
+    for l in &ls[1..] {
+        let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(t.starts_with(&" ".repeat(19)) && !t[19..].starts_with(' '), "{t:?}");
+    }
+}
+
+#[test]
+fn a_ship_cannot_take_the_commodores_address() {
+    let mut f = Form::new_ship("MAIN", "ARGOS", "west-mac");
+    f.set("ship", "COMMODORE");
+    f.set("prompt", "x");
+    f.validate(&fixtures::demo_env(), &fixtures::demo_snapshot());
+    assert!(f.fields.iter().find(|x| x.key == "ship").unwrap().error.as_deref().unwrap_or("").contains("address"));
 }

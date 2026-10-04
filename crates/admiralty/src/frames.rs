@@ -12,11 +12,12 @@ use crate::theme::{bold, mono, pane_color, pane_dot, severity_color, st, Icons};
 use crate::view::{Row, Section};
 
 //                 NAME STATUS AGE KIND DETAIL
-pub const COL_MIN: [u16; 5] = [30, 12, 4, 9, 0];
+pub const COL_MIN: [u16; 5] = [24, 12, 4, 9, 0];
 pub const COL_MAX: [u16; 5] = [58, 14, 5, 10, 96];
 /// how the columns grow: the small fixed ones first, then NAME and DETAIL take
 /// turns, so a narrow window still shows some DETAIL (column, up to width)
-const GROW: [(usize, u16); 7] = [(1, 14), (2, 5), (3, 10), (0, 40), (4, 40), (0, 58), (4, 96)];
+/// DETAIL first gets enough for an issue code or two
+const GROW: [(usize, u16); 8] = [(4, 22), (1, 14), (2, 5), (3, 10), (0, 40), (4, 40), (0, 58), (4, 96)];
 /// columns a frame takes on each side of a row: outer border + inner border (or a space)
 pub const FRAME_SIDE: usize = 2;
 
@@ -114,6 +115,24 @@ pub fn name_cell(r: &Row, width: usize, icons: &Icons) -> Vec<Span<'static>> {
     ]
 }
 
+/// A row's lines: one for a member, as many as it takes for a note (an error
+/// shown in full, wrapped with its indent).
+fn body_spans(r: &Row, w: &[u16; 5], inner: usize, icons: &Icons) -> Vec<Vec<Span<'static>>> {
+    if r.node.kind != crate::view::Kind::Note {
+        return vec![row_spans(r, w, inner, icons)];
+    }
+    let lead = r.node.name.len() - r.node.name.trim_start().len();
+    wrap(vec![Span::styled(format!("    {}", r.node.name), r.node.name_style)], inner, 4 + lead)
+        .into_iter()
+        .map(|l| {
+            let used: usize = l.spans.iter().map(|s| s.content.width()).sum();
+            let mut v = l.spans;
+            v.push(Span::raw(" ".repeat(inner.saturating_sub(used))));
+            v
+        })
+        .collect()
+}
+
 /// A row: NAME, STATUS, AGE, KIND, DETAIL, exactly `inner` columns wide.
 pub fn row_spans(r: &Row, w: &[u16; 5], inner: usize, icons: &Icons) -> Vec<Span<'static>> {
     let mut out: Vec<Span<'static>> = truncate_spans(name_cell(r, w[0] as usize, icons), w[0] as usize);
@@ -195,7 +214,9 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
 
 /// Gold for a fleet's frame; dimmed for a fleet that does not run here.
 fn fleet_edge(r: &Row) -> Style {
-    if r.node.frame == Some(mono::DIM) {
+    if r.node.children.iter().any(|c| c.kind == crate::view::Kind::Note) {
+        bold(mono::PINK) // its config does not load
+    } else if r.node.frame == Some(mono::DIM) {
         st(mono::GOLD_DIM)
     } else {
         bold(mono::GOLD)
@@ -261,21 +282,25 @@ pub fn frame_lines(rows: &[Row], width: u16, cursor: usize, icons: &Icons) -> Ve
                 }
                 Section::SquadronBody => {
                     let e = sq_open.unwrap_or(edge);
-                    let mut spans = vec![Span::styled(v, edge), Span::styled("\u{2502}", e)];
-                    spans.extend(row_spans(r, &w, inner, icons));
-                    spans.push(Span::styled("\u{2502}", e));
-                    spans.push(Span::styled(v, edge));
-                    out.push((selectable(Line::from(spans), i == cursor), Some(i)));
+                    for body in body_spans(r, &w, inner, icons) {
+                        let mut spans = vec![Span::styled(v, edge), Span::styled("\u{2502}", e)];
+                        spans.extend(body);
+                        spans.push(Span::styled("\u{2502}", e));
+                        spans.push(Span::styled(v, edge));
+                        out.push((selectable(Line::from(spans), i == cursor), Some(i)));
+                    }
                 }
                 _ => {
                     if let Some(e) = sq_open.take() {
                         out.push((sq_bottom(v, edge, e, inner), None));
                     }
-                    let mut spans = vec![Span::styled(v, edge), Span::raw(" ")];
-                    spans.extend(row_spans(r, &w, inner, icons));
-                    spans.push(Span::raw(" "));
-                    spans.push(Span::styled(v, edge));
-                    out.push((selectable(Line::from(spans), i == cursor), Some(i)));
+                    for body in body_spans(r, &w, inner, icons) {
+                        let mut spans = vec![Span::styled(v, edge), Span::raw(" ")];
+                        spans.extend(body);
+                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(v, edge));
+                        out.push((selectable(Line::from(spans), i == cursor), Some(i)));
+                    }
                 }
             }
             i += 1;
@@ -295,4 +320,70 @@ fn sq_bottom(v: &str, edge: Style, e: Style, inner: usize) -> Line<'static> {
         Span::styled(format!("\u{2570}{}\u{256f}", "\u{2500}".repeat(inner)), e),
         Span::styled(v.to_string(), edge),
     ])
+}
+
+/// Wrap styled text to `width` columns at spaces; continuation lines start
+/// with `indent` spaces, so wrapped text keeps its column.
+pub fn wrap(spans: Vec<Span<'static>>, width: usize, indent: usize) -> Vec<Line<'static>> {
+    let width = width.max(indent + 8);
+    let mut lines: Vec<Line<'static>> = vec![];
+    let mut cur: Vec<Span<'static>> = vec![];
+    let mut used = 0usize;
+    for sp in spans {
+        let style = sp.style;
+        // split into words, each with its trailing spaces
+        let mut words: Vec<String> = vec![];
+        let mut w = String::new();
+        for ch in sp.content.chars() {
+            if ch == ' ' {
+                w.push(ch);
+            } else {
+                if w.ends_with(' ') {
+                    words.push(std::mem::take(&mut w));
+                }
+                w.push(ch);
+            }
+        }
+        if !w.is_empty() {
+            words.push(w);
+        }
+        for word in words {
+            let mut word = word;
+            loop {
+                let ww = word.trim_end().width();
+                if used + ww <= width || (used <= indent && ww > width - indent) {
+                    // fits, or a single word longer than a line: cut it
+                    let room = width - used;
+                    if word.width() > room && ww > room {
+                        let cut: String = {
+                            let mut c = String::new();
+                            for ch in word.chars() {
+                                if c.width() + ch.to_string().width() > room {
+                                    break;
+                                }
+                                c.push(ch);
+                            }
+                            c
+                        };
+                        word = word[cut.len()..].to_string();
+                        cur.push(Span::styled(cut, style));
+                        lines.push(Line::from(std::mem::take(&mut cur)));
+                        cur.push(Span::raw(" ".repeat(indent)));
+                        used = indent;
+                        continue;
+                    }
+                    used += word.width();
+                    cur.push(Span::styled(word, style));
+                    break;
+                }
+                lines.push(Line::from(std::mem::take(&mut cur)));
+                cur.push(Span::raw(" ".repeat(indent)));
+                used = indent;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(Line::from(cur));
+    }
+    lines
 }

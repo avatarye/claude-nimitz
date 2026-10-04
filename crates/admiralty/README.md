@@ -75,12 +75,25 @@ with `--plan --json` in a sandbox and compares the plans, so the two cannot
 drift. `herdr-plugin/tests/e2e_admiralty_in_herdr.py` runs Admiralty in a
 private Herdr server (pane dots, `m` into an admiral's pane, `A`, enter).
 
-With no multiplexer Admiralty is monitor-only: start, open, jump and message
-are closed and say why; stop, sweep, rm, adopt and config changes still work.
+With no multiplexer Admiralty is monitor-only: what needs a pane is closed and
+says why (starting an admiral or commodore, `up`, open, attach, jump, typing a
+message); ships and tenders start, relaunch and stop as usual, and so do sweep,
+rm, adopt and config changes.
+
+A fleet or squadron whose config does not load stays on screen as a red frame
+with the error in full (file, line, caret); the sessions labelled for it are
+counted in the top bar as "outside the config".
+
+At 80x24 the header keeps the mux state, the footer keeps `? help` and `q quit`,
+DETAIL keeps room for issue codes, the detail pane drops its picture to show the
+reasons first (ctrl-e / ctrl-y scroll it), and help and the issues view wrap and
+scroll. The first frame comes from the session files alone; `claude agents`
+follows right after, and keys typed meanwhile are kept.
 
 ## Screens
 
 `docs/screens/`: `admiralty-wide`, `admiralty-issue-detail`,
 `admiralty-issues-view`, `admiralty-confirm`, `admiralty-actions-menu`,
 `admiralty-form`, `admiralty-tender-form`, `admiralty-fleet-menu`,
-`admiralty-legacy`, `admiralty-sandbox-monitor-only`, `admiralty-narrow`.
+`admiralty-legacy`, `admiralty-broken-config`, `admiralty-sandbox-monitor-only`,
+`admiralty-narrow`, `admiralty-80x24`.

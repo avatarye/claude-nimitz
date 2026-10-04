@@ -200,6 +200,15 @@ pub const ASCII: Icons = Icons {
 };
 
 impl Icons {
+    /// Every glyph of the set, for width checks.
+    pub fn all(&self) -> Vec<&'static str> {
+        vec![
+            self.fleet, self.admiral, self.squadron, self.commodore, self.ship, self.tender, self.crew, self.teammate, self.stowaway,
+            self.issue, self.legacy, self.finished, self.row, self.completed, self.in_progress, self.pending, self.pane, self.s_needs,
+            self.s_busy, self.s_idle, self.s_stopped, self.s_off, self.s_unknown,
+        ]
+    }
+
     pub fn status(&self, s: Status) -> &'static str {
         match s {
             Status::NeedsYou => self.s_needs,
