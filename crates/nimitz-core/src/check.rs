@@ -223,12 +223,50 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
         });
     }
 
-    // Stowaways only matter for the whole-world check.
-    if id.is_none() {
+    // Stowaways: the whole-world check lists them all; `check_tree` of a fleet,
+    // squadron or ship lists those in its folders (a member's folder itself, or
+    // anywhere under the fleet's / squadron's nimitz folders).
+    let stowaway_scope: Option<(Vec<PathBuf>, Vec<PathBuf>)> = match id {
+        None => None,
+        Some(_) if !tree => Some((vec![], vec![])),
+        Some(t) => {
+            let mut exact: Vec<PathBuf> = vec![];
+            let mut trees: Vec<PathBuf> = vec![];
+            for f in fleets.iter().filter(|f| f.config.fleet == t.fleet()) {
+                match t.role() {
+                    Role::Admiral => trees.push(f.dir.clone()),
+                    Role::Commodore => {
+                        if let Some(sd) = crate::config::member_dir(env, f, t) {
+                            trees.push(sd);
+                        }
+                        trees.push(f.dir.join("ships").join(t.squadron().unwrap_or_default().to_lowercase()));
+                    }
+                    _ => {}
+                }
+            }
+            for fl in &snap.fleets {
+                let mut ms = vec![&fl.admiral];
+                for sq in &fl.squadrons {
+                    ms.push(&sq.commodore);
+                    ms.extend(sq.ships.iter().chain(sq.tenders.iter()));
+                }
+                exact.extend(ms.into_iter().filter(|m| m.id == *t || below(&m.id, Some(t))).filter_map(|m| m.cwd.as_deref()).map(|c| crate::env::canon(Path::new(c))));
+            }
+            Some((exact, trees.iter().map(|d| crate::env::canon(d)).collect()))
+        }
+    };
+    let stowaway_in_scope = |cwd: &str| match &stowaway_scope {
+        None => true,
+        Some((exact, trees)) => {
+            let c = crate::env::canon(Path::new(cwd));
+            exact.contains(&c) || trees.iter().any(|t| c.starts_with(t))
+        }
+    };
+    {
         // A stowaway named in a legacy map is an old fleet's session: its member
         // carries the `legacy` issue instead.
         let legacy: std::collections::BTreeSet<String> = fleets.iter().flat_map(|f| crate::config::legacy_map(f).into_keys()).collect();
-        for s in snap.stowaways.iter().filter(|s| !legacy.contains(&s.name)) {
+        for s in snap.stowaways.iter().filter(|s| !legacy.contains(&s.name) && stowaway_in_scope(&s.cwd)) {
             let short = s.short_id.as_deref().unwrap_or(&s.session_id);
             // never offer rm for a live session (contracts.md section 7)
             let fix = if s.pid.is_some() {
@@ -244,6 +282,8 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
                 id: None,
             });
         }
+    }
+    if id.is_none() {
         out.extend(snap.issues.iter().cloned());
     }
 
@@ -401,6 +441,31 @@ pub(crate) mod tests {
         std::fs::write(&trust, r#"{"projects": {}}"#).unwrap();
         let i = folder_issue(&env, &Id::admiral("MAIN"), link.to_str().unwrap()).unwrap();
         assert!(i.fix.unwrap().contains(real.to_str().unwrap()));
+    }
+
+    #[test]
+    fn check_tree_lists_stowaways_in_its_folders_only() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let f = crate::config::load_fleet(&env, "MAIN").unwrap();
+        let ship_dir = f.dir.join("ships/argos/argos");
+        std::fs::create_dir_all(&ship_dir).unwrap();
+        let mut snap = snap_for(&env, ship_dir.to_str());
+        let mut st = live_session("stray");
+        st.pid = None;
+        st.cwd = ship_dir.to_string_lossy().into_owned();
+        snap.stowaways.push(st.clone());
+        let mut far = st.clone();
+        far.session_id = "22222222-bbbb".into();
+        far.cwd = td.path().join("elsewhere").to_string_lossy().into_owned();
+        snap.stowaways.push(far);
+        let count = |v: Vec<Issue>| v.iter().filter(|i| i.code == "stowaway").count();
+        assert_eq!(count(check_tree(&env, &snap, Some(&Id::admiral("MAIN")))), 1);
+        assert_eq!(count(check_tree(&env, &snap, Some(&Id::commodore("MAIN", "ARGOS")))), 1);
+        assert_eq!(count(check_tree(&env, &snap, Some(&Id::ship("MAIN", "ARGOS", "ARGOS")))), 1);
+        assert_eq!(count(check_tree(&env, &snap, Some(&Id::commodore("MAIN", "OTHER")))), 0);
+        assert_eq!(count(check(&env, &snap, Some(&Id::admiral("MAIN")))), 0, "the gate does not list stowaways");
+        assert_eq!(count(check(&env, &snap, None)), 2);
     }
 
     #[test]

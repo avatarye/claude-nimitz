@@ -104,6 +104,9 @@ the `.bak` and the SessionStart labels in `events.jsonl`, and `check` reports
       {"session_id": "9e0cad63-...", "bound_at": 1790900000.0, "via": "launch|resume|relaunch|adopt|migrate"}]}}}
 ```
 
+The registry's `machine` is this machine's label, set by `nimitz init --label`;
+it is per machine and outlives every fleet (`registry::machine_label`).
+
 `events.jsonl` (append, one line per hook call, `O_APPEND`):
 
 ```json
@@ -158,7 +161,7 @@ Each finding is an `Issue` with a stable `code`:
 | `cc.version` | Claude Code outside `compat.toml` (a pre-release such as `2.1.288-beta` is outside unless `prerelease = [...]` lists it; Error) |
 | `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
 | `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
-| `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
+| `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); `check` lists all, `check F` / `check F/SQ` / `check F/SQ/SHIP` those in the target's folders (fleet or squadron nimitz folders, or a member folder under the target); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
 | `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`). The name alone decides (another agent in a member's folder is a stowaway). Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |
 
 Refusal-only codes (in `Plan.refusals`, not from `check`):
