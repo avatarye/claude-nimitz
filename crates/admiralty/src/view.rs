@@ -440,9 +440,9 @@ pub fn status_counts(members: &[&Member], issues: usize, worst: Option<Severity>
         let shown = cell.is_some();
         out.push(cell.clone().unwrap_or_else(|| Span::raw(" ".repeat(SLOT_W))));
         if i + 1 < n {
-            // a slash only between this count and a later one that is shown
-            let later = cells[i + 1..].iter().any(|c| c.is_some());
-            out.push(Span::styled(if shown && later { " / " } else { "   " }, st(mono::DIM)));
+            // a slash only between two neighbouring counts that are both shown
+            let next = cells[i + 1].is_some();
+            out.push(Span::styled(if shown && next { " / " } else { "   " }, st(mono::DIM)));
         }
     }
     out

@@ -34,7 +34,10 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 - A rounded frame per squadron inside its fleet, tinted the same way, with its
   comms rule; ships and tenders are rows; crew, tasks and extra job rows sit
   under their member with tree guides.
-- A pink STOWAWAYS frame for unlabelled sessions in fleet scope.
+- A pink STOWAWAYS frame for unlabelled sessions in fleet scope. A session of
+  the old fleet-skill fleets (issue `legacy`) has its own orange history marker,
+  and `x` then `d` adopts it as the identity its fix names.
+- The band counts keep one column per kind across every band, so they read down the list.
 - Columns NAME / STATUS / AGE / KIND / DETAIL line up across all frames. NAME
   starts with the pane dot (yellow working, red blocked, teal done, green
   idle, grey unknown) and an issue mark coloured by severity; DETAIL lists the
@@ -49,7 +52,9 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 `j/k h/l gg/G ctrl-d/u space`, `/` filter, `n/N`, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
 row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach in a
-new pane, `x` actions (stop, relaunch, sweep, rm, adopt, remove from config),
+new pane, `x` actions (stop, relaunch, sweep, rm, adopt, remove from config;
+on a fleet band also `layout herdr [--ships]` and removing a machine; sweep is
+scoped to the row: member, squadron or fleet),
 `m` message (admiral and commodore: typed into their pane; ships: relayed by
 their commodore), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
 from config, `y` yank the session id, `I` stowaways, `f` fleet-state filter, `F`
@@ -60,6 +65,17 @@ Every action and form shows the exact `nimitz` command and core's plan steps
 (names with core's rules, the rest by asking core for the plan); `ctrl-e` edits
 a prompt or brief in `$EDITOR`.
 
+Plans come from core (`sessions::plan_*`, `config::plan_*`). Two things are
+the CLI's own and Admiralty runs `nimitz` for them, showing its `--plan --json`
+and running it with `--yes`: `layout herdr` and removal from the config (a ship
+is retired: stopped, its job rows removed, then the config). The binary is
+found as `NIMITZ_BIN`, next to `admiralty`, or on PATH.
+
+`tests/cli_drift.rs` runs every command Admiralty shows through the real CLI
+with `--plan --json` in a sandbox and compares the plans, so the two cannot
+drift. `herdr-plugin/tests/e2e_admiralty_in_herdr.py` runs Admiralty in a
+private Herdr server (pane dots, `m` into an admiral's pane, `A`, enter).
+
 With no multiplexer Admiralty is monitor-only: start, open, jump and message
 are closed and say why; stop, sweep, rm, adopt and config changes still work.
 
@@ -67,4 +83,5 @@ are closed and say why; stop, sweep, rm, adopt and config changes still work.
 
 `docs/screens/`: `admiralty-wide`, `admiralty-issue-detail`,
 `admiralty-issues-view`, `admiralty-confirm`, `admiralty-actions-menu`,
-`admiralty-form`, `admiralty-sandbox-monitor-only`, `admiralty-narrow`.
+`admiralty-form`, `admiralty-tender-form`, `admiralty-fleet-menu`,
+`admiralty-legacy`, `admiralty-sandbox-monitor-only`, `admiralty-narrow`.

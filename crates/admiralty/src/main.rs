@@ -67,8 +67,12 @@ fn main() -> ExitCode {
                         if !dir.join("world.json").exists() {
                             return fail(&format!("{} is not a sandbox; create it with `admiralty sandbox create {}`", dir.display(), dir.display()));
                         }
-                        // the children (fake claude, hooks) must see the sandbox too
+                        // the children (fake claude, hooks) must see the sandbox too; a
+                        // multiplexer chosen by the caller (a private or fake Herdr) stays
                         for (k, val) in nimitz_core::sandbox::env_for(&dir) {
+                            if matches!(k.as_str(), "NIMITZ_MUX" | "NIMITZ_HERDR_BIN") && vars.contains_key(&k) {
+                                continue;
+                            }
                             std::env::set_var(&k, &val);
                             vars.insert(k, val);
                         }

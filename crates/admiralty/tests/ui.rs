@@ -48,7 +48,7 @@ fn title_band_is_tinted_by_state_with_counts_on_the_right() {
     assert_eq!(buf[(x - 2, y)].bg, mono::T_PURPLE, "broken fleet band is purple-tinted");
     // right side: `icon n / icon n`, each kind in its own column
     let band = &ls[y as usize];
-    assert!(band.contains("^ 13 /"), "{band}");
+    assert!(band.contains("^ 13 ") && band.contains("* 2  / - 1  / x 2"), "{band}");
     let main = ls.iter().find(|l| l.contains("[MAIN]") && l.contains("needs you")).unwrap();
     assert!(main.contains("! 2  / * 3  / - 2  / x 1"), "{main}");
 }
