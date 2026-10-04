@@ -472,7 +472,6 @@ fn bug25_migration_reports_a_ship_rooted_at_the_home_folder() {
 }
 
 #[test]
-#[ignore = "BUG-33"]
 fn bug33_the_command_admiralty_shows_for_a_new_ship_does_what_it_says() {
     // Admiralty's new-ship form shows `nimitz ship new F/SQ/X --dir <machine>=managed`.
     let sb = Sb::new(false);
