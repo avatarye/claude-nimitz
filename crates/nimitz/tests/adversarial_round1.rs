@@ -500,3 +500,13 @@ fn bug25_migration_reports_a_ship_rooted_at_the_home_folder() {
         assert!(m.out.contains("config.layout") || m.out.to_lowercase().contains("nest"), "the import made layout errors and said nothing:\n{}", m.out);
     }
 }
+
+#[test]
+#[ignore = "BUG-33"]
+fn bug33_the_command_admiralty_shows_for_a_new_ship_does_what_it_says() {
+    // Admiralty's new-ship form shows `nimitz ship new F/SQ/X --dir <machine>=managed`.
+    let sb = Sb::new(false);
+    let r = sb.run(&["ship", "new", "MAIN/ARGOS/ZQ", "--dir", "sandbox=managed", "--prompt", "hi", "--yes"]);
+    let t = std::fs::read_to_string(sb.squadron_toml()).unwrap();
+    assert!(r.code != 0 || !t.contains("sandbox=managed"), "`--dir sandbox=managed` became a relative folder named `sandbox=managed`:\n{}", r.out);
+}
