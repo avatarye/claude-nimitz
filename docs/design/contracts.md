@@ -188,12 +188,6 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `lineage.current` | `rm` of an identity's current session (it would break the lineage) |
 | `tender.invalid` | a tender's commodore, task name or prompt is wrong |
 | `step.failed` | a step of an applied plan failed (or a lock could not be taken); nothing after it ran |
-| `config.missing` | the id names no fleet, squadron, ship or machine label in the config |
-| `config.exists` | `new`/`add` of something that is already there |
-| `config.nonempty` | `rm` of a fleet or squadron that still has squadrons or ships |
-| `config.write` | a config step failed, or the re-read does not match |
-| `machine.host` | `machine add` would give one host a second label (no `--hostname`, or the hostname is taken) |
-| `machine.live` | (warning) `machine rm` of this machine while members of the fleet are live here; lists them |
 
 Session codes from the snapshot, besides section 7's: `job.unreadable` (a job
 row's `state.json` does not parse; start refuses), `folder.moved` (the
