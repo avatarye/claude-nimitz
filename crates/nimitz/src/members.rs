@@ -282,9 +282,10 @@ pub fn adopt(ctx: &Ctx) -> Result<i32, String> {
 pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     let id = parse_id(ctx.args.need(0, "id")?)?;
-    let text = ctx.args.pos[1..].join(" ");
-    if text.trim().is_empty() {
-        return Err("missing text".into());
+    // Typed into a pane: no control characters, no newlines (BUG-43).
+    let text = nimitz_mux::sanitize_text(&ctx.args.pos[1..].join(" "));
+    if text.is_empty() {
+        return Err("missing text (nothing is left after removing control characters)".into());
     }
     let snap = ctx.snap();
     let mut plan = Plan { summary: format!("signal {id}"), ..Default::default() };

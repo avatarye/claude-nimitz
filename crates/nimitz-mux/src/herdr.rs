@@ -241,7 +241,12 @@ impl Mux for Herdr {
     /// `herdr agent prompt`: herdr itself rejects a blocked pane
     /// (`agent_blocked`) before sending anything; that error is surfaced.
     fn type_text(&self, pane: &PaneRef, text: &str) -> Result<(), MuxError> {
-        self.run(&["agent", "prompt", &pane.pane_id, text]).map(|_| ())
+        // never type control characters into a pane (callers sanitise too; this is the floor)
+        let text = crate::sanitize_text(text);
+        if text.is_empty() {
+            return Err(MuxError::Failed("nothing to type after removing control characters".into()));
+        }
+        self.run(&["agent", "prompt", &pane.pane_id, &text]).map(|_| ())
     }
 
     /// One workspace per entry, tabs with commands. Idempotent: an existing
