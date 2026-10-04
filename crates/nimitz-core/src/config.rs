@@ -18,9 +18,26 @@ pub fn valid_label(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_'))
 }
 
+/// Ship names that would take another role's address (`[F.SQ]-COMMODORE`).
+pub const RESERVED_SHIP_NAMES: [&str; 2] = ["COMMODORE", "ADMIRAL"];
+
+/// Is `name` reserved for a role (COMMODORE, ADMIRAL, or a tender's `COMMODORE/...`)?
+pub fn reserved_ship_name(name: &str) -> bool {
+    RESERVED_SHIP_NAMES.contains(&name) || name.starts_with("COMMODORE/")
+}
+
+/// Parse a TOML file; the error is one line: `path:line:col: message`.
 fn read_toml<T: serde::de::DeserializeOwned>(p: &Path) -> Result<T, String> {
     let raw = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
-    toml::from_str(&raw).map_err(|e| format!("{}: {e}", p.display()))
+    toml::from_str(&raw).map_err(|e: toml::de::Error| {
+        let at = e.span().map(|sp| {
+            let before = &raw[..sp.start.min(raw.len())];
+            let line = before.matches('\n').count() + 1;
+            let col = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
+            format!(":{line}:{col}")
+        });
+        format!("{}{}: {}", p.display(), at.unwrap_or_default(), e.message().trim())
+    })
 }
 
 /// This machine's label in the fleet's `machines` table, if listed.
@@ -32,6 +49,8 @@ fn machine_label(env: &Env, c: &FleetConfig) -> Option<String> {
 }
 
 /// Every fleet under NIMITZ_HOME, with config errors as issues (never panics).
+/// A squadron whose squadron.toml does not parse is left out of its fleet (and
+/// reported); the rest of the fleet still loads.
 pub fn load_all(env: &Env) -> (Vec<FleetOnDisk>, Vec<Issue>) {
     let mut fleets = vec![];
     let mut issues = vec![];
@@ -47,50 +66,120 @@ pub fn load_all(env: &Env) -> (Vec<FleetOnDisk>, Vec<Issue>) {
     dirs.sort();
     for dir in dirs {
         match load_fleet_dir(env, &dir) {
-            Ok(f) => fleets.push(f),
+            Ok((f, broken)) => {
+                issues.extend(broken);
+                fleets.push(f);
+            }
             Err(i) => issues.push(i),
         }
     }
     (fleets, issues)
 }
 
-fn load_fleet_dir(env: &Env, dir: &Path) -> Result<FleetOnDisk, Issue> {
-    let config: FleetConfig = read_toml(&dir.join("fleet.toml"))
-        .map_err(|e| issue("config.invalid", Severity::Error, format!("fleet.toml does not parse: {e}"), None, None))?;
-    let id = Some(Id::admiral(&config.fleet));
+/// Squadron folders with a squadron.toml, sorted.
+fn squadron_dirs(fleet_dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = std::fs::read_dir(fleet_dir.join("squadrons"))
+        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir() && p.join("squadron.toml").is_file()).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+/// The fleet plus one `config.invalid` issue per squadron.toml that does not parse.
+fn load_fleet_dir(env: &Env, dir: &Path) -> Result<(FleetOnDisk, Vec<Issue>), Issue> {
+    let config: FleetConfig = read_toml(&dir.join("fleet.toml")).map_err(|e| {
+        issue(
+            "config.invalid",
+            Severity::Error,
+            format!("fleet.toml does not parse: {e}"),
+            Some(format!("fix {} by hand, then nimitz check", dir.join("fleet.toml").display())),
+            // no identity: the fleet's members are unknown, so this blocks every start
+            None,
+        )
+    })?;
     let mut squadrons = vec![];
-    let sq_root = dir.join("squadrons");
-    if sq_root.is_dir() {
-        let mut sq_dirs: Vec<PathBuf> = std::fs::read_dir(&sq_root)
-            .map_err(|e| issue("config.invalid", Severity::Error, format!("{}: {e}", sq_root.display()), None, id.clone()))?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.is_dir() && p.join("squadron.toml").is_file())
-            .collect();
-        sq_dirs.sort();
-        for sd in sq_dirs {
-            let sq: SquadronConfig = read_toml(&sd.join("squadron.toml")).map_err(|e| {
-                issue("config.invalid", Severity::Error, format!("squadron.toml does not parse: {e}"), None, id.clone())
-            })?;
-            squadrons.push((sd, sq));
+    let mut broken = vec![];
+    for sd in squadron_dirs(dir) {
+        match read_toml::<SquadronConfig>(&sd.join("squadron.toml")) {
+            Ok(sq) => squadrons.push((sd, sq)),
+            Err(e) => broken.push(unreadable_issue(&config.fleet, &sd, &e)),
         }
     }
     let machine = machine_label(env, &config);
-    Ok(FleetOnDisk { dir: dir.to_path_buf(), config, squadrons, machine })
+    Ok((FleetOnDisk { dir: dir.to_path_buf(), config, squadrons, machine }, broken))
 }
 
+fn unreadable_issue(fleet: &str, sd: &Path, err: &str) -> Issue {
+    let sq = sd.file_name().map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_default();
+    issue(
+        "config.invalid",
+        Severity::Error,
+        format!("squadron.toml does not parse: {err} (squadron {fleet}/{sq} and its ships are unreadable; the rest of the fleet still loads)"),
+        Some(format!("fix {} by hand, then nimitz check {fleet}/{sq}", sd.join("squadron.toml").display())),
+        Some(Id::commodore(fleet, &sq)),
+    )
+}
+
+/// Squadrons of `f` left out because their squadron.toml does not parse: the
+/// squadron id (from the folder name), its folder, and the `config.invalid` issue.
+/// Their live members stay visible as members whose config is unreadable.
+pub fn unreadable_squadrons(f: &FleetOnDisk) -> Vec<(Id, PathBuf, Issue)> {
+    squadron_dirs(&f.dir)
+        .into_iter()
+        .filter(|sd| !f.squadrons.iter().any(|(d, _)| d == sd))
+        .filter_map(|sd| {
+            let err = read_toml::<SquadronConfig>(&sd.join("squadron.toml")).err()?;
+            let i = unreadable_issue(&f.config.fleet, &sd, &err);
+            Some((i.id.clone()?, sd, i))
+        })
+        .collect()
+}
+
+/// The fleet as far as it loads: a squadron whose squadron.toml does not parse
+/// is left out (see `unreadable_squadrons`). Err only when fleet.toml itself is bad.
 pub fn load_fleet(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
     let dir = env.fleet_dir(fleet);
     if !dir.join("fleet.toml").is_file() {
         return Err(issue(
-            "config.invalid",
+            "config.missing",
             Severity::Error,
             format!("fleet {fleet}: no fleet.toml in {}", dir.display()),
             Some(format!("nimitz fleet new {fleet}")),
             Some(Id::admiral(fleet)),
         ));
     }
-    load_fleet_dir(env, &dir)
+    load_fleet_dir(env, &dir).map(|(f, _)| f)
+}
+
+/// The fleet, for a config change: refuses while any of its squadron.toml files
+/// does not parse (a rewrite could drop or overwrite what is in it).
+fn load_fleet_for_write(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
+    let f = load_fleet(env, fleet)?;
+    match unreadable_squadrons(&f).into_iter().next() {
+        Some((_, _, i)) => Err(i),
+        None => Ok(f),
+    }
+}
+
+/// `CLAUDE.md`, `CLAUDE.local.md` and `.claude/CLAUDE.md` in `dir`: every
+/// session below it would inherit them.
+fn inherited_md(dir: &Path) -> Vec<PathBuf> {
+    ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"].iter().map(|n| dir.join(n)).filter(|p| p.is_file()).collect()
+}
+
+fn layout_md_issue(p: &Path, id: Option<Id>) -> Issue {
+    issue(
+        "config.layout",
+        Severity::Error,
+        format!("{} would be inherited by every session below {}", p.display(), p.parent().map(|d| d.display().to_string()).unwrap_or_default()),
+        Some(format!("rm {}", p.display())),
+        id,
+    )
+}
+
+/// `config.layout` for NIMITZ_HOME itself (an instructions file there reaches every fleet).
+pub fn home_layout(env: &Env) -> Vec<Issue> {
+    inherited_md(&env.home).iter().map(|p| layout_md_issue(p, None)).collect()
 }
 
 /// Schema and layout rules; returns issues (config.invalid, config.layout, ...).
@@ -117,14 +206,16 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
             out.push(inv(format!("machine {label:?} has an empty hostname"), Some(fid.clone())));
         }
     }
-    if f.dir.join("CLAUDE.md").is_file() {
-        out.push(issue(
-            "config.layout",
-            Severity::Error,
-            format!("CLAUDE.md in {} (every session under the fleet folder would inherit it)", f.dir.display()),
-            Some(format!("rm {}", f.dir.join("CLAUDE.md").display())),
-            Some(fid.clone()),
-        ));
+    // Instructions files every session below would inherit: in the fleet folder,
+    // squadrons/, ships/ and ships/<SQ>/ (each with its .claude/).
+    let mut md_dirs = vec![f.dir.clone(), f.dir.join("squadrons"), f.dir.join("ships")];
+    if let Ok(rd) = std::fs::read_dir(f.dir.join("ships")) {
+        let mut v: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir() && p.file_name() != Some(".claude".as_ref())).collect();
+        v.sort();
+        md_dirs.extend(v);
+    }
+    for d in &md_dirs {
+        out.extend(inherited_md(d).iter().map(|p| layout_md_issue(p, Some(fid.clone()))));
     }
 
     let mut sq_names: Vec<&str> = vec![];
@@ -156,6 +247,9 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
             let shid = Id::ship(&c.fleet, &sq.squadron, &ship.name);
             if !valid_name(&ship.name) {
                 out.push(inv(format!("ship name {:?} is not [A-Z0-9_]+", ship.name), Some(shid.clone())));
+            }
+            if reserved_ship_name(&ship.name) {
+                out.push(inv(format!("ship name {:?} is reserved: {shid} would answer to a role's address", ship.name), Some(shid.clone())));
             }
             if ship_names[..i].contains(&ship.name.as_str()) {
                 out.push(inv(format!("ship {:?} is defined twice in {}", ship.name, sq.squadron), Some(shid.clone())));
@@ -195,6 +289,21 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
             if let Some(d) = member_dir(env, f, &shid) {
                 let managed = f.machine.as_ref().and_then(|m| ship.dirs.get(m)).map(|v| v == "managed").unwrap_or(false);
                 folders.push((shid, d, managed));
+            }
+        }
+    }
+    // Compare real paths: a symlinked folder is the folder it points to.
+    let folders: Vec<(Id, PathBuf, bool)> = folders.into_iter().map(|(id, p, m)| (id, crate::env::canon(&p), m)).collect();
+    for (i, (a, pa, _)) in folders.iter().enumerate() {
+        for (b, pb, _) in &folders[i + 1..] {
+            if a != b && pa == pb {
+                out.push(issue(
+                    "config.layout",
+                    Severity::Error,
+                    format!("{a} and {b} share the folder {}: one folder holds one member", pa.display()),
+                    Some(format!("nimitz ship set {b} --dir <another folder>")),
+                    Some(b.clone()),
+                ));
             }
         }
     }
@@ -272,7 +381,8 @@ pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
                 "managed" => {
                     Some(f.dir.join("ships").join(sq.squadron.to_lowercase()).join(ship.name.to_lowercase()))
                 }
-                d => Some(expand_dir(d)),
+                // the real path when it exists: Claude Code records (and trusts) that one
+                d => Some(expand_dir(d)).map(|p| p.canonicalize().unwrap_or(p)),
             }
         }
     }
@@ -367,7 +477,7 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
     }
     let dir = env.fleet_dir(fleet);
     if dir.join("fleet.toml").is_file() {
-        refuse(&mut plan, "config.invalid", format!("fleet {fleet} already exists at {}", dir.display()), None, Some(id.clone()));
+        refuse(&mut plan, "config.exists", format!("fleet {fleet} already exists at {}", dir.display()), None, Some(id.clone()));
     }
     if !plan.ok() {
         return plan;
@@ -398,7 +508,7 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: C
         refuse(&mut plan, "config.invalid", format!("squadron name {sq:?} is not [A-Z0-9_]+"), None, Some(id.clone()));
         return plan;
     }
-    let f = match load_fleet(env, fleet) {
+    let f = match load_fleet_for_write(env, fleet) {
         Ok(f) => f,
         Err(i) => {
             plan.refusals.push(i);
@@ -406,7 +516,7 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: C
         }
     };
     if f.squadrons.iter().any(|(_, s)| s.squadron == sq) {
-        refuse(&mut plan, "config.invalid", format!("squadron {sq} already exists in {fleet}"), None, Some(id.clone()));
+        refuse(&mut plan, "config.exists", format!("squadron {sq} already exists in {fleet}"), None, Some(id.clone()));
         return plan;
     }
     let sd = f.dir.join("squadrons").join(sq.to_lowercase());
@@ -432,7 +542,7 @@ fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, sq: SquadronConfig, id: &Id, 
         if !f.config.machines.contains_key(label) {
             refuse(
                 plan,
-                "config.invalid",
+                "config.missing",
                 format!("machine label {label:?} is not in {}'s fleet.toml [machines]", f.config.fleet),
                 Some(format!("nimitz machine add {} {label}", f.config.fleet)),
                 Some(id.clone()),
@@ -440,7 +550,8 @@ fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, sq: SquadronConfig, id: &Id, 
         }
         if d != "managed" {
             // A session folder inside another session folder, both ways, judged by `nesting`.
-            let dir = expand_dir(d);
+            // Real paths on both sides: a symlink to a folder is that folder.
+            let dir = crate::env::canon(&expand_dir(d));
             let mut others: Vec<(PathBuf, bool)> = vec![(f.dir.join("admiral"), true), (f.dir.join("squadrons"), true)];
             for (osd, osq) in &f.squadrons {
                 others.push((osd.clone(), true));
@@ -455,6 +566,7 @@ fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, sq: SquadronConfig, id: &Id, 
                 }
             }
             let _ = sq_dir; // the squadron dir is already in `others` via f.squadrons
+            let others: Vec<(PathBuf, bool)> = others.into_iter().map(|(p, m)| (crate::env::canon(&p), m)).collect();
             let sevs: Vec<Severity> = others
                 .iter()
                 .filter_map(|(p, managed)| {
@@ -506,7 +618,17 @@ pub fn plan_ship_new(env: &Env, fleet: &str, sq: &str, ship: ShipDef) -> Plan {
         refuse(&mut plan, "config.invalid", format!("ship name {:?} is not [A-Z0-9_]+", ship.name), None, Some(id.clone()));
         return plan;
     }
-    let f = match load_fleet(env, fleet) {
+    if reserved_ship_name(&ship.name) {
+        refuse(
+            &mut plan,
+            "config.invalid",
+            format!("ship name {:?} is reserved: {id} would answer to [{fleet}.{sq}]-{}, a role's address", ship.name, ship.name),
+            Some(format!("nimitz ship new {fleet}/{sq}/<another name>")),
+            Some(id.clone()),
+        );
+        return plan;
+    }
+    let f = match load_fleet_for_write(env, fleet) {
         Ok(f) => f,
         Err(i) => {
             plan.refusals.push(i);
@@ -516,15 +638,15 @@ pub fn plan_ship_new(env: &Env, fleet: &str, sq: &str, ship: ShipDef) -> Plan {
     let Some((sd, sqc)) = f.squadrons.iter().find(|(_, s)| s.squadron == sq) else {
         refuse(
             &mut plan,
-            "config.invalid",
+            "config.missing",
             format!("no squadron {sq} in {fleet}"),
-            Some(format!("nimitz squadron new {fleet} {sq}")),
+            Some(format!("nimitz squadron new {fleet}/{sq}")),
             Some(id.clone()),
         );
         return plan;
     };
     if sqc.ships.iter().any(|s| s.name == ship.name) {
-        refuse(&mut plan, "config.invalid", format!("ship {id} already exists"), None, Some(id.clone()));
+        refuse(&mut plan, "config.exists", format!("ship {id} already exists"), None, Some(id.clone()));
         return plan;
     }
     let mut new_sq = sqc.clone();
@@ -540,11 +662,15 @@ pub fn plan_ship_set(env: &Env, id: &Id, ship: ShipDef) -> Plan {
         refuse(&mut plan, "config.invalid", format!("{id} is not a ship id"), None, Some(id.clone()));
         return plan;
     }
+    if reserved_ship_name(&ship.name) {
+        refuse(&mut plan, "config.invalid", format!("ship name {:?} is reserved for a role's address", ship.name), Some(format!("nimitz ship rm {id}")), Some(id.clone()));
+        return plan;
+    }
     if ship.name != id.parts()[2] {
         refuse(&mut plan, "config.invalid", format!("ship def names {:?}, id names {id} (no renames)", ship.name), None, Some(id.clone()));
         return plan;
     }
-    let f = match load_fleet(env, id.fleet()) {
+    let f = match load_fleet_for_write(env, id.fleet()) {
         Ok(f) => f,
         Err(i) => {
             plan.refusals.push(i);
@@ -553,11 +679,11 @@ pub fn plan_ship_set(env: &Env, id: &Id, ship: ShipDef) -> Plan {
     };
     let sq_name = id.squadron().unwrap_or_default().to_string();
     let Some((sd, sqc)) = f.squadrons.iter().find(|(_, s)| s.squadron == sq_name) else {
-        refuse(&mut plan, "config.invalid", format!("no squadron {sq_name} in {}", id.fleet()), None, Some(id.clone()));
+        refuse(&mut plan, "config.missing", format!("no squadron {sq_name} in {}", id.fleet()), None, Some(id.clone()));
         return plan;
     };
     let Some(pos) = sqc.ships.iter().position(|s| s.name == ship.name) else {
-        refuse(&mut plan, "config.invalid", format!("no ship {id}"), Some(format!("nimitz ship new {id}")), Some(id.clone()));
+        refuse(&mut plan, "config.missing", format!("no ship {id}"), Some(format!("nimitz ship new {id}")), Some(id.clone()));
         return plan;
     };
     let mut new_sq = sqc.clone();
@@ -569,7 +695,7 @@ pub fn plan_ship_set(env: &Env, id: &Id, ship: ShipDef) -> Plan {
 
 pub fn plan_rm(env: &Env, id: &Id) -> Plan {
     let mut plan = Plan { summary: format!("remove {id} from the config"), ..Default::default() };
-    let f = match load_fleet(env, id.fleet()) {
+    let f = match load_fleet_for_write(env, id.fleet()) {
         Ok(f) => f,
         Err(i) => {
             plan.refusals.push(i);
@@ -585,7 +711,7 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
             if !f.squadrons.is_empty() {
                 refuse(
                     &mut plan,
-                    "config.invalid",
+                    "config.nonempty",
                     format!("fleet {} still has {} squadron(s)", id.fleet(), f.squadrons.len()),
                     Some(format!("nimitz squadron rm {}/<SQ>", id.fleet())),
                     Some(id.clone()),
@@ -597,10 +723,10 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
         Role::Commodore => {
             let sq_name = id.squadron().unwrap_or_default().to_string();
             match f.squadrons.iter().find(|(_, s)| s.squadron == sq_name) {
-                None => refuse(&mut plan, "config.invalid", format!("no squadron {id}"), None, Some(id.clone())),
+                None => refuse(&mut plan, "config.missing", format!("no squadron {id}"), None, Some(id.clone())),
                 Some((sd, sqc)) if !sqc.ships.is_empty() => refuse(
                     &mut plan,
-                    "config.invalid",
+                    "config.nonempty",
                     format!("squadron {id} still has {} ship(s) at {}", sqc.ships.len(), sd.display()),
                     Some(format!("nimitz ship rm {id}/<SHIP>")),
                     Some(id.clone()),
@@ -614,10 +740,10 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
             let sq_name = id.squadron().unwrap_or_default().to_string();
             let ship_name = id.parts()[2].to_string();
             match f.squadrons.iter().find(|(_, s)| s.squadron == sq_name) {
-                None => refuse(&mut plan, "config.invalid", format!("no squadron {}/{sq_name}", id.fleet()), None, Some(id.clone())),
+                None => refuse(&mut plan, "config.missing", format!("no squadron {}/{sq_name}", id.fleet()), None, Some(id.clone())),
                 Some((sd, sqc)) => {
                     if !sqc.ships.iter().any(|s| s.name == ship_name) {
-                        refuse(&mut plan, "config.invalid", format!("no ship {id}"), None, Some(id.clone()));
+                        refuse(&mut plan, "config.missing", format!("no ship {id}"), None, Some(id.clone()));
                     } else {
                         let mut new_sq = sqc.clone();
                         new_sq.ships.retain(|s| s.name != ship_name);
@@ -635,14 +761,23 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
     plan
 }
 
+/// `nimitz machine add <F> <label>` with no `--hostname`: see `plan_machine_add_on`.
 pub fn plan_machine_add(env: &Env, fleet: &str, label: &str, dirs: Vec<(Id, String)>) -> Plan {
+    plan_machine_add_on(env, fleet, label, None, dirs)
+}
+
+/// `nimitz machine add <F> <label> [--hostname H]`. With no hostname the label
+/// names this machine, but only when no other label of the fleet already does
+/// (a second label for this host would make two machines of one); a label for
+/// another machine needs `--hostname`.
+pub fn plan_machine_add_on(env: &Env, fleet: &str, label: &str, hostname: Option<&str>, dirs: Vec<(Id, String)>) -> Plan {
     let mut plan = Plan { summary: format!("add machine {label} to {fleet}"), ..Default::default() };
     let fid = Id::admiral(fleet);
     if !valid_label(label) {
         refuse(&mut plan, "config.invalid", format!("machine label {label:?} is not [a-z0-9._-]+"), None, Some(fid.clone()));
         return plan;
     }
-    let f = match load_fleet(env, fleet) {
+    let f = match load_fleet_for_write(env, fleet) {
         Ok(f) => f,
         Err(i) => {
             plan.refusals.push(i);
@@ -650,7 +785,34 @@ pub fn plan_machine_add(env: &Env, fleet: &str, label: &str, dirs: Vec<(Id, Stri
         }
     };
     if f.config.machines.contains_key(label) {
-        refuse(&mut plan, "config.invalid", format!("machine {label} is already in {fleet}"), None, Some(fid.clone()));
+        refuse(&mut plan, "config.exists", format!("machine {label} is already in {fleet}"), None, Some(fid.clone()));
+        return plan;
+    }
+    let host = match hostname.map(str::trim) {
+        Some("") => {
+            refuse(&mut plan, "config.invalid", "--hostname is empty".into(), Some(format!("nimitz machine add {fleet} {label} --hostname <H>")), Some(fid.clone()));
+            return plan;
+        }
+        Some(h) => h.to_lowercase(),
+        None => env.hostname.clone(),
+    };
+    let same_host = |h: &str| {
+        let short = |x: &str| x.split('.').next().unwrap_or("").to_string();
+        h.eq_ignore_ascii_case(&host) || short(&h.to_lowercase()) == short(&host)
+    };
+    if let Some((other, _)) = f.config.machines.iter().find(|(_, m)| same_host(&m.hostname)) {
+        let why = if hostname.is_none() {
+            format!("no --hostname given, and this machine ({host}) is already {fleet}'s machine {other:?}")
+        } else {
+            format!("host {host} is already {fleet}'s machine {other:?}")
+        };
+        refuse(
+            &mut plan,
+            "machine.host",
+            format!("machine {label}: {why}; one host has one label"),
+            Some(format!("nimitz machine add {fleet} {label} --hostname <the other machine's hostname>")),
+            Some(fid.clone()),
+        );
         return plan;
     }
     for (id, _) in &dirs {
@@ -661,7 +823,8 @@ pub fn plan_machine_add(env: &Env, fleet: &str, label: &str, dirs: Vec<(Id, Stri
     let mut config = f.config.clone();
     config.machines.insert(
         label.to_string(),
-        MachineDef { hostname: env.hostname.clone(), os: Some(std::env::consts::OS.into()) },
+        // the os is known only for this machine
+        MachineDef { hostname: host.clone(), os: (host == env.hostname).then(|| std::env::consts::OS.into()) },
     );
     plan.steps.push(step_write(Some(fid.clone()), &f.dir.join("fleet.toml"), toml_out(&config), "fleet settings with the new machine"));
 
@@ -679,7 +842,7 @@ pub fn plan_machine_add(env: &Env, fleet: &str, label: &str, dirs: Vec<(Id, Stri
                     s.dirs.insert(label.to_string(), dir.clone());
                     touched = true;
                 }
-                None => refuse(&mut plan, "config.invalid", format!("no ship {id}"), None, Some(id.clone())),
+                None => refuse(&mut plan, "config.missing", format!("no ship {id}"), None, Some(id.clone())),
             }
         }
         if touched {
@@ -753,7 +916,7 @@ fn mode_change(plan: &mut Plan, mode: Option<&str>, id: &Id) -> Option<Option<St
 pub fn plan_fleet_set(env: &Env, fleet: &str, admiral_mode: Option<&str>) -> Plan {
     let fid = Id::admiral(fleet);
     let mut plan = Plan { summary: format!("update fleet {fleet}"), ..Default::default() };
-    let f = match load_fleet(env, fleet) {
+    let f = match load_fleet_for_write(env, fleet) {
         Ok(f) => f,
         Err(i) => {
             plan.refusals.push(i);
@@ -780,7 +943,7 @@ pub fn plan_squadron_set(env: &Env, id: &Id, brief: Option<&str>, comms: Option<
         return plan;
     }
     let (fleet, sq) = (id.fleet().to_string(), id.squadron().unwrap_or_default().to_string());
-    let f = match load_fleet(env, &fleet) {
+    let f = match load_fleet_for_write(env, &fleet) {
         Ok(f) => f,
         Err(i) => {
             plan.refusals.push(i);
@@ -788,7 +951,7 @@ pub fn plan_squadron_set(env: &Env, id: &Id, brief: Option<&str>, comms: Option<
         }
     };
     let Some((dir, s)) = f.squadrons.iter().find(|(_, s)| s.squadron == sq) else {
-        refuse(&mut plan, "config.invalid", format!("no squadron {id}"), Some(format!("nimitz squadron new {id}")), Some(id.clone()));
+        refuse(&mut plan, "config.missing", format!("no squadron {id}"), Some(format!("nimitz squadron new {id}")), Some(id.clone()));
         return plan;
     };
     let mut c = s.clone();
@@ -823,9 +986,19 @@ pub fn plan_squadron_set(env: &Env, id: &Id, brief: Option<&str>, comms: Option<
 /// `nimitz machine rm <F> <label>`: the label leaves `fleet.toml` and every
 /// ship's folders and modes. Folders and transcripts on disk stay.
 pub fn plan_machine_rm(env: &Env, fleet: &str, label: &str) -> Plan {
+    plan_machine_rm_on(env, None, fleet, label)
+}
+
+/// `plan_machine_rm`, with the snapshot: removing this machine's label while
+/// members of the fleet are live here warns and lists them.
+pub fn plan_machine_rm_live(env: &Env, snap: &Snapshot, fleet: &str, label: &str) -> Plan {
+    plan_machine_rm_on(env, Some(snap), fleet, label)
+}
+
+fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &str) -> Plan {
     let fid = Id::admiral(fleet);
     let mut plan = Plan { summary: format!("remove machine {label} from {fleet}"), ..Default::default() };
-    let f = match load_fleet(env, fleet) {
+    let f = match load_fleet_for_write(env, fleet) {
         Ok(f) => f,
         Err(i) => {
             plan.refusals.push(i);
@@ -833,17 +1006,30 @@ pub fn plan_machine_rm(env: &Env, fleet: &str, label: &str) -> Plan {
         }
     };
     let Some(m) = f.config.machines.get(label) else {
-        refuse(&mut plan, "config.invalid", format!("machine {label} is not in {fleet}"), None, Some(fid));
+        refuse(&mut plan, "config.missing", format!("machine {label} is not in {fleet}"), None, Some(fid));
         return plan;
     };
     if env.matches_hostname(&m.hostname) {
-        plan.warnings.push(issue(
-            "config.pending",
-            Severity::Warn,
-            format!("{label} is this machine: {fleet}'s members stop running here after their next stop"),
-            None,
-            Some(fid.clone()),
-        ));
+        let live: Vec<String> = snap
+            .and_then(|s| s.fleets.iter().find(|fl| fl.id == fid))
+            .map(|fl| {
+                let mut v = vec![&fl.admiral];
+                for sq in &fl.squadrons {
+                    v.push(&sq.commodore);
+                    v.extend(sq.ships.iter().chain(sq.tenders.iter()));
+                }
+                v.into_iter().filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some())).map(|m| m.id.0.clone()).collect()
+            })
+            .unwrap_or_default();
+        let (code, message) = if live.is_empty() {
+            ("config.pending", format!("{label} is this machine: {fleet}'s ships stop running here after their next stop"))
+        } else {
+            (
+                "machine.live",
+                format!("{label} is this machine and {} member(s) of {fleet} are live here: {}; ships lose their folder here at their next stop", live.len(), live.join(", ")),
+            )
+        };
+        plan.warnings.push(issue(code, Severity::Warn, message, None, Some(fid.clone())));
     }
     let mut c = f.config.clone();
     c.machines.remove(label);
@@ -873,7 +1059,7 @@ pub fn apply_config_plan(_env: &Env, plan: &Plan) -> Outcome {
         let failed = code != 0;
         out.ran.push((step.clone(), code, msg.clone()));
         if failed {
-            out.issues.push(issue("config.invalid", Severity::Error, format!("step failed: {msg}"), None, step.id.clone()));
+            out.issues.push(issue("config.write", Severity::Error, format!("step failed: {msg}"), None, step.id.clone()));
             return out; // stop at the first failure; what ran is in `ran`
         }
     }
@@ -885,7 +1071,7 @@ pub fn apply_config_plan(_env: &Env, plan: &Plan) -> Outcome {
         _ => false,
     });
     if !out.verified {
-        out.issues.push(issue("config.invalid", Severity::Error, "plan applied but re-read does not match".into(), None, None));
+        out.issues.push(issue("config.write", Severity::Error, "plan applied but re-read does not match".into(), None, None));
     }
     out
 }
@@ -1028,6 +1214,85 @@ pub(crate) mod tests {
         for want in ["empty hostname", "not [A-Z0-9_]+", "defined twice", "no-such-machine", "sideways"] {
             assert!(msgs.contains(want), "missing {want:?} in {msgs}");
         }
+    }
+
+    #[test]
+    fn a_broken_squadron_does_not_hide_the_fleet() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        apply_ok(&env, &plan_squadron_new(&env, "MAIN", "BOREAL", "", Comms::default()));
+        let bad = env.fleet_dir("MAIN").join("squadrons/argos/squadron.toml");
+        std::fs::write(&bad, std::fs::read_to_string(&bad).unwrap() + "\nname = \"oops\n").unwrap();
+        let (fleets, issues) = load_all(&env);
+        assert_eq!(fleets.len(), 1, "the fleet still loads");
+        assert_eq!(fleets[0].squadrons.iter().map(|(_, s)| s.squadron.as_str()).collect::<Vec<_>>(), ["BOREAL"]);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        let i = &issues[0];
+        assert_eq!((i.code.as_str(), i.id.clone()), ("config.invalid", Some(Id::commodore("MAIN", "ARGOS"))));
+        let line = std::fs::read_to_string(&bad).unwrap().lines().count();
+        assert!(i.message.contains(&format!("squadron.toml:{line}:")), "file and line: {}", i.message);
+        let un = unreadable_squadrons(&fleets[0]);
+        assert_eq!(un.len(), 1);
+        assert_eq!(un[0].0, Id::commodore("MAIN", "ARGOS"));
+        // writes refuse while a squadron file is broken (a rewrite could lose it)
+        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default()).ok());
+        assert!(!plan_machine_add_on(&env, "MAIN", "other", Some("other-host"), vec![]).ok());
+        assert!(load_fleet(&env, "MAIN").is_ok());
+    }
+
+    #[test]
+    fn two_members_in_one_folder_and_symlinks_are_one_folder() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let real = td.path().join("proj");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = td.path().join("proj-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut f = load_fleet(&env, "MAIN").unwrap();
+        for (name, d) in [("A", &real), ("B", &link)] {
+            f.squadrons[0].1.ships.push(ShipDef { name: name.into(), prompt: Some("p".into()), dirs: [("test-mac".to_string(), d.to_string_lossy().into_owned())].into(), ..Default::default() });
+        }
+        let issues = validate(&env, &f);
+        assert!(issues.iter().any(|i| i.code == "config.layout" && i.severity == Severity::Error && i.message.contains("share the folder")), "{issues:?}");
+        // and plan_ship_new refuses the same folder through a symlink
+        let ship = ShipDef { name: "C".into(), prompt: Some("p".into()), dirs: [("test-mac".to_string(), link.to_string_lossy().into_owned())].into(), ..Default::default() };
+        apply_ok(&env, &plan_ship_new(&env, "MAIN", "ARGOS", ShipDef { name: "A".into(), ..f.squadrons[0].1.ships[1].clone() }));
+        assert!(plan_ship_new(&env, "MAIN", "ARGOS", ship).refusals.iter().any(|i| i.code == "config.layout"));
+        // member_dir gives the real path
+        assert_eq!(member_dir(&env, &f, &Id::ship("MAIN", "ARGOS", "B")), Some(real.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn every_inherited_instructions_file_is_a_layout_error() {
+        for rel in ["CLAUDE.md", "squadrons/CLAUDE.md", "ships/CLAUDE.md", ".claude/CLAUDE.md", "ships/argos/CLAUDE.local.md"] {
+            let (_td, env) = test_env();
+            make_fleet(&env);
+            let p = env.fleet_dir("MAIN").join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "x").unwrap();
+            let issues = validate(&env, &load_fleet(&env, "MAIN").unwrap());
+            assert!(issues.iter().any(|i| i.code == "config.layout" && i.message.contains(&p.display().to_string())), "{rel}: {issues:?}");
+        }
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        assert!(home_layout(&env).is_empty());
+        std::fs::write(env.home.join("CLAUDE.md"), "x").unwrap();
+        assert_eq!(home_layout(&env)[0].code, "config.layout");
+    }
+
+    #[test]
+    fn reserved_ship_names_are_refused() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        for name in ["COMMODORE", "ADMIRAL"] {
+            let ship = ShipDef { name: name.into(), prompt: Some("p".into()), dirs: [("test-mac".to_string(), "managed".to_string())].into(), ..Default::default() };
+            assert!(!plan_ship_new(&env, "MAIN", "ARGOS", ship.clone()).ok(), "{name}");
+            assert!(!plan_ship_set(&env, &Id::ship("MAIN", "ARGOS", name), ship.clone()).ok(), "{name}");
+            let mut f = load_fleet(&env, "MAIN").unwrap();
+            f.squadrons[0].1.ships.push(ship);
+            assert!(validate(&env, &f).iter().any(|i| i.message.contains("reserved")), "{name}");
+        }
+        assert!(reserved_ship_name("COMMODORE/job") && !reserved_ship_name("COMMODORES"));
     }
 
     #[test]
@@ -1207,10 +1472,14 @@ pub(crate) mod tests {
     fn machine_add_updates_fleet_and_ships() {
         let (_td, env) = test_env();
         make_fleet(&env);
-        let plan = plan_machine_add(&env, "MAIN", "home-server", vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]);
+        // no --hostname: this host already is test-mac, so a second label refuses
+        let p = plan_machine_add(&env, "MAIN", "home-server", vec![]);
+        assert!(p.refusals.iter().any(|i| i.code == "machine.host" && i.message.contains("test-mac")), "{:?}", p.refusals);
+        assert!(!plan_machine_add_on(&env, "MAIN", "home-server", Some("TEST-MAC.local"), vec![]).ok());
+        let plan = plan_machine_add_on(&env, "MAIN", "home-server", Some("u0box"), vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]);
         apply_ok(&env, &plan);
         let f = load_fleet(&env, "MAIN").unwrap();
-        assert!(f.config.machines.contains_key("home-server"));
+        assert_eq!(f.config.machines["home-server"].hostname, "u0box");
         assert_eq!(f.squadrons[0].1.ships[0].dirs.get("home-server").map(|s| s.as_str()), Some("managed"));
         assert!(validate(&env, &f).is_empty());
         assert!(!plan_machine_add(&env, "MAIN", "home-server", vec![]).ok()); // dup label
@@ -1246,15 +1515,19 @@ pub(crate) mod tests {
         assert!(!plan_squadron_set(&env, &Id::admiral("MAIN"), None, None, None).ok());
 
         // machine rm: the label leaves fleet.toml and every ship's dirs; this machine warns
-        apply_ok(&env, &plan_machine_add(&env, "MAIN", "home-server", vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]));
+        apply_ok(&env, &plan_machine_add_on(&env, "MAIN", "home-server", Some("u0box"), vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]));
         let plan = plan_machine_rm(&env, "MAIN", "home-server");
-        // machine add records this host's name, so removing it warns too
-        assert!(plan.warnings.iter().any(|i| i.code == "config.pending"));
+        assert!(plan.warnings.is_empty(), "another machine: {:?}", plan.warnings);
         apply_ok(&env, &plan);
         let f = load_fleet(&env, "MAIN").unwrap();
         assert!(!f.config.machines.contains_key("home-server"));
         assert!(f.squadrons[0].1.ships[0].dirs.keys().all(|k| k != "home-server"));
         assert!(!plan_machine_rm(&env, "MAIN", "home-server").ok());
         assert!(plan_machine_rm(&env, "MAIN", "test-mac").warnings.iter().any(|i| i.code == "config.pending"));
+        // with live members here, the warning names them
+        let mut snap = crate::check::tests::snap_for(&env, None);
+        snap.fleets[0].admiral.session = Some(crate::check::tests::live_session("[MAIN]-ADMIRAL"));
+        let w = plan_machine_rm_live(&env, &snap, "MAIN", "test-mac").warnings;
+        assert!(w.iter().any(|i| i.code == "machine.live" && i.message.contains("MAIN")), "{w:?}");
     }
 }
