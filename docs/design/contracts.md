@@ -171,6 +171,12 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `config.pending` | a config change is waiting for a relaunch |
 | `layout.skip` | a member has no place in the layout |
 | `authority` | the caller may not do this (plan-v3 5.5); partial or inconsistent `NIMITZ_*` labels make a caller with no authority, never the user |
+| `config.missing` | the id names no fleet, squadron, ship or machine label in the config |
+| `config.exists` | `new`/`add` of something that is already there |
+| `config.nonempty` | `rm` of a fleet or squadron that still has squadrons or ships |
+| `config.write` | a config step failed, or the re-read does not match |
+| `machine.host` | `machine add` would give one host a second label (no `--hostname`, or the hostname is taken) |
+| `machine.live` | (warning) `machine rm` of this machine while members of the fleet are live here; lists them |
 | `member.unknown` | the id names no member of any fleet config (or a tender's commodore does not exist) |
 | `prompt.missing` | a ship's cold launch needs a prompt and the config has none |
 | `machine.missing` | the fleet does not run on this machine |

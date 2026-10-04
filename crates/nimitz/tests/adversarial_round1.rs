@@ -393,7 +393,6 @@ fn bug23_labels_in_the_job_row_count_when_session_start_is_lost() {
 }
 
 #[test]
-#[ignore = "BUG-24"]
 fn bug24_check_of_a_fleet_or_squadron_covers_its_members() {
     let sb = Sb::new(false);
     for id in ["MAIN", "MAIN/ARGOS"] {

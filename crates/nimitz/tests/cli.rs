@@ -432,7 +432,11 @@ fn crud_round_trip() {
 
     let r = sb.run(&["machine", "add", "TOP", "box2", "--hostname", "box2-host", "--dir", "TOP/SQ/S1=managed", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(std::fs::read_to_string(fleet_dir.join("fleet.toml")).unwrap().contains("box2"));
+    assert!(std::fs::read_to_string(fleet_dir.join("fleet.toml")).unwrap().contains("box2-host"));
+    // this host already has a label: no second one without --hostname
+    let r = sb.run(&["machine", "add", "TOP", "box3", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("machine.host"), "{}", r.out);
     assert!(sq_toml().contains("box2"));
     let r = sb.run(&["machine", "rm", "TOP", "box2", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);

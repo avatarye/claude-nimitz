@@ -317,7 +317,7 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
         }
         "rm" => {
             ctx.args.allow(&[])?;
-            config::plan_machine_rm(&ctx.env, fleet, label)
+            config::plan_machine_rm_live(&ctx.env, &ctx.snap(), fleet, label)
         }
         v => return Err(format!("machine {v}: use add or rm")),
     };

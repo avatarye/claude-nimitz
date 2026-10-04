@@ -164,7 +164,7 @@ pub fn check(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.at_most(1)?;
     let id = ctx.args.pos.first().map(|s| parse_id(s)).transpose()?;
     let snap = ctx.snap();
-    let mut issues = nimitz_core::check::check(&ctx.env, &snap, id.as_ref());
+    let mut issues = nimitz_core::check::check_tree(&ctx.env, &snap, id.as_ref());
     issues.sort_by(|a, b| b.severity.cmp(&a.severity));
     let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
     if out::json_mode() {

@@ -53,11 +53,12 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   init [--label L]                 data root, machine label, trust check, doctor
   doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats
   status [--json]                  the fleets, their members and issues
-  check [<id>]                     integrity check (runs before every start)
+  check [<id>]                     integrity check of <id>, its parents and everything under it
   fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)
   squadron new|set|rm <F/SQ>       --brief T --comms open|commodore-only|allow:A,B --mode M
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
-  machine add|rm <F> <label>       add: --dir F/SQ/SHIP=PATH (repeat)
+  machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
+                                   rm warns about live members when <label> is this machine
   up <F>                           start every member of a fleet (needs a multiplexer)
   start|stop|relaunch <id>         one member; start brings up missing parents first
   rm <id|session>                  remove job rows (never transcripts)
