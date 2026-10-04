@@ -1,0 +1,94 @@
+---
+name: fleet
+description: Run claude-nimitz fleets with the nimitz command. Use when the user asks to create, change or delete a fleet, squadron, ship or machine; to start, stop, relaunch or remove a session; to bring a fleet up; to sweep copy rows; to adopt a stowaway; to signal a member; or asks who may start or signal whom.
+---
+
+# Fleet: run fleets with `nimitz`
+
+`nimitz` holds every rule. This skill tells you which command to run. Do not
+edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
+`claude rm` yourself for a fleet member.
+
+## Words
+
+| Word | Meaning | Id | Name (address) |
+| --- | --- | --- | --- |
+| admiral | Commands one fleet. Interactive. | `F` | `[F]-ADMIRAL` |
+| commodore | Commands one squadron. Interactive. | `F/SQ` | `[F.SQ]-COMMODORE` |
+| ship | Long-term work in one folder. Background. | `F/SQ/SHIP` | `[F.SQ]-SHIP` |
+| tender | One job for a commodore, then it stops. Background. | `F/SQ/~task` | `[F.SQ]-COMMODORE/task` |
+
+## Rules
+
+1. Look first. Run `nimitz status` (or `nimitz status --json`) before you act.
+2. Plan first. Every command that changes something takes `--plan`. Run it
+   with `--plan`, show the plan to the user, and run it with `--yes` only
+   after the user agrees.
+3. Never use `--force` unless the user asks for it by name.
+4. The config is the truth. CRUD commands change only the config. Running
+   sessions change only through `up`, `start`, `stop`, `relaunch`, `rm`,
+   `sweep`, `tender` and `adopt`.
+5. Start top-down. `nimitz start <id>` starts the admiral, then the commodore,
+   then the target. Do not start the parents yourself.
+6. A refusal is an answer. When `nimitz` prints `[ERROR]` with a `fix:`, show
+   the fix to the user. Do not work around the refusal.
+7. Never resume, stop or remove a session that is not in the fleet.
+
+## Who may start what
+
+| Caller | May start |
+| --- | --- |
+| the user (no labels) | everything; `nimitz up` |
+| commodore | one of its own ships that it needs now; its own tenders |
+| admiral, ship, tender | nothing |
+
+`nimitz` reads the caller from the session's labels. It refuses what the table
+does not allow. CRUD, `up`, `rm`, `sweep`, `adopt`, `layout` and `init` are the
+user's alone.
+
+## Who may signal whom
+
+Sessions signal with `SendMessage` to a name. The plugin's hook blocks a signal
+that the chain does not allow.
+
+| From | May signal |
+| --- | --- |
+| admiral | its commodores (questions only) |
+| commodore | its admiral, its ships, its tenders |
+| ship | its commodore; other ships as the squadron's `comms` rule allows |
+| tender | its commodore |
+
+`comms` in `squadron.toml`: `open` (default), `commodore-only`, or an allow list.
+The user reaches a ship through its commodore: `nimitz signal F/SQ/SHIP <text>`
+types the text into the commodore's pane.
+
+## Commands
+
+| Task | Command |
+| --- | --- |
+| First run on a machine | `nimitz init --label <label>`, then `nimitz doctor` |
+| Check the setup | `nimitz doctor` (`--fix` sets `crossSessionInbound`) |
+| See everything | `nimitz status` |
+| Find problems | `nimitz check [<id>]` |
+| New fleet | `nimitz fleet new <F> [--machine <label>]` |
+| New squadron | `nimitz squadron new <F/SQ> --brief "<text>" [--comms open\|commodore-only\|allow:F/SQ/SHIP,...]` |
+| New ship | `nimitz ship new <F/SQ/SHIP> --dir <folder\|managed> --prompt "<text>" [--mode <permission mode>] [--depends A,B]` |
+| Change a ship | `nimitz ship set <F/SQ/SHIP> [same flags]` (takes effect at its next relaunch) |
+| Retire a ship | `nimitz ship rm <F/SQ/SHIP>` (stops it, removes job rows, keeps transcripts) |
+| Delete a squadron or fleet | `nimitz squadron rm <F/SQ>`, `nimitz fleet rm <F>` (only when empty and not live) |
+| Add or remove a machine | `nimitz machine add <F> <label> [--dir F/SQ/SHIP=<folder>]`, `nimitz machine rm <F> <label>` |
+| Bring a fleet up | `nimitz up <F>` (needs Herdr) |
+| Start one member | `nimitz start <id>` (admiral and commodore open in a Herdr tab) |
+| Stop one member | `nimitz stop <id>`; one copy of two: `nimitz stop <short id>` |
+| New session id, labels restored | `nimitz relaunch <id>` |
+| Remove stale rows | `nimitz sweep [<id>]`, or one row: `nimitz rm <short id>` |
+| One-off job | `nimitz tender <F/SQ> <task> "<prompt>"` |
+| A session with no labels | `nimitz adopt <session> <id>`, or `nimitz rm <session>` |
+| Show a member | `nimitz open <id>` |
+| Herdr workspaces for fleets | `nimitz layout herdr [<F>]` |
+| Move a fleet-skill fleet | `nimitz migrate fleet-skill <old dir>... --into <F>` (plan), then add `--yes` |
+
+## Status words
+
+`not-started`, `stopped`, `idle`, `busy`, `needs-you`, `unknown`. `reasons`
+says why. `unknown` means the evidence does not decide; do not guess.
