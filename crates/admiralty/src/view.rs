@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
 use crate::data::pane_for;
-use crate::theme::{self, age, bold, mono, st, status_glyph, status_style, status_word, Icons};
+use crate::theme::{self, age, bold, mono, st, status_style, status_word, Icons};
 
 // ------------------------------------------------------------------ fleet state
 
@@ -43,22 +43,46 @@ impl FleetState {
     ];
 
     pub fn of(f: &Fleet) -> FleetState {
-        let members: Vec<&Member> = fleet_members(f);
-        let live = |m: &&Member| m.session.as_ref().map(|s| s.pid.is_some()).unwrap_or(false);
         if f.machine.is_none() {
-            FleetState::Elsewhere
-        } else if members.iter().any(|m| m.status == Status::NeedsYou) {
+            return FleetState::Elsewhere;
+        }
+        Self::of_group(&fleet_members(f), &fleet_issues(f), Some(&f.admiral))
+    }
+
+    /// A squadron's state: the same scale, its commodore standing in for the admiral.
+    pub fn of_squadron(f: &Fleet, sq: &Squadron) -> FleetState {
+        if f.machine.is_none() {
+            return FleetState::Elsewhere;
+        }
+        let mut issues: Vec<&Issue> = sq.issues.iter().collect();
+        for m in squadron_members(sq) {
+            issues.extend(m.issues.iter());
+        }
+        Self::of_group(&squadron_members(sq), &issues, Some(&sq.commodore))
+    }
+
+    fn of_group(members: &[&Member], issues: &[&Issue], lead: Option<&Member>) -> FleetState {
+        let live = |m: &Member| member_live(m);
+        if members.iter().any(|m| m.status == Status::NeedsYou) {
             FleetState::NeedsYou
-        } else if fleet_issues(f).iter().any(|i| i.severity == Severity::Error) {
+        } else if issues.iter().any(|i| i.severity == Severity::Error) {
             FleetState::Broken
-        } else if !members.is_empty() && !members.iter().any(live) {
+        } else if !members.iter().any(|m| live(m)) {
             FleetState::Inactive
-        } else if !live(&&f.admiral) {
+        } else if !lead.map(live).unwrap_or(true) {
             FleetState::NoAdmiral
         } else if members.iter().any(|m| m.status == Status::Busy) {
             FleetState::Busy
         } else {
             FleetState::Idle
+        }
+    }
+
+    /// The label inside a squadron, where the lead is the commodore.
+    pub fn squadron_label(self) -> &'static str {
+        match self {
+            FleetState::NoAdmiral => "no commodore",
+            other => other.label(),
         }
     }
 
@@ -183,7 +207,8 @@ pub struct Node {
     /// worst severity among this row's own issues
     pub worst: Option<Severity>,
     pub issue_count: usize,
-    /// the multiplexer pane hosting this row's session, with its state
+    /// the multiplexer pane hosting this row's session, and its state
+    pub pane_id: Option<String>,
     pub pane_state: Option<String>,
     /// band only: bright frame colour
     pub frame: Option<Color>,
@@ -212,6 +237,7 @@ impl Node {
             detail: vec![],
             worst: None,
             issue_count: 0,
+            pane_id: None,
             pane_state: None,
             frame: None,
             band_bg: None,
@@ -301,6 +327,7 @@ fn extra_row_node(parent: &str, s: &SessionInfo, now: f64, icons: &Icons) -> Nod
     let live = s.pid.is_some();
     let style = if live { st(mono::PINK) } else { st(mono::DIM) };
     let mut n = Node::new(format!("X:{parent}:{}", s.session_id), Kind::ExtraRow);
+    n.member = Some(nimitz_core::Id(parent.to_string()));
     n.session_id = Some(s.session_id.clone());
     n.icon = icons.row;
     n.icon_style = style;
@@ -335,12 +362,15 @@ fn member_node(m: &Member, v: &View) -> Node {
     n.icon_style = name_style;
     n.name = m.session.as_ref().map(|s| s.name.clone()).filter(|s| !s.is_empty()).unwrap_or(m.expected_name.clone());
     n.name_style = name_style;
-    n.status = (format!("{} {}", status_glyph(m.status), status_word(m.status)), style);
+    n.status = (format!("{} {}", v.icons.status(m.status), status_word(m.status)), style);
     n.age = member_age(m, v.now);
     n.kind_text = m.role.as_str().into();
     n.worst = worst_of(&m.issues);
     n.issue_count = m.issues.len();
-    n.pane_state = pane_for(n.session_id.as_deref(), &n.name, m.cwd.as_deref(), v.panes).map(|p| p.state.clone());
+    if let Some(p) = m.pane.as_deref().and_then(|id| v.panes.iter().find(|p| p.pane.pane_id == id)) {
+        n.pane_id = Some(p.pane.pane_id.clone());
+        n.pane_state = Some(p.state.clone());
+    }
     n.detail = issue_spans(&m.issues, v.icons);
     if m.status == Status::NeedsYou {
         let why = m
@@ -408,11 +438,8 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
     }
     let own_issues: Vec<&Issue> = sq.issues.iter().chain(members.iter().flat_map(|m| m.issues.iter())).collect();
     let worst = own_issues.iter().map(|i| i.severity).max();
-    let color = match worst {
-        Some(Severity::Error) => mono::PURPLE,
-        _ if members.iter().any(|m| m.status == Status::NeedsYou) => mono::PINK,
-        _ => FleetState::of(f).color(),
-    };
+    let state = FleetState::of_squadron(f, sq);
+    let color = state.color();
     let sq_name = sq.id.squadron().unwrap_or("?").to_string();
     let mut n = Node::new(format!("SQ:{}", sq.id.0), Kind::SquadronBand);
     n.member = Some(sq.id.clone());
@@ -423,17 +450,16 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
     n.name_style = bold(mono::FG);
     n.kind_text = "squadron".into();
     n.frame = Some(color);
-    n.band_bg = Some(match worst {
-        Some(Severity::Error) => mono::T_PURPLE,
-        _ => mono::T_DIM,
-    });
+    n.band_bg = Some(state.tint());
     n.worst = worst_of(&sq.issues);
     n.issue_count = sq.issues.len();
-    let mut notes = vec![format!("comms {}", comms_text(&sq.comms))];
+    n.detail = vec![
+        Span::styled(state.squadron_label().to_string(), bold(color)),
+        Span::styled(format!("   comms {}", comms_text(&sq.comms)), st(mono::SOFT)),
+    ];
     if let Some(i) = sq.issues.first() {
-        notes.push(format!("{} {}", v.icons.issue, i.code));
+        n.detail.push(Span::styled(format!("   {} {}", v.icons.issue, i.code), bold(theme::severity_color(i.severity))));
     }
-    n.detail = vec![Span::styled(notes.join("   "), st(mono::SOFT))];
     n.title_right = status_counts(&members, own_issues.len(), worst, v.icons);
     n.children = shown.iter().map(|m| member_node(m, v)).collect();
     Some(n)
@@ -449,12 +475,15 @@ fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
     n.name = if s.name.is_empty() { s.session_id.chars().take(8).collect() } else { s.name.clone() };
     n.name_style = style;
     n.status = (
-        if live { format!("{} live", status_glyph(Status::Busy)) } else { "x dead".into() },
+        if live { format!("{} live", v.icons.s_busy) } else { format!("{} dead", v.icons.s_stopped) },
         if live { st(mono::PINK) } else { st(mono::COMMENT) },
     );
     n.age = s.started_at.map(|t| age(v.now - t)).unwrap_or_default();
     n.kind_text = "stowaway".into();
-    n.pane_state = pane_for(Some(&s.session_id), &n.name, Some(&s.cwd), v.panes).map(|p| p.state.clone());
+    if let Some(p) = pane_for(Some(&s.session_id), &n.name, Some(&s.cwd), v.panes) {
+        n.pane_id = Some(p.pane.pane_id.clone());
+        n.pane_state = Some(p.state.clone());
+    }
     // the matching snapshot-level stowaway issue carries the fix
     let fix = snap
         .issues
@@ -505,13 +534,11 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
         n.band_bg = Some(state.tint());
         n.worst = worst_of(&f.issues);
         n.issue_count = f.issues.len();
-        let mut notes = vec![state.label().to_string()];
-        match &f.machine {
-            Some(m) => notes.push(m.clone()),
-            None => notes.push("not on this machine".into()),
-        }
-        notes.push(f.dir.clone());
-        n.detail = vec![Span::styled(notes.join("   "), st(mono::SOFT))];
+        let place = f.machine.clone().unwrap_or_else(|| "not on this machine".into());
+        n.detail = vec![
+            Span::styled(state.label().to_string(), bold(state.color())),
+            Span::styled(format!("   {place}   {}", f.dir), st(mono::SOFT)),
+        ];
         n.title_right = status_counts(&fleet_members(f), issues.len(), worst, v.icons);
         if matches(&f.admiral) {
             n.children.push(member_node(&f.admiral, v));

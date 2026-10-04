@@ -1,0 +1,126 @@
+//! The terminal loop. A loader thread owns the data source and sends a fresh
+//! bundle every interval (or at once on `R` and after an action); actions apply
+//! on a worker thread. The screen redraws when data or a key arrives, and once a
+//! second so ages and toasts stay current; otherwise the loop sleeps in `poll`.
+
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use ratatui::crossterm::event::{self, Event};
+
+use crate::actions::Pending;
+use crate::app::{App, Effect};
+use crate::data::{Bundle, DataSource};
+
+pub type SourceMaker = Box<dyn FnOnce() -> Box<dyn DataSource> + Send>;
+
+enum Cmd {
+    Refresh,
+}
+
+fn spawn_loader(make: SourceMaker, interval: Duration) -> (mpsc::Sender<Cmd>, mpsc::Receiver<Bundle>) {
+    let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut source = make();
+        loop {
+            if tx.send(source.load()).is_err() {
+                return;
+            }
+            match cmd_rx.recv_timeout(interval) {
+                Ok(Cmd::Refresh) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    });
+    (cmd_tx, rx)
+}
+
+/// Edit `text` in `$EDITOR` (vi when unset); returns the new text.
+fn edit_in_editor(text: &str) -> std::io::Result<String> {
+    let path = std::env::temp_dir().join(format!("admiralty-edit-{}.md", std::process::id()));
+    std::fs::write(&path, text)?;
+    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
+    let status = std::process::Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("sh").arg(&path).status()?;
+    let out = std::fs::read_to_string(&path)?;
+    let _ = std::fs::remove_file(&path);
+    if status.success() {
+        Ok(out)
+    } else {
+        Err(std::io::Error::other(format!("{editor} exited with {status}")))
+    }
+}
+
+pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Result<()> {
+    let (cmd_tx, data_rx) = spawn_loader(make, interval);
+    let (done_tx, done_rx) = mpsc::channel::<(Pending, nimitz_core::Outcome)>();
+    let mut terminal = ratatui::init();
+    let mut dirty = true;
+    let mut last_draw = Instant::now();
+    let result = loop {
+        let mut latest = None;
+        while let Ok(b) = data_rx.try_recv() {
+            latest = Some(b);
+        }
+        if let Some(b) = latest {
+            app.apply(b);
+            dirty = true;
+        }
+        while let Ok((p, o)) = done_rx.try_recv() {
+            app.finish(&p, &o);
+            let _ = cmd_tx.send(Cmd::Refresh);
+            dirty = true;
+        }
+        if dirty || last_draw.elapsed() >= Duration::from_secs(1) {
+            if let Err(e) = terminal.draw(|f| crate::render::draw(&mut app, f)) {
+                break Err(e);
+            }
+            dirty = false;
+            last_draw = Instant::now();
+        }
+        match event::poll(Duration::from_millis(250)) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => break Err(e),
+        }
+        let ev = match event::read() {
+            Ok(e) => e,
+            Err(e) => break Err(e),
+        };
+        dirty = true;
+        let Event::Key(k) = ev else { continue };
+        match app.on_key(k) {
+            Some(Effect::Quit) => break Ok(()),
+            Some(Effect::Refresh) => {
+                let _ = cmd_tx.send(Cmd::Refresh);
+            }
+            Some(Effect::Run(p)) => {
+                if app.busy.is_some() {
+                    app.notify("An action is still running; wait for it.", crate::theme::st(crate::theme::mono::YELLOW));
+                } else if app.begin(&p).is_ok() {
+                    let env = app.ctx.env.clone();
+                    let tx = done_tx.clone();
+                    std::thread::spawn(move || {
+                        let o = crate::actions::apply(&env, &p);
+                        let _ = tx.send((p, o));
+                    });
+                }
+            }
+            Some(Effect::Editor) => {
+                if let Some(text) = app.editor_text() {
+                    ratatui::restore();
+                    let edited = edit_in_editor(&text);
+                    terminal = ratatui::init();
+                    let _ = terminal.clear();
+                    match edited {
+                        Ok(t) => app.editor_done(t),
+                        Err(e) => app.notify(format!("$EDITOR: {e}"), crate::theme::st(crate::theme::mono::PINK)),
+                    }
+                }
+            }
+            None => {}
+        }
+    };
+    ratatui::restore();
+    result
+}

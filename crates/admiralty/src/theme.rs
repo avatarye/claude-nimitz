@@ -29,6 +29,7 @@ pub mod mono {
     pub const T_DIM: Color = Color::Rgb(0x2d, 0x2e, 0x28);
     pub const GOLD: Color = Color::Rgb(0xff, 0xc6, 0x3a);
     pub const T_GOLD: Color = Color::Rgb(0x4a, 0x3c, 0x14);
+    pub const GOLD_DIM: Color = Color::Rgb(0x8a, 0x72, 0x2e);
     pub const T_PURPLE: Color = Color::Rgb(0x38, 0x2a, 0x55);
 }
 
@@ -180,7 +181,7 @@ pub const ASCII: Icons = Icons {
     crew: "s",
     teammate: "T",
     stowaway: "?",
-    issue: "!",
+    issue: "^",
     finished: "+",
     row: "-",
     completed: "v",
@@ -196,6 +197,17 @@ pub const ASCII: Icons = Icons {
 };
 
 impl Icons {
+    pub fn status(&self, s: Status) -> &'static str {
+        match s {
+            Status::NeedsYou => self.s_needs,
+            Status::Busy => self.s_busy,
+            Status::Idle => self.s_idle,
+            Status::Stopped => self.s_stopped,
+            Status::NotStarted => self.s_off,
+            Status::Unknown => self.s_unknown,
+        }
+    }
+
     pub fn role(&self, r: Role) -> &'static str {
         match r {
             Role::Admiral => self.admiral,

@@ -18,7 +18,9 @@ pub struct Bundle {
     pub mux_caps: Caps,
 }
 
-pub trait DataSource: Send {
+/// One refresh at a time; the loader thread owns the source (it is built there,
+/// so a multiplexer adapter never crosses threads).
+pub trait DataSource {
     fn load(&mut self) -> Bundle;
 }
 
@@ -102,10 +104,6 @@ pub struct CoreSource {
     pub cache: nimitz_core::snapshot::Cache,
     pub mux: Box<dyn Mux>,
 }
-
-// `Box<dyn Mux>` has no Send bound in the trait; the adapters hold only a
-// binary path, so this is sound for the loader thread.
-unsafe impl Send for CoreSource {}
 
 impl CoreSource {
     pub fn detect(vars: &HashMap<String, String>) -> CoreSource {

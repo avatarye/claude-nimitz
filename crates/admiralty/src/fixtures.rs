@@ -401,3 +401,21 @@ pub fn demo() -> Bundle {
 pub fn demo_monitor_only() -> Bundle {
     Bundle { snap: demo_snapshot(), panes: vec![], mux_name: "none".into(), mux_caps: Caps::default() }
 }
+
+/// An Env for demo data that points nowhere real: plans read empty folders,
+/// and nothing runs (the demo `Ctx` is not live).
+pub fn demo_env() -> nimitz_core::env::Env {
+    let base = std::env::temp_dir().join("admiralty-demo-nowhere");
+    let p = |x: &str| base.join(x).to_string_lossy().into_owned();
+    let vars = std::collections::HashMap::from([
+        ("HOME".to_string(), p("home")),
+        ("NIMITZ_HOME".to_string(), p("nimitz")),
+        ("NIMITZ_STATE".to_string(), p("state")),
+        ("NIMITZ_CLAUDE_HOME".to_string(), p("claude_home")),
+        ("NIMITZ_CLAUDE_BIN".to_string(), "/nonexistent/claude".to_string()),
+        ("NIMITZ_NATIVE_CLAUDE_BIN".to_string(), "/nonexistent/claude".to_string()),
+        ("NIMITZ_HOSTNAME".to_string(), "west-mac".to_string()),
+        ("NIMITZ_MUX".to_string(), "none".to_string()),
+    ]);
+    nimitz_core::env::Env::from_vars(&vars)
+}
