@@ -11,7 +11,9 @@ Status: design and probes. Nothing to install yet.
 
 | Where | What |
 | --- | --- |
-| `docs/design/plan-v2.md` | The plan: vocabulary, folder layout, identity, evidence, phases. |
+| `docs/design/plan-v3.md` | The plan: decisions, vocabulary, setup and CRUD, adapters, compatibility, phases. |
+| `docs/design/cc-control-model.md` | How `nimitz` controls Claude Code sessions along the chain of command. |
+| `docs/design/plan-v2.md` | Previous plan (kept for history). |
 | `docs/design/review-identity-and-status.md` | How Claude Code, the old fleet skill and the old watch identify agents; the gaps. |
 | `docs/probes/` | P0 probes: requirements, findings per Claude Code build, comparison. |
 | `probes/p0_probe.py` | The probe script. |
