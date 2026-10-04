@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::actions::{find_member, Act, Target};
 use crate::app::App;
 use crate::frames::{pad, truncate_spans, wrap};
-use crate::theme::{age, art, bold, mono, pane_color, pane_dot, severity_color, severity_word, st, status_style, status_word, Art};
+use crate::theme::{art, bold, mono, pane_color, pane_dot, severity_color, severity_word, st, status_style, status_word, Art};
 use crate::view::{fleet_issues, fleet_members, squadron_members, FleetState, Kind, Node};
 
 const KEY_W: usize = 12;
@@ -253,7 +253,8 @@ fn squadron_detail(f: &Fleet, sq: &Squadron, width: usize) -> Vec<Line<'static>>
 fn member_age(m: &Member, now: f64) -> String {
     let s = m.session.as_ref();
     match s.and_then(|s| s.status_since).or(s.and_then(|s| s.started_at)) {
-        Some(t) => format!("  for {}", age(now - t)),
+        Some(t) => format!("  for {}", crate::view::age_or_unknown(now - t)),
+        None if s.is_some() => "  since ? (no believable time)".into(),
         None => String::new(),
     }
 }
@@ -274,7 +275,7 @@ fn session_lines(s: &SessionInfo, now: f64, expected_name: Option<&str>) -> Vec<
     }
     v.push(kv("cwd", s.cwd.clone()));
     if let Some(t) = s.started_at {
-        v.push(kv("started", format!("{} ago", age(now - t))));
+        v.push(kv("started", format!("{} ago", crate::view::age_or_unknown(now - t))));
     }
     if s.labels.is_empty() {
         v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "labels"), st(mono::COMMENT)), Span::styled("none", bold(mono::ORANGE))]));

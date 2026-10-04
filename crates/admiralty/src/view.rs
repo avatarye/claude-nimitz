@@ -275,11 +275,28 @@ fn worst_of(issues: &[Issue]) -> Option<Severity> {
     issues.iter().map(|i| i.severity).max()
 }
 
+/// A session's age; `?` when it has a session but core has no believable time
+/// for it (BUG-45), empty when there is no session at all.
 fn member_age(m: &Member, now: f64) -> String {
-    let s = m.session.as_ref();
-    match s.and_then(|s| s.status_since).or(s.and_then(|s| s.started_at)) {
-        Some(t) => age(now - t),
+    match &m.session {
+        Some(s) => session_age(s, now),
         None => String::new(),
+    }
+}
+
+fn session_age(s: &SessionInfo, now: f64) -> String {
+    match s.status_since.or(s.started_at) {
+        Some(t) => age_or_unknown(now - t),
+        None => "?".into(),
+    }
+}
+
+/// `age`, or `?` for a time that is missing or not believable.
+pub fn age_or_unknown(seconds: f64) -> String {
+    if seconds.is_finite() && seconds >= 0.0 {
+        age(seconds)
+    } else {
+        "?".into()
     }
 }
 
@@ -291,7 +308,7 @@ fn crew_node(parent: &str, c: &Crew, kids: &HashMap<String, Vec<&Crew>>, now: f6
     n.name = c.label.clone();
     n.name_style = style;
     n.status = (if c.running { "> running".into() } else { ". finished".into() }, style);
-    n.age = age(now - c.last_write);
+    n.age = if c.last_write > 0.0 { age_or_unknown(now - c.last_write) } else { "?".into() };
     n.kind_text = if c.teammate { "teammate".into() } else { "crew".into() };
     n.detail = vec![Span::styled(c.agent_type.clone().unwrap_or_default(), st(mono::COMMENT))];
     if depth < 32 {
@@ -345,7 +362,7 @@ fn extra_row_node(parent: &str, s: &SessionInfo, now: f64, icons: &Icons) -> Nod
     n.name = s.short_id.clone().unwrap_or_else(|| s.session_id.chars().take(8).collect());
     n.name_style = style;
     n.status = (if live { "! live copy".into() } else { s.state.clone().unwrap_or("dead".into()) }, style);
-    n.age = s.started_at.map(|t| age(now - t)).unwrap_or_default();
+    n.age = s.started_at.map(|t| age_or_unknown(now - t)).unwrap_or_else(|| "?".into());
     n.kind_text = "copy".into();
     n.detail = vec![Span::styled(format!("{}  {}", s.kind, s.cwd), st(mono::DIM))];
     n
@@ -519,7 +536,7 @@ fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
         if live { format!("{} live", v.icons.s_busy) } else { format!("{} dead", v.icons.s_stopped) },
         if live { st(mono::PINK) } else { st(mono::COMMENT) },
     );
-    n.age = s.started_at.map(|t| age(v.now - t)).unwrap_or_default();
+    n.age = s.started_at.map(|t| age_or_unknown(v.now - t)).unwrap_or_else(|| "?".into());
     n.kind_text = "stowaway".into();
     if let Some(p) = pane_for(Some(&s.session_id), &n.name, Some(&s.cwd), v.panes) {
         n.pane_id = Some(p.pane.pane_id.clone());

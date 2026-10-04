@@ -228,7 +228,7 @@ fn flagged_only_stowaways_and_fleet_state_filter() {
     press(&mut t.app, KeyCode::Esc);
     assert!(!t.app.rows.iter().any(|r| r.node.id == "F:FORGE"));
     let s = screen(&mut t.app, 200, 50);
-    assert!(s.contains("fleets: needs you, busy"), "top bar lists the states shown");
+    assert!(s.contains("filtered: no broken (f clears)"), "top bar says what the filter hides:\n{}", s.lines().next().unwrap());
 }
 
 #[test]
@@ -738,4 +738,52 @@ fn the_header_shortens_counts_instead_of_cutting_words() {
     let mut t = demo();
     let top80 = lines(&draw(&mut t.app, 80, 24))[0].clone();
     assert!(top80.contains("6 warn") || top80.contains("6w"), "80 columns keep the warning count: {top80}");
+}
+
+#[test]
+fn a_filter_is_always_marked_in_the_header_even_when_saved_and_narrow() {
+    // a filter saved by the last run comes back on launch
+    let mut t = demo();
+    keys(&mut t.app, "/anvil");
+    press(&mut t.app, KeyCode::Enter);
+    keys(&mut t.app, "F");
+    let state = t.dir.path().join("ui.json");
+    let ctx = admiralty::actions::Ctx { env: fixtures::demo_env(), mux: Box::new(TestMux::default()), live: false, exit_after_jump: false };
+    let mut again = admiralty::app::App::new(ctx, Some(state), true);
+    again.fixed_now = Some(fixtures::NOW);
+    again.apply(fixtures::demo());
+    for w in [200u16, 120, 80, 60, 50] {
+        let top = lines(&draw(&mut again, w, 24))[0].clone();
+        assert!(top.contains("filtered:") || top.contains("FILTERED"), "{w}: no filter marker: {top}");
+        assert!(top.contains("esc") && top.contains('F'), "{w}: the marker says how to clear it: {top}");
+    }
+    let top = lines(&draw(&mut again, 200, 24))[0].clone();
+    assert!(top.contains("filtered: \"anvil\", flagged (esc/F clears)"), "{top}");
+}
+
+#[test]
+fn bug45_a_missing_or_absurd_age_shows_a_question_mark() {
+    let mut b = fixtures::demo();
+    for f in &mut b.snap.fleets {
+        if let Some(s) = f.admiral.session.as_mut() {
+            s.started_at = None;
+            s.status_since = None;
+        }
+        for sq in &mut f.squadrons {
+            if let Some(s) = sq.commodore.session.as_mut() {
+                s.status_since = Some(fixtures::NOW + 1.0e9); // in the future: not believable
+                s.started_at = None;
+            }
+        }
+    }
+    let mut t = fixture_app(b, false);
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    for name in ["[MAIN]-ADMIRAL", "[MAIN.ARGOS]-COMMODORE"] {
+        let l = ls.iter().find(|l| l.contains(name)).unwrap();
+        let age = &l[l.find(name).unwrap()..];
+        assert!(age.contains(" ? "), "{name}: AGE shows ?: {l}");
+    }
+    // no session at all: the cell stays empty
+    let l = ls.iter().find(|l| l.contains("[FORGE.IRON]-QUENCH")).unwrap();
+    assert!(!l.contains(" ? "), "{l}");
 }

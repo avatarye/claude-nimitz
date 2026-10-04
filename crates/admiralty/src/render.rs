@@ -100,6 +100,42 @@ fn top_line(app: &App, width: usize) -> Line<'static> {
     Line::from(out)
 }
 
+/// What hides rows right now, and the key that undoes it; `None` when nothing does.
+fn filter_marker(app: &App, level: u8) -> Option<String> {
+    let mut what: Vec<String> = vec![];
+    let mut keys: Vec<&str> = vec![];
+    if !app.filter.is_empty() {
+        what.push(format!("\"{}\"", app.filter));
+        keys.push("esc");
+    }
+    if app.flagged_only {
+        what.push("flagged".into());
+        keys.push("F");
+    }
+    let hidden = app.fleet_states.iter().filter(|on| !**on).count();
+    if hidden > 0 {
+        what.push(match level {
+            0 => {
+                let off: Vec<&str> = FleetState::ALL.iter().filter(|x| !app.fleet_states[x.index()]).map(|x| x.label()).collect();
+                format!("no {}", off.join(", "))
+            }
+            _ => format!("{hidden} states"),
+        });
+        keys.push("f");
+    }
+    if !app.show_stowaways {
+        what.push("no stowaways".into());
+        keys.push("I");
+    }
+    if what.is_empty() {
+        return None;
+    }
+    Some(match level {
+        2 => format!(" FILTERED ({}) ", keys.join(" ")),
+        _ => format!(" filtered: {} ({} clears) ", what.join(", "), keys.join("/")),
+    })
+}
+
 /// The top bar at a level of detail (0 words, 1 short words, 2 letters), as
 /// (what always shows, what shows when there is room).
 fn top_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
@@ -119,6 +155,11 @@ fn top_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static
     if !app.ctx.live {
         v.push(Span::raw(" "));
         v.push(badge("DEMO", mono::PURPLE));
+    }
+    // a filter (maybe saved from the last run) hides rows: always say so, before the counts
+    if let Some(f) = filter_marker(app, level) {
+        v.push(Span::raw(" "));
+        v.push(Span::styled(f, Style::new().fg(mono::BG).bg(mono::YELLOW).add_modifier(Modifier::BOLD)));
     }
     v.push(Span::raw(pick(format!("  {fleets} fleets  {live} live  "), format!(" {fleets} fleets {live} live "), format!(" {fleets}f {live} live "))));
     // sessions labelled for a fleet whose config does not load: not lost, just not listed
@@ -143,17 +184,6 @@ fn top_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static
         }
     }
     let mut opt = vec![];
-    // filters first: they change what the list shows
-    if !app.filter.is_empty() {
-        opt.push(Span::styled(format!("   filter: {}", app.filter), st(mono::YELLOW)));
-    }
-    if app.flagged_only {
-        opt.push(Span::styled("   flagged only", st(mono::PURPLE)));
-    }
-    if app.fleet_states.iter().any(|on| !on) {
-        let shown: Vec<&str> = FleetState::ALL.iter().filter(|x| app.fleet_states[x.index()]).map(|x| x.label()).collect();
-        opt.push(Span::styled(format!("   fleets: {}", if shown.is_empty() { "none".into() } else { shown.join(", ") }), st(mono::ORANGE)));
-    }
     if !b.snap.compat_ok {
         let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
         opt.push(Span::styled(pick(format!("   Claude Code {ver} outside the supported range"), format!("   CC {ver} unsupported"), " CC!".into()), bold(mono::ORANGE)));
