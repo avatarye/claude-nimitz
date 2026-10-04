@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nimitz_core::env::Env;
 use nimitz_core::{Caller, Id, Member, Outcome, Plan, Role, Snapshot, Step};
-use nimitz_mux::{Caps, Mux, Pane, PaneRef, Place};
+use nimitz_mux::{Caps, LayoutPlan, Mux, Pane, PaneRef, Place};
 
 /// Everything an action needs from the outside world.
 pub struct Ctx {
@@ -116,8 +116,6 @@ impl Act {
     }
 }
 
-pub const NO_CLI: &str = "this runs `nimitz`, and no nimitz binary was found (set NIMITZ_BIN)";
-
 pub const MONITOR_ONLY: &str = "monitor-only: no multiplexer here (run Admiralty inside Herdr to start or open sessions)";
 
 /// A plan ready for the confirm dialog.
@@ -131,30 +129,13 @@ pub struct Pending {
     pub config: bool,
     /// steps the multiplexer opens as panes (interactive members), with where
     pub panes: Vec<(Step, Place)>,
-    /// run by the `nimitz` CLI instead (argv without `--plan`/`--yes`), for
-    /// what core has no plan for (layout)
-    pub external: Option<Vec<String>>,
-}
-
-/// The `nimitz` binary: `NIMITZ_BIN`, else next to this binary (or one up,
-/// for test binaries in `deps/`), else on PATH.
-pub fn nimitz_bin() -> Option<String> {
-    if let Ok(b) = std::env::var("NIMITZ_BIN") {
-        return Some(b);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        for dir in exe.ancestors().skip(1).take(2) {
-            let c = dir.join("nimitz");
-            if c.is_file() {
-                return Some(c.to_string_lossy().into_owned());
-            }
-        }
-    }
-    nimitz_core::env::which("nimitz")
+    /// a layout for the multiplexer (core's `layout::plan`, mapped onto the mux)
+    pub layout: Option<LayoutPlan>,
 }
 
 /// A `nimitz` process that sees exactly this Env (contracts.md section 2) and,
-/// with no NIMITZ_* labels, runs as the user, never as a member.
+/// with no NIMITZ_* labels, runs as the user, never as a member (for tests and
+/// tools that check Admiralty against the CLI).
 pub fn cli_command(env: &Env, bin: &str) -> std::process::Command {
     let mut c = std::process::Command::new(bin);
     for k in ["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_PARENT"] {
@@ -175,30 +156,6 @@ pub fn cli_command(env: &Env, bin: &str) -> std::process::Command {
         c.env("NIMITZ_HERDR_BIN", h);
     }
     c
-}
-
-/// Ask the CLI for its plan: `nimitz <args> --plan --json`.
-pub fn cli_plan(env: &Env, args: &[String]) -> Result<Plan, String> {
-    let bin = nimitz_bin().ok_or("no nimitz binary (NIMITZ_BIN)")?;
-    let out = cli_command(env, &bin).args(args).args(["--plan", "--json"]).output().map_err(|e| format!("{bin}: {e}"))?;
-    serde_json::from_slice::<Plan>(&out.stdout).map_err(|e| {
-        let err = String::from_utf8_lossy(&out.stderr);
-        format!("nimitz {}: {e}; {}", args.join(" "), err.lines().last().unwrap_or(""))
-    })
-}
-
-/// Run it for real: `nimitz <args> --yes`; the outcome from its JSON, else its exit code.
-fn cli_apply(env: &Env, args: &[String]) -> Outcome {
-    let fail = |m: String| Outcome { issues: vec![nimitz_core::Issue { code: "cli.failed".into(), severity: nimitz_core::Severity::Error, message: m, fix: None, id: None }], ..Default::default() };
-    let Some(bin) = nimitz_bin() else { return fail("no nimitz binary (NIMITZ_BIN)".into()) };
-    match cli_command(env, &bin).args(args).args(["--yes", "--json"]).output() {
-        Ok(out) => match serde_json::from_slice::<Outcome>(&out.stdout) {
-            Ok(o) => o,
-            Err(_) if out.status.success() => Outcome { verified: true, ..Default::default() },
-            Err(_) => fail(format!("nimitz {} exited {}: {}", args.join(" "), out.status, String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or(""))),
-        },
-        Err(e) => fail(format!("{bin}: {e}")),
-    }
 }
 
 // ------------------------------------------------------------------ lookups
@@ -255,7 +212,7 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
         (Act::Tender, _) => Err("a tender belongs to a commodore (select its squadron or commodore)".into()),
         (Act::Layout | Act::LayoutShips, _) if !caps.layout => Err("the multiplexer here has no layout (Herdr has)".into()),
         (Act::Layout | Act::LayoutShips, Target::Fleet(id)) => match snap.fleets.iter().find(|f| &f.id == id) {
-            Some(f) if f.machine.is_some() => nimitz_bin().map(|_| ()).ok_or_else(|| NO_CLI.into()),
+            Some(f) if f.machine.is_some() => Ok(()),
             Some(_) => Err("this fleet does not run on this machine".into()),
             None => Err("not in the snapshot".into()),
         },
@@ -341,8 +298,8 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
         (Act::Rm, _) => Err("rm names a job row, a stowaway or a member".into()),
         (Act::Adopt, Target::Stowaway(_)) => Ok(()),
         (Act::Adopt, _) => Err("adopt is for stowaways".into()),
-        (Act::ConfigRm, Target::Member(id)) if id.role() == Role::Ship => nimitz_bin().map(|_| ()).ok_or_else(|| NO_CLI.into()),
-        (Act::ConfigRm, Target::Squadron(_) | Target::Fleet(_)) => nimitz_bin().map(|_| ()).ok_or_else(|| NO_CLI.into()),
+        (Act::ConfigRm, Target::Member(id)) if id.role() == Role::Ship => Ok(()),
+        (Act::ConfigRm, Target::Squadron(_) | Target::Fleet(_)) => Ok(()),
         (Act::ConfigRm, _) => Err("remove names a fleet, a squadron or a ship".into()),
     }
 }
@@ -379,7 +336,7 @@ fn with_panes(act: Act, command: String, plan: Plan) -> Pending {
         .filter(|s| nimitz_core::sessions::is_pane_step(s))
         .map(|s| (s.clone(), place_for(s.id.as_ref().unwrap_or(&Id("ADMIRALTY".into())))))
         .collect();
-    Pending { act, command, plan, config: false, panes, external: None }
+    Pending { act, command, plan, config: false, panes, layout: None }
 }
 
 /// Build the core plan for `act` on `target`; `caps` are what the loader's
@@ -424,30 +381,40 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
             with_panes(act, format!("nimitz adopt {short} {id}"), nimitz_core::sessions::plan_adopt(env, snap, sid, id, &user))
         }
         (Act::Open, _) => plan_open(ctx, snap, target)?,
-        (Act::Layout | Act::LayoutShips, Target::Fleet(id)) => {
-            let mut args = vec!["layout".to_string(), "herdr".into(), id.0.clone()];
-            if act == Act::LayoutShips {
-                args.push("--ships".into());
-            }
-            let plan = cli_plan(&ctx.env, &args)?;
-            Pending { act, command: format!("nimitz {}", shell(&args)), plan, config: false, panes: vec![], external: Some(args) }
-        }
         (Act::ConfigRm, _) => {
-            // the CLI owns removal (a ship is retired: stop, rm its job rows,
-            // then the config), so its own plan is shown and run
+            // retire: stop, rm the job rows, then the config (core's plan; `apply` runs all of it)
             let id = member_id(target).ok_or("no member")?;
             let what = match id.role() {
                 Role::Admiral => "fleet",
                 Role::Commodore => "squadron",
                 _ => "ship",
             };
-            let args = vec![what.to_string(), "rm".into(), id.0.clone()];
-            let plan = cli_plan(env, &args)?;
-            Pending { act, command: format!("nimitz {}", shell(&args)), plan, config: false, panes: vec![], external: Some(args) }
+            with_panes(act, format!("nimitz {what} rm {id}"), nimitz_core::sessions::plan_retire(env, snap, &user, &id))
         }
         _ => return Err(format!("{} does not apply here", act.word())),
     };
     Ok(p)
+}
+
+/// `layout herdr F [--ships]`: core's layout for the fleet, minus tabs whose
+/// session already has a pane, mapped onto the multiplexer's layout plan.
+pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fleet: &Id, ships: bool) -> Result<Pending, String> {
+    let act = if ships { Act::LayoutShips } else { Act::Layout };
+    available(caps, snap, &Target::Fleet(fleet.clone()), act)?;
+    let mut spec = nimitz_core::layout::plan(&ctx.env, snap, Some(fleet.fleet()), ships && caps.open, &Caller::User, false);
+    let shown: Vec<String> = panes.iter().filter_map(|p| p.session_id.clone()).collect();
+    nimitz_core::layout::drop_shown(&mut spec, &shown);
+    let lp = LayoutPlan {
+        workspaces: spec
+            .workspaces
+            .iter()
+            .map(|w| (w.label.clone(), w.tabs.iter().map(|t| (t.label.clone(), t.cmd.clone(), PathBuf::from(&t.cwd))).collect()))
+            .collect(),
+    };
+    let mut plan = spec.plan;
+    plan.summary = format!("layout herdr {fleet}{}", if ships { " --ships" } else { "" });
+    let command = format!("nimitz layout herdr {fleet}{}", if ships { " --ships" } else { "" });
+    Ok(Pending { act, command, plan, config: false, panes: vec![], layout: Some(lp) })
 }
 
 /// `open`: attach to a running background session in a new pane.
@@ -479,13 +446,17 @@ fn plan_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<Pending, Str
         Target::Member(id) => format!("nimitz open {id}"),
         _ => shell(&step.cmd),
     };
-    Ok(Pending { act: Act::Open, command, plan, config: false, panes: vec![(step, place)], external: None })
+    Ok(Pending { act: Act::Open, command, plan, config: false, panes: vec![(step, place)], layout: None })
 }
 
 // ------------------------------------------------------------------ running
 
-/// Open the plan's pane steps in the multiplexer (main thread: the adapter lives here).
+/// Open the plan's pane steps, or lay out its workspaces, in the multiplexer
+/// (main thread: the adapter lives here).
 pub fn open_panes(ctx: &Ctx, p: &Pending) -> Result<Vec<PaneRef>, String> {
+    if let Some(lp) = &p.layout {
+        return ctx.mux.layout(lp).map_err(|e| format!("layout: {e}"));
+    }
     let mut out = vec![];
     for (step, place) in &p.panes {
         let cwd = PathBuf::from(step.cwd.clone().unwrap_or_else(|| ".".into()));
@@ -499,10 +470,7 @@ pub fn open_panes(ctx: &Ctx, p: &Pending) -> Result<Vec<PaneRef>, String> {
 
 /// Run the non-pane part of the plan (any thread). Core skips pane steps itself.
 pub fn apply(env: &Env, p: &Pending) -> Outcome {
-    if let Some(args) = &p.external {
-        return cli_apply(env, args);
-    }
-    if p.act == Act::Open {
+    if p.act == Act::Open || p.layout.is_some() {
         return Outcome { verified: true, ..Default::default() };
     }
     if p.config {
@@ -521,6 +489,10 @@ pub fn outcome_text(p: &Pending, o: &Outcome) -> (bool, String) {
     }
     if let Some((s, rc, text)) = failed {
         return (false, format!("{}: step failed (exit {rc}): {} {}", p.act.word(), shell(&s.cmd), text.lines().last().unwrap_or("")));
+    }
+    if let Some(lp) = &p.layout {
+        let tabs: usize = lp.workspaces.iter().map(|(_, t)| t.len()).sum();
+        return (true, format!("layout: {} ({tabs} tab(s) in {} workspace(s); members bind at their SessionStart)", p.plan.summary, lp.workspaces.len()));
     }
     let checked = if o.verified || p.config { "verified" } else { "done" };
     (true, format!("{}: {} ({} steps, {checked})", p.act.word(), p.plan.summary, o.ran.len()))

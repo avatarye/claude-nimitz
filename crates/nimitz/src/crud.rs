@@ -114,7 +114,7 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
 
 // ------------------------------------------------------------------ ship
 
-const SHIP_FLAGS: &[&str] = &["--dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--edit"];
+const SHIP_FLAGS: &[&str] = &["--dir", "--no-dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--edit"];
 
 /// `$VISUAL`, else `$EDITOR`, else vi.
 fn editor(ctx: &Ctx) -> String {
@@ -157,19 +157,45 @@ fn prompt_from_editor(ctx: &Ctx, current: Option<&str>, new: bool) -> Result<Opt
     Ok(Some(text))
 }
 
-/// Apply the ship flags to a definition, for the machine `label`.
-fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str) {
-    if let Some(d) = ctx.args.value("--dir") {
-        if d.is_empty() {
-            def.dirs.remove(label);
-        } else {
-            let d = if d == "managed" || d.starts_with('/') || d.starts_with('~') {
-                d.to_string()
-            } else {
-                std::env::current_dir().map(|c| c.join(d).to_string_lossy().into_owned()).unwrap_or(d.into())
-            };
-            def.dirs.insert(label.into(), d);
+/// `managed`, `~/...` and absolute folders stay as given; a relative one is made
+/// absolute against the current folder (and cleaned of `.` and `..`).
+fn absolute_dir(d: &str) -> String {
+    if d == "managed" || d.starts_with('/') || d.starts_with('~') {
+        return d.to_string();
+    }
+    let joined = std::env::current_dir().unwrap_or_default().join(d);
+    let mut clean = PathBuf::new();
+    for c in joined.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                clean.pop();
+            }
+            other => clean.push(other),
         }
+    }
+    clean.to_string_lossy().into_owned()
+}
+
+/// Apply the ship flags to a definition, for the machine `label`.
+fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, labels: &[String]) -> Result<(), String> {
+    for l in ctx.args.values("--no-dir") {
+        if def.dirs.remove(&l).is_none() {
+            return Err(format!("{} has no folder for machine {l:?}", def.name));
+        }
+        def.permission_mode.remove(&l); // no folder there, so no mode either
+    }
+    if let Some(d) = ctx.args.value("--dir") {
+        if d.trim().is_empty() {
+            return Err("--dir needs a folder or `managed`; to remove a machine's folder use --no-dir <label>".into());
+        }
+        // `--dir sandbox=managed` is the `machine add` form; here it would become a folder name.
+        if let Some((l, x)) = d.split_once('=').filter(|(l, _)| labels.iter().any(|k| k == l)) {
+            return Err(format!("--dir {d:?} looks like <label>=<folder>; use --dir {} --machine {l}", out::quote(x)));
+        }
+        let stored = absolute_dir(d);
+        out::line(&format!("folder for {label}: {stored}"));
+        def.dirs.insert(label.into(), stored);
     }
     if let Some(p) = ctx.args.value("--prompt") {
         def.prompt = Some(p.into());
@@ -189,6 +215,7 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str) {
     if let Some(d) = ctx.args.value("--depends") {
         def.depends_on = d.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect();
     }
+    Ok(())
 }
 
 pub fn ship(ctx: &Ctx) -> Result<i32, String> {
@@ -206,6 +233,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
         Ok(f) => f,
         Err(p) => return Ok(config_plan(ctx, p)),
     };
+    let labels: Vec<String> = f.config.machines.keys().cloned().collect();
     let label = match ctx.args.value("--machine").map(str::to_string).or(f.machine.clone()) {
         Some(l) => l,
         None => return Err(format!("this machine has no label in fleet {fleet}; pass --machine <label> or `nimitz machine add {fleet} <label>`")),
@@ -216,7 +244,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 return Err("ship new needs --dir <folder|managed>".into());
             }
             let mut def = ShipDef { name: name.into(), ..Default::default() };
-            edit_ship(ctx, &mut def, &label);
+            edit_ship(ctx, &mut def, &label, &labels)?;
             if let Some(p) = prompt_from_editor(ctx, None, true)? {
                 def.prompt = Some(p);
             }
@@ -233,7 +261,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 Some(mut def) => {
                     let before = def.clone();
                     let current = config::ship_prompt(&f, &id);
-                    edit_ship(ctx, &mut def, &label);
+                    edit_ship(ctx, &mut def, &label, &labels)?;
                     if let Some(p) = prompt_from_editor(ctx, current.as_deref(), false)? {
                         def.prompt = Some(p);
                         def.prompt_file = None;
@@ -332,6 +360,15 @@ mod tests {
         let got = edit_text("sh -c 'printf \"\\nmore\" >> \"$1\"' ed", "first").unwrap();
         assert_eq!(got, "first\nmore");
         assert!(edit_text("false", "x").is_err());
+    }
+
+    #[test]
+    fn relative_dirs_become_absolute() {
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(absolute_dir("./a/../b"), cwd.join("b").to_string_lossy());
+        assert_eq!(absolute_dir("managed"), "managed");
+        assert_eq!(absolute_dir("/x/y"), "/x/y");
+        assert_eq!(absolute_dir("~/p"), "~/p");
     }
 
     #[test]

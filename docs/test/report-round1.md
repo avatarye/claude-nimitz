@@ -51,3 +51,31 @@ Regression tests: `crates/nimitz/tests/adversarial_round1.rs`, one per bug,
 | 29 | wrong state (real) | core-sessions | Labels kept per session id from any old event; a same-id resume with no labels still shows clean. |
 | 30 | wrong state (real) | core-sessions | A labelled session in the wrong folder is accepted as the identity; a fake admiral blocked every start. |
 | 31 | wrong state (real) | core-sessions | After a folder move + `ship set --dir`, check green but start fails (workspace not trusted); relaunch works. |
+
+## Scenario G (Admiralty), run on dev a0a0d1d
+
+Private tmux (`tmux -L nzadv`), every HERDR_* unset; sandboxes and `--demo`;
+sizes 50x12, 80x24, 120x40, 250x60. Tests: `crates/admiralty/tests/adversarial_g.rs`.
+Totals with G: 18 PASS, 14 PARTIAL, 8 FAIL.
+
+| Check | Result |
+| --- | --- |
+| G1 states shown | PARTIAL (35, 38) |
+| G2 no mux | PARTIAL (34) |
+| G3 sizes, icons | PARTIAL (36, 37) |
+| G4 rapid refresh | PASS |
+| G5 forms and commands | FAIL (32, 33) |
+
+| Bug | Severity | Finding |
+| --- | --- | --- |
+| 32 | makes it worse | D (remove from config) on a live ship only rewrites squadron.toml; the ship keeps running and leaves the tree. |
+| 33 | shown command is not what runs | The form shows `--dir sandbox=managed`; the CLI stores that as a relative folder. |
+| 34 | wrong state | Monitor-only disables start/relaunch of ships, which need no mux. |
+| 35 | unclear message | One bad squadron.toml removes the fleet from the screen; header says 0 live while 8 run; parse error cut off. |
+| 36 | unclear message | 80x24: DETAIL shrinks to "…", header loses mux state, footer loses help/quit, i view cuts messages, help popup clipped, detail shows no reasons. |
+| 37 | cosmetic | Nerd-font issue icons shift rows and popup borders by one cell in tmux. |
+| 38 | unclear message | A legacy warning on the commodore shows in every start dialog, also for other ships; wrapped text loses indent. |
+| 39 | testability | `--sandbox` forces NIMITZ_MUX=none; a `--herdr` sandbox's fake Herdr goes unused. |
+| 40 | cosmetic | Keys pressed during the ~3 s startup "loading" are dropped. |
+
+Also: the form accepts a ship named COMMODORE (BUG-26); the demo's role.background fix says `nimitz open FORGE` while core says `claude attach <short>`.

@@ -43,8 +43,15 @@ impl Mux for TestMux {
         self.calls.lock().unwrap().push(format!("type {} {text}", pane.pane_id));
         Ok(())
     }
-    fn layout(&self, _plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError> {
-        Ok(vec![])
+    fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError> {
+        let mut out = vec![];
+        for (ws, tabs) in &plan.workspaces {
+            for (tab, _, _) in tabs {
+                self.calls.lock().unwrap().push(format!("layout {ws}/{tab}"));
+                out.push(PaneRef { pane_id: format!("{ws}:{tab}"), tab_id: None, workspace_id: None });
+            }
+        }
+        Ok(out)
     }
 }
 
