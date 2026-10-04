@@ -53,7 +53,6 @@ fn bug32_remove_from_config_of_a_live_ship_stops_it_first() {
 }
 
 #[test]
-#[ignore = "BUG-34"]
 fn bug34_monitor_only_still_starts_a_ship() {
     // plan-v3 section 13: a multiplexer is not needed for ships (daemon sessions).
     let w = world();
@@ -75,7 +74,6 @@ fn bug35_a_broken_squadron_toml_keeps_the_fleet_on_screen() {
 }
 
 #[test]
-#[ignore = "BUG-36"]
 fn bug36_at_80x24_the_issue_code_quit_and_help_are_visible() {
     let w = world();
     let mut app = app_on(&w, false);

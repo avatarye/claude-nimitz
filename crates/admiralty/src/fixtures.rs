@@ -203,11 +203,12 @@ fn fleet_forge() -> Fleet {
         &["session file: status busy", "job row says background"],
         Some(session(&adm_id, "ca11ca11", Some(5100), "background", Some("busy"), None, 1800.0, true)),
     );
+    // core's wording (sessions::session_issues)
     admiral.issues = vec![issue(
         "role.background",
         Severity::Error,
-        "the admiral is a background session; attach it and keep it in a terminal",
-        Some("nimitz open FORGE"),
+        "FORGE (an admiral) is a background session",
+        Some("claude attach ca11ca11  # and keep it in a terminal"),
         Some(&adm_id),
     )];
 
@@ -410,12 +411,13 @@ pub fn demo() -> Bundle {
         ],
         mux_name: "herdr".into(),
         mux_caps: Caps { open: true, focus: true, type_text: true, layout: true },
+        partial: false,
     }
 }
 
 /// The same world with no multiplexer: Admiralty must go monitor-only.
 pub fn demo_monitor_only() -> Bundle {
-    Bundle { snap: demo_snapshot(), panes: vec![], mux_name: "none".into(), mux_caps: Caps::default() }
+    Bundle { snap: demo_snapshot(), panes: vec![], mux_name: "none".into(), mux_caps: Caps::default(), partial: false }
 }
 
 /// An Env for demo data that points nowhere real: plans read empty folders,
