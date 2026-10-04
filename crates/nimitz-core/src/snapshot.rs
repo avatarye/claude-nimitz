@@ -167,29 +167,63 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         }
     }
 
-    // Stowaways: unclaimed, unlabelled sessions inside a fleet's scope
-    // (NIMITZ_HOME or a member's folder).
-    let fleet_dirs: Vec<String> = {
-        let mut v: Vec<String> = fleets_cfg.iter().map(|f| f.dir.to_string_lossy().into_owned()).collect();
-        v.push(env.home.to_string_lossy().into_owned());
-        for f in &snap.fleets {
-            let members = std::iter::once(&f.admiral)
-                .chain(f.squadrons.iter().flat_map(|s| std::iter::once(&s.commodore).chain(s.ships.iter()).chain(s.tenders.iter())));
-            v.extend(members.filter_map(|m| m.cwd.clone()));
+    // Stowaways: unclaimed, unlabelled sessions in a fleet's scope: anywhere
+    // under NIMITZ_HOME (the fleets' own folders), in a member's folder itself
+    // (a user project folder is not a scope: a ship at `~` must not claim every
+    // session on the machine), or named by a fleet's legacy map.
+    let legacy_names: HashMap<String, Id> = fleets_cfg.iter().flat_map(crate::config::legacy_map).collect();
+    let mut scope_trees: Vec<std::path::PathBuf> = fleets_cfg.iter().map(|f| f.dir.clone()).collect();
+    scope_trees.push(env.home.clone());
+    let mut folder_of: Vec<(String, Id)> = vec![];
+    for f in &snap.fleets {
+        for m in all_members(f) {
+            if let Some(c) = &m.cwd {
+                folder_of.push((c.trim_end_matches('/').to_string(), m.id.clone()));
+            }
         }
-        v
-    };
-    let in_scope = |cwd: &str| {
-        let c = std::path::Path::new(cwd);
-        fleet_dirs.iter().any(|d| !d.is_empty() && c.starts_with(d))
+    }
+    let in_scope = |r: &SessionRow| {
+        let c = std::path::Path::new(&r.cwd);
+        scope_trees.iter().any(|d| !d.as_os_str().is_empty() && c.starts_with(d))
+            || folder_of.iter().any(|(d, _)| d == r.cwd.trim_end_matches('/'))
+            || legacy_names.contains_key(&r.name)
     };
     for r in rows.iter().filter(|r| !claimed.contains(&r.session_id)) {
         if labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false) {
             continue; // labelled but unconfigured: reported above
         }
-        if in_scope(&r.cwd) {
+        if in_scope(r) {
             snap.stowaways.push(r.info(Default::default()));
         }
+    }
+
+    // legacy: a stowaway that belongs to an old fleet (its name is in a legacy
+    // map), or any live unlabelled session in a member's own folder. A start of
+    // that member would make a second agent in the folder (contracts.md section 7).
+    let mut legacy: Vec<Issue> = vec![];
+    for st in &snap.stowaways {
+        let by_name = legacy_names.get(&st.name).cloned();
+        let by_folder = folder_of.iter().find(|(d, _)| d == st.cwd.trim_end_matches('/')).map(|(_, id)| id.clone());
+        let Some(id) = by_name.clone().or(by_folder.filter(|_| st.pid.is_some())) else { continue };
+        let short = st.short_id.as_deref().unwrap_or(&st.session_id);
+        let whose = if by_name.is_some() { "belongs to the old fleet" } else { "has no labels and runs in its folder" };
+        let (severity, message, fix) = if st.pid.is_some() {
+            (
+                Severity::Warn,
+                format!("live session {short} ({}) {whose}; starting {id} would make a second agent there", st.name),
+                format!("stop it in the old fleet first, or nimitz adopt {} {id}", st.session_id),
+            )
+        } else {
+            (
+                Severity::Info,
+                format!("stopped session {short} ({}) {whose}", st.name),
+                format!("nimitz adopt {} {id}  # or nimitz rm {short}", st.session_id),
+            )
+        };
+        legacy.push(Issue { code: "legacy".into(), severity, message, fix: Some(fix), id: Some(id) });
+    }
+    for f in &mut snap.fleets {
+        for_each_member(f, |m| m.issues.extend(legacy.iter().filter(|i| i.id.as_ref() == Some(&m.id)).cloned()));
     }
 
     // name.taken: a member's expected name held by a live session that is not its own.
@@ -210,6 +244,25 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         }
     }
     snap
+}
+
+fn all_members(f: &Fleet) -> Vec<&Member> {
+    let mut v = vec![&f.admiral];
+    for sq in &f.squadrons {
+        v.push(&sq.commodore);
+        v.extend(sq.ships.iter());
+        v.extend(sq.tenders.iter());
+    }
+    v
+}
+
+fn for_each_member(f: &mut Fleet, mut each: impl FnMut(&mut Member)) {
+    each(&mut f.admiral);
+    for sq in &mut f.squadrons {
+        each(&mut sq.commodore);
+        sq.ships.iter_mut().for_each(&mut each);
+        sq.tenders.iter_mut().for_each(&mut each);
+    }
 }
 
 /// One member: its rows, status, reasons, crew, tasks and whole-world issues.
