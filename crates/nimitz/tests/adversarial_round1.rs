@@ -150,7 +150,6 @@ fn hook_decision(out: &str) -> String {
 // ------------------------------------------------------------------ A. starting and order
 
 #[test]
-#[ignore = "BUG-01"]
 fn bug01_nimitz_mux_auto_still_detects_herdr() {
     // contracts.md section 2: NIMITZ_MUX defaults to `auto`; saying so must not turn the mux off.
     let sb = Sb::new(true);
@@ -199,7 +198,6 @@ fn bug04_a_symlinked_path_to_a_trusted_folder_is_trusted() {
 }
 
 #[test]
-#[ignore = "BUG-05"]
 fn bug05_an_empty_dir_is_refused() {
     let sb = Sb::new(false);
     let r = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", "", "--yes"]);
@@ -499,4 +497,14 @@ fn bug25_migration_reports_a_ship_rooted_at_the_home_folder() {
     if c.out.contains("config.layout") {
         assert!(m.out.contains("config.layout") || m.out.to_lowercase().contains("nest"), "the import made layout errors and said nothing:\n{}", m.out);
     }
+}
+
+#[test]
+#[ignore = "BUG-33"]
+fn bug33_the_command_admiralty_shows_for_a_new_ship_does_what_it_says() {
+    // Admiralty's new-ship form shows `nimitz ship new F/SQ/X --dir <machine>=managed`.
+    let sb = Sb::new(false);
+    let r = sb.run(&["ship", "new", "MAIN/ARGOS/ZQ", "--dir", "sandbox=managed", "--prompt", "hi", "--yes"]);
+    let t = std::fs::read_to_string(sb.squadron_toml()).unwrap();
+    assert!(r.code != 0 || !t.contains("sandbox=managed"), "`--dir sandbox=managed` became a relative folder named `sandbox=managed`:\n{}", r.out);
 }
