@@ -2,11 +2,11 @@
 //! fleet-skill migration. They change only the config (plan-v3 5.1); running
 //! sessions change through `up` and the single-session commands. `ship rm` is
 //! the one exception the plan names: stop, remove job rows, then the config.
-use crate::members::{member, parse_id};
+use crate::members::parse_id;
 use crate::run::refusal;
 use crate::{out, Ctx};
 use nimitz_core::config;
-use nimitz_core::{Caller, Comms, FleetOnDisk, Id, Plan, Role, ShipDef, Step};
+use nimitz_core::{Caller, Comms, FleetOnDisk, Id, Plan, Role, ShipDef};
 use std::path::{Path, PathBuf};
 
 /// Config changes are yours: a session's own labels never edit the fleet.
@@ -77,11 +77,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
         }
         "rm" => {
             ctx.args.allow(&[])?;
-            let mut p = config::plan_rm(&ctx.env, &id);
-            if let Some(m) = member(&ctx.snap(), &id).filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some())) {
-                p.refusals.push(refusal("config.invalid", format!("{} is live; a fleet is deleted only with nothing live", m.id), Some("type /exit in its pane".into()), Some(id.clone())));
-            }
-            p
+            return Ok(retire(ctx, &id));
         }
         v => return Err(format!("fleet {v}: use new, set or rm")),
     };
@@ -109,18 +105,7 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
         }
         "rm" => {
             ctx.args.allow(&[])?;
-            let mut p = config::plan_rm(&ctx.env, &id);
-            let snap = ctx.snap();
-            let live: Vec<String> = crate::members::members(&snap)
-                .into_iter()
-                .filter(|m| m.id == id || m.id.0.starts_with(&format!("{id}/")))
-                .filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some()))
-                .map(|m| m.id.0.clone())
-                .collect();
-            if !live.is_empty() {
-                p.refusals.push(refusal("config.invalid", format!("still live: {}", live.join(", ")), None, Some(id.clone())));
-            }
-            p
+            return Ok(retire(ctx, &id));
         }
         v => return Err(format!("squadron {v}: use new, set or rm")),
     };
@@ -241,7 +226,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
     let (fleet, sq, name) = (parts[0], parts[1], parts[2]);
     if verb == "rm" {
         ctx.args.allow(&[])?;
-        return Ok(ship_rm(ctx, &id));
+        return Ok(retire(ctx, &id));
     }
     ctx.args.allow(SHIP_FLAGS)?;
     let f = match load(ctx, fleet) {
@@ -303,36 +288,13 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
 }
 
 /// Stop the ship, remove its job rows (transcripts stay), then drop it from the config.
-fn ship_rm(ctx: &Ctx, id: &Id) -> i32 {
-    let snap = ctx.snap();
-    let cfg = config::plan_rm(&ctx.env, id);
-    let mut sess = Plan { summary: format!("retire {id}"), ..Default::default() };
-    user_only(ctx, &mut sess);
-    if let Some(m) = member(&snap, id) {
-        for r in m.session.iter().chain(m.extra_rows.iter()) {
-            let Some(short) = &r.short_id else { continue };
-            if r.pid.is_some() {
-                sess.steps.push(Step { id: Some(id.clone()), cmd: nimitz_core::claude::stop(&ctx.env, short), cwd: None, why: "stop it first".into() });
-            }
-            sess.steps.push(Step { id: Some(id.clone()), cmd: nimitz_core::claude::rm(&ctx.env, short), cwd: None, why: "remove the job row; the transcript stays".into() });
-        }
-    }
-    let mut shown = sess.clone();
-    shown.summary = format!("retire {id}: stop, remove job rows, remove from the config");
-    shown.steps.extend(cfg.steps.iter().cloned());
-    shown.refusals.extend(cfg.refusals.iter().cloned());
-    match ctx.gate(&shown) {
+/// `ship rm`, `squadron rm`, `fleet rm`: core's retire plan (stop, rm the job
+/// rows, then the config), applied and verified in one go.
+fn retire(ctx: &Ctx, id: &Id) -> i32 {
+    let plan = nimitz_core::sessions::plan_retire(&ctx.env, &ctx.snap(), &ctx.caller, id);
+    match ctx.gate(&plan) {
         out::Go::Exit(c) => c,
-        out::Go::Run => {
-            if !sess.steps.is_empty() {
-                let o = nimitz_core::sessions::apply(&ctx.env, &sess);
-                if out::outcome(&o) != 0 {
-                    out::error("the config is unchanged because the sessions part failed");
-                    return 1;
-                }
-            }
-            out::outcome(&config::apply_config_plan(&ctx.env, &cfg))
-        }
+        out::Go::Run => out::outcome(&nimitz_core::sessions::apply(&ctx.env, &plan)),
     }
 }
 

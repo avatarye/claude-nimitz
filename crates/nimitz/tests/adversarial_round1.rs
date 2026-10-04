@@ -159,7 +159,6 @@ fn bug01_nimitz_mux_auto_still_detects_herdr() {
 }
 
 #[test]
-#[ignore = "BUG-02"]
 fn bug02_two_concurrent_starts_make_one_session() {
     let sb = Sb::new(false);
     let a = { let v = sb.vars.clone(); std::thread::spawn(move || raw(&v, &["start", "MAIN/ARGOS/FRESH", "--yes"], &[], None, None)) };
@@ -170,7 +169,6 @@ fn bug02_two_concurrent_starts_make_one_session() {
 }
 
 #[test]
-#[ignore = "BUG-03"]
 fn bug03_concurrent_starts_of_a_stopped_ship_make_no_copies() {
     let sb = Sb::new(false);
     let hs: Vec<_> = (0..3)
@@ -204,7 +202,6 @@ fn bug05_an_empty_dir_is_refused() {
 }
 
 #[test]
-#[ignore = "BUG-06"]
 fn bug06_partial_labels_do_not_make_the_caller_the_user() {
     let sb = Sb::new(false);
     for extra in [&[("NIMITZ_ROLE", "ship")][..], &[("NIMITZ_ID", "MAIN/ARGOS/CLEAN")][..], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS/CLEAN")][..]] {
@@ -214,7 +211,6 @@ fn bug06_partial_labels_do_not_make_the_caller_the_user() {
 }
 
 #[test]
-#[ignore = "BUG-07"]
 fn bug07_messages_say_what_was_refused() {
     let sb = Sb::new(false);
     let s = sb.run(&["status"]);
@@ -226,7 +222,6 @@ fn bug07_messages_say_what_was_refused() {
 // ------------------------------------------------------------------ B. breaking a live session
 
 #[test]
-#[ignore = "BUG-08"]
 fn bug08_name_taken_fix_works_for_a_holder_outside_the_fleet() {
     let sb = Sb::new(false);
     let rand = sb.dir("home/rand");
@@ -241,7 +236,6 @@ fn bug08_name_taken_fix_works_for_a_holder_outside_the_fleet() {
 }
 
 #[test]
-#[ignore = "BUG-09"]
 fn bug09_refusals_carry_their_own_code() {
     let sb = Sb::new(false);
     let r = sb.run(&["rm", "060f8274", "--yes"]); // a live stowaway
@@ -249,7 +243,6 @@ fn bug09_refusals_carry_their_own_code() {
 }
 
 #[test]
-#[ignore = "BUG-10"]
 fn bug10_relaunch_refuses_while_the_name_is_taken() {
     let sb = Sb::new(false);
     let sid = sb.sid("MAIN/ARGOS/STOPPED");
@@ -260,7 +253,6 @@ fn bug10_relaunch_refuses_while_the_name_is_taken() {
 }
 
 #[test]
-#[ignore = "BUG-11"]
 fn bug11_a_hand_made_copy_is_tied_to_its_ship() {
     let sb = Sb::new(false);
     let sid = sb.sid("MAIN/ARGOS/CLEAN");
@@ -270,7 +262,6 @@ fn bug11_a_hand_made_copy_is_tied_to_its_ship() {
 }
 
 #[test]
-#[ignore = "BUG-12"]
 fn bug12_a_row_less_ship_with_a_transcript_is_not_cold_launched() {
     let sb = Sb::new(false);
     sb.claude(&sb.dir("dirs/main/stopped"), &["rm", "d5a94781"]);
@@ -282,7 +273,6 @@ fn bug12_a_row_less_ship_with_a_transcript_is_not_cold_launched() {
 }
 
 #[test]
-#[ignore = "BUG-13"]
 fn bug13_an_unreadable_session_file_is_not_stopped() {
     let sb = Sb::new(false);
     std::fs::write(sb.dir("claude_home/sessions/2287e6e4.json"), b"").unwrap(); // a session file caught mid-write
@@ -293,7 +283,6 @@ fn bug13_an_unreadable_session_file_is_not_stopped() {
 }
 
 #[test]
-#[ignore = "BUG-14"]
 fn bug14_a_corrupt_job_row_is_reported() {
     let sb = Sb::new(false);
     std::fs::write(sb.dir("claude_home/jobs/d5a94781/state.json"), b"not json{").unwrap();
@@ -349,7 +338,6 @@ fn bug18_a_corrupt_registry_is_kept_and_reported() {
 }
 
 #[test]
-#[ignore = "BUG-19"]
 fn bug19_a_stowaway_can_be_adopted_as_a_tender() {
     let sb = Sb::new(false);
     let r = sb.run(&["adopt", "060f8274", "MAIN/ARGOS/~adopted", "--yes"]);
@@ -365,7 +353,6 @@ fn bug20_machine_add_does_not_copy_this_hostname() {
 }
 
 #[test]
-#[ignore = "BUG-21"]
 fn bug21_a_stale_ship_lock_is_noticed_on_its_own_machine() {
     let sb = Sb::new(false);
     assert_eq!(sb.run(&["ship", "new", "MAIN/ARGOS/MUD", "--dir", "managed", "--prompt", "hi", "--yes"]).code, 0);
@@ -381,7 +368,6 @@ fn bug21_a_stale_ship_lock_is_noticed_on_its_own_machine() {
 // ------------------------------------------------------------------ D/E/F
 
 #[test]
-#[ignore = "BUG-22"]
 fn bug22_a_uds_address_does_not_bypass_the_comms_rule() {
     // Real Claude Code 2.1.288 delivers SendMessage to `uds:/tmp/cc-socks/<pid>.sock`.
     let sb = Sb::new(false);
@@ -391,7 +377,6 @@ fn bug22_a_uds_address_does_not_bypass_the_comms_rule() {
 }
 
 #[test]
-#[ignore = "BUG-23"]
 fn bug23_labels_in_the_job_row_count_when_session_start_is_lost() {
     let sb = Sb::new(false);
     assert_eq!(sb.run(&["start", "MAIN/ARGOS/FRESH", "--yes"]).code, 0);
@@ -433,7 +418,6 @@ fn bug27_the_missing_squadron_fix_runs() {
 }
 
 #[test]
-#[ignore = "BUG-29"]
 fn bug29_a_session_that_lost_its_labels_is_flagged() {
     // Real Claude Code: after its row is removed, `--resume <id> --name X` continues the SAME
     // id with no labels (SessionStart source resume, labels {}).
@@ -448,7 +432,6 @@ fn bug29_a_session_that_lost_its_labels_is_flagged() {
 }
 
 #[test]
-#[ignore = "BUG-30"]
 fn bug30_a_labelled_session_in_the_wrong_folder_is_reported() {
     let sb = Sb::new(false);
     let settings = r#"{"env":{"NIMITZ_FLEET":"MAIN","NIMITZ_SQUADRON":"ARGOS","NIMITZ_ROLE":"ship","NIMITZ_ID":"MAIN/ARGOS/FRESH"}}"#;
@@ -458,7 +441,6 @@ fn bug30_a_labelled_session_in_the_wrong_folder_is_reported() {
 }
 
 #[test]
-#[ignore = "BUG-31"]
 fn bug31_a_row_in_another_folder_than_the_config_is_reported() {
     let sb = Sb::new(false);
     let moved = sb.dir("dirs/main/stopped-moved");
@@ -488,4 +470,14 @@ fn bug25_migration_reports_a_ship_rooted_at_the_home_folder() {
     if c.out.contains("config.layout") {
         assert!(m.out.contains("config.layout") || m.out.to_lowercase().contains("nest"), "the import made layout errors and said nothing:\n{}", m.out);
     }
+}
+
+#[test]
+#[ignore = "BUG-33"]
+fn bug33_the_command_admiralty_shows_for_a_new_ship_does_what_it_says() {
+    // Admiralty's new-ship form shows `nimitz ship new F/SQ/X --dir <machine>=managed`.
+    let sb = Sb::new(false);
+    let r = sb.run(&["ship", "new", "MAIN/ARGOS/ZQ", "--dir", "sandbox=managed", "--prompt", "hi", "--yes"]);
+    let t = std::fs::read_to_string(sb.squadron_toml()).unwrap();
+    assert!(r.code != 0 || !t.contains("sandbox=managed"), "`--dir sandbox=managed` became a relative folder named `sandbox=managed`:\n{}", r.out);
 }

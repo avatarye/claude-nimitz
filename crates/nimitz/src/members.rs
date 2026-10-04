@@ -224,33 +224,9 @@ pub fn stop(ctx: &Ctx) -> Result<i32, String> {
     Ok(run::session_plan(ctx, plan))
 }
 
-/// `nimitz stop <short>`: one live row of a member (the fix for `dup.live`).
+/// `nimitz stop <short>`: one live session by its id (core's plan).
 fn plan_stop_row(ctx: &Ctx, snap: &Snapshot, target: &str) -> Plan {
-    let mut plan = Plan { summary: format!("stop session {target}"), ..Default::default() };
-    if ctx.caller != Caller::User {
-        plan.refusals.push(refusal("authority", "stopping a session by its id is yours alone".into(), None, None));
-        return plan;
-    }
-    let is = |r: &&nimitz_core::SessionInfo| r.short_id.as_deref() == Some(target) || r.session_id == target;
-    // A member's row (one of two live copies), else a stowaway (e.g. one holding a name).
-    let hit = members(snap)
-        .into_iter()
-        .find_map(|m| m.session.iter().chain(m.extra_rows.iter()).find(is).map(|r| (Some(m.id.clone()), r.clone())))
-        .or_else(|| snap.stowaways.iter().find(is).map(|r| (None, r.clone())));
-    let Some((owner, row)) = hit else {
-        plan.refusals.push(refusal("config.invalid", format!("{target} names no identity and no known session"), Some("nimitz status".into()), None));
-        return plan;
-    };
-    let Some(short) = row.short_id.clone().filter(|_| row.pid.is_some()) else {
-        plan.refusals.push(refusal("config.invalid", format!("session {} is not a live background session", row.session_id), None, owner));
-        return plan;
-    };
-    let why = match &owner {
-        Some(id) => format!("stop this one session of {id}; the others stay"),
-        None => format!("stop the unlabelled session {:?}", row.name),
-    };
-    plan.steps.push(Step { id: owner, cmd: nimitz_core::claude::stop(&ctx.env, &short), cwd: None, why });
-    plan
+    ses::plan_stop_session(&ctx.env, snap, target, &ctx.caller)
 }
 
 pub fn relaunch(ctx: &Ctx) -> Result<i32, String> {
@@ -475,48 +451,24 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
         plan.refusals.push(refusal("authority", "`nimitz layout` is yours alone".into(), None, None));
         return Ok(finish_plan(ctx, &plan));
     }
-    let mut lp = LayoutPlan::default();
-    for f in snap.fleets.iter().filter(|f| only.as_ref().map(|o| o.fleet() == f.id.fleet()).unwrap_or(true)) {
-        if f.machine.is_none() {
-            plan.warnings.push(warn_issue(&f.id, format!("fleet {} does not run on this machine; no layout", f.id)));
-            continue;
-        }
-        let mut ids = vec![f.admiral.id.clone()];
-        ids.extend(f.squadrons.iter().map(|s| s.commodore.id.clone()));
-        for id in ids {
-            let m = member(&snap, &id).expect("listed member");
-            if live(m) {
-                plan.warnings.push(warn_issue(&id, format!("{id} is running already; `nimitz open {id}` shows it")));
-                continue;
-            }
-            let p = ses::plan_start(&ctx.env, &snap, &id, &ctx.caller, ctx.force());
-            let step = p.steps.iter().find(|s| s.id.as_ref() == Some(&id) && ses::is_pane_step(s)).cloned();
-            match (p.ok(), step) {
-                (true, Some(step)) => {
-                    let cwd = PathBuf::from(step.cwd.clone().unwrap_or_else(|| ".".into()));
-                    let ws = run::workspace_of(&id);
-                    match lp.workspaces.iter_mut().find(|(w, _)| *w == ws) {
-                        Some((_, tabs)) => tabs.push((run::tab_of(&id), step.cmd.clone(), cwd)),
-                        None => lp.workspaces.push((ws, vec![(run::tab_of(&id), step.cmd.clone(), cwd)])),
-                    }
-                    plan.steps.push(Step { why: format!("tab {} in workspace {}", run::tab_of(&id), run::workspace_of(&id)), ..step });
-                }
-                _ => {
-                    for r in p.refusals {
-                        plan.warnings.push(Issue { severity: Severity::Warn, ..r });
-                    }
-                }
-            }
-        }
-        if ctx.args.flag("--ships") {
-            let panes = mux.panes();
-            for sq in &f.squadrons {
-                for m in &sq.ships {
-                    ship_tab(ctx, mux.as_ref(), &panes, m, &mut lp, &mut plan);
-                }
-            }
-        }
+    // The layout itself is core's (pure data); this maps it onto the mux.
+    let ships = ctx.args.flag("--ships") && mux.caps().open;
+    let mut spec = nimitz_core::layout::plan(&ctx.env, &snap, only.as_ref().map(|i| i.fleet()), ships, &ctx.caller, ctx.force());
+    if ctx.args.flag("--ships") && !mux.caps().open {
+        spec.plan.warnings.push(Issue { id: None, ..warn_issue(&Id::admiral("-"), format!("{} cannot open panes; no ship tabs", mux.name())) });
     }
+    let shown: Vec<String> = mux.panes().into_iter().filter_map(|p| p.session_id).collect();
+    nimitz_core::layout::drop_shown(&mut spec, &shown);
+    let lp = LayoutPlan {
+        workspaces: spec
+            .workspaces
+            .iter()
+            .map(|w| (w.label.clone(), w.tabs.iter().map(|t| (t.label.clone(), t.cmd.clone(), PathBuf::from(&t.cwd))).collect()))
+            .collect(),
+    };
+    plan.steps = spec.plan.steps;
+    plan.warnings.extend(spec.plan.warnings);
+    plan.refusals.extend(spec.plan.refusals);
     match ctx.gate(&plan) {
         out::Go::Exit(code) => Ok(code),
         out::Go::Run => match mux.layout(&lp) {
@@ -530,36 +482,6 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
             }
         },
     }
-}
-
-/// `--ships`: a tab that attaches a live ship, in its squadron's workspace.
-/// Attaching changes no session; a ship that is not live, or already in a pane, is skipped.
-fn ship_tab(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, panes: &[nimitz_mux::Pane], m: &Member, lp: &mut LayoutPlan, plan: &mut Plan) {
-    let id = &m.id;
-    if !mux.caps().open {
-        plan.warnings.push(warn_issue(id, format!("{} cannot open panes; no tab for {id}", mux.name())));
-        return;
-    }
-    let Some(s) = m.session.as_ref().filter(|_| live(m)) else {
-        plan.warnings.push(warn_issue(id, format!("{id} is not live; no tab (`nimitz start {id}` first)")));
-        return;
-    };
-    if panes.iter().any(|p| p.session_id.as_deref() == Some(s.session_id.as_str())) {
-        plan.warnings.push(warn_issue(id, format!("{id} already has a pane; `nimitz open {id}` shows it")));
-        return;
-    }
-    let Some(short) = &s.short_id else {
-        plan.warnings.push(warn_issue(id, format!("{id} has no job id to attach to")));
-        return;
-    };
-    let cmd = nimitz_core::claude::attach(&ctx.env, short);
-    let cwd = PathBuf::from(m.cwd.clone().unwrap_or_else(|| ".".into()));
-    let (ws, tab) = (run::workspace_of(id), run::tab_of(id));
-    match lp.workspaces.iter_mut().find(|(w, _)| *w == ws) {
-        Some((_, tabs)) => tabs.push((tab.clone(), cmd.clone(), cwd.clone())),
-        None => lp.workspaces.push((ws.clone(), vec![(tab.clone(), cmd.clone(), cwd.clone())])),
-    }
-    plan.steps.push(Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string_lossy().into_owned()), why: format!("tab {tab} in workspace {ws}: attach; detaching leaves it running") });
 }
 
 fn warn_issue(id: &Id, message: String) -> Issue {

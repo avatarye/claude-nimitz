@@ -188,19 +188,25 @@ fn form_commands_match_the_cli() {
 }
 
 #[test]
-fn layout_comes_from_the_cli_itself() {
+fn layout_is_cores_plan_and_the_cli_takes_its_command() {
     let w = world();
     let mut app = app_on(&w);
-    nimitz();
     app.bundle.as_mut().unwrap().mux_caps = nimitz_mux::Caps { open: true, focus: true, type_text: true, layout: true };
     goto(&mut app, "F:MAIN");
     keys(&mut app, "x");
     keys(&mut app, "S");
     let Some(admiralty::app::Modal::Confirm(p)) = &app.modal else { panic!("{}", toast(&app)) };
     assert_eq!(p.command, "nimitz layout herdr MAIN --ships");
-    assert_eq!(p.external.as_deref(), Some(&["layout".to_string(), "herdr".into(), "MAIN".into(), "--ships".into()][..]));
-    // the sandbox has no Herdr: the CLI's own refusal is what the dialog shows
-    assert!(p.plan.refusals.iter().any(|r| r.message.contains("Herdr")), "{:?}", p.plan.refusals);
+    let lp = p.layout.as_ref().expect("a layout for the mux");
+    // --ships: a tab attaching each live ship, in its squadron's workspace
+    let argos = lp.workspaces.iter().find(|(w, _)| w == "MAIN.ARGOS").expect("workspace MAIN.ARGOS");
+    assert!(argos.1.iter().any(|(tab, cmd, _)| tab == "CLEAN" && cmd.contains(&"attach".to_string())), "{argos:?}");
+    // the plan's steps are the tabs' commands, nothing else
+    let tabs: Vec<&Vec<String>> = lp.workspaces.iter().flat_map(|(_, t)| t.iter().map(|(_, c, _)| c)).collect();
+    assert_eq!(p.plan.steps.iter().map(|s| &s.cmd).collect::<Vec<_>>(), tabs);
+    // the CLI takes the same command (here it refuses: the sandbox has no Herdr)
+    let theirs = cli(&app, &p.command);
+    assert!(theirs.refusals.iter().any(|r| r.message.contains("Herdr")), "{:?}", theirs.refusals);
 }
 
 #[test]

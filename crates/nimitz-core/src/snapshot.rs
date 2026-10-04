@@ -34,7 +34,6 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let (fleets_cfg, cfg_issues) = crate::config::load_all(env);
     let reg = crate::registry::load(env);
     let events = evidence::events_cached(env, &mut cache.files);
-    let labels = evidence::labels_by_session(&events);
 
     // Evidence 1: rows from the files. Evidence 2: the CLI, merged in for rows
     // the files missed (never run more than once per CLI_EVERY_S).
@@ -49,14 +48,27 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         }
     };
     // A cached CLI row may be up to CLI_EVERY_S old: its pid must still be alive.
-    let seen: HashSet<String> = rows.iter().map(|r| r.session_id.clone()).collect();
-    rows.extend(cli_rows.into_iter().filter(|r| !seen.contains(&r.session_id)).map(|mut r| {
-        if r.pid.map(|p| !evidence::pid_alive(p)).unwrap_or(false) {
-            r.pid = None;
-            r.status = None;
+    // A row the files show stopped but the CLI shows live (its session file
+    // could not be read) is live.
+    let cli_rows: Vec<SessionRow> = cli_rows
+        .into_iter()
+        .map(|mut r| {
+            if r.pid.map(|p| !evidence::pid_alive(p)).unwrap_or(false) {
+                r.pid = None;
+                r.status = None;
+            }
+            r
+        })
+        .collect();
+    for r in rows.iter_mut().filter(|r| r.pid.is_none()) {
+        if let Some(c) = cli_rows.iter().find(|c| c.session_id == r.session_id && c.pid.is_some()) {
+            r.pid = c.pid;
+            r.status = c.status.clone().or(Some("unknown".into()));
         }
-        r
-    }));
+    }
+    let seen: HashSet<String> = rows.iter().map(|r| r.session_id.clone()).collect();
+    rows.extend(cli_rows.into_iter().filter(|r| !seen.contains(&r.session_id)));
+    let labels = evidence::session_labels(&events, &rows);
 
     let cc_version = match &cache.version {
         Some((t, v)) if now - t < VERSION_EVERY_S => v.clone(),
@@ -81,14 +93,71 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         .iter()
         .flat_map(|(id, rec)| rec.lineage.iter().map(move |l| (l.session_id.as_str(), id.as_str())))
         .collect();
+    // Every configured member's folder on this machine (tenders: the squadron's).
+    let mut dir_of: HashMap<String, String> = HashMap::new();
+    let mut ship_ids: Vec<Id> = vec![];
+    for fc in &fleets_cfg {
+        let mut put = |id: Id| {
+            if let Some(d) = crate::config::member_dir(env, fc, &id) {
+                dir_of.insert(id.0.clone(), norm_dir(&d.to_string_lossy()));
+            }
+            if id.role() == Role::Ship {
+                ship_ids.push(id);
+            }
+        };
+        put(Id::admiral(&fc.config.fleet));
+        for (_, sq) in &fc.squadrons {
+            put(Id::commodore(&fc.config.fleet, &sq.squadron));
+            for sh in &sq.ships {
+                put(Id::ship(&fc.config.fleet, &sq.squadron, &sh.name));
+            }
+        }
+    }
+    let legacy_names: HashMap<String, Id> = fleets_cfg.iter().flat_map(crate::config::legacy_map).collect();
+    let folder_ok = |owner: &str, cwd: &str| -> bool {
+        let owner_dir = if Id(owner.to_string()).role() == Role::Tender { Id(owner.to_string()).parent().map(|p| p.0) } else { Some(owner.to_string()) };
+        match owner_dir.and_then(|o| dir_of.get(&o)) {
+            Some(d) => same_dir(d, cwd),
+            None => true, // not deployed here, or not configured: nothing to compare
+        }
+    };
+    // labelled sessions in another folder than their identity's (BUG-30)
+    let mut misplaced: Vec<(String, SessionRow)> = vec![];
     for r in &rows {
+        let by_labels = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(String::as_str);
         let owner = current_of
             .get(r.session_id.as_str())
             .copied()
-            .or_else(|| labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(String::as_str))
+            .or_else(|| by_labels.filter(|o| folder_ok(o, &r.cwd)))
             .or_else(|| lineage_of.get(r.session_id.as_str()).copied());
         if let Some(owner) = owner {
             by_identity.entry(owner.to_string()).or_default().push(r.clone());
+            claimed.insert(r.session_id.clone());
+        } else if let Some(o) = by_labels {
+            misplaced.push((o.to_string(), r.clone()));
+            claimed.insert(r.session_id.clone());
+        }
+    }
+    // Hand-made copies of a ship (BUG-11): unlabelled, unclaimed rows named the
+    // way Claude Code names a copy (`<name>-<word>-<word>`), or background rows
+    // in the ship's own folder that carry no fleet address. Not the ship's exact
+    // name (that is name.taken) and not an old fleet's name (that is legacy).
+    let unclaimed: Vec<&SessionRow> = rows.iter().filter(|r| !claimed.contains(&r.session_id)).collect();
+    for r in unclaimed {
+        if labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false) || legacy_names.contains_key(&r.name) {
+            continue;
+        }
+        let copy_of = ship_ids.iter().find(|id| {
+            let name = id.name();
+            let named_copy = r.name.strip_prefix(&format!("{name}-")).map(|rest| rest.split('-').count() >= 2).unwrap_or(false);
+            let in_folder = r.kind == "background"
+                && r.name != name
+                && crate::sessions::id_from_name(&r.name).is_none()
+                && dir_of.get(&id.0).map(|d| same_dir(d, &r.cwd)).unwrap_or(false);
+            named_copy || in_folder
+        });
+        if let Some(id) = copy_of {
+            by_identity.entry(id.0.clone()).or_default().push(r.clone());
             claimed.insert(r.session_id.clone());
         }
     }
@@ -171,7 +240,6 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     // under NIMITZ_HOME (the fleets' own folders), in a member's folder itself
     // (a user project folder is not a scope: a ship at `~` must not claim every
     // session on the machine), or named by a fleet's legacy map.
-    let legacy_names: HashMap<String, Id> = fleets_cfg.iter().flat_map(crate::config::legacy_map).collect();
     let mut scope_trees: Vec<std::path::PathBuf> = fleets_cfg.iter().map(|f| f.dir.clone()).collect();
     scope_trees.push(env.home.clone());
     let mut folder_of: Vec<(String, Id)> = vec![];
@@ -222,6 +290,35 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         };
         legacy.push(Issue { code: "legacy".into(), severity, message, fix: Some(fix), id: Some(id) });
     }
+    // A session with an identity's labels in another folder is not that
+    // identity (BUG-30): labels.mismatch on the identity, the row not its own.
+    for (owner, r) in &misplaced {
+        let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+        let want = dir_of.get(owner).cloned().unwrap_or_default();
+        legacy.push(Issue {
+            code: "labels.mismatch".into(),
+            severity: Severity::Error,
+            message: format!("session {short} ({}) carries {owner}'s labels but runs in folder {}, not {want}", r.name, r.cwd),
+            fix: Some(if r.pid.is_some() { format!("nimitz stop {short}") } else { format!("nimitz rm {short}") }),
+            id: Some(Id(owner.clone())),
+        });
+    }
+    // A job row that does not parse (BUG-14): its session is unknown, so the
+    // identity whose session it may be gets an error and no guessed start.
+    for jid in evidence::corrupt_jobs(env) {
+        let owner = reg.identities.iter().find(|(_, rec)| {
+            rec.current.iter().chain(rec.lineage.iter().map(|l| &l.session_id)).any(|sid| sid.starts_with(&jid))
+        });
+        let path = env.claude_home.join("jobs").join(&jid).join("state.json");
+        let i = Issue {
+            code: "job.unreadable".into(),
+            severity: Severity::Error,
+            message: format!("job row {} does not parse; its session's state is unknown", path.display()),
+            fix: Some(format!("nimitz status  # wait for Claude Code to rewrite it; if it stays broken: nimitz rm {jid}")),
+            id: owner.map(|(id, _)| Id(id.clone())),
+        };
+        if i.id.is_some() { legacy.push(i) } else { snap.issues.push(i) }
+    }
     for f in &mut snap.fleets {
         for_each_member(f, |m| m.issues.extend(legacy.iter().filter(|i| i.id.as_ref() == Some(&m.id)).cloned()));
     }
@@ -244,6 +341,16 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         }
     }
     snap
+}
+
+/// A folder as a comparable string (no trailing slash; the realpath when it exists).
+fn norm_dir(d: &str) -> String {
+    let t = d.trim_end_matches('/');
+    std::fs::canonicalize(t).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| t.to_string())
+}
+
+fn same_dir(a: &str, b: &str) -> bool {
+    a.trim_end_matches('/') == b.trim_end_matches('/') || norm_dir(a) == norm_dir(b)
 }
 
 fn all_members(f: &Fleet) -> Vec<&Member> {
@@ -306,6 +413,10 @@ fn build_member(
 
     // Status and the reasons for it, newest evidence first.
     let status = match &primary {
+        Some(p) if p.unreadable && !p.live() => {
+            reasons.push(format!("session file for job {} cannot be read (mid-write?); the process may be live", p.short_id.as_deref().unwrap_or("?")));
+            Status::Unknown
+        }
         Some(p) if p.live() => {
             let job = evidence::read_job(env, &mut cache.files, p.short_id.as_deref());
             if let Some(w) = &p.waiting_for {
@@ -342,8 +453,12 @@ fn build_member(
             // transcript (resume with `claude -c`); otherwise it never started.
             let transcript =
                 id.role().interactive() && cwd.as_deref().map(|c| !evidence::transcripts_in(env, c).is_empty()).unwrap_or(false);
+            let current_transcript = current.as_deref().and_then(|sid| evidence::transcript(env, &mut cache.files, cwd.as_deref(), sid));
             if transcript {
                 reasons.push("no session row; a transcript in its folder (continue with -c)".into());
+                Status::Stopped
+            } else if let Some(t) = current_transcript {
+                reasons.push(format!("no job row; its session's transcript is there ({})", t.display()));
                 Status::Stopped
             } else if rec.is_some() {
                 reasons.push("registry knows it, but no row and no transcript".into());
@@ -354,6 +469,25 @@ fn build_member(
             }
         }
     };
+
+    // A ship lock this machine left, for a session that is no longer live (it
+    // was stopped outside nimitz, or crashed): clear it, or every other machine
+    // stays blocked (BUG-21).
+    if id.role() == Role::Ship {
+        if let Some(c) = cwd.as_deref() {
+            if let Some(l) = crate::sessions::read_lock(c).filter(|l| env.matches_hostname(&l.machine)) {
+                let live_sid = primary.as_ref().filter(|p| p.live() || p.unreadable).map(|p| p.session_id.clone());
+                let stale = match &l.session_id {
+                    Some(sid) => Some(sid) != live_sid.as_ref(),
+                    None => live_sid.is_none(), // an older lock names no session
+                };
+                if stale {
+                    let _ = std::fs::remove_file(crate::sessions::ship_lock_path(c));
+                    reasons.push("cleared this machine's stale ship lock (its session is not live)".into());
+                }
+            }
+        }
+    }
 
     // Crew and tasks for the live primary.
     let (mut crew, mut tasks) = (vec![], vec![]);
