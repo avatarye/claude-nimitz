@@ -1089,3 +1089,71 @@ fn a_commodore_whose_old_lead_ran_elsewhere_says_why_it_starts_fresh() {
     assert!(sessions::is_pane_step(&step));
     assert!(step.why.contains("[NEWSQ]-LEAD") && step.why.contains("another folder"), "{}", step.why);
 }
+
+// ------------------------------------------------------------------ retire and layout
+
+#[test]
+fn retire_a_live_ship_stops_removes_its_rows_then_the_config_in_one_verified_apply() {
+    let w = world();
+    let snap = w.snap();
+    let id = w.ship("CLEAN");
+    let short = w.member(&snap, &id).session.unwrap().short_id.unwrap();
+    // only you
+    let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
+    assert!(has(&sessions::plan_retire(&w.env, &snap, &own, &id).refusals, "authority"));
+    let plan = sessions::plan_retire(&w.env, &snap, &Caller::User, &id);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let kinds: Vec<&str> = plan.steps.iter().map(|s| s.cmd.get(1).map(String::as_str).filter(|c| ["stop", "rm"].contains(c)).unwrap_or(s.cmd[0].as_str())).collect();
+    assert_eq!(kinds, vec!["stop", "rm", "write"], "{:?}", plan.steps);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(short.as_str())), "the job row is gone");
+    let f = nimitz_core::config::load_fleet(&w.env, "MAIN").unwrap();
+    assert!(!f.squadrons.iter().any(|(_, s)| s.ships.iter().any(|x| x.name == "CLEAN")), "and the ship is out of the config");
+}
+
+#[test]
+fn retire_a_squadron_or_fleet_refuses_while_anything_in_it_is_live() {
+    let w = world();
+    let snap = w.snap();
+    let plan = sessions::plan_retire(&w.env, &snap, &Caller::User, &Id::commodore("MAIN", "ARGOS"));
+    assert!(!plan.ok());
+    assert!(plan.refusals.iter().any(|i| i.message.contains("still has")), "ships left in the config: {:?}", plan.refusals);
+    assert!(plan.refusals.iter().any(|i| i.message.contains("is live")), "{:?}", plan.refusals);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(!out.verified && w.member(&w.snap(), &w.ship("CLEAN")).session.unwrap().pid.is_some(), "nothing ran");
+    assert!(!sessions::plan_retire(&w.env, &snap, &Caller::User, &Id::admiral("MAIN")).ok());
+}
+
+#[test]
+fn layout_spec_lays_out_leads_and_attaches_live_ships() {
+    use nimitz_core::layout::{self, TabKind};
+    let w = world();
+    let snap = w.snap();
+    // MAIN's admiral and ARGOS's commodore run already; BOREAL's is in the background (refused, so skipped)
+    let spec = layout::plan(&w.env, &snap, Some("MAIN"), false, &Caller::User, false);
+    assert!(spec.workspaces.is_empty(), "{:?}", spec.workspaces);
+    assert!(spec.plan.warnings.iter().any(|i| i.code == "layout.skip"));
+    // BETA's admiral ended with a transcript: a Start tab with `claude -c`
+    let spec = layout::plan(&w.env, &snap, Some("BETA"), false, &Caller::User, false);
+    assert_eq!(spec.workspaces.len(), 1);
+    let t = &spec.workspaces[0].tabs[0];
+    assert_eq!((spec.workspaces[0].label.as_str(), t.label.as_str(), &t.kind), ("BETA", "ADMIRAL", &TabKind::Start));
+    assert!(t.cmd.contains(&"-c".to_string()));
+    assert_eq!(spec.plan.steps.len(), 1);
+    // ships: an Attach tab per live ship, in its squadron's workspace
+    let mut spec = layout::plan(&w.env, &snap, Some("MAIN"), true, &Caller::User, false);
+    let argos = spec.workspaces.iter().find(|w| w.label == "MAIN.ARGOS").unwrap();
+    let clean = argos.tabs.iter().find(|t| t.label == "CLEAN").unwrap().clone();
+    assert_eq!(clean.kind, TabKind::Attach);
+    assert_eq!(clean.cmd[1], "attach");
+    assert!(!argos.tabs.iter().any(|t| t.label == "STOPPED"), "a stopped ship gets no tab");
+    // a ship already shown in a pane is dropped
+    let before = spec.plan.steps.len();
+    layout::drop_shown(&mut spec, &[clean.session_id.clone().unwrap()]);
+    assert_eq!(spec.plan.steps.len(), before - 1);
+    assert!(!spec.workspaces.iter().flat_map(|w| w.tabs.iter()).any(|t| t.id == clean.id));
+    // only you
+    let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
+    assert!(has(&layout::plan(&w.env, &snap, None, false, &own, false).plan.refusals, "authority"));
+}
