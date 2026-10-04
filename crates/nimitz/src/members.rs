@@ -101,20 +101,32 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
     if snap.fleets.is_empty() {
         out::line("no fleets; create one with `nimitz fleet new <F>`");
     }
+    // One column for every id: indent + the longest id, so the status lines up.
+    let col = snap
+        .fleets
+        .iter()
+        .flat_map(|f| {
+            std::iter::once(2 + f.admiral.id.0.len()).chain(f.squadrons.iter().flat_map(|q| {
+                std::iter::once(2 + q.commodore.id.0.len()).chain(q.ships.iter().chain(q.tenders.iter()).map(|m| 4 + m.id.0.len()))
+            }))
+        })
+        .max()
+        .unwrap_or(0)
+        .max(26);
     for f in &snap.fleets {
         let here = f.machine.as_deref().map(|m| format!("runs here as {m}")).unwrap_or("does not run on this machine".into());
         out::line(&format!("{}  ({here})", f.id));
         for i in &f.issues {
             out::issue(i);
         }
-        member_line(&ctx.env, &f.admiral, 1);
+        member_line(&ctx.env, &f.admiral, 1, col);
         for sq in &f.squadrons {
-            member_line(&ctx.env, &sq.commodore, 1);
+            member_line(&ctx.env, &sq.commodore, 1, col);
             for i in &sq.issues {
                 out::issue(i);
             }
             for m in sq.ships.iter().chain(sq.tenders.iter()) {
-                member_line(&ctx.env, m, 2);
+                member_line(&ctx.env, m, 2, col);
             }
         }
     }
@@ -131,9 +143,9 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
     Ok(0)
 }
 
-fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize) {
+fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize) {
     let pad = "  ".repeat(depth);
-    let width = 26usize.saturating_sub(pad.len());
+    let width = col.saturating_sub(pad.len());
     let sess = m
         .session
         .as_ref()

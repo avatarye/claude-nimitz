@@ -7,8 +7,9 @@
 //!
 //! Hooks come from the ship folder's own `.claude/settings.json` (project
 //! scope, inside the test folder), so nothing is installed into the user's
-//! Claude Code. The session name is `[NIMITZ_E2E.SMOKE]-SHIP`: nimitz names
-//! sessions by identity, so the `nimitz-e2e-*` rule applies to the folders.
+//! Claude Code. `NIMITZ_E2E_MODEL` (optional) sets the ship's model. The
+//! session name is `[NIMITZ_E2E.SMOKE]-SHIP`: nimitz names sessions by
+//! identity, so the `nimitz-e2e-*` rule applies to the folders.
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -147,7 +148,12 @@ fn e2e_real_claude_code_ship_lifecycle() {
         .iter()
         .map(|e| (e.to_string(), json!([{"hooks": [{"type": "command", "command": EXE, "args": ["hook", e], "timeout": 5}]}])))
         .collect();
-    let settings = json!({"model": "haiku", "env": {"NIMITZ_STATE": b.join("state")}, "hooks": hooks});
+    // NIMITZ_E2E_MODEL picks a cheap model; unset, Claude Code's own default runs
+    // (an org policy may refuse a named model).
+    let mut settings = json!({"env": {"NIMITZ_STATE": b.join("state")}, "hooks": hooks});
+    if let Some(m) = std::env::var("NIMITZ_E2E_MODEL").ok().filter(|m| !m.is_empty()) {
+        settings["model"] = Value::from(m);
+    }
     write(&ship_dir.join(".claude/settings.json"), &serde_json::to_string_pretty(&settings).unwrap());
 
     w.ok(&["fleet", "new", "NIMITZ_E2E", "--machine", "e2e", "--yes"]);
