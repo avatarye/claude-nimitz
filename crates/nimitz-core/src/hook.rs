@@ -22,8 +22,13 @@ pub fn handle(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, String
 
 fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, String>) -> String {
     let input: Value = serde_json::from_str(stdin.trim()).unwrap_or(Value::Null);
-    let labels: BTreeMap<String, String> =
+    let mut labels: BTreeMap<String, String> =
         LABELS.iter().filter_map(|k| vars.get(*k).filter(|v| !v.is_empty()).map(|v| (k.to_string(), v.clone()))).collect();
+    // An inherited NIMITZ_HOME (a user who exports it in their shell) is not a
+    // label: such a session stays unlabelled, a stowaway (contracts.md section 7).
+    if !crate::evidence::is_labelled(&labels) {
+        labels.clear();
+    }
     let tool = str_at(&input, "tool_name");
     let is_signal = tool.as_deref() == Some("SendMessage");
     let to = input.get("tool_input").and_then(|t| str_at(t, "to").or_else(|| str_at(t, "recipient")));
@@ -269,6 +274,18 @@ mod tests {
         assert!(events[0].pid.unwrap_or(0) > 0, "the pid is the Claude Code process (the hook's parent)");
         assert_eq!(events[1].tool_name.as_deref(), Some("SendMessage"));
         assert!(events[1].reason.as_deref().unwrap_or("").starts_with("denied:"), "{:?}", events[1].reason);
+    }
+
+    #[test]
+    fn an_inherited_nimitz_home_alone_is_not_a_label() {
+        let (_td, env) = world();
+        let start = serde_json::json!({"session_id": "s7", "source": "startup"});
+        handle(&env, "SessionStart", &start.to_string(), &vars(&[("NIMITZ_HOME", "/h"), ("NIMITZ_FLEET", "MAIN")]));
+        let events = crate::evidence::events(&env);
+        assert!(events[0].labels.is_empty(), "{:?}", events[0].labels);
+        // and an older line that logged it anyway reads as unlabelled
+        let old = vec![Event { labels: [("NIMITZ_HOME".to_string(), "/h".to_string())].into(), ..events[0].clone() }];
+        assert!(crate::evidence::labels_by_session(&old).is_empty());
     }
 
     #[test]

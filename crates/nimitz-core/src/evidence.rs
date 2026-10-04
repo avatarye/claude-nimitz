@@ -176,13 +176,20 @@ pub fn events_cached(env: &Env, cache: &mut FileCache) -> Vec<Event> {
     t.rows.clone()
 }
 
+/// Does this env carry nimitz labels? Only `NIMITZ_ID` or `NIMITZ_ROLE` make a
+/// label (contracts.md section 7): an inherited `NIMITZ_HOME` alone does not.
+pub fn is_labelled(labels: &BTreeMap<String, String>) -> bool {
+    ["NIMITZ_ID", "NIMITZ_ROLE"].iter().any(|k| labels.get(*k).map(|v| !v.is_empty()).unwrap_or(false))
+}
+
 /// Labels per session id, from the newest event that carried any. A session's
 /// labels never change (a copy gets a new id), so any event will do when the
-/// SessionStart line was lost.
+/// SessionStart line was lost. Events without real labels (`is_labelled`) count
+/// as unlabelled, whatever an older hook wrote.
 pub fn labels_by_session(events: &[Event]) -> HashMap<String, BTreeMap<String, String>> {
     let mut out = HashMap::new();
     for e in events {
-        if !e.labels.is_empty() {
+        if is_labelled(&e.labels) {
             if let Some(sid) = &e.session_id {
                 out.insert(sid.clone(), e.labels.clone());
             }

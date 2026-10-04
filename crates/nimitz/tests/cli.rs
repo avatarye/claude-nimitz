@@ -282,7 +282,6 @@ fn stop_relaunch_sweep_rm() {
 }
 
 #[test]
-#[ignore = "core: a stopped stowaway's SessionEnd logs NIMITZ_HOME as a label, so it stops being a stowaway (reported to core-sessions)"]
 fn rm_removes_a_stopped_stowaway() {
     let sb = Sb::new(false);
     // rm refuses a live stowaway, then removes it once stopped
