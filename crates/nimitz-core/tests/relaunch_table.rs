@@ -1368,3 +1368,39 @@ fn bug50_a_launch_in_an_untrusted_worktree_fails_with_the_trust_fix() {
     let fix = i.fix.clone().expect("a fix");
     assert!(fix.contains("run `claude` once in") && fix.contains("/wt"), "{fix}");
 }
+
+#[test]
+fn an_interrupted_relaunch_is_recovered_with_the_same_id() {
+    let w = world();
+    let id = w.ship("BARE");
+    let old = w.member(&w.snap(), &id).session.unwrap();
+    let plan = w.start(&w.snap(), &id, false);
+    assert!(plan.steps[0].cmd.contains(&"rm".to_string()) && plan.steps[1].cmd.contains(&"--resume".to_string()), "{:?}", plan.steps);
+    // nimitz "dies" between the rm and the resume: here the resume fails
+    // (the folder is untrusted for a moment), which leaves the same state
+    let trust: Vec<_> = ["claude_home/.claude.json", "claude_home.json"].iter().map(|f| w.base.join(f)).collect();
+    let saved: Vec<Vec<u8>> = trust.iter().map(|f| std::fs::read(f).unwrap()).collect();
+    for f in &trust {
+        std::fs::write(f, br#"{"projects": {}}"#).unwrap();
+    }
+    let out = sessions::apply(&w.env, &plan);
+    assert!(!out.verified);
+    assert!(!w.rows().iter().any(|r| r.session_id == old.session_id), "the row is gone");
+    for (f, b) in trust.iter().zip(saved) {
+        std::fs::write(f, b).unwrap();
+    }
+    // the next start finds it and says so
+    let snap = w.snap();
+    let m = w.member(&snap, &id);
+    assert!(m.reasons.iter().any(|r| r.contains("interrupted relaunch")), "{:?}", m.reasons);
+    let plan = w.start(&snap, &id, false);
+    let steps = w.steps_of(&plan, &id);
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert!(steps[0].why.starts_with("recovering an interrupted relaunch"), "{}", steps[0].why);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let s = w.member(&w.snap(), &id).session.unwrap();
+    assert_eq!(s.session_id, old.session_id, "same id, history kept");
+    assert_eq!(s.labels.get("NIMITZ_ID"), Some(&id.0));
+    assert!(sessions::pending_relaunch(&w.env, &id).is_none(), "the marker is cleared after the bind");
+}

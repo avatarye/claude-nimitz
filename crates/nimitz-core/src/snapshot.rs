@@ -511,6 +511,9 @@ fn build_member(
                 reasons.push("no session row; a transcript in its folder (continue with -c)".into());
                 Status::Stopped
             } else if let Some(t) = current_transcript {
+                if crate::sessions::pending_relaunch(env, id).is_some() {
+                    reasons.push("an interrupted relaunch: its row was removed before the resume ran (nimitz start recovers it)".into());
+                }
                 reasons.push(format!("no job row; its session's transcript is there ({})", t.display()));
                 Status::Stopped
             } else if rec.is_some() {

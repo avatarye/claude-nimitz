@@ -449,17 +449,22 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
             let olds = legacy_rows(snap, &fod, id, &cwd);
             // the registry's current session lost its job row but kept its
             // transcript (BUG-12): `--resume <id>` with every flag continues it
+            // (or an interrupted relaunch's session: a migration's old row was
+            // already removed, and the registry does not know it yet)
             let current = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.current.clone());
-            let kept = current.filter(|sid| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(&cwd), sid).is_some());
+            let has_log = |sid: &String| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(&cwd), sid).is_some();
+            let kept = pending_relaunch(env, id).filter(has_log).or_else(|| current.filter(has_log));
             // no row: an interactive member continues its transcript with `-c` (row 6)
             if m.role.interactive() && !crate::evidence::transcripts_in(env, &cwd).is_empty() {
                 plan.steps.push(step(id, crate::claude::interactive(env, id, &mode, true), "continue the interactive session in a pane"));
             } else if let (false, Some(sid)) = (m.role.interactive(), kept) {
-                plan.steps.push(step(
-                    id,
-                    crate::claude::relaunch_bg(env, id, &mode, &sid),
-                    &format!("resume {} from its transcript with every flag (its job row is gone; Claude Code keeps the id)", &sid[..sid.len().min(8)]),
-                ));
+                let interrupted = pending_relaunch(env, id).as_deref() == Some(sid.as_str());
+                let why = if interrupted {
+                    format!("recovering an interrupted relaunch: resume {} with every flag (its row was removed; Claude Code keeps the id)", &sid[..sid.len().min(8)])
+                } else {
+                    format!("resume {} from its transcript with every flag (its job row is gone; Claude Code keeps the id)", &sid[..sid.len().min(8)])
+                };
+                plan.steps.push(step(id, crate::claude::relaunch_bg(env, id, &mode, &sid), &why));
             } else if let (Role::Ship, Some(newest)) = (m.role, olds.first()) {
                 // a migrated ship keeps its history: continue the old fleet's newest
                 // stopped session the row-5 way (a labelled copy); the old rows stay
@@ -1354,7 +1359,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     };
     let mut skipped: Vec<Id> = vec![];
     let mut started: Vec<(Id, String)> = vec![]; // (identity, session id) to verify again at the end
-    for step in &plan.steps {
+    for (at, step) in plan.steps.iter().enumerate() {
         let kind = classify(step);
         if step.id.as_ref().map(|i| skipped.contains(i)).unwrap_or(false) {
             out.ran.push((step.clone(), 0, "skipped: a concurrent start already brought this member up".into()));
@@ -1417,6 +1422,16 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 return out;
             }
         }
+        // rm-then-resume (BUG-53) is two steps; if nimitz dies between them the
+        // row is gone and only the transcript and the registry remain. A marker
+        // says so to the next start ("recovering an interrupted relaunch").
+        if let (Kind::Rm { .. }, Some(id), Some(next)) = (&kind, &step.id, plan.steps.get(at + 1)) {
+            if classify(next) == Kind::Relaunch && next.id.as_ref() == Some(id) {
+                if let Some(sid) = resumed_id(next) {
+                    write_pending(env, id, &sid);
+                }
+            }
+        }
         let since = crate::evidence::now() - 0.001;
         let (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
         out.ran.push((step.clone(), rc, text.clone()));
@@ -1444,7 +1459,10 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     _ => (resumed.as_deref(), "relaunch"),
                 };
                 match bind_started(env, id, step.cwd.as_deref(), since, expect, via, BIND_TIMEOUT_S) {
-                    Ok(sid) => started.push((id.clone(), sid)),
+                    Ok(sid) => {
+                        clear_pending(env, id);
+                        started.push((id.clone(), sid))
+                    }
                     Err(issues) => {
                         out.issues.extend(issues);
                         return out; // the next steps (rm of the old row) assume this one worked
@@ -1473,6 +1491,29 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     }
     out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() == plan.steps.len();
     out
+}
+
+fn pending_path(env: &Env, id: &Id) -> std::path::PathBuf {
+    let name: String = id.0.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    env.state.join("pending").join(format!("{name}.json"))
+}
+
+fn write_pending(env: &Env, id: &Id, session_id: &str) {
+    let p = pending_path(env, id);
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(p, serde_json::json!({"id": id.0, "session_id": session_id, "at": crate::evidence::now()}).to_string());
+}
+
+fn clear_pending(env: &Env, id: &Id) {
+    let _ = std::fs::remove_file(pending_path(env, id));
+}
+
+/// The session an interrupted relaunch of `id` was about to resume, if any.
+pub fn pending_relaunch(env: &Env, id: &Id) -> Option<String> {
+    let v = crate::evidence::first_json(&std::fs::read(pending_path(env, id)).ok()?)?;
+    v.get("session_id").and_then(|s| s.as_str()).map(str::to_string)
 }
 
 /// An identity's start lock (flock on `NIMITZ_STATE/locks/<id>.lock`); released on drop.
