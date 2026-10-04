@@ -284,3 +284,13 @@ fn every_member_carries_its_session_issues() {
     let boreal = &snap.fleets.iter().find(|f| f.id.fleet() == "MAIN").unwrap().squadrons.iter().find(|s| s.id.squadron() == Some("BOREAL")).unwrap().commodore;
     assert!(boreal.issues.iter().any(|i| i.code == "role.background"), "{:?}", boreal.issues);
 }
+
+#[test]
+fn check_reports_each_session_issue_once() {
+    let w = world();
+    let snap = w.snap();
+    let issues = nimitz_core::check::check(&w.env, &snap, None);
+    let drift = Id::ship("MAIN", "ARGOS", "DRIFT");
+    let n = issues.iter().filter(|i| i.code == "name.drift" && i.id.as_ref() == Some(&drift)).count();
+    assert_eq!(n, 1, "{issues:?}");
+}
