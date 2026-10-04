@@ -7,10 +7,9 @@
 //!
 //! A row belongs to an identity by its labels (`NIMITZ_ID` from the session's
 //! events) or by the registry's lineage — never by its name alone. `Member::
-//! issues` carries only what needs this whole-world view (name.taken,
-//! lineage.broken); the per-member codes come from `sessions::session_issues`,
-//! which `check` calls (keeping the two sources disjoint, so `check` never
-//! reports a code twice).
+//! issues` carries every session-level code of the member: the per-member
+//! rules (`sessions::session_issues`) plus what needs the whole-world view
+//! (name.taken, lineage.broken). Folder and config codes stay with `check`.
 use crate::env::Env;
 use crate::evidence::{self, FileCache, SessionRow};
 use crate::types::*;
@@ -332,8 +331,10 @@ fn build_member(
         issues: vec![],
         pane: None,
     };
-    // Whole-world issues the member alone cannot see (name.taken is added by
-    // the caller once every member's rows are known).
+    // Every member carries its own issues: the session rules, then what needs
+    // the registry (name.taken is added by the caller once every member's rows
+    // are known).
+    m.issues = crate::sessions::session_issues(env, &m);
     m.issues.extend(crate::sessions::registry_issues(env, &mut cache.files, &m, reg));
     m
 }

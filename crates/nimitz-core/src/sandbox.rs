@@ -69,7 +69,8 @@ pub fn env_for(base: &Path) -> HashMap<String, String> {
         ("NIMITZ_HOME".into(), p("nimitz")),
         ("NIMITZ_STATE".into(), p("state")),
         ("NIMITZ_CLAUDE_HOME".into(), p("claude_home")),
-        ("NIMITZ_CLAUDE_BIN".into(), p("bin/claude")),
+        // like ACME: the PATH `claude` is a wrapper that adds its own --settings
+        ("NIMITZ_CLAUDE_BIN".into(), p("bin/claude-wrapper")),
         ("NIMITZ_NATIVE_CLAUDE_BIN".into(), p("bin/claude")),
         ("NIMITZ_HOSTNAME".into(), HOST.into()),
         ("NIMITZ_MUX".into(), "none".into()),
@@ -318,6 +319,16 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     fs::write(&bin, format!("#!/bin/sh\nexec '{}' __fake-claude '{}' \"$@\"\n", exe.display(), base.display())).map_err(|e| e.to_string())?;
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    // The ACME wrapper (findings-acme-2.1.288.md): it puts its own `--settings`
+    // before your arguments, so a resume through it is always a copy. Cold
+    // launches go through it; resume, stop, rm and agents must not.
+    let wrapper = base.join("bin").join("claude-wrapper");
+    fs::write(
+        &wrapper,
+        format!("#!/bin/sh\nexec '{}' --settings '{{\"env\":{{\"CLAUDE_CODE_USE_BEDROCK\":\"1\"}}}}' \"$@\"\n", bin.display()),
+    )
+    .map_err(|e| e.to_string())?;
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
 
     let e = env(&base);
     let mut w = World { base: base.clone(), now: crate::evidence::now(), seq: 0, sessions: vec![], trusted: vec![] };
@@ -545,7 +556,14 @@ fn parse(args: &[String]) -> Args {
             "-c" | "--continue" => a.cont = true,
             "--name" => a.name = take(&mut i),
             "--permission-mode" => a.mode = take(&mut i),
-            "--settings" => a.settings = take(&mut i),
+            "--settings" => {
+                // several --settings (the wrapper's, then yours) merge, later keys winning
+                let next = take(&mut i);
+                a.settings = match (a.settings.take(), next) {
+                    (Some(prev), Some(next)) => Some(merge_settings(&prev, &next)),
+                    (prev, next) => next.or(prev),
+                };
+            }
             "--resume" => a.resume = take(&mut i),
             "--session-id" => a.session_id = take(&mut i),
             s if !s.starts_with('-') => a.prompt = Some(s.to_string()),
@@ -554,6 +572,21 @@ fn parse(args: &[String]) -> Args {
         i += 1;
     }
     a
+}
+
+fn merge_settings(prev: &str, next: &str) -> String {
+    let (Ok(Value::Object(mut p)), Ok(Value::Object(n))) = (serde_json::from_str::<Value>(prev), serde_json::from_str::<Value>(next)) else {
+        return next.to_string();
+    };
+    for (k, v) in n {
+        match (p.get_mut(&k), v) {
+            (Some(Value::Object(old)), Value::Object(new)) => old.extend(new),
+            (_, v) => {
+                p.insert(k, v);
+            }
+        }
+    }
+    Value::Object(p).to_string()
 }
 
 fn labels_from_settings(settings: Option<&String>) -> std::collections::BTreeMap<String, String> {
@@ -569,6 +602,9 @@ fn fire(base: &Path, event: &str, sid: &str, source: Option<&str>, labels: &std:
     let mut input = json!({"session_id": sid, "hook_event_name": event, "cwd": cwd, "transcript_path": "", "scratchpad_dir": ""});
     if let Some(s) = source {
         input["source"] = json!(s);
+    }
+    if event == "SessionEnd" {
+        input["reason"] = json!("other"); // what a `claude stop` gave in probe 3
     }
     let vars: HashMap<String, String> = env_for(base).into_iter().chain(labels.iter().map(|(k, v)| (k.clone(), v.clone()))).collect();
     if let Some(cmd) = read_json(&base.join("hook-cmd.json")).and_then(|v| v.as_array().cloned()) {
@@ -759,15 +795,16 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                     return 0;
                 }
             };
-            let flags = a.name.is_some() || a.mode.is_some() || a.settings.is_some() || a.prompt.is_some();
+            // A prompt is not a flag: `--bg --resume <id> [prompt]` keeps the id (probe 2c1).
+            let flags = a.name.is_some() || a.mode.is_some() || a.settings.is_some();
             let saved = row.short_id.as_deref().and_then(|s| job_state(&base, s));
             let saved_name = saved.as_ref().and_then(|j| j.get("savedName").and_then(|v| v.as_str()).map(str::to_string));
             let saved_settings = saved.as_ref().and_then(|j| j.get("savedSettings").and_then(|v| v.as_str()).map(str::to_string));
-            let saved_mode = saved.as_ref().and_then(|j| j.get("savedMode").and_then(|v| v.as_str()).map(str::to_string));
 
             if row.live() {
-                // probe 2 / 2b: a copy with a new id; with no --settings it fires no hooks
-                let name = a.name.clone().or(saved_name).unwrap_or_else(|| "untitled-session".into());
+                // probe 2 / 2b: a copy with a new id and only the flags passed (an
+                // auto-generated name without --name); with no --settings it fires no hooks
+                let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
                 let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
                 println!("session {} is already running in the background, so this started a copy as {short}", row.session_id);
                 return 0;
@@ -795,7 +832,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             }
             // probe 2c2 / 2c3: the flags you passed started a copy; the old row stays
             let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
-            let mode = a.mode.clone().or(saved_mode).unwrap_or_default();
+            let mode = a.mode.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
             println!("the flags you passed started a copy as {short}");
             0

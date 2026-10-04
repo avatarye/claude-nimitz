@@ -15,8 +15,16 @@ use std::collections::HashMap;
 /// Parse a session name (address) back into an identity (contracts.md section 4):
 /// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-COMMODORE/task`, `[F.SQ]-SHIP`.
 /// None for names that are not fleet addresses (teammates, ad-hoc sessions).
+/// A trailing ` [ref]` (how `SendMessage` disambiguates two sessions with one
+/// name) is not part of the address, so it cannot hide a target from the rules.
 pub fn id_from_name(name: &str) -> Option<Id> {
-    let rest = name.trim().strip_prefix('[')?;
+    let mut name = name.trim();
+    if let Some((head, tail)) = name.rsplit_once(' ') {
+        if tail.starts_with('[') && tail.ends_with(']') {
+            name = head.trim_end();
+        }
+    }
+    let rest = name.strip_prefix('[')?;
     let close = rest.find(']')?;
     let tag = &rest[..close];
     let role = rest[close + 1..].strip_prefix('-')?;
@@ -419,6 +427,15 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
 pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: bool) -> Plan {
     let mut plan = Plan { summary: format!("start {id} (top-down)"), ..Default::default() };
     gate(env, &mut plan, snap, Some(id), force);
+    // What is wrong with a member caller's own chain is yours to fix, not a
+    // reason to refuse the caller's start of its ship or tender.
+    if let Caller::Member { id: me, .. } = caller {
+        let above = chain(me);
+        let (theirs, keep): (Vec<Issue>, Vec<Issue>) =
+            plan.refusals.drain(..).partition(|i| i.id.as_ref().map(|x| x != id && above.contains(x)).unwrap_or(false));
+        plan.refusals = keep;
+        plan.warnings.extend(theirs.into_iter().map(|i| Issue { severity: Severity::Warn, ..i }));
+    }
     for link in chain(id) {
         let running_clean = member(snap, &link)
             .map(|(_, m)| {
@@ -428,6 +445,20 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
             .unwrap_or(false);
         if running_clean {
             continue; // row 1 for a parent: nothing, and no authority needed
+        }
+        // A member caller is running, and what is above it is yours to start: a
+        // commodore reviving its ship is not blocked by an admiral that is down.
+        if let Caller::Member { id: me, .. } = caller {
+            if link != *id && chain(me).contains(&link) {
+                plan.warnings.push(issue(
+                    "config.invalid",
+                    Severity::Info,
+                    format!("{link} is not running clean; only you start it"),
+                    Some(format!("nimitz start {link}")),
+                    Some(link.clone()),
+                ));
+                continue;
+            }
         }
         if let Err(why) = may_start(caller, &link) {
             refuse(&mut plan, "config.invalid", why, None, Some(link.clone()));
@@ -1029,6 +1060,9 @@ mod tests {
         assert_eq!(id_from_name("scratch notes"), None);
         assert_eq!(id_from_name("[main.ARGOS]-SHIP"), None); // lowercase fleet
         assert_eq!(id_from_name("[F.SQ]-COMMODORE/"), None);
+        // a SendMessage ref suffix does not hide the address
+        assert_eq!(id_from_name("[F.SQ]-S [3fa9c1]"), Some(Id::ship("F", "SQ", "S")));
+        assert_eq!(id_from_name("[F.SQ]-COMMODORE/fix [ab12]"), Some(Id::tender("F", "SQ", "fix")));
     }
 
     #[test]
