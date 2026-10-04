@@ -277,11 +277,14 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
         }
         return;
     }
-    if let Some(e) = session_errs.iter().find(|i| i.severity == Severity::Error) {
-        // e.g. ship.elsewhere on a stopped ship
+    // A stopped member: name drift and missing labels are what rows 5 and 9 fix,
+    // so they do not refuse. Everything else about the session still does.
+    const ROW_FIXES: [&str; 3] = ["name.drift", "labels.missing", "copy.rows"];
+    if let Some(e) = session_errs.iter().find(|i| i.severity == Severity::Error && !ROW_FIXES.contains(&i.code.as_str())) {
         plan.refusals.push(e.clone());
         return;
     }
+    let needs_relabel = session_errs.iter().any(|i| ROW_FIXES[..2].contains(&i.code.as_str()));
     plan.warnings.extend(session_errs);
 
     let lineage_broken = m.issues.iter().any(|i| i.code == "lineage.broken");
@@ -300,8 +303,10 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
             }
             cold_launch(env, plan, &fod, id, m.role, &mode, &cwd);
         }
-        // stopped with its labels: resume = native binary, NO flags, from its folder (row 4)
-        Some(p) if p.labels.get("NIMITZ_ID") == Some(&id.0) => {
+        // stopped with its labels and its name: resume = native binary, NO flags,
+        // from its folder (row 4). A resume restores the saved name too, so a
+        // drifted name must go the relaunch way instead.
+        Some(p) if p.labels.get("NIMITZ_ID") == Some(&id.0) && !needs_relabel => {
             if m.role.interactive() {
                 plan.steps.push(step(id, crate::claude::interactive(env, id, &mode, true), "continue the interactive session in a pane"));
             } else {
@@ -391,6 +396,23 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
             _ => plan.warnings.push(i),
         }
     }
+    // A version above the range is only a warning for read-only commands, but it
+    // refuses a launch until the tier-2 tests widen the range (plan-v3 8.1).
+    if !snap.compat_ok && !force {
+        let i = match plan.warnings.iter().position(|i| i.code == "cc.version") {
+            Some(at) => Issue { severity: Severity::Error, ..plan.warnings.remove(at) },
+            None => issue(
+                "cc.version",
+                Severity::Error,
+                format!("Claude Code {} is outside the supported range", snap.cc_version.as_deref().unwrap_or("(not found)")),
+                Some("`--force` overrides launches".into()),
+                None,
+            ),
+        };
+        if !plan.refusals.iter().any(|r| r.code == "cc.version") {
+            plan.refusals.push(i);
+        }
+    }
 }
 
 /// Start `id` and every missing parent, top-down. Runs `check` first.
@@ -411,10 +433,18 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
             refuse(&mut plan, "config.invalid", why, None, Some(link.clone()));
             continue;
         }
+        if already_refused(&plan, &link) {
+            continue; // the gate found something that no step can fix
+        }
         start_member(env, &mut plan, snap, &link, force);
     }
     dedup_issues(&mut plan);
     plan
+}
+
+/// Has the gate (or an earlier member) already refused for this identity?
+fn already_refused(plan: &Plan, id: &Id) -> bool {
+    plan.refusals.iter().any(|i| i.id.as_ref() == Some(id) || i.id.is_none())
 }
 
 /// `nimitz up <fleet>`: start every member that should run on this machine.
@@ -446,7 +476,11 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
                     && session_issues(env, m).iter().all(|i| i.severity != Severity::Error)
             })
             .unwrap_or(false);
-        if !clean_live {
+        if clean_live {
+            continue;
+        }
+        gate(env, &mut plan, snap, Some(&id), false);
+        if !already_refused(&plan, &id) {
             start_member(env, &mut plan, snap, &id, false);
         }
     }

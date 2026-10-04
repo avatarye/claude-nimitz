@@ -63,19 +63,23 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let compat = crate::compat::supported();
     let compat_ok = cc_version.as_deref().map(|v| crate::compat::position(&compat, v) == 0).unwrap_or(false);
 
-    // Rows per identity: labels first, lineage second.
+    // Rows per identity. The registry's `current` wins (so a session whose
+    // labels name someone else still belongs to the identity that started it,
+    // and shows up as labels.mismatch); then the labels; then the lineage.
     let mut by_identity: HashMap<String, Vec<SessionRow>> = HashMap::new();
     let mut claimed: HashSet<String> = HashSet::new();
+    let current_of: HashMap<&str, &str> =
+        reg.identities.iter().filter_map(|(id, rec)| Some((rec.current.as_deref()?, id.as_str()))).collect();
     let lineage_of: HashMap<&str, &str> = reg
         .identities
         .iter()
         .flat_map(|(id, rec)| rec.lineage.iter().map(move |l| (l.session_id.as_str(), id.as_str())))
         .collect();
     for r in &rows {
-        let owner = labels
-            .get(&r.session_id)
-            .and_then(|l| l.get("NIMITZ_ID"))
-            .map(String::as_str)
+        let owner = current_of
+            .get(r.session_id.as_str())
+            .copied()
+            .or_else(|| labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(String::as_str))
             .or_else(|| lineage_of.get(r.session_id.as_str()).copied());
         if let Some(owner) = owner {
             by_identity.entry(owner.to_string()).or_default().push(r.clone());
