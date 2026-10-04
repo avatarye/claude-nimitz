@@ -1,5 +1,16 @@
 //! Running the `claude` CLI: launch, resume, stop, rm, agents (contracts.md sections 2, 8). Owner: core-sessions.
+//!
+//! Two binaries (contracts.md section 2):
+//! - `env.claude_bin` (PATH `claude`; on ACME a wrapper that adds Bedrock
+//!   `--settings`) for cold launches, so the saved options carry the provider;
+//! - `env.native_claude_bin` for resume, stop, rm, agents and `--version`. A
+//!   resume through the wrapper always makes a copy (the wrapper adds flags).
+//!
+//! The argv builders here are the only place that knows the exact flags.
 use crate::env::Env;
+use crate::types::*;
+use std::collections::BTreeMap;
+use std::process::{Command, Stdio};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
@@ -14,10 +25,187 @@ pub struct Row {
     pub started_at: Option<f64>,
 }
 
-/// `claude agents --json --all` through the native binary.
-pub fn agents(_env: &Env) -> Result<Vec<Row>, String> {
-    todo!("core-sessions")
+impl Row {
+    pub fn to_session_row(&self) -> crate::evidence::SessionRow {
+        crate::evidence::SessionRow {
+            session_id: self.session_id.clone(),
+            name: self.name.clone(),
+            cwd: self.cwd.clone(),
+            kind: self.kind.clone(),
+            short_id: self.id.clone(),
+            pid: self.pid,
+            state: self.state.clone(),
+            status: self.status.clone(),
+            status_since: None,
+            started_at: self.started_at,
+            waiting_for: None,
+        }
+    }
 }
-pub fn version(_env: &Env) -> Option<String> {
-    todo!("core-sessions")
+
+/// Run a command to completion with stdin closed: (exit code, stdout + stderr).
+pub fn run(cmd: &[String], cwd: Option<&str>) -> (i32, String) {
+    let Some(bin) = cmd.first() else { return (-1, "empty command".into()) };
+    let mut c = Command::new(bin);
+    c.args(&cmd[1..]).stdin(Stdio::null());
+    if let Some(d) = cwd {
+        c.current_dir(d);
+    }
+    match c.output() {
+        Ok(o) => (
+            o.status.code().unwrap_or(-1),
+            format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_string(),
+        ),
+        Err(e) => (-1, format!("{bin}: {e}")),
+    }
+}
+
+/// `claude agents --json --all` through the native binary.
+pub fn agents(env: &Env) -> Result<Vec<Row>, String> {
+    let out = Command::new(&env.native_claude_bin)
+        .args(["agents", "--json", "--all"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("`claude agents --json --all` failed: {e}"))?;
+    let v = crate::evidence::first_json(&out.stdout).ok_or_else(|| {
+        let err = String::from_utf8_lossy(&out.stderr);
+        format!("`claude agents --json --all` gave no JSON: {}", err.lines().last().unwrap_or("no output"))
+    })?;
+    if !v.is_array() {
+        return Err("`claude agents --json --all` did not return a list".into());
+    }
+    Ok(crate::evidence::parse_cli_rows(&v)
+        .into_iter()
+        .map(|r| Row {
+            id: r.short_id,
+            session_id: r.session_id,
+            name: r.name,
+            cwd: r.cwd,
+            kind: r.kind,
+            pid: r.pid,
+            state: r.state,
+            status: r.status,
+            started_at: r.started_at,
+        })
+        .collect())
+}
+
+/// The native binary's version, e.g. "2.1.288" (from "2.1.288 (Claude Code)"
+/// or "claude 2.1.288.1000 (ACME Claude Code, ...)": the first x.y.z, three parts).
+pub fn version(env: &Env) -> Option<String> {
+    let (rc, out) = run(&[env.native_claude_bin.clone(), "--version".into()], None);
+    if rc != 0 {
+        return None;
+    }
+    parse_version(&out)
+}
+
+pub fn parse_version(out: &str) -> Option<String> {
+    out.split_whitespace().find_map(|w| {
+        let parts: Vec<&str> = w.split('.').collect();
+        if parts.len() >= 3 && parts.iter().take(3).all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())) {
+            Some(parts[..3].join("."))
+        } else {
+            None
+        }
+    })
+}
+
+// ------------------------------------------------------------------ labels and argv
+
+/// The labels `nimitz` gives a member's session (contracts.md section 4).
+pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
+    let mut m = BTreeMap::new();
+    m.insert("NIMITZ_FLEET".to_string(), id.fleet().to_string());
+    if let Some(sq) = id.squadron() {
+        m.insert("NIMITZ_SQUADRON".to_string(), sq.to_string());
+    }
+    m.insert("NIMITZ_ROLE".to_string(), id.role().as_str().to_string());
+    m.insert("NIMITZ_ID".to_string(), id.0.clone());
+    if id.role() == Role::Tender {
+        if let Some(p) = id.parent() {
+            m.insert("NIMITZ_PARENT".to_string(), p.0);
+        }
+    }
+    m.insert("NIMITZ_HOME".to_string(), env.home.to_string_lossy().into_owned());
+    m
+}
+
+/// `--settings` JSON: the labels as env, plus `worktree.bgIsolation none` for background sessions.
+pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
+    let mut v = serde_json::json!({ "env": labels_for(env, id) });
+    if background {
+        v["worktree"] = serde_json::json!({ "bgIsolation": "none" });
+    }
+    v.to_string()
+}
+
+fn mode_args(mode: &str) -> Vec<String> {
+    if mode.is_empty() {
+        vec![]
+    } else {
+        vec!["--permission-mode".into(), mode.into()]
+    }
+}
+
+/// Cold launch of a ship or tender: `claude --bg --name N --permission-mode M --settings S [prompt]`.
+pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<String> {
+    let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--name".into(), id.name()];
+    c.extend(mode_args(mode));
+    c.extend(["--settings".into(), settings_json(env, id, true)]);
+    if let Some(p) = prompt.filter(|p| !p.is_empty()) {
+        c.push(p.to_string());
+    }
+    c
+}
+
+/// Relaunch from an old session with every flag: a copy with a new id
+/// (`source: fork`) that carries the labels. Through the PATH binary, as a cold launch.
+pub fn relaunch_bg(env: &Env, id: &Id, mode: &str, from_session: &str) -> Vec<String> {
+    let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--resume".into(), from_session.into(), "--name".into(), id.name()];
+    c.extend(mode_args(mode));
+    c.extend(["--settings".into(), settings_json(env, id, true)]);
+    c
+}
+
+/// Resume a stopped background session keeping its id: native binary, no flags.
+pub fn resume_bg(env: &Env, session_id: &str) -> Vec<String> {
+    vec![env.native_claude_bin.clone(), "--bg".into(), "--resume".into(), session_id.into()]
+}
+
+/// An admiral or commodore: `claude [-c] --name N [--permission-mode M] --settings S`,
+/// run in a terminal (a mux pane), never in the background.
+pub fn interactive(env: &Env, id: &Id, mode: &str, cont: bool) -> Vec<String> {
+    let mut c = vec![env.claude_bin.clone()];
+    if cont {
+        c.push("-c".into());
+    }
+    c.extend(["--name".into(), id.name()]);
+    c.extend(mode_args(mode));
+    c.extend(["--settings".into(), settings_json(env, id, false)]);
+    c
+}
+
+pub fn stop(env: &Env, short_id: &str) -> Vec<String> {
+    vec![env.native_claude_bin.clone(), "stop".into(), short_id.into()]
+}
+
+pub fn rm(env: &Env, short_id: &str) -> Vec<String> {
+    vec![env.native_claude_bin.clone(), "rm".into(), short_id.into()]
+}
+
+pub fn attach(env: &Env, short_id: &str) -> Vec<String> {
+    vec![env.native_claude_bin.clone(), "attach".into(), short_id.into()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn versions() {
+        assert_eq!(parse_version("2.1.288 (Claude Code)").as_deref(), Some("2.1.288"));
+        assert_eq!(parse_version("claude 2.1.288.1000 (ACME Claude Code, channel stable)").as_deref(), Some("2.1.288"));
+        assert_eq!(parse_version("no version here"), None);
+    }
 }

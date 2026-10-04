@@ -1,8 +1,592 @@
 //! Readers: session files, job rows, transcripts, sub-agents, task lists, events.jsonl (contracts.md section 6). Owner: core-sessions.
+//!
+//! Everything under the Claude Code home is internal to Claude Code and may
+//! change in any release, so every reader tolerates missing files, missing
+//! fields, unknown fields and trailing bytes, and reads only the fields it needs.
+//! Nothing here writes.
+//!
+//! Rows come from the files `claude agents --json --all` reads
+//! (`sessions/<pid>.json` for live processes, `jobs/<id>/state.json` for job
+//! rows); liveness is `kill(pid, 0)`. That keeps a refresh to a few
+//! milliseconds; the CLI (`crate::claude::agents`) is the cross-check.
 use crate::env::Env;
 use crate::types::*;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Read events.jsonl (tolerant).
-pub fn events(_env: &Env) -> Vec<Event> {
-    todo!("core-sessions")
+pub fn now() -> f64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
+fn mtime(p: &Path) -> Option<SystemTime> {
+    fs::metadata(p).and_then(|m| m.modified()).ok()
+}
+
+pub fn mtime_secs(p: &Path) -> Option<f64> {
+    mtime(p).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64())
+}
+
+pub(crate) fn s(v: &Value, k: &str) -> Option<String> {
+    match v.get(k) {
+        Some(Value::String(x)) if !x.is_empty() => Some(x.clone()),
+        _ => None,
+    }
+}
+
+/// Epoch milliseconds (number) or an ISO-8601 string, to epoch seconds.
+fn ts(v: &Value, k: &str) -> Option<f64> {
+    match v.get(k)? {
+        Value::Number(n) => n.as_f64().map(|ms| ms / 1000.0),
+        Value::String(x) => parse_iso(x),
+        _ => None,
+    }
+}
+
+/// Minimal `YYYY-MM-DDTHH:MM:SS[.fff]Z` parser (UTC), enough for Claude Code's stamps.
+pub fn parse_iso(x: &str) -> Option<f64> {
+    if x.len() < 19 {
+        return None;
+    }
+    let num = |a: usize, z: usize| x.get(a..z)?.parse::<i64>().ok();
+    let (y, mo, d, h, mi, se) = (num(0, 4)?, num(5, 7)?, num(8, 10)?, num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    // days from civil (Howard Hinnant)
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let mut secs = (days * 86400 + h * 3600 + mi * 60 + se) as f64;
+    if let Some(frac) = x.get(19..).and_then(|r| r.strip_prefix('.')) {
+        let digits: String = frac.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(v) = format!("0.{digits}").parse::<f64>() {
+            secs += v;
+        }
+    }
+    Some(secs)
+}
+
+/// The first JSON value in `raw`, ignoring anything after it. Claude Code
+/// sometimes rewrites a session file in place without truncating it, leaving
+/// the tail of a longer earlier version behind the new object; a strict parse
+/// would drop a live session (`claude agents --json` itself does).
+pub fn first_json(raw: &[u8]) -> Option<Value> {
+    serde_json::Deserializer::from_slice(raw).into_iter::<Value>().next()?.ok()
+}
+
+// ------------------------------------------------------------------ cache
+
+/// File reads keyed by mtime, so a refresh every 2 s re-reads only what changed.
+#[derive(Default)]
+pub struct FileCache {
+    json: HashMap<PathBuf, (SystemTime, Value)>,
+    session_dirs: HashMap<String, PathBuf>,
+    titles: HashMap<PathBuf, (SystemTime, Option<String>)>,
+    events: EventTail,
+}
+
+#[derive(Default)]
+struct EventTail {
+    path: PathBuf,
+    offset: u64,
+    rows: Vec<Event>,
+}
+
+impl FileCache {
+    pub fn json(&mut self, p: &Path) -> Option<Value> {
+        let m = mtime(p)?;
+        if let Some((t, v)) = self.json.get(p) {
+            if *t == m {
+                return Some(v.clone());
+            }
+        }
+        let v = first_json(&fs::read(p).ok()?)?;
+        self.json.insert(p.to_path_buf(), (m, v.clone()));
+        Some(v)
+    }
+}
+
+// ------------------------------------------------------------------ events
+
+pub fn events_path(env: &Env) -> PathBuf {
+    env.state.join("events.jsonl")
+}
+
+pub(crate) fn parse_event_line(line: &str) -> Option<Event> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    let ev = s(&v, "event")?;
+    let labels = v
+        .get("labels")
+        .and_then(|l| l.as_object())
+        .map(|o| o.iter().filter_map(|(k, x)| Some((k.clone(), x.as_str()?.to_string()))).collect())
+        .unwrap_or_default();
+    Some(Event {
+        ts: v.get("ts").and_then(|t| t.as_f64()).unwrap_or(0.0),
+        event: ev,
+        session_id: s(&v, "session_id"),
+        source: s(&v, "source"),
+        reason: s(&v, "reason"),
+        agent_id: s(&v, "agent_id"),
+        agent_type: s(&v, "agent_type"),
+        tool_name: s(&v, "tool_name"),
+        to: s(&v, "to"),
+        pid: v.get("pid").and_then(|p| p.as_i64()),
+        labels,
+    })
+}
+
+/// Read events.jsonl (tolerant: bad lines are skipped).
+pub fn events(env: &Env) -> Vec<Event> {
+    let Ok(raw) = fs::read(events_path(env)) else { return vec![] };
+    String::from_utf8_lossy(&raw).lines().filter_map(parse_event_line).collect()
+}
+
+/// Same as `events`, but reads only what was appended since the last call.
+pub fn events_cached(env: &Env, cache: &mut FileCache) -> Vec<Event> {
+    let p = events_path(env);
+    let t = &mut cache.events;
+    if t.path != p {
+        *t = EventTail { path: p.clone(), ..Default::default() };
+    }
+    let Ok(mut f) = fs::File::open(&p) else {
+        t.offset = 0;
+        t.rows.clear();
+        return vec![];
+    };
+    let size = f.seek(SeekFrom::End(0)).unwrap_or(0);
+    if size < t.offset {
+        t.offset = 0;
+        t.rows.clear();
+    }
+    if size > t.offset {
+        let _ = f.seek(SeekFrom::Start(t.offset));
+        let mut raw = vec![];
+        if f.read_to_end(&mut raw).is_ok() {
+            // a partial last line waits for the next call
+            let end = raw.iter().rposition(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+            t.rows.extend(String::from_utf8_lossy(&raw[..end]).lines().filter_map(parse_event_line));
+            t.offset += end as u64;
+        }
+    }
+    t.rows.clone()
+}
+
+/// Labels per session id, from the newest SessionStart that carried any.
+pub fn labels_by_session(events: &[Event]) -> HashMap<String, BTreeMap<String, String>> {
+    let mut out = HashMap::new();
+    for e in events {
+        if e.event == "SessionStart" && !e.labels.is_empty() {
+            if let Some(sid) = &e.session_id {
+                out.insert(sid.clone(), e.labels.clone());
+            }
+        }
+    }
+    out
+}
+
+// ------------------------------------------------------------------ session rows
+
+/// One session as the files show it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionRow {
+    pub session_id: String,
+    pub name: String,
+    pub cwd: String,
+    /// interactive | background
+    pub kind: String,
+    /// background job id (what `attach`, `stop`, `rm` take)
+    pub short_id: Option<String>,
+    /// present only while the process is alive
+    pub pid: Option<i64>,
+    /// background job state; stale on live rows
+    pub state: Option<String>,
+    /// busy / idle / waiting on live rows
+    pub status: Option<String>,
+    pub status_since: Option<f64>,
+    pub started_at: Option<f64>,
+    /// set while a live session sits at a prompt (`status: waiting`)
+    pub waiting_for: Option<String>,
+}
+
+impl SessionRow {
+    pub fn live(&self) -> bool {
+        self.pid.is_some()
+    }
+    pub fn info(&self, labels: BTreeMap<String, String>) -> SessionInfo {
+        SessionInfo {
+            session_id: self.session_id.clone(),
+            short_id: self.short_id.clone(),
+            pid: self.pid,
+            kind: self.kind.clone(),
+            state: self.state.clone(),
+            status: self.status.clone(),
+            waiting_for: self.waiting_for.clone(),
+            started_at: self.started_at,
+            status_since: self.status_since,
+            name: self.name.clone(),
+            cwd: self.cwd.clone(),
+            labels,
+        }
+    }
+}
+
+pub fn pid_alive(pid: i64) -> bool {
+    if pid <= 0 || pid > i32::MAX as i64 {
+        return false;
+    }
+    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+fn norm_kind(k: &str) -> String {
+    match k {
+        "bg" | "background" => "background".into(),
+        "" => "?".into(),
+        other => other.into(),
+    }
+}
+
+/// Rows from the files `claude agents --json --all` reads. None when the
+/// layout is not there (a different Claude Code version, or no Claude Code).
+pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRow>> {
+    let sess_dir = env.claude_home.join("sessions");
+    let jobs_dir = env.claude_home.join("jobs");
+    if !sess_dir.is_dir() && !jobs_dir.is_dir() {
+        return None;
+    }
+    let list = |d: &Path| -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = fs::read_dir(d).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default();
+        v.sort();
+        v
+    };
+    let mut rows: Vec<SessionRow> = vec![];
+    let mut by_sid: HashMap<String, usize> = HashMap::new();
+    for jd in list(&jobs_dir) {
+        let jid = jd.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(d) = cache.json(&jd.join("state.json")) else { continue };
+        let Some(sid) = s(&d, "sessionId") else { continue };
+        by_sid.insert(sid.clone(), rows.len());
+        rows.push(SessionRow {
+            session_id: sid,
+            name: s(&d, "name").unwrap_or_default(),
+            cwd: s(&d, "cwd").unwrap_or_default(),
+            kind: "background".into(),
+            short_id: Some(jid),
+            pid: None,
+            state: s(&d, "state"),
+            status: None,
+            status_since: None,
+            started_at: ts(&d, "createdAt"),
+            waiting_for: None,
+        });
+    }
+    for p in list(&sess_dir) {
+        if p.extension().map(|x| x != "json").unwrap_or(true) {
+            continue;
+        }
+        let Some(d) = cache.json(&p) else { continue };
+        let Some(pid) = d.get("pid").and_then(|v| v.as_i64()) else { continue };
+        if !pid_alive(pid) {
+            continue;
+        }
+        let Some(sid) = s(&d, "sessionId") else { continue };
+        let kind = norm_kind(&s(&d, "kind").unwrap_or_default());
+        let status = s(&d, "status");
+        let live = SessionRow {
+            session_id: sid.clone(),
+            name: s(&d, "name").unwrap_or_default(),
+            cwd: s(&d, "cwd").unwrap_or_default(),
+            kind: kind.clone(),
+            short_id: s(&d, "jobId"),
+            pid: Some(pid),
+            state: None,
+            status: status.clone(),
+            status_since: ts(&d, "statusUpdatedAt"),
+            started_at: ts(&d, "startedAt"),
+            waiting_for: if status.as_deref() == Some("waiting") { Some(s(&d, "waitingFor").unwrap_or("input".into())) } else { None },
+        };
+        match by_sid.get(&sid) {
+            // a live background process: its job row gains pid and status
+            Some(&i) if kind == "background" => {
+                let r = &mut rows[i];
+                r.pid = live.pid;
+                r.status = live.status;
+                r.status_since = live.status_since;
+                r.waiting_for = live.waiting_for;
+                if !live.name.is_empty() {
+                    r.name = live.name;
+                }
+            }
+            // an interactive process on a session that also has a row: the live one wins
+            Some(&i) => rows[i] = live,
+            None => {
+                by_sid.insert(sid, rows.len());
+                rows.push(live)
+            }
+        }
+    }
+    Some(rows)
+}
+
+/// Rows from `claude agents --json --all` output.
+pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| {
+                    Some(SessionRow {
+                        session_id: s(r, "sessionId")?,
+                        name: s(r, "name").unwrap_or_default(),
+                        cwd: s(r, "cwd").unwrap_or_default(),
+                        kind: norm_kind(&s(r, "kind").unwrap_or_default()),
+                        short_id: s(r, "id"),
+                        pid: r.get("pid").and_then(|p| p.as_i64()),
+                        state: s(r, "state"),
+                        status: s(r, "status"),
+                        status_since: None,
+                        started_at: ts(r, "startedAt"),
+                        waiting_for: None,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ------------------------------------------------------------------ job detail
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JobState {
+    pub state: Option<String>,
+    pub detail: Option<String>,
+    /// the question a job left for you
+    pub needs: Option<String>,
+}
+
+pub fn read_job(env: &Env, cache: &mut FileCache, short_id: Option<&str>) -> JobState {
+    let Some(id) = short_id else { return JobState::default() };
+    let d = cache.json(&env.claude_home.join("jobs").join(id).join("state.json")).unwrap_or(Value::Null);
+    JobState { state: s(&d, "state"), detail: s(&d, "detail"), needs: s(&d, "needs") }
+}
+
+// ------------------------------------------------------------------ transcripts
+
+/// Claude Code's project-dir name for a cwd: every non-alphanumeric character becomes `-`.
+pub fn project_dir_name(cwd: &str) -> String {
+    cwd.trim_end_matches('/').chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
+}
+
+/// The transcript of a session: under its folder's project dir first, then anywhere.
+pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str) -> Option<PathBuf> {
+    let projects = env.claude_home.join("projects");
+    if let Some(c) = cwd {
+        let p = projects.join(project_dir_name(c)).join(format!("{sid}.jsonl"));
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Some(d) = find_session_dir(env, cache, sid) {
+        let p = d.with_extension("jsonl");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    for e in fs::read_dir(&projects).ok()?.filter_map(|e| e.ok()) {
+        let p = e.path().join(format!("{sid}.jsonl"));
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Transcripts in a folder's project dir, newest first: (last write, session id).
+pub fn transcripts_in(env: &Env, cwd: &str) -> Vec<(f64, String)> {
+    let proj = env.claude_home.join("projects").join(project_dir_name(cwd));
+    let mut out: Vec<(f64, String)> = fs::read_dir(&proj)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
+                .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// A session's name from its transcript: `<session>/custom-title.json`, else
+/// the last `customTitle` record near the start or end (transcripts can be large).
+pub fn transcript_title(cache: &mut FileCache, jsonl: &Path) -> Option<String> {
+    let sid_dir = jsonl.with_extension("");
+    if let Some(t) = cache.json(&sid_dir.join("custom-title.json")).and_then(|v| s(&v, "customTitle")) {
+        return Some(t);
+    }
+    let m = mtime(jsonl)?;
+    if let Some((t, title)) = cache.titles.get(jsonl) {
+        if *t == m {
+            return title.clone();
+        }
+    }
+    let mut f = fs::File::open(jsonl).ok()?;
+    let size = f.seek(SeekFrom::End(0)).ok()?;
+    let mut found = None;
+    for start in [0, size.saturating_sub(256 * 1024)] {
+        let _ = f.seek(SeekFrom::Start(start));
+        let mut raw = vec![0u8; (256 * 1024).min(size as usize)];
+        let n = f.read(&mut raw).unwrap_or(0);
+        for line in String::from_utf8_lossy(&raw[..n]).lines() {
+            if line.contains("\"customTitle\"") {
+                if let Ok(v) = serde_json::from_str::<Value>(line) {
+                    if let Some(t) = s(&v, "customTitle") {
+                        found = Some(t);
+                    }
+                }
+            }
+        }
+    }
+    cache.titles.insert(jsonl.to_path_buf(), (m, found.clone()));
+    found
+}
+
+// ------------------------------------------------------------------ sub-agents and tasks
+
+#[derive(Clone, Debug)]
+pub struct SubAgentRec {
+    pub agent_id: String,
+    pub parent_id: Option<String>,
+    pub label: String,
+    pub agent_type: Option<String>,
+    pub team: Option<String>,
+    pub teammate: bool,
+    pub last_write: f64,
+}
+
+fn find_session_dir(env: &Env, cache: &mut FileCache, sid: &str) -> Option<PathBuf> {
+    if let Some(p) = cache.session_dirs.get(sid) {
+        if p.is_dir() {
+            return Some(p.clone());
+        }
+    }
+    let rd = fs::read_dir(env.claude_home.join("projects")).ok()?;
+    for e in rd.filter_map(|e| e.ok()) {
+        let cand = e.path().join(sid);
+        if cand.is_dir() {
+            cache.session_dirs.insert(sid.to_string(), cand.clone());
+            return Some(cand);
+        }
+    }
+    None
+}
+
+pub fn read_subagents(env: &Env, cache: &mut FileCache, sid: &str) -> Vec<SubAgentRec> {
+    let Some(sdir) = find_session_dir(env, cache, sid) else { return vec![] };
+    let Ok(rd) = fs::read_dir(sdir.join("subagents")) else { return vec![] };
+    let mut out = vec![];
+    for e in rd.filter_map(|e| e.ok()) {
+        let fname = e.file_name().to_string_lossy().into_owned();
+        let Some(agent_id) = fname.strip_prefix("agent-").and_then(|r| r.strip_suffix(".meta.json")) else { continue };
+        let m = cache.json(&e.path()).unwrap_or(Value::Null);
+        let log = e.path().with_file_name(format!("agent-{agent_id}.jsonl"));
+        let last = mtime_secs(&log).or_else(|| mtime_secs(&e.path())).unwrap_or(0.0);
+        out.push(SubAgentRec {
+            agent_id: agent_id.to_string(),
+            parent_id: s(&m, "parentAgentId"),
+            label: s(&m, "name").or_else(|| s(&m, "description")).unwrap_or(agent_id.to_string()),
+            agent_type: s(&m, "agentType"),
+            team: s(&m, "teamName"),
+            teammate: s(&m, "taskKind").as_deref() == Some("in_process_teammate"),
+            last_write: last,
+        });
+    }
+    out.sort_by(|a, b| b.last_write.partial_cmp(&a.last_write).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+pub fn read_tasks(env: &Env, cache: &mut FileCache, team: &str) -> Vec<Task> {
+    let Ok(rd) = fs::read_dir(env.claude_home.join("tasks").join(team)) else { return vec![] };
+    let mut out = vec![];
+    for e in rd.filter_map(|e| e.ok()) {
+        let p = e.path();
+        if p.extension().map(|x| x != "json").unwrap_or(true) {
+            continue;
+        }
+        let Some(d) = cache.json(&p).filter(|d| d.is_object()) else { continue };
+        let stem = p.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+        out.push(Task {
+            id: s(&d, "id").unwrap_or(stem),
+            subject: s(&d, "subject").or_else(|| s(&d, "description")).unwrap_or("?".into()),
+            status: s(&d, "status").unwrap_or("pending".into()),
+            owner: s(&d, "owner"),
+        });
+    }
+    out.sort_by_key(|t| (t.id.parse::<i64>().unwrap_or(i64::MAX), t.id.clone()));
+    out
+}
+
+// ------------------------------------------------------------------ trust
+
+/// Whether Claude Code trusts `dir` (it or a parent has `hasTrustDialogAccepted`),
+/// from `<claude_home>/.claude.json` (the `CLAUDE_CONFIG_DIR` layout) and, when
+/// the Claude home is `~/.claude`, from `~/.claude.json`.
+pub fn folder_trusted(env: &Env, dir: &str) -> bool {
+    let mut files = vec![env.claude_home.join(".claude.json")];
+    if env.claude_home.file_name().map(|n| n == ".claude").unwrap_or(false) {
+        if let Some(parent) = env.claude_home.parent() {
+            files.push(parent.join(".claude.json"));
+        }
+    }
+    let want = Path::new(dir.trim_end_matches('/'));
+    for f in files {
+        let Some(v) = fs::read(&f).ok().and_then(|b| first_json(&b)) else { continue };
+        let Some(projects) = v.get("projects").and_then(|p| p.as_object()) else { continue };
+        for (k, p) in projects {
+            if p.get("hasTrustDialogAccepted").and_then(|x| x.as_bool()) == Some(true) && want.starts_with(Path::new(k.trim_end_matches('/'))) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_json_ignores_trailing_bytes() {
+        let v = first_json(br#"{"pid": 1, "sessionId": "a"}ionId": "old"}"#).unwrap();
+        assert_eq!(v["sessionId"], "a");
+        assert!(first_json(b"not json").is_none());
+        assert!(first_json(b"").is_none());
+    }
+
+    #[test]
+    fn iso_and_project_dir() {
+        assert_eq!(parse_iso("1970-01-01T00:01:00.500Z"), Some(60.5));
+        assert_eq!(parse_iso("short"), None);
+        assert_eq!(project_dir_name("/a/b.c_d/"), "-a-b-c-d");
+    }
+
+    #[test]
+    fn event_lines_tolerate_junk_and_new_fields() {
+        let e = parse_event_line(r#"{"ts": 1.5, "event": "SessionStart", "session_id": "s", "labels": {"NIMITZ_ID": "F"}, "scratchpad_dir": "/x"}"#).unwrap();
+        assert_eq!(e.labels.get("NIMITZ_ID").map(String::as_str), Some("F"));
+        assert!(parse_event_line("{\"event\": 3}").is_none());
+        assert!(parse_event_line("garbage").is_none());
+    }
+
+    #[test]
+    fn cli_rows_parse() {
+        let v: Value = serde_json::from_str(r#"[{"sessionId": "s1", "id": "j1", "kind": "bg", "pid": 4, "name": "n", "cwd": "/c"}, {"id": "no-session"}]"#).unwrap();
+        let rows = parse_cli_rows(&v);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "background");
+        assert!(rows[0].live());
+    }
 }
