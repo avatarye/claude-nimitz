@@ -277,6 +277,8 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         report.push(format!("[OK] {} old session name(s) recorded in {}/legacy.toml", legacy.len(), into.to_lowercase()));
         plan.steps.push(step_write(Some(fid.clone()), &fleet_dir.join("legacy.toml"), config::legacy_toml(&legacy), "old session names -> identities"));
     }
+    // What `nimitz check` will say about the result, in the report now.
+    check_result(env, &fleet_dir, &fleet_config, existing.as_ref(), &squads, &mut report);
     for (sq, fleet_md) in squads {
         let sqid = Id::commodore(into, &sq.squadron);
         let sd = fleet_dir.join("squadrons").join(sq.squadron.to_lowercase());
@@ -287,6 +289,39 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         plan.steps.push(step_write(Some(sqid.clone()), &sd.join("CLAUDE.md"), config::commodore_claude_md(into, &sq.squadron), "commodore brief"));
     }
     (plan, report)
+}
+
+/// Validate the fleet as it will be after the import (config.layout and every
+/// other config rule, plus folder.missing / folder.untrusted for this machine)
+/// and put each issue in the report.
+fn check_result(env: &Env, fleet_dir: &Path, config: &FleetConfig, existing: Option<&FleetOnDisk>, squads: &[(SquadronConfig, Option<String>)], report: &mut Vec<String>) {
+    let mut squadrons: Vec<(PathBuf, SquadronConfig)> = existing.map(|f| f.squadrons.clone()).unwrap_or_default();
+    for (sq, _) in squads {
+        squadrons.push((fleet_dir.join("squadrons").join(sq.squadron.to_lowercase()), sq.clone()));
+    }
+    let machine = config.machines.iter().find(|(_, m)| env.matches_hostname(&m.hostname)).map(|(l, _)| l.clone());
+    let f = FleetOnDisk { dir: fleet_dir.to_path_buf(), config: config.clone(), squadrons, machine };
+    let mut issues = config::validate(env, &f);
+    for (_, sq) in &f.squadrons {
+        for ship in &sq.ships {
+            let id = Id::ship(&config.fleet, &sq.squadron, &ship.name);
+            if let Some(d) = config::member_dir(env, &f, &id) {
+                issues.extend(crate::check::folder_issue(env, &id, &d.to_string_lossy()));
+            }
+        }
+    }
+    if issues.is_empty() {
+        report.push("[OK] the result passes `nimitz check` for its config and folders on this machine".to_string());
+    }
+    for i in issues {
+        let tag = match i.severity {
+            Severity::Error => "[ERROR]",
+            Severity::Warn => "[WARN]",
+            Severity::Info => "[INFO]",
+        };
+        let fix = i.fix.map(|x| format!(" (fix: {x})")).unwrap_or_default();
+        report.push(format!("{tag} after import, check will report {}: {}{fix}", i.code, i.message));
+    }
 }
 
 #[cfg(test)]
@@ -438,4 +473,28 @@ mod tests {
 
     // The real old fleets are exercised from fixture copies in
     // tests/migrate_old_fleets.rs (load_all + check + idempotence).
+
+    #[test]
+    fn the_report_lists_what_check_will_say() {
+        let (td, env) = test_env();
+        let home = td.path().join("home");
+        let proj = home.join("proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(home.join("CLAUDE.md"), "mine").unwrap();
+        let json = format!(
+            r#"{{"fleet": "GEN", "machines": {{"m": {{"hostname": "test-mac"}}}}, "agents": [
+              {{"name": "HOME", "prompt": "p", "dirs": {{"m": "{}"}}}},
+              {{"name": "PROJ", "prompt": "p", "dirs": {{"m": "{}"}}}},
+              {{"name": "GONE", "prompt": "p", "dirs": {{"m": "/no/such/folder"}}}}]}}"#,
+            home.display(),
+            proj.display()
+        );
+        let old = td.path().join("old/gen");
+        old_fleet(&old, &json, None);
+        let (plan, report) = plan_from_fleet_skill(&env, &[old], "MAIN");
+        assert!(plan.ok(), "{:?}", plan.refusals);
+        let r = report.join("\n");
+        assert!(r.contains("check will report config.layout") && r.contains("MAIN/GEN/PROJ"), "{r}");
+        assert!(r.contains("check will report folder.missing"), "{r}");
+    }
 }
