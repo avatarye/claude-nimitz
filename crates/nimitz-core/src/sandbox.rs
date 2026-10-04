@@ -701,6 +701,18 @@ fn start_as(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&St
         &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "bg", "name": name,
                 "jobId": short, "status": "idle", "statusUpdatedAt": ms(t)}),
     );
+    // The conversation: a new id starts an empty transcript (a copy has NO
+    // history, BUG-53); a kept id appends to the one it has, wherever it is.
+    let existing = fs::read_dir(claude_home(base).join("projects"))
+        .ok()
+        .and_then(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path().join(format!("{sid}.jsonl"))).find(|p| p.is_file()));
+    let log = existing.unwrap_or_else(|| claude_home(base).join("projects").join(crate::evidence::project_dir_name(cwd)).join(format!("{sid}.jsonl")));
+    if let Some(d) = log.parent() {
+        let _ = fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&log) {
+        let _ = writeln!(f, "{}", json!({"type": "system", "sessionId": sid, "cwd": cwd, "source": source}));
+    }
     // A copy with no --settings carries no hooks at all, so it fires none (probe 2b, 2c2).
     if labels_fire {
         fire(base, "SessionStart", &sid, Some(source), &labels, cwd);

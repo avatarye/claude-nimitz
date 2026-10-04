@@ -432,17 +432,9 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
                 plan.steps.push(step(id, crate::claude::resume_bg(env, &p.session_id), "resume keeps the id, name, mode and labels (probe 2c1)"));
             }
         }
-        // stopped without labels: a flag-free resume would keep none; full relaunch (row 5)
-        Some(p) => {
-            plan.steps.push(step(
-                id,
-                crate::claude::relaunch_bg(env, id, &mode, &p.session_id),
-                "relaunch with every flag: a copy (source fork) that carries the labels",
-            ));
-            if let Some(short) = &p.short_id {
-                plan.steps.push(step(id, crate::claude::rm(env, short), "drop the old, unlabelled row"));
-            }
-        }
+        // stopped without labels (or with a drifted name): a flag-free resume
+        // would keep neither; rm the row, then resume with every flag (row 5)
+        Some(p) => plan.steps.extend(relabel_steps(env, id, &mode, p, &cwd)),
         None if lineage_broken && !force => {
             refuse(
                 plan,
@@ -473,11 +465,11 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
                 // stopped session the row-5 way (a labelled copy); the old rows stay
                 // (Info `legacy`, for `sweep` to offer)
                 let short = newest.short_id.as_deref().unwrap_or(&newest.session_id);
-                plan.steps.push(step(
-                    id,
-                    crate::claude::relaunch_bg(env, id, &mode, &newest.session_id),
-                    &format!("{MIGRATE_WHY} {short} (newest of {})", olds.len()),
-                ));
+                let mut steps = relabel_steps(env, id, &mode, newest, &cwd);
+                if let Some(last) = steps.last_mut() {
+                    last.why = format!("{MIGRATE_WHY} {short} (newest of {}): its id becomes the ship's, history kept", olds.len());
+                }
+                plan.steps.extend(steps);
             } else {
                 cold_launch(env, plan, &fod, id, m.role, &mode, &cwd); // row 7
                 if m.role.interactive() {
@@ -872,24 +864,34 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         );
         return plan;
     }
-    let step = |cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.clone()), why: why.into() };
-    if p.pid.is_some() {
-        match &p.short_id {
-            Some(short) => plan.steps.push(step(crate::claude::stop(env, short), "a live session is never resumed; stop it first")),
-            None => {
-                refuse(&mut plan, "session.none", format!("{id} is live with no job id; cannot stop it"), None, Some(id.clone()));
-                return plan;
-            }
-        }
+    if p.pid.is_some() && p.short_id.is_none() {
+        refuse(&mut plan, "session.none", format!("{id} is live with no job id; cannot stop it"), None, Some(id.clone()));
+        return plan;
     }
-    plan.steps.push(step(
-        crate::claude::relaunch_bg(env, id, &mode, &p.session_id),
-        "relaunch with every flag: a copy (source fork) that carries the labels",
-    ));
-    if let Some(short) = &p.short_id {
-        plan.steps.push(step(crate::claude::rm(env, short), "drop the old row; one row per identity"));
-    }
+    plan.steps.extend(relabel_steps(env, id, &mode, p, &cwd));
     plan
+}
+
+/// Give a session new labels, name and mode while keeping its id and its
+/// conversation (BUG-53, found on real Claude Code): `--resume <id>` with flags
+/// while the job row exists starts a copy with a new id and NO history; with the
+/// row removed, the same command continues <id> with its history. So: stop it
+/// if live, `rm` its row (native), then `--resume <id>` with every flag. If the
+/// rm fails, `apply` stops there and nothing is resumed.
+fn relabel_steps(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str) -> Vec<Step> {
+    let step = |cmd: Vec<String>, why: String| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string()), why };
+    let mut v = vec![];
+    if let Some(short) = &p.short_id {
+        if p.pid.is_some() {
+            v.push(step(crate::claude::stop(env, short), "a live session is never resumed; stop it first".into()));
+        }
+        v.push(step(crate::claude::rm(env, short), format!("remove row {short} first: a resume with flags while it exists makes an empty copy")));
+    }
+    v.push(step(
+        crate::claude::relaunch_bg(env, id, mode, &p.session_id),
+        format!("resume {} with every flag: same id and history, new name and labels", &p.session_id[..p.session_id.len().min(8)]),
+    ));
+    v
 }
 
 /// Remove job rows: a member's stale rows (`target` = identity), or one row of
@@ -1209,6 +1211,12 @@ fn classify(step: &Step) -> Kind {
     }
 }
 
+/// The session id a `--resume <id>` step continues.
+fn resumed_id(step: &Step) -> Option<String> {
+    let i = step.cmd.iter().position(|a| a == "--resume")?;
+    step.cmd.get(i + 1).cloned()
+}
+
 /// How long `apply` waits for a background session's SessionStart event.
 pub const BIND_TIMEOUT_S: f64 = 15.0;
 
@@ -1385,6 +1393,19 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             }
             continue;
         }
+        if kind == Kind::Relaunch {
+            if let Some(r) = resumed_id(step).and_then(|sid| crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default().into_iter().find(|r| r.session_id == sid && r.short_id.is_some())) {
+                out.ran.push((step.clone(), -1, "not run".into()));
+                out.issues.push(issue(
+                    "step.failed",
+                    Severity::Error,
+                    format!("the job row {} of {} still exists; a resume with flags would start an empty copy", r.short_id.unwrap_or_default(), r.session_id),
+                    step.id.as_ref().map(|i| format!("nimitz relaunch {i}")),
+                    step.id.clone(),
+                ));
+                return out;
+            }
+        }
         let since = crate::evidence::now() - 0.001;
         let (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
         out.ran.push((step.clone(), rc, text.clone()));
@@ -1401,11 +1422,12 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         match kind {
             Kind::Launch | Kind::Relaunch | Kind::Resume { .. } => {
                 let Some(id) = &step.id else { continue };
+                let resumed = resumed_id(step);
                 let (expect, via) = match &kind {
                     Kind::Resume { session_id } => (Some(session_id.as_str()), "resume"),
                     Kind::Launch => (None, "launch"),
-                    _ if step.why.starts_with(MIGRATE_WHY) => (None, "migrate"),
-                    _ => (None, "relaunch"),
+                    _ if step.why.starts_with(MIGRATE_WHY) => (resumed.as_deref(), "migrate"),
+                    _ => (resumed.as_deref(), "relaunch"),
                 };
                 match bind_started(env, id, step.cwd.as_deref(), since, expect, via, BIND_TIMEOUT_S) {
                     Ok(sid) => started.push((id.clone(), sid)),
@@ -1424,7 +1446,8 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             }
             Kind::Rm { short } => {
                 if find_row(env, &short).is_some() {
-                    out.issues.push(issue("copy.rows", Severity::Error, format!("rm {short} ran but the row is still there"), None, step.id.clone()));
+                    out.issues.push(issue("step.failed", Severity::Error, format!("rm {short} ran but the row is still there; nothing after it ran"), None, step.id.clone()));
+                    return out; // a resume with flags would now make an empty copy
                 }
             }
             Kind::Bind | Kind::Interactive | Kind::Config => unreachable!(),

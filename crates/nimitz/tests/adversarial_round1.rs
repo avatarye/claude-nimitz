@@ -531,7 +531,6 @@ fn bug48_a_symlinked_nimitz_home_sees_the_same_world() {
 }
 
 #[test]
-#[ignore = "BUG-53"]
 fn bug53_relaunch_keeps_the_session_id_and_its_history() {
     // Real Claude Code: `--bg --resume <id> --name --settings` while the row exists starts a copy
     // with NO conversation; after `claude rm <row>` the same command continues <id> with history.

@@ -265,7 +265,7 @@ fn stop_relaunch_sweep_rm() {
     assert_eq!(r.code, 0, "{}", r.out);
     let m = sb.member("MAIN/ARGOS/NOLABEL");
     assert!(live(&m));
-    assert_ne!(m["session"]["session_id"], old);
+    assert_eq!(m["session"]["session_id"], old, "rm then resume with flags keeps the id and its history (BUG-53)");
     assert_eq!(m["session"]["labels"]["NIMITZ_ID"], "MAIN/ARGOS/NOLABEL");
 
     assert!(!sb.member("MAIN/ARGOS/COPIES")["extra_rows"].as_array().unwrap().is_empty());
