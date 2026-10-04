@@ -15,7 +15,7 @@ Needs Rust (cargo) and Claude Code. Herdr is needed to run admirals and
 commodores; status, config and ships work without it.
 
 ```sh
-git clone https://github.com/avatarye/claude-nimitz && cd claude-nimitz
+git clone -b dev https://github.com/avatarye/claude-nimitz && cd claude-nimitz
 cargo build --release
 cargo install --path crates/nimitz       # nimitz: the CLI and the hook binary
 cargo install --path crates/admiralty    # admiralty: the TUI

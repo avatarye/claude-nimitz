@@ -10,11 +10,11 @@ Date: 2026-10-04. Branch: `dev`. For: you, before the first real use.
 | `admiralty` (TUI) | Fleet and squadron frames, issues view, forms, actions. Screens in `docs/screens/`. |
 | Herdr plugin (`herdr-plugin/`) | Same plugin id `admiralty-watch`; now runs `admiralty`. |
 | Main fleet | Migrated to `~/.claude-nimitz/main` (Dropbox). 10 squadrons, 29 ships. No session was started or stopped. |
-| Tests | 300+ unit, sandbox and CLI tests; 55 adversarial bugs found, all fixed; 3 test rounds on real Claude Code. Reports: `docs/test/report-round1.md`. |
+| Tests | 315 unit, sandbox and CLI tests, none skipped; 55 adversarial bugs found, all fixed and re-tested; 4 rounds on real Claude Code, including history checks on every relaunch path. Reports: `docs/test/report-round1.md`. |
 
 ## 2. Install
 
-1. `cd ~/Github/claude-nimitz && git checkout dev && git pull`
+1. `cd ~/Github/claude-nimitz && git checkout dev && git pull` (`main` holds only the plan; code is on `dev`)
 2. `cargo install --path crates/nimitz` and `cargo install --path crates/admiralty`
 3. Plugin: run the command that `nimitz doctor` prints (marketplace add, then install).
 4. `nimitz init --label west-mac`, then `nimitz doctor`. Every line must be `[OK]`.

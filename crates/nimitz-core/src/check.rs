@@ -270,9 +270,9 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
             let short = s.short_id.as_deref().unwrap_or(&s.session_id);
             // never offer rm for a live session (contracts.md section 7)
             let fix = if s.pid.is_some() {
-                format!("nimitz adopt {} <id>  # or nimitz stop {short} first, then nimitz rm {short}", s.session_id)
+                format!("nimitz stop {short}, then nimitz rm {short}  # or, if it holds work to keep: nimitz adopt {} <id>", s.session_id)
             } else {
-                format!("nimitz adopt {} <id>  # or nimitz rm {short}", s.session_id)
+                format!("nimitz rm {short}  # or, if it holds work to keep: nimitz adopt {} <id>", s.session_id)
             };
             out.push(Issue {
                 code: "stowaway".into(),
