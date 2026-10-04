@@ -14,6 +14,15 @@ use crate::data::{Bundle, DataSource};
 
 pub type SourceMaker = Box<dyn FnOnce() -> Box<dyn DataSource> + Send>;
 
+type Term = ratatui::Terminal<crate::backend::GlyphSafe<ratatui::backend::CrosstermBackend<std::io::Stdout>>>;
+
+/// Raw mode, the alternate screen and the panic hook from `ratatui::init`, on
+/// a backend that keeps positions right whatever the terminal's glyph widths.
+fn init_terminal() -> std::io::Result<Term> {
+    drop(ratatui::init());
+    ratatui::Terminal::new(crate::backend::GlyphSafe(ratatui::backend::CrosstermBackend::new(std::io::stdout())))
+}
+
 enum Cmd {
     Refresh,
 }
@@ -57,7 +66,7 @@ fn edit_in_editor(text: &str) -> std::io::Result<String> {
 }
 
 /// Carry out one effect; `true` means quit.
-fn effect(app: &mut App, e: Effect, terminal: &mut ratatui::DefaultTerminal, cmd_tx: &mpsc::Sender<Cmd>, done_tx: &mpsc::Sender<(Pending, nimitz_core::Outcome)>) -> bool {
+fn effect(app: &mut App, e: Effect, terminal: &mut Term, cmd_tx: &mpsc::Sender<Cmd>, done_tx: &mpsc::Sender<(Pending, nimitz_core::Outcome)>) -> bool {
     match e {
         Effect::Quit => return true,
         Effect::Refresh => {
@@ -79,7 +88,10 @@ fn effect(app: &mut App, e: Effect, terminal: &mut ratatui::DefaultTerminal, cmd
             if let Some(text) = app.editor_text() {
                 ratatui::restore();
                 let edited = edit_in_editor(&text);
-                *terminal = ratatui::init();
+                match init_terminal() {
+                    Ok(t) => *terminal = t,
+                    Err(e) => app.notify(format!("terminal: {e}"), crate::theme::st(crate::theme::mono::PINK)),
+                }
                 let _ = terminal.clear();
                 match edited {
                     Ok(t) => app.editor_done(t),
@@ -94,7 +106,7 @@ fn effect(app: &mut App, e: Effect, terminal: &mut ratatui::DefaultTerminal, cmd
 pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Result<()> {
     let (cmd_tx, data_rx) = spawn_loader(make, interval);
     let (done_tx, done_rx) = mpsc::channel::<(Pending, nimitz_core::Outcome)>();
-    let mut terminal = ratatui::init();
+    let mut terminal = init_terminal()?;
     let mut dirty = true;
     let mut last_draw = Instant::now();
     // keys typed before the first data lands, replayed once it does
