@@ -544,7 +544,7 @@ impl App {
             }
         }
         let Some(b) = &self.bundle else { return None };
-        match actions::prepare(&self.ctx, &b.snap, &self.target(), act, None) {
+        match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {
             Ok(p) => self.modal = Some(Modal::Confirm(p)),
             Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::YELLOW)),
         }
@@ -694,7 +694,7 @@ impl App {
             (KeyCode::Char('u'), _) => {
                 if let Some(f) = self.current_fleet() {
                     let b = self.bundle.as_ref()?;
-                    match actions::prepare(&self.ctx, &b.snap, &Target::Fleet(Id(f)), Act::Up, None) {
+                    match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &Target::Fleet(Id(f)), Act::Up, None) {
                         Ok(p) => self.modal = Some(Modal::Confirm(p)),
                         Err(why) => self.notify(format!("up: not available. {why}"), st(mono::YELLOW)),
                     }

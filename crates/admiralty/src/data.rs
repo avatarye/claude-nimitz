@@ -115,10 +115,55 @@ impl CoreSource {
     }
 }
 
+/// Fold core's integrity check into the snapshot: each finding goes on the
+/// member it names (or the fleet, or the machine), once.
+pub fn merge_check(snap: &mut Snapshot, found: Vec<nimitz_core::Issue>) {
+    let same = |a: &nimitz_core::Issue, b: &nimitz_core::Issue| a.code == b.code && a.id == b.id && a.message == b.message;
+    let seen = |snap: &Snapshot, i: &nimitz_core::Issue| crate::view::all_issues(snap).into_iter().any(|x| same(x, i));
+    for i in found {
+        if seen(snap, &i) {
+            continue;
+        }
+        let mut placed = false;
+        if let Some(id) = i.id.clone() {
+            for f in &mut snap.fleets {
+                if f.id.fleet() != id.fleet() {
+                    continue;
+                }
+                let mut members: Vec<&mut nimitz_core::Member> = vec![&mut f.admiral];
+                for sq in &mut f.squadrons {
+                    members.push(&mut sq.commodore);
+                    members.extend(sq.ships.iter_mut());
+                    members.extend(sq.tenders.iter_mut());
+                }
+                if let Some(m) = members.into_iter().find(|m| m.id == id) {
+                    m.issues.push(i.clone());
+                    placed = true;
+                } else {
+                    f.issues.push(i.clone());
+                    placed = true;
+                }
+                break;
+            }
+        }
+        if !placed {
+            snap.issues.push(i);
+        }
+    }
+}
+
 impl DataSource for CoreSource {
     fn load(&mut self) -> Bundle {
+        let mut snap = nimitz_core::snapshot::snapshot(&self.env, &mut self.cache);
+        let mut found = nimitz_core::check::check(&self.env, &snap, None);
+        for f in &snap.fleets {
+            for m in crate::view::fleet_members(f) {
+                found.extend(nimitz_core::sessions::session_issues(&self.env, m));
+            }
+        }
+        merge_check(&mut snap, found);
         Bundle {
-            snap: nimitz_core::snapshot::snapshot(&self.env, &mut self.cache),
+            snap,
             panes: self.mux.panes(),
             mux_name: self.mux.name().to_string(),
             mux_caps: self.mux.caps(),

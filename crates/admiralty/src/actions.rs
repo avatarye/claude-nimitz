@@ -278,9 +278,10 @@ fn with_panes(act: Act, command: String, plan: Plan) -> Pending {
     Pending { act, command, plan, config: false, panes }
 }
 
-/// Build the core plan for `act` on `target`; `adopt_as` names the identity for adopt.
-pub fn prepare(ctx: &Ctx, snap: &Snapshot, target: &Target, act: Act, adopt_as: Option<&Id>) -> Result<Pending, String> {
-    available(ctx.mux.caps(), snap, target, act)?;
+/// Build the core plan for `act` on `target`; `caps` are what the loader's
+/// multiplexer reported; `adopt_as` names the identity for adopt.
+pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act, adopt_as: Option<&Id>) -> Result<Pending, String> {
+    available(caps, snap, target, act)?;
     let env = &ctx.env;
     let user = Caller::User;
     let p = match (act, target) {

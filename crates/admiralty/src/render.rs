@@ -367,7 +367,7 @@ fn draw_issues(app: &App, f: &mut Frame, area: Rect, sel: usize) {
         body.push(fx);
     }
     let room = inner_h.saturating_sub(lines.len());
-    let start = if sel_line + 2 > room { sel_line + 2 - room } else { 0 };
+    let start = (sel_line + 2).saturating_sub(room);
     lines.extend(body.into_iter().skip(start).take(room));
     let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
     f.render_widget(Clear, r);
