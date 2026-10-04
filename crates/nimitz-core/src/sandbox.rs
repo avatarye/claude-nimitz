@@ -111,7 +111,14 @@ fn trusted(base: &Path, cwd: &str) -> bool {
     // git repository (a `.git` folder or file), which needs an entry at its root
     // or below (BUG-50, seen for worktrees and plain repos).
     let real = crate::env::canon(Path::new(cwd));
-    let floor = crate::env::git_root(&real);
+    // sessions ran here before: Claude Code accepted this folder already
+    let proj = claude_home(base).join("projects");
+    let ran_here = [cwd.to_string(), real.to_string_lossy().into_owned()]
+        .iter()
+        .any(|c| fs::read_dir(proj.join(crate::evidence::project_dir_name(c))).map(|mut d| d.next().is_some()).unwrap_or(false));
+    // inside a git repo, a parent's trust is not enough, unless sessions ran
+    // here before (Claude Code accepted the repo then; core-config's ran_here)
+    let floor = crate::env::git_root(&real).filter(|_| !ran_here);
     trust_files(base).iter().any(|f| {
         read_json(f)
             .and_then(|v| v.get("projects").and_then(|p| p.as_object()).cloned())
