@@ -644,8 +644,10 @@ pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
             files.push(parent.join(".claude.json"));
         }
     }
+    // Claude Code records real paths (/private/tmp for /tmp): try both forms
     let want = Path::new(dir.trim_end_matches('/'));
-    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root)))
+    let real = crate::env::canon(want);
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root) || real.starts_with(root)))
 }
 
 fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {

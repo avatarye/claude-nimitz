@@ -637,6 +637,10 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
         }
         start_member(env, &mut plan, snap, &link, force);
     }
+    // A `legacy` warning is about starting that member; a running parent left
+    // alone does not make the target's start a second agent anywhere (BUG-38).
+    let acting: Vec<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).chain(std::iter::once(id.clone())).collect();
+    plan.warnings.retain(|i| i.code != "legacy" || i.id.as_ref().map(|x| acting.contains(x)).unwrap_or(true));
     dedup_issues(&mut plan);
     plan
 }
