@@ -107,13 +107,18 @@ fn trusted(base: &Path, cwd: &str) -> bool {
     if Path::new(cwd).starts_with(&home) || Path::new(cwd).starts_with(&real_home) {
         return true;
     }
+    // Like real Claude Code: a parent's trust covers a folder, except inside a
+    // git worktree (`.git` is a file), which needs an entry at its root or below
+    // (BUG-50).
+    let real = crate::env::canon(Path::new(cwd));
+    let floor = crate::env::git_root(&real).filter(|r| crate::env::is_git_worktree(r));
     trust_files(base).iter().any(|f| {
         read_json(f)
             .and_then(|v| v.get("projects").and_then(|p| p.as_object()).cloned())
             .map(|projects| {
-                Path::new(cwd)
-                    .ancestors()
-                    .any(|a| projects.get(&a.to_string_lossy().into_owned()).and_then(|e| e.get("hasTrustDialogAccepted")).and_then(|b| b.as_bool()) == Some(true))
+                let accepted = |a: &Path| projects.get(&a.to_string_lossy().into_owned()).and_then(|e| e.get("hasTrustDialogAccepted")).and_then(|b| b.as_bool()) == Some(true);
+                let covers = |a: &Path| floor.as_ref().map(|r| a.starts_with(r)).unwrap_or(true);
+                Path::new(cwd).ancestors().chain(real.ancestors()).any(|a| covers(a) && accepted(a))
             })
             .unwrap_or(false)
     })

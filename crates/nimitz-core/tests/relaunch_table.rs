@@ -39,6 +39,9 @@ impl World {
     fn start(&self, snap: &Snapshot, id: &Id, force: bool) -> Plan {
         sessions::plan_start(&self.env, snap, id, &Caller::User, force)
     }
+    fn start_as(&self, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
+        sessions::plan_start(&self.env, snap, id, caller, false)
+    }
     /// Steps of a plan that belong to one identity.
     fn steps_of<'a>(&self, plan: &'a Plan, id: &Id) -> Vec<&'a Step> {
         plan.steps.iter().filter(|s| s.id.as_ref() == Some(id)).collect()
@@ -1328,4 +1331,40 @@ fn bug52_the_labels_mismatch_fix_stops_a_session_in_the_wrong_folder() {
     assert!(plan.ok(), "the fix must run: {:?}", plan.refusals);
     assert!(sessions::apply(&w.env, &plan).verified);
     assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(short.as_str()) && r.live()));
+}
+
+#[test]
+fn bug51_a_caller_without_authority_gets_only_the_authority_refusal() {
+    let w = world();
+    let snap = w.snap();
+    let ship = Caller::Member { id: w.ship("CLEAN"), role: Role::Ship };
+    for target in ["CLEAN", "DRIFT", "FRESH"] {
+        let p = w.start_as(&snap, &w.ship(target), &ship);
+        assert_eq!(p.refusals.len(), 1, "{target}: {:?}", p.refusals);
+        assert_eq!(p.refusals[0].code, "authority");
+        assert!(p.warnings.is_empty() && p.steps.is_empty() && p.refusals[0].fix.is_none(), "{target}: {p:?}");
+    }
+}
+
+#[test]
+fn bug50_a_launch_in_an_untrusted_worktree_fails_with_the_trust_fix() {
+    let w = world();
+    // a git worktree inside FRESH's (trusted) folder: a parent's trust does not cover it
+    let fresh = w.member(&w.snap(), &w.ship("FRESH")).cwd.unwrap();
+    let wt = std::path::Path::new(&fresh).join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
+    let ship = ShipDef { name: "WT".into(), prompt: Some("hi".into()), dirs: [("sandbox".to_string(), wt.to_string_lossy().into_owned())].into(), ..Default::default() };
+    let p = nimitz_core::config::plan_ship_new(&w.env, "MAIN", "ARGOS", ship);
+    assert!(p.ok(), "{:?}", p.refusals);
+    assert!(nimitz_core::config::apply_config_plan(&w.env, &p).verified);
+    let id = w.ship("WT");
+    let plan = w.start(&w.snap(), &id, false);
+    assert!(plan.ok(), "a worktree is a warning, not a refusal: {:?}", plan.refusals);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(!out.verified);
+    let i = out.issues.iter().find(|i| i.code == "step.failed").expect("the launch failed");
+    assert!(i.message.contains("Workspace not trusted"), "{}", i.message);
+    let fix = i.fix.clone().expect("a fix");
+    assert!(fix.contains("run `claude` once in") && fix.contains("/wt"), "{fix}");
 }

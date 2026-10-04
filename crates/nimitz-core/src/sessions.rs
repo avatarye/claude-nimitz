@@ -586,6 +586,12 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
 /// Start `id` and every missing parent, top-down. Runs `check` first.
 pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: bool) -> Plan {
     let mut plan = Plan { summary: format!("start {id} (top-down)"), ..Default::default() };
+    // Authority first (BUG-51): a caller who may not start the target gets that
+    // one refusal, and nothing else (no other refusals, warnings or fixes).
+    if let Err(why) = may_start(caller, id, "start") {
+        refuse(&mut plan, "authority", why, None, Some(id.clone()));
+        return plan;
+    }
     gate(env, &mut plan, snap, Some(id), force);
     // What is wrong with a member caller's own chain is yours to fix, not a
     // reason to refuse the caller's start of its ship or tender.
@@ -1415,11 +1421,14 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         let (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
         out.ran.push((step.clone(), rc, text.clone()));
         if rc != 0 {
+            // real Claude Code refuses an untrusted folder at launch (BUG-50)
+            let fix = (text.contains("Workspace not trusted") || text.contains("not trusted"))
+                .then(|| crate::check::untrusted_fix(std::path::Path::new(step.cwd.as_deref().unwrap_or("."))));
             out.issues.push(issue(
                 "step.failed",
                 Severity::Error,
                 format!("step failed ({rc}): {} -> {text}", step.cmd.join(" ")),
-                None,
+                fix,
                 step.id.clone(),
             ));
             return out; // a failed step stops the plan; nothing after it is safe
