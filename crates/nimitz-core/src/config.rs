@@ -640,6 +640,135 @@ pub fn plan_machine_add(env: &Env, fleet: &str, label: &str, dirs: Vec<(Id, Stri
     plan
 }
 
+/// Claude Code's permission modes (`--permission-mode`).
+pub const PERMISSION_MODES: [&str; 6] = ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"];
+
+/// A mode to set: `Some("")` clears it, an unknown mode refuses.
+fn mode_change(plan: &mut Plan, mode: Option<&str>, id: &Id) -> Option<Option<String>> {
+    let m = mode?;
+    if m.is_empty() {
+        return Some(None);
+    }
+    if !PERMISSION_MODES.contains(&m) {
+        refuse(plan, "config.invalid", format!("permission mode {m:?} is not one of {}", PERMISSION_MODES.join(", ")), None, Some(id.clone()));
+        return None;
+    }
+    Some(Some(m.to_string()))
+}
+
+/// `nimitz fleet set <F>`: the admiral's permission mode (`Some("")` clears it).
+/// It takes effect at the admiral's next start.
+pub fn plan_fleet_set(env: &Env, fleet: &str, admiral_mode: Option<&str>) -> Plan {
+    let fid = Id::admiral(fleet);
+    let mut plan = Plan { summary: format!("update fleet {fleet}"), ..Default::default() };
+    let f = match load_fleet(env, fleet) {
+        Ok(f) => f,
+        Err(i) => {
+            plan.refusals.push(i);
+            return plan;
+        }
+    };
+    let mut c = f.config.clone();
+    if let Some(m) = mode_change(&mut plan, admiral_mode, &fid) {
+        c.admiral.permission_mode = m;
+    }
+    if plan.ok() && c != f.config {
+        plan.steps.push(step_write(Some(fid), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings"));
+    }
+    plan
+}
+
+/// `nimitz squadron set <F/SQ>`: brief text (into the brief file), `comms`, and
+/// the default ship mode (`Some("")` clears it). Ships pick changes up at their
+/// next relaunch; the comms rule applies to the next signal.
+pub fn plan_squadron_set(env: &Env, id: &Id, brief: Option<&str>, comms: Option<Comms>, mode: Option<&str>) -> Plan {
+    let mut plan = Plan { summary: format!("update squadron {id}"), ..Default::default() };
+    if id.role() != Role::Commodore {
+        refuse(&mut plan, "config.invalid", format!("{id} is not a squadron id (F/SQ)"), None, Some(id.clone()));
+        return plan;
+    }
+    let (fleet, sq) = (id.fleet().to_string(), id.squadron().unwrap_or_default().to_string());
+    let f = match load_fleet(env, &fleet) {
+        Ok(f) => f,
+        Err(i) => {
+            plan.refusals.push(i);
+            return plan;
+        }
+    };
+    let Some((dir, s)) = f.squadrons.iter().find(|(_, s)| s.squadron == sq) else {
+        refuse(&mut plan, "config.invalid", format!("no squadron {id}"), Some(format!("nimitz squadron new {id}")), Some(id.clone()));
+        return plan;
+    };
+    let mut c = s.clone();
+    if let Some(cm) = comms {
+        if let Comms::Allow { allow } = &cm {
+            for a in allow {
+                let ok = Id(a.clone()).role() == Role::Ship && Id(a.clone()).parts().iter().all(|p| valid_name(p));
+                if !ok {
+                    refuse(&mut plan, "config.invalid", format!("comms allow entry {a:?} is not a ship id F/SQ/SHIP"), None, Some(id.clone()));
+                }
+            }
+        }
+        c.comms = cm;
+    }
+    if let Some(m) = mode_change(&mut plan, mode, id) {
+        c.permission_mode = m;
+    }
+    if let Some(b) = brief {
+        let file = c.brief.clone().unwrap_or_else(|| "SQUADRON.md".into());
+        c.brief = Some(file.clone());
+        plan.steps.push(step_write(Some(id.clone()), &dir.join(file), squadron_md(&fleet, &sq, b), "the brief"));
+    }
+    if &c != s {
+        plan.steps.insert(0, step_write(Some(id.clone()), &dir.join("squadron.toml"), toml_out(&c), "squadron settings"));
+    }
+    if !plan.ok() {
+        plan.steps.clear();
+    }
+    plan
+}
+
+/// `nimitz machine rm <F> <label>`: the label leaves `fleet.toml` and every
+/// ship's folders and modes. Folders and transcripts on disk stay.
+pub fn plan_machine_rm(env: &Env, fleet: &str, label: &str) -> Plan {
+    let fid = Id::admiral(fleet);
+    let mut plan = Plan { summary: format!("remove machine {label} from {fleet}"), ..Default::default() };
+    let f = match load_fleet(env, fleet) {
+        Ok(f) => f,
+        Err(i) => {
+            plan.refusals.push(i);
+            return plan;
+        }
+    };
+    let Some(m) = f.config.machines.get(label) else {
+        refuse(&mut plan, "config.invalid", format!("machine {label} is not in {fleet}"), None, Some(fid));
+        return plan;
+    };
+    if env.matches_hostname(&m.hostname) {
+        plan.warnings.push(issue(
+            "config.pending",
+            Severity::Warn,
+            format!("{label} is this machine: {fleet}'s members stop running here after their next stop"),
+            None,
+            Some(fid.clone()),
+        ));
+    }
+    let mut c = f.config.clone();
+    c.machines.remove(label);
+    plan.steps.push(step_write(Some(fid), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings without the machine"));
+    for (dir, s) in &f.squadrons {
+        let mut ns = s.clone();
+        for ship in &mut ns.ships {
+            ship.dirs.remove(label);
+            ship.permission_mode.remove(label);
+        }
+        if &ns != s {
+            plan.steps.push(step_write(Some(Id::commodore(fleet, &s.squadron)), &dir.join("squadron.toml"), toml_out(&ns), "ship folders without the machine"));
+        }
+    }
+    plan
+}
+
 /// Run a config plan: mkdir / atomic write / archive, then verify by re-reading.
 pub fn apply_config_plan(_env: &Env, plan: &Plan) -> Outcome {
     let mut out = Outcome::default();
@@ -970,5 +1099,46 @@ pub(crate) mod tests {
         assert!(validate(&env, &f).is_empty());
         assert!(!plan_machine_add(&env, "MAIN", "home-server", vec![]).ok()); // dup label
         assert!(!plan_machine_add(&env, "MAIN", "other", vec![(Id::ship("MAIN", "ARGOS", "GHOST"), "managed".into())]).ok());
+    }
+
+    #[test]
+    fn fleet_set_squadron_set_machine_rm() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        // fleet set: the admiral's mode; "" clears; an unknown mode refuses; no change, no step
+        apply_ok(&env, &plan_fleet_set(&env, "MAIN", Some("auto")));
+        assert_eq!(load_fleet(&env, "MAIN").unwrap().config.admiral.permission_mode.as_deref(), Some("auto"));
+        assert!(plan_fleet_set(&env, "MAIN", Some("auto")).steps.is_empty());
+        assert!(!plan_fleet_set(&env, "MAIN", Some("yolo")).ok());
+        apply_ok(&env, &plan_fleet_set(&env, "MAIN", Some("")));
+        assert_eq!(load_fleet(&env, "MAIN").unwrap().config.admiral.permission_mode, None);
+        assert!(!plan_fleet_set(&env, "NOPE", Some("auto")).ok());
+
+        // squadron set: comms, mode, brief
+        let sq = Id::commodore("MAIN", "ARGOS");
+        let plan = plan_squadron_set(&env, &sq, Some("New orders."), Some(Comms::Mode("commodore-only".into())), Some("plan"));
+        apply_ok(&env, &plan);
+        let f = load_fleet(&env, "MAIN").unwrap();
+        let (dir, s) = &f.squadrons[0];
+        assert_eq!(s.comms, Comms::Mode("commodore-only".into()));
+        assert_eq!(s.permission_mode.as_deref(), Some("plan"));
+        assert!(std::fs::read_to_string(dir.join(s.brief.as_deref().unwrap())).unwrap().contains("New orders."));
+        assert!(validate(&env, &f).is_empty());
+        let bad = plan_squadron_set(&env, &sq, None, Some(Comms::Allow { allow: vec!["not a ship".into()] }), None);
+        assert!(!bad.ok() && bad.steps.is_empty());
+        assert!(!plan_squadron_set(&env, &Id::commodore("MAIN", "GHOST"), None, None, Some("plan")).ok());
+        assert!(!plan_squadron_set(&env, &Id::admiral("MAIN"), None, None, None).ok());
+
+        // machine rm: the label leaves fleet.toml and every ship's dirs; this machine warns
+        apply_ok(&env, &plan_machine_add(&env, "MAIN", "home-server", vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]));
+        let plan = plan_machine_rm(&env, "MAIN", "home-server");
+        // machine add records this host's name, so removing it warns too
+        assert!(plan.warnings.iter().any(|i| i.code == "config.pending"));
+        apply_ok(&env, &plan);
+        let f = load_fleet(&env, "MAIN").unwrap();
+        assert!(!f.config.machines.contains_key("home-server"));
+        assert!(f.squadrons[0].1.ships[0].dirs.keys().all(|k| k != "home-server"));
+        assert!(!plan_machine_rm(&env, "MAIN", "home-server").ok());
+        assert!(plan_machine_rm(&env, "MAIN", "test-mac").warnings.iter().any(|i| i.code == "config.pending"));
     }
 }

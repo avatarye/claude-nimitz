@@ -1,0 +1,14 @@
+{
+  "name": "claude-nimitz",
+  "description": "The nimitz plugin for claude-nimitz fleets.",
+  "owner": {
+    "name": "Yongqing Ye"
+  },
+  "plugins": [
+    {
+      "name": "nimitz",
+      "source": "./",
+      "description": "Fleets of Claude Code sessions with a chain of command."
+    }
+  ]
+}

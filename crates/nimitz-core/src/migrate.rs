@@ -380,16 +380,16 @@ mod tests {
         let (td, env) = test_env();
         let a = td.path().join("old/bolt-fleet");
         old_fleet(&a, BOLT, None);
-        let (plan, _) = plan_from_fleet_skill(&env, &[a.clone()], "MAIN");
+        let (plan, _) = plan_from_fleet_skill(&env, std::slice::from_ref(&a), "MAIN");
         apply_ok(&env, &plan);
         // The same old fleet again: idempotent, nothing planned.
-        let (plan2, report2) = plan_from_fleet_skill(&env, &[a.clone()], "MAIN");
+        let (plan2, report2) = plan_from_fleet_skill(&env, std::slice::from_ref(&a), "MAIN");
         assert!(plan2.ok(), "{:?}", plan2.refusals);
         assert!(plan2.steps.is_empty(), "{:?}", plan2.steps);
         assert!(report2.join("\n").contains("no changes"));
         // The same name with different content: refused.
         old_fleet(&a, &BOLT.replace("You are BOLT.", "You are not BOLT."), None);
-        let (plan2b, _) = plan_from_fleet_skill(&env, &[a.clone()], "MAIN");
+        let (plan2b, _) = plan_from_fleet_skill(&env, std::slice::from_ref(&a), "MAIN");
         assert!(!plan2b.ok());
         old_fleet(&a, BOLT, None); // restore
         // A different one: merged alongside.
@@ -409,7 +409,7 @@ mod tests {
         assert!(!plan.ok());
         let a = td.path().join("old/bad-fleet");
         old_fleet(&a, "{not json", None);
-        let (plan, _) = plan_from_fleet_skill(&env, &[a.clone()], "MAIN");
+        let (plan, _) = plan_from_fleet_skill(&env, std::slice::from_ref(&a), "MAIN");
         assert!(!plan.ok());
         old_fleet(&a, r#"{"machines": {}}"#, None);
         let (plan, _) = plan_from_fleet_skill(&env, &[a], "MAIN");

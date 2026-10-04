@@ -28,6 +28,7 @@ starting/opening interactive members and to Admiralty's pane actions.
 | `NIMITZ_HERDR_BIN` | `herdr` on PATH (only when `HERDR_ENV=1`) | Herdr adapter |
 | `NIMITZ_HOSTNAME` | `gethostname()` | machine matching |
 | `NIMITZ_MUX` | auto | `herdr` or `none` |
+| `NIMITZ_BIND_TIMEOUT` | `10` (s) | how long the CLI waits for a pane's session to start and bind; tests set `0` |
 
 ## 3. Config files (TOML, in `NIMITZ_HOME/<fleet>/`)
 
@@ -139,7 +140,20 @@ Each finding is an `Issue` with a stable `code`:
 | `role.background` | an admiral or commodore is a background session |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml` |
-| `stowaway` | a session in a fleet folder with no labels |
+| `stowaway` | a session in a fleet folder with no labels (an inherited `NIMITZ_HOME` alone is not a label) |
+
+Refusal-only codes (in `Plan.refusals`, not from `check`):
+
+| Code | Condition |
+| --- | --- |
+| `mux.none` | the action needs a multiplexer and there is none |
+| `mux.nopane` | the mux cannot open a pane here |
+| `mux.failed` | the mux returned an error |
+| `comms.denied` | a signal the chain of command or `comms` rule forbids |
+| `lineage.pending` | a pane was opened but its session did not bind in time |
+| `config.pending` | a config change is waiting for a relaunch |
+| `layout.skip` | a member has no place in the layout |
+| `authority` | the caller may not do this (plan-v3 5.5) |
 
 ## 8. Relaunch state table (core; each row is a sandbox test)
 
@@ -165,6 +179,11 @@ target. For each member, one action from this table:
 Rules that hold in every row: never resume a live session; never pass flags to
 a resume that must keep the id; `stop`/`rm` through the native binary and verify
 by re-reading; never touch a session that is not in the identity's lineage.
+
+Authority for `sweep`: the user, any scope; a commodore, its own squadron only
+(its tenders and the stale copy rows of its own ships). Admiral, ship, tender: none.
+Core owns a plan for every mutating command, including `fleet set`,
+`squadron set` and `machine rm`.
 
 ## 9. Mux trait (`nimitz-mux`)
 
@@ -201,8 +220,10 @@ do nothing).
 
 1. Tests use the sandbox (fake `claude`, fake `herdr`) and the env overrides in
    section 2. Never point a test at the real `~/.claude` or `~/.claude-nimitz`.
-2. Real Claude Code sessions only in the e2e harness: names `nimitz-e2e-*`, under
-   `~/.cache/nimitz-e2e/`, stopped and removed at the end, verified.
+2. Real Claude Code sessions only in the e2e harness: folders `~/.cache/nimitz-e2e/nimitz-e2e-*/`,
+   fleet names starting `NIMITZ_E2E` (so session names are `[NIMITZ_E2E...]-*`),
+   stopped and removed at the end, verified. Their transcript folders under
+   `~/.claude/projects/` stay; the user removes them.
 3. Never stop, resume, message or rename any session you did not start.
 4. Never touch the user's Herdr session; Herdr tests use a private server (temp
    `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, all `HERDR_*` unset).
