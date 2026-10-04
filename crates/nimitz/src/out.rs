@@ -1,4 +1,4 @@
-//! Output lines (`[OK]`, `[WARN]`, `[ERROR]`, no emoji), plan printing and the
+//! Output lines (`[OK]`, `[INFO]`, `[WARN]`, `[ERROR]`, no emoji), plan printing and the
 //! confirm gate every mutating command goes through.
 use nimitz_core::{Issue, Outcome, Plan, Severity, Step};
 use std::io::{BufRead, IsTerminal, Write};

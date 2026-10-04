@@ -75,6 +75,30 @@ pub mod fake;
 pub mod herdr;
 pub mod none;
 
+/// The values `NIMITZ_MUX` may take.
+pub const MUX_SETTINGS: [&str; 3] = ["auto", "herdr", "none"];
+
+/// Is the `NIMITZ_MUX` value (if any) one we know?
+pub fn valid_mux_setting(vars: &std::collections::HashMap<String, String>) -> Result<(), String> {
+    match vars.get("NIMITZ_MUX").map(String::as_str) {
+        None | Some("") => Ok(()),
+        Some(v) if MUX_SETTINGS.contains(&v) => Ok(()),
+        Some(v) => Err(format!("NIMITZ_MUX={v:?} is not a multiplexer setting; use one of: {}", MUX_SETTINGS.join(", "))),
+    }
+}
+
+/// What to do when no multiplexer could open a pane: the cause, not a guess.
+pub fn missing_mux_fix(vars: &std::collections::HashMap<String, String>) -> String {
+    let herdr_env = vars.get("HERDR_ENV").map(String::as_str) == Some("1");
+    match vars.get("NIMITZ_MUX").map(String::as_str) {
+        Some("none") => "NIMITZ_MUX=none turns the multiplexer off: unset it, or set NIMITZ_MUX=auto".into(),
+        _ if herdr_env && resolve_herdr_bin(vars).is_none() => {
+            "HERDR_ENV=1 is set but no herdr binary was found: put herdr on PATH, or set NIMITZ_HERDR_BIN".into()
+        }
+        _ => "run nimitz inside Herdr (HERDR_ENV is not 1 here)".into(),
+    }
+}
+
 /// `NIMITZ_MUX` override, else Herdr when `HERDR_ENV=1` and a herdr binary
 /// resolves (`NIMITZ_HERDR_BIN`, else PATH), else NoMux. Pure in `vars`.
 pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> {
@@ -85,8 +109,10 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
             let bin = resolve_herdr_bin(vars).unwrap_or_else(|| "herdr".into());
             return Box::new(herdr::Herdr { bin });
         }
-        Some(_) => return Box::new(none::NoMux), // unknown name: safest is no mux
-        None => {}
+        // `auto` (the default) and unset: detect. An unknown name: safest is no mux
+        // (the CLI refuses it first with `valid_mux_setting`).
+        Some("auto") | Some("") | None => {}
+        Some(_) => return Box::new(none::NoMux),
     }
     if vars.get("HERDR_ENV").map(String::as_str) == Some("1") {
         if let Some(bin) = resolve_herdr_bin(vars) {
@@ -181,6 +207,22 @@ mod tests {
         let m = detect(&v);
         assert_eq!(m.name(), "herdr");
         assert!(m.caps().open && m.caps().focus && m.caps().type_text && m.caps().layout);
+    }
+
+    #[test]
+    fn detect_auto_is_detection() {
+        let d = fake_bin_dir();
+        let v = vars(&[("NIMITZ_MUX", "auto"), ("HERDR_ENV", "1"), ("PATH", d.path().to_str().unwrap())]);
+        assert_eq!(detect(&v).name(), "herdr");
+        assert!(valid_mux_setting(&v).is_ok());
+        assert!(valid_mux_setting(&vars(&[("NIMITZ_MUX", "tmux")])).unwrap_err().contains("auto, herdr, none"));
+    }
+
+    #[test]
+    fn the_fix_names_what_is_missing() {
+        assert!(missing_mux_fix(&vars(&[("NIMITZ_MUX", "none"), ("HERDR_ENV", "1")])).contains("NIMITZ_MUX=none"));
+        assert!(missing_mux_fix(&vars(&[("HERDR_ENV", "1"), ("PATH", "/nonexistent-dir-nimitz")])).contains("no herdr binary"));
+        assert!(missing_mux_fix(&vars(&[])).contains("HERDR_ENV is not 1"));
     }
 
     #[test]

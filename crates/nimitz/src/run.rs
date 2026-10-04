@@ -38,13 +38,13 @@ pub fn refusal(code: &str, message: String, fix: Option<String>, id: Option<Id>)
 }
 
 /// A plan with pane steps needs a multiplexer that can open panes.
-pub fn require_panes(plan: &mut Plan, mux: &dyn Mux) {
+pub fn require_panes(plan: &mut Plan, mux: &dyn Mux, vars: &std::collections::HashMap<String, String>) {
     if plan.ok() && plan.steps.iter().any(is_pane_step) && !mux.caps().open {
         let who: Vec<String> = plan.steps.iter().filter(|s| is_pane_step(s)).filter_map(|s| s.id.as_ref().map(|i| i.0.clone())).collect();
         plan.refusals.push(refusal(
             "mux.none",
             format!("{} must open in a terminal pane, and no multiplexer is here ({})", who.join(", "), mux.name()),
-            Some("run nimitz inside Herdr (HERDR_ENV=1)".into()),
+            Some(nimitz_mux::missing_mux_fix(vars)),
             None,
         ));
     }
@@ -53,7 +53,7 @@ pub fn require_panes(plan: &mut Plan, mux: &dyn Mux) {
 /// Gate, then run. Returns the exit code.
 pub fn session_plan(ctx: &Ctx, mut plan: Plan) -> i32 {
     let mux = ctx.mux();
-    require_panes(&mut plan, mux.as_ref());
+    require_panes(&mut plan, mux.as_ref(), &ctx.vars);
     match ctx.gate(&plan) {
         out::Go::Exit(code) => code,
         out::Go::Run => out::outcome(&execute(ctx, mux.as_ref(), &plan)),

@@ -150,7 +150,6 @@ fn hook_decision(out: &str) -> String {
 // ------------------------------------------------------------------ A. starting and order
 
 #[test]
-#[ignore = "BUG-01"]
 fn bug01_nimitz_mux_auto_still_detects_herdr() {
     // contracts.md section 2: NIMITZ_MUX defaults to `auto`; saying so must not turn the mux off.
     let sb = Sb::new(true);
@@ -199,7 +198,6 @@ fn bug04_a_symlinked_path_to_a_trusted_folder_is_trusted() {
 }
 
 #[test]
-#[ignore = "BUG-05"]
 fn bug05_an_empty_dir_is_refused() {
     let sb = Sb::new(false);
     let r = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", "", "--yes"]);

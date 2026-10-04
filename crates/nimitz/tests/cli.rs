@@ -408,6 +408,13 @@ fn crud_round_trip() {
     assert!(sq_toml().contains("plan"));
     assert!(r.out.contains("next relaunch"), "{}", r.out);
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/NOPE", "--mode", "plan", "--yes"]).code, 1);
+    // an empty --dir is a usage error; removing a folder is explicit
+    assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--dir", "", "--yes"]).code, 2);
+    assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--no-dir", "nowhere", "--yes"]).code, 2);
+    let r = sb.run(&["ship", "set", "TOP/SQ/S1", "--no-dir", "sandbox-host", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!sq_toml().contains("sandbox-host ="), "{}", sq_toml());
+    assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--dir", "managed", "--yes"]).code, 0);
     // --edit opens $EDITOR on the current prompt
     let ed = "sh -c 'printf \" Be brief.\" >> \"$1\"' ed";
     let r = raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--yes"], &[("EDITOR", ed)], None);
@@ -495,6 +502,12 @@ fn layout_herdr() {
     let sb = Sb::new(false);
     assert_eq!(sb.run(&["layout", "herdr", "--yes"]).code, 1);
     assert_eq!(sb.run(&["layout", "tmux"]).code, 2);
+    // NIMITZ_MUX: an unknown value is a usage error naming the valid ones; none says so in the fix
+    let r = raw(&sb.vars, &["status"], &[("NIMITZ_MUX", "tmux")], None);
+    assert_eq!(r.code, 2);
+    assert!(r.out.contains("auto, herdr, none"), "{}", r.out);
+    let r = raw(&sb.vars, &["layout", "herdr", "--yes"], &[("NIMITZ_MUX", "none"), ("HERDR_ENV", "1")], None);
+    assert!(r.out.contains("NIMITZ_MUX=none turns the multiplexer off") && !r.out.contains("run nimitz inside Herdr"), "{}", r.out);
     let sb = Sb::new(true);
     let r = sb.run(&["layout", "herdr", "BETA", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);

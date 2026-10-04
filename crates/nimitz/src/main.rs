@@ -107,6 +107,9 @@ fn dispatch(argv: Vec<String>) -> i32 {
     };
     out::set_json(args.flag("--json"));
     let vars: HashMap<String, String> = std::env::vars().collect();
+    if let Err(e) = nimitz_mux::valid_mux_setting(&vars) {
+        return usage_error(&e);
+    }
     let ctx = Ctx { env: Env::from_vars(&vars), caller: nimitz_core::sessions::caller_from_env(&vars), vars, args };
     let r = match cmd.as_str() {
         "init" => setup::init(&ctx),
