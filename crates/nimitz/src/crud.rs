@@ -307,13 +307,13 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.at_most(3)?;
     let plan = match verb {
         "add" => {
-            ctx.args.allow(&["--dir"])?;
+            ctx.args.allow(&["--dir", "--hostname"])?;
             let mut dirs = vec![];
             for d in ctx.args.values("--dir") {
                 let (sid, path) = d.split_once('=').ok_or(format!("--dir {d:?}: use F/SQ/SHIP=PATH"))?;
                 dirs.push((parse_id(sid)?, path.to_string()));
             }
-            config::plan_machine_add(&ctx.env, fleet, label, dirs)
+            config::plan_machine_add_on(&ctx.env, fleet, label, ctx.args.value("--hostname"), dirs)
         }
         "rm" => {
             ctx.args.allow(&[])?;

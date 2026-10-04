@@ -207,6 +207,35 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             }
             fleet.squadrons.push(squadron);
         }
+        // A squadron whose squadron.toml does not parse (BUG-15): the fleet still
+        // shows, and so does the squadron, from its folder, the registry and the
+        // labels, with the parse error on every member (status reads as such),
+        // so its live sessions get no `rm` fixes.
+        for (sqid, sd, err) in crate::config::unreadable_squadrons(fc) {
+            let prefix = format!("{}/", sqid.0);
+            let mut under: Vec<String> = reg.identities.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+            under.extend(by_identity.keys().filter(|k| k.starts_with(&prefix)).cloned());
+            under.sort();
+            under.dedup();
+            let unread = |m: &mut Member, dir: Option<String>| {
+                if m.cwd.is_none() {
+                    m.cwd = dir;
+                }
+                m.reasons.insert(0, format!("config unreadable: {}", err.message));
+                m.issues.insert(0, err.clone());
+            };
+            let mut commodore = build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events);
+            unread(&mut commodore, Some(sd.to_string_lossy().into_owned()));
+            let mut squadron = Squadron { id: sqid.clone(), commodore, ships: vec![], tenders: vec![], comms: Comms::default(), issues: vec![err.clone()] };
+            for k in under {
+                let id = Id(k);
+                let mut m = build_member(env, cache, fc, &id, &reg, &mut by_identity, &labels, &events);
+                let dir = if id.role() == Role::Tender { Some(sd.to_string_lossy().into_owned()) } else { None };
+                unread(&mut m, dir);
+                if id.role() == Role::Tender { squadron.tenders.push(m) } else { squadron.ships.push(m) }
+            }
+            fleet.squadrons.push(squadron);
+        }
         snap.fleets.push(fleet);
     }
     snap.machine = snap.fleets.iter().find_map(|f| f.machine.clone());

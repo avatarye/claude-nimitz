@@ -293,7 +293,6 @@ fn bug14_a_corrupt_job_row_is_reported() {
 // ------------------------------------------------------------------ C. config and folders
 
 #[test]
-#[ignore = "BUG-15"]
 fn bug15_one_broken_squadron_does_not_hide_the_fleet() {
     let sb = Sb::new(false);
     sb.edit(&sb.squadron_toml(), |s| s + "\nname = \"oops\n");
