@@ -1,5 +1,5 @@
 //! `nimitz check`: integrity before every start (contracts.md section 7). Owner: core-config.
-//! Session-level issues come from `crate::sessions::session_issues`.
+//! Session-level issues ride in on `Member::issues` (snapshot fills them).
 use crate::env::Env;
 use crate::types::*;
 use std::path::Path;
@@ -87,12 +87,10 @@ pub fn check(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
                     });
                 }
             }
-            out.extend(m.issues.iter().filter(|i| scoped(i)).cloned());
             // Session rules (name.*, labels.*, dup.live, copy.rows, lineage.broken,
-            // role.background, ship.elsewhere) need a session or job rows to judge.
-            if m.session.is_some() || !m.extra_rows.is_empty() {
-                out.extend(crate::sessions::session_issues(env, m));
-            }
+            // role.background, ship.elsewhere) arrive here too: snapshot puts
+            // sessions::session_issues into Member::issues.
+            out.extend(m.issues.iter().filter(|i| scoped(i)).cloned());
         }
         out.extend(fleet.issues.iter().filter(|i| scoped(i)).cloned());
         for sq in &fleet.squadrons {
@@ -153,7 +151,7 @@ mod tests {
             cwd: cwd.map(|s| s.to_string()),
             status: Status::NotStarted,
             reasons: vec![],
-            session: None, // keep session_issues (a core-sessions stub) out of these tests
+            session: None,
             extra_rows: vec![],
             crew: vec![],
             tasks: vec![],
