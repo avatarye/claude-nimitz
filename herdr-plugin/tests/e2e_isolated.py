@@ -4,9 +4,11 @@
 
 Starts a Herdr client+server in a pseudo-terminal with HERDR_* unset and
 XDG_CONFIG_HOME / XDG_STATE_HOME in a fresh temp dir, links this plugin there,
-binds prefix+f to it, and runs admiralty-watch against its sandbox (fake claude,
-fake herdr for the jump). Presses real keys and checks pane state through the
-private server's API. Stops only that server, after checking its socket path.
+binds prefix+f to it, and runs the admiralty TUI (claude-nimitz) against its
+sandbox (fake claude, fake herdr for the jump). Presses real keys and checks
+pane state through the private server's API. Stops only that server, after
+checking its socket path. ADMIRALTY_WATCH_BIN picks the binary (default:
+`admiralty` on PATH, e.g. target/debug/admiralty for an uninstalled build).
 """
 
 import fcntl, glob, json, os, pty, re, select, shutil, signal, struct, subprocess, sys, tempfile, termios, time
@@ -33,7 +35,8 @@ def setup():
     with open(os.path.join(TMP, "config", "herdr", "config.toml"), "w") as f:
         f.write('onboarding = false\n[keys]\nprefix = "ctrl+g"\n\n[[keys.command]]\nkey = "prefix+f"\n'
                 'type = "plugin_action"\ncommand = "admiralty-watch.toggle"\ndescription = "admiralty watch"\n')
-    subprocess.run(["admiralty-watch", "sandbox", "create", SANDBOX], check=True, capture_output=True)
+    subprocess.run([ISO.get("ADMIRALTY_WATCH_BIN", "admiralty"), "sandbox", "create", SANDBOX],
+                   check=True, capture_output=True)
     rc, out = h("plugin", "link", ROOT)
     assert rc == 0 and "plugin_linked" in out, out
 
@@ -109,7 +112,7 @@ def main():
         check("prefix+f opens the watch, focused", len(p) == 2 and state() == p[1], (p, state()))
         info = json.loads(h("pane", "get", p[1])[1])["result"]["pane"]
         check("its pane label is the one toggle.sh checks", info.get("label") == "Admiralty Watch", info)
-        check("the watch renders", any("admiralty-watch" in l for l in SCR.display), "no header")
+        check("the watch renders", any("admiralty" in l for l in SCR.display), "no header")
         toggle(); check("prefix+f again closes it", panes() == p[:1], panes())
         toggle(); key(fd, "q", wait=3); check("q closes it", len(panes()) == 1, panes())
         toggle(); check("stale id: prefix+f opens a fresh one", len(panes()) == 2, panes())

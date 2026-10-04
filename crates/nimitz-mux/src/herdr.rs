@@ -1,4 +1,304 @@
-//! Herdr adapter (`herdr agent list/focus/prompt`, `pane run`, `workspace/tab create|focus`). Owner: mux agent.
+//! Herdr adapter (`herdr agent list/focus/prompt`, `pane run/split`,
+//! `workspace/tab create|list|focus`, `tab rename`). Owner: mux agent.
+//!
+//! Every operation shells out to the herdr CLI and parses its JSON reply;
+//! every id comes from that JSON, never from guessing. Errors (JSON
+//! `{"error":{code,message}}` on stderr, exit 1) are surfaced verbatim.
+use std::path::Path;
+use std::process::Command;
+
+use serde_json::Value;
+
+use crate::{Caps, LayoutPlan, Mux, MuxError, Pane, PaneRef, Place};
+
 pub struct Herdr {
     pub bin: String,
+}
+
+/// Loose label matching, the herdr-fleet skill's rules in their order:
+/// strip a trailing `-FLEET`, **then** delete every `[` and `]`, then upcase.
+/// The order matters: bracket-first leaves `[ARGOS]-FLEET` as `ARGOS]`.
+pub fn normalize_label(label: &str) -> String {
+    let t = label.trim();
+    // "-FLEET" is 6 ASCII bytes; if the uppercased tail matches, the slice is char-safe
+    let t = if t.len() >= 6 && t.is_char_boundary(t.len() - 6) && t[t.len() - 6..].eq_ignore_ascii_case("-FLEET") {
+        &t[..t.len() - 6]
+    } else {
+        t
+    };
+    t.chars().filter(|c| !matches!(c, '[' | ']')).collect::<String>().to_uppercase()
+}
+
+/// POSIX shell quoting: safe words stay bare, the rest go in single quotes
+/// (`'` becomes `'\''`). Works in sh, bash and zsh.
+pub fn shell_join(cmd: &[String]) -> String {
+    cmd.iter()
+        .map(|a| {
+            let safe = !a.is_empty()
+                && a.chars().all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
+            if safe { a.clone() } else { format!("'{}'", a.replace('\'', "'\\''")) }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn s(v: &Value, k: &str) -> String {
+    v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
+/// Agent rows (`herdr agent list` / fake world) -> panes. Public so the fake
+/// and the adapter agree on one parse.
+pub fn parse_panes(v: &Value) -> Vec<Pane> {
+    let Some(list) = v.pointer("/result/agents").and_then(Value::as_array) else { return vec![] };
+    list.iter()
+        .filter(|a| !s(a, "pane_id").is_empty())
+        .map(|a| Pane {
+            pane: PaneRef {
+                pane_id: s(a, "pane_id"),
+                tab_id: Some(s(a, "tab_id")).filter(|x| !x.is_empty()),
+                workspace_id: Some(s(a, "workspace_id")).filter(|x| !x.is_empty()),
+            },
+            session_id: a.pointer("/agent_session/value").and_then(Value::as_str).map(String::from),
+            title: s(a, "terminal_title_stripped"),
+            state: s(a, "agent_status"),
+            cwd: {
+                let f = s(a, "foreground_cwd");
+                if f.is_empty() { s(a, "cwd") } else { f }
+            },
+        })
+        .collect()
+}
+
+impl Herdr {
+    fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
+        let out = Command::new(&self.bin)
+            .args(args)
+            .output()
+            .map_err(|e| MuxError::Failed(format!("{}: {e}", self.bin)))?;
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if out.status.success() {
+            return Ok(serde_json::from_str(&stdout).unwrap_or(Value::Null));
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = [stderr.as_str(), stdout.as_str()]
+            .iter()
+            .filter_map(|t| serde_json::from_str::<Value>(t).ok())
+            .find_map(|v| {
+                let e = v.get("error")?.clone();
+                Some(format!("herdr {}: {} ({})", args.join(" "), s(&e, "message"), s(&e, "code")))
+            })
+            .unwrap_or_else(|| {
+                format!("herdr {}: {}", args.join(" "), if stderr.is_empty() { stdout } else { stderr })
+            });
+        Err(MuxError::Failed(msg))
+    }
+
+    /// `herdr workspace list` -> [(workspace_id, label, active_tab_id)]
+    fn workspaces(&self) -> Result<Vec<(String, String, String)>, MuxError> {
+        let v = self.run(&["workspace", "list"])?;
+        let list = v.pointer("/result/workspaces").and_then(Value::as_array).cloned().unwrap_or_default();
+        Ok(list.iter().map(|w| (s(w, "workspace_id"), s(w, "label"), s(w, "active_tab_id"))).collect())
+    }
+
+    /// `herdr tab list --workspace <id>` -> [(tab_id, label)]
+    fn tabs(&self, workspace_id: &str) -> Result<Vec<(String, String)>, MuxError> {
+        let v = self.run(&["tab", "list", "--workspace", workspace_id])?;
+        let list = v.pointer("/result/tabs").and_then(Value::as_array).cloned().unwrap_or_default();
+        Ok(list.iter().map(|t| (s(t, "tab_id"), s(t, "label"))).collect())
+    }
+
+    /// First pane of a tab (for reusing an existing tab in `layout`).
+    fn pane_in_tab(&self, workspace_id: &str, tab_id: &str) -> Result<PaneRef, MuxError> {
+        let v = self.run(&["pane", "list"])?;
+        let list = v.pointer("/result/panes").and_then(Value::as_array).cloned().unwrap_or_default();
+        list.iter()
+            .find(|p| s(p, "tab_id") == tab_id)
+            .map(|p| PaneRef {
+                pane_id: s(p, "pane_id"),
+                tab_id: Some(tab_id.to_string()),
+                workspace_id: Some(workspace_id.to_string()),
+            })
+            .ok_or_else(|| MuxError::Failed(format!("herdr pane list: no pane in tab {tab_id}")))
+    }
+
+    /// `workspace create --label <label> --cwd <cwd> --no-focus`
+    /// -> (workspace_id, root tab_id, root pane_id), all from the reply.
+    fn workspace_create(&self, label: &str, cwd: &str) -> Result<(String, String, String), MuxError> {
+        let v = self.run(&["workspace", "create", "--label", label, "--cwd", cwd, "--no-focus"])?;
+        let r = v.pointer("/result").cloned().unwrap_or(Value::Null);
+        let ws = r.pointer("/workspace/workspace_id").and_then(Value::as_str).unwrap_or("").to_string();
+        let tab = r.pointer("/tab/tab_id").and_then(Value::as_str).unwrap_or("").to_string();
+        let pane = r.pointer("/root_pane/pane_id").and_then(Value::as_str).unwrap_or("").to_string();
+        if ws.is_empty() || tab.is_empty() || pane.is_empty() {
+            return Err(MuxError::Failed(format!("herdr workspace create: ids missing in reply {r}")));
+        }
+        Ok((ws, tab, pane))
+    }
+
+    /// `tab create --workspace <id> --label <label> --cwd <cwd> --no-focus`
+    /// -> (tab_id, root pane_id).
+    fn tab_create(&self, workspace_id: &str, label: &str, cwd: &str) -> Result<(String, String), MuxError> {
+        let v = self.run(&["tab", "create", "--workspace", workspace_id, "--label", label, "--cwd", cwd, "--no-focus"])?;
+        let r = v.pointer("/result").cloned().unwrap_or(Value::Null);
+        let tab = r.pointer("/tab/tab_id").and_then(Value::as_str).unwrap_or("").to_string();
+        let pane = r.pointer("/root_pane/pane_id").and_then(Value::as_str).unwrap_or("").to_string();
+        if tab.is_empty() || pane.is_empty() {
+            return Err(MuxError::Failed(format!("herdr tab create: ids missing in reply {r}")));
+        }
+        Ok((tab, pane))
+    }
+
+    /// `herdr pane run` joins its arguments with spaces and types the line
+    /// into the pane's shell, so the command goes over as one quoted line.
+    fn pane_run(&self, pane_id: &str, cmd: &[String]) -> Result<(), MuxError> {
+        self.run(&["pane", "run", pane_id, &shell_join(cmd)]).map(|_| ())
+    }
+
+    /// The workspace whose label loosely matches, else a new one; `fresh_tab`
+    /// is the new workspace's root tab (unlabelled, reusable), None on a match.
+    #[allow(clippy::type_complexity)]
+    fn find_or_create_workspace(
+        &self,
+        label: &str,
+        cwd: &str,
+    ) -> Result<(String, Option<(String, String)>), MuxError> {
+        let want = normalize_label(label);
+        if let Some((id, _, _)) = self.workspaces()?.into_iter().find(|(_, l, _)| normalize_label(l) == want) {
+            return Ok((id, None));
+        }
+        let (ws, tab, pane) = self.workspace_create(label, cwd)?;
+        Ok((ws, Some((tab, pane))))
+    }
+}
+
+impl Mux for Herdr {
+    fn name(&self) -> &'static str {
+        "herdr"
+    }
+
+    fn caps(&self) -> Caps {
+        Caps { open: true, focus: true, type_text: true, layout: true }
+    }
+
+    /// Agent panes Herdr knows about; empty on any error (same as not inside Herdr).
+    fn panes(&self) -> Vec<Pane> {
+        self.run(&["agent", "list"]).map(|v| parse_panes(&v)).unwrap_or_default()
+    }
+
+    fn open(&self, cmd: &[String], cwd: &Path, place: Place) -> Result<PaneRef, MuxError> {
+        let cwd = cwd.to_string_lossy().into_owned();
+        let (pane, tab, ws) = match place {
+            Place::Workspace { label } => {
+                let (ws, tab, pane) = self.workspace_create(&label, &cwd)?;
+                (pane, tab, ws)
+            }
+            Place::Tab { workspace, label } => {
+                let (ws, fresh_tab) = self.find_or_create_workspace(&workspace, &cwd)?;
+                let (tab, pane) = match fresh_tab {
+                    // a new workspace already has an unlabelled root tab: claim it
+                    Some((tab, pane)) => {
+                        self.run(&["tab", "rename", &tab, &label])?;
+                        (tab, pane)
+                    }
+                    None => self.tab_create(&ws, &label, &cwd)?,
+                };
+                (pane, tab, ws)
+            }
+            Place::Split { next_to } => {
+                let v = self.run(&["pane", "split", &next_to.pane_id, "--direction", "right", "--cwd", &cwd, "--no-focus"])?;
+                let p = v.pointer("/result/pane").cloned().unwrap_or(Value::Null);
+                let pane = s(&p, "pane_id");
+                if pane.is_empty() {
+                    return Err(MuxError::Failed(format!("herdr pane split: no pane_id in reply {p}")));
+                }
+                let tab = {
+                    let t = s(&p, "tab_id");
+                    if t.is_empty() { next_to.tab_id.clone().unwrap_or_default() } else { t }
+                };
+                (pane, tab, next_to.workspace_id.clone().unwrap_or_default())
+            }
+        };
+        self.pane_run(&pane, cmd)?;
+        Ok(PaneRef {
+            pane_id: pane,
+            tab_id: Some(tab).filter(|x| !x.is_empty()),
+            workspace_id: Some(ws).filter(|x| !x.is_empty()),
+        })
+    }
+
+    /// Workspace focus, then tab focus, then agent focus — so the pane is
+    /// actually in front of the user, not just focused inside a hidden tab.
+    fn focus(&self, pane: &PaneRef) -> Result<(), MuxError> {
+        if let Some(ws) = pane.workspace_id.as_deref().filter(|x| !x.is_empty()) {
+            self.run(&["workspace", "focus", ws])?;
+        }
+        if let Some(tab) = pane.tab_id.as_deref().filter(|x| !x.is_empty()) {
+            self.run(&["tab", "focus", tab])?;
+        }
+        self.run(&["agent", "focus", &pane.pane_id]).map(|_| ())
+    }
+
+    /// `herdr agent prompt`: herdr itself rejects a blocked pane
+    /// (`agent_blocked`) before sending anything; that error is surfaced.
+    fn type_text(&self, pane: &PaneRef, text: &str) -> Result<(), MuxError> {
+        self.run(&["agent", "prompt", &pane.pane_id, text]).map(|_| ())
+    }
+
+    /// One workspace per entry, tabs with commands. Idempotent: an existing
+    /// workspace/tab is reused by loose label match (`normalize_label`) and its
+    /// command is NOT run again.
+    fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError> {
+        let mut out = vec![];
+        for (ws_label, tabs) in &plan.workspaces {
+            let first_cwd = tabs.first().map(|(_, _, c)| c.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
+            let (ws, mut fresh_tab) = self.find_or_create_workspace(ws_label, &first_cwd)?;
+            let existing = self.tabs(&ws)?;
+            for (tab_label, cmd, cwd) in tabs {
+                let want = normalize_label(tab_label);
+                if let Some((tab_id, _)) = existing.iter().find(|(_, l)| normalize_label(l) == want) {
+                    out.push(self.pane_in_tab(&ws, tab_id)?);
+                    continue;
+                }
+                let (tab, pane) = match fresh_tab.take() {
+                    Some((tab, pane)) => {
+                        self.run(&["tab", "rename", &tab, tab_label])?;
+                        (tab, pane)
+                    }
+                    None => self.tab_create(&ws, tab_label, &cwd.to_string_lossy())?,
+                };
+                self.pane_run(&pane, cmd)?;
+                out.push(PaneRef { pane_id: pane, tab_id: Some(tab), workspace_id: Some(ws.clone()) });
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_label, shell_join};
+
+    #[test]
+    fn shell_join_quotes_only_what_needs_it() {
+        let v = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(shell_join(&v(&["ccl"])), "ccl");
+        assert_eq!(shell_join(&v(&["sh", "-c", "sleep 30"])), "sh -c 'sleep 30'");
+        assert_eq!(shell_join(&v(&["tail", "-f", "/a/x.log"])), "tail -f /a/x.log");
+        assert_eq!(shell_join(&v(&["echo", "it's", ""])), "echo 'it'\\''s' ''");
+        assert_eq!(shell_join(&v(&["claude", "--name", "[LUX]-LEAD"])), "claude --name '[LUX]-LEAD'");
+    }
+
+    #[test]
+    fn normalize_order_is_fleet_then_brackets_then_upcase() {
+        assert_eq!(normalize_label("[ARGOS]-FLEET"), "ARGOS");
+        assert_eq!(normalize_label("[argos]-fleet"), "ARGOS");
+        assert_eq!(normalize_label("admiralty"), "ADMIRALTY");
+        assert_eq!(normalize_label("[ADMIRALTY]"), "ADMIRALTY");
+        assert_eq!(normalize_label("LUX"), "LUX");
+        assert_eq!(normalize_label("[LUX]-LEAD"), "LUX-LEAD");
+        assert_eq!(normalize_label("Yazi"), "YAZI");
+        assert_eq!(normalize_label(" [BOLT]-FLEET "), "BOLT");
+        // brackets deleted everywhere, not trimmed from the ends
+        assert_eq!(normalize_label("a[b]c"), "ABC");
+    }
 }

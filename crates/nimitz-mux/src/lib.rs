@@ -37,10 +37,13 @@ pub enum Place {
     Workspace { label: String },
 }
 
+/// (tab label, command, cwd)
+pub type TabPlan = (String, Vec<String>, std::path::PathBuf);
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LayoutPlan {
     /// workspace label -> [(tab label, command, cwd)]
-    pub workspaces: Vec<(String, Vec<(String, Vec<String>, std::path::PathBuf)>)>,
+    pub workspaces: Vec<(String, Vec<TabPlan>)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,10 +71,151 @@ pub trait Mux {
     fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError>;
 }
 
+pub mod fake;
 pub mod herdr;
 pub mod none;
 
-/// `NIMITZ_MUX` override, else Herdr when `HERDR_ENV=1`, else None.
-pub fn detect(_vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> {
-    todo!("mux agent")
+/// `NIMITZ_MUX` override, else Herdr when `HERDR_ENV=1` and a herdr binary
+/// resolves (`NIMITZ_HERDR_BIN`, else PATH), else NoMux. Pure in `vars`.
+pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> {
+    match vars.get("NIMITZ_MUX").map(String::as_str) {
+        Some("none") => return Box::new(none::NoMux),
+        Some("herdr") => {
+            // explicit override: take the configured binary even if it does not resolve yet
+            let bin = resolve_herdr_bin(vars).unwrap_or_else(|| "herdr".into());
+            return Box::new(herdr::Herdr { bin });
+        }
+        Some(_) => return Box::new(none::NoMux), // unknown name: safest is no mux
+        None => {}
+    }
+    if vars.get("HERDR_ENV").map(String::as_str) == Some("1") {
+        if let Some(bin) = resolve_herdr_bin(vars) {
+            return Box::new(herdr::Herdr { bin });
+        }
+    }
+    Box::new(none::NoMux)
+}
+
+/// `NIMITZ_HERDR_BIN` (checked as a path when it has a `/`, else searched on
+/// PATH under that name), else `herdr` on PATH.
+fn resolve_herdr_bin(vars: &std::collections::HashMap<String, String>) -> Option<String> {
+    let name = vars.get("NIMITZ_HERDR_BIN").map(String::as_str).unwrap_or("herdr");
+    if name.contains('/') {
+        return executable(std::path::Path::new(name)).then(|| name.to_string());
+    }
+    let path = vars.get("PATH").map(String::as_str).unwrap_or("");
+    path.split(':')
+        .filter(|d| !d.is_empty())
+        .map(|d| std::path::Path::new(d).join(name))
+        .find(|p| executable(p))
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+fn executable(p: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        p.metadata().map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn fake_bin_dir() -> tempdir::TempDir {
+        let d = tempdir::TempDir::new();
+        std::fs::write(d.path().join("herdr"), "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(d.path().join("herdr"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        d
+    }
+
+    // minimal temp dir without a dev-dependency
+    mod tempdir {
+        pub struct TempDir(std::path::PathBuf);
+        impl TempDir {
+            pub fn new() -> Self {
+                static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let p = std::env::temp_dir().join(format!(
+                    "nimitz-mux-test-{}-{}",
+                    std::process::id(),
+                    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                ));
+                std::fs::create_dir_all(&p).unwrap();
+                TempDir(p)
+            }
+            pub fn path(&self) -> &std::path::Path {
+                &self.0
+            }
+        }
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    #[test]
+    fn detect_override_none_wins_over_herdr_env() {
+        let d = fake_bin_dir();
+        let v = vars(&[("NIMITZ_MUX", "none"), ("HERDR_ENV", "1"), ("PATH", d.path().to_str().unwrap())]);
+        assert_eq!(detect(&v).name(), "none");
+    }
+
+    #[test]
+    fn detect_override_herdr_without_env() {
+        let v = vars(&[("NIMITZ_MUX", "herdr")]);
+        let m = detect(&v);
+        assert_eq!(m.name(), "herdr");
+        assert!(m.caps().open && m.caps().focus && m.caps().type_text && m.caps().layout);
+    }
+
+    #[test]
+    fn detect_unknown_override_is_none() {
+        let v = vars(&[("NIMITZ_MUX", "tmux"), ("HERDR_ENV", "1")]);
+        assert_eq!(detect(&v).name(), "none");
+    }
+
+    #[test]
+    fn detect_herdr_env_with_binary_on_path() {
+        let d = fake_bin_dir();
+        let v = vars(&[("HERDR_ENV", "1"), ("PATH", d.path().to_str().unwrap())]);
+        assert_eq!(detect(&v).name(), "herdr");
+    }
+
+    #[test]
+    fn detect_herdr_env_without_binary_is_none() {
+        let v = vars(&[("HERDR_ENV", "1"), ("PATH", "/nonexistent-dir-nimitz")]);
+        assert_eq!(detect(&v).name(), "none");
+    }
+
+    #[test]
+    fn detect_no_env_is_none() {
+        let d = fake_bin_dir();
+        let v = vars(&[("PATH", d.path().to_str().unwrap())]);
+        assert_eq!(detect(&v).name(), "none");
+    }
+
+    #[test]
+    fn detect_nimitz_herdr_bin_path_override() {
+        let d = fake_bin_dir();
+        let bin = d.path().join("herdr");
+        let v = vars(&[("HERDR_ENV", "1"), ("NIMITZ_HERDR_BIN", bin.to_str().unwrap()), ("PATH", "")]);
+        assert_eq!(detect(&v).name(), "herdr");
+        let v = vars(&[("HERDR_ENV", "1"), ("NIMITZ_HERDR_BIN", "/nonexistent/herdr"), ("PATH", "")]);
+        assert_eq!(detect(&v).name(), "none");
+    }
 }
