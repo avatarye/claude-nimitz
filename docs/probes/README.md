@@ -40,3 +40,13 @@ job row still exists starts a **copy with a new id and no conversation history**
 (native), the same command **continues <id> itself**: same id, its history, and
 the new name and labels. So nimitz relabels by stop, `rm`, then resume with every
 flag.
+
+## P0.9: resume with flags (found by the adversarial tester, 2026-10-04)
+
+| Case | ACME 2.1.288.1000 |
+| --- | --- |
+| `--bg --resume <id>` with flags while the job row exists, with a prompt | new id; history kept (the first turn writes the fork's transcript) |
+| the same with no prompt, stopped before its first turn | new id; history LOST (no transcript was written) |
+| `claude rm <row>` first, then `--bg --resume <id>` with flags | same id; new name and labels; history kept |
+
+nimitz uses the last row for every relabel (`probes/p0_relabel.py`, `results-p9-*.json`).
