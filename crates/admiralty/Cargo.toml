@@ -2,17 +2,13 @@
 name = "admiralty"
 version = "0.3.0"
 edition = "2021"
-description = "Live tree view of Claude Code fleets on this machine"
+description = "The Admiralty TUI: watch and control every claude-nimitz fleet on this machine"
 publish = false
 
 [dependencies]
-libc = "0.2"
-ratatui = "0.30"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-unicode-width = "0.2"
-
-[profile.release]
-opt-level = 3
-lto = "thin"
-strip = true
+nimitz-core = { path = "../nimitz-core" }
+nimitz-mux = { path = "../nimitz-mux" }
+ratatui = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+unicode-width = { workspace = true }
