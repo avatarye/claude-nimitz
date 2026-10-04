@@ -178,7 +178,7 @@ fn absolute_dir(d: &str) -> String {
 }
 
 /// Apply the ship flags to a definition, for the machine `label`.
-fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, labels: &[String]) -> Result<(), String> {
+fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk) -> Result<(), String> {
     for l in ctx.args.values("--no-dir") {
         if def.dirs.remove(&l).is_none() {
             return Err(format!("{} has no folder for machine {l:?}", def.name));
@@ -186,14 +186,15 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, labels: &[String]) -> Re
         def.permission_mode.remove(&l); // no folder there, so no mode either
     }
     if let Some(d) = ctx.args.value("--dir") {
-        if d.trim().is_empty() {
-            return Err("--dir needs a folder or `managed`; to remove a machine's folder use --no-dir <label>".into());
-        }
-        // `--dir sandbox=managed` is the `machine add` form; here it would become a folder name.
-        if let Some((l, x)) = d.split_once('=').filter(|(l, _)| labels.iter().any(|k| k == l)) {
-            return Err(format!("--dir {d:?} looks like <label>=<folder>; use --dir {} --machine {l}", out::quote(x)));
-        }
-        let stored = absolute_dir(d);
+        // core's normalize_ship_dir is the rule (shared with Admiralty); the CLI only
+        // resolves a relative folder against the cwd first. `<label>=<x>` and an
+        // empty value go to core as typed, so its message names the right form.
+        let raw = d.trim();
+        let label_form = raw.split_once('=').is_some_and(|(l, _)| f.config.machines.contains_key(l));
+        let input = if raw.is_empty() || label_form { raw.to_string() } else { absolute_dir(raw) };
+        let stored = config::normalize_ship_dir(f, &input).map_err(|e| {
+            if raw.is_empty() { format!("--dir: {e}; to remove a machine's folder use --no-dir <label>") } else { format!("--dir: {e}") }
+        })?;
         out::line(&format!("folder for {label}: {stored}"));
         def.dirs.insert(label.into(), stored);
     }
@@ -233,7 +234,6 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
         Ok(f) => f,
         Err(p) => return Ok(config_plan(ctx, p)),
     };
-    let labels: Vec<String> = f.config.machines.keys().cloned().collect();
     let label = match ctx.args.value("--machine").map(str::to_string).or(f.machine.clone()) {
         Some(l) => l,
         None => return Err(format!("this machine has no label in fleet {fleet}; pass --machine <label> or `nimitz machine add {fleet} <label>`")),
@@ -244,7 +244,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 return Err("ship new needs --dir <folder|managed>".into());
             }
             let mut def = ShipDef { name: name.into(), ..Default::default() };
-            edit_ship(ctx, &mut def, &label, &labels)?;
+            edit_ship(ctx, &mut def, &label, &f)?;
             if let Some(p) = prompt_from_editor(ctx, None, true)? {
                 def.prompt = Some(p);
             }
@@ -261,7 +261,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 Some(mut def) => {
                     let before = def.clone();
                     let current = config::ship_prompt(&f, &id);
-                    edit_ship(ctx, &mut def, &label, &labels)?;
+                    edit_ship(ctx, &mut def, &label, &f)?;
                     if let Some(p) = prompt_from_editor(ctx, current.as_deref(), false)? {
                         def.prompt = Some(p);
                         def.prompt_file = None;
