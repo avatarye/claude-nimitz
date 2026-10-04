@@ -1311,3 +1311,21 @@ fn strays_in_a_ship_folder_are_never_the_ship() {
     let m = w.member(&w.snap(), &id);
     assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(fork.as_str()) && r.name.is_empty()), "unnamed fork: {:?}", m.extra_rows);
 }
+
+#[test]
+fn bug52_the_labels_mismatch_fix_stops_a_session_in_the_wrong_folder() {
+    let w = world();
+    let id = w.ship("FRESH");
+    let wrong = w.member(&w.snap(), &w.ship("STOPPED")).cwd.unwrap();
+    let settings = claude::settings_json(&w.env, &id, true);
+    let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), id.name(), "--settings".into(), settings, "hi".into()], Some(&wrong));
+    assert_eq!(rc, 0, "{out}");
+    let snap = w.snap();
+    let i = w.member(&snap, &id).issues.into_iter().find(|i| i.code == "labels.mismatch").expect("labels.mismatch");
+    let fix = i.fix.unwrap();
+    let short = fix.strip_prefix("nimitz stop ").expect("a stop fix").trim().to_string();
+    let plan = sessions::plan_stop_session(&w.env, &snap, &short, &Caller::User);
+    assert!(plan.ok(), "the fix must run: {:?}", plan.refusals);
+    assert!(sessions::apply(&w.env, &plan).verified);
+    assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(short.as_str()) && r.live()));
+}

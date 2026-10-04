@@ -785,9 +785,14 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
     if hit.is_none() {
         // a session outside fleet scope that holds a member's address
         let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+        let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
         if let Some(r) = rows.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target) {
+            let labelled_as = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).cloned();
             if let Some((_, m)) = all.iter().find(|(_, m)| m.expected_name == r.name) {
                 hit = Some((None, r.info(Default::default()), format!("stop the session in {} that holds {}'s name {:?}", r.cwd, m.id, r.name)));
+            } else if let Some((_, m)) = all.iter().find(|(_, m)| Some(&m.id.0) == labelled_as.as_ref()) {
+                // BUG-52: a session carrying a member's labels in another folder
+                hit = Some((None, r.info(Default::default()), format!("stop the session in {} that carries {}'s labels in the wrong folder", r.cwd, m.id)));
             }
         }
     }
@@ -805,7 +810,7 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
 
 /// A deliberate relaunch: new id, every flag, old row removed (contracts.md section 8).
 pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
-    let mut plan = Plan { summary: format!("relaunch {id} (new session id, labels restored)"), ..Default::default() };
+    let mut plan = Plan { summary: format!("relaunch {id} (same session id and history; labels, name and mode restored)"), ..Default::default() };
     if let Err(why) = may_start(caller, id, "relaunch") {
         refuse(&mut plan, "authority", why, None, Some(id.clone()));
         return plan;

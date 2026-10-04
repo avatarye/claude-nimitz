@@ -78,13 +78,84 @@ fn str_at(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(|x| x.as_str()).map(str::to_string)
 }
 
+/// events.jsonl is compacted when it grows past this (BUG-44): a status reads
+/// the whole file, and must stay fast.
+pub const EVENTS_MAX_BYTES: u64 = 4 * 1024 * 1024;
+/// What a compaction keeps besides every session's newest SessionStart.
+pub const EVENTS_KEEP_RECENT: usize = 2000;
+
+fn flock(f: &std::fs::File, op: i32) {
+    use std::os::unix::io::AsRawFd;
+    unsafe {
+        libc::flock(f.as_raw_fd(), op);
+    }
+}
+
 fn append_line(env: &Env, line: &str) {
     let path = env.events_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = f.write_all(format!("{line}\n").as_bytes());
+    // appends share the lock; a compaction takes it alone
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")).ok();
+    if let Some(l) = &lock {
+        flock(l, libc::LOCK_SH);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).read(true).open(&path) {
+        // a line left half-written (full disk) must not swallow this one (BUG-49)
+        let lead = match f.metadata().map(|m| m.len()).unwrap_or(0) {
+            0 => "",
+            n => {
+                use std::io::{Read, Seek, SeekFrom};
+                let mut last = [0u8; 1];
+                let ok = f.seek(SeekFrom::Start(n - 1)).is_ok() && f.read_exact(&mut last).is_ok();
+                if ok && last[0] != b'\n' { "\n" } else { "" }
+            }
+        };
+        let _ = f.write_all(format!("{lead}{line}\n").as_bytes());
+        let big = f.metadata().map(|m| m.len() > EVENTS_MAX_BYTES).unwrap_or(false);
+        drop(f);
+        if let (true, Some(l)) = (big, &lock) {
+            flock(l, libc::LOCK_UN);
+            flock(l, libc::LOCK_EX);
+            compact_events(&path);
+        }
+    }
+}
+
+/// Keep every session's newest SessionStart (the binding and the labels) and
+/// its newest SessionEnd, plus the last EVENTS_KEEP_RECENT lines; write a temp
+/// file and rename it over events.jsonl. Called under the exclusive lock.
+pub fn compact_events(path: &std::path::Path) {
+    let Ok(raw) = std::fs::read(path) else { return };
+    if (raw.len() as u64) <= EVENTS_MAX_BYTES {
+        return; // someone else compacted it while we waited
+    }
+    let text = String::from_utf8_lossy(&raw);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let recent_from = lines.len().saturating_sub(EVENTS_KEEP_RECENT);
+    let mut newest: std::collections::HashMap<(String, String), usize> = Default::default();
+    for (i, l) in lines.iter().enumerate().take(recent_from) {
+        if let Some(e) = crate::evidence::parse_event_line(l) {
+            if matches!(e.event.as_str(), "SessionStart" | "SessionEnd") {
+                if let Some(sid) = e.session_id {
+                    newest.insert((sid, e.event), i);
+                }
+            }
+        }
+    }
+    let mut keep: Vec<usize> = newest.into_values().collect();
+    keep.extend(recent_from..lines.len());
+    keep.sort_unstable();
+    keep.dedup();
+    let mut out = String::with_capacity(keep.len() * 200);
+    for i in keep {
+        out.push_str(lines[i]);
+        out.push('\n');
+    }
+    let tmp = path.with_extension("jsonl.tmp");
+    if std::fs::write(&tmp, out).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
     }
 }
 
@@ -332,6 +403,45 @@ mod tests {
         // and an older line that logged it anyway reads as unlabelled
         let old = vec![Event { labels: [("NIMITZ_HOME".to_string(), "/h".to_string())].into(), ..events[0].clone() }];
         assert!(crate::evidence::labels_by_session(&old).values().all(|l| !crate::evidence::is_labelled(l)));
+    }
+
+    #[test]
+    fn a_half_written_line_does_not_swallow_the_next_event() {
+        let (_td, env) = world();
+        std::fs::create_dir_all(env.state.clone()).unwrap();
+        std::fs::write(env.events_path(), "{\"ts\": 1, \"event\": \"Sto").unwrap(); // disk was full
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        handle(&env, "SessionStart", r#"{"session_id": "s1", "source": "startup"}"#, &labels_of(&env, &id));
+        let events = crate::evidence::events(&env);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].session_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn a_big_event_log_is_compacted_and_keeps_every_binding() {
+        let (_td, env) = world();
+        std::fs::create_dir_all(env.state.clone()).unwrap();
+        let mut body = String::new();
+        let n = 40_000;
+        for i in 0..n {
+            let ev = if i % 20 == 0 { "SessionStart" } else { "Stop" };
+            body.push_str(&format!(
+                "{{\"ts\": {i}.0, \"event\": \"{ev}\", \"session_id\": \"s{}\", \"pid\": 1, \"labels\": {{\"NIMITZ_ID\": \"MAIN/ARGOS/S{}\", \"NIMITZ_ROLE\": \"ship\"}}, \"pad\": \"{}\"}}\n",
+                i / 20, i / 20, "x".repeat(60)
+            ));
+        }
+        std::fs::write(env.events_path(), &body).unwrap();
+        assert!(body.len() as u64 > EVENTS_MAX_BYTES);
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        handle(&env, "Stop", r#"{"session_id": "last"}"#, &labels_of(&env, &id));
+        let size = std::fs::metadata(env.events_path()).unwrap().len();
+        assert!(size < EVENTS_MAX_BYTES / 2, "compacted to {size} bytes");
+        let events = crate::evidence::events(&env);
+        let labels = crate::evidence::labels_by_session(&events);
+        for s in [0, 1, 500, n / 20 - 1] {
+            assert_eq!(labels.get(&format!("s{s}")).and_then(|l| l.get("NIMITZ_ID")).map(String::as_str), Some(format!("MAIN/ARGOS/S{s}").as_str()), "binding of s{s} kept");
+        }
+        assert_eq!(events.last().unwrap().session_id.as_deref(), Some("last"));
     }
 
     #[test]

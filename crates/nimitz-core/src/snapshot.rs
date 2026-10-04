@@ -381,6 +381,13 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     snap
 }
 
+/// Claude Code's own idle hint in a job row ("send a prompt to start") is not
+/// a question for you (BUG-07).
+fn idle_hint(needs: &str) -> bool {
+    let n = needs.trim().to_lowercase();
+    n.starts_with("send a prompt") || n.starts_with("waiting for a prompt") || n.is_empty()
+}
+
 /// A folder as a comparable string: the real path (of its longest existing
 /// prefix), no trailing slash.
 pub(crate) fn norm_dir(d: &str) -> String {
@@ -471,7 +478,7 @@ fn build_member(
             } else if p.status.as_deref() == Some("busy") {
                 reasons.push("session file: status busy".into());
                 Status::Busy
-            } else if let Some(n) = &job.needs {
+            } else if let Some(n) = job.needs.as_ref().filter(|n| !idle_hint(n)) {
                 reasons.push(format!("job row left a question: {n}"));
                 Status::NeedsYou
             } else if p.status.as_deref() == Some("idle") {
