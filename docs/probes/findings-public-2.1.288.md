@@ -83,3 +83,26 @@ ACME "2c: new id" was caused by the old probe passing flags, not by the build.
    to the probe's own labels, added `ran_a_turn` to 2a and `copy_rows` to 2c, and
    ran again. This file and the JSON are from run 2; run 1 agreed on every fact
    except the timing-dependent Notification.
+
+## P0.6 to P0.8 (`probes/p0_probe2.py`)
+
+Run on 2026-10-04 with **2.1.289** (Claude Code updated itself after round 1; ACME
+measured these on 2.1.288). Raw data: `results2-public-2.1.289-subscription.json`.
+`cleanup.rows_left` empty; the private tmux server `nimitz-probe` was gone afterwards.
+
+| Id | Result |
+| --- | --- |
+| P0.6 | Labels reach the Bash tool's processes. A `--bg` session ran `env \| grep NIMITZ_ \| sort` with its Bash tool; the output had `NIMITZ_ID=PROBE/p6`, `NIMITZ_PROBE=p6`, `NIMITZ_ROLE=ship` from `--settings`. |
+| P0.7 | PreToolUse sees `SendMessage` and can block it. Tool name `SendMessage`; `tool_input` has `to`, `recipient`, `message`, `content`, `summary`, `type`. The session first loaded the tool with `ToolSearch` (deferred tool). With `permissionDecision: "deny"` PreToolUse fired and PostToolUse did not. |
+| P0.8 | `claude -c` keeps the session id for an interactive session across a restart: SessionStart `startup`, then `resume`, same id. |
+
+PreToolUse input fields: `cwd, effort, hook_event_name, permission_mode, prompt_id,
+**scratchpad_dir**, session_id, tool_input, tool_name, tool_use_id, transcript_path`.
+
+### Differences from ACME (round 2)
+
+1. **Version:** public 2.1.289 against ACME 2.1.288.
+2. **PreToolUse input has `scratchpad_dir`**, which the ACME field list does not.
+   Likely the version, not the build. `nimitz` should not depend on the exact field set.
+
+All three results match ACME.
