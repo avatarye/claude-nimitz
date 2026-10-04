@@ -61,7 +61,16 @@ home-server = "managed"
 [ships.permission_mode]             # optional per machine
 ```
 
-A ship with no `dirs` entry for this machine does not run here.
+A ship with no `dirs` entry for this machine does not run here. Ship names
+`COMMODORE` and `ADMIRAL` (and anything starting `COMMODORE/`) are reserved: they
+would take a role's address. Folders are compared as real paths (symlinks
+resolved, as Claude Code records them); one folder holds one member.
+
+A `squadron.toml` that does not parse leaves only that squadron out: the rest of
+the fleet loads, the squadron is `config.invalid` (file:line:col), its live
+members stay visible as members whose config is unreadable, and config writes to
+the fleet refuse until the file is fixed. `machine add <F> <label>` records this
+host only when no other label of the fleet names it; otherwise `--hostname H`.
 
 ## 4. Identity, names, labels
 
@@ -79,7 +88,12 @@ Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 
 ## 5. Registry and events (`NIMITZ_STATE`)
 
-`registry.json` (atomic write: temp + rename; `registry.lock` with `flock`):
+`registry.json` (atomic write: temp + rename; `registry.lock` with `flock`; every
+save also writes `registry.json.bak`, the last good copy). A `registry.json` that
+does not parse is never replaced in silence: it is kept as
+`registry.json.corrupt-<ts>` (with a `.txt` note), the registry is rebuilt from
+the `.bak` and the SessionStart labels in `events.jsonl`, and `check` reports
+`registry.corrupt` until the kept file is removed:
 
 ```json
 {"version": 1, "machine": "west-mac", "identities": {
@@ -127,8 +141,8 @@ Each finding is an `Issue` with a stable `code`:
 
 | Code | Condition |
 | --- | --- |
-| `config.invalid` | TOML does not parse or breaks a schema rule (names, duplicates, unknown keys) |
-| `config.layout` | a `CLAUDE.md` in `<fleet>/` (Error); a member folder inside a nimitz-managed folder (admiral, commodore, managed ship) (Error); a member folder inside a user project folder that has a `CLAUDE.md` (Warn). A member folder inside a user folder without one (e.g. a ship at `~`) is fine |
+| `config.invalid` | TOML does not parse (file:line:col; a bad squadron.toml hides only its squadron) or breaks a schema rule (names, reserved ship names, duplicates, unknown keys) |
+| `config.layout` | an inherited instructions file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) in `NIMITZ_HOME/`, `<fleet>/`, `<fleet>/squadrons/`, `<fleet>/ships/` or `<fleet>/ships/<sq>/` (Error); two members with one folder (Error); a member folder inside a nimitz-managed folder (admiral, commodore, managed ship) (Error); a member folder inside a user project folder that has a `CLAUDE.md` (Warn). A member folder inside a user folder without one (e.g. a ship at `~`) is fine |
 | `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted |
 | `name.drift` | live session's name differs from the expected name |
 | `name.taken` | the expected name is held by a live session of another identity |
@@ -140,6 +154,8 @@ Each finding is an `Issue` with a stable `code`:
 | `role.background` | an admiral or commodore is a background session |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml` |
+| `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
+| `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
 | `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
 | `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`), or any live unlabelled session in a member's folder. Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |
 
@@ -155,6 +171,12 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `config.pending` | a config change is waiting for a relaunch |
 | `layout.skip` | a member has no place in the layout |
 | `authority` | the caller may not do this (plan-v3 5.5) |
+| `config.missing` | the id names no fleet, squadron, ship or machine label in the config |
+| `config.exists` | `new`/`add` of something that is already there |
+| `config.nonempty` | `rm` of a fleet or squadron that still has squadrons or ships |
+| `config.write` | a config step failed, or the re-read does not match |
+| `machine.host` | `machine add` would give one host a second label (no `--hostname`, or the hostname is taken) |
+| `machine.live` | (warning) `machine rm` of this machine while members of the fleet are live here; lists them |
 
 ## 8. Relaunch state table (core; each row is a sandbox test)
 
@@ -209,8 +231,10 @@ clear message. Admiralty runs anywhere; without a mux it is monitor-only.
 
 ## 10. CLI surface (`nimitz`)
 
-`init`, `doctor [--fix]`, `status [--json]`, `check [<id>]`,
-`fleet new|set|rm`, `squadron new|set|rm`, `ship new|set|rm`, `machine add|rm`,
+`init`, `doctor [--fix]`, `status [--json]`, `check [<id>]` (the target, every
+member under it, and its parents; the pre-start gate checks the target and its
+parents only),
+`fleet new|set|rm`, `squadron new|set|rm`, `ship new|set|rm`, `machine add [--hostname H]|rm`,
 `up <fleet> [--plan]`, `start <id>`, `stop <id>`, `relaunch <id>`, `rm <id>`,
 `sweep [<id>]`, `tender <F/SQ> <task>`, `adopt <session> <id>`, `signal <id> <text>`,
 `open <id>`, `layout herdr [<fleet>]`, `migrate fleet-skill <dir...> --into <F>`,

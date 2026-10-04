@@ -12,16 +12,23 @@ fn in_scope(member: &Id, target: Option<&Id>) -> bool {
     }
 }
 
+/// Is `member` under the target (a ship or tender of a squadron, anything of a fleet)?
+fn below(member: &Id, target: Option<&Id>) -> bool {
+    target.is_some_and(|t| member.0.starts_with(&format!("{}/", t.0)))
+}
+
 /// The trust file next to Claude Code's home (`~/.claude` -> `~/.claude.json`).
 fn trust_file(env: &Env) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.json", env.claude_home.display()))
 }
 
 /// Trusted = inside NIMITZ_HOME (nimitz init trusts it), or the folder (or a
-/// parent) has `hasTrustDialogAccepted` in the trust file. An unreadable trust
-/// file is unknown, not untrusted: `None`.
+/// parent) has `hasTrustDialogAccepted` in the trust file, as given or as its
+/// real path (Claude Code records the real path: /tmp is /private/tmp on macOS).
+/// An unreadable trust file is unknown, not untrusted: `None`.
 fn trusted(env: &Env, dir: &Path) -> Option<bool> {
-    if dir.starts_with(&env.home) {
+    let real = crate::env::canon(dir);
+    if dir.starts_with(&env.home) || real.starts_with(crate::env::canon(&env.home)) {
         return Some(true);
     }
     let raw = std::fs::read_to_string(trust_file(env)).ok()?;
@@ -29,16 +36,55 @@ fn trusted(env: &Env, dir: &Path) -> Option<bool> {
     let projects = v.get("projects")?.as_object()?;
     let accepted = |p: &Path| {
         projects
-            .get(&p.to_string_lossy().into_owned())
+            .get(p.to_string_lossy().trim_end_matches('/'))
+            .or_else(|| projects.get(&p.to_string_lossy().into_owned()))
             .and_then(|e| e.get("hasTrustDialogAccepted"))
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
     };
-    Some(dir.ancestors().any(accepted))
+    Some(dir.ancestors().any(accepted) || real.ancestors().any(accepted))
 }
 
-/// All issues for one identity (and its parents), or for everything when `id` is None.
+/// `folder.missing` / `folder.untrusted` for a member's folder, if either applies.
+pub fn folder_issue(env: &Env, id: &Id, cwd: &str) -> Option<Issue> {
+    let dir = Path::new(cwd);
+    if !dir.is_dir() {
+        return Some(Issue {
+            code: "folder.missing".into(),
+            severity: Severity::Error,
+            message: format!("{id}'s folder {cwd} does not exist"),
+            fix: Some(format!("mkdir -p {cwd}  # or point {id} elsewhere with nimitz ship set")),
+            id: Some(id.clone()),
+        });
+    }
+    if trusted(env, dir) == Some(false) {
+        // Claude Code records the real path when the prompt is accepted; name that one.
+        let real = crate::env::canon(dir);
+        return Some(Issue {
+            code: "folder.untrusted".into(),
+            severity: Severity::Error,
+            message: format!("{id}'s folder {} is not trusted by Claude Code", real.display()),
+            fix: Some(format!("run `claude` once in {} and accept the trust prompt", real.display())),
+            id: Some(id.clone()),
+        });
+    }
+    None
+}
+
+/// `nimitz check [<id>]`: the target, every member under it (a fleet's
+/// squadrons and ships, a squadron's ships and tenders), and its parents.
+pub fn check_tree(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
+    check_scoped(env, snap, id, true)
+}
+
+/// All issues for one identity and its parents (the pre-start gate), or for
+/// everything when `id` is None.
 pub fn check(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
+    check_scoped(env, snap, id, false)
+}
+
+fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<Issue> {
+    let in_scope = |m: &Id, t: Option<&Id>| in_scope(m, t) || (tree && below(m, t));
     let mut out: Vec<Issue> = vec![];
     let scoped = |i: &Issue| match (&i.id, id) {
         (_, None) => true,
@@ -49,6 +95,10 @@ pub fn check(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
     // Config and layout issues, from the files themselves.
     let (fleets, load_issues) = crate::config::load_all(env);
     out.extend(load_issues.into_iter().filter(|i| scoped(i)));
+    if id.is_none() || fleets.iter().any(|f| id.is_some_and(|t| t.fleet() == f.config.fleet)) {
+        out.extend(crate::config::home_layout(env));
+    }
+    out.extend(crate::registry::health(env));
     for f in &fleets {
         if id.map(|t| t.fleet() == f.config.fleet).unwrap_or(true) {
             out.extend(crate::config::validate(env, f).into_iter().filter(|i| scoped(i)));
@@ -67,25 +117,8 @@ pub fn check(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
             if !in_scope(&m.id, id) {
                 continue;
             }
-            if let Some(cwd) = &m.cwd {
-                let dir = Path::new(cwd);
-                if !dir.is_dir() {
-                    out.push(Issue {
-                        code: "folder.missing".into(),
-                        severity: Severity::Error,
-                        message: format!("{}'s folder {} does not exist", m.id, cwd),
-                        fix: Some(format!("mkdir -p {cwd}  # or point {} elsewhere with nimitz ship set", m.id)),
-                        id: Some(m.id.clone()),
-                    });
-                } else if trusted(env, dir) == Some(false) {
-                    out.push(Issue {
-                        code: "folder.untrusted".into(),
-                        severity: Severity::Error,
-                        message: format!("{}'s folder {} is not trusted by Claude Code", m.id, cwd),
-                        fix: Some(format!("run `claude` once in {cwd} and accept the trust prompt")),
-                        id: Some(m.id.clone()),
-                    });
-                }
+            if let Some(i) = m.cwd.as_deref().and_then(|cwd| folder_issue(env, &m.id, cwd)) {
+                out.push(i);
             }
             // Session rules (name.*, labels.*, dup.live, copy.rows, lineage.broken,
             // role.background, ship.elsewhere) arrive here too: snapshot puts
@@ -101,20 +134,19 @@ pub fn check(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
     // Claude Code version against the compiled range (launches refuse outside it).
     if !snap.compat_ok {
         let c = crate::compat::supported();
-        let (sev, what) = match snap.cc_version.as_deref().map(|v| crate::compat::position(&c, v)) {
-            Some(1) => (Severity::Warn, "above".to_string()),
-            Some(-1) => (Severity::Error, "below".to_string()),
-            _ => (Severity::Error, "unknown against".to_string()),
+        let range = format!("the supported range {} - {}", c.min, c.max);
+        let (sev, message) = match snap.cc_version.as_deref() {
+            None => (Severity::Error, format!("Claude Code's version could not be read (`{} --version` gave none); {range}", env.native_claude_bin)),
+            Some(v) => match crate::compat::position(&c, v) {
+                1 => (Severity::Warn, format!("Claude Code {v} is above {range}")),
+                -1 => (Severity::Error, format!("Claude Code {v} is below {range}")),
+                _ => (Severity::Error, format!("Claude Code version {v:?} is not a version nimitz can compare with {range}")),
+            },
         };
         out.push(Issue {
             code: "cc.version".into(),
             severity: sev,
-            message: format!(
-                "Claude Code {} is {what} the supported range {} - {}",
-                snap.cc_version.as_deref().unwrap_or("(not found)"),
-                c.min,
-                c.max
-            ),
+            message,
             fix: Some("read-only commands still work; `--force` overrides launches".into()),
             id: None,
         });
@@ -149,11 +181,28 @@ pub fn check(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::tests::{make_fleet, test_env};
 
-    fn member(id: Id, cwd: Option<&str>) -> Member {
+    pub(crate) fn live_session(name: &str) -> SessionInfo {
+        SessionInfo {
+            session_id: "11111111-aaaa".into(),
+            short_id: Some("11111111".into()),
+            pid: Some(1),
+            kind: "interactive".into(),
+            state: None,
+            status: None,
+            waiting_for: None,
+            started_at: None,
+            status_since: None,
+            name: name.into(),
+            cwd: "/x".into(),
+            labels: Default::default(),
+        }
+    }
+
+    pub(crate) fn member(id: Id, cwd: Option<&str>) -> Member {
         Member {
             role: id.role(),
             expected_name: id.name(),
@@ -170,7 +219,7 @@ mod tests {
         }
     }
 
-    fn snap_for(env: &Env, ship_cwd: Option<&str>) -> Snapshot {
+    pub(crate) fn snap_for(env: &Env, ship_cwd: Option<&str>) -> Snapshot {
         let f = crate::config::load_fleet(env, "MAIN").unwrap();
         let admiral_dir = f.dir.join("admiral");
         let sq_dir = f.squadrons[0].0.clone();
@@ -224,6 +273,37 @@ mod tests {
         // But the ship's check walks its parents (clean here).
         let issues = check(&env, &snap, Some(&ship));
         assert_eq!(issues.len(), 1, "{issues:?}");
+    }
+
+    #[test]
+    fn check_tree_covers_members_below_the_target() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let snap = snap_for(&env, Some("/no/such/dir"));
+        for t in [Id::admiral("MAIN"), Id::commodore("MAIN", "ARGOS")] {
+            let issues = check_tree(&env, &snap, Some(&t));
+            assert!(issues.iter().any(|i| i.code == "folder.missing"), "{t}: {issues:?}");
+            assert!(!check(&env, &snap, Some(&t)).iter().any(|i| i.code == "folder.missing"), "the gate stays chain-only");
+        }
+        let other = Id::commodore("MAIN", "OTHER");
+        assert!(check_tree(&env, &snap, Some(&other)).is_empty());
+    }
+
+    #[test]
+    fn a_symlink_to_a_trusted_folder_is_trusted() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let real = td.path().canonicalize().unwrap().join("project");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = td.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let trust = format!("{}.json", env.claude_home.display());
+        std::fs::write(&trust, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, real.display())).unwrap();
+        assert!(folder_issue(&env, &Id::admiral("MAIN"), link.to_str().unwrap()).is_none());
+        // untrusted: the fix names the real path, the one Claude Code records
+        std::fs::write(&trust, r#"{"projects": {}}"#).unwrap();
+        let i = folder_issue(&env, &Id::admiral("MAIN"), link.to_str().unwrap()).unwrap();
+        assert!(i.fix.unwrap().contains(real.to_str().unwrap()));
     }
 
     #[test]

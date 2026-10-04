@@ -186,7 +186,6 @@ fn bug03_concurrent_starts_of_a_stopped_ship_make_no_copies() {
 }
 
 #[test]
-#[ignore = "BUG-04"]
 fn bug04_a_symlinked_path_to_a_trusted_folder_is_trusted() {
     let sb = Sb::new(false);
     let link = sb.dir("link-to-fresh");
@@ -315,7 +314,6 @@ fn bug15_one_broken_squadron_does_not_hide_the_fleet() {
 }
 
 #[test]
-#[ignore = "BUG-16"]
 fn bug16_two_ships_in_one_folder_are_reported() {
     let sb = Sb::new(false);
     let clean = sb.dir("dirs/main/clean");
@@ -326,7 +324,6 @@ fn bug16_two_ships_in_one_folder_are_reported() {
 }
 
 #[test]
-#[ignore = "BUG-17"]
 fn bug17_every_inherited_claude_md_is_reported() {
     for rel in ["nimitz/CLAUDE.md", "nimitz/main/squadrons/CLAUDE.md", "nimitz/main/ships/CLAUDE.md", "nimitz/main/.claude/CLAUDE.md"] {
         let sb = Sb::new(false);
@@ -339,7 +336,6 @@ fn bug17_every_inherited_claude_md_is_reported() {
 }
 
 #[test]
-#[ignore = "BUG-18"]
 fn bug18_a_corrupt_registry_is_kept_and_reported() {
     let sb = Sb::new(false);
     let reg = sb.dir("state/registry.json");
@@ -361,7 +357,6 @@ fn bug19_a_stowaway_can_be_adopted_as_a_tender() {
 }
 
 #[test]
-#[ignore = "BUG-20"]
 fn bug20_machine_add_does_not_copy_this_hostname() {
     let sb = Sb::new(false);
     sb.run(&["machine", "add", "MAIN", "second", "--yes"]);
@@ -424,7 +419,6 @@ fn bug24_check_of_a_fleet_or_squadron_covers_its_members() {
 }
 
 #[test]
-#[ignore = "BUG-26"]
 fn bug26_a_ship_may_not_take_the_commodores_address() {
     let sb = Sb::new(false);
     let r = sb.run(&["ship", "new", "MAIN/ARGOS/COMMODORE", "--dir", "managed", "--prompt", "x", "--yes"]);
@@ -432,7 +426,6 @@ fn bug26_a_ship_may_not_take_the_commodores_address() {
 }
 
 #[test]
-#[ignore = "BUG-27"]
 fn bug27_the_missing_squadron_fix_runs() {
     let sb = Sb::new(false);
     let r = sb.run(&["ship", "new", "MAIN/NOPE/X", "--dir", "managed", "--prompt", "x", "--yes"]);
@@ -481,7 +474,6 @@ fn bug31_a_row_in_another_folder_than_the_config_is_reported() {
 // ------------------------------------------------------------------ H. migration
 
 #[test]
-#[ignore = "BUG-25"]
 fn bug25_migration_reports_a_ship_rooted_at_the_home_folder() {
     // general-fleet's HOME agent lives in the home folder: every other ship nests in it.
     let sb = Sb::new(false);
