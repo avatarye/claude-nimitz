@@ -103,7 +103,8 @@ fn trust(base: &Path, dirs: &[String]) {
 fn trusted(base: &Path, cwd: &str) -> bool {
     // NIMITZ_HOME is trusted by `nimitz init`; anything else needs the trust file.
     let home = base.join("nimitz");
-    if Path::new(cwd).starts_with(&home) {
+    let real_home = home.canonicalize().unwrap_or_else(|_| home.clone());
+    if Path::new(cwd).starts_with(&home) || Path::new(cwd).starts_with(&real_home) {
         return true;
     }
     trust_files(base).iter().any(|f| {
