@@ -37,7 +37,6 @@ fn app_on(w: &World, mux: bool) -> App {
 }
 
 #[test]
-#[ignore = "BUG-32"]
 fn bug32_remove_from_config_of_a_live_ship_stops_it_first() {
     // `nimitz ship rm` plans stop + rm + write; the dialog says it runs that command.
     let w = world();
@@ -85,4 +84,17 @@ fn bug36_at_80x24_the_issue_code_quit_and_help_are_visible() {
     let sc = screen(&mut app, 80, 24);
     assert!(sc.contains("labels.missing"), "the issue code is cut to `…` at 80 columns:\n{sc}");
     assert!(sc.contains("q quit") || sc.contains("? help"), "the footer loses help and quit at 80 columns:\n{sc}");
+}
+
+#[test]
+#[ignore = "BUG-38"]
+fn bug38_a_ship_start_does_not_warn_about_the_commodore_folder() {
+    // The stowaway in ARGOS's commodore folder has nothing to do with starting STOPPED.
+    let w = world();
+    let mut app = app_on(&w, true);
+    goto(&mut app, "M:MAIN/ARGOS/STOPPED");
+    keys(&mut app, "a");
+    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!("no confirm: {}", toast(&app)) };
+    let warns: Vec<String> = p.plan.warnings.iter().map(|i| format!("{} {}", i.code, i.message)).collect();
+    assert!(!warns.iter().any(|w| w.contains("would make a second agent")), "unrelated warning in a ship's start dialog: {warns:?}");
 }
