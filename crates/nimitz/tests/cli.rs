@@ -196,7 +196,7 @@ fn plan_prints_and_changes_nothing() {
         vec!["ship", "new", "MAIN/ARGOS/NEWSHIP", "--dir", "managed", "--prompt", "hi", "--plan"],
         vec!["ship", "rm", "MAIN/ARGOS/CLEAN", "--plan"],
         vec!["fleet", "new", "ZED", "--plan"],
-        vec!["machine", "add", "MAIN", "box2", "--plan"],
+        vec!["machine", "add", "MAIN", "box2", "--hostname", "box2-host", "--plan"],
     ] {
         let r = sb.run(&args);
         assert_eq!(r.code, 0, "{args:?}:\n{}", r.out);
@@ -408,6 +408,13 @@ fn crud_round_trip() {
     assert!(sq_toml().contains("plan"));
     assert!(r.out.contains("next relaunch"), "{}", r.out);
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/NOPE", "--mode", "plan", "--yes"]).code, 1);
+    // `--dir <label>=<x>` is the machine-add form: a usage error with the right form
+    let r = sb.run(&["ship", "new", "TOP/SQ/S3", "--dir", "sandbox-host=managed", "--prompt", "x", "--yes"]);
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert!(r.out.contains("use --dir managed --machine sandbox-host"), "{}", r.out);
+    // a relative folder is stored absolute, and the stored path is printed
+    let r = raw(&sb.vars, &["ship", "new", "TOP/SQ/S3", "--dir", "rel/./s3", "--prompt", "x", "--plan"], &[], None);
+    assert!(r.out.contains("folder for sandbox-host: /"), "{}", r.out);
     // an empty --dir is a usage error; removing a folder is explicit
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--dir", "", "--yes"]).code, 2);
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--no-dir", "nowhere", "--yes"]).code, 2);
@@ -423,9 +430,13 @@ fn crud_round_trip() {
     assert_eq!(raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--prompt", "x", "--yes"], &[("EDITOR", ed)], None).code, 2);
     assert_eq!(sb.run(&["ship", "new", "TOP/SQ/S2", "--yes"]).code, 2, "--dir is required");
 
-    let r = sb.run(&["machine", "add", "TOP", "box2", "--dir", "TOP/SQ/S1=managed", "--yes"]);
+    let r = sb.run(&["machine", "add", "TOP", "box2", "--hostname", "box2-host", "--dir", "TOP/SQ/S1=managed", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(std::fs::read_to_string(fleet_dir.join("fleet.toml")).unwrap().contains("box2"));
+    assert!(std::fs::read_to_string(fleet_dir.join("fleet.toml")).unwrap().contains("box2-host"));
+    // this host already has a label: no second one without --hostname
+    let r = sb.run(&["machine", "add", "TOP", "box3", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("machine.host"), "{}", r.out);
     assert!(sq_toml().contains("box2"));
     let r = sb.run(&["machine", "rm", "TOP", "box2", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);

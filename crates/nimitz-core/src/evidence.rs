@@ -182,20 +182,75 @@ pub fn is_labelled(labels: &BTreeMap<String, String>) -> bool {
     ["NIMITZ_ID", "NIMITZ_ROLE"].iter().any(|k| labels.get(*k).map(|v| !v.is_empty()).unwrap_or(false))
 }
 
-/// Labels per session id, from the newest event that carried any. A session's
-/// labels never change (a copy gets a new id), so any event will do when the
-/// SessionStart line was lost. Events without real labels (`is_labelled`) count
-/// as unlabelled, whatever an older hook wrote.
+/// Labels per session id. The newest SessionStart of a session decides: a
+/// later resume of the same id with no labels (real Claude Code continues the
+/// id after `--resume <id> --name X`) makes it unlabelled, and the map then
+/// holds an empty entry for it. Other events count only for a session whose
+/// SessionStart line was lost. Labels without `NIMITZ_ID`/`NIMITZ_ROLE`
+/// (`is_labelled`) are no labels.
 pub fn labels_by_session(events: &[Event]) -> HashMap<String, BTreeMap<String, String>> {
-    let mut out = HashMap::new();
+    let mut out: HashMap<String, BTreeMap<String, String>> = HashMap::new();
+    let mut started: std::collections::HashSet<String> = Default::default();
     for e in events {
-        if is_labelled(&e.labels) {
-            if let Some(sid) = &e.session_id {
-                out.insert(sid.clone(), e.labels.clone());
-            }
+        let Some(sid) = &e.session_id else { continue };
+        let labels = if is_labelled(&e.labels) { e.labels.clone() } else { BTreeMap::new() };
+        if e.event == "SessionStart" {
+            started.insert(sid.clone());
+            out.insert(sid.clone(), labels);
+        } else if !started.contains(sid) && !labels.is_empty() {
+            out.insert(sid.clone(), labels);
         }
     }
     out
+}
+
+/// `labels_by_session`, plus the labels a job row saved (its `--settings`) for
+/// sessions with no event at all: a SessionStart can be lost (BUG-23).
+pub fn session_labels(events: &[Event], rows: &[SessionRow]) -> HashMap<String, BTreeMap<String, String>> {
+    let mut out = labels_by_session(events);
+    for r in rows {
+        if !out.contains_key(&r.session_id) && is_labelled(&r.job_labels) {
+            out.insert(r.session_id.clone(), r.job_labels.clone());
+        }
+    }
+    out
+}
+
+/// The NIMITZ_* labels in a job row's saved launch options: `savedSettings` (a
+/// `--settings` JSON string) or `respawnFlags` (argv: `--settings <json>`).
+fn job_labels(d: &Value) -> BTreeMap<String, String> {
+    let mut settings: Vec<String> = vec![];
+    if let Some(x) = s(d, "savedSettings") {
+        settings.push(x);
+    }
+    match d.get("respawnFlags") {
+        Some(Value::Array(a)) => {
+            let argv: Vec<&str> = a.iter().filter_map(|x| x.as_str()).collect();
+            for w in argv.windows(2) {
+                if w[0] == "--settings" {
+                    settings.push(w[1].to_string());
+                }
+            }
+        }
+        Some(Value::Object(o)) => {
+            if let Some(x) = o.get("settings").and_then(|x| x.as_str()) {
+                settings.push(x.to_string());
+            }
+        }
+        _ => {}
+    }
+    let mut out = BTreeMap::new();
+    for raw in settings {
+        let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
+        if let Some(env) = v.get("env").and_then(|e| e.as_object()) {
+            for (k, x) in env {
+                if let (true, Some(x)) = (k.starts_with("NIMITZ_"), x.as_str()) {
+                    out.insert(k.clone(), x.to_string());
+                }
+            }
+        }
+    }
+    if is_labelled(&out) { out } else { BTreeMap::new() }
 }
 
 // ------------------------------------------------------------------ session rows
@@ -220,6 +275,11 @@ pub struct SessionRow {
     pub started_at: Option<f64>,
     /// set while a live session sits at a prompt (`status: waiting`)
     pub waiting_for: Option<String>,
+    /// labels the job row saved with its launch options
+    pub job_labels: BTreeMap<String, String>,
+    /// a session file for this row exists but cannot be read (caught mid-write):
+    /// its process may be live, so the row is neither live nor stopped
+    pub unreadable: bool,
 }
 
 impl SessionRow {
@@ -233,7 +293,7 @@ impl SessionRow {
             pid: self.pid,
             kind: self.kind.clone(),
             state: self.state.clone(),
-            status: self.status.clone(),
+            status: if self.unreadable && self.pid.is_none() { Some("unreadable".into()) } else { self.status.clone() },
             waiting_for: self.waiting_for.clone(),
             started_at: self.started_at,
             status_since: self.status_since,
@@ -293,13 +353,24 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             status_since: ts(&d, "updatedAt"),
             started_at: ts(&d, "createdAt"),
             waiting_for: None,
+            job_labels: job_labels(&d),
+            unreadable: false,
         });
     }
     for p in list(&sess_dir) {
         if p.extension().map(|x| x != "json").unwrap_or(true) {
             continue;
         }
-        let Some(d) = cache.json(&p) else { continue };
+        let Some(d) = cache.json(&p) else {
+            // empty or truncated (caught mid-write): the process may be live. A
+            // file named after a job id marks that row; one named after a pid
+            // (real Claude Code) is left to the `claude agents` cross-check.
+            let stem = p.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+            if let Some(r) = rows.iter_mut().find(|r| r.short_id.as_deref() == Some(stem.as_str())) {
+                r.unreadable = true;
+            }
+            continue;
+        };
         let Some(pid) = d.get("pid").and_then(|v| v.as_i64()) else { continue };
         if !pid_alive(pid) {
             continue;
@@ -319,6 +390,8 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             status_since: ts(&d, "statusUpdatedAt"),
             started_at: ts(&d, "startedAt"),
             waiting_for: if status.as_deref() == Some("waiting") { Some(s(&d, "waitingFor").unwrap_or("input".into())) } else { None },
+            job_labels: BTreeMap::new(),
+            unreadable: false,
         };
         match by_sid.get(&sid) {
             // a live background process: its job row gains pid and status
@@ -333,7 +406,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
                 }
             }
             // an interactive process on a session that also has a row: the live one wins
-            Some(&i) => rows[i] = live,
+            Some(&i) => rows[i] = SessionRow { job_labels: std::mem::take(&mut rows[i].job_labels), ..live },
             None => {
                 by_sid.insert(sid, rows.len());
                 rows.push(live)
@@ -341,6 +414,22 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
         }
     }
     Some(rows)
+}
+
+/// Job folders whose `state.json` exists but does not parse: their session is
+/// unknown, so nothing may be planned on a guess (BUG-14).
+pub fn corrupt_jobs(env: &Env) -> Vec<String> {
+    let Ok(rd) = fs::read_dir(env.claude_home.join("jobs")) else { return vec![] };
+    let mut out: Vec<String> = rd
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let p = e.path().join("state.json");
+            fs::read(&p).map(|b| first_json(&b).map(|v| !v.is_object()).unwrap_or(true)).unwrap_or(false)
+        })
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    out.sort();
+    out
 }
 
 /// Rows from `claude agents --json --all` output.
@@ -361,6 +450,8 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         status_since: None,
                         started_at: ts(r, "startedAt"),
                         waiting_for: None,
+                        job_labels: BTreeMap::new(),
+                        unreadable: false,
                     })
                 })
                 .collect()
@@ -553,8 +644,10 @@ pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
             files.push(parent.join(".claude.json"));
         }
     }
+    // Claude Code records real paths (/private/tmp for /tmp): try both forms
     let want = Path::new(dir.trim_end_matches('/'));
-    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root)))
+    let real = crate::env::canon(want);
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root) || real.starts_with(root)))
 }
 
 fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {

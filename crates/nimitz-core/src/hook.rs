@@ -36,16 +36,22 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     let mut out = String::new();
     let mut reason = str_at(&input, "reason");
     if event == "PreToolUse" && is_signal {
-        if let (Some(target), Some(sender)) = (to.as_deref(), labels.get("NIMITZ_ID")) {
-            if let Err(why) = may_signal(env, &Id(sender.clone()), target) {
-                reason = Some(format!("denied: {why}"));
-                out = json!({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": why,
-                }})
-                .to_string();
+        let verdict = match (to.as_deref(), labels.get("NIMITZ_ID")) {
+            (Some(target), Some(sender)) => Some(may_signal(env, &Id(sender.clone()), target)),
+            // labels without an id (partial): fail closed for fleet targets
+            (Some(target), None) if !labels.is_empty() && (crate::sessions::id_from_name(target).is_some() || target.contains(':')) => {
+                Some(Err("the sender's NIMITZ_* labels are partial (no NIMITZ_ID); nimitz cannot judge this signal".to_string()))
             }
+            _ => None,
+        };
+        if let Some(Err(why)) = verdict {
+            reason = Some(format!("denied: {why}"));
+            out = json!({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": why,
+            }})
+            .to_string();
         }
     }
     let tool_event = matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure");
@@ -82,9 +88,49 @@ fn append_line(env: &Env, line: &str) {
     }
 }
 
+/// A `uds:<socket>` address (real Claude Code 2.1.288 delivers SendMessage to a
+/// session's socket): the name of the session that owns the socket, from the
+/// session files (`messagingSocketPath`, or the pid in `<pid>.sock`).
+fn resolve_socket(env: &Env, to: &str) -> Option<String> {
+    let path = to.strip_prefix("uds:")?;
+    let pid: Option<i64> = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse().ok());
+    for e in std::fs::read_dir(env.claude_home.join("sessions")).ok()?.filter_map(|e| e.ok()) {
+        let Some(v) = std::fs::read(e.path()).ok().and_then(|b| crate::evidence::first_json(&b)) else { continue };
+        let sock = v.get("messagingSocketPath").and_then(|x| x.as_str());
+        let vpid = v.get("pid").and_then(|x| x.as_i64());
+        if sock == Some(path) || (pid.is_some() && vpid == pid) {
+            return v.get("name").and_then(|x| x.as_str()).map(str::to_string);
+        }
+    }
+    None
+}
+
 /// The chain-of-command signal table (plan-v3 section 7). Targets that are not
-/// fleet names (teammates of an agent team, other sessions) are not ours to rule.
+/// fleet names (teammates of an agent team, other sessions) are not ours to
+/// rule, except an address nimitz cannot resolve (a socket, BUG-22): a ship
+/// under a closed comms rule, or a tender, may not signal what it cannot name.
 pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
+    if to_name.contains(':') && !to_name.starts_with('[') {
+        let resolved = resolve_socket(env, to_name);
+        if let Some(name) = resolved.as_deref().filter(|n| crate::sessions::id_from_name(n).is_some()) {
+            return may_signal(env, from, name);
+        }
+        let closed = match from.role() {
+            Role::Tender => true,
+            Role::Ship => !matches!(squadron_comms(env, from), Comms::Mode(m) if m == "open"),
+            _ => false,
+        };
+        return if closed {
+            Err(format!(
+                "{to_name} is not a fleet address nimitz can resolve{}; a {} under this squadron's comms rule signals only named members (nimitz chain of command; sender {})",
+                resolved.map(|n| format!(" (it is {n:?})")).unwrap_or_default(),
+                from.role().as_str(),
+                from.name()
+            ))
+        } else {
+            Ok(())
+        };
+    }
     let Some(to) = crate::sessions::id_from_name(to_name) else { return Ok(()) };
     let deny = |why: String| Err(format!("{why} (nimitz chain of command; sender {})", from.name()));
     let same_sq = to.fleet() == from.fleet() && to.squadron() == from.squadron();
@@ -285,7 +331,7 @@ mod tests {
         assert!(events[0].labels.is_empty(), "{:?}", events[0].labels);
         // and an older line that logged it anyway reads as unlabelled
         let old = vec![Event { labels: [("NIMITZ_HOME".to_string(), "/h".to_string())].into(), ..events[0].clone() }];
-        assert!(crate::evidence::labels_by_session(&old).is_empty());
+        assert!(crate::evidence::labels_by_session(&old).values().all(|l| !crate::evidence::is_labelled(l)));
     }
 
     #[test]

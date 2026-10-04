@@ -651,10 +651,33 @@ fn next_id(base: &Path) -> (String, String) {
     (short.clone(), format!("{short}-0000-4000-8000-{n:012x}"))
 }
 
+/// The name Claude Code gives a copy started without `--name`: the original's
+/// name and two words, e.g. `[MAIN.ARGOS]-CLEAN-melodic-mitten` (BUG-11).
+fn copy_name(base: &Path, of: &str) -> String {
+    const WORDS: [&str; 8] = ["melodic", "mitten", "quiet", "otter", "amber", "falcon", "brisk", "lantern"];
+    let (_, sid) = next_id(base);
+    let n = sid.bytes().fold(0usize, |a, b| a.wrapping_mul(31).wrapping_add(b as usize));
+    format!("{of}-{}-{}", WORDS[n % 8], WORDS[(n / 8) % 8])
+}
+
+fn transcript_exists(base: &Path, sid: &str) -> bool {
+    fs::read_dir(claude_home(base).join("projects"))
+        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().join(format!("{sid}.jsonl")).is_file()))
+        .unwrap_or(false)
+}
+
 /// Make a live background session (a cold launch or a copy) and fire its hooks.
-#[allow(clippy::too_many_arguments)]
 fn start(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&String>, source: &str, labels_fire: bool) -> String {
-    let (short, sid) = next_id(base);
+    start_as(base, cwd, name, mode, settings, source, labels_fire, None)
+}
+
+/// `start`, optionally keeping a given session id (a resume from a transcript).
+#[allow(clippy::too_many_arguments)]
+fn start_as(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&String>, source: &str, labels_fire: bool, keep: Option<&str>) -> String {
+    let (short, sid) = match keep {
+        Some(k) => (k[..k.len().min(8)].to_string(), k.to_string()),
+        None => next_id(base),
+    };
     let t = crate::evidence::now();
     let labels = labels_from_settings(settings);
     let mut row = json!({"sessionId": sid, "name": name, "cwd": cwd, "state": "running", "createdAt": ms(t),
@@ -783,6 +806,14 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
         Some(target) => {
             let row = match find(&base, target) {
                 Some(r) => r,
+                // no job row, but the transcript is there: real Claude Code
+                // continues that same id (with the flags passed; BUG-12)
+                None if transcript_exists(&base, target) => {
+                    let name = a.name.clone().unwrap_or_default();
+                    let short = start_as(&base, &cwd, &name, &a.mode.clone().unwrap_or_default(), a.settings.as_ref(), "resume", a.settings.is_some(), Some(target));
+                    println!("resumed {target} as {short}");
+                    return 0;
+                }
                 None => {
                     // probe 2a: the session never runs; the row ends `failed`; only SessionEnd fires
                     let (short, _) = next_id(&base);
@@ -805,7 +836,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             if row.live() {
                 // probe 2 / 2b: a copy with a new id and only the flags passed (an
                 // auto-generated name without --name); with no --settings it fires no hooks
-                let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
+                let name = a.name.clone().unwrap_or_else(|| copy_name(&base, saved_name.as_deref().unwrap_or(&row.name)));
                 let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
                 println!("session {} is already running in the background, so this started a copy as {short}", row.session_id);
                 return 0;
@@ -832,7 +863,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 return 0;
             }
             // probe 2c2 / 2c3: the flags you passed started a copy; the old row stays
-            let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
+            let name = a.name.clone().unwrap_or_else(|| copy_name(&base, saved_name.as_deref().unwrap_or(&row.name)));
             let mode = a.mode.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
             println!("the flags you passed started a copy as {short}");

@@ -31,6 +31,25 @@ fn expand(p: &str, home: &Path) -> PathBuf {
     }
 }
 
+/// The real path of `p` (symlinks resolved, as Claude Code records folders):
+/// the longest existing prefix canonicalized, the rest appended as given.
+pub fn canon(p: &Path) -> PathBuf {
+    let mut rest = vec![];
+    let mut cur = p;
+    loop {
+        if let Ok(real) = cur.canonicalize() {
+            return rest.iter().rev().fold(real, |acc: PathBuf, c| acc.join(c));
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                cur = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
 /// First `name` on PATH that is a file.
 pub fn which(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
@@ -203,6 +222,17 @@ mod tests {
         assert!(!e.hostname.is_empty());
         assert!(!e.hostname.contains('.'));
         assert_eq!(e.hostname, e.hostname.to_lowercase());
+    }
+
+    #[test]
+    fn canon_resolves_symlinks_and_keeps_missing_tails() {
+        let td = tempfile::tempdir().unwrap();
+        let real = td.path().canonicalize().unwrap().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = td.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(canon(&link), real);
+        assert_eq!(canon(&link.join("not/yet")), real.join("not/yet"));
     }
 
     #[test]

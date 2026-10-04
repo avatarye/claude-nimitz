@@ -164,7 +164,7 @@ pub fn check(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.at_most(1)?;
     let id = ctx.args.pos.first().map(|s| parse_id(s)).transpose()?;
     let snap = ctx.snap();
-    let mut issues = nimitz_core::check::check(&ctx.env, &snap, id.as_ref());
+    let mut issues = nimitz_core::check::check_tree(&ctx.env, &snap, id.as_ref());
     issues.sort_by(|a, b| b.severity.cmp(&a.severity));
     let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
     if out::json_mode() {
@@ -224,33 +224,9 @@ pub fn stop(ctx: &Ctx) -> Result<i32, String> {
     Ok(run::session_plan(ctx, plan))
 }
 
-/// `nimitz stop <short>`: one live row of a member (the fix for `dup.live`).
+/// `nimitz stop <short>`: one live session by its id (core's plan).
 fn plan_stop_row(ctx: &Ctx, snap: &Snapshot, target: &str) -> Plan {
-    let mut plan = Plan { summary: format!("stop session {target}"), ..Default::default() };
-    if ctx.caller != Caller::User {
-        plan.refusals.push(refusal("authority", "stopping a session by its id is yours alone".into(), None, None));
-        return plan;
-    }
-    let is = |r: &&nimitz_core::SessionInfo| r.short_id.as_deref() == Some(target) || r.session_id == target;
-    // A member's row (one of two live copies), else a stowaway (e.g. one holding a name).
-    let hit = members(snap)
-        .into_iter()
-        .find_map(|m| m.session.iter().chain(m.extra_rows.iter()).find(is).map(|r| (Some(m.id.clone()), r.clone())))
-        .or_else(|| snap.stowaways.iter().find(is).map(|r| (None, r.clone())));
-    let Some((owner, row)) = hit else {
-        plan.refusals.push(refusal("config.invalid", format!("{target} names no identity and no known session"), Some("nimitz status".into()), None));
-        return plan;
-    };
-    let Some(short) = row.short_id.clone().filter(|_| row.pid.is_some()) else {
-        plan.refusals.push(refusal("config.invalid", format!("session {} is not a live background session", row.session_id), None, owner));
-        return plan;
-    };
-    let why = match &owner {
-        Some(id) => format!("stop this one session of {id}; the others stay"),
-        None => format!("stop the unlabelled session {:?}", row.name),
-    };
-    plan.steps.push(Step { id: owner, cmd: nimitz_core::claude::stop(&ctx.env, &short), cwd: None, why });
-    plan
+    ses::plan_stop_session(&ctx.env, snap, target, &ctx.caller)
 }
 
 pub fn relaunch(ctx: &Ctx) -> Result<i32, String> {

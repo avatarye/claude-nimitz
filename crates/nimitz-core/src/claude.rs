@@ -39,6 +39,8 @@ impl Row {
             status_since: None,
             started_at: self.started_at,
             waiting_for: None,
+            job_labels: Default::default(),
+            unreadable: false,
         }
     }
 }
