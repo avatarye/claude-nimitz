@@ -252,3 +252,45 @@ fn a_fleet_that_does_not_run_here_is_listed_without_folders() {
     let plan = nimitz_core::sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
     assert!(plan.refusals.iter().any(|i| i.message.contains("does not run on this machine")), "{:?}", plan.refusals);
 }
+
+#[test]
+fn a_status_nobody_knows_is_unknown_and_a_stop_says_why_it_ended() {
+    let w = world();
+    let clean = w.ship(&w.snap(), "CLEAN");
+    let short = clean.session.as_ref().unwrap().short_id.clone().unwrap();
+    // a status value from a newer Claude Code: Unknown, never a guess
+    w.patch(&w.session_file(&short), |v| v["status"] = json!("compacting"));
+    let m = w.ship(&w.snap(), "CLEAN");
+    assert_eq!(m.status, Status::Unknown);
+    assert!(m.reasons[0].contains("compacting"), "{:?}", m.reasons);
+
+    // a stop through the (fake) native binary: the SessionEnd reason shows up
+    let (rc, out) = nimitz_core::claude::run(&nimitz_core::claude::stop(&w.env, &short), None);
+    assert_eq!(rc, 0, "{out}");
+    let m = w.ship(&w.snap(), "CLEAN");
+    assert_eq!(m.status, Status::Stopped);
+    assert!(m.reasons.iter().any(|r| r.contains("SessionEnd") && r.contains("other")), "{:?}", m.reasons);
+}
+
+#[test]
+fn every_member_carries_its_session_issues() {
+    let w = world();
+    let snap = w.snap();
+    for (ship, code) in [("DRIFT", "name.drift"), ("NOLABEL", "labels.missing"), ("TWIN", "dup.live"), ("MISLABEL", "labels.mismatch"), ("COPIES", "copy.rows"), ("TAKEN", "name.taken"), ("BROKEN", "lineage.broken")] {
+        let m = w.ship(&snap, ship);
+        assert!(m.issues.iter().any(|i| i.code == code), "{ship}: {:?}", m.issues);
+    }
+    assert!(w.ship(&snap, "CLEAN").issues.is_empty());
+    let boreal = &snap.fleets.iter().find(|f| f.id.fleet() == "MAIN").unwrap().squadrons.iter().find(|s| s.id.squadron() == Some("BOREAL")).unwrap().commodore;
+    assert!(boreal.issues.iter().any(|i| i.code == "role.background"), "{:?}", boreal.issues);
+}
+
+#[test]
+fn check_reports_each_session_issue_once() {
+    let w = world();
+    let snap = w.snap();
+    let issues = nimitz_core::check::check(&w.env, &snap, None);
+    let drift = Id::ship("MAIN", "ARGOS", "DRIFT");
+    let n = issues.iter().filter(|i| i.code == "name.drift" && i.id.as_ref() == Some(&drift)).count();
+    assert_eq!(n, 1, "{issues:?}");
+}

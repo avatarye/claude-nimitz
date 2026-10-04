@@ -194,6 +194,9 @@ mod tests {
         // a ship: its commodore always
         assert!(!denied(&send(&env, &ship, &argos.name())));
         assert!(denied(&send(&env, &ship, &adm.name())), "a ship does not signal the admiral");
+        // a `[ref]` suffix (two sessions with one name) does not get around the table
+        assert!(denied(&send(&env, &ship, &format!("{} [3fa9c1]", adm.name()))));
+        assert!(!denied(&send(&env, &ship, &format!("{} [3fa9c1]", argos.name()))));
     }
 
     #[test]

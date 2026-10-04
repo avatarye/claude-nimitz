@@ -15,8 +15,16 @@ use std::collections::HashMap;
 /// Parse a session name (address) back into an identity (contracts.md section 4):
 /// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-COMMODORE/task`, `[F.SQ]-SHIP`.
 /// None for names that are not fleet addresses (teammates, ad-hoc sessions).
+/// A trailing ` [ref]` (how `SendMessage` disambiguates two sessions with one
+/// name) is not part of the address, so it cannot hide a target from the rules.
 pub fn id_from_name(name: &str) -> Option<Id> {
-    let rest = name.trim().strip_prefix('[')?;
+    let mut name = name.trim();
+    if let Some((head, tail)) = name.rsplit_once(' ') {
+        if tail.starts_with('[') && tail.ends_with(']') {
+            name = head.trim_end();
+        }
+    }
+    let rest = name.strip_prefix('[')?;
     let close = rest.find(']')?;
     let tag = &rest[..close];
     let role = rest[close + 1..].strip_prefix('-')?;
@@ -277,6 +285,19 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
         }
         return;
     }
+    // The current session is stopped but a copy of the identity is live: a start
+    // would make two. Never start a second live session (row 3's rule).
+    if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
+        let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+        refuse(
+            plan,
+            "dup.live",
+            format!("{id}'s current session is stopped, but its copy {short} ({}) is live", r.name),
+            Some(format!("nimitz stop {short}  # or nimitz adopt {} {id} to keep the copy", r.session_id)),
+            Some(id.clone()),
+        );
+        return;
+    }
     // A stopped member: name drift and missing labels are what rows 5 and 9 fix,
     // so they do not refuse. Everything else about the session still does.
     const ROW_FIXES: [&str; 3] = ["name.drift", "labels.missing", "copy.rows"];
@@ -419,6 +440,15 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
 pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: bool) -> Plan {
     let mut plan = Plan { summary: format!("start {id} (top-down)"), ..Default::default() };
     gate(env, &mut plan, snap, Some(id), force);
+    // What is wrong with a member caller's own chain is yours to fix, not a
+    // reason to refuse the caller's start of its ship or tender.
+    if let Caller::Member { id: me, .. } = caller {
+        let above = chain(me);
+        let (theirs, keep): (Vec<Issue>, Vec<Issue>) =
+            plan.refusals.drain(..).partition(|i| i.id.as_ref().map(|x| x != id && above.contains(x)).unwrap_or(false));
+        plan.refusals = keep;
+        plan.warnings.extend(theirs.into_iter().map(|i| Issue { severity: Severity::Warn, ..i }));
+    }
     for link in chain(id) {
         let running_clean = member(snap, &link)
             .map(|(_, m)| {
@@ -428,6 +458,20 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
             .unwrap_or(false);
         if running_clean {
             continue; // row 1 for a parent: nothing, and no authority needed
+        }
+        // A member caller is running, and what is above it is yours to start: a
+        // commodore reviving its ship is not blocked by an admiral that is down.
+        if let Caller::Member { id: me, .. } = caller {
+            if link != *id && chain(me).contains(&link) {
+                plan.warnings.push(issue(
+                    "config.invalid",
+                    Severity::Info,
+                    format!("{link} is not running clean; only you start it"),
+                    Some(format!("nimitz start {link}")),
+                    Some(link.clone()),
+                ));
+                continue;
+            }
         }
         if let Err(why) = may_start(caller, &link) {
             refuse(&mut plan, "config.invalid", why, None, Some(link.clone()));
@@ -608,6 +652,17 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "config.invalid", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
         return plan;
     };
+    if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
+        let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+        refuse(
+            &mut plan,
+            "dup.live",
+            format!("{id} has another live session {short}; a relaunch would leave two"),
+            Some(format!("nimitz stop {short}  # for the one you drop")),
+            Some(id.clone()),
+        );
+        return plan;
+    }
     let step = |cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.clone()), why: why.into() };
     if p.pid.is_some() {
         match &p.short_id {
@@ -846,14 +901,16 @@ fn classify(step: &Step) -> Kind {
     }
 }
 
-const BIND_TIMEOUT_S: f64 = 15.0;
+/// How long `apply` waits for a background session's SessionStart event.
+pub const BIND_TIMEOUT_S: f64 = 15.0;
 
 /// Wait for the SessionStart event that binds `id` to a session, appended at or
 /// after `since`. Returns the session id.
 fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64) -> Option<String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(timeout_s);
+    let mut cache = crate::evidence::FileCache::default();
     loop {
-        for e in crate::evidence::events(env).iter().rev() {
+        for e in crate::evidence::events_cached(env, &mut cache).iter().rev() {
             if e.ts >= since && e.event == "SessionStart" && e.labels.get("NIMITZ_ID") == Some(&id.0) {
                 if let Some(sid) = &e.session_id {
                     return Some(sid.clone());
@@ -867,19 +924,99 @@ fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64) -> Option<St
     }
 }
 
+/// Bind one started member and verify it: wait for its SessionStart event (at
+/// or after `since`), check a flag-free resume kept `expect`, record the id in
+/// the registry (`via` = launch | resume | relaunch), then re-read the files:
+/// live, named right, labelled right. `apply` calls this for every background
+/// start; the CLI calls it after it opened an interactive member's pane step
+/// (`is_pane_step`), with `since` taken just before it opened the pane.
+pub fn bind_started(
+    env: &Env,
+    id: &Id,
+    cwd: Option<&str>,
+    since: f64,
+    expect: Option<&str>,
+    via: &str,
+    timeout_s: f64,
+) -> Result<String, Vec<Issue>> {
+    let Some(sid) = wait_for_binding(env, id, since, timeout_s) else {
+        return Err(vec![issue(
+            "lineage.broken",
+            Severity::Error,
+            format!("{id} started but no SessionStart event bound it within {timeout_s}s"),
+            Some("check the hooks: nimitz doctor".into()),
+            Some(id.clone()),
+        )]);
+    };
+    if let Some(want) = expect.filter(|w| *w != sid) {
+        return Err(vec![issue(
+            "lineage.broken",
+            Severity::Error,
+            format!("{id}'s resume was expected to keep {want} but bound {sid} (a copy; flags on the resume?)"),
+            Some(format!("nimitz sweep {id}  # drop the copy, then nimitz start {id}")),
+            Some(id.clone()),
+        )]);
+    }
+    let (role, name) = (id.role(), id.name());
+    let cwd_s = cwd.unwrap_or_default().to_string();
+    if let Err(e) = crate::registry::update(env, |r| crate::registry::bind(r, id, role, &name, &cwd_s, &sid, via, crate::evidence::now())) {
+        return Err(vec![issue("lineage.broken", Severity::Error, format!("registry write failed: {e}"), None, Some(id.clone()))]);
+    }
+    claim_folder(env, id, cwd, &sid);
+    let problems = verify_live(env, id, &sid);
+    if problems.is_empty() { Ok(sid) } else { Err(problems) }
+}
+
+/// Re-read the files: `sid` is live, carries `id`'s name and `id`'s labels.
+fn verify_live(env: &Env, id: &Id, sid: &str) -> Vec<Issue> {
+    let mut out = vec![];
+    let mut cache = crate::evidence::FileCache::default();
+    let rows = crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default();
+    let labels = crate::evidence::labels_by_session(&crate::evidence::events(env));
+    let Some(row) = rows.iter().find(|r| r.session_id == sid) else {
+        return vec![issue("lineage.broken", Severity::Error, format!("{id}'s new session {sid} left no row"), None, Some(id.clone()))];
+    };
+    if !row.live() {
+        out.push(issue("lineage.broken", Severity::Error, format!("{id}'s new session {sid} is not live"), None, Some(id.clone())));
+    }
+    if row.name != id.name() {
+        out.push(issue(
+            "name.drift",
+            Severity::Error,
+            format!("{id} started as {:?}, expected {:?}", row.name, id.name()),
+            Some(format!("nimitz relaunch {id}")),
+            Some(id.clone()),
+        ));
+    }
+    if labels.get(sid).map(|l| l.get("NIMITZ_ID") != Some(&id.0)).unwrap_or(true) {
+        out.push(issue(
+            "labels.missing",
+            Severity::Error,
+            format!("{id}'s new session {sid} carries no (or foreign) labels"),
+            Some(format!("nimitz relaunch {id}")),
+            Some(id.clone()),
+        ));
+    }
+    out
+}
+
 /// Run a plan's steps, then re-read state and verify (never trust exit codes alone).
+///
+/// Pane steps (interactive members, `is_pane_step`) are not run: they appear in
+/// `ran` with code 0 and a text starting `pane:`. They sit at the top of a
+/// top-down plan, so the CLI opens them first, calls `bind_started` for each,
+/// and then calls `apply`. `verified` speaks for the steps `apply` ran.
 pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     let mut out = Outcome::default();
     if !plan.ok() {
         out.issues = plan.refusals.clone();
         return out;
     }
-    let mut started: Vec<(Id, String)> = vec![]; // (identity, session id) to verify live
+    let mut started: Vec<(Id, String)> = vec![]; // (identity, session id) to verify again at the end
     for step in &plan.steps {
         let kind = classify(step);
-        // Interactive members open in a mux pane; core runs nothing for them.
         if kind == Kind::Interactive {
-            out.ran.push((step.clone(), 0, "left for the CLI: open this command in a pane".into()));
+            out.ran.push((step.clone(), 0, "pane: open this command in a terminal pane, then bind_started".into()));
             continue;
         }
         if kind == Kind::Bind {
@@ -912,48 +1049,24 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         match kind {
             Kind::Launch | Kind::Relaunch | Kind::Resume { .. } => {
                 let Some(id) = &step.id else { continue };
-                let Some(sid) = wait_for_binding(env, id, since, BIND_TIMEOUT_S) else {
-                    out.issues.push(issue(
-                        "lineage.broken",
-                        Severity::Error,
-                        format!("{id} started but no SessionStart event bound it within {BIND_TIMEOUT_S}s"),
-                        Some("check the hooks: nimitz doctor".into()),
-                        Some(id.clone()),
-                    ));
-                    return out;
+                let (expect, via) = match &kind {
+                    Kind::Resume { session_id } => (Some(session_id.as_str()), "resume"),
+                    Kind::Launch => (None, "launch"),
+                    _ => (None, "relaunch"),
                 };
-                let via = match &kind {
-                    Kind::Resume { session_id } => {
-                        if &sid != session_id {
-                            out.issues.push(issue(
-                                "lineage.broken",
-                                Severity::Error,
-                                format!("{id}'s resume was expected to keep {session_id} but bound {sid} (a copy; flags on the resume?)"),
-                                None,
-                                Some(id.clone()),
-                            ));
-                            return out;
-                        }
-                        "resume"
+                match bind_started(env, id, step.cwd.as_deref(), since, expect, via, BIND_TIMEOUT_S) {
+                    Ok(sid) => started.push((id.clone(), sid)),
+                    Err(issues) => {
+                        out.issues.extend(issues);
+                        return out; // the next steps (rm of the old row) assume this one worked
                     }
-                    Kind::Launch => "launch",
-                    _ => "relaunch",
-                };
-                let (role, name) = (id.role(), id.name());
-                let cwd = step.cwd.clone().unwrap_or_default();
-                if let Err(e) =
-                    crate::registry::update(env, |r| crate::registry::bind(r, id, role, &name, &cwd, &sid, via, crate::evidence::now()))
-                {
-                    out.issues.push(issue("lineage.broken", Severity::Error, format!("registry write failed: {e}"), None, Some(id.clone())));
-                    return out;
                 }
-                claim_folder(env, id, step.cwd.as_deref(), &sid);
-                started.push((id.clone(), sid));
             }
             Kind::Stop { short } => {
                 release_folder(env, step.id.as_ref(), step.cwd.as_deref());
                 if find_row(env, &short).map(|r| r.live()).unwrap_or(false) {
                     out.issues.push(issue("dup.live", Severity::Error, format!("stop {short} ran but the session is still live"), None, step.id.clone()));
+                    return out;
                 } // no row at all after a stop is fine too
             }
             Kind::Rm { short } => {
@@ -964,31 +1077,9 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             Kind::Bind | Kind::Interactive => unreachable!(),
         }
     }
-    // Verify by re-reading, never by exit codes: every started id is live with
-    // its name and its labels.
-    let mut cache = crate::evidence::FileCache::default();
-    let rows = crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default();
-    let labels = crate::evidence::labels_by_session(&crate::evidence::events(env));
+    // Verify again once every step ran (an rm must not have hit the new row).
     for (id, sid) in &started {
-        let Some(row) = rows.iter().find(|r| &r.session_id == sid) else {
-            out.issues.push(issue("lineage.broken", Severity::Error, format!("{id}'s new session {sid} left no row"), None, Some(id.clone())));
-            continue;
-        };
-        if !row.live() {
-            out.issues.push(issue("lineage.broken", Severity::Error, format!("{id}'s new session {sid} is not live"), None, Some(id.clone())));
-        }
-        if row.name != id.name() {
-            out.issues.push(issue(
-                "name.drift",
-                Severity::Error,
-                format!("{id} started as {:?}, expected {:?}", row.name, id.name()),
-                None,
-                Some(id.clone()),
-            ));
-        }
-        if labels.get(sid).map(|l| l.get("NIMITZ_ID") != Some(&id.0)).unwrap_or(true) {
-            out.issues.push(issue("labels.missing", Severity::Error, format!("{id}'s new session {sid} carries no (or foreign) labels"), None, Some(id.clone())));
-        }
+        out.issues.extend(verify_live(env, id, sid));
     }
     out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() == plan.steps.len();
     out
@@ -1029,6 +1120,9 @@ mod tests {
         assert_eq!(id_from_name("scratch notes"), None);
         assert_eq!(id_from_name("[main.ARGOS]-SHIP"), None); // lowercase fleet
         assert_eq!(id_from_name("[F.SQ]-COMMODORE/"), None);
+        // a SendMessage ref suffix does not hide the address
+        assert_eq!(id_from_name("[F.SQ]-S [3fa9c1]"), Some(Id::ship("F", "SQ", "S")));
+        assert_eq!(id_from_name("[F.SQ]-COMMODORE/fix [ab12]"), Some(Id::tender("F", "SQ", "fix")));
     }
 
     #[test]
