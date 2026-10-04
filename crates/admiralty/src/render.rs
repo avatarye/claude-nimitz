@@ -61,7 +61,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     );
     f.render_widget(Paragraph::new(bottom_line(app, bottom.width as usize)).style(Style::new().bg(mono::BG_HI)), bottom);
     match &app.modal {
-        Some(Modal::Help { scroll }) => draw_help(f, area, *scroll),
+        Some(Modal::Help { scroll }) => draw_help(f, area, *scroll, app.icons),
         Some(Modal::Confirm(p)) => draw_confirm(f, area, p, app.ctx.live),
         Some(Modal::Needs { items, sel }) => draw_needs(f, area, items, *sel),
         Some(Modal::Issues { sel }) => draw_issues(app, f, area, *sel),
@@ -142,10 +142,11 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
         }
     }
     let key = |k: &str, d: &str| vec![Span::styled(format!(" {k} "), bold(mono::YELLOW)), Span::styled(format!("{d} "), st(mono::SOFT))];
-    // help and quit always show, at the right; the rest fills what is left
-    let right: Vec<Span<'static>> = [key("?", "help"), key("q", "quit")].concat();
+    // `? help` first and `q quit` at the right, at every width; the rest fills what is left
+    let right: Vec<Span<'static>> = key("q", "quit");
     let right_w: usize = right.iter().map(|s| s.content.width()).sum();
     let keys = [
+        ("?", "help"),
         ("j/k", "move"),
         ("h/l", "fold"),
         ("\u{23ce}", "pane"),
@@ -165,7 +166,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
     for (k, d) in keys {
         let item = key(k, d);
         let w: usize = item.iter().map(|s| s.content.width()).sum();
-        if used + w + right_w > width {
+        if used + w + right_w > width && used > 0 {
             break;
         }
         used += w;
@@ -227,15 +228,43 @@ fn keys_line(pairs: &[(&str, &str)]) -> Line<'static> {
     Line::from(v)
 }
 
-fn draw_help(f: &mut Frame, area: Rect, scroll: usize) {
-    let r = centered(area, 90, HELP.len() as u16 + 6);
+fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Icons) {
+    let r = centered(area, 90, HELP.len() as u16 + 32);
     let width = r.width.saturating_sub(2) as usize;
     let mut lines = vec![Line::styled("Keys (vim style)   j/k scroll, esc closes", bold(mono::FG)), Line::raw("")];
     for (k, d) in HELP {
         lines.extend(wrap(vec![Span::styled(format!("  {k:<18}"), bold(mono::CYAN)), Span::styled(d.to_string(), st(mono::FG))], width, 20));
     }
     lines.push(Line::raw(""));
-    lines.extend(wrap(vec![Span::styled("  Pane dots: yellow working, red blocked, teal done, green idle, grey unknown.", st(mono::COMMENT))], width, 2));
+    lines.push(Line::styled("What the icons mean", bold(mono::FG)));
+    let legend: [(&str, Style, &str); 22] = [
+        (icons.issue, bold(mono::PINK), "errors (red) and warnings (orange); `i` lists them with fixes"),
+        (icons.legacy, bold(mono::ORANGE), "a session of an old fleet-skill fleet; `x` then `d` adopts it"),
+        (icons.s_needs, bold(mono::PINK), "needs you: waiting at a prompt or a question"),
+        (icons.s_busy, bold(mono::GREEN), "busy"),
+        (icons.s_idle, bold(mono::YELLOW), "idle"),
+        (icons.s_stopped, st(mono::COMMENT), "stopped (has a job row)"),
+        (icons.s_off, st(mono::DIM), "not started"),
+        (icons.s_unknown, st(mono::PURPLE), "unknown: the evidence does not say"),
+        (icons.fleet, bold(mono::GOLD), "fleet"),
+        (icons.admiral, bold(mono::GOLD), "admiral"),
+        (icons.squadron, st(mono::FG), "squadron"),
+        (icons.commodore, bold(mono::CYAN), "commodore"),
+        (icons.ship, st(mono::FG), "ship"),
+        (icons.tender, st(mono::FG), "tender (one job for a commodore)"),
+        (icons.crew, st(mono::GREEN), "crew: a sub-agent inside a session"),
+        (icons.teammate, st(mono::GREEN), "teammate"),
+        (icons.stowaway, bold(mono::PINK), "stowaway: a session in fleet scope with no labels"),
+        ("\u{25cf}", bold(mono::YELLOW), "pane dot: working (yellow), blocked (red), done (teal)"),
+        ("\u{25cb}", bold(mono::GREEN), "pane dot: idle"),
+        ("\u{00b7}", st(mono::COMMENT), "pane dot: unknown"),
+        ("\u{25be}", st(mono::COMMENT), "unfolded (h folds)"),
+        ("\u{25b8}", st(mono::COMMENT), "folded (l unfolds)"),
+    ];
+    for (icon, style, what) in legend {
+        lines.extend(wrap(vec![Span::styled(format!("  {icon}  "), style), Span::styled(what.to_string(), st(mono::SOFT))], width, 5));
+    }
+    lines.extend(wrap(vec![Span::styled("  Band counts read `icon n`; under 100 columns only needs-you and errors stay.", st(mono::COMMENT))], width, 2));
     let room = r.height.saturating_sub(2) as usize;
     let scroll = scroll.min(lines.len().saturating_sub(room));
     let more = lines.len() > room + scroll;

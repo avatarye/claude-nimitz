@@ -281,7 +281,6 @@ impl App {
             panes: &b.panes,
             icons: self.icons,
             now,
-            slots: crate::view::count_slots(&b.snap),
         };
         let nodes = build_nodes(&b.snap, &view);
         self.rows = flatten(&nodes, &self.expanded);

@@ -37,7 +37,9 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 - A pink STOWAWAYS frame for unlabelled sessions in fleet scope. A session of
   the old fleet-skill fleets (issue `legacy`) has its own orange history marker,
   and `x` then `d` adopts it as the identity its fix names.
-- The band counts keep one column per kind across every band, so they read down the list.
+- Band counts read `icon n` (`!2 / *3 / -1`: needs you, busy, idle ...; red and orange
+  triangles are errors and warnings), right-aligned as a group; under 100 columns only
+  needs-you and errors stay. `?` has a legend for every icon.
 - Columns NAME / STATUS / AGE / KIND / DETAIL line up across all frames. NAME
   starts with the pane dot (yellow working, red blocked, teal done, green
   idle, grey unknown) and an issue mark coloured by severity; DETAIL lists the
@@ -80,9 +82,8 @@ says why (starting an admiral or commodore, `up`, open, attach, jump, typing a
 message); ships and tenders start, relaunch and stop as usual, and so do sweep,
 rm, adopt and config changes.
 
-A fleet or squadron whose config does not load stays on screen as a red frame
-with the error in full (file, line, caret); the sessions labelled for it are
-counted in the top bar as "outside the config".
+A squadron (or fleet) whose config does not load stays on screen as a red frame
+with the error in full (file:line and the parser's words) above its members.
 
 At 80x24 the header keeps the mux state, the footer keeps `? help` and `q quit`,
 DETAIL keeps room for issue codes, the detail pane drops its picture to show the
@@ -96,4 +97,4 @@ follows right after, and keys typed meanwhile are kept.
 `admiralty-issues-view`, `admiralty-confirm`, `admiralty-actions-menu`,
 `admiralty-form`, `admiralty-tender-form`, `admiralty-fleet-menu`,
 `admiralty-legacy`, `admiralty-broken-config`, `admiralty-sandbox-monitor-only`,
-`admiralty-narrow`, `admiralty-80x24`.
+`admiralty-narrow`, `admiralty-80x24`, `admiralty-help`.

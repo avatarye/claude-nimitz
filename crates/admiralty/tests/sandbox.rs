@@ -340,9 +340,10 @@ fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
     let mut app = app_on(&w, TestMux::default());
     let buf = draw(&mut app, 200, 60);
     let ls = lines(&buf);
-    let y = ls.iter().position(|l| l.contains("[MAIN]") && l.contains("config does not load")).expect("the fleet stays on screen");
-    assert_eq!(buf[(0, y as u16)].fg, admiralty::theme::mono::PINK, "a red frame");
+    assert!(ls.iter().any(|l| l.contains("[MAIN]")), "the fleet stays on screen");
+    let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).expect("the squadron stays on screen");
+    assert_eq!(buf[(1, y as u16)].fg, admiralty::theme::mono::PINK, "its frame is red");
     let all = ls.join("\n");
-    assert!(all.contains("squadron.toml") && all.contains("line 164"), "the file and line, in full:\n{all}");
-    assert!(all.contains("outside the config"), "and the sessions still running are counted");
+    assert!(all.contains("squadron.toml") && all.contains("164:13"), "the file and line, in full:\n{all}");
+    assert!(all.contains("invalid basic string"), "the parse error's own words");
 }

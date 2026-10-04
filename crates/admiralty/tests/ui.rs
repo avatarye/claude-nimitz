@@ -46,25 +46,32 @@ fn title_band_is_tinted_by_state_with_counts_on_the_right() {
     let y = ls.iter().position(|l| l.contains("[FORGE]") && l.contains("broken")).unwrap() as u16;
     let x = (ls[y as usize].find("broken").unwrap()) as u16; // ASCII before it
     assert_eq!(buf[(x - 2, y)].bg, mono::T_PURPLE, "broken fleet band is purple-tinted");
-    // right side: `icon n / icon n`, each kind in its own column
+    // right side: `icon n`, slashes between, right-aligned as a group
     let band = &ls[y as usize];
-    assert!(band.contains("^ 13 ") && band.contains("* 2  / - 1  / x 2"), "{band}");
+    assert!(band.contains("^10 / ^3 / *2 / -1 / x2 / o3 / ?1"), "{band}");
     let main = ls.iter().find(|l| l.contains("[MAIN]") && l.contains("needs you")).unwrap();
-    assert!(main.contains("! 2  / * 3  / - 2  / x 1"), "{main}");
+    assert!(main.contains("!2 / *3 / -2 / x1"), "needs-you first: {main}");
 }
 
 #[test]
-fn band_counts_line_up_in_columns_across_fleets_and_squadrons() {
+fn band_counts_are_a_right_aligned_group_and_narrow_bands_keep_the_key_ones() {
     let mut t = demo();
     let ls = lines(&draw(&mut t.app, 200, 60));
-    let busy = |has: &str, n: &str| col_of(&ls, has, &format!("* {n} "));
-    let main = busy("[MAIN]   needs you", "3");
-    assert_eq!(main, busy("[FORGE]   broken", "2"), "fleet bands");
-    assert_eq!(main, busy("ARGOS   busy", "3"), "a squadron band inside a fleet");
-    assert_eq!(main, busy("IRON   broken", "1"));
-    let off = |has: &str, n: &str| col_of(&ls, has, &format!("o {n} "));
-    assert_eq!(off("[FORGE]   broken", "3"), off("[LAB]", "3"));
-    assert_eq!(off("[FORGE]   broken", "3"), off("MOLD   broken", "2"));
+    // every band's group ends at the same column (nested bands too)
+    let end = |has: &str| {
+        let l = ls.iter().find(|l| l.contains(has)).unwrap();
+        let c: Vec<char> = l.chars().take(130).collect();
+        let corner = c.iter().rposition(|ch| "\u{2557}\u{256e}".contains(*ch)).unwrap();
+        c[..corner].iter().rposition(|ch| *ch != ' ').unwrap()
+    };
+    assert_eq!(end("[MAIN]   needs you"), end("[FORGE]   broken"));
+    assert_eq!(end("[MAIN]   needs you"), end("ARGOS   busy"));
+    // under 100 columns: needs-you and errors only
+    let ls = lines(&draw(&mut t.app, 90, 40));
+    let main = ls.iter().find(|l| l.contains("[MAIN]")).unwrap();
+    assert!(main.contains("!2") && !main.contains("*3"), "narrow: {main}");
+    let forge = ls.iter().find(|l| l.contains("[FORGE]")).unwrap();
+    assert!(forge.contains("^10") && !forge.contains("^3"), "narrow: errors only: {forge}");
 }
 
 #[test]
@@ -250,6 +257,27 @@ fn y_yanks_and_q_quits() {
 }
 
 // ------------------------------------------------------------------ modals
+
+#[test]
+fn help_has_a_legend_line_for_each_icon() {
+    let mut t = demo();
+    keys(&mut t.app, "?");
+    let s = screen(&mut t.app, 200, 80);
+    for what in ["errors (red) and warnings", "needs you: waiting", "busy", "stowaway: a session", "pane dot: idle", "Band counts read"] {
+        assert!(s.contains(what), "legend has {what}");
+    }
+}
+
+#[test]
+fn the_footer_keeps_help_first_at_every_width() {
+    for w in [40u16, 60, 80, 120, 200] {
+        let mut t = demo();
+        let ls = lines(&draw(&mut t.app, w, 24));
+        let foot = &ls[23];
+        assert!(foot.trim_start().starts_with("? help"), "{w}: {foot}");
+        assert!(foot.contains("q quit"), "{w}: {foot}");
+    }
+}
 
 #[test]
 fn help_lists_every_key() {
@@ -646,11 +674,11 @@ fn at_80x24_the_issues_view_wraps_and_help_scrolls() {
     keys(&mut t.app, "?");
     let first = screen(&mut t.app, 80, 24);
     assert!(first.contains("j for more"), "help says it scrolls:\n{first}");
-    for _ in 0..30 {
+    for _ in 0..80 {
         keys(&mut t.app, "j");
     }
     let last = screen(&mut t.app, 80, 24);
-    assert!(last.contains("Pane dots"), "help scrolls to its end:\n{last}");
+    assert!(last.contains("100 columns"), "help scrolls to its end:\n{last}");
 }
 
 #[test]

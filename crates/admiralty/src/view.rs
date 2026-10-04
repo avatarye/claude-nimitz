@@ -220,6 +220,8 @@ pub struct Node {
     pub band_bg: Option<Color>,
     /// band only: right side of the title (status counts)
     pub title_right: Vec<Span<'static>>,
+    /// band only: the counts, laid out by `frames` to fit the band
+    pub counts: Vec<Count>,
     pub children: Vec<Node>,
 }
 
@@ -247,6 +249,7 @@ impl Node {
             frame: None,
             band_bg: None,
             title_right: vec![],
+            counts: vec![],
             children: vec![],
         }
     }
@@ -263,8 +266,6 @@ pub struct View<'a> {
     pub panes: &'a [Pane],
     pub icons: &'a Icons,
     pub now: f64,
-    /// count cells every band shows (`count_slots`)
-    pub slots: [bool; 7],
 }
 
 fn worst_of(issues: &[Issue]) -> Option<Severity> {
@@ -425,47 +426,37 @@ fn member_node(m: &Member, v: &View) -> Node {
     n
 }
 
-/// `icon n / icon n` for a band's right side: issues, then each status. Each
-/// kind in `slots` (the kinds present anywhere on screen) has a fixed cell,
-/// blank when zero, so the counts of every band line up in columns.
-pub fn status_counts(members: &[&Member], issues: usize, worst: Option<Severity>, icons: &Icons, slots: &[bool; 7]) -> Vec<Span<'static>> {
-    let c = theme::severity_color(worst.unwrap_or(Severity::Warn));
-    let mut cells: Vec<Option<Span<'static>>> = vec![(issues > 0).then(|| Span::styled(format!("{} {issues:<2}", icons.issue), bold(c)))];
-    for status in SLOT_STATUSES {
-        let n = members.iter().filter(|m| m.status == status).count();
-        cells.push((n > 0).then(|| Span::styled(format!("{} {n:<2}", icons.status(status)), status_style(status).add_modifier(Modifier::BOLD))));
-    }
-    let cells: Vec<Option<Span<'static>>> = cells.into_iter().zip(slots.iter()).filter(|(_, on)| **on).map(|(c, _)| c).collect();
-    let mut out: Vec<Span<'static>> = vec![];
-    let n = cells.len();
-    for (i, cell) in cells.iter().enumerate() {
-        let shown = cell.is_some();
-        out.push(cell.clone().unwrap_or_else(|| Span::raw(" ".repeat(SLOT_W))));
-        if i + 1 < n {
-            // a slash only between two neighbouring counts that are both shown
-            let next = cells[i + 1].is_some();
-            out.push(Span::styled(if shown && next { " / " } else { "   " }, st(mono::DIM)));
-        }
-    }
-    out
+/// One count on a band's right side: `icon n`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Count {
+    pub icon: &'static str,
+    pub n: usize,
+    pub style: Style,
+    /// kept on a narrow band (needs you, errors)
+    pub key: bool,
 }
 
-const SLOT_STATUSES: [Status; 6] = [Status::NeedsYou, Status::Busy, Status::Idle, Status::Stopped, Status::NotStarted, Status::Unknown];
-/// `icon nn`: counts up to 99 keep the columns
-const SLOT_W: usize = 4;
-
-/// Which count cells any band needs: issues, then each status in `SLOT_STATUSES`.
-pub fn count_slots(snap: &Snapshot) -> [bool; 7] {
-    let mut on = [false; 7];
-    on[0] = !all_issues(snap).is_empty();
-    for f in &snap.fleets {
-        for m in fleet_members(f) {
-            if let Some(i) = SLOT_STATUSES.iter().position(|s| *s == m.status) {
-                on[i + 1] = true;
-            }
+/// A band's counts: errors, other issues, then members by status, zero counts
+/// left out. `frames` lays them out (all of them, or the key ones when narrow).
+pub fn status_counts(members: &[&Member], issues: &[&Issue], icons: &Icons) -> Vec<Count> {
+    let mut out = vec![];
+    let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
+    let others = issues.len() - errors;
+    if errors > 0 {
+        out.push(Count { icon: icons.issue, n: errors, style: bold(mono::PINK), key: true });
+    }
+    if others > 0 {
+        out.push(Count { icon: icons.issue, n: others, style: bold(mono::ORANGE), key: false });
+    }
+    for status in [Status::NeedsYou, Status::Busy, Status::Idle, Status::Stopped, Status::NotStarted, Status::Unknown] {
+        let n = members.iter().filter(|m| m.status == status).count();
+        if n > 0 {
+            out.push(Count { icon: icons.status(status), n, style: status_style(status).add_modifier(Modifier::BOLD), key: status == Status::NeedsYou });
         }
     }
-    on
+    // needs-you first among the key ones, so a narrow band reads "needs you, errors"
+    out.sort_by_key(|c| if c.key && c.icon == icons.s_needs { 0 } else if c.key { 1 } else { 2 });
+    out
 }
 
 fn comms_text(c: &Comms) -> String {
@@ -482,9 +473,9 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
         return None;
     }
     let own_issues: Vec<&Issue> = sq.issues.iter().chain(members.iter().flat_map(|m| m.issues.iter())).collect();
-    let worst = own_issues.iter().map(|i| i.severity).max();
     let state = FleetState::of_squadron(f, sq);
-    let color = state.color();
+    let load_errors: Vec<&Issue> = sq.issues.iter().filter(|i| is_load_error(i) && i.id.as_ref() == Some(&sq.id)).collect();
+    let color = if load_errors.is_empty() { state.color() } else { mono::PINK };
     let sq_name = sq.id.squadron().unwrap_or("?").to_string();
     let mut n = Node::new(format!("SQ:{}", sq.id.0), Kind::SquadronBand);
     n.member = Some(sq.id.clone());
@@ -505,8 +496,10 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
     if let Some(i) = sq.issues.first() {
         n.detail.push(Span::styled(format!("   {} {}", v.icons.issue, i.code), bold(theme::severity_color(i.severity))));
     }
-    n.title_right = status_counts(&members, own_issues.len(), worst, v.icons, &v.slots);
-    n.children = shown.iter().map(|m| member_node(m, v)).collect();
+    n.counts = status_counts(&members, &own_issues, v.icons);
+    // a squadron.toml that does not load: the error in full, above its members
+    n.children = error_notes(&sq.id, &load_errors);
+    n.children.extend(shown.iter().map(|m| member_node(m, v)));
     Some(n)
 }
 
@@ -588,6 +581,28 @@ fn broken_squadrons(snap: &Snapshot, f: &Fleet) -> Vec<nimitz_core::Id> {
     out
 }
 
+fn note(id: &nimitz_core::Id, k: usize, text: String, style: Style) -> Node {
+    let mut c = Node::new(format!("N:{}:{k}", id.0), Kind::Note);
+    c.member = Some(id.clone());
+    c.name = text;
+    c.name_style = style;
+    c
+}
+
+/// Note rows with config errors in full, line by line, and their fixes.
+fn error_notes(id: &nimitz_core::Id, errors: &[&Issue]) -> Vec<Node> {
+    let mut out = vec![];
+    for e in errors {
+        for line in e.message.lines().filter(|l| !l.trim().is_empty()) {
+            out.push(note(id, out.len(), line.to_string(), st(mono::FG)));
+        }
+        if let Some(fx) = &e.fix {
+            out.push(note(id, out.len(), format!("fix: {fx}"), bold(mono::CYAN)));
+        }
+    }
+    out
+}
+
 /// A fleet or squadron whose config does not load: a purple frame with the
 /// error in full, line by line, and how many sessions now run outside it.
 fn broken_band(snap: &Snapshot, id: &nimitz_core::Id, v: &View) -> Node {
@@ -609,27 +624,12 @@ fn broken_band(snap: &Snapshot, id: &nimitz_core::Id, v: &View) -> Node {
         .filter(|i| is_load_error(i) && i.id.as_ref().map(|x| x == id || (fleet && x.fleet() == id.fleet())).unwrap_or(false))
         .collect();
     n.issue_count = errors.len();
-    n.title_right = vec![Span::styled(format!("{} {}", v.icons.issue, errors.len()), bold(mono::PINK))];
-    let mut k = 0;
-    let mut note = |text: String, style: Style| {
-        let mut c = Node::new(format!("N:{}:{k}", id.0), Kind::Note);
-        c.member = Some(id.clone());
-        c.name = text;
-        c.name_style = style;
-        k += 1;
-        c
-    };
-    for e in &errors {
-        for line in e.message.lines().filter(|l| !l.trim().is_empty()) {
-            n.children.push(note(line.to_string(), st(mono::FG)));
-        }
-        if let Some(fx) = &e.fix {
-            n.children.push(note(format!("fix: {fx}"), bold(mono::CYAN)));
-        }
-    }
+    n.counts = vec![Count { icon: v.icons.issue, n: errors.len(), style: bold(mono::PINK), key: true }];
+    n.children = error_notes(id, &errors);
     let unlisted = unlisted_sessions(snap, id);
     if unlisted > 0 {
-        n.children.push(note(
+        let k = n.children.len();
+        n.children.push(note(id, k, 
             format!("{unlisted} session(s) labelled for {} keep running outside the config (i lists them)", id.0),
             bold(mono::ORANGE),
         ));
@@ -660,7 +660,6 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
             continue;
         }
         let issues: Vec<&Issue> = fleet_issues(f);
-        let worst = issues.iter().map(|i| i.severity).max();
         let mut n = Node::new(format!("F:{}", f.id.0), Kind::FleetBand);
         n.member = Some(f.id.clone());
         n.default_expand = f.machine.is_some();
@@ -678,7 +677,7 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
             Span::styled(state.label().to_string(), bold(state.color())),
             Span::styled(format!("   {place}   {}", f.dir), st(mono::SOFT)),
         ];
-        n.title_right = status_counts(&fleet_members(f), issues.len(), worst, v.icons, &v.slots);
+        n.counts = status_counts(&fleet_members(f), &issues, v.icons);
         if matches(&f.admiral) {
             n.children.push(member_node(&f.admiral, v));
         }

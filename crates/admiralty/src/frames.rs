@@ -175,6 +175,9 @@ pub fn header_line(width: u16) -> Line<'static> {
 }
 
 /// A title band `width` columns wide including its two corner cells.
+/// Bands narrower than this show only the key counts (needs you, errors).
+pub const NARROW_BAND: usize = 100;
+
 /// `pad` columns before the right corner keep top-level and nested bands' counts in one column.
 fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: bool, pad_right: usize) -> Vec<Span<'static>> {
     let n = &r.node;
@@ -199,6 +202,16 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
         left.extend(n.detail.iter().map(|s| Span::styled(s.content.clone(), b.patch(s.style))));
     }
     let mut right: Vec<Span<'static>> = n.title_right.iter().map(|s| Span::styled(s.content.clone(), b.patch(s.style))).collect();
+    // counts: `icon n`, slashes between them, right-aligned as a group; a narrow
+    // band keeps only needs-you and errors
+    let narrow = width < NARROW_BAND;
+    let shown: Vec<&crate::view::Count> = n.counts.iter().filter(|c| !narrow || c.key).collect();
+    for (i, c) in shown.iter().enumerate() {
+        if i > 0 {
+            right.push(Span::styled(" / ", b.fg(mono::DIM)));
+        }
+        right.push(Span::styled(format!("{}{}", c.icon, c.n), b.patch(c.style)));
+    }
     right.push(Span::styled(" ".repeat(pad_right), b));
     let room = width.saturating_sub(2);
     let right_w = spans_width(&right);
@@ -363,7 +376,11 @@ pub fn wrap(spans: Vec<Span<'static>>, width: usize, indent: usize) -> Vec<Line<
                                 }
                                 c.push(ch);
                             }
-                            c
+                            // a path or file:line breaks after a `/` or `:` when it can
+                            match c.rfind(['/', ':']) {
+                                Some(i) if i + 1 > c.len() / 2 => c[..=i].to_string(),
+                                _ => c,
+                            }
                         };
                         word = word[cut.len()..].to_string();
                         cur.push(Span::styled(cut, style));
