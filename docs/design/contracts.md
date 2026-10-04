@@ -169,6 +169,7 @@ target. For each member, one action from this table:
 | stopped (job row, no pid), labels right | resume: native binary, **no flags**, from its folder |
 | stopped, labels missing (resumed with flags earlier) | relaunch: native resume would keep no labels; cold launch with `--resume <id>` and all flags (copy, `source: fork`), then record the new id and `rm` the old row |
 | no row, transcript exists (interactive member) | `claude -c` in its folder with the name and labels |
+| no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): cold launch `--resume <it>` with all flags (copy, `source: fork`), lineage `via: migrate`; the old rows stay as Info `legacy`, removed only by `sweep`. An interactive member whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
 | no row, no transcript | cold launch (ship: prompt from config; tender: refuse) |
 | row `failed` / unknown id | mark lineage broken; cold launch only with `--force` |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |

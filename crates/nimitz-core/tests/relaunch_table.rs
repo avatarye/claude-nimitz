@@ -1017,3 +1017,75 @@ fn a_stowaway_fix_offers_rm_only_once_it_is_stopped() {
     let f = fix(&w.snap());
     assert!(!f.contains("stop") && f.contains("nimitz rm"), "{f}");
 }
+
+#[test]
+fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
+    let w = world();
+    let id = w.ship("FRESH");
+    let cwd = w.member(&w.snap(), &id).cwd.unwrap();
+    std::fs::write(w.env.fleet_dir("MAIN").join("legacy.toml"), "[names]\n\"[ARGOS]-FRESH\" = \"MAIN/ARGOS/FRESH\"\n\"[ARGOS]-LEAD\" = \"MAIN/ARGOS\"\n").unwrap();
+    // three stopped sessions of the old [ARGOS]-FRESH in its folder
+    let mut olds = vec![];
+    for _ in 0..3 {
+        let old = vec![w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
+        let (rc, out) = claude::run(&old, Some(&cwd));
+        assert_eq!(rc, 0, "{out}");
+        let short = out.trim().to_string();
+        let (rc, out) = claude::run(&claude::stop(&w.env, &short), None);
+        assert_eq!(rc, 0, "{out}");
+        olds.push(short);
+    }
+    // the first one was used last: its job row has the newest updatedAt
+    let job = w.base.join("claude_home/jobs").join(&olds[0]).join("state.json");
+    let mut j: serde_json::Value = serde_json::from_slice(&std::fs::read(&job).unwrap()).unwrap();
+    j["updatedAt"] = serde_json::json!(((evidence::now() + 60.0) * 1000.0) as i64);
+    std::fs::write(&job, serde_json::to_vec(&j).unwrap()).unwrap();
+    let newest = w.rows().into_iter().find(|r| r.short_id.as_deref() == Some(olds[0].as_str())).unwrap();
+
+    let snap = w.snap();
+    assert!(w.member(&snap, &id).issues.iter().filter(|i| i.code == "legacy").all(|i| i.severity == Severity::Info));
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let steps = w.steps_of(&plan, &id);
+    assert_eq!(steps.len(), 1, "no rm of the old rows: {:?}", steps);
+    assert_eq!(steps[0].cmd, claude::relaunch_bg(&w.env, &id, "", &newest.session_id));
+    assert_eq!(steps[0].why, format!("continue the old fleet's session {} (newest of 3)", olds[0]));
+    // up plans the same, not a cold launch
+    let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
+    assert!(up.steps.iter().any(|s| s.id.as_ref() == Some(&id) && s.cmd.contains(&"--resume".to_string())));
+
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.snap();
+    let m = w.member(&after, &id);
+    let s = m.session.as_ref().unwrap();
+    assert!(s.pid.is_some() && s.labels.get("NIMITZ_ID") == Some(&id.0) && s.name == id.name());
+    assert!(!olds.contains(s.short_id.as_ref().unwrap()), "a labelled copy, not the old row");
+    let rec = &nimitz_core::registry::load(&w.env).identities[&id.0];
+    assert_eq!(rec.lineage.last().unwrap().via, "migrate");
+    for o in &olds {
+        assert!(w.rows().iter().any(|r| r.short_id.as_deref() == Some(o.as_str())), "old row {o} stays");
+    }
+    assert_eq!(m.issues.iter().filter(|i| i.code == "legacy" && i.severity == Severity::Info).count(), 3, "{:?}", m.issues);
+
+    // sweep offers them (it is a plan you confirm), and removes them when applied
+    let sweep = sessions::plan_sweep(&w.env, &after, Some(&id), &Caller::User);
+    let rms: Vec<&Step> = sweep.steps.iter().filter(|s| s.why.contains("old fleet")).collect();
+    assert_eq!(rms.len(), 3, "{:?}", sweep.steps);
+    assert!(sessions::apply(&w.env, &sweep).verified);
+    assert!(olds.iter().all(|o| !w.rows().iter().any(|r| r.short_id.as_deref() == Some(o.as_str()))));
+}
+
+#[test]
+fn a_commodore_whose_old_lead_ran_elsewhere_says_why_it_starts_fresh() {
+    let w = world();
+    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default());
+    assert!(nimitz_core::config::apply_config_plan(&w.env, &plan).verified);
+    std::fs::write(w.env.fleet_dir("MAIN").join("legacy.toml"), "[names]\n\"[NEWSQ]-LEAD\" = \"MAIN/NEWSQ\"\n").unwrap();
+    let id = Id::commodore("MAIN", "NEWSQ");
+    let plan = w.start(&w.snap(), &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let step = w.steps_of(&plan, &id)[0].clone();
+    assert!(sessions::is_pane_step(&step));
+    assert!(step.why.contains("[NEWSQ]-LEAD") && step.why.contains("another folder"), "{}", step.why);
+}

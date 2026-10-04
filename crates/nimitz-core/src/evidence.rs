@@ -289,7 +289,8 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             pid: None,
             state: s(&d, "state"),
             status: None,
-            status_since: None,
+            // on a stopped row: when the job last changed
+            status_since: ts(&d, "updatedAt"),
             started_at: ts(&d, "createdAt"),
             waiting_for: None,
         });
