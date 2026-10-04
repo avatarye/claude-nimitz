@@ -61,7 +61,9 @@ home-server = "managed"
 [ships.permission_mode]             # optional per machine
 ```
 
-A ship with no `dirs` entry for this machine does not run here. Ship names
+A ship with no `dirs` entry for this machine does not run here. A `dirs` value
+is `managed`, an absolute path or `~/...` (`config::normalize_ship_dir`; empty,
+relative and `<label>=<folder>` values are refused, for every front end). Ship names
 `COMMODORE` and `ADMIRAL` (and anything starting `COMMODORE/`) are reserved: they
 would take a role's address. Folders are compared as real paths (symlinks
 resolved, as Claude Code records them); one folder holds one member.
@@ -143,7 +145,7 @@ Each finding is an `Issue` with a stable `code`:
 | --- | --- |
 | `config.invalid` | TOML does not parse (file:line:col; a bad squadron.toml hides only its squadron) or breaks a schema rule (names, reserved ship names, duplicates, unknown keys) |
 | `config.layout` | an inherited instructions file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) in `NIMITZ_HOME/`, `<fleet>/`, `<fleet>/squadrons/`, `<fleet>/ships/` or `<fleet>/ships/<sq>/` (Error); two members with one folder (Error); a member folder inside a nimitz-managed folder (admiral, commodore, managed ship) (Error); a member folder inside a user project folder that has a `CLAUDE.md` (Warn). A member folder inside a user folder without one (e.g. a ship at `~`) is fine |
-| `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted |
+| `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted: no `hasTrustDialogAccepted` on the folder or a parent (as given or real path); inside a git repository or worktree (`.git` folder or file) only the root and below count, and the fix names the root |
 | `name.drift` | live session's name differs from the expected name |
 | `name.taken` | the expected name is held by a live session of another identity |
 | `labels.missing` | the identity's current session has no labels (e.g. resumed with flags, legacy). Only a session in its lineage (or its registry current) can be its current session; an unlabelled row outside the lineage never is |
