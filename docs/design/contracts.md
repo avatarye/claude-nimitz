@@ -128,7 +128,7 @@ Each finding is an `Issue` with a stable `code`:
 | Code | Condition |
 | --- | --- |
 | `config.invalid` | TOML does not parse or breaks a schema rule (names, duplicates, unknown keys) |
-| `config.layout` | a session folder inside another session folder; a `CLAUDE.md` in `<fleet>/` |
+| `config.layout` | a `CLAUDE.md` in `<fleet>/` (Error); a member folder inside a nimitz-managed folder (admiral, commodore, managed ship) (Error); a member folder inside a user project folder that has a `CLAUDE.md` (Warn). A member folder inside a user folder without one (e.g. a ship at `~`) is fine |
 | `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted |
 | `name.drift` | live session's name differs from the expected name |
 | `name.taken` | the expected name is held by a live session of another identity |
