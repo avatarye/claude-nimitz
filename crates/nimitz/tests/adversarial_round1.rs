@@ -656,3 +656,13 @@ fn bug50_a_git_repo_under_a_trusted_parent_is_not_just_info() {
     let line = c.out.lines().find(|l| l.contains("git repository")).unwrap_or("").to_string();
     assert!(!line.starts_with("[INFO]"), "a repo Claude Code will refuse is only Info:\n{}", c.out);
 }
+
+#[test]
+#[ignore = "BUG-55"]
+fn bug55_relaunch_is_not_skipped_because_an_impostor_carries_the_labels() {
+    // MISLABEL's live session carries CLEAN's labels (another folder). Relaunch of CLEAN removed its
+    // row, then skipped the resume as "live already": CLEAN is left down while nimitz says OK.
+    let sb = Sb::new(false);
+    sb.run(&["relaunch", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(sb.live_in(&sb.dir("dirs/main/clean")), 1, "CLEAN is down after relaunch");
+}
