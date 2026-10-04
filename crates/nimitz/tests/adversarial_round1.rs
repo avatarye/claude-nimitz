@@ -479,3 +479,68 @@ fn bug33_the_command_admiralty_shows_for_a_new_ship_does_what_it_says() {
     let t = std::fs::read_to_string(sb.squadron_toml()).unwrap();
     assert!(r.code != 0 || !t.contains("sandbox=managed"), "`--dir sandbox=managed` became a relative folder named `sandbox=managed`:\n{}", r.out);
 }
+
+// ------------------------------------------------------------------ round 2 (BUG-42 onward)
+
+#[test]
+#[ignore = "BUG-42"]
+fn bug42_the_legacy_fix_does_not_adopt_a_stowaway_as_the_commodore() {
+    let sb = Sb::new(false);
+    let c = sb.run(&["check", "MAIN/ARGOS/STOPPED"]);
+    assert!(!c.out.contains("adopt 060f8274-5b0c-4d1e-9f2a-000000000014 MAIN/ARGOS\n"), "fix offers to adopt a background stowaway as the commodore:\n{}", c.out);
+    let s = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert!(!s.out.contains("would make a second agent"), "a ship's start warns about the commodore's folder:\n{}", s.out);
+}
+
+#[test]
+#[ignore = "BUG-43"]
+fn bug43_signal_text_is_not_typed_with_control_characters() {
+    let sb = Sb::new(true);
+    let w = sb.dir("herdr/world.json");
+    sb.edit(&w, |s| {
+        let mut v: Value = serde_json::from_str(&s).unwrap();
+        v["panes"][1]["agent_session"]["value"] = Value::from("6634f372-5b0c-4d1e-9f2a-000000000002");
+        v["panes"][1]["agent_status"] = Value::from("idle");
+        v.to_string()
+    });
+    let r = sb.run(&["signal", "MAIN/ARGOS", "x\u{3}\u{1b}[A\nsecond line", "--yes"]);
+    let calls = std::fs::read_to_string(sb.dir("herdr/calls.jsonl")).unwrap_or_default();
+    assert!(r.code != 0 || !(calls.contains("\\u0003") || calls.contains("\\u001b")), "ctrl-C and ESC typed into the commodore's pane:\n{calls}");
+}
+
+#[test]
+#[ignore = "BUG-47"]
+fn bug47_a_second_start_does_not_open_a_second_admiral_pane() {
+    let sb = Sb::new(true);
+    std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
+    sb.run(&["start", "MAIN", "--yes"]);
+    sb.run(&["start", "MAIN", "--yes"]); // the first pane has not bound yet
+    let calls = std::fs::read_to_string(sb.dir("herdr/calls.jsonl")).unwrap_or_default();
+    let runs = calls.lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("[MAIN]-ADMIRAL")).count();
+    assert_eq!(runs, 1, "two panes now run `claude -c` for the admiral:\n{calls}");
+}
+
+#[test]
+#[ignore = "BUG-48"]
+fn bug48_a_symlinked_nimitz_home_sees_the_same_world() {
+    let sb = Sb::new(false);
+    let link = sb.dir("home/nzlink");
+    std::os::unix::fs::symlink(sb.dir("nimitz"), &link).unwrap();
+    let plain = sb.run(&["status"]).out;
+    let linked = raw(&sb.vars, &["status"], &[("NIMITZ_HOME", link.to_str().unwrap())], None, None).out;
+    let norm = |s: &str| s.replace(link.to_str().unwrap(), "X").replace(sb.dir("nimitz").to_str().unwrap(), "X");
+    assert_eq!(norm(&plain), norm(&linked), "status differs when NIMITZ_HOME is a symlink");
+}
+
+#[test]
+#[ignore = "BUG-53"]
+fn bug53_relaunch_keeps_the_session_id_and_its_history() {
+    // Real Claude Code: `--bg --resume <id> --name --settings` while the row exists starts a copy
+    // with NO conversation; after `claude rm <row>` the same command continues <id> with history.
+    let sb = Sb::new(false);
+    let p = sb.run(&["relaunch", "MAIN/ARGOS/NOLABEL", "--plan"]);
+    let lines: Vec<&str> = p.out.lines().filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit())).collect();
+    let rm = lines.iter().position(|l| l.contains(" rm "));
+    let resume = lines.iter().position(|l| l.contains("--resume"));
+    assert!(matches!((rm, resume), (Some(a), Some(b)) if a < b), "the old row must go before the labelled resume, or the ship loses its history:\n{}", p.out);
+}
