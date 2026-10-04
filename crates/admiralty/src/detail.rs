@@ -324,12 +324,10 @@ fn stowaway_detail(snap: &Snapshot, s: &SessionInfo, now: f64) -> Vec<Line<'stat
         ]),
         Line::styled("A session in fleet scope with no NIMITZ_* labels.", st(mono::SOFT)),
     ];
-    let short = s.short_id.clone().unwrap_or_default();
-    let issues: Vec<&Issue> = snap
-        .issues
-        .iter()
-        .filter(|i| i.code == "stowaway" && (i.message.contains(&s.name) || (!short.is_empty() && i.fix.as_deref().map(|f| f.contains(&short)).unwrap_or(false))))
-        .collect();
+    let issues: Vec<&Issue> = crate::view::stowaway_issues(snap, s);
+    if issues.iter().any(|i| i.code == "legacy") {
+        v.push(Line::styled("Its name says it belongs to an old fleet-skill fleet: adopt it to bring it under nimitz.", st(mono::ORANGE)));
+    }
     v.extend(issues_block("ISSUES", &issues));
     v.push(blank());
     v.push(heading("SESSION"));
@@ -377,6 +375,12 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     let member_like = matches!(n.kind, Kind::Member(_) | Kind::FleetBand | Kind::SquadronBand);
     for a in acts {
         let r = app.available(a);
+        if a == Act::Adopt {
+            if let Some((_, id)) = app.legacy_adopt() {
+                line(&mut v, "d", Ok(format!("adopt this legacy session as {id}")));
+                continue;
+            }
+        }
         if r.is_ok() || (member_like && matches!(a, Act::Start | Act::Open)) {
             line(&mut v, &a.key().to_string(), r.map(|_| a.label().to_string()));
         }
@@ -394,7 +398,7 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
             Span::styled(format!("  {}", crate::actions::MONITOR_ONLY), st(mono::ORANGE)),
         ]));
     }
-    v.push(Line::styled("  x   all actions   c create   e edit ship   D remove from config", st(mono::COMMENT)));
+    v.push(Line::styled("  x   all actions   c create   e edit   D remove from config", st(mono::COMMENT)));
     v
 }
 

@@ -92,6 +92,7 @@ pub fn name_cell(r: &Row, width: usize, icons: &Icons) -> Vec<Span<'static>> {
         None => Span::raw("  "),
     };
     let mark = match n.worst {
+        _ if n.legacy => Span::styled(format!("{} ", icons.legacy), bold(mono::ORANGE)),
         Some(sev) => Span::styled(format!("{} ", icons.issue), bold(severity_color(sev))),
         None => Span::raw("  "),
     };
@@ -155,7 +156,8 @@ pub fn header_line(width: u16) -> Line<'static> {
 }
 
 /// A title band `width` columns wide including its two corner cells.
-fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: bool) -> Vec<Span<'static>> {
+/// `pad` columns before the right corner keep top-level and nested bands' counts in one column.
+fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: bool, pad_right: usize) -> Vec<Span<'static>> {
     let n = &r.node;
     let color = n.frame.unwrap_or(mono::SOFT);
     let bg = if selected { mono::SEL } else { n.band_bg.unwrap_or(mono::BG_HI) };
@@ -178,7 +180,7 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
         left.extend(n.detail.iter().map(|s| Span::styled(s.content.clone(), b.patch(s.style))));
     }
     let mut right: Vec<Span<'static>> = n.title_right.iter().map(|s| Span::styled(s.content.clone(), b.patch(s.style))).collect();
-    right.push(Span::styled(" ", b));
+    right.push(Span::styled(" ".repeat(pad_right), b));
     let room = width.saturating_sub(2);
     let right_w = spans_width(&right);
     let left = truncate_spans(left, room.saturating_sub(right_w + 1));
@@ -235,7 +237,7 @@ pub fn frame_lines(rows: &[Row], width: u16, cursor: usize, icons: &Icons) -> Ve
         if !out.is_empty() {
             out.push((Line::raw(""), None));
         }
-        out.push((Line::from(band(head, width, corners, edge, i == cursor)), Some(i)));
+        out.push((Line::from(band(head, width, corners, edge, i == cursor, 2)), Some(i)));
         i += 1;
         let mut sq_open: Option<Style> = None;
         while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
@@ -250,7 +252,7 @@ pub fn frame_lines(rows: &[Row], width: u16, cursor: usize, icons: &Icons) -> Ve
                     let boxed = r.expanded;
                     let corners = if boxed { ("\u{256d}", "\u{256e}") } else { (" ", " ") };
                     let mut spans = vec![Span::styled(v, edge)];
-                    spans.extend(band(r, inner + 2, corners, e, i == cursor));
+                    spans.extend(band(r, inner + 2, corners, e, i == cursor, 1));
                     spans.push(Span::styled(v, edge));
                     out.push((Line::from(spans), Some(i)));
                     if boxed {

@@ -358,11 +358,27 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         cwd: "/home/u/.claude-nimitz/main/admiral".into(),
         labels: BTreeMap::new(),
     };
+    // a session of the old fleet-skill fleets, recognised by its name
+    let s3 = SessionInfo {
+        session_id: "ab99ab99-0000-4000-8000-000000000000".into(),
+        short_id: Some("ab99ab99".into()),
+        pid: Some(6300),
+        kind: "interactive".into(),
+        state: None,
+        status: Some("idle".into()),
+        waiting_for: None,
+        started_at: Some(NOW - 30000.0),
+        status_since: Some(NOW - 600.0),
+        name: "[KITS]-LEAD".into(),
+        cwd: "/home/u/.claude-nimitz/main/squadrons/KITS".into(),
+        labels: BTreeMap::new(),
+    };
     let issues = vec![
+        issue("legacy", Severity::Warn, "`[KITS]-LEAD` is a session of the old fleet-skill fleet KITS", Some("nimitz adopt ab99ab99 MAIN/KITS"), None),
         issue("stowaway", Severity::Warn, "live session `scratch-run` in FORGE scope has no labels", Some("nimitz adopt ee11ee11 FORGE/IRON/<ship>"), None),
         issue("stowaway", Severity::Info, "dead session `one-off probe` in MAIN scope has no labels", Some("nimitz rm ef22ef22"), None),
     ];
-    (vec![s1, s2], issues)
+    (vec![s1, s2, s3], issues)
 }
 
 // ------------------------------------------------------------------ bundles

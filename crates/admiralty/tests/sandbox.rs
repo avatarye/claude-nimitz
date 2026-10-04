@@ -101,7 +101,7 @@ fn a_new_squadron_form_writes_the_config_through_core() {
     keys(&mut app, "CIRRUS");
     let Some(Modal::Form(f)) = &app.modal else { panic!() };
     assert!(f.ok(), "{:?} {:?}", f.problems, f.fields.iter().map(|x| &x.error).collect::<Vec<_>>());
-    assert_eq!(f.command, "nimitz squadron new MAIN CIRRUS --comms open");
+    assert_eq!(f.command, "nimitz squadron new MAIN/CIRRUS --comms open");
     ctrl(&mut app, 's');
     let Some(Modal::Confirm(p)) = app.modal.take() else { panic!() };
     app.begin(&p).unwrap();
@@ -162,4 +162,78 @@ fn rm_a_stopped_stowaway_is_refused_while_live_and_planned_when_stopped() {
     goto(&mut app, &format!("SW:{}", s.session_id));
     press(&mut app, KeyCode::Char('x'));
     assert!(matches!(app.modal, Some(Modal::Menu { .. })));
+}
+
+#[test]
+fn edit_squadron_and_fleet_forms_plan_through_core() {
+    let w = world();
+    let mut app = app_on(&w, TestMux::default());
+    goto(&mut app, "SQ:MAIN/ARGOS");
+    keys(&mut app, "e");
+    let Some(Modal::Form(f)) = &app.modal else { panic!("{}", toast(&app)) };
+    assert_eq!(f.get("comms"), "open");
+    assert!(f.ok(), "{:?}", f.problems);
+    // a bad comms rule is caught in the field
+    ctrl(&mut app, 'u');
+    keys(&mut app, "everyone");
+    let Some(Modal::Form(f)) = &app.modal else { panic!() };
+    assert!(f.fields.iter().find(|x| x.key == "comms").unwrap().error.is_some());
+    ctrl(&mut app, 'u');
+    keys(&mut app, "allow:MAIN/ARGOS/CLEAN");
+    let Some(Modal::Form(f)) = &app.modal else { panic!() };
+    assert!(f.ok(), "{:?}", f.problems);
+    assert_eq!(f.command, "nimitz squadron set MAIN/ARGOS --comms allow:MAIN/ARGOS/CLEAN");
+    assert!(f.plan.steps.iter().any(|s| s.cmd[1].ends_with("squadron.toml")));
+    ctrl(&mut app, 's');
+    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!() };
+    let o = actions::apply(&app.ctx.env, &p);
+    assert!(o.issues.is_empty(), "{:?}", o.issues);
+    reload(&w, &mut app);
+    let sq = app.bundle.as_ref().unwrap().snap.fleets.iter().flat_map(|f| f.squadrons.iter()).find(|s| s.id.0 == "MAIN/ARGOS").unwrap().clone();
+    assert_eq!(sq.comms, nimitz_core::Comms::Allow { allow: vec!["MAIN/ARGOS/CLEAN".into()] });
+
+    let mut f = Form::edit_fleet(&app.ctx.env, "MAIN").unwrap();
+    f.set("mode", "auto");
+    f.validate(&app.ctx.env, &app.bundle.as_ref().unwrap().snap);
+    assert!(f.ok(), "{:?}", f.problems);
+    assert_eq!(f.command, "nimitz fleet set MAIN --admiral-mode auto");
+    assert!(f.plan.steps.iter().any(|s| s.cmd[1].ends_with("fleet.toml")));
+}
+
+#[test]
+fn a_tender_form_starts_a_tender_through_core() {
+    let w = world();
+    let mut app = app_on(&w, TestMux::default());
+    goto(&mut app, "SQ:MAIN/ARGOS");
+    keys(&mut app, "c");
+    keys(&mut app, "t");
+    let Some(Modal::Form(_)) = &app.modal else { panic!("{}", toast(&app)) };
+    keys(&mut app, "fix ci");
+    let Some(Modal::Form(f)) = &app.modal else { panic!() };
+    assert!(f.fields.iter().find(|x| x.key == "task").unwrap().error.is_some(), "one word");
+    ctrl(&mut app, 'u');
+    keys(&mut app, "lint");
+    press(&mut app, KeyCode::Tab);
+    keys(&mut app, "Run the linter and report.");
+    let Some(Modal::Form(f)) = &app.modal else { panic!() };
+    assert!(f.ok(), "{:?}", f.problems);
+    assert_eq!(f.command, "nimitz tender MAIN/ARGOS lint 'Run the linter and report.'");
+    ctrl(&mut app, 's');
+    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!() };
+    assert_eq!(p.act, Act::Tender);
+    let o = actions::apply(&app.ctx.env, &p);
+    assert!(o.issues.is_empty(), "{:?}", o.issues);
+    reload(&w, &mut app);
+    assert!(app.rows.iter().any(|r| r.node.id == "M:MAIN/ARGOS/~lint"), "the tender is listed");
+}
+
+#[test]
+fn machine_rm_form_plans_through_core() {
+    let w = world();
+    let app = app_on(&w, TestMux::default());
+    let mut f = Form::machine_rm("MAIN", "sandbox");
+    f.validate(&app.ctx.env, &app.bundle.as_ref().unwrap().snap);
+    assert!(f.ok(), "{:?}", f.problems);
+    assert_eq!(f.command, "nimitz machine rm MAIN sandbox");
+    assert!(f.plan.steps.iter().any(|s| s.cmd[1].ends_with("fleet.toml")));
 }
