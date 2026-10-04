@@ -255,6 +255,14 @@ fn chain(id: &Id) -> Vec<Id> {
 
 // ------------------------------------------------------------------ the relaunch state table
 
+/// A live old-fleet or unlabelled session in the member's folder (issue
+/// `legacy`, Warn while live): any start would make a second agent there.
+fn refuse_legacy(plan: &mut Plan, m: &Member) -> bool {
+    let Some(i) = m.issues.iter().find(|i| i.code == "legacy" && i.severity == Severity::Warn) else { return false };
+    plan.refusals.push(Issue { severity: Severity::Error, ..i.clone() });
+    true
+}
+
 /// One member's action per contracts.md section 8. Appends steps or refusals.
 fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: bool) {
     let Some((fleet, m)) = member(snap, id) else {
@@ -274,6 +282,9 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
         return;
     };
     let mode = crate::config::permission_mode(&fod, id);
+    if refuse_legacy(plan, m) {
+        return;
+    }
     let session_errs = session_issues(env, m);
     let step = |id: &Id, cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.clone()), why: why.into() };
 
@@ -635,6 +646,9 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
     };
     let mode = crate::config::permission_mode(&fod, id);
     let cwd = m.cwd.clone().unwrap_or_default();
+    if refuse_legacy(&mut plan, m) {
+        return plan;
+    }
     if m.role.interactive() {
         if m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
             refuse(&mut plan, "config.invalid", format!("{id} is live; end it in its pane first"), Some("type /exit in its pane".into()), Some(id.clone()));

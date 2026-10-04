@@ -140,7 +140,8 @@ Each finding is an `Issue` with a stable `code`:
 | `role.background` | an admiral or commodore is a background session |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml` |
-| `stowaway` | a session in a fleet folder with no labels (an inherited `NIMITZ_HOME` alone is not a label) |
+| `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
+| `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`), or any live unlabelled session in a member's folder. Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |
 
 Refusal-only codes (in `Plan.refusals`, not from `check`):
 
@@ -175,6 +176,7 @@ target. For each member, one action from this table:
 | admiral/commodore is a background session | refuse; fix: attach and keep it in a terminal |
 | Claude Code version out of range | refuse launches (read-only still works); `--force` overrides |
 | session file has extra bytes | read the first JSON value; not an issue |
+| a live old-fleet or unlabelled session in the member's folder (`legacy`) | refuse; fix: stop it in the old fleet, or adopt it (then stop + start = the labels-missing row) |
 
 Rules that hold in every row: never resume a live session; never pass flags to
 a resume that must keep the id; `stop`/`rm` through the native binary and verify

@@ -941,3 +941,79 @@ fn apply_refuses_to_run_a_refused_plan_and_reports_a_failed_step() {
     assert_ne!(out.ran[0].1, 0);
     assert!(out.issues[0].message.contains("no job"), "{:?}", out.issues);
 }
+
+// ------------------------------------------------------------------ legacy (old fleet) sessions
+
+#[test]
+fn legacy_old_fleet_session_refuses_then_adopt_stop_start_relaunches_with_labels() {
+    let w = world();
+    let id = w.ship("FRESH");
+    let cwd = w.member(&w.snap(), &id).cwd.unwrap();
+    // the migration's map, and the old fleet's [ARGOS]-FRESH running in the folder
+    let fleet_dir = w.env.fleet_dir("MAIN");
+    std::fs::write(fleet_dir.join("legacy.toml"), "[names]\n\"[ARGOS]-FRESH\" = \"MAIN/ARGOS/FRESH\"\n").unwrap();
+    let old = vec![w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
+    let (rc, out) = claude::run(&old, Some(&cwd));
+    assert_eq!(rc, 0, "{out}");
+    let snap = w.snap();
+    let row = snap.stowaways.iter().find(|s| s.name == "[ARGOS]-FRESH").expect("still a stowaway (unlabelled)").clone();
+
+    // check: a `legacy` issue on the member, no `stowaway` line, and no rm offered while live
+    let issues = nimitz_core::check::check(&w.env, &snap, None);
+    let leg = issues.iter().find(|i| i.code == "legacy" && i.id.as_ref() == Some(&id)).expect("legacy issue");
+    assert!(leg.message.contains("old fleet"), "{}", leg.message);
+    assert!(leg.fix.as_deref().unwrap().contains(&format!("nimitz adopt {} {id}", row.session_id)));
+    assert!(!leg.fix.as_deref().unwrap().contains("rm"), "never rm a live session: {:?}", leg.fix);
+    assert!(!issues.iter().any(|i| i.code == "stowaway" && i.message.contains(&row.session_id)));
+
+    // start and up refuse: a second agent in the folder
+    let plan = w.start(&snap, &id, false);
+    assert!(has(&plan.refusals, "legacy"), "{:?}", plan.refusals);
+    assert!(w.steps_of(&plan, &id).is_empty());
+    let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
+    assert!(up.steps.iter().all(|s| s.id.as_ref() != Some(&id)), "up starts no second FRESH");
+
+    // adopt, then stop: the identity owns an unlabelled, stopped session
+    let out = sessions::apply(&w.env, &sessions::plan_adopt(&w.env, &snap, &row.session_id, &id, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    let snap = w.snap();
+    assert_eq!(w.member(&snap, &id).session.as_ref().map(|p| p.session_id.clone()), Some(row.session_id.clone()));
+    let out = sessions::apply(&w.env, &sessions::plan_stop(&w.env, &snap, &id, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+
+    // the next start is row 5: relaunch with every flag (a labelled copy), rm the old row
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let steps = w.steps_of(&plan, &id);
+    assert!(steps[0].cmd.contains(&"--resume".to_string()) && steps[0].cmd.contains(&"--settings".to_string()), "{:?}", steps[0].cmd);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.member(&w.snap(), &id);
+    let s = after.session.unwrap();
+    assert_ne!(s.session_id, row.session_id);
+    assert_eq!(s.name, id.name());
+    assert_eq!(s.labels.get("NIMITZ_ID"), Some(&id.0));
+    assert!(!w.rows().iter().any(|r| r.session_id == row.session_id), "the old fleet's row is gone");
+    assert!(after.issues.is_empty(), "{:?}", after.issues);
+}
+
+#[test]
+fn a_stowaway_fix_offers_rm_only_once_it_is_stopped() {
+    let w = world();
+    let snap = w.snap();
+    let live = snap.stowaways.iter().find(|s| s.name == "quick look at the logs").unwrap().clone();
+    let fix = |snap: &Snapshot| {
+        nimitz_core::check::check(&w.env, snap, None)
+            .into_iter()
+            .find(|i| i.code == "stowaway" && i.message.contains(&live.session_id))
+            .and_then(|i| i.fix)
+            .unwrap()
+    };
+    let f = fix(&snap);
+    assert!(f.contains("stop") && f.find("stop") < f.find("rm"), "{f}");
+    let (rc, out) = claude::run(&claude::stop(&w.env, live.short_id.as_deref().unwrap()), None);
+    assert_eq!(rc, 0, "{out}");
+    let f = fix(&w.snap());
+    assert!(!f.contains("stop") && f.contains("nimitz rm"), "{f}");
+}
