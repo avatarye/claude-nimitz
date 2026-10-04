@@ -536,9 +536,33 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: C
     plan
 }
 
+/// A ship folder value as stored in squadron.toml: `managed`, an absolute path
+/// or `~/...`. Refused: empty, `<machine label>=<folder>` (the machine goes in
+/// its own field), and relative paths (a front end makes them absolute first).
+pub fn normalize_ship_dir(f: &FleetOnDisk, d: &str) -> Result<String, String> {
+    let d = d.trim();
+    if d.is_empty() {
+        return Err("the folder is empty (use managed, an absolute path or ~/...)".into());
+    }
+    if let Some((label, rest)) = d.split_once('=') {
+        if f.config.machines.contains_key(label) {
+            return Err(format!("{d:?} puts the machine in the folder; use --dir {rest} --machine {label}"));
+        }
+    }
+    if d == "managed" || d.starts_with('/') || d.starts_with("~/") {
+        let t = d.trim_end_matches('/');
+        return Ok(if t.is_empty() { "/".into() } else { t.to_string() });
+    }
+    Err(format!("folder {d:?} is relative; give an absolute path, ~/..., or managed"))
+}
+
 /// Shared tail of ship new/set: check folders, rewrite squadron.toml, make managed folders.
 fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, sq: SquadronConfig, id: &Id, ship: &ShipDef, plan: &mut Plan) {
     for (label, d) in &ship.dirs {
+        if let Err(why) = normalize_ship_dir(f, d) {
+            refuse(plan, "config.invalid", format!("{id} on {label}: {why}"), None, Some(id.clone()));
+            continue;
+        }
         if !f.config.machines.contains_key(label) {
             refuse(
                 plan,
@@ -1278,6 +1302,23 @@ pub(crate) mod tests {
         assert!(home_layout(&env).is_empty());
         std::fs::write(env.home.join("CLAUDE.md"), "x").unwrap();
         assert_eq!(home_layout(&env)[0].code, "config.layout");
+    }
+
+    #[test]
+    fn ship_dirs_are_managed_absolute_or_home_relative() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let f = load_fleet(&env, "MAIN").unwrap();
+        assert_eq!(normalize_ship_dir(&f, "managed").as_deref(), Ok("managed"));
+        assert_eq!(normalize_ship_dir(&f, "/w/x/").as_deref(), Ok("/w/x"));
+        assert_eq!(normalize_ship_dir(&f, "~/x").as_deref(), Ok("~/x"));
+        for bad in ["", "  ", "test-mac=managed", "rel/dir", "./x"] {
+            assert!(normalize_ship_dir(&f, bad).is_err(), "{bad:?}");
+        }
+        assert!(normalize_ship_dir(&f, "test-mac=managed").unwrap_err().contains("--machine test-mac"));
+        let ship = ShipDef { name: "S".into(), prompt: Some("p".into()), dirs: [("test-mac".to_string(), "test-mac=managed".to_string())].into(), ..Default::default() };
+        let p = plan_ship_new(&env, "MAIN", "ARGOS", ship);
+        assert!(p.refusals.iter().any(|i| i.code == "config.invalid") && p.steps.is_empty(), "{:?}", p.refusals);
     }
 
     #[test]

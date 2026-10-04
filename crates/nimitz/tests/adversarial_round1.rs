@@ -492,7 +492,6 @@ fn bug42_the_legacy_fix_does_not_adopt_a_stowaway_as_the_commodore() {
 }
 
 #[test]
-#[ignore = "BUG-43"]
 fn bug43_signal_text_is_not_typed_with_control_characters() {
     let sb = Sb::new(true);
     let w = sb.dir("herdr/world.json");
@@ -508,7 +507,6 @@ fn bug43_signal_text_is_not_typed_with_control_characters() {
 }
 
 #[test]
-#[ignore = "BUG-47"]
 fn bug47_a_second_start_does_not_open_a_second_admiral_pane() {
     let sb = Sb::new(true);
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
@@ -540,4 +538,24 @@ fn bug53_relaunch_keeps_the_session_id_and_its_history() {
     let rm = lines.iter().position(|l| l.contains(" rm "));
     let resume = lines.iter().position(|l| l.contains("--resume"));
     assert!(matches!((rm, resume), (Some(a), Some(b)) if a < b), "the old row must go before the labelled resume, or the ship loses its history:\n{}", p.out);
+}
+
+// ------------------------------------------------------------------ round 2
+
+#[test]
+fn bug50_a_git_root_under_a_trusted_home_needs_its_own_trust() {
+    // Real Claude Code: a parent's trust does not cover a git repository root or worktree.
+    let sb = Sb::new(false);
+    let home = sb.dir("home");
+    let wt = home.join("cache/wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
+    sb.trust(&home);
+    assert_eq!(sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", wt.to_str().unwrap(), "--yes"]).code, 0);
+    let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
+    assert!(c.out.contains("folder.untrusted"), "the home's trust was taken for the worktree's:\n{}", c.out);
+    assert!(c.out.contains(&format!("run `claude` once in {}", wt.display())), "the fix must name the git root:\n{}", c.out);
+    sb.trust(&wt);
+    let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
+    assert!(!c.out.contains("folder.untrusted"), "trusted at the root, still untrusted:\n{}", c.out);
 }

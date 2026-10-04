@@ -75,6 +75,52 @@ pub mod fake;
 pub mod herdr;
 pub mod none;
 
+/// Text that is safe to type into an agent's pane: escape sequences (CSI, OSC,
+/// two-byte ESC) and every other C0/C1 control and DEL removed; newlines, CRs
+/// and tabs become spaces (Herdr's `agent prompt` has no paste mode, and a
+/// newline would submit early); runs of spaces collapse; ends trimmed.
+pub fn sanitize_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\u{1b}' => match it.next() {
+                // CSI: parameters, then one final byte in @..~
+                Some('[') => {
+                    for d in it.by_ref() {
+                        if ('@'..='~').contains(&d) {
+                            break;
+                        }
+                    }
+                }
+                // OSC, DCS, PM, APC, SOS: up to BEL or ST (ESC \)
+                Some(']') | Some('P') | Some('^') | Some('_') | Some('X') => {
+                    while let Some(d) = it.next() {
+                        if d == '\u{7}' || (d == '\u{1b}' && it.peek() == Some(&'\\')) {
+                            if d == '\u{1b}' {
+                                it.next();
+                            }
+                            break;
+                        }
+                    }
+                }
+                _ => {} // ESC + one char
+            },
+            '\n' | '\r' | '\t' => out.push(' '),
+            c if c.is_control() => {} // other C0, DEL, C1 (incl. the 8-bit CSI)
+            c => out.push(c),
+        }
+    }
+    let mut collapsed = String::with_capacity(out.len());
+    for w in out.split(' ').filter(|w| !w.is_empty()) {
+        if !collapsed.is_empty() {
+            collapsed.push(' ');
+        }
+        collapsed.push_str(w);
+    }
+    collapsed
+}
+
 /// The values `NIMITZ_MUX` may take.
 pub const MUX_SETTINGS: [&str; 3] = ["auto", "herdr", "none"];
 
@@ -207,6 +253,15 @@ mod tests {
         let m = detect(&v);
         assert_eq!(m.name(), "herdr");
         assert!(m.caps().open && m.caps().focus && m.caps().type_text && m.caps().layout);
+    }
+
+    #[test]
+    fn sanitize_strips_controls_and_escapes() {
+        assert_eq!(sanitize_text("x\u{3}\u{1b}[A\nsecond line"), "x second line");
+        assert_eq!(sanitize_text("a\u{1b}]0;title\u{7}b\u{1b}]2;t\u{1b}\\c"), "abc");
+        assert_eq!(sanitize_text("\u{9b}31m red\u{7f}\u{1b}c ok\t\r\n end  "), "31m red ok end");
+        assert_eq!(sanitize_text("plain text, kept: [MAIN.ARGOS]-SHIP"), "plain text, kept: [MAIN.ARGOS]-SHIP");
+        assert_eq!(sanitize_text("\u{1b}[31m"), "");
     }
 
     #[test]
