@@ -46,11 +46,25 @@ fn title_band_is_tinted_by_state_with_counts_on_the_right() {
     let y = ls.iter().position(|l| l.contains("[FORGE]") && l.contains("broken")).unwrap() as u16;
     let x = (ls[y as usize].find("broken").unwrap()) as u16; // ASCII before it
     assert_eq!(buf[(x - 2, y)].bg, mono::T_PURPLE, "broken fleet band is purple-tinted");
-    // right side: `icon n / icon n`
+    // right side: `icon n / icon n`, each kind in its own column
     let band = &ls[y as usize];
-    assert!(band.contains("^ 13 / * 2 / - 1"), "{band}");
+    assert!(band.contains("^ 13 ") && band.contains("* 2  / - 1  / x 2"), "{band}");
     let main = ls.iter().find(|l| l.contains("[MAIN]") && l.contains("needs you")).unwrap();
-    assert!(main.contains("! 2 / * 3 / - 2 / x 1"), "{main}");
+    assert!(main.contains("! 2  / * 3  / - 2  / x 1"), "{main}");
+}
+
+#[test]
+fn band_counts_line_up_in_columns_across_fleets_and_squadrons() {
+    let mut t = demo();
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    let busy = |has: &str, n: &str| col_of(&ls, has, &format!("* {n} "));
+    let main = busy("[MAIN]   needs you", "3");
+    assert_eq!(main, busy("[FORGE]   broken", "2"), "fleet bands");
+    assert_eq!(main, busy("ARGOS   busy", "3"), "a squadron band inside a fleet");
+    assert_eq!(main, busy("IRON   broken", "1"));
+    let off = |has: &str, n: &str| col_of(&ls, has, &format!("o {n} "));
+    assert_eq!(off("[FORGE]   broken", "3"), off("[LAB]", "3"));
+    assert_eq!(off("[FORGE]   broken", "3"), off("MOLD   broken", "2"));
 }
 
 #[test]
@@ -403,8 +417,7 @@ fn message_goes_direct_to_leads_and_through_the_commodore_for_ships() {
     press(&mut t.app, KeyCode::Enter);
     let calls = t.mux.calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);
-    assert!(calls[0].starts_with("type p2 Message from the user for [MAIN.ARGOS]-BOLT"), "{calls:?}");
-    assert!(calls[0].ends_with("ship it"));
+    assert_eq!(calls[0], "type p2 Relay to [MAIN.ARGOS]-BOLT from the user: ship it", "the CLI's relay text");
     goto(&mut t.app, "M:MAIN");
     let p = t.app.message_plan().unwrap();
     assert!(!p.relay);
@@ -427,7 +440,7 @@ fn open_attaches_a_background_session_in_a_new_pane() {
     assert!(p.panes[0].0.cmd.contains(&"attach".to_string()));
     t.app.begin(&p).unwrap();
     let calls = t.mux.calls.lock().unwrap().clone();
-    assert!(calls[0].starts_with("open ") && calls[0].contains("attach") && calls[0].contains("workspace: \"MAIN\""), "{calls:?}");
+    assert!(calls[0].starts_with("open ") && calls[0].contains("attach") && calls[0].contains("workspace: \"MAIN.ARGOS\"") && calls[0].contains("label: \"BOLT\""), "{calls:?}");
     // an interactive lead is not attached; it lives in its terminal
     goto(&mut t.app, "M:MAIN/ARGOS");
     assert!(t.app.available(Act::Open).unwrap_err().contains("interactive"));
@@ -502,7 +515,7 @@ fn new_ship_form_needs_a_prompt_and_reports_what_core_refuses() {
     f.validate(&env, &snap);
     // the demo env has no fleet MAIN on disk: core refuses, and the form says so
     assert!(!f.problems.is_empty());
-    assert!(f.command.starts_with("nimitz ship new MAIN/ARGOS/NEWSHIP --dir west-mac=/work/importer --prompt 'You build the importer.' --mode west-mac=auto"), "{}", f.command);
+    assert_eq!(f.command, "nimitz ship new MAIN/ARGOS/NEWSHIP --dir /work/importer --machine west-mac --prompt 'You build the importer.' --mode auto");
 }
 
 #[test]
@@ -512,7 +525,7 @@ fn forms_open_where_the_cursor_is() {
     let menu = t.app.create_menu();
     assert!(menu.iter().any(|i| i.label == "new squadron in MAIN" && i.enabled.is_ok()));
     assert!(menu.iter().any(|i| i.label == "new ship in MAIN/ARGOS" && i.enabled.is_ok()));
-    assert!(menu.iter().any(|i| i.label == "edit this ship" && i.enabled.is_ok()));
+    assert!(menu.iter().any(|i| i.label == "edit ship MAIN/ARGOS/BOLT" && i.enabled.is_ok()));
     goto(&mut t.app, "STOW");
     let menu = t.app.create_menu();
     assert!(menu.iter().any(|i| i.key == 'p' && i.enabled.is_err()));
@@ -534,4 +547,63 @@ fn ascii_icons_have_no_nerd_glyphs() {
     let mut t = demo();
     let s = screen(&mut t.app, 200, 60);
     assert!(!s.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c) || c >= '\u{f0000}'), "ASCII mode has no private-use glyphs");
+}
+
+#[test]
+fn a_legacy_session_has_its_own_marker_and_adopt_is_prefilled() {
+    let mut t = demo();
+    let buf = draw(&mut t.app, 200, 70);
+    let ls = lines(&buf);
+    let y = ls.iter().position(|l| l.contains("[KITS]-LEAD")).unwrap();
+    let x = col_of(&ls, "[KITS]-LEAD", "L ");
+    assert!(x < col_of(&ls, "[KITS]-LEAD", "[KITS]-LEAD"), "marker before the name: {}", ls[y]);
+    assert_eq!(buf[(x as u16, y as u16)].fg, mono::ORANGE);
+    assert!(ls[y].contains("legacy"));
+    goto(&mut t.app, "SW:ab99ab99-0000-4000-8000-000000000000");
+    assert_eq!(t.app.legacy_adopt(), Some(("ab99ab99".into(), "MAIN/KITS".into())));
+    keys(&mut t.app, "x");
+    let Some(Modal::Menu { items, .. }) = &t.app.modal else { panic!() };
+    let it = items.iter().find(|i| i.key == 'd').unwrap();
+    assert_eq!(it.label, "adopt this legacy session as MAIN/KITS");
+    assert!(it.enabled.is_ok());
+    keys(&mut t.app, "d");
+    let Some(Modal::Form(f)) = &t.app.modal else { panic!("{}", toast(&t.app)) };
+    assert_eq!(f.get("id"), "MAIN/KITS");
+    assert_eq!(f.command, "nimitz adopt ab99ab99 MAIN/KITS");
+}
+
+#[test]
+fn tender_layout_and_machine_entries_are_where_they_belong() {
+    let mut t = demo();
+    goto(&mut t.app, "SQ:MAIN/ARGOS");
+    let menu = t.app.create_menu();
+    let it = menu.iter().find(|i| i.key == 't').unwrap();
+    assert_eq!(it.label, "new tender for [MAIN.ARGOS]-COMMODORE");
+    assert!(it.enabled.is_ok());
+    goto(&mut t.app, "F:MAIN");
+    assert!(t.app.create_menu().iter().find(|i| i.key == 't').unwrap().enabled.is_err());
+    let menu = t.app.action_menu();
+    for k in ['L', 'S', 'M', 'w'] {
+        assert!(menu.iter().any(|i| i.key == k), "fleet band menu has {k}");
+    }
+    // the demo's mux has layout; demo data has no nimitz binary path guarantee, so only check monitor-only refuses
+    let mut m = fixture_app(fixtures::demo_monitor_only(), false);
+    goto(&mut m.app, "F:MAIN");
+    assert!(m.app.available(Act::Layout).unwrap_err().contains("monitor-only"));
+}
+
+#[test]
+fn sweep_from_a_band_is_scoped_to_that_band() {
+    let mut t = demo();
+    goto(&mut t.app, "SQ:FORGE/IRON");
+    keys(&mut t.app, "x");
+    keys(&mut t.app, "w");
+    let Some(Modal::Confirm(p)) = &t.app.modal else { panic!("{}", toast(&t.app)) };
+    assert_eq!(p.command, "nimitz sweep FORGE/IRON");
+    press(&mut t.app, KeyCode::Esc);
+    goto(&mut t.app, "F:FORGE");
+    keys(&mut t.app, "x");
+    keys(&mut t.app, "w");
+    let Some(Modal::Confirm(p)) = &t.app.modal else { panic!() };
+    assert_eq!(p.command, "nimitz sweep FORGE");
 }

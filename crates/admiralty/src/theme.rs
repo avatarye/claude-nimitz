@@ -132,6 +132,7 @@ pub struct Icons {
     pub teammate: &'static str,  // people
     pub stowaway: &'static str,  // incognito
     pub issue: &'static str,     // warning triangle
+    pub legacy: &'static str,    // history: a session of the old fleet-skill fleets
     pub finished: &'static str,  // archive
     pub row: &'static str,       // dash / stale row
     pub completed: &'static str,
@@ -157,6 +158,7 @@ pub const NERD: Icons = Icons {
     teammate: "\u{f0c0}",   // nf-fa-users
     stowaway: "\u{f21b}",   // nf-fa-user-secret
     issue: "\u{f071}",      // nf-fa-warning
+    legacy: "\u{f02da}",    // nf-md-history
     finished: "\u{f187}",   // nf-fa-archive
     row: "\u{f28d}",        // nf-fa-stop-circle-o
     completed: "\u{f058}",  // nf-fa-check-circle
@@ -182,6 +184,7 @@ pub const ASCII: Icons = Icons {
     teammate: "T",
     stowaway: "?",
     issue: "^",
+    legacy: "L",
     finished: "+",
     row: "-",
     completed: "v",

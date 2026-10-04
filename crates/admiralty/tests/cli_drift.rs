@@ -1,0 +1,211 @@
+//! Every `nimitz ...` command Admiralty shows must be one the real CLI takes,
+//! flag for flag, and plan the same thing. Each command is run with
+//! `--plan --json` against the same sandbox and its plan compared with ours.
+
+mod common;
+
+use std::path::PathBuf;
+use std::sync::Once;
+
+use admiralty::actions::{self, Act, Ctx, Target};
+use admiralty::app::App;
+use admiralty::data::{CoreSource, DataSource};
+use admiralty::forms::Form;
+use common::*;
+use nimitz_core::{Id, Plan};
+
+/// Build the CLI once and point Admiralty's lookup at it.
+fn nimitz() -> PathBuf {
+    static BUILD: Once = Once::new();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bin = root.join("target/debug/nimitz");
+    BUILD.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let st = std::process::Command::new(cargo).args(["build", "-q", "-p", "nimitz"]).current_dir(&root).status().unwrap();
+        assert!(st.success(), "cargo build -p nimitz");
+        std::env::set_var("NIMITZ_BIN", &bin);
+    });
+    bin
+}
+
+/// Undo `actions::quote`: words, with '...' quoting and '\'' for a quote.
+fn split(cmd: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quoted, mut any) = (vec![], String::new(), false, false);
+    let mut it = cmd.chars().peekable();
+    while let Some(c) = it.next() {
+        match c {
+            '\'' if quoted => quoted = false,
+            '\'' => {
+                quoted = true;
+                any = true;
+            }
+            '\\' if !quoted => {
+                if let Some(n) = it.next() {
+                    cur.push(n);
+                }
+            }
+            ' ' if !quoted => {
+                if any || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                any = false;
+            }
+            c => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+struct World {
+    _dir: tempfile::TempDir,
+    vars: std::collections::HashMap<String, String>,
+}
+
+fn world() -> World {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("sb");
+    nimitz_core::sandbox::create(&base, std::path::Path::new(env!("CARGO_BIN_EXE_admiralty"))).unwrap();
+    World { vars: nimitz_core::sandbox::env_for(&base), _dir: dir }
+}
+
+fn app_on(w: &World) -> App {
+    let ctx = Ctx { env: nimitz_core::env::Env::from_vars(&w.vars), mux: Box::new(TestMux::default()), live: true, exit_after_jump: false };
+    let mut app = App::new(ctx, None, true);
+    app.apply(CoreSource::detect(&w.vars).load());
+    app
+}
+
+/// The CLI's plan for a command Admiralty showed.
+fn cli(app: &App, command: &str) -> Plan {
+    let bin = nimitz();
+    let argv = split(command);
+    assert_eq!(argv[0], "nimitz", "{command}");
+    let out = actions::cli_command(&app.ctx.env, &bin.to_string_lossy()).args(&argv[1..]).args(["--plan", "--json"]).output().unwrap();
+    let code = out.status.code().unwrap_or(-1);
+    assert_ne!(code, 2, "the CLI rejected `{command}` as a usage error: {}", String::from_utf8_lossy(&out.stderr));
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("`{command}`: no JSON plan ({e}): {}", String::from_utf8_lossy(&out.stderr)))
+}
+
+/// Same steps (what runs, where); our summary may be worded for the screen.
+fn same(ours: &Plan, theirs: &Plan, command: &str) {
+    assert_eq!(ours.ok(), theirs.ok(), "`{command}`: refusals differ: ours {:?} cli {:?}", ours.refusals, theirs.refusals);
+    let cmds = |p: &Plan| p.steps.iter().map(|s| (s.cmd.clone(), s.cwd.clone())).collect::<Vec<_>>();
+    assert_eq!(cmds(ours), cmds(theirs), "`{command}`: steps differ");
+}
+
+#[test]
+fn session_commands_match_the_cli() {
+    let w = world();
+    let mut app = app_on(&w);
+    let caps = nimitz_mux::Caps::default();
+    let snap = app.bundle.as_ref().unwrap().snap.clone();
+    let cases: Vec<(Target, Act)> = vec![
+        (Target::Member(Id("MAIN/ARGOS/CLEAN".into())), Act::Stop),
+        (Target::Member(Id("MAIN/ARGOS/COPIES".into())), Act::Sweep),
+        (Target::Squadron(Id("MAIN/ARGOS".into())), Act::Sweep),
+        (Target::Fleet(Id("MAIN".into())), Act::Sweep),
+        (Target::Member(Id("MAIN/ARGOS/COPIES".into())), Act::Rm),
+        (Target::Member(Id("MAIN/ARGOS/BROKEN".into())), Act::ConfigRm),
+        (Target::Squadron(Id("MAIN/BOREAL".into())), Act::ConfigRm),
+    ];
+    for (t, a) in cases {
+        let p = actions::prepare(&app.ctx, caps, &snap, &t, a, None).unwrap_or_else(|e| panic!("{a:?} {t:?}: {e}"));
+        same(&p.plan, &cli(&app, &p.command), &p.command);
+    }
+    // start and relaunch need a multiplexer in Admiralty; the CLI takes the same command
+    let open = nimitz_mux::Caps { open: true, focus: true, type_text: true, layout: true };
+    for (id, a) in [("MAIN/ARGOS/STOPPED", Act::Start), ("MAIN/ARGOS/NOLABEL", Act::Relaunch)] {
+        let p = actions::prepare(&app.ctx, open, &snap, &Target::Member(Id(id.into())), a, None).unwrap();
+        same(&p.plan, &cli(&app, &p.command), &p.command);
+    }
+    // these the CLI refuses here (no multiplexer); the command must still parse
+    for (t, a) in [(Target::Member(Id("MAIN/ARGOS/TWIN".into())), Act::Open), (Target::Fleet(Id("MAIN".into())), Act::Up)] {
+        let p = actions::prepare(&app.ctx, open, &snap, &t, a, None).unwrap();
+        cli(&app, &p.command);
+    }
+    // message: the command the message box shows
+    app.bundle.as_mut().unwrap().mux_caps = open;
+    goto(&mut app, "M:MAIN/ARGOS/CLEAN");
+    if let Ok(m) = app.message_plan() {
+        cli(&app, &actions::signal_command(&m, "hello there"));
+    }
+    cli(&app, &actions::signal_command(&actions::MessagePlan { id: Id("MAIN".into()), to: "[MAIN]-ADMIRAL".into(), via: "[MAIN]-ADMIRAL".into(), pane: nimitz_mux::PaneRef { pane_id: "p".into(), tab_id: None, workspace_id: None }, relay: false }, "it's me"));
+}
+
+#[test]
+fn form_commands_match_the_cli() {
+    let w = world();
+    let app = app_on(&w);
+    let snap = app.bundle.as_ref().unwrap().snap.clone();
+    let env = app.ctx.env.clone();
+    let mut forms: Vec<Form> = vec![];
+    let mut f = Form::new_fleet(&env);
+    f.set("fleet", "NEWF");
+    f.set("machine", "sandbox");
+    forms.push(f);
+    let mut f = Form::new_squadron("MAIN");
+    f.set("squadron", "CIRRUS");
+    f.set("comms", "allow:MAIN/ARGOS/CLEAN");
+    f.set("brief", "Clouds, with 'quotes'.");
+    forms.push(f);
+    let mut f = Form::new_ship("MAIN", "ARGOS", "sandbox");
+    f.set("ship", "NEWSHIP");
+    f.set("prompt", "You build the importer.\nTwo lines.");
+    f.set("mode", "auto");
+    f.set("depends", "CLEAN");
+    forms.push(f);
+    let mut f = Form::edit_ship(&env, &Id("MAIN/ARGOS/CLEAN".into()), "sandbox").unwrap();
+    f.set("mode", "plan");
+    forms.push(f);
+    let mut f = Form::edit_squadron(&env, &Id("MAIN/ARGOS".into())).unwrap();
+    f.set("comms", "commodore-only");
+    f.set("brief", "New brief.");
+    f.set("mode", "auto");
+    forms.push(f);
+    let mut f = Form::edit_fleet(&env, "MAIN").unwrap();
+    f.set("mode", "acceptEdits");
+    forms.push(f);
+    forms.push(Form::machine_rm("MAIN", "sandbox"));
+    let mut f = Form::tender(&Id("MAIN/ARGOS".into()));
+    f.set("task", "lint");
+    f.set("prompt", "Run the linter.");
+    forms.push(f);
+    for mut f in forms {
+        f.validate(&env, &snap);
+        assert!(f.ok(), "{}: {:?}", f.title, f.problems);
+        let theirs = cli(&app, &f.command);
+        same(&f.plan, &theirs, &f.command);
+    }
+    // adopt: whatever the identity, the CLI takes the command
+    let s = &snap.stowaways[0];
+    let mut f = Form::adopt(&s.session_id, s.short_id.as_deref().unwrap_or(""), "MAIN/ARGOS/FRESH");
+    f.validate(&env, &snap);
+    let theirs = cli(&app, &f.command);
+    same(&f.plan, &theirs, &f.command);
+}
+
+#[test]
+fn layout_comes_from_the_cli_itself() {
+    let w = world();
+    let mut app = app_on(&w);
+    nimitz();
+    app.bundle.as_mut().unwrap().mux_caps = nimitz_mux::Caps { open: true, focus: true, type_text: true, layout: true };
+    goto(&mut app, "F:MAIN");
+    keys(&mut app, "x");
+    keys(&mut app, "S");
+    let Some(admiralty::app::Modal::Confirm(p)) = &app.modal else { panic!("{}", toast(&app)) };
+    assert_eq!(p.command, "nimitz layout herdr MAIN --ships");
+    assert_eq!(p.external.as_deref(), Some(&["layout".to_string(), "herdr".into(), "MAIN".into(), "--ships".into()][..]));
+    // the sandbox has no Herdr: the CLI's own refusal is what the dialog shows
+    assert!(p.plan.refusals.iter().any(|r| r.message.contains("Herdr")), "{:?}", p.plan.refusals);
+}
+
+#[test]
+fn split_undoes_quote() {
+    for s in ["plain", "with space", "it's", "a'b'c", "", "--x=y", "line\nbreak"] {
+        assert_eq!(split(&format!("nimitz {}", actions::quote(s))), vec!["nimitz".to_string(), s.to_string()], "{s:?}");
+    }
+}

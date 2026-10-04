@@ -41,6 +41,12 @@ pub enum MenuAction {
     NewSquadron(String),
     NewShip(String, String),
     EditShip(Id),
+    EditFleet(String),
+    EditSquadron(Id),
+    Tender(Id),
+    MachineRm(String),
+    /// adopt this session as this identity (from a `legacy` issue's fix)
+    AdoptAs(String, String),
 }
 
 #[derive(Clone, Debug)]
@@ -131,9 +137,9 @@ pub const HELP: &[(&str, &str)] = &[
     ("a", "start the member, top-down (confirms)"),
     ("u", "up: start everything the fleet runs here (confirms)"),
     ("A", "open: attach to a background session in a new pane"),
-    ("x", "actions: stop, relaunch, sweep, rm, adopt, remove"),
+    ("x", "actions: stop, relaunch, sweep, rm, adopt, remove; on a fleet: layout, machines"),
     ("m", "message (ships: relayed by their commodore)"),
-    ("c / e / D", "create fleet, squadron, ship / edit ship / remove from config"),
+    ("c / e / D", "create fleet, squadron, ship, tender / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
     ("f / F", "filter fleets by state / flagged rows only"),
@@ -269,6 +275,7 @@ impl App {
             panes: &b.panes,
             icons: self.icons,
             now,
+            slots: crate::view::count_slots(&b.snap),
         };
         let nodes = build_nodes(&b.snap, &view);
         self.rows = flatten(&nodes, &self.expanded);
@@ -450,13 +457,45 @@ impl App {
         actions::available(b.mux_caps, &b.snap, &self.target(), act)
     }
 
+    /// The `legacy` issue's fix on the selected row, as (session, identity):
+    /// `nimitz adopt <sid> <id>`.
+    pub fn legacy_adopt(&self) -> Option<(String, String)> {
+        let b = self.bundle.as_ref()?;
+        let issues: Vec<Issue> = match self.target() {
+            Target::Member(id) => actions::find_member(&b.snap, &id).map(|m| m.issues.clone()).unwrap_or_default(),
+            Target::Stowaway(sid) => b.snap.stowaways.iter().find(|s| s.session_id == sid).map(|s| crate::view::stowaway_issues(&b.snap, s).into_iter().cloned().collect()).unwrap_or_default(),
+            _ => vec![],
+        };
+        issues.iter().filter(|i| i.code == "legacy").find_map(|i| {
+            let w: Vec<&str> = i.fix.as_deref()?.split_whitespace().collect();
+            match w.as_slice() {
+                ["nimitz", "adopt", sid, id] => Some((sid.to_string(), id.to_string())),
+                _ => None,
+            }
+        })
+    }
+
     /// The action menu (`x`) for the selected row.
     pub fn action_menu(&self) -> Vec<MenuItem> {
-        Act::MENU
+        let mut v: Vec<MenuItem> = Act::MENU
             .iter()
             .filter(|a| !matches!(a, Act::Start | Act::Open | Act::Up))
             .map(|a| MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(*a), action: MenuAction::Act(*a) })
-            .collect()
+            .collect();
+        if let Some((sid, id)) = self.legacy_adopt() {
+            if let Some(it) = v.iter_mut().find(|i| i.key == Act::Adopt.key()) {
+                it.label = format!("adopt this legacy session as {id}");
+                it.enabled = Ok(());
+                it.action = MenuAction::AdoptAs(sid, id);
+            }
+        }
+        if let Target::Fleet(id) = self.target() {
+            for a in [Act::Layout, Act::LayoutShips] {
+                v.push(MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(a), action: MenuAction::Act(a) });
+            }
+            v.push(MenuItem { key: 'M', label: "remove a machine from this fleet".into(), enabled: Ok(()), action: MenuAction::MachineRm(id.0) });
+        }
+        v
     }
 
     /// The create menu (`c`) for where the cursor is.
@@ -470,17 +509,43 @@ impl App {
             Some((f, sq)) => v.push(MenuItem { key: 'p', label: format!("new ship in {f}/{sq}"), enabled: Ok(()), action: MenuAction::NewShip(f, sq) }),
             None => v.push(MenuItem { key: 'p', label: "new ship".into(), enabled: Err("select a squadron first".into()), action: MenuAction::NewFleet }),
         }
-        let edit = match self.target() {
-            Target::Member(id) if id.role() == Role::Ship => Ok(id),
-            _ => Err("select a ship to edit it".to_string()),
+        let tender = match self.target() {
+            Target::Squadron(id) => Ok(id),
+            Target::Member(id) if id.role() != Role::Admiral && id.squadron().is_some() => Ok(Id::commodore(id.fleet(), id.squadron().unwrap_or_default())),
+            _ => Err("select a squadron or its commodore".to_string()),
+        };
+        v.push(MenuItem {
+            key: 't',
+            label: match &tender {
+                Ok(id) => format!("new tender for {}", id.name()),
+                Err(_) => "new tender".into(),
+            },
+            enabled: tender.as_ref().map(|_| ()).map_err(|e| e.clone()),
+            action: tender.map(MenuAction::Tender).unwrap_or(MenuAction::NewFleet),
+        });
+        let (label, edit) = match self.edit_action() {
+            Ok((l, a)) => (l, Ok(a)),
+            Err(e) => ("edit".to_string(), Err(e)),
         };
         v.push(MenuItem {
             key: 'e',
-            label: "edit this ship".into(),
+            label,
             enabled: edit.as_ref().map(|_| ()).map_err(|e| e.clone()),
-            action: edit.map(MenuAction::EditShip).unwrap_or(MenuAction::NewFleet),
+            action: edit.unwrap_or(MenuAction::NewFleet),
         });
         v
+    }
+
+    /// What `e` edits on the selected row.
+    pub fn edit_action(&self) -> Result<(String, MenuAction), String> {
+        match self.target() {
+            Target::Member(id) if id.role() == Role::Ship => Ok((format!("edit ship {id}"), MenuAction::EditShip(id))),
+            Target::Squadron(id) => Ok((format!("edit squadron {id}"), MenuAction::EditSquadron(id))),
+            Target::Member(id) if id.role() == Role::Commodore => Ok((format!("edit squadron {id}"), MenuAction::EditSquadron(id))),
+            Target::Fleet(id) => Ok((format!("edit fleet {id}"), MenuAction::EditFleet(id.0))),
+            Target::Member(id) if id.role() == Role::Admiral => Ok((format!("edit fleet {id}"), MenuAction::EditFleet(id.0))),
+            _ => Err("select a fleet, squadron or ship to edit it".into()),
+        }
     }
 
     fn machine_of(&self, fleet: &str) -> String {
@@ -497,6 +562,13 @@ impl App {
             form.validate(&self.ctx.env, &b.snap);
         }
         self.modal = Some(Modal::Form(Box::new(form)));
+    }
+
+    fn open_or_say(&mut self, f: Result<Form, String>) {
+        match f {
+            Ok(f) => self.open_form(f),
+            Err(e) => self.notify(format!("edit: {e}"), st(mono::YELLOW)),
+        }
     }
 
     fn run_menu(&mut self, a: MenuAction) -> Option<Effect> {
@@ -518,10 +590,32 @@ impl App {
             }
             MenuAction::EditShip(id) => {
                 let m = self.machine_of(id.fleet());
-                match Form::edit_ship(&self.ctx.env, &id, &m) {
-                    Ok(f) => self.open_form(f),
-                    Err(e) => self.notify(format!("edit: {e}"), st(mono::YELLOW)),
-                }
+                let f = Form::edit_ship(&self.ctx.env, &id, &m);
+                self.open_or_say(f);
+                None
+            }
+            MenuAction::EditFleet(f) => {
+                let f = Form::edit_fleet(&self.ctx.env, &f);
+                self.open_or_say(f);
+                None
+            }
+            MenuAction::EditSquadron(id) => {
+                let f = Form::edit_squadron(&self.ctx.env, &id);
+                self.open_or_say(f);
+                None
+            }
+            MenuAction::Tender(id) => {
+                self.open_form(Form::tender(&id));
+                None
+            }
+            MenuAction::MachineRm(f) => {
+                let m = self.machine_of(&f);
+                self.open_form(Form::machine_rm(&f, &m));
+                None
+            }
+            MenuAction::AdoptAs(sid, id) => {
+                let short: String = sid.chars().take(8).collect();
+                self.open_form(Form::adopt(&sid, &short, &id));
                 None
             }
         }
@@ -530,6 +624,9 @@ impl App {
     /// Plan `act` for the selected row and show the confirm dialog.
     pub fn start_act(&mut self, act: Act) -> Option<Effect> {
         if act == Act::Adopt {
+            if let Some((sid, id)) = self.legacy_adopt() {
+                return self.run_menu(MenuAction::AdoptAs(sid, id));
+            }
             if let Target::Stowaway(sid) = self.target() {
                 let short: String = sid.chars().take(8).collect();
                 let suggestion = self
@@ -707,9 +804,9 @@ impl App {
                 self.modal = Some(Modal::Menu { title: format!("actions: {title}"), items: self.action_menu(), sel: 0 });
             }
             (KeyCode::Char('c'), _) => self.modal = Some(Modal::Menu { title: "create".into(), items: self.create_menu(), sel: 0 }),
-            (KeyCode::Char('e'), _) => match self.target() {
-                Target::Member(id) if id.role() == Role::Ship => return self.run_menu(MenuAction::EditShip(id)),
-                _ => self.notify("edit: select a ship (fleets and squadrons: `nimitz fleet set` / `squadron set`)", st(mono::YELLOW)),
+            (KeyCode::Char('e'), _) => match self.edit_action() {
+                Ok((_, a)) => return self.run_menu(a),
+                Err(why) => self.notify(format!("edit: {why}"), st(mono::YELLOW)),
             },
             (KeyCode::Char('m'), _) => match self.message_plan() {
                 Ok(plan) => self.modal = Some(Modal::Message { plan, text: String::new() }),

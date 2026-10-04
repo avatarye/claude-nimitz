@@ -966,12 +966,54 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
     plan
 }
 
+/// Retire a ship, a squadron or a fleet (`ship rm`, `squadron rm`, `fleet rm`):
+/// stop its live background sessions, remove its job rows (transcripts stay),
+/// then the config change (`config::plan_rm`), in one plan that `apply` runs and
+/// verifies. A squadron or fleet goes only with nothing live in it and no ships
+/// left in the config; a live interactive member is ended in its own pane.
+pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan {
+    let mut plan = Plan { summary: format!("retire {id}: stop, remove job rows, remove from the config"), ..Default::default() };
+    if *caller != Caller::User {
+        refuse(&mut plan, "authority", "config changes are yours alone; ask the user".into(), None, None);
+        return plan;
+    }
+    let cfg = crate::config::plan_rm(env, id);
+    plan.refusals.extend(cfg.refusals.iter().cloned());
+    let under = |m: &Id| m == id || m.0.starts_with(&format!("{id}/"));
+    for (_, m) in members(snap).into_iter().filter(|(_, m)| under(&m.id)) {
+        for r in m.session.iter().chain(m.extra_rows.iter()) {
+            let live = r.pid.is_some();
+            if live && (r.kind != "background" || id.role() != Role::Ship) {
+                // a fleet or squadron is removed only with nothing live in it
+                refuse(
+                    &mut plan,
+                    "config.invalid",
+                    format!("{} is live; {id} is removed only with nothing live in it", m.id),
+                    Some(if r.kind == "background" { format!("nimitz stop {}", m.id) } else { "type /exit in its pane".into() }),
+                    Some(m.id.clone()),
+                );
+                continue;
+            }
+            let Some(short) = &r.short_id else { continue }; // an interactive session leaves no job row
+            if live {
+                plan.steps.push(Step { id: Some(m.id.clone()), cmd: crate::claude::stop(env, short), cwd: m.cwd.clone(), why: "stop it first".into() });
+            }
+            plan.steps.push(Step { id: Some(m.id.clone()), cmd: crate::claude::rm(env, short), cwd: None, why: "remove the job row; the transcript stays".into() });
+        }
+    }
+    plan.steps.extend(cfg.steps);
+    dedup_issues(&mut plan);
+    plan
+}
+
 // ------------------------------------------------------------------ apply
 
 /// What a step is, read back from its argv.
 #[derive(Debug, PartialEq)]
 enum Kind {
     Bind,
+    /// a config step (`mkdir`, `write`, `archive`), run by `config::apply_config_plan`
+    Config,
     Interactive,
     Launch,
     Resume { session_id: String },
@@ -984,6 +1026,7 @@ fn classify(step: &Step) -> Kind {
     let c: Vec<&str> = step.cmd.iter().map(String::as_str).collect();
     match c.as_slice() {
         ["bind", ..] => Kind::Bind,
+        ["mkdir", _] | ["write", _, _] | ["archive", _] => Kind::Config,
         [_, "stop", short] => Kind::Stop { short: short.to_string() },
         [_, "rm", short] => Kind::Rm { short: short.to_string() },
         _ if !step.cmd.contains(&"--bg".to_string()) => Kind::Interactive,
@@ -1115,6 +1158,17 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             out.ran.push((step.clone(), 0, "pane: open this command in a terminal pane, then bind_started".into()));
             continue;
         }
+        if kind == Kind::Config {
+            let one = Plan { summary: step.why.clone(), steps: vec![step.clone()], ..Default::default() };
+            let o = crate::config::apply_config_plan(env, &one);
+            let ok = o.verified && o.issues.iter().all(|i| i.severity != Severity::Error);
+            out.ran.push((step.clone(), if ok { 0 } else { -1 }, o.ran.first().map(|r| r.2.clone()).unwrap_or_default()));
+            if !ok {
+                out.issues.extend(o.issues);
+                return out;
+            }
+            continue;
+        }
         if kind == Kind::Bind {
             let (id, sid, via) = (Id(step.cmd[1].clone()), step.cmd[2].clone(), step.cmd[3].clone());
             let (role, name) = (id.role(), id.name());
@@ -1171,7 +1225,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     out.issues.push(issue("copy.rows", Severity::Error, format!("rm {short} ran but the row is still there"), None, step.id.clone()));
                 }
             }
-            Kind::Bind | Kind::Interactive => unreachable!(),
+            Kind::Bind | Kind::Interactive | Kind::Config => unreachable!(),
         }
     }
     // Verify again once every step ran (an rm must not have hit the new row).
@@ -1260,5 +1314,7 @@ mod tests {
         assert_eq!(classify(&s(&["claude", "-c", "--name", "n", "--settings", "{}"])), Kind::Interactive);
         assert_eq!(classify(&s(&["/n/claude", "stop", "j1"])), Kind::Stop { short: "j1".into() });
         assert_eq!(classify(&s(&["bind", "F/SQ/S", "sid", "adopt"])), Kind::Bind);
+        assert_eq!(classify(&s(&["write", "/x/squadron.toml", "body"])), Kind::Config);
+        assert_eq!(classify(&s(&["archive", "/x/fleet.toml"])), Kind::Config);
     }
 }

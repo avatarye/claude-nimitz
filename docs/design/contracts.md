@@ -186,7 +186,10 @@ by re-reading; never touch a session that is not in the identity's lineage.
 Authority for `sweep`: the user, any scope; a commodore, its own squadron only
 (its tenders and the stale copy rows of its own ships). Admiral, ship, tender: none.
 Core owns a plan for every mutating command, including `fleet set`,
-`squadron set` and `machine rm`.
+`squadron set`, `machine rm`, retire (`sessions::plan_retire`: `ship|squadron|fleet rm`,
+session and config steps in one plan, one verified `apply`) and the layout
+(`layout::plan` -> `LayoutSpec`, mux-free; the CLI and Admiralty map it onto
+`nimitz_mux::LayoutPlan`, dropping attach tabs a pane already shows with `layout::drop_shown`).
 
 ## 9. Mux trait (`nimitz-mux`)
 

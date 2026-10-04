@@ -3,25 +3,18 @@
 //! order, so the chain still comes up top-down.
 use crate::{out, Ctx};
 use nimitz_core::sessions::is_pane_step;
-use nimitz_core::{Id, Issue, Outcome, Plan, Role, Severity, Step};
+use nimitz_core::{Id, Issue, Outcome, Plan, Severity, Step};
 use nimitz_mux::{Mux, PaneRef, Place};
 use std::path::Path;
 
 /// Herdr workspace for a member: `F` for the admiral, `F.SQ` for the rest.
 pub fn workspace_of(id: &Id) -> String {
-    match id.squadron() {
-        Some(sq) => format!("{}.{sq}", id.fleet()),
-        None => id.fleet().to_string(),
-    }
+    nimitz_core::layout::workspace_of(id)
 }
 
 /// Tab label: ADMIRAL, COMMODORE, the ship's name, or `~task`.
 pub fn tab_of(id: &Id) -> String {
-    match id.role() {
-        Role::Admiral => "ADMIRAL".into(),
-        Role::Commodore => "COMMODORE".into(),
-        _ => id.parts().get(2).map(|s| s.to_string()).unwrap_or_default(),
-    }
+    nimitz_core::layout::tab_of(id)
 }
 
 pub fn place_for(id: &Id) -> Place {
