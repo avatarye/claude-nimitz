@@ -242,6 +242,20 @@ fn row6_no_row_but_a_transcript_continues_with_c_in_a_pane() {
     assert!(out.verified, "{:?}", out.issues);
     assert!(out.ran[0].2.contains("pane"), "{}", out.ran[0].2);
     assert!(w.member(&w.snap(), &id).session.is_none(), "core started nothing itself");
+
+    // What the CLI does with the pane step: open it (here: run it in place), then
+    // bind and verify. `claude -c` keeps the transcript's id (probe P0.8).
+    let transcript_id = nimitz_core::evidence::transcripts_in(&w.env, m.cwd.as_deref().unwrap())[0].1.clone();
+    let since = nimitz_core::evidence::now() - 0.001;
+    let (rc, text) = claude::run(&steps[0].cmd, steps[0].cwd.as_deref());
+    assert_eq!(rc, 0, "{text}");
+    let sid = sessions::bind_started(&w.env, &id, steps[0].cwd.as_deref(), since, None, "resume", 5.0).expect("bound and verified");
+    assert_eq!(sid, transcript_id, "-c continues the same session");
+    let after = w.member(&w.snap(), &id);
+    assert_eq!(after.session.as_ref().map(|p| p.kind.as_str()), Some("interactive"));
+    assert!(matches!(after.status, Status::Idle), "{:?}", after.reasons);
+    assert!(after.issues.is_empty(), "{:?}", after.issues);
+    assert_eq!(nimitz_core::registry::load(&w.env).identities[&id.0].current.as_deref(), Some(sid.as_str()));
 }
 
 // ------------------------------------------------------------------ row 7
@@ -634,6 +648,33 @@ fn a_commodore_may_start_its_own_ship_only() {
 }
 
 #[test]
+fn a_commodore_revives_its_ship_while_the_admiral_is_down() {
+    let w = world();
+    // the admiral's process ends: its session file goes away
+    let adm = Id::admiral("MAIN");
+    let adm_sid = w.member(&w.snap(), &adm).session.unwrap().session_id;
+    for f in std::fs::read_dir(w.env.claude_home.join("sessions")).unwrap().flatten() {
+        if std::fs::read_to_string(f.path()).unwrap_or_default().contains(&adm_sid) {
+            std::fs::remove_file(f.path()).unwrap();
+        }
+    }
+    let snap = w.snap();
+    assert_eq!(w.member(&snap, &adm).status, Status::Stopped);
+    let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
+    let ship = w.ship("FRESH");
+    let plan = sessions::plan_start(&w.env, &snap, &ship, &own, false);
+    assert!(plan.ok(), "the admiral being down is not the commodore's to fix: {:?}", plan.refusals);
+    assert!(plan.steps.iter().all(|s| s.id.as_ref() == Some(&ship)), "the commodore starts only its ship: {:?}", plan.steps);
+    assert!(plan.warnings.iter().any(|i| i.id.as_ref() == Some(&adm)), "{:?}", plan.warnings);
+    // you, top-down: the admiral first (a pane step), then the ship
+    let plan = sessions::plan_start(&w.env, &snap, &ship, &Caller::User, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert_eq!(plan.steps[0].id.as_ref(), Some(&adm));
+    assert!(sessions::is_pane_step(&plan.steps[0]));
+    assert_eq!(plan.steps.last().unwrap().id.as_ref(), Some(&ship));
+}
+
+#[test]
 fn tender_is_one_background_job_for_its_commodore() {
     let w = world();
     let snap = w.snap();
@@ -765,6 +806,27 @@ fn fake_claude_reproduces_every_probed_resume_case() {
 
     // probe 5: two live sessions may share one name
     assert!(w.rows().iter().filter(|r| r.name == stopped.name() && r.live()).count() >= 1);
+
+    // the rule for nimitz: `--bg --resume <id> [prompt]` keeps the id; a prompt is not a flag
+    let copies = w.ship("COPIES");
+    let cm = w.member(&w.snap(), &copies);
+    let csid = cm.session.as_ref().unwrap().session_id.clone();
+    let mut cmd = claude::resume_bg(&w.env, &csid);
+    cmd.push("carry on".into());
+    let (rc, out) = claude::run(&cmd, cm.cwd.as_deref());
+    assert_eq!(rc, 0);
+    assert!(out.contains("saved options"), "{out}");
+
+    // ACME: the PATH wrapper adds its own --settings, so a resume through it is a copy
+    let tender = Id::tender("MAIN", "ARGOS", "fixci");
+    let tm = w.member(&w.snap(), &tender);
+    let tsid = tm.session.as_ref().unwrap().session_id.clone();
+    assert_ne!(w.env.claude_bin, w.env.native_claude_bin, "the sandbox models the wrapper");
+    let cmd = vec![w.env.claude_bin.clone(), "--bg".into(), "--resume".into(), tsid.clone()];
+    let (rc, out) = claude::run(&cmd, tm.cwd.as_deref());
+    assert_eq!(rc, 0);
+    assert!(out.contains("started a copy"), "{out}");
+    assert!(!w.rows().iter().any(|r| r.session_id == tsid && r.live()), "the original stays stopped");
 }
 
 #[test]

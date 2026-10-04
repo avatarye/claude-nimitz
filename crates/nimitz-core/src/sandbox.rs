@@ -211,6 +211,10 @@ impl World {
         if let Some(l) = labels {
             self.event("SessionStart", &sid, Some("startup"), &l, started);
         }
+        // every session that ran has a transcript in its folder's project dir
+        let proj = home.join("projects").join(crate::evidence::project_dir_name(cwd));
+        let _ = fs::create_dir_all(&proj);
+        let _ = fs::write(proj.join(format!("{sid}.jsonl")), format!("{}\n", json!({"type": "user", "cwd": cwd, "sessionId": sid})));
         self.sessions.push((name, sid.clone(), short.clone()));
         (short, sid)
     }
@@ -753,11 +757,8 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
     }
 
     if !a.bg {
-        // An interactive session: the sandbox records it and returns; a test that
-        // wants a live interactive member builds it in the world.
         if a.cont || a.name.is_some() {
-            println!("[fake claude] interactive session in {cwd} (sandbox: not started)");
-            return 0;
+            return interactive(&base, &cwd, &a);
         }
         eprintln!("[fake claude] unsupported: {args:?}");
         return 2;
@@ -838,6 +839,35 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             0
         }
     }
+}
+
+/// An interactive session as a mux pane would run it: it stays live (a session
+/// file, no job row) until the test ends. `-c` continues the newest transcript
+/// in the folder with the same id (`source: resume`, probe P0.8); otherwise a
+/// new id (`startup`). The hooks see the labels from `--settings`.
+fn interactive(base: &Path, cwd: &str, a: &Args) -> i32 {
+    let e = env(base);
+    let newest = crate::evidence::transcripts_in(&e, cwd).into_iter().next().map(|(_, sid)| sid);
+    let (sid, source) = match newest.filter(|_| a.cont) {
+        Some(sid) => (sid, "resume"),
+        None => (next_id(base).1, "startup"),
+    };
+    let t = crate::evidence::now();
+    let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
+    let proj = claude_home(base).join("projects").join(crate::evidence::project_dir_name(cwd));
+    let _ = fs::create_dir_all(&proj);
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(proj.join(format!("{sid}.jsonl"))) {
+        let _ = writeln!(f, "{}", json!({"type": "user", "cwd": cwd, "sessionId": sid}));
+    }
+    write_json(
+        &claude_home(base).join("sessions").join(format!("i-{}.json", &sid[..8])),
+        &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "interactive", "name": name,
+                "status": "idle", "statusUpdatedAt": ms(t)}),
+    );
+    let labels = labels_from_settings(a.settings.as_ref());
+    fire(base, "SessionStart", &sid, Some(source), &labels, cwd);
+    println!("[fake claude] interactive session {sid} in {cwd} ({source})");
+    0
 }
 
 fn log_call(base: &Path, args: &[String]) {

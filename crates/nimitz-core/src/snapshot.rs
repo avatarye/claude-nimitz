@@ -48,8 +48,15 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             r
         }
     };
+    // A cached CLI row may be up to CLI_EVERY_S old: its pid must still be alive.
     let seen: HashSet<String> = rows.iter().map(|r| r.session_id.clone()).collect();
-    rows.extend(cli_rows.into_iter().filter(|r| !seen.contains(&r.session_id)));
+    rows.extend(cli_rows.into_iter().filter(|r| !seen.contains(&r.session_id)).map(|mut r| {
+        if r.pid.map(|p| !evidence::pid_alive(p)).unwrap_or(false) {
+            r.pid = None;
+            r.status = None;
+        }
+        r
+    }));
 
     let cc_version = match &cache.version {
         Some((t, v)) if now - t < VERSION_EVERY_S => v.clone(),
@@ -102,7 +109,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             id: fid.clone(),
             dir: fc.dir.to_string_lossy().into_owned(),
             machine: fc.machine.clone(),
-            admiral: build_member(env, cache, fc, &fid, &reg, &mut by_identity, &labels),
+            admiral: build_member(env, cache, fc, &fid, &reg, &mut by_identity, &labels, &events),
             squadrons: vec![],
             issues: vec![],
         };
@@ -110,7 +117,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             let sqid = Id::commodore(&fc.config.fleet, &sq.squadron);
             let mut squadron = Squadron {
                 id: sqid.clone(),
-                commodore: build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels),
+                commodore: build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events),
                 ships: vec![],
                 tenders: vec![],
                 comms: sq.comms.clone(),
@@ -118,7 +125,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             };
             for ship in &sq.ships {
                 let sid = Id::ship(&fc.config.fleet, &sq.squadron, &ship.name);
-                squadron.ships.push(build_member(env, cache, fc, &sid, &reg, &mut by_identity, &labels));
+                squadron.ships.push(build_member(env, cache, fc, &sid, &reg, &mut by_identity, &labels, &events));
             }
             // Tenders are not declared: they exist in the registry or as labelled sessions.
             let prefix = format!("{}/~", sqid.0);
@@ -127,7 +134,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             tender_ids.sort();
             tender_ids.dedup();
             for t in tender_ids {
-                squadron.tenders.push(build_member(env, cache, fc, &Id(t), &reg, &mut by_identity, &labels));
+                squadron.tenders.push(build_member(env, cache, fc, &Id(t), &reg, &mut by_identity, &labels, &events));
             }
             fleet.squadrons.push(squadron);
         }
@@ -206,6 +213,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
 }
 
 /// One member: its rows, status, reasons, crew, tasks and whole-world issues.
+#[allow(clippy::too_many_arguments)]
 fn build_member(
     env: &Env,
     cache: &mut Cache,
@@ -214,6 +222,7 @@ fn build_member(
     reg: &Registry,
     by_identity: &mut HashMap<String, Vec<SessionRow>>,
     labels: &HashMap<String, BTreeMap<String, String>>,
+    events: &[Event],
 ) -> Member {
     let rec = reg.identities.get(&id.0);
     let cwd = crate::config::member_dir(env, fc, id)
@@ -255,9 +264,13 @@ fn build_member(
             } else if let Some(n) = &job.needs {
                 reasons.push(format!("job row left a question: {n}"));
                 Status::NeedsYou
-            } else {
-                reasons.push(format!("session file: status {}", p.status.as_deref().unwrap_or("unknown")));
+            } else if p.status.as_deref() == Some("idle") {
+                reasons.push("session file: status idle".into());
                 Status::Idle
+            } else {
+                // live, but no status we know: say so rather than guess
+                reasons.push(format!("live pid {}, session status {:?} not understood", p.pid.unwrap_or(0), p.status.as_deref().unwrap_or("missing")));
+                Status::Unknown
             }
         }
         Some(p) => {
@@ -266,6 +279,9 @@ fn build_member(
                 p.short_id.as_deref().unwrap_or("?"),
                 p.state.as_deref().unwrap_or("?")
             ));
+            if let Some(end) = events.iter().rev().find(|e| e.event == "SessionEnd" && e.session_id.as_deref() == Some(p.session_id.as_str())) {
+                reasons.push(format!("SessionEnd event, reason {}", end.reason.as_deref().unwrap_or("not given")));
+            }
             Status::Stopped
         }
         None => {
