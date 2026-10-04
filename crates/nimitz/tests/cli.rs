@@ -196,7 +196,7 @@ fn plan_prints_and_changes_nothing() {
         vec!["ship", "new", "MAIN/ARGOS/NEWSHIP", "--dir", "managed", "--prompt", "hi", "--plan"],
         vec!["ship", "rm", "MAIN/ARGOS/CLEAN", "--plan"],
         vec!["fleet", "new", "ZED", "--plan"],
-        vec!["machine", "add", "MAIN", "box2", "--plan"],
+        vec!["machine", "add", "MAIN", "box2", "--hostname", "box2-host", "--plan"],
     ] {
         let r = sb.run(&args);
         assert_eq!(r.code, 0, "{args:?}:\n{}", r.out);
@@ -430,9 +430,13 @@ fn crud_round_trip() {
     assert_eq!(raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--prompt", "x", "--yes"], &[("EDITOR", ed)], None).code, 2);
     assert_eq!(sb.run(&["ship", "new", "TOP/SQ/S2", "--yes"]).code, 2, "--dir is required");
 
-    let r = sb.run(&["machine", "add", "TOP", "box2", "--dir", "TOP/SQ/S1=managed", "--yes"]);
+    let r = sb.run(&["machine", "add", "TOP", "box2", "--hostname", "box2-host", "--dir", "TOP/SQ/S1=managed", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(std::fs::read_to_string(fleet_dir.join("fleet.toml")).unwrap().contains("box2"));
+    assert!(std::fs::read_to_string(fleet_dir.join("fleet.toml")).unwrap().contains("box2-host"));
+    // this host already has a label: no second one without --hostname
+    let r = sb.run(&["machine", "add", "TOP", "box3", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("machine.host"), "{}", r.out);
     assert!(sq_toml().contains("box2"));
     let r = sb.run(&["machine", "rm", "TOP", "box2", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
