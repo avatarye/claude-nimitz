@@ -138,24 +138,32 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             claimed.insert(r.session_id.clone());
         }
     }
-    // Hand-made copies of a ship (BUG-11): unlabelled, unclaimed rows named the
-    // way Claude Code names a copy (`<name>-<word>-<word>`), or background rows
-    // in the ship's own folder that carry no fleet address. Not the ship's exact
-    // name (that is name.taken) and not an old fleet's name (that is legacy).
+    // Copies of a member (BUG-11), strictly: an unlabelled, unclaimed row is a
+    // copy only when its name is exactly how Claude Code names a copy of the
+    // member (`<expected name>-<word>-<word>`, or an old fleet name plus two
+    // words), or when it has no name and its job row records it as a fork of a
+    // session in the member's lineage. Any other row in a member's folder is
+    // someone else's agent: a stowaway (or `legacy` by name), never copy.rows,
+    // dup.live or labels.missing of the member.
+    let two_words = |rest: &str| {
+        let w: Vec<&str> = rest.split('-').collect();
+        w.len() == 2 && w.iter().all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_lowercase()))
+    };
     let unclaimed: Vec<&SessionRow> = rows.iter().filter(|r| !claimed.contains(&r.session_id)).collect();
     for r in unclaimed {
         if labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false) || legacy_names.contains_key(&r.name) {
             continue;
         }
-        let copy_of = ship_ids.iter().find(|id| {
-            let name = id.name();
-            let named_copy = r.name.strip_prefix(&format!("{name}-")).map(|rest| rest.split('-').count() >= 2).unwrap_or(false);
-            let in_folder = r.kind == "background"
-                && r.name != name
-                && crate::sessions::id_from_name(&r.name).is_none()
-                && dir_of.get(&id.0).map(|d| same_dir(d, &r.cwd)).unwrap_or(false);
-            named_copy || in_folder
-        });
+        let by_name = |id: &Id| {
+            let mut names = vec![id.name()];
+            names.extend(legacy_names.iter().filter(|(_, v)| *v == id).map(|(k, _)| k.clone()));
+            names.iter().any(|n| r.name.strip_prefix(&format!("{n}-")).map(two_words).unwrap_or(false))
+        };
+        let by_fork = |id: &Id| {
+            r.name.is_empty()
+                && r.forked_from.as_ref().map(|f| lineage_of.get(f.as_str()) == Some(&id.0.as_str())).unwrap_or(false)
+        };
+        let copy_of = ship_ids.iter().find(|id| by_name(id) || by_fork(id));
         if let Some(id) = copy_of {
             by_identity.entry(id.0.clone()).or_default().push(r.clone());
             claimed.insert(r.session_id.clone());
@@ -269,20 +277,23 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     // under NIMITZ_HOME (the fleets' own folders), in a member's folder itself
     // (a user project folder is not a scope: a ship at `~` must not claim every
     // session on the machine), or named by a fleet's legacy map.
-    let mut scope_trees: Vec<std::path::PathBuf> = fleets_cfg.iter().map(|f| f.dir.clone()).collect();
-    scope_trees.push(env.home.clone());
+    // Claude Code records real paths (`~/.claude-nimitz` may be a symlink), so
+    // every comparison is on real paths; what the user sees stays as written.
+    let mut scope_trees: Vec<std::path::PathBuf> = fleets_cfg.iter().map(|f| crate::env::canon(&f.dir)).collect();
+    scope_trees.push(crate::env::canon(&env.home));
     let mut folder_of: Vec<(String, Id)> = vec![];
     for f in &snap.fleets {
         for m in all_members(f) {
             if let Some(c) = &m.cwd {
-                folder_of.push((c.trim_end_matches('/').to_string(), m.id.clone()));
+                folder_of.push((norm_dir(c), m.id.clone()));
             }
         }
     }
     let in_scope = |r: &SessionRow| {
-        let c = std::path::Path::new(&r.cwd);
+        let c = crate::env::canon(std::path::Path::new(&r.cwd));
+        let cn = norm_dir(&r.cwd);
         scope_trees.iter().any(|d| !d.as_os_str().is_empty() && c.starts_with(d))
-            || folder_of.iter().any(|(d, _)| d == r.cwd.trim_end_matches('/'))
+            || folder_of.iter().any(|(d, _)| *d == cn)
             || legacy_names.contains_key(&r.name)
     };
     for r in rows.iter().filter(|r| !claimed.contains(&r.session_id)) {
@@ -294,16 +305,14 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         }
     }
 
-    // legacy: a stowaway that belongs to an old fleet (its name is in a legacy
-    // map), or any live unlabelled session in a member's own folder. A start of
-    // that member would make a second agent in the folder (contracts.md section 7).
+    // legacy: a stowaway whose name is in a legacy map belongs to an old fleet.
+    // Only the name decides: another agent in a member's folder is a stowaway,
+    // not the member's business (contracts.md section 7).
     let mut legacy: Vec<Issue> = vec![];
     for st in &snap.stowaways {
-        let by_name = legacy_names.get(&st.name).cloned();
-        let by_folder = folder_of.iter().find(|(d, _)| d == st.cwd.trim_end_matches('/')).map(|(_, id)| id.clone());
-        let Some(id) = by_name.clone().or(by_folder.filter(|_| st.pid.is_some())) else { continue };
+        let Some(id) = legacy_names.get(&st.name).cloned() else { continue };
         let short = st.short_id.as_deref().unwrap_or(&st.session_id);
-        let whose = if by_name.is_some() { "belongs to the old fleet" } else { "has no labels and runs in its folder" };
+        let whose = "belongs to the old fleet";
         let (severity, message, fix) = if st.pid.is_some() {
             (
                 Severity::Warn,
@@ -372,10 +381,11 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     snap
 }
 
-/// A folder as a comparable string (no trailing slash; the realpath when it exists).
-fn norm_dir(d: &str) -> String {
+/// A folder as a comparable string: the real path (of its longest existing
+/// prefix), no trailing slash.
+pub(crate) fn norm_dir(d: &str) -> String {
     let t = d.trim_end_matches('/');
-    std::fs::canonicalize(t).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| t.to_string())
+    crate::env::canon(std::path::Path::new(t)).to_string_lossy().trim_end_matches('/').to_string()
 }
 
 fn same_dir(a: &str, b: &str) -> bool {
@@ -421,14 +431,21 @@ fn build_member(
     let mut reasons = vec![];
 
     // Primary: the registry's current session when its row exists; else the
-    // newest live row; else the newest row.
+    // newest live row; else the newest row; but only among rows that are the
+    // identity's own (in its lineage, or carrying its labels). A copy found by
+    // its name or fork link is never the current session.
     let current = rec.and_then(|r| r.current.clone());
+    let own = |r: &SessionRow| {
+        rec.map(|x| x.lineage.iter().any(|l| l.session_id == r.session_id) || x.current.as_deref() == Some(r.session_id.as_str())).unwrap_or(false)
+            || labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0)
+    };
     let primary_at = current
         .as_ref()
         .and_then(|cur| rows.iter().position(|r| &r.session_id == cur))
         .or_else(|| {
             rows.iter()
                 .enumerate()
+                .filter(|(_, r)| own(r))
                 .max_by(|(_, a), (_, b)| {
                     (a.live(), a.started_at.unwrap_or(0.0))
                         .partial_cmp(&(b.live(), b.started_at.unwrap_or(0.0)))
