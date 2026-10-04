@@ -8,3 +8,8 @@ description = "claude-nimitz multiplexer adapters (Herdr first)"
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+
+# custom harness: the test binary doubles as the fake herdr (`__fake-herdr`)
+[[test]]
+name = "mux"
+harness = false
