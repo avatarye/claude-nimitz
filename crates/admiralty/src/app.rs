@@ -641,6 +641,13 @@ impl App {
             }
         }
         let Some(b) = &self.bundle else { return None };
+        if let (Act::Layout | Act::LayoutShips, Target::Fleet(f)) = (act, self.target()) {
+            match actions::prepare_layout(&self.ctx, b.mux_caps, &b.snap, &b.panes, &f, act == Act::LayoutShips) {
+                Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                Err(why) => self.notify(format!("layout: not available. {why}"), st(mono::YELLOW)),
+            }
+            return None;
+        }
         match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {
             Ok(p) => self.modal = Some(Modal::Confirm(p)),
             Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::YELLOW)),
@@ -1027,9 +1034,15 @@ impl App {
     /// Run loop, step 1 (main thread): open panes. `Ok` means apply may follow.
     pub fn begin(&mut self, p: &Pending) -> Result<(), String> {
         actions::log(&self.ctx.env, p.act.word(), &p.command);
-        if let Err(e) = actions::open_panes(&self.ctx, p) {
-            self.notify(format!("{}: {e}", p.act.word()), st(mono::PINK));
-            return Err(e);
+        match actions::open_panes(&self.ctx, p) {
+            Err(e) => {
+                self.notify(format!("{}: {e}", p.act.word()), st(mono::PINK));
+                return Err(e);
+            }
+            Ok(opened) if p.layout.is_some() => {
+                actions::log(&self.ctx.env, "layout result", &format!("{} pane(s)", opened.len()));
+            }
+            Ok(_) => {}
         }
         self.busy = Some(format!("{} ...", p.command));
         Ok(())

@@ -475,7 +475,7 @@ impl Form {
             _ => Act::Save,
         };
         let config = !matches!(act, Act::Adopt | Act::Tender);
-        Pending { act, command: self.command.clone(), plan: self.plan.clone(), config, panes: vec![], external: None }
+        Pending { act, command: self.command.clone(), plan: self.plan.clone(), config, panes: vec![], layout: None }
     }
 
     /// The word on the confirm dialog's title.

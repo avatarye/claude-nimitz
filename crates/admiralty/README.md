@@ -65,11 +65,10 @@ Every action and form shows the exact `nimitz` command and core's plan steps
 (names with core's rules, the rest by asking core for the plan); `ctrl-e` edits
 a prompt or brief in `$EDITOR`.
 
-Plans come from core (`sessions::plan_*`, `config::plan_*`). Two things are
-the CLI's own and Admiralty runs `nimitz` for them, showing its `--plan --json`
-and running it with `--yes`: `layout herdr` and removal from the config (a ship
-is retired: stopped, its job rows removed, then the config). The binary is
-found as `NIMITZ_BIN`, next to `admiralty`, or on PATH.
+Every plan comes from core: `sessions::plan_*` (removal is `plan_retire`: a
+ship is stopped, its job rows removed, then the config), `config::plan_*`, and
+`layout::plan` for `layout herdr` (tabs whose session already has a pane are
+dropped, the rest go to the multiplexer's `layout`).
 
 `tests/cli_drift.rs` runs every command Admiralty shows through the real CLI
 with `--plan --json` in a sandbox and compares the plans, so the two cannot

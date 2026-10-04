@@ -237,3 +237,40 @@ fn machine_rm_form_plans_through_core() {
     assert_eq!(f.command, "nimitz machine rm MAIN sandbox");
     assert!(f.plan.steps.iter().any(|s| s.cmd[1].ends_with("fleet.toml")));
 }
+
+#[test]
+fn retiring_a_live_ship_stops_it_removes_its_rows_and_the_config() {
+    let w = world();
+    let mut app = app_on(&w, TestMux::default());
+    goto(&mut app, "M:MAIN/ARGOS/CLEAN");
+    keys(&mut app, "D");
+    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!("{}", toast(&app)) };
+    assert_eq!(p.command, "nimitz ship rm MAIN/ARGOS/CLEAN");
+    assert!(p.plan.ok(), "{:?}", p.plan.refusals);
+    assert!(p.plan.steps.iter().any(|s| s.cmd.contains(&"stop".to_string())), "stop first: {:?}", p.plan.steps);
+    assert!(p.plan.steps.iter().any(|s| s.cmd[0] == "write"), "then the config: {:?}", p.plan.steps);
+    app.begin(&p).unwrap();
+    let o = actions::apply(&app.ctx.env, &p);
+    app.finish(&p, &o);
+    assert!(o.issues.is_empty(), "{:?}", o.issues);
+    reload(&w, &mut app);
+    assert!(!app.rows.iter().any(|r| r.node.id == "M:MAIN/ARGOS/CLEAN"), "gone from the list");
+}
+
+#[test]
+fn layout_goes_to_the_multiplexer_from_cores_plan() {
+    let w = world();
+    let mux = TestMux::default();
+    let mut app = app_on(&w, mux.clone());
+    app.bundle.as_mut().unwrap().mux_caps = nimitz_mux::Caps { open: true, focus: true, type_text: true, layout: true };
+    goto(&mut app, "F:MAIN");
+    keys(&mut app, "x");
+    keys(&mut app, "S");
+    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!("{}", toast(&app)) };
+    app.begin(&p).unwrap();
+    let o = actions::apply(&app.ctx.env, &p);
+    app.finish(&p, &o);
+    let calls = mux.calls.lock().unwrap().clone();
+    assert!(calls.contains(&"layout MAIN.ARGOS/CLEAN".to_string()), "{calls:?}");
+    assert!(toast(&app).starts_with("layout:"), "{}", toast(&app));
+}
