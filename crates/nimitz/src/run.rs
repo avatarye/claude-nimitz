@@ -154,7 +154,9 @@ fn open_step(ctx: &Ctx, mux: &dyn Mux, step: &Step, all: &mut Outcome) -> bool {
     match nimitz_core::sessions::bind_started(&ctx.env, &id, Some(&cwd), since, None, "launch", 2.0) {
         Ok(sid) => {
             clear_pending(ctx, &id);
-            all.ran.push((step.clone(), 0, format!("bound {sid} to {id}")));
+            if let Some(last) = all.ran.last_mut() {
+                last.2 = format!("{}; bound {sid}", last.2); // one line per step, not two
+            }
             true
         }
         Err(issues) => {

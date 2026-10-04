@@ -7,7 +7,29 @@ a Claude subscription login and with Bedrock.
 - **Admiralty**: the TUI where you watch and control every fleet.
 - A Claude Code plugin: the fleet skills and the hooks that report state.
 
-Status: design and probes. Nothing to install yet.
+Status: in testing (Claude Code 2.1.288 - 2.1.289).
+
+## Install for testing
+
+Needs Rust (cargo) and Claude Code. Herdr is needed to run admirals and
+commodores; status, config and ships work without it.
+
+```sh
+git clone https://github.com/avatarye/claude-nimitz && cd claude-nimitz
+cargo build --release
+cargo install --path crates/nimitz       # nimitz: the CLI and the hook binary
+cargo install --path crates/admiralty    # admiralty: the TUI
+claude plugin marketplace add "$PWD" && claude plugin install nimitz@claude-nimitz
+nimitz init --label <this-machine>       # data root and machine label
+nimitz doctor                            # hooks, trust, Claude Code versions; --fix sets crossSessionInbound
+```
+
+`nimitz init` asks you to run `claude` once in the data root
+(`~/.claude-nimitz`) to accept the trust prompt. Run `nimitz doctor` again until
+it says `[OK] doctor: ready`. To try nimitz without touching your setup, use a
+sandbox: `nimitz sandbox create /tmp/nz --herdr && eval "$(nimitz sandbox env /tmp/nz)"`.
+
+## Documents
 
 | Where | What |
 | --- | --- |

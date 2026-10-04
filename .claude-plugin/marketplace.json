@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "nimitz",
-      "source": "./",
+      "source": "./plugin",
       "description": "Fleets of Claude Code sessions with a chain of command."
     }
   ]

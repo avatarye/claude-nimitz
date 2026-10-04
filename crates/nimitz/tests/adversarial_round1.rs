@@ -665,3 +665,13 @@ fn bug55_relaunch_is_not_skipped_because_an_impostor_carries_the_labels() {
     sb.run(&["relaunch", "MAIN/ARGOS/CLEAN", "--yes"]);
     assert_eq!(sb.live_in(&sb.dir("dirs/main/clean")), 1, "CLEAN is down after relaunch");
 }
+
+#[test]
+fn final_e_check_of_a_fleet_lists_stowaways_in_its_folders() {
+    let sb = Sb::new(false);
+    sb.claude(&sb.dir("dirs/main/fresh"), &["--bg", "an unlabelled session in a ship folder"]);
+    for id in ["MAIN", "MAIN/ARGOS"] {
+        let c = sb.run(&["check", id]);
+        assert!(c.out.contains("stowaway"), "`nimitz check {id}` hides a stowaway in FRESH's folder:\n{}", c.out);
+    }
+}
