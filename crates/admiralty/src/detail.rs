@@ -394,7 +394,7 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
             Span::styled(format!("  {}", crate::actions::MONITOR_ONLY), st(mono::ORANGE)),
         ]));
     }
-    v.push(Line::styled("  x   all actions   c create   e edit ship   D remove from config", st(mono::COMMENT)));
+    v.push(Line::styled("  x   all actions   c create   e edit   D remove from config", st(mono::COMMENT)));
     v
 }
 

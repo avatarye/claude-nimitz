@@ -41,6 +41,8 @@ pub enum MenuAction {
     NewSquadron(String),
     NewShip(String, String),
     EditShip(Id),
+    EditFleet(String),
+    EditSquadron(Id),
 }
 
 #[derive(Clone, Debug)]
@@ -133,7 +135,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("A", "open: attach to a background session in a new pane"),
     ("x", "actions: stop, relaunch, sweep, rm, adopt, remove"),
     ("m", "message (ships: relayed by their commodore)"),
-    ("c / e / D", "create fleet, squadron, ship / edit ship / remove from config"),
+    ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
     ("f / F", "filter fleets by state / flagged rows only"),
@@ -470,17 +472,29 @@ impl App {
             Some((f, sq)) => v.push(MenuItem { key: 'p', label: format!("new ship in {f}/{sq}"), enabled: Ok(()), action: MenuAction::NewShip(f, sq) }),
             None => v.push(MenuItem { key: 'p', label: "new ship".into(), enabled: Err("select a squadron first".into()), action: MenuAction::NewFleet }),
         }
-        let edit = match self.target() {
-            Target::Member(id) if id.role() == Role::Ship => Ok(id),
-            _ => Err("select a ship to edit it".to_string()),
+        let (label, edit) = match self.edit_action() {
+            Ok((l, a)) => (l, Ok(a)),
+            Err(e) => ("edit".to_string(), Err(e)),
         };
         v.push(MenuItem {
             key: 'e',
-            label: "edit this ship".into(),
+            label,
             enabled: edit.as_ref().map(|_| ()).map_err(|e| e.clone()),
-            action: edit.map(MenuAction::EditShip).unwrap_or(MenuAction::NewFleet),
+            action: edit.unwrap_or(MenuAction::NewFleet),
         });
         v
+    }
+
+    /// What `e` edits on the selected row.
+    pub fn edit_action(&self) -> Result<(String, MenuAction), String> {
+        match self.target() {
+            Target::Member(id) if id.role() == Role::Ship => Ok((format!("edit ship {id}"), MenuAction::EditShip(id))),
+            Target::Squadron(id) => Ok((format!("edit squadron {id}"), MenuAction::EditSquadron(id))),
+            Target::Member(id) if id.role() == Role::Commodore => Ok((format!("edit squadron {id}"), MenuAction::EditSquadron(id))),
+            Target::Fleet(id) => Ok((format!("edit fleet {id}"), MenuAction::EditFleet(id.0))),
+            Target::Member(id) if id.role() == Role::Admiral => Ok((format!("edit fleet {id}"), MenuAction::EditFleet(id.0))),
+            _ => Err("select a fleet, squadron or ship to edit it".into()),
+        }
     }
 
     fn machine_of(&self, fleet: &str) -> String {
@@ -497,6 +511,13 @@ impl App {
             form.validate(&self.ctx.env, &b.snap);
         }
         self.modal = Some(Modal::Form(Box::new(form)));
+    }
+
+    fn open_or_say(&mut self, f: Result<Form, String>) {
+        match f {
+            Ok(f) => self.open_form(f),
+            Err(e) => self.notify(format!("edit: {e}"), st(mono::YELLOW)),
+        }
     }
 
     fn run_menu(&mut self, a: MenuAction) -> Option<Effect> {
@@ -518,10 +539,18 @@ impl App {
             }
             MenuAction::EditShip(id) => {
                 let m = self.machine_of(id.fleet());
-                match Form::edit_ship(&self.ctx.env, &id, &m) {
-                    Ok(f) => self.open_form(f),
-                    Err(e) => self.notify(format!("edit: {e}"), st(mono::YELLOW)),
-                }
+                let f = Form::edit_ship(&self.ctx.env, &id, &m);
+                self.open_or_say(f);
+                None
+            }
+            MenuAction::EditFleet(f) => {
+                let f = Form::edit_fleet(&self.ctx.env, &f);
+                self.open_or_say(f);
+                None
+            }
+            MenuAction::EditSquadron(id) => {
+                let f = Form::edit_squadron(&self.ctx.env, &id);
+                self.open_or_say(f);
                 None
             }
         }
@@ -707,9 +736,9 @@ impl App {
                 self.modal = Some(Modal::Menu { title: format!("actions: {title}"), items: self.action_menu(), sel: 0 });
             }
             (KeyCode::Char('c'), _) => self.modal = Some(Modal::Menu { title: "create".into(), items: self.create_menu(), sel: 0 }),
-            (KeyCode::Char('e'), _) => match self.target() {
-                Target::Member(id) if id.role() == Role::Ship => return self.run_menu(MenuAction::EditShip(id)),
-                _ => self.notify("edit: select a ship (fleets and squadrons: `nimitz fleet set` / `squadron set`)", st(mono::YELLOW)),
+            (KeyCode::Char('e'), _) => match self.edit_action() {
+                Ok((_, a)) => return self.run_menu(a),
+                Err(why) => self.notify(format!("edit: {why}"), st(mono::YELLOW)),
             },
             (KeyCode::Char('m'), _) => match self.message_plan() {
                 Ok(plan) => self.modal = Some(Modal::Message { plan, text: String::new() }),

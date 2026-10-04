@@ -502,7 +502,7 @@ fn new_ship_form_needs_a_prompt_and_reports_what_core_refuses() {
     f.validate(&env, &snap);
     // the demo env has no fleet MAIN on disk: core refuses, and the form says so
     assert!(!f.problems.is_empty());
-    assert!(f.command.starts_with("nimitz ship new MAIN/ARGOS/NEWSHIP --dir west-mac=/work/importer --prompt 'You build the importer.' --mode west-mac=auto"), "{}", f.command);
+    assert_eq!(f.command, "nimitz ship new MAIN/ARGOS/NEWSHIP --dir /work/importer --machine west-mac --prompt 'You build the importer.' --mode auto");
 }
 
 #[test]
@@ -512,7 +512,7 @@ fn forms_open_where_the_cursor_is() {
     let menu = t.app.create_menu();
     assert!(menu.iter().any(|i| i.label == "new squadron in MAIN" && i.enabled.is_ok()));
     assert!(menu.iter().any(|i| i.label == "new ship in MAIN/ARGOS" && i.enabled.is_ok()));
-    assert!(menu.iter().any(|i| i.label == "edit this ship" && i.enabled.is_ok()));
+    assert!(menu.iter().any(|i| i.label == "edit ship MAIN/ARGOS/BOLT" && i.enabled.is_ok()));
     goto(&mut t.app, "STOW");
     let menu = t.app.create_menu();
     assert!(menu.iter().any(|i| i.key == 'p' && i.enabled.is_err()));
