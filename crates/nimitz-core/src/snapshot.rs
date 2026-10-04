@@ -251,7 +251,8 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         }
         snap.fleets.push(fleet);
     }
-    snap.machine = snap.fleets.iter().find_map(|f| f.machine.clone());
+    // this machine's label: from a fleet that runs here, else the one `init` saved
+    snap.machine = snap.fleets.iter().find_map(|f| f.machine.clone()).or_else(|| crate::registry::machine_label(env));
 
     // Labelled rows of identities in no config (a removed ship, a foreign fleet).
     let configured: HashSet<String> = {

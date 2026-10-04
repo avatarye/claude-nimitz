@@ -294,3 +294,17 @@ fn check_reports_each_session_issue_once() {
     let n = issues.iter().filter(|i| i.code == "name.drift" && i.id.as_ref() == Some(&drift)).count();
     assert_eq!(n, 1, "{issues:?}");
 }
+
+#[test]
+fn the_machine_label_survives_removing_every_fleet() {
+    let w = world();
+    nimitz_core::registry::update(&w.env, |r| r.machine = "west-mac".into()).unwrap();
+    for e in std::fs::read_dir(&w.env.home).unwrap().flatten() {
+        if e.path().join("fleet.toml").is_file() {
+            std::fs::remove_dir_all(e.path()).unwrap();
+        }
+    }
+    let snap = w.snap();
+    assert!(snap.fleets.is_empty());
+    assert_eq!(snap.machine.as_deref(), Some("west-mac"));
+}
