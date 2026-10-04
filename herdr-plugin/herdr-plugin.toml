@@ -2,7 +2,7 @@ id = "admiralty-watch"
 name = "Admiralty Watch"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
-description = "Call up the admiralty-watch fleet tree over the current tab; the same key puts it away."
+description = "Call up the admiralty fleet tree (claude-nimitz) over the current tab; the same key puts it away."
 platforms = ["macos", "linux"]
 
 # One action. Bind it to a key in config.toml (see README). bin/toggle.sh closes the
@@ -11,11 +11,11 @@ platforms = ["macos", "linux"]
 [[actions]]
 id = "toggle"
 title = "Admiralty watch: toggle"
-description = "Open the admiralty-watch overlay in this tab, or close it if it is already open here."
+description = "Open the admiralty overlay in this tab, or close it if it is already open here."
 contexts = ["global"]
 command = ["./bin/toggle.sh"]
 
-# The watch itself. It closes when admiralty-watch exits: q, or right after enter
+# The watch itself. It closes when the admiralty TUI exits: q, or right after enter
 # jumps to an agent's pane (bin/watch.sh turns on --exit-after-jump).
 # Overlay, not popup: a popup is session-modal, so Herdr's keys (this toggle
 # included) never fire while it is up, and `plugin pane open` returns no pane id
