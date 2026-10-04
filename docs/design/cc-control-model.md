@@ -181,7 +181,7 @@ You are above the chain. From Admiralty you can:
 
 | Event | What `nimitz` does |
 | --- | --- |
-| A ship stopped and is needed | Resume it with the **native** binary and **no flags**, from its folder: `<native claude> --bg --resume <id>`. Claude Code continues the same session id with its saved name, permission mode and labels (probe 2c1, both builds; SessionStart `source: resume`). Any flag, or the ACME wrapper on PATH, makes a copy instead. Only a deliberate relaunch (new labels or settings) adds a new id to the lineage; then `nimitz` removes the old job row and checks that one row remains. |
+| A ship stopped and is needed | Resume it with the **native** binary and **no flags**, from its folder: `<native claude> --bg --resume <id>`. Claude Code continues the same session id with its saved name, permission mode and labels (probe 2c1, both builds; SessionStart `source: resume`). Any flag, or the ACME wrapper on PATH, makes a copy instead **while the job row exists**, and that copy has no conversation history. A deliberate relaunch (new labels, name or settings) therefore stops the session, removes its job row with the native `claude rm`, and then runs `--bg --resume <id>` with every flag: Claude Code keeps the same id and its history and takes the new labels and name (found by the adversarial tester on real Claude Code, 2026-10-04). If the `rm` fails, nothing is resumed. |
 | A name differs from the identity | Mark it. A hook title does not change the name (probe 4). The fix is a relaunch with `--name`. |
 | Two live sessions have one identity | Mark it red. Do not stop either one without you. |
 | An admiral or commodore is now a background session | Mark it. You attach to it and keep it in a terminal. |

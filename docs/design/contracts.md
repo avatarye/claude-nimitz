@@ -207,9 +207,9 @@ target. For each member, one action from this table:
 | live, name drift or labels missing | refuse; Issue with fix `nimitz relaunch <id>` (needs a stop) |
 | two live sessions | refuse; list both; fix `nimitz stop <short>` for the one you drop |
 | stopped (job row, no pid), labels right | resume: native binary, **no flags**, from its folder |
-| stopped, labels missing (resumed with flags earlier) | relaunch: native resume would keep no labels; cold launch with `--resume <id>` and all flags (copy, `source: fork`), then record the new id and `rm` the old row |
+| stopped, labels missing (resumed with flags earlier), or a drifted name | relabel (BUG-53): `rm` its job row (native; if that fails the plan stops), then cold launch `--resume <id>` with all flags: with no row Claude Code keeps the **same id and its history** and takes the new name and labels. (With the row present the same command starts an empty copy with a new id; `apply` refuses such a step.) Same path for `relaunch`, `folder.moved`, adopt + start |
 | no row, transcript exists (interactive member) | `claude -c` in its folder with the name and labels |
-| no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): cold launch `--resume <it>` with all flags (copy, `source: fork`), lineage `via: migrate`; the old rows stay as Info `legacy`, removed only by `sweep`. An interactive member whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
+| no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): `rm` its row, then cold launch `--resume <it>` with all flags, so the old session id becomes the ship's with its history, lineage `via: migrate`; the other old rows stay as Info `legacy`, removed only by `sweep`. An interactive member whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
 | no row, no transcript | cold launch (ship: prompt from config; tender: refuse) |
 | row `failed` / unknown id | mark lineage broken; cold launch only with `--force` |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
