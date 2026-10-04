@@ -112,25 +112,27 @@ fn open_step(ctx: &Ctx, mux: &dyn Mux, step: &Step, all: &mut Outcome) -> bool {
             return false;
         }
     }
-    match wait_binding(ctx, &id, since) {
-        Some(sid) => {
-            let r = nimitz_core::registry::update(&ctx.env, |r| {
-                nimitz_core::registry::bind(r, &id, id.role(), &id.name(), &cwd, &sid, "launch", nimitz_core::evidence::now())
-            });
-            if let Err(e) = r {
-                all.issues.push(refusal("lineage.broken", format!("registry write failed: {e}"), None, Some(id)));
-                return false;
-            }
-        }
-        None => all.issues.push(Issue {
+    // The pane runs on its own; once its SessionStart arrives, core binds and verifies it.
+    if wait_binding(ctx, &id, since).is_none() {
+        all.issues.push(Issue {
             code: "lineage.pending".into(),
             severity: Severity::Warn,
             message: "opened; its SessionStart has not arrived yet, so the registry binds it later (status finds it by its labels)".into(),
             fix: Some("nimitz status".into()),
             id: Some(id),
-        }),
+        });
+        return true;
     }
-    true
+    match nimitz_core::sessions::bind_started(&ctx.env, &id, Some(&cwd), since, None, "launch", 2.0) {
+        Ok(sid) => {
+            all.ran.push((step.clone(), 0, format!("bound {sid} to {id}")));
+            true
+        }
+        Err(issues) => {
+            all.issues.extend(issues);
+            false
+        }
+    }
 }
 
 /// Seconds to wait for an interactive member's SessionStart (`NIMITZ_BIND_TIMEOUT`, default 10).

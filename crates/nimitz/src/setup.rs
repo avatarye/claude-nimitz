@@ -38,8 +38,10 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
     if !nimitz_core::config::valid_label(&label) {
         plan.refusals.push(refusal("config.invalid", format!("machine label {label:?} is not [a-z0-9._-]+"), Some("nimitz init --label <label>".into()), None));
     }
+    // registry::load fills in a label when there is no file yet; only a saved one counts.
+    let saved = ctx.env.registry_path().is_file();
     let reg = nimitz_core::registry::load(&ctx.env);
-    if !reg.machine.is_empty() && reg.machine != label {
+    if saved && !reg.machine.is_empty() && reg.machine != label {
         plan.refusals.push(refusal(
             "config.invalid",
             format!("this machine is already labelled {:?}", reg.machine),
@@ -54,7 +56,7 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
     if !ctx.env.state.is_dir() {
         plan.steps.push(mk(&ctx.env.state, "per-machine registry and events (never synced)"));
     }
-    if reg.machine != label {
+    if !saved || reg.machine != label {
         plan.steps.push(Step {
             id: None,
             cmd: vec!["label".into(), label.clone()],
@@ -139,7 +141,7 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         r.err(&format!("no data root at {}", env.home.display()), Some("nimitz init"));
     }
     let reg = nimitz_core::registry::load(env);
-    if reg.machine.is_empty() {
+    if reg.machine.is_empty() || !env.registry_path().is_file() {
         r.err("this machine has no label", Some("nimitz init --label <label>"));
     } else {
         r.ok(&format!("machine label {}", reg.machine));
