@@ -120,3 +120,189 @@ fn squadron_comms(env: &Env, from: &Id) -> Comms {
     let Ok(f) = crate::config::load_fleet(env, from.fleet()) else { return strict };
     f.squadrons.into_iter().find(|(_, s)| Some(s.squadron.as_str()) == from.squadron()).map(|(_, s)| s.comms).unwrap_or(strict)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::tests::{make_fleet, test_env};
+
+    fn vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    fn labels_of(env: &Env, id: &Id) -> HashMap<String, String> {
+        crate::claude::labels_for(env, id).into_iter().collect()
+    }
+
+    fn send(env: &Env, from: &Id, to: &str) -> String {
+        let input = serde_json::json!({
+            "session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "SendMessage",
+            "tool_input": {"to": to, "message": "status?"}, "scratchpad_dir": "/x",
+        });
+        handle(env, "PreToolUse", &input.to_string(), &labels_of(env, from))
+    }
+
+    fn denied(out: &str) -> bool {
+        serde_json::from_str::<Value>(out)
+            .ok()
+            .and_then(|v| v["hookSpecificOutput"]["permissionDecision"].as_str().map(str::to_string))
+            .as_deref()
+            == Some("deny")
+    }
+
+    /// MAIN with squadron ARGOS (comms open) and ship ARGOS; plus BOREAL, comms
+    /// commodore-only, with ships ONE and TWO.
+    fn world() -> (tempfile::TempDir, Env) {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let plan = crate::config::plan_squadron_new(&env, "MAIN", "BOREAL", "Quiet squadron.", Comms::Mode("commodore-only".into()));
+        crate::config::tests::apply_ok(&env, &plan);
+        for name in ["ONE", "TWO"] {
+            let ship = ShipDef {
+                name: name.into(),
+                prompt: Some(format!("You are {name}.")),
+                dirs: [("test-mac".to_string(), "managed".to_string())].into(),
+                ..Default::default()
+            };
+            crate::config::tests::apply_ok(&env, &crate::config::plan_ship_new(&env, "MAIN", "BOREAL", ship));
+        }
+        (td, env)
+    }
+
+    #[test]
+    fn the_signal_table_holds() {
+        let (_td, env) = world();
+        let adm = Id::admiral("MAIN");
+        let argos = Id::commodore("MAIN", "ARGOS");
+        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let tender = Id::tender("MAIN", "ARGOS", "fix");
+        let boreal = Id::commodore("MAIN", "BOREAL");
+        let one = Id::ship("MAIN", "BOREAL", "ONE");
+        let two = Id::ship("MAIN", "BOREAL", "TWO");
+
+        // an admiral signals its own commodores and nothing else
+        assert!(!denied(&send(&env, &adm, &argos.name())));
+        assert!(denied(&send(&env, &adm, &ship.name())));
+        assert!(denied(&send(&env, &adm, &Id::commodore("OTHER", "SQ").name())));
+        // a commodore: its admiral, its ships, its tenders
+        assert!(!denied(&send(&env, &argos, &adm.name())));
+        assert!(!denied(&send(&env, &argos, &ship.name())));
+        assert!(!denied(&send(&env, &argos, &tender.name())));
+        assert!(denied(&send(&env, &argos, &one.name())), "not a ship of another squadron");
+        // a tender: only its commodore
+        assert!(!denied(&send(&env, &tender, &argos.name())));
+        assert!(denied(&send(&env, &tender, &adm.name())));
+        assert!(denied(&send(&env, &tender, &ship.name())));
+        // a ship: its commodore always
+        assert!(!denied(&send(&env, &ship, &argos.name())));
+        assert!(denied(&send(&env, &ship, &adm.name())), "a ship does not signal the admiral");
+    }
+
+    #[test]
+    fn the_comms_rule_decides_ship_to_ship() {
+        let (_td, env) = world();
+        let one = Id::ship("MAIN", "BOREAL", "ONE");
+        let two = Id::ship("MAIN", "BOREAL", "TWO");
+        let argos_ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+
+        // BOREAL is commodore-only
+        let out = send(&env, &one, &two.name());
+        assert!(denied(&out));
+        assert!(out.contains("commodore-only"), "{out}");
+        // ARGOS is open, but only inside the squadron
+        assert!(denied(&send(&env, &argos_ship, &two.name())), "open means open within the squadron");
+
+        // an allow list may name a ship of another squadron
+        let sq_path = crate::config::load_fleet(&env, "MAIN")
+            .unwrap()
+            .squadrons
+            .into_iter()
+            .find(|(_, s)| s.squadron == "BOREAL")
+            .map(|(d, _)| d.join("squadron.toml"))
+            .unwrap();
+        let raw = std::fs::read_to_string(&sq_path).unwrap();
+        std::fs::write(&sq_path, raw.replace("comms = \"commodore-only\"", "comms = { allow = [\"MAIN/ARGOS/ARGOS\"] }")).unwrap();
+        assert!(!denied(&send(&env, &one, &argos_ship.name())), "the allow list lets it through");
+        assert!(denied(&send(&env, &one, &two.name())), "and nothing else");
+    }
+
+    #[test]
+    fn a_target_that_is_not_a_fleet_address_is_not_ours_to_rule() {
+        let (_td, env) = world();
+        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+        // teammates and ad-hoc sessions are the session's own business
+        assert!(send(&env, &ship, "reviewer").is_empty());
+        assert!(send(&env, &ship, "[ADMIRALTY]").is_empty());
+        // and an unlabelled sender is never judged
+        let input = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN]-ADMIRAL"}});
+        assert!(handle(&env, "PreToolUse", &input.to_string(), &vars(&[])).is_empty());
+    }
+
+    #[test]
+    fn a_broken_config_falls_back_to_the_strictest_rule() {
+        let (_td, env) = world();
+        let one = Id::ship("MAIN", "BOREAL", "ONE");
+        let two = Id::ship("MAIN", "BOREAL", "TWO");
+        std::fs::write(env.fleet_dir("MAIN").join("fleet.toml"), "fleet = ").unwrap();
+        assert!(denied(&send(&env, &one, &two.name())));
+    }
+
+    #[test]
+    fn every_event_is_appended_as_one_line_with_its_labels() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let start = serde_json::json!({"session_id": "s9", "source": "resume", "hook_event_name": "SessionStart"});
+        assert!(handle(&env, "SessionStart", &start.to_string(), &labels_of(&env, &id)).is_empty());
+        // a tool call that is not a signal is not logged (they fire for every tool)
+        let read = serde_json::json!({"session_id": "s9", "tool_name": "Read"});
+        handle(&env, "PreToolUse", &read.to_string(), &labels_of(&env, &id));
+        // a denied signal is logged with its reason
+        let _ = send(&env, &id, &Id::admiral("MAIN").name());
+
+        let events = crate::evidence::events(&env);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].event, "SessionStart");
+        assert_eq!(events[0].session_id.as_deref(), Some("s9"));
+        assert_eq!(events[0].source.as_deref(), Some("resume"));
+        assert_eq!(events[0].labels.get("NIMITZ_ID").map(String::as_str), Some("MAIN/ARGOS/ARGOS"));
+        assert!(events[0].pid.unwrap_or(0) > 0, "the pid is the Claude Code process (the hook's parent)");
+        assert_eq!(events[1].tool_name.as_deref(), Some("SendMessage"));
+        assert!(events[1].reason.as_deref().unwrap_or("").starts_with("denied:"), "{:?}", events[1].reason);
+    }
+
+    #[test]
+    fn a_hook_never_fails_the_session() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        // malformed stdin, unknown event, missing fields: no panic, no output
+        for stdin in ["", "not json", "[]", r#"{"tool_name": 7, "tool_input": {"to": 3}}"#] {
+            assert!(handle(&env, "PreToolUse", stdin, &labels_of(&env, &id)).is_empty(), "{stdin}");
+        }
+        assert!(handle(&env, "SomeNewEventInANewVersion", "{}", &labels_of(&env, &id)).is_empty());
+        // an unwritable state dir loses the line but still returns
+        let bad = Env { state: std::path::PathBuf::from("/dev/null/nope"), ..env.clone() };
+        assert!(handle(&bad, "SessionStart", "{}", &labels_of(&env, &id)).is_empty());
+    }
+
+    #[test]
+    fn concurrent_hooks_do_not_interleave_their_lines() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let n = 40;
+        std::thread::scope(|s| {
+            for i in 0..n {
+                let (env, id) = (env.clone(), id.clone());
+                s.spawn(move || {
+                    let input = serde_json::json!({"session_id": format!("s{i}"), "hook_event_name": "Stop"});
+                    handle(&env, "Stop", &input.to_string(), &labels_of(&env, &id));
+                });
+            }
+        });
+        let events = crate::evidence::events(&env);
+        assert_eq!(events.len(), n, "every line is whole and readable");
+        let mut ids: Vec<String> = events.iter().filter_map(|e| e.session_id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), n);
+    }
+}

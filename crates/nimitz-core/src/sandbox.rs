@@ -238,6 +238,7 @@ impl World {
         sid
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn subagent(&self, sid: &str, cwd: &str, agent: &str, label: &str, ago: f64, teammate: bool, team: &str) {
         let sd = claude_home(&self.base).join("projects").join(crate::evidence::project_dir_name(cwd)).join(sid).join("subagents");
         let mut meta = json!({"agentType": "general-purpose", "description": label});

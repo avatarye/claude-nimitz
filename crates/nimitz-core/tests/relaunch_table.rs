@@ -722,7 +722,7 @@ fn fake_claude_reproduces_every_probed_resume_case() {
     assert!(out.contains("started a copy"), "{out}");
     let copy = w.rows().into_iter().find(|r| r.name == stopped.name() && r.session_id != bsid).expect("the copy");
     let labels = evidence::labels_by_session(&evidence::events(&w.env));
-    assert!(labels.get(&copy.session_id).is_none(), "a copy with no --settings fires no hooks, so it has no labels");
+    assert!(!labels.contains_key(&copy.session_id), "a copy with no --settings fires no hooks, so it has no labels");
 
     // probe 5: two live sessions may share one name
     assert!(w.rows().iter().filter(|r| r.name == stopped.name() && r.live()).count() >= 1);

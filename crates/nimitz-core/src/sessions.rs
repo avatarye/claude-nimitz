@@ -216,7 +216,7 @@ fn refuse(plan: &mut Plan, code: &str, msg: String, fix: Option<String>, id: Opt
 // ------------------------------------------------------------------ members in a snapshot
 
 /// Every member of a snapshot, with its fleet.
-fn members<'a>(snap: &'a Snapshot) -> Vec<(&'a Fleet, &'a Member)> {
+fn members(snap: &Snapshot) -> Vec<(&Fleet, &Member)> {
     let mut out = vec![];
     for f in &snap.fleets {
         out.push((f, &f.admiral));
@@ -390,9 +390,9 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
     const TABLE_HANDLED: [&str; 7] =
         ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "role.background"];
     for i in crate::check::check(env, snap, id) {
-        let forceable = i.code == "cc.version";
+        let forced_away = force && i.code == "cc.version";
         match i.severity {
-            Severity::Error if !TABLE_HANDLED.contains(&i.code.as_str()) && !(force && forceable) => plan.refusals.push(i),
+            Severity::Error if !TABLE_HANDLED.contains(&i.code.as_str()) && !forced_away => plan.refusals.push(i),
             _ => plan.warnings.push(i),
         }
     }
