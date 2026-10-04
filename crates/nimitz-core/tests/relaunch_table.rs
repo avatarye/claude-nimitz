@@ -39,6 +39,9 @@ impl World {
     fn start(&self, snap: &Snapshot, id: &Id, force: bool) -> Plan {
         sessions::plan_start(&self.env, snap, id, &Caller::User, force)
     }
+    fn start_as(&self, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
+        sessions::plan_start(&self.env, snap, id, caller, false)
+    }
     /// Steps of a plan that belong to one identity.
     fn steps_of<'a>(&self, plan: &'a Plan, id: &Id) -> Vec<&'a Step> {
         plan.steps.iter().filter(|s| s.id.as_ref() == Some(id)).collect()
@@ -218,25 +221,45 @@ fn row4_a_live_copy_of_a_stopped_member_refuses_instead_of_making_two() {
 // ------------------------------------------------------------------ row 5
 
 #[test]
-fn row5_stopped_without_labels_relaunches_with_all_flags_and_drops_the_old_row() {
+fn row5_stopped_without_labels_removes_the_row_then_resumes_with_every_flag_keeping_id_and_history() {
     let w = world();
     let snap = w.snap();
     let id = w.ship("BARE");
     let old = w.member(&snap, &id).session.unwrap();
+    let history = std::fs::read_to_string(evidence::transcript(&w.env, &mut evidence::FileCache::default(), Some(&old.cwd), &old.session_id).unwrap()).unwrap();
     let plan = w.start(&snap, &id, false);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let steps = w.steps_of(&plan, &id);
-    assert_eq!(steps.len(), 2, "relaunch, then rm the old row: {:?}", steps);
-    assert!(steps[0].cmd.contains(&"--settings".to_string()) && steps[0].cmd.contains(&"--name".to_string()));
-    assert_eq!(steps[1].cmd, claude::rm(&w.env, old.short_id.as_deref().unwrap()));
+    assert_eq!(steps.len(), 2, "rm the row, then resume with every flag (BUG-53): {:?}", steps);
+    assert_eq!(steps[0].cmd, claude::rm(&w.env, old.short_id.as_deref().unwrap()));
+    assert!(steps[1].cmd.contains(&"--settings".to_string()) && steps[1].cmd.contains(&"--name".to_string()));
 
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
     let after = w.member(&w.snap(), &id).session.unwrap();
-    assert_ne!(after.session_id, old.session_id, "a relaunch is a copy with a new id");
-    assert_eq!(after.labels.get("NIMITZ_ID"), Some(&id.0), "the new session carries the labels");
-    assert!(!w.rows().iter().any(|r| r.session_id == old.session_id), "the old row is gone");
+    assert_eq!(after.session_id, old.session_id, "with the row gone, Claude Code keeps the id");
+    assert_eq!(after.labels.get("NIMITZ_ID"), Some(&id.0), "and takes the new labels");
+    let now = std::fs::read_to_string(evidence::transcript(&w.env, &mut evidence::FileCache::default(), Some(&after.cwd), &after.session_id).unwrap()).unwrap();
+    assert!(now.starts_with(&history), "the conversation is kept");
+    assert_eq!(w.rows().iter().filter(|r| r.session_id == old.session_id).count(), 1, "one row");
     assert_eq!(nimitz_core::registry::load(&w.env).identities[&id.0].lineage.last().unwrap().via, "relaunch");
+}
+
+#[test]
+fn bug53_a_resume_with_flags_while_the_row_exists_is_an_empty_copy_so_apply_refuses_it() {
+    let w = world();
+    let id = w.ship("BARE");
+    let old = w.member(&w.snap(), &id).session.unwrap();
+    // the fake: flags + an existing row = a new id with an empty history
+    let (rc, out) = claude::run(&claude::relaunch_bg(&w.env, &id, "", &old.session_id), Some(&old.cwd));
+    assert_eq!(rc, 0, "{out}");
+    let copy = w.rows().into_iter().find(|r| r.session_id != old.session_id && r.name == id.name()).expect("a copy");
+    let log = evidence::transcript(&w.env, &mut evidence::FileCache::default(), Some(&copy.cwd), &copy.session_id).unwrap();
+    assert_eq!(std::fs::read_to_string(log).unwrap().lines().count(), 1, "no history");
+    // apply never runs such a step: the row must be gone first
+    let plan = Plan { summary: "bad".into(), steps: vec![Step { id: Some(w.ship("STOPPED")), cmd: claude::relaunch_bg(&w.env, &w.ship("STOPPED"), "", &w.member(&w.snap(), &w.ship("STOPPED")).session.unwrap().session_id), cwd: None, why: "x".into() }], ..Default::default() };
+    let out = sessions::apply(&w.env, &plan);
+    assert!(!out.verified && has(&out.issues, "step.failed"), "{:?}", out.issues);
 }
 
 // ------------------------------------------------------------------ row 6
@@ -667,13 +690,14 @@ fn relaunch_stops_a_live_ship_first_then_forks_and_drops_the_old_row() {
     let old = w.member(&snap, &id).session.unwrap();
     let plan = sessions::plan_relaunch(&w.env, &snap, &id, &Caller::User);
     assert!(plan.ok(), "{:?}", plan.refusals);
-    assert_eq!(plan.steps.len(), 3, "stop, relaunch, rm: {:?}", plan.steps);
+    assert_eq!(plan.steps.len(), 3, "stop, rm, resume with flags: {:?}", plan.steps);
     assert!(plan.steps[0].cmd.contains(&"stop".to_string()));
+    assert!(plan.steps[1].cmd.contains(&"rm".to_string()));
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
     let after = w.member(&w.snap(), &id);
     let s = after.session.unwrap();
-    assert_ne!(s.session_id, old.session_id);
+    assert_eq!(s.session_id, old.session_id, "same id, history kept (BUG-53)");
     assert_eq!(s.name, id.name(), "the drift is gone");
     assert!(sessions::session_issues(&w.env, &w.member(&w.snap(), &id)).is_empty());
 }
@@ -981,20 +1005,22 @@ fn legacy_old_fleet_session_refuses_then_adopt_stop_start_relaunches_with_labels
     let out = sessions::apply(&w.env, &sessions::plan_stop(&w.env, &snap, &id, &Caller::User));
     assert!(out.verified, "{:?}", out.issues);
 
-    // the next start is row 5: relaunch with every flag (a labelled copy), rm the old row
+    // the next start is row 5: rm the old row, then resume with every flag:
+    // the old fleet's session id becomes the ship's, with its history (BUG-53)
     let snap = w.snap();
     let plan = w.start(&snap, &id, false);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let steps = w.steps_of(&plan, &id);
-    assert!(steps[0].cmd.contains(&"--resume".to_string()) && steps[0].cmd.contains(&"--settings".to_string()), "{:?}", steps[0].cmd);
+    assert!(steps[0].cmd.contains(&"rm".to_string()), "{:?}", steps[0].cmd);
+    assert!(steps[1].cmd.contains(&"--resume".to_string()) && steps[1].cmd.contains(&"--settings".to_string()), "{:?}", steps[1].cmd);
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
     let after = w.member(&w.snap(), &id);
     let s = after.session.unwrap();
-    assert_ne!(s.session_id, row.session_id);
+    assert_eq!(s.session_id, row.session_id, "the old session id is now the ship's");
     assert_eq!(s.name, id.name());
     assert_eq!(s.labels.get("NIMITZ_ID"), Some(&id.0));
-    assert!(!w.rows().iter().any(|r| r.session_id == row.session_id), "the old fleet's row is gone");
+    assert_eq!(w.rows().iter().filter(|r| r.session_id == row.session_id).count(), 1, "one row");
     assert!(after.issues.is_empty(), "{:?}", after.issues);
 }
 
@@ -1047,9 +1073,10 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
     let plan = w.start(&snap, &id, false);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let steps = w.steps_of(&plan, &id);
-    assert_eq!(steps.len(), 1, "no rm of the old rows: {:?}", steps);
-    assert_eq!(steps[0].cmd, claude::relaunch_bg(&w.env, &id, "", &newest.session_id));
-    assert_eq!(steps[0].why, format!("continue the old fleet's session {} (newest of 3)", olds[0]));
+    assert_eq!(steps.len(), 2, "rm the newest old row, then resume it with flags; the others stay: {:?}", steps);
+    assert_eq!(steps[0].cmd, claude::rm(&w.env, &olds[0]));
+    assert_eq!(steps[1].cmd, claude::relaunch_bg(&w.env, &id, "", &newest.session_id));
+    assert_eq!(steps[1].why, format!("continue the old fleet's session {} (newest of 3): its id becomes the ship's, history kept", olds[0]));
     // up plans the same, not a cold launch
     let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
     assert!(up.steps.iter().any(|s| s.id.as_ref() == Some(&id) && s.cmd.contains(&"--resume".to_string())));
@@ -1060,20 +1087,20 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
     let m = w.member(&after, &id);
     let s = m.session.as_ref().unwrap();
     assert!(s.pid.is_some() && s.labels.get("NIMITZ_ID") == Some(&id.0) && s.name == id.name());
-    assert!(!olds.contains(s.short_id.as_ref().unwrap()), "a labelled copy, not the old row");
+    assert_eq!(s.session_id, newest.session_id, "the old fleet's session id is now the ship's, history kept (BUG-53)");
     let rec = &nimitz_core::registry::load(&w.env).identities[&id.0];
     assert_eq!(rec.lineage.last().unwrap().via, "migrate");
-    for o in &olds {
+    for o in &olds[1..] {
         assert!(w.rows().iter().any(|r| r.short_id.as_deref() == Some(o.as_str())), "old row {o} stays");
     }
-    assert_eq!(m.issues.iter().filter(|i| i.code == "legacy" && i.severity == Severity::Info).count(), 3, "{:?}", m.issues);
+    assert_eq!(m.issues.iter().filter(|i| i.code == "legacy" && i.severity == Severity::Info).count(), 2, "{:?}", m.issues);
 
     // sweep offers them (it is a plan you confirm), and removes them when applied
     let sweep = sessions::plan_sweep(&w.env, &after, Some(&id), &Caller::User);
     let rms: Vec<&Step> = sweep.steps.iter().filter(|s| s.why.contains("old fleet")).collect();
-    assert_eq!(rms.len(), 3, "{:?}", sweep.steps);
+    assert_eq!(rms.len(), 2, "{:?}", sweep.steps);
     assert!(sessions::apply(&w.env, &sweep).verified);
-    assert!(olds.iter().all(|o| !w.rows().iter().any(|r| r.short_id.as_deref() == Some(o.as_str()))));
+    assert!(olds[1..].iter().all(|o| !w.rows().iter().any(|r| r.short_id.as_deref() == Some(o.as_str()))));
 }
 
 #[test]
@@ -1286,4 +1313,58 @@ fn strays_in_a_ship_folder_are_never_the_ship() {
     }
     let m = w.member(&w.snap(), &id);
     assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(fork.as_str()) && r.name.is_empty()), "unnamed fork: {:?}", m.extra_rows);
+}
+
+#[test]
+fn bug52_the_labels_mismatch_fix_stops_a_session_in_the_wrong_folder() {
+    let w = world();
+    let id = w.ship("FRESH");
+    let wrong = w.member(&w.snap(), &w.ship("STOPPED")).cwd.unwrap();
+    let settings = claude::settings_json(&w.env, &id, true);
+    let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), id.name(), "--settings".into(), settings, "hi".into()], Some(&wrong));
+    assert_eq!(rc, 0, "{out}");
+    let snap = w.snap();
+    let i = w.member(&snap, &id).issues.into_iter().find(|i| i.code == "labels.mismatch").expect("labels.mismatch");
+    let fix = i.fix.unwrap();
+    let short = fix.strip_prefix("nimitz stop ").expect("a stop fix").trim().to_string();
+    let plan = sessions::plan_stop_session(&w.env, &snap, &short, &Caller::User);
+    assert!(plan.ok(), "the fix must run: {:?}", plan.refusals);
+    assert!(sessions::apply(&w.env, &plan).verified);
+    assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(short.as_str()) && r.live()));
+}
+
+#[test]
+fn bug51_a_caller_without_authority_gets_only_the_authority_refusal() {
+    let w = world();
+    let snap = w.snap();
+    let ship = Caller::Member { id: w.ship("CLEAN"), role: Role::Ship };
+    for target in ["CLEAN", "DRIFT", "FRESH"] {
+        let p = w.start_as(&snap, &w.ship(target), &ship);
+        assert_eq!(p.refusals.len(), 1, "{target}: {:?}", p.refusals);
+        assert_eq!(p.refusals[0].code, "authority");
+        assert!(p.warnings.is_empty() && p.steps.is_empty() && p.refusals[0].fix.is_none(), "{target}: {p:?}");
+    }
+}
+
+#[test]
+fn bug50_a_launch_in_an_untrusted_worktree_fails_with_the_trust_fix() {
+    let w = world();
+    // a git worktree inside FRESH's (trusted) folder: a parent's trust does not cover it
+    let fresh = w.member(&w.snap(), &w.ship("FRESH")).cwd.unwrap();
+    let wt = std::path::Path::new(&fresh).join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
+    let ship = ShipDef { name: "WT".into(), prompt: Some("hi".into()), dirs: [("sandbox".to_string(), wt.to_string_lossy().into_owned())].into(), ..Default::default() };
+    let p = nimitz_core::config::plan_ship_new(&w.env, "MAIN", "ARGOS", ship);
+    assert!(p.ok(), "{:?}", p.refusals);
+    assert!(nimitz_core::config::apply_config_plan(&w.env, &p).verified);
+    let id = w.ship("WT");
+    let plan = w.start(&w.snap(), &id, false);
+    assert!(plan.ok(), "a worktree is a warning, not a refusal: {:?}", plan.refusals);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(!out.verified);
+    let i = out.issues.iter().find(|i| i.code == "step.failed").expect("the launch failed");
+    assert!(i.message.contains("Workspace not trusted"), "{}", i.message);
+    let fix = i.fix.clone().expect("a fix");
+    assert!(fix.contains("run `claude` once in") && fix.contains("/wt"), "{fix}");
 }

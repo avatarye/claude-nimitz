@@ -265,7 +265,7 @@ fn stop_relaunch_sweep_rm() {
     assert_eq!(r.code, 0, "{}", r.out);
     let m = sb.member("MAIN/ARGOS/NOLABEL");
     assert!(live(&m));
-    assert_ne!(m["session"]["session_id"], old);
+    assert_eq!(m["session"]["session_id"], old, "rm then resume with flags keeps the id and its history (BUG-53)");
     assert_eq!(m["session"]["labels"]["NIMITZ_ID"], "MAIN/ARGOS/NOLABEL");
 
     assert!(!sb.member("MAIN/ARGOS/COPIES")["extra_rows"].as_array().unwrap().is_empty());
@@ -348,10 +348,13 @@ fn a_ship_and_an_admiral_start_nothing() {
     }
     assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
     assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
-    // a member never gets a fix only the user may run
+    // a caller without authority gets only the authority refusal (BUG-51): no
+    // other refusal, and never a fix only the user may run
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/DRIFT", "--plan"]);
-    assert!(r.out.contains("fix: ask the user to run: nimitz relaunch MAIN/ARGOS/DRIFT"), "{}", r.out);
+    assert!(r.out.contains("(authority)") && !r.out.contains("name.drift"), "{}", r.out);
     assert!(!r.out.lines().any(|l| l.trim_start().starts_with("fix: nimitz relaunch")), "{}", r.out);
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert_ne!(r.code, 0, "nothing to do is still not the caller's to do: {}", r.out);
 }
 
 // ------------------------------------------------------------------ CRUD and top-down

@@ -107,13 +107,18 @@ fn trusted(base: &Path, cwd: &str) -> bool {
     if Path::new(cwd).starts_with(&home) || Path::new(cwd).starts_with(&real_home) {
         return true;
     }
+    // Like real Claude Code: a parent's trust covers a folder, except inside a
+    // git worktree (`.git` is a file), which needs an entry at its root or below
+    // (BUG-50).
+    let real = crate::env::canon(Path::new(cwd));
+    let floor = crate::env::git_root(&real).filter(|r| crate::env::is_git_worktree(r));
     trust_files(base).iter().any(|f| {
         read_json(f)
             .and_then(|v| v.get("projects").and_then(|p| p.as_object()).cloned())
             .map(|projects| {
-                Path::new(cwd)
-                    .ancestors()
-                    .any(|a| projects.get(&a.to_string_lossy().into_owned()).and_then(|e| e.get("hasTrustDialogAccepted")).and_then(|b| b.as_bool()) == Some(true))
+                let accepted = |a: &Path| projects.get(&a.to_string_lossy().into_owned()).and_then(|e| e.get("hasTrustDialogAccepted")).and_then(|b| b.as_bool()) == Some(true);
+                let covers = |a: &Path| floor.as_ref().map(|r| a.starts_with(r)).unwrap_or(true);
+                Path::new(cwd).ancestors().chain(real.ancestors()).any(|a| covers(a) && accepted(a))
             })
             .unwrap_or(false)
     })
@@ -701,6 +706,18 @@ fn start_as(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&St
         &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "bg", "name": name,
                 "jobId": short, "status": "idle", "statusUpdatedAt": ms(t)}),
     );
+    // The conversation: a new id starts an empty transcript (a copy has NO
+    // history, BUG-53); a kept id appends to the one it has, wherever it is.
+    let existing = fs::read_dir(claude_home(base).join("projects"))
+        .ok()
+        .and_then(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path().join(format!("{sid}.jsonl"))).find(|p| p.is_file()));
+    let log = existing.unwrap_or_else(|| claude_home(base).join("projects").join(crate::evidence::project_dir_name(cwd)).join(format!("{sid}.jsonl")));
+    if let Some(d) = log.parent() {
+        let _ = fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&log) {
+        let _ = writeln!(f, "{}", json!({"type": "system", "sessionId": sid, "cwd": cwd, "source": source}));
+    }
     // A copy with no --settings carries no hooks at all, so it fires none (probe 2b, 2c2).
     if labels_fire {
         fire(base, "SessionStart", &sid, Some(source), &labels, cwd);

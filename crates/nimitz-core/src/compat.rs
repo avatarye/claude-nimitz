@@ -5,6 +5,8 @@ use crate::env::Env;
 pub struct Compat {
     pub min: String,
     pub max: String,
+    /// pre-release versions tested and supported (`prerelease = [...]` in compat.toml)
+    pub prerelease: Vec<String>,
 }
 
 /// docs/compat.toml, compiled into this build.
@@ -14,19 +16,33 @@ const COMPAT_TOML: &str = include_str!("../../../docs/compat.toml");
 pub fn supported() -> Compat {
     let v: toml::Value = toml::from_str(COMPAT_TOML).expect("docs/compat.toml is part of the build and must parse");
     let get = |k: &str| v.get(k).and_then(|x| x.as_str()).expect("docs/compat.toml needs min and max").to_string();
-    Compat { min: get("min"), max: get("max") }
+    let prerelease = v
+        .get("prerelease")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect())
+        .unwrap_or_default();
+    Compat { min: get("min"), max: get("max"), prerelease }
 }
 
 /// The version inside a `--version` line, tolerant of both builds:
 /// `2.1.288 (Claude Code)` and `claude 2.1.288.1000 (ACME wrapper ...)`.
+/// A pre-release suffix is kept (`2.1.288-beta`, `2.1.288-rc.1`); build
+/// metadata (`+build`) is dropped, as it carries no order.
 pub fn parse_version(raw: &str) -> Option<String> {
-    raw.split_whitespace()
-        .map(|t| t.trim_matches(|c: char| !c.is_ascii_digit() && c != '.'))
-        .find(|t| {
-            let mut parts = t.split('.');
-            t.contains('.') && parts.all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    raw.split_whitespace().find_map(|t| {
+        let t = t.trim_start_matches(|c: char| !c.is_ascii_digit());
+        let t = t.split('+').next().unwrap_or("");
+        let (core, pre) = match t.split_once('-') {
+            Some((c, p)) => (c, Some(p.trim_end_matches(|c: char| !c.is_ascii_alphanumeric()))),
+            None => (t.trim_end_matches(|c: char| !c.is_ascii_digit()), None),
+        };
+        let numeric = core.contains('.') && core.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        let pre_ok = pre.is_none_or(|p| !p.is_empty() && p.split('.').all(|x| !x.is_empty() && x.bytes().all(|b| b.is_ascii_alphanumeric())));
+        (numeric && pre_ok).then(|| match pre {
+            Some(p) => format!("{core}-{p}"),
+            None => core.to_string(),
         })
-        .map(|t| t.to_string())
+    })
 }
 
 /// Installed version (native binary `--version`), e.g. "2.1.288".
@@ -39,7 +55,7 @@ pub fn installed(env: &Env) -> Option<String> {
 }
 
 fn nums(v: &str) -> Vec<u64> {
-    v.split('.').filter_map(|p| p.parse().ok()).collect()
+    v.split('-').next().unwrap_or("").split('.').filter_map(|p| p.parse().ok()).collect()
 }
 
 /// Compare dotted versions componentwise, missing components = 0.
@@ -56,8 +72,16 @@ fn cmp(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// -1 below, 0 inside, 1 above the range. The max is inclusive at patch level:
-/// `2.1.289.77` is inside a max of `2.1.289`.
+/// `2.1.289.77` is inside a max of `2.1.289`. A pre-release (`2.1.288-beta`) is
+/// inside only when compat.toml lists it; otherwise it sits just below its
+/// release (-1 when that release is the min or below, else 1: untested).
 pub fn position(c: &Compat, version: &str) -> i32 {
+    if version.contains('-') {
+        if c.prerelease.iter().any(|p| p == version) {
+            return 0;
+        }
+        return if cmp(version, &c.min) != std::cmp::Ordering::Greater { -1 } else { 1 };
+    }
     if cmp(version, &c.min) == std::cmp::Ordering::Less {
         return -1;
     }
@@ -87,13 +111,21 @@ mod tests {
         assert_eq!(parse_version("2.1.288 (Claude Code)").as_deref(), Some("2.1.288"));
         assert_eq!(parse_version("claude 2.1.288.1000 (ACME wrapper, Bedrock)").as_deref(), Some("2.1.288.1000"));
         assert_eq!(parse_version("  2.1.289\n").as_deref(), Some("2.1.289"));
+        assert_eq!(parse_version("2.1.288-beta (Claude Code)").as_deref(), Some("2.1.288-beta"));
+        assert_eq!(parse_version("claude 2.1.288-rc.1+build.5").as_deref(), Some("2.1.288-rc.1"));
+        assert_eq!(parse_version("v2.1.289,").as_deref(), Some("2.1.289"));
+        assert_eq!(parse_version("2.1.288-"), None);
         assert_eq!(parse_version("no version here"), None);
         assert_eq!(parse_version(""), None);
     }
 
     #[test]
     fn position_in_range() {
-        let c = Compat { min: "2.1.288".into(), max: "2.1.289".into() };
+        let mut c = Compat { min: "2.1.288".into(), max: "2.1.289".into(), prerelease: vec![] };
+        assert_eq!(position(&c, "2.1.288-beta"), -1, "a pre-release is not its release");
+        assert_eq!(position(&c, "2.1.289-rc.1"), 1, "untested pre-release inside the range: outside");
+        c.prerelease.push("2.1.289-rc.1".into());
+        assert_eq!(position(&c, "2.1.289-rc.1"), 0, "listed in compat.toml");
         assert_eq!(position(&c, "2.1.287"), -1);
         assert_eq!(position(&c, "2.0.999"), -1);
         assert_eq!(position(&c, "2.1.288"), 0);

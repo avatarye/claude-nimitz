@@ -61,7 +61,9 @@ home-server = "managed"
 [ships.permission_mode]             # optional per machine
 ```
 
-A ship with no `dirs` entry for this machine does not run here. Ship names
+A ship with no `dirs` entry for this machine does not run here. A `dirs` value
+is `managed`, an absolute path or `~/...` (`config::normalize_ship_dir`; empty,
+relative and `<label>=<folder>` values are refused, for every front end). Ship names
 `COMMODORE` and `ADMIRAL` (and anything starting `COMMODORE/`) are reserved: they
 would take a role's address. Folders are compared as real paths (symlinks
 resolved, as Claude Code records them); one folder holds one member.
@@ -143,7 +145,7 @@ Each finding is an `Issue` with a stable `code`:
 | --- | --- |
 | `config.invalid` | TOML does not parse (file:line:col; a bad squadron.toml hides only its squadron) or breaks a schema rule (names, reserved ship names, duplicates, unknown keys) |
 | `config.layout` | an inherited instructions file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) in `NIMITZ_HOME/`, `<fleet>/`, `<fleet>/squadrons/`, `<fleet>/ships/` or `<fleet>/ships/<sq>/` (Error); two members with one folder (Error); a member folder inside a nimitz-managed folder (admiral, commodore, managed ship) (Error); a member folder inside a user project folder that has a `CLAUDE.md` (Warn). A member folder inside a user folder without one (e.g. a ship at `~`) is fine |
-| `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted: no `hasTrustDialogAccepted` on the folder or a parent (as given or real path); inside a git repository or worktree (`.git` folder or file) only the root and below count, and the fix names the root |
+| `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted. Trusted: inside `NIMITZ_HOME`; an accepted entry on the folder's repository itself (git root or below); Claude Code already ran a session in that exact folder (transcripts, job row or session file with that cwd); or, outside git, an accepted entry on the folder or a parent (keys as given and as real paths). A git worktree (`.git` file) covered only by a parent: Warn "may not be trusted". An ordinary git repository covered only by a parent: Info. Nothing accepts it: Error. The fix names the git root when there is one; a launch that fails with "Workspace not trusted" carries the same fix (`check::untrusted_fix`) |
 | `name.drift` | live session's name differs from the expected name |
 | `name.taken` | the expected name is held by a live session of another identity |
 | `labels.missing` | the identity's current session has no labels (e.g. resumed with flags, legacy). Only a session in its lineage (or its registry current) can be its current session; an unlabelled row outside the lineage never is |
@@ -153,7 +155,7 @@ Each finding is an `Issue` with a stable `code`:
 | `lineage.broken` | registry's current session id has no job row and no transcript |
 | `role.background` | an admiral or commodore is a background session |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
-| `cc.version` | Claude Code outside `compat.toml` |
+| `cc.version` | Claude Code outside `compat.toml` (a pre-release such as `2.1.288-beta` is outside unless `prerelease = [...]` lists it; Error) |
 | `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
 | `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
 | `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
@@ -207,9 +209,9 @@ target. For each member, one action from this table:
 | live, name drift or labels missing | refuse; Issue with fix `nimitz relaunch <id>` (needs a stop) |
 | two live sessions | refuse; list both; fix `nimitz stop <short>` for the one you drop |
 | stopped (job row, no pid), labels right | resume: native binary, **no flags**, from its folder |
-| stopped, labels missing (resumed with flags earlier) | relaunch: native resume would keep no labels; cold launch with `--resume <id>` and all flags (copy, `source: fork`), then record the new id and `rm` the old row |
+| stopped, labels missing (resumed with flags earlier), or a drifted name | relabel (BUG-53): `rm` its job row (native; if that fails the plan stops), then cold launch `--resume <id>` with all flags: with no row Claude Code keeps the **same id and its history** and takes the new name and labels. (With the row present the same command starts an empty copy with a new id; `apply` refuses such a step.) Same path for `relaunch`, `folder.moved`, adopt + start |
 | no row, transcript exists (interactive member) | `claude -c` in its folder with the name and labels |
-| no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): cold launch `--resume <it>` with all flags (copy, `source: fork`), lineage `via: migrate`; the old rows stay as Info `legacy`, removed only by `sweep`. An interactive member whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
+| no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): `rm` its row, then cold launch `--resume <it>` with all flags, so the old session id becomes the ship's with its history, lineage `via: migrate`; the other old rows stay as Info `legacy`, removed only by `sweep`. An interactive member whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
 | no row, no transcript | cold launch (ship: prompt from config; tender: refuse) |
 | row `failed` / unknown id | mark lineage broken; cold launch only with `--force` |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
