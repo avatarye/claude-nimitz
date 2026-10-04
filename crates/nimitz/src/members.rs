@@ -153,7 +153,7 @@ fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize) {
         let tag = match i.severity {
             Severity::Error => "[ERROR]",
             Severity::Warn => "[WARN]",
-            Severity::Info => "[OK]",
+            Severity::Info => "[INFO]",
         };
         out::line(&format!("{pad}    {tag} {} ({}){fix}", i.message, i.code));
     }

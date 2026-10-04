@@ -55,7 +55,7 @@ pub fn argv(cmd: &[String]) -> String {
 
 fn tag(sev: Severity) -> &'static str {
     match sev {
-        Severity::Info => "[OK]",
+        Severity::Info => "[INFO]",
         Severity::Warn => "[WARN]",
         Severity::Error => "[ERROR]",
     }

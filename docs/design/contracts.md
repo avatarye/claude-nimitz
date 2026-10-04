@@ -214,7 +214,7 @@ clear message. Admiralty runs anywhere; without a mux it is monitor-only.
 `sweep [<id>]`, `tender <F/SQ> <task>`, `adopt <session> <id>`, `signal <id> <text>`,
 `open <id>`, `layout herdr [<fleet>]`, `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
-`__fake-herdr`. Every command exits non-zero on failure and prints `[OK]`,
+`__fake-herdr`. Every command exits non-zero on failure and prints `[OK]`, `[INFO]`,
 `[WARN]`, `[ERROR]` lines (no emoji). Mutating commands support `--plan` (print,
 do nothing).
 
