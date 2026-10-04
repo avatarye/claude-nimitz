@@ -99,6 +99,18 @@ def screen(pane):
     return h("pane", "read", pane)[1]
 
 
+def screen_with(pane, needle, t=8.0):
+    """The pane's text once it contains `needle`; raises if it never does."""
+    end = time.time() + t
+    while True:
+        s = screen(pane)
+        if needle in s:
+            return s
+        if time.time() >= end:
+            raise AssertionError(f"{needle!r} never showed in pane {pane}: {s[-400:]}")
+        time.sleep(0.2)
+
+
 def main():
     if not shutil.which("clang"):
         print("[WARN] no clang: skipped")
@@ -129,7 +141,7 @@ def main():
 
     try:
         pump(4)
-        rc, st = h("status")
+        _, st = h("status")
         assert SOCK in st and "running" in st, st
         print(f"[OK] private server at {SOCK}")
         # the admiral's pane: the stand-in claude in its folder, with its session id
@@ -148,7 +160,7 @@ def main():
         apane = [p["pane_id"] for p in hj("pane", "list")["panes"] if p["pane_id"] not in before][0]
         h("pane", "run", apane, f"NIMITZ_MUX=herdr ADMIRALTY_NO_CLIPBOARD=1 '{BIN}' --sandbox '{SB}'")
         pump(1)
-        shown = wait(lambda: "[MAIN]-ADMIRAL" in screen(apane) and screen(apane))
+        shown = screen_with(apane, "[MAIN]-ADMIRAL")
         row = next((l for l in shown.splitlines() if "[MAIN]-ADMIRAL" in l and "admiral" in l), "")
         check("the admiral row starts with Herdr's idle dot", row[2:4].startswith("○"), row)
         check("monitor-only is off inside Herdr", "MONITOR-ONLY" not in shown and "mux herdr" in shown, shown.splitlines()[0])
@@ -180,7 +192,7 @@ def main():
             tabs = hj("tab", "list", "--workspace", ws[0]["workspace_id"])["tabs"]
             check("with a tab CLEAN", any(t.get("label") == "CLEAN" for t in tabs), tabs)
     finally:
-        rc, st = h("status")
+        _, st = h("status")
         if SOCK in st:  # only ever our private server
             h("server", "stop")
         try:
