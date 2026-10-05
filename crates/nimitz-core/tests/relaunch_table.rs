@@ -431,7 +431,7 @@ fn sweep_authority_you_any_scope_a_commodore_its_own_squadron() {
     for (target, caller) in [
         (Some(Id::commodore("MAIN", "BOREAL")), own.clone()),
         (Some(Id::admiral("MAIN")), own.clone()),
-        (None, Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral }),
+        (Some(Id::admiral("BETA")), Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral }),
         (None, Caller::Member { id: w.ship("CLEAN"), role: Role::Ship }),
         (None, Caller::Member { id: tender.clone(), role: Role::Tender }),
     ] {
@@ -439,6 +439,12 @@ fn sweep_authority_you_any_scope_a_commodore_its_own_squadron() {
         assert!(has(&p.refusals, "authority"), "{target:?} {caller:?}: {:?}", p.refusals);
         assert!(p.steps.is_empty());
     }
+    // an admiral: its own fleet, by default and by name
+    let adm = Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral };
+    let plan = sessions::plan_sweep(&w.env, &snap, None, &adm);
+    assert!(plan.ok() && plan.steps.iter().all(|s| s.id.as_ref().is_some_and(|i| i.fleet() == "MAIN")), "{:?}", plan);
+    assert!(plan.steps.iter().any(|s| s.id.as_ref() == Some(&w.ship("COPIES"))));
+    assert!(sessions::plan_sweep(&w.env, &snap, Some(&argos), &adm).ok());
     // you: a squadron id sweeps everything under it
     let plan = sessions::plan_sweep(&w.env, &snap, Some(&argos), &Caller::User);
     let out = sessions::apply(&w.env, &plan);
@@ -731,9 +737,11 @@ fn a_commodore_may_start_its_own_ship_only() {
     let other = Caller::Member { id: Id::commodore("MAIN", "BOREAL"), role: Role::Commodore };
     let plan = sessions::plan_start(&w.env, &snap, &w.ship("FRESH"), &other, false);
     assert!(plan.refusals.iter().any(|i| i.message.contains("may not start")), "{:?}", plan.refusals);
-    // an admiral starts nothing
+    // its admiral may too; another fleet's admiral may not
     let adm = Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral };
-    assert!(!sessions::plan_start(&w.env, &snap, &w.ship("FRESH"), &adm, false).ok());
+    assert!(sessions::plan_start(&w.env, &snap, &w.ship("FRESH"), &adm, false).ok());
+    let beta = Caller::Member { id: Id::admiral("BETA"), role: Role::Admiral };
+    assert!(!sessions::plan_start(&w.env, &snap, &w.ship("FRESH"), &beta, false).ok());
 }
 
 #[test]
@@ -1125,9 +1133,18 @@ fn retire_a_live_ship_stops_removes_its_rows_then_the_config_in_one_verified_app
     let snap = w.snap();
     let id = w.ship("CLEAN");
     let short = w.member(&snap, &id).session.unwrap().short_id.unwrap();
-    // only you
+    // you, its admiral or its commodore; not a ship, not another squadron's commodore
     let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
-    assert!(has(&sessions::plan_retire(&w.env, &snap, &own, &id).refusals, "authority"));
+    assert!(!has(&sessions::plan_retire(&w.env, &snap, &own, &id).refusals, "authority"));
+    let boreal = Caller::Member { id: Id::commodore("MAIN", "BOREAL"), role: Role::Commodore };
+    assert!(has(&sessions::plan_retire(&w.env, &snap, &boreal, &id).refusals, "authority"));
+    let ship = Caller::Member { id: w.ship("DRIFT"), role: Role::Ship };
+    assert!(has(&sessions::plan_retire(&w.env, &snap, &ship, &id).refusals, "authority"));
+    // a squadron goes by its admiral, never by its own commodore; a fleet only by you
+    assert!(has(&sessions::plan_retire(&w.env, &snap, &own, &Id::commodore("MAIN", "ARGOS")).refusals, "authority"));
+    let adm = Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral };
+    assert!(has(&sessions::plan_retire(&w.env, &snap, &adm, &Id::admiral("MAIN")).refusals, "authority"));
+    assert!(!has(&sessions::plan_retire(&w.env, &snap, &adm, &Id::commodore("MAIN", "ARGOS")).refusals, "authority"));
     let plan = sessions::plan_retire(&w.env, &snap, &Caller::User, &id);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let kinds: Vec<&str> = plan.steps.iter().map(|s| s.cmd.get(1).map(String::as_str).filter(|c| ["stop", "rm"].contains(c)).unwrap_or(s.cmd[0].as_str())).collect();

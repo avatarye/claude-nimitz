@@ -9,16 +9,25 @@ use nimitz_core::config;
 use nimitz_core::{Caller, Comms, FleetOnDisk, Id, Plan, Role, ShipDef};
 use std::path::{Path, PathBuf};
 
-/// Config changes are yours: a session's own labels never edit the fleet.
-fn user_only(ctx: &Ctx, plan: &mut Plan) {
-    if ctx.caller != Caller::User {
-        plan.refusals.insert(0, refusal("authority", "config changes are yours alone; ask the user".into(), None, None));
-    }
+/// Who may make this config change. `None`: you alone (a fleet created or
+/// removed, machines, migration). `Some(scope)`: you, the scope's admiral, or
+/// (for a squadron's settings and its ships) its commodore (`may_config`).
+fn authority(ctx: &Ctx, plan: &mut Plan, scope: Option<&Id>) {
+    let why = match (scope, &ctx.caller) {
+        (_, Caller::User) => return,
+        (None, _) => "this change is yours alone (fleets created or removed, machines, migration); ask the user".to_string(),
+        (Some(scope), caller) => match nimitz_core::sessions::may_config(caller, scope) {
+            Ok(()) => return,
+            Err(why) => why,
+        },
+    };
+    // the refusal alone: no other refusals or fixes for a change the caller may not make
+    *plan = Plan { summary: plan.summary.clone(), refusals: vec![refusal("authority", why, None, scope.cloned())], ..Default::default() };
 }
 
 /// Gate, then apply a config plan.
-fn config_plan(ctx: &Ctx, mut plan: Plan) -> i32 {
-    user_only(ctx, &mut plan);
+fn config_plan(ctx: &Ctx, mut plan: Plan, scope: Option<&Id>) -> i32 {
+    authority(ctx, &mut plan, scope);
     match ctx.gate(&plan) {
         out::Go::Exit(c) => c,
         out::Go::Run => out::outcome(&config::apply_config_plan(&ctx.env, &plan)),
@@ -69,7 +78,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
         "new" => {
             ctx.args.allow(&["--machine"])?;
             let label = ctx.args.value("--machine").map(str::to_string).unwrap_or_else(|| machine_label(ctx));
-            config::plan_fleet_new(&ctx.env, fleet, &label)
+            return Ok(config_plan(ctx, config::plan_fleet_new(&ctx.env, fleet, &label), None));
         }
         "set" => {
             ctx.args.allow(&["--admiral-mode"])?;
@@ -81,7 +90,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
         }
         v => return Err(format!("fleet {v}: use new, set or rm")),
     };
-    Ok(config_plan(ctx, plan))
+    Ok(config_plan(ctx, plan, Some(&id)))
 }
 
 // ------------------------------------------------------------------ squadron
@@ -109,7 +118,9 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
         }
         v => return Err(format!("squadron {v}: use new, set or rm")),
     };
-    Ok(config_plan(ctx, plan))
+    // a new squadron is its admiral's (or yours); a squadron's settings its commodore's too
+    let scope = if verb == "new" { Id::admiral(fleet) } else { id.clone() };
+    Ok(config_plan(ctx, plan, Some(&scope)))
 }
 
 // ------------------------------------------------------------------ ship
@@ -230,9 +241,13 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
         return Ok(retire(ctx, &id));
     }
     ctx.args.allow(SHIP_FLAGS)?;
+    // refuse before anything opens an editor
+    if nimitz_core::sessions::may_config(&ctx.caller, &id).is_err() {
+        return Ok(config_plan(ctx, Plan { summary: format!("ship {verb} {id}"), ..Default::default() }, Some(&id)));
+    }
     let f = match load(ctx, fleet) {
         Ok(f) => f,
-        Err(p) => return Ok(config_plan(ctx, p)),
+        Err(p) => return Ok(config_plan(ctx, p, Some(&id))),
     };
     let label = match ctx.args.value("--machine").map(str::to_string).or(f.machine.clone()) {
         Some(l) => l,
@@ -284,7 +299,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
         }
         v => return Err(format!("ship {v}: use new, set or rm")),
     };
-    Ok(config_plan(ctx, plan))
+    Ok(config_plan(ctx, plan, Some(&id)))
 }
 
 /// Stop the ship, remove its job rows (transcripts stay), then drop it from the config.
@@ -321,7 +336,7 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
         }
         v => return Err(format!("machine {v}: use add or rm")),
     };
-    Ok(config_plan(ctx, plan))
+    Ok(config_plan(ctx, plan, None))
 }
 
 // ------------------------------------------------------------------ migrate
@@ -347,7 +362,7 @@ pub fn migrate(ctx: &Ctx) -> Result<i32, String> {
         Some("mkdir") => !Path::new(&s.cmd[1]).is_dir(),
         _ => true,
     });
-    Ok(config_plan(ctx, plan))
+    Ok(config_plan(ctx, plan, None))
 }
 
 #[cfg(test)]

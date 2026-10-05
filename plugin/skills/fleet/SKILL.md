@@ -38,13 +38,18 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 
 | Caller | May start |
 | --- | --- |
-| the user (no labels) | everything; `nimitz up` |
-| commodore | one of its own ships that it needs now; its own tenders; a sweep of its own squadron |
-| admiral, ship, tender | nothing |
+| the user (no labels) | everything |
+| admiral | every command inside its own fleet: `start`, `stop`, `relaunch`, `rm`, `sweep`, `tender`, `adopt` for any member but itself; `up` and `layout herdr` for its fleet; `fleet set`, `squadron new/set/rm`, `ship new/set/rm` in its fleet |
+| commodore | inside its own squadron: `start`, `stop`, `relaunch`, `rm`, `sweep`, `tender`, `adopt` for its ships and tenders; `squadron set` for its squadron; `ship new/set/rm` for its ships |
+| ship, tender | nothing |
 
 `nimitz` reads the caller from the session's labels. It refuses what the table
-does not allow. CRUD, `up`, `rm`, `adopt`, `layout` and `init` are the user's alone.
-`sweep` is the user's, or a commodore's for its own squadron.
+does not allow. Always the user's alone: `init`, `fleet new`, `fleet rm`,
+`machine add`, `machine rm`, `migrate`, and any session named only by its short
+id that is no member's (a stowaway outside the admiral's fleet, a stray). A
+commodore never removes its own squadron; nobody stops or relaunches itself.
+More authority does not skip the plan: `--plan` first, `--yes` only after the
+user agrees, `--force` only when the user names it.
 
 ## Who may signal whom
 

@@ -87,22 +87,29 @@ impl LayoutSpec {
     }
 }
 
-/// The layout for `fleet` (or every fleet that runs here). Only you lay out.
+/// The layout for `fleet` (or every fleet that runs here). You lay out any
+/// fleet; an admiral its own.
 pub fn plan(env: &Env, snap: &Snapshot, fleet: Option<&str>, ships: bool, caller: &Caller, force: bool) -> LayoutSpec {
     let mut spec = LayoutSpec {
         plan: Plan { summary: format!("layout herdr {}", fleet.unwrap_or("(every fleet here)")), ..Default::default() },
         ..Default::default()
     };
-    if *caller != Caller::User {
-        spec.plan.refusals.push(Issue {
-            code: "authority".into(),
-            severity: Severity::Error,
-            message: "`nimitz layout` is yours alone".into(),
-            fix: None,
-            id: None,
-        });
-        return spec;
-    }
+    // you lay out any fleet; an admiral its own (by default too); nobody else
+    let fleet = match (caller, fleet) {
+        (Caller::User, f) => f,
+        (Caller::Member { id, role: Role::Admiral }, None) => Some(id.fleet()),
+        (Caller::Member { id, role: Role::Admiral }, Some(f)) if f == id.fleet() => Some(f),
+        (Caller::Member { id, .. }, _) => {
+            spec.plan.refusals.push(Issue {
+                code: "authority".into(),
+                severity: Severity::Error,
+                message: format!("`nimitz layout` lays out whole fleets: yours, or an admiral's for its own fleet; not {}'s", id.name()),
+                fix: None,
+                id: None,
+            });
+            return spec;
+        }
+    };
     for f in snap.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
         if f.machine.is_none() {
             spec.plan.warnings.push(skip(&f.id, format!("fleet {} does not run on this machine; no layout", f.id)));

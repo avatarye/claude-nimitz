@@ -277,15 +277,99 @@ pub fn name_taken_issue(m: &Member, others: &[SessionInfo]) -> Option<Issue> {
 
 // ------------------------------------------------------------------ authority
 
-/// May `caller` start (or stop, relaunch) `target`? Plan-v3 section 5.5: you
-/// start anything; a commodore its own ships and tenders; everyone else nothing.
-fn may_start(caller: &Caller, target: &Id, verb: &str) -> Result<(), String> {
+/// May `caller` start (or stop, relaunch, rm, adopt as) `target`? The
+/// authority table (plan-v3 section 5.5, widened in 0.3.1): you, anything; an
+/// admiral, every member of its own fleet but itself; a commodore, its own
+/// ships and tenders; ships and tenders nothing.
+pub fn may_start(caller: &Caller, target: &Id, verb: &str) -> Result<(), String> {
     match caller {
         Caller::User => Ok(()),
+        Caller::Member { id, role: Role::Admiral } if target.fleet() == id.fleet() && target != id => Ok(()),
         Caller::Member { id, role: Role::Commodore } if target.parent().as_ref() == Some(id) => Ok(()),
         Caller::Member { id, .. } => Err(format!(
-            "{} may not {verb} {target}: only you {verb} admirals and commodores; a commodore may {verb} its own ships and tenders",
+            "{} may not {verb} {target}: you {verb} anything; an admiral, the members of its own fleet; a commodore, its own ships and tenders",
             caller_name(id)
+        )),
+    }
+}
+
+/// May `caller` change the config at `scope` (a fleet `F`, a squadron `F/SQ`,
+/// a ship `F/SQ/SHIP`)? You, anything; an admiral, its own fleet (the fleet's
+/// settings, its squadrons and ships); a commodore, its own squadron's settings
+/// and ships. Creating or removing a fleet, machines and migration stay yours
+/// (the CLI never asks this for them).
+pub fn may_config(caller: &Caller, scope: &Id) -> Result<(), String> {
+    match caller {
+        Caller::User => Ok(()),
+        Caller::Member { id, role: Role::Admiral } if scope.fleet() == id.fleet() => Ok(()),
+        Caller::Member { id, role: Role::Commodore } if scope == id || scope.parent().as_ref() == Some(id) => Ok(()),
+        Caller::Member { id, .. } => Err(format!(
+            "{} may not change the config of {scope}: you change any; an admiral, its own fleet; a commodore, its own squadron and its ships",
+            caller_name(id)
+        )),
+    }
+}
+
+/// May `caller` run this fix itself (`nimitz <verb> ...`)? Read-only commands
+/// always; the rest by the authority table for the id the command names. A
+/// command that names a session by its short id, or that only you run (init,
+/// fleet new / rm, machine, migrate, doctor), is not a member's.
+pub fn may_run(caller: &Caller, fix: &str) -> bool {
+    let Caller::Member { id: me, role } = caller else { return true };
+    let w: Vec<&str> = fix.split_whitespace().take_while(|x| *x != "#").collect();
+    if w.first() != Some(&"nimitz") {
+        return false;
+    }
+    let id_at = |i: usize| -> Option<Id> {
+        let s = w.get(i)?;
+        let id = Id(s.to_string());
+        let ok = !s.is_empty() && id.parts().iter().all(|p| crate::config::valid_name(p.trim_start_matches('~')));
+        ok.then_some(id)
+    };
+    let in_fleet = |t: &Id| *role == Role::Admiral && t.fleet() == me.fleet();
+    let in_squadron = |t: &Id| *role == Role::Commodore && (t == me || t.parent().as_ref() == Some(me));
+    match w.get(1).copied() {
+        Some("status") | Some("check") => true,
+        Some("start") | Some("stop") | Some("relaunch") | Some("rm") => id_at(2).is_some_and(|t| may_start(caller, &t, "start").is_ok()),
+        Some("sweep") => match id_at(2) {
+            None => w.len() == 2 && matches!(role, Role::Admiral | Role::Commodore),
+            Some(t) => in_fleet(&t) || in_squadron(&t),
+        },
+        Some("tender") => id_at(2).is_some_and(|t| t.role() == Role::Commodore && (in_fleet(&t) || &t == me)),
+        Some("adopt") => id_at(3).is_some_and(|t| may_start(caller, &t, "adopt as").is_ok()),
+        Some("up") => id_at(2).is_some_and(|t| in_fleet(&t)),
+        Some("layout") => *role == Role::Admiral && id_at(3).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
+        Some("ship") => id_at(3).is_some_and(|t| may_config(caller, &t).is_ok()),
+        Some("squadron") => match (w.get(2).copied(), id_at(3)) {
+            (Some("new"), Some(t)) => in_fleet(&t),
+            (Some("rm"), Some(t)) => in_fleet(&t),
+            (Some("set"), Some(t)) => may_config(caller, &t).is_ok(),
+            _ => false,
+        },
+        Some("fleet") => w.get(2) == Some(&"set") && id_at(3).is_some_and(|t| in_fleet(&t)),
+        _ => false,
+    }
+}
+
+/// May `caller` act on one session row (`stop <short>`, `rm <short>`)? A
+/// member's row goes by that member (`may_start`); a stowaway in an admiral's
+/// own fleet is that admiral's too; anything else is yours.
+fn may_touch_row(snap: &Snapshot, caller: &Caller, owner: Option<&Id>, row: &SessionInfo, verb: &str) -> Result<(), String> {
+    if let Some(o) = owner {
+        return may_start(caller, o, verb);
+    }
+    match caller {
+        Caller::User => Ok(()),
+        Caller::Member { id, role: Role::Admiral }
+            if snap.stowaways.iter().any(|s| s.session_id == row.session_id)
+                && crate::snapshot::stowaway_fleet(snap, row).as_deref() == Some(id.fleet()) =>
+        {
+            Ok(())
+        }
+        Caller::Member { id, .. } => Err(format!(
+            "{} may not {verb} session {}: it is no member of yours (a stowaway goes to its fleet's admiral or you; the rest to you)",
+            caller_name(id),
+            row.short_id.as_deref().unwrap_or(&row.session_id)
         )),
     }
 }
@@ -663,8 +747,13 @@ fn already_refused(plan: &Plan, id: &Id) -> bool {
 /// `nimitz up <fleet>`: start every member that should run on this machine.
 pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("up {fleet}: reconcile the config with the running sessions"), ..Default::default() };
-    if *caller != Caller::User {
-        refuse(&mut plan, "authority", "`nimitz up` is yours alone; members start nothing fleet-wide".into(), None, None);
+    let ok = match caller {
+        Caller::User => true,
+        Caller::Member { id, role: Role::Admiral } => id.fleet() == fleet,
+        _ => false,
+    };
+    if !ok {
+        refuse(&mut plan, "authority", format!("`nimitz up {fleet}` is yours or {fleet}'s admiral's; a commodore starts its own ships one by one"), None, None);
         return plan;
     }
     let Some(f) = snap.fleets.iter().find(|f| f.id.fleet() == fleet) else {
@@ -839,10 +928,6 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
 /// `name.taken` fix, BUG-08); never an unrelated session.
 pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("stop session {target}"), ..Default::default() };
-    if *caller != Caller::User {
-        refuse(&mut plan, "authority", "stopping a session by its id is yours alone".into(), None, None);
-        return plan;
-    }
     let is = |r: &&SessionInfo| r.short_id.as_deref() == Some(target) || r.session_id == target;
     let all = members(snap);
     let mut hit: Option<(Option<Id>, SessionInfo, String)> = all
@@ -864,9 +949,16 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
         }
     }
     let Some((owner, row, why)) = hit else {
-        refuse(&mut plan, "session.unknown", format!("{target} names no fleet member's session, no stowaway and no holder of a fleet name"), Some("nimitz status".into()), None);
+        let msg = format!("{target} names no fleet member's session, no stowaway and no holder of a fleet name");
+        // a member learns nothing about sessions that are not its business
+        let (code, msg) = if *caller == Caller::User { ("session.unknown", msg) } else { ("authority", format!("{msg}; anything else is the user's")) };
+        refuse(&mut plan, code, msg, Some("nimitz status".into()), None);
         return plan;
     };
+    if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), &row, "stop") {
+        refuse(&mut plan, "authority", why, None, owner);
+        return plan;
+    }
     let Some(short) = row.short_id.clone().filter(|_| row.pid.is_some()) else {
         refuse(&mut plan, "session.none", format!("session {} is not a live background session", row.session_id), None, owner);
         return plan;
@@ -971,12 +1063,12 @@ fn relabel_steps(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str) -> 
 /// a stowaway / non-fleet session (`target` = short id or session id).
 pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("rm {target}"), ..Default::default() };
-    if *caller != Caller::User {
-        refuse(&mut plan, "authority", "`nimitz rm` is yours alone".into(), None, None);
-        return plan;
-    }
     // An identity: its stale rows (same as sweep <id>).
     if let Some((_, m)) = member(snap, &Id(target.to_string())) {
+        if let Err(why) = may_start(caller, &m.id, "rm") {
+            refuse(&mut plan, "authority", why, None, Some(m.id.clone()));
+            return plan;
+        }
         sweep_member(env, &mut plan, m);
         if plan.steps.is_empty() && plan.refusals.is_empty() {
             plan.warnings.push(issue("copy.rows", Severity::Info, format!("{target} has no stale rows"), None, Some(m.id.clone())));
@@ -1001,9 +1093,23 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
             .map(|r| r.info(Default::default()))
     };
     let Some(row) = all.iter().copied().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target).or(misplaced.as_ref()) else {
-        refuse(&mut plan, "session.unknown", format!("{target} names no identity and no job row"), None, None);
+        refuse(&mut plan, if *caller == Caller::User { "session.unknown" } else { "authority" }, format!("{target} names no identity and no job row"), None, None);
         return plan;
     };
+    // whose row: a member's (its session or a copy), else the labels it carries (misplaced)
+    let owner: Option<Id> = binding
+        .iter()
+        .find(|(_, m)| m.session.iter().chain(m.extra_rows.iter()).any(|r| r.session_id == row.session_id))
+        .map(|(_, m)| m.id.clone())
+        .or_else(|| {
+            let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+            let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
+            labels.get(&row.session_id).and_then(|l| l.get("NIMITZ_ID")).map(|o| Id(o.clone())).filter(|_| misplaced.as_ref().is_some_and(|m| m.session_id == row.session_id))
+        });
+    if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), row, "rm") {
+        refuse(&mut plan, "authority", why, None, owner);
+        return plan;
+    }
     if row.pid.is_some() {
         refuse(
             &mut plan,
@@ -1063,7 +1169,7 @@ fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
 pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) -> Plan {
     let scope = match (id, caller) {
         (Some(i), _) => i.0.clone(),
-        (None, Caller::Member { id: me, role: Role::Commodore }) => me.0.clone(),
+        (None, Caller::Member { id: me, role: Role::Commodore | Role::Admiral }) => me.0.clone(),
         (None, _) => "everything".into(),
     };
     let mut plan = Plan { summary: format!("sweep {scope}"), ..Default::default() };
@@ -1080,8 +1186,17 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
             }
             Box::new(move |m: &Id| m.parent().as_ref() == Some(&me))
         }
+        Caller::Member { id: me, role: Role::Admiral } => {
+            let fleet = me.fleet().to_string();
+            if id.is_some_and(|t| t.fleet() != fleet) {
+                let t = id.map(|t| t.0.clone()).unwrap_or_default();
+                refuse(&mut plan, "authority", format!("{} may sweep only its own fleet, not {t}", me.name()), None, id.cloned());
+                return plan;
+            }
+            Box::new(move |m: &Id| m.fleet() == fleet)
+        }
         Caller::Member { id: me, .. } => {
-            refuse(&mut plan, "authority", format!("{} may not sweep; you or its commodore do", me.name()), None, id.cloned());
+            refuse(&mut plan, "authority", format!("{} may not sweep; you, its admiral or its commodore do", me.name()), None, id.cloned());
             return plan;
         }
     };
@@ -1124,10 +1239,11 @@ pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, promp
     let ok = match caller {
         Caller::User => true,
         Caller::Member { id, role: Role::Commodore } => id == commodore,
+        Caller::Member { id, role: Role::Admiral } => id.fleet() == commodore.fleet(),
         _ => false,
     };
     if !ok {
-        refuse(&mut plan, "authority", format!("only you or {commodore} itself may start its tenders"), None, Some(commodore.clone()));
+        refuse(&mut plan, "authority", format!("only you, {commodore} itself or its admiral may start its tenders"), None, Some(commodore.clone()));
         return plan;
     }
     if task.is_empty() || !task.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -1169,8 +1285,8 @@ pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, promp
 pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller: &Caller) -> Plan {
     let _ = env;
     let mut plan = Plan { summary: format!("adopt {session_id} as {id}"), ..Default::default() };
-    if *caller != Caller::User {
-        refuse(&mut plan, "authority", "`nimitz adopt` is yours alone".into(), None, Some(id.clone()));
+    if let Err(why) = may_start(caller, id, "adopt as") {
+        refuse(&mut plan, "authority", why, None, Some(id.clone()));
         return plan;
     }
     let Some(row) = snap.stowaways.iter().find(|r| r.session_id == session_id || r.short_id.as_deref() == Some(session_id)) else {
@@ -1183,6 +1299,11 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
         );
         return plan;
     };
+    // a member adopts only what sits in its own fleet's folders
+    if *caller != Caller::User && crate::snapshot::stowaway_fleet(snap, row).as_deref() != Some(id.fleet()) {
+        refuse(&mut plan, "authority", format!("session {session_id} does not sit in fleet {}'s folders; adopting it is the user's", id.fleet()), None, Some(id.clone()));
+        return plan;
+    }
     // A tender is not declared: adopting as `F/SQ/~task` creates the identity,
     // under a commodore that exists (BUG-19).
     let found = member(snap, id);
@@ -1227,8 +1348,18 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
 /// left in the config; a live interactive member is ended in its own pane.
 pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan {
     let mut plan = Plan { summary: format!("retire {id}: stop, remove job rows, remove from the config"), ..Default::default() };
-    if *caller != Caller::User {
-        refuse(&mut plan, "authority", "config changes are yours alone; ask the user".into(), None, None);
+    // a fleet goes only by you; a squadron by its admiral or you (not by its own
+    // commodore); a ship by its admiral, its commodore or you
+    let allowed = match (id.role(), caller) {
+        (_, Caller::User) => Ok(()),
+        (Role::Admiral, Caller::Member { id: me, .. }) => Err(format!("{} may not remove fleet {id}: creating and removing fleets is yours alone", caller_name(me))),
+        (Role::Commodore, Caller::Member { id: me, role: Role::Commodore }) if me == id => {
+            Err(format!("{} may not remove its own squadron; its admiral or you do", caller_name(me)))
+        }
+        _ => may_config(caller, id),
+    };
+    if let Err(why) = allowed {
+        refuse(&mut plan, "authority", why, None, None);
         return plan;
     }
     let cfg = crate::config::plan_rm(env, id);
@@ -1758,8 +1889,56 @@ mod tests {
         assert!(may_start(&own, &ship, "start").is_ok());
         assert!(may_start(&own, &Id::tender("F", "SQ", "t"), "start").is_ok());
         assert!(may_start(&other, &ship, "start").is_err());
-        assert!(may_start(&admiral, &ship, "start").is_err());
-        assert!(may_start(&own, &Id::commodore("F", "SQ"), "start").is_err());
+        assert!(may_start(&own, &Id::commodore("F", "SQ"), "start").is_err(), "not itself");
+        assert!(may_start(&own, &Id::admiral("F"), "start").is_err(), "not its admiral");
+        // an admiral: every member of its own fleet but itself
+        assert!(may_start(&admiral, &ship, "start").is_ok());
+        assert!(may_start(&admiral, &Id::commodore("F", "ZZ"), "relaunch").is_ok());
+        assert!(may_start(&admiral, &Id::admiral("F"), "stop").is_err(), "not itself");
+        assert!(may_start(&admiral, &Id::ship("G", "SQ", "S"), "start").is_err(), "not another fleet");
+        let msg = may_start(&admiral, &Id::ship("G", "SQ", "S"), "start").unwrap_err();
+        assert!(msg.contains("an admiral, the members of its own fleet"), "{msg}");
+        // ships and tenders: nothing
+        let a_ship = Caller::Member { id: ship.clone(), role: Role::Ship };
+        assert!(may_start(&a_ship, &Id::ship("F", "SQ", "T"), "start").is_err());
+    }
+
+    #[test]
+    fn config_authority_follows_the_same_scopes() {
+        let own = Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore };
+        let admiral = Caller::Member { id: Id::admiral("F"), role: Role::Admiral };
+        let a_ship = Caller::Member { id: Id::ship("F", "SQ", "S"), role: Role::Ship };
+        for scope in [Id::admiral("F"), Id::commodore("F", "ZZ"), Id::ship("F", "ZZ", "X")] {
+            assert!(may_config(&admiral, &scope).is_ok(), "{scope}");
+            assert!(may_config(&Caller::User, &scope).is_ok());
+        }
+        assert!(may_config(&admiral, &Id::admiral("G")).is_err(), "another fleet");
+        assert!(may_config(&own, &Id::commodore("F", "SQ")).is_ok(), "its squadron's settings");
+        assert!(may_config(&own, &Id::ship("F", "SQ", "NEW")).is_ok(), "its ships");
+        assert!(may_config(&own, &Id::ship("F", "ZZ", "X")).is_err());
+        assert!(may_config(&own, &Id::admiral("F")).is_err(), "not the fleet's settings");
+        assert!(may_config(&a_ship, &Id::ship("F", "SQ", "S")).is_err(), "a ship changes no config, not even its own");
+    }
+
+    #[test]
+    fn a_fix_is_a_members_when_the_table_lets_it_run_it() {
+        let own = Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore };
+        let admiral = Caller::Member { id: Id::admiral("F"), role: Role::Admiral };
+        let a_ship = Caller::Member { id: Id::ship("F", "SQ", "S"), role: Role::Ship };
+        for fix in ["nimitz start F/SQ/S", "nimitz relaunch F/SQ/S", "nimitz sweep F/SQ", "nimitz tender F/SQ fix go", "nimitz ship set F/SQ/S --mode auto", "nimitz squadron set F/SQ --comms open"] {
+            assert!(may_run(&own, fix), "commodore: {fix}");
+            assert!(may_run(&admiral, fix), "admiral: {fix}");
+        }
+        for fix in ["nimitz up F", "nimitz fleet set F --admiral-mode auto", "nimitz squadron new F/NEW", "nimitz relaunch F/SQ", "nimitz layout herdr F"] {
+            assert!(may_run(&admiral, fix), "admiral: {fix}");
+            assert!(!may_run(&own, fix), "not the commodore's: {fix}");
+        }
+        for fix in ["nimitz fleet new G", "nimitz fleet rm F", "nimitz machine add F box", "nimitz init", "nimitz stop 1a2b3c4d", "nimitz start G/SQ/S", "claude rm x"] {
+            assert!(!may_run(&admiral, fix), "the user's: {fix}");
+        }
+        assert!(may_run(&a_ship, "nimitz status") && may_run(&a_ship, "nimitz check F/SQ/S"));
+        assert!(!may_run(&a_ship, "nimitz start F/SQ/S"));
+        assert!(may_run(&own, "nimitz start F/SQ/S  # if it holds work"), "a comment is not an argument");
     }
 
     #[test]

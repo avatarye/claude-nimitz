@@ -347,7 +347,7 @@ fn a_commodore_starts_its_own_ship_only() {
     assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
     assert_eq!(sb.run_as("MAIN/ARGOS", &["start", "BETA", "--yes"]).code, 1, "never an admiral");
     for verb in [vec!["sweep", "MAIN/BOREAL", "--yes"], vec!["up", "MAIN", "--yes"], vec!["fleet", "new", "ZED", "--yes"]] {
-        assert_eq!(sb.run_as("MAIN/ARGOS", &verb).code, 1, "{verb:?} is the user's");
+        assert_eq!(sb.run_as("MAIN/ARGOS", &verb).code, 1, "{verb:?} is not a commodore's");
     }
     // a commodore sweeps its own squadron (contracts.md section 8)
     let r = sb.run_as("MAIN/ARGOS", &["sweep", "--yes"]);
@@ -355,9 +355,10 @@ fn a_commodore_starts_its_own_ship_only() {
 }
 
 #[test]
-fn a_ship_and_an_admiral_start_nothing() {
+fn a_ship_starts_nothing_and_an_admiral_only_in_its_own_fleet() {
     let sb = Sb::new(false);
-    for who in ["MAIN/ARGOS/CLEAN", "MAIN"] {
+    // a ship, and another fleet's admiral: nothing here
+    for who in ["MAIN/ARGOS/CLEAN", "BETA"] {
         let r = sb.run_as(who, &["start", "MAIN/ARGOS/FRESH", "--yes"]);
         assert_eq!(r.code, 1, "{who}: {}", r.out);
         assert!(r.out.contains("may not start"), "{}", r.out);
@@ -366,6 +367,17 @@ fn a_ship_and_an_admiral_start_nothing() {
     }
     assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
     assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
+    // MAIN's admiral: any member of MAIN, with the same plan step first
+    let r = sb.run_as("MAIN", &["start", "MAIN/ARGOS/FRESH", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = sb.run_as("MAIN", &["start", "MAIN/ARGOS/FRESH", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(live(&sb.member("MAIN/ARGOS/FRESH")));
+    assert_eq!(sb.run_as("MAIN", &["stop", "MAIN/ARGOS/FRESH", "--yes"]).code, 0);
+    assert_eq!(sb.run_as("MAIN", &["sweep", "--plan"]).code, 0, "its own fleet");
+    assert_eq!(sb.run_as("MAIN", &["sweep", "BETA", "--plan"]).code, 1, "not another fleet");
+    assert_eq!(sb.run_as("MAIN", &["up", "BETA", "--plan"]).code, 1);
+    assert_eq!(sb.run_as("MAIN", &["stop", "MAIN", "--yes"]).code, 1, "not itself");
     // a caller without authority gets only the authority refusal (BUG-51): no
     // other refusal, and never a fix only the user may run
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/DRIFT", "--plan"]);
@@ -373,6 +385,43 @@ fn a_ship_and_an_admiral_start_nothing() {
     assert!(!r.out.lines().any(|l| l.trim_start().starts_with("fix: nimitz relaunch")), "{}", r.out);
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/CLEAN", "--plan"]);
     assert_ne!(r.code, 0, "nothing to do is still not the caller's to do: {}", r.out);
+}
+
+#[test]
+fn config_changes_go_by_the_same_scopes_and_whole_fleets_stay_yours() {
+    let sb = Sb::new(false);
+    let ok = |who: &str, args: &[&str]| {
+        let r = sb.run_as(who, args);
+        assert_eq!(r.code, 0, "{who} {args:?}:\n{}", r.out);
+    };
+    let no = |who: &str, args: &[&str]| {
+        let r = sb.run_as(who, args);
+        assert_eq!(r.code, 1, "{who} {args:?}:\n{}", r.out);
+        assert!(r.out.contains("(authority)"), "{who} {args:?}:\n{}", r.out);
+    };
+    // a commodore: its squadron's settings and its ships
+    ok("MAIN/ARGOS", &["ship", "new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "You are NEWBIE.", "--yes"]);
+    ok("MAIN/ARGOS", &["ship", "set", "MAIN/ARGOS/NEWBIE", "--mode", "auto", "--plan"]);
+    ok("MAIN/ARGOS", &["squadron", "set", "MAIN/ARGOS", "--comms", "open", "--plan"]);
+    no("MAIN/ARGOS", &["ship", "new", "MAIN/BOREAL/X", "--dir", "managed", "--prompt", "x", "--plan"]);
+    no("MAIN/ARGOS", &["squadron", "new", "MAIN/EXTRA", "--brief", "x", "--plan"]);
+    no("MAIN/ARGOS", &["squadron", "rm", "MAIN/ARGOS", "--plan"]);
+    no("MAIN/ARGOS", &["fleet", "set", "MAIN", "--admiral-mode", "auto", "--plan"]);
+    // an admiral: its own fleet
+    ok("MAIN", &["squadron", "new", "MAIN/EXTRA", "--brief", "Extra squadron.", "--yes"]);
+    ok("MAIN", &["ship", "rm", "MAIN/ARGOS/NEWBIE", "--yes"]);
+    ok("MAIN", &["fleet", "set", "MAIN", "--admiral-mode", "auto", "--plan"]);
+    no("MAIN", &["ship", "new", "BETA/SQ/X", "--dir", "managed", "--prompt", "x", "--plan"]);
+    // a whole fleet, machines, migration: yours alone
+    no("MAIN", &["fleet", "new", "ZED", "--plan"]);
+    no("MAIN", &["fleet", "rm", "MAIN", "--plan"]);
+    no("MAIN", &["machine", "add", "MAIN", "box2", "--hostname", "box2", "--plan"]);
+    // ships and tenders change no config
+    no("MAIN/ARGOS/CLEAN", &["ship", "set", "MAIN/ARGOS/CLEAN", "--mode", "auto", "--plan"]);
+    no("MAIN/ARGOS/~fix", &["squadron", "set", "MAIN/ARGOS", "--comms", "open", "--plan"]);
+    // a refusal's fix is shown only when the caller may run it
+    let r = sb.run_as("MAIN/ARGOS", &["start", "MAIN/ARGOS/DRIFT", "--plan"]);
+    assert!(r.out.contains("fix: nimitz relaunch MAIN/ARGOS/DRIFT"), "its own ship's fix is its own:\n{}", r.out);
 }
 
 // ------------------------------------------------------------------ CRUD and top-down

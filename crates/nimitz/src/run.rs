@@ -3,7 +3,7 @@
 //! order, so the chain still comes up top-down.
 use crate::{out, Ctx};
 use nimitz_core::sessions::is_pane_step;
-use nimitz_core::{Id, Issue, Outcome, Plan, Role, Severity, Step};
+use nimitz_core::{Id, Issue, Outcome, Plan, Severity, Step};
 use nimitz_mux::{Mux, PaneRef, Place};
 use std::path::Path;
 
@@ -30,18 +30,16 @@ pub fn refusal(code: &str, message: String, fix: Option<String>, id: Option<Id>)
     Issue { code: code.into(), severity: Severity::Error, message, fix, id }
 }
 
-/// A member caller sees only fixes it may run itself; any other fix becomes
-/// "ask the user to run: ..." (BUG-51). The user sees every fix as is.
+/// A member caller sees only fixes it may run itself (`sessions::may_run`, the
+/// authority table); any other fix becomes "ask the user to run: ..." (BUG-51).
+/// The user sees every fix as is.
 pub fn fixes_for(caller: &nimitz_core::Caller, plan: &mut Plan) {
-    let nimitz_core::Caller::Member { role, .. } = caller else { return };
-    let mine = |f: &str| {
-        let read_only = f.starts_with("nimitz status") || f.starts_with("nimitz check");
-        let commodore = *role == Role::Commodore && ["nimitz start ", "nimitz tender ", "nimitz sweep "].iter().any(|p| f.starts_with(p));
-        read_only || commodore
-    };
+    if *caller == nimitz_core::Caller::User {
+        return;
+    }
     for i in plan.refusals.iter_mut().chain(plan.warnings.iter_mut()) {
         if let Some(f) = i.fix.take() {
-            i.fix = Some(if mine(&f) { f } else { format!("ask the user to run: {f}") });
+            i.fix = Some(if nimitz_core::sessions::may_run(caller, &f) { f } else { format!("ask the user to run: {f}") });
         }
     }
 }

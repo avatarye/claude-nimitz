@@ -46,5 +46,18 @@ commanded by a **commodore**; a squadron has **ships** (background agents);
 a commodore can send out **tenders** (helpers); sessions carry **crew**
 (sub-agents). Admiralty is the office where the admirals work.
 
+Who may run what (`nimitz` reads the caller from the session's labels; no
+labels is you):
+
+| Caller | May run |
+| --- | --- |
+| you | everything |
+| admiral | every command inside its own fleet, on any member but itself: start, stop, relaunch, rm, sweep, tender, adopt, up, layout herdr, fleet set, squadron new/set/rm, ship new/set/rm |
+| commodore | inside its own squadron: start, stop, relaunch, rm, sweep, tender, adopt for its ships and tenders; squadron set; ship new/set/rm |
+| ship, tender | nothing |
+
+`init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` stay yours. More
+authority skips nothing: every change is still `--plan` first, then `--yes`.
+
 Note: "Claude" is an Anthropic trademark. This name is for private use; check
 Anthropic's trademark guidelines before any public release.

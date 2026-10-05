@@ -117,13 +117,20 @@ Single-session commands: `nimitz admiral`, `commodore`, `launch`, `resume`,
 | Admiralty | A form for each create and update; `$EDITOR` for prompts; deletes confirm with the exact effects. Each form shows the `nimitz` command it runs. |
 | The skill | You ask in words ("add a ship for package X to ARGOS"); Claude runs `nimitz ... ` with flags. The skill has no rules of its own. |
 
-### 5.5 Who may start what
+### 5.5 Who may run what (widened in 0.3.1)
 
-| Caller | May start |
+| Caller | May run |
 | --- | --- |
-| you | admiral, commodore, ship, tender, `nimitz up` |
-| commodore | one of its own ships that it needs now; its tenders |
-| admiral, ship, tender | nothing |
+| you | everything |
+| admiral | inside its own fleet, on any member but itself: start, stop, relaunch, rm, sweep, tender, adopt; `up` and `layout herdr` for its fleet; `fleet set`, `squadron new/set/rm`, `ship new/set/rm` |
+| commodore | inside its own squadron: start, stop, relaunch, rm, sweep, tender, adopt for its ships and tenders; `squadron set`; `ship new/set/rm` |
+| ship, tender | nothing |
+
+Yours alone: `init`, `fleet new`, `fleet rm`, `machine add|rm`, `migrate`, and
+a session named by short id that is no member's (a stowaway outside the
+admiral's fleet, a stray). A commodore never removes its own squadron. The
+plan step stays: `--plan`, then `--yes`. Core: `sessions::may_start`,
+`may_config`, `may_run` (which fixes a member may run itself).
 
 `nimitz` reads the caller's labels from its env (fact: labels reach the Bash
 tool's processes).
