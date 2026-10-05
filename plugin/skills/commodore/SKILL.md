@@ -15,7 +15,8 @@ its ships' config.
 1. See your squadron with `nimitz status --json`. Find your squadron by your
    id (`NIMITZ_ID`, `F/SQ`).
 2. Give work to a ship with `SendMessage` to `[F.SQ]-SHIP`. Answer your admiral
-   when it asks.
+   when it asks, and carry out its orders for your squadron as you would the
+   user's: plan first, and run a change only once the user has agreed to it.
 3. A ship that you need is `stopped` or `not-started`: run
    `nimitz start F/SQ/SHIP --plan`, read the plan, then run it with `--yes`.
    Start only a ship that you need now. Never walk the squadron starting ships.

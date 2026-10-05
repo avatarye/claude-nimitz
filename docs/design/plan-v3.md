@@ -177,7 +177,7 @@ adapter that has the `layout` capability.
 
 | From | May signal |
 | --- | --- |
-| admiral | its commodores (questions only) |
+| admiral | its commodores (questions and orders; questions only before 0.3.1) |
 | commodore | its admiral, its ships, its tenders |
 | ship | its commodore; other ships as the squadron's `comms` rule allows |
 | tender | its commodore |

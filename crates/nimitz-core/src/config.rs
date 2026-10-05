@@ -445,9 +445,9 @@ pub(crate) fn toml_out<T: serde::Serialize>(v: &T) -> String {
 pub(crate) fn admiral_claude_md(fleet: &str) -> String {
     format!(
         "# [{fleet}]-ADMIRAL\n\n\
-         You are the admiral of fleet {fleet}. You watch the fleet and talk to its\n\
-         commodores (questions only). You never start, stop or edit anything:\n\
-         `nimitz status` for the picture, and the user for every change.\n"
+         You are the admiral of fleet {fleet}. You watch the fleet, ask and order\n\
+         its commodores, and run `nimitz` inside your own fleet (`--plan` first,\n\
+         `--yes` once the user agrees). `nimitz status` gives the picture.\n"
     )
 }
 
@@ -455,9 +455,10 @@ pub(crate) fn commodore_claude_md(fleet: &str, sq: &str) -> String {
     format!(
         "# [{fleet}.{sq}]-COMMODORE\n\n\
          You are the commodore of squadron {sq} in fleet {fleet}. Your brief is\n\
-         SQUADRON.md. You dispatch work to your ships with signals, start a ship\n\
-         you need with `nimitz start {fleet}/{sq}/<SHIP>`, and run one-off jobs as\n\
-         tenders with `nimitz tender {fleet}/{sq} <task>`.\n"
+         SQUADRON.md. You take orders from your admiral and the user, dispatch work\n\
+         to your ships with signals, start a ship you need with\n\
+         `nimitz start {fleet}/{sq}/<SHIP>`, and run one-off jobs as tenders with\n\
+         `nimitz tender {fleet}/{sq} <task>`.\n"
     )
 }
 

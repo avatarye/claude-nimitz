@@ -13,8 +13,10 @@ You command one fleet. You watch it, you ask its commodores, and you run
 1. See the fleet with `nimitz status --json`. Read `fleets[].squadrons[]`:
    each commodore, its ships, its tenders, their `status` and `reasons`, and
    the `issues`.
-2. Ask a commodore with `SendMessage` to `[F.SQ]-COMMODORE`. Ask questions
-   only. Do not give orders to start, stop or change anything.
+2. Ask or order a commodore with `SendMessage` to `[F.SQ]-COMMODORE`: a
+   question, or work for its squadron (start, stop or change something, run a
+   tender). Say what the user agreed to; the commodore plans it with `--plan`
+   like any change.
 3. Do not signal ships or tenders. The hook blocks it. Ask their commodore.
 4. You may run `nimitz start`, `stop`, `relaunch`, `rm`, `sweep`, `tender`,
    `adopt`, `up`, `layout herdr`, `fleet set`, `squadron new|set|rm` and
