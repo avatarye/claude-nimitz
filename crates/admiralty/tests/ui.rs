@@ -18,13 +18,20 @@ use ratatui::crossterm::event::KeyCode;
 #[test]
 fn each_fleet_is_a_gold_double_frame_with_squadron_frames_inside() {
     let mut t = demo();
+    // one fleet per tab
+    for fleet in ["MAIN", "FORGE", "LAB"] {
+        tab(&mut t.app, fleet);
+        let buf = draw(&mut t.app, 200, 60);
+        let ls = lines(&buf);
+        let tag = format!("[{fleet}]");
+        let y = ls.iter().position(|l| l.contains(&tag) && l.starts_with('\u{2554}')).unwrap_or_else(|| panic!("{tag} band"));
+        let gold = if fleet == "LAB" { mono::GOLD_DIM } else { mono::GOLD };
+        assert_eq!(buf[(0, y as u16)].fg, gold, "{tag} frame is gold (dimmed when it runs elsewhere)");
+        assert_eq!(ls.iter().filter(|l| l.starts_with('\u{2554}')).count(), 1, "only {tag} on its tab");
+    }
+    tab(&mut t.app, "MAIN");
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
-    for tag in ["[MAIN]", "[FORGE]", "[LAB]"] {
-        let y = ls.iter().position(|l| l.contains(tag) && l.starts_with('\u{2554}')).unwrap_or_else(|| panic!("{tag} band"));
-        let gold = if tag == "[LAB]" { mono::GOLD_DIM } else { mono::GOLD };
-        assert_eq!(buf[(0, y as u16)].fg, gold, "{tag} frame is gold (dimmed when it runs elsewhere)");
-    }
     // squadron frames open one cell in, inside the fleet's double line
     let argos = ls.iter().find(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
     assert!(argos.starts_with("\u{2551}\u{256d}"), "{argos}");
@@ -40,6 +47,7 @@ fn each_fleet_is_a_gold_double_frame_with_squadron_frames_inside() {
 #[test]
 fn title_band_is_tinted_by_state_with_counts_on_the_right() {
     let mut t = demo();
+    tab(&mut t.app, "FORGE");
     keys(&mut t.app, "j"); // move the cursor off the first band so its tint shows
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
@@ -49,6 +57,8 @@ fn title_band_is_tinted_by_state_with_counts_on_the_right() {
     // right side: `icon n`, slashes between, right-aligned as a group
     let band = &ls[y as usize];
     assert!(band.contains("^10 / ^3 / *2 / -1 / x2 / o3 / ?1"), "{band}");
+    tab(&mut t.app, "MAIN");
+    let ls = lines(&draw(&mut t.app, 200, 60));
     let main = ls.iter().find(|l| l.contains("[MAIN]") && l.contains("needs you")).unwrap();
     assert!(main.contains("!2 / *3 / -2 / x1"), "needs-you first: {main}");
 }
@@ -56,21 +66,25 @@ fn title_band_is_tinted_by_state_with_counts_on_the_right() {
 #[test]
 fn band_counts_are_a_right_aligned_group_and_narrow_bands_keep_the_key_ones() {
     let mut t = demo();
-    let ls = lines(&draw(&mut t.app, 200, 60));
-    // every band's group ends at the same column (nested bands too)
-    let end = |has: &str| {
+    let main_ls = lines(&draw(&mut t.app, 200, 60));
+    tab(&mut t.app, "FORGE");
+    let forge_ls = lines(&draw(&mut t.app, 200, 60));
+    // every band's group ends at the same column (nested bands too, other tabs too)
+    let end = |ls: &[String], has: &str| {
         let l = ls.iter().find(|l| l.contains(has)).unwrap();
         let c: Vec<char> = l.chars().take(130).collect();
         let corner = c.iter().rposition(|ch| "\u{2557}\u{256e}".contains(*ch)).unwrap();
         c[..corner].iter().rposition(|ch| *ch != ' ').unwrap()
     };
-    assert_eq!(end("[MAIN]   needs you"), end("[FORGE]   broken"));
-    assert_eq!(end("[MAIN]   needs you"), end("ARGOS   busy"));
+    assert_eq!(end(&main_ls, "[MAIN]   needs you"), end(&forge_ls, "[FORGE]   broken"));
+    assert_eq!(end(&main_ls, "[MAIN]   needs you"), end(&main_ls, "ARGOS   busy"));
     // under 100 columns: needs-you and errors only
+    let forge_ls = lines(&draw(&mut t.app, 90, 40));
+    tab(&mut t.app, "MAIN");
     let ls = lines(&draw(&mut t.app, 90, 40));
     let main = ls.iter().find(|l| l.contains("[MAIN]")).unwrap();
     assert!(main.contains("!2") && !main.contains("*3"), "narrow: {main}");
-    let forge = ls.iter().find(|l| l.contains("[FORGE]")).unwrap();
+    let forge = forge_ls.iter().find(|l| l.contains("[FORGE]")).unwrap();
     assert!(forge.contains("^10") && !forge.contains("^3"), "narrow: errors only: {forge}");
 }
 
@@ -81,8 +95,10 @@ fn columns_line_up_across_fleet_squadron_and_stowaway_frames() {
     let header = col_of(&ls, "STATUS", "STATUS");
     let admiral = col_of(&ls, "[MAIN]-ADMIRAL", "- idle");
     let ship = col_of(&ls, "[MAIN.ARGOS]-BOOM", "- idle");
-    let stow = col_of(&ls, "scratch-run", "* live");
-    let forge_ship = col_of(&ls, "[FORGE.MOLD]-CAST", "- idle");
+    tab(&mut t.app, "FORGE");
+    let forge = lines(&draw(&mut t.app, 200, 60));
+    let stow = col_of(&forge, "scratch-run", "* live");
+    let forge_ship = col_of(&forge, "[FORGE.MOLD]-CAST", "- idle");
     assert_eq!(header, admiral);
     assert_eq!(admiral, ship);
     assert_eq!(ship, stow);
@@ -106,8 +122,12 @@ fn column_widths_grow_to_their_maxima_and_keep_detail_on_narrow_screens() {
 #[test]
 fn several_fleets_in_config_order_and_an_elsewhere_fleet_is_folded() {
     let mut t = demo();
-    let bands: Vec<String> = t.app.rows.iter().filter(|r| r.node.kind == Kind::FleetBand).map(|r| r.node.name.clone()).collect();
-    assert_eq!(bands, ["[MAIN]", "[FORGE]", "[LAB]"]);
+    // a tab per fleet, in config order; each tab shows its own fleet only
+    assert_eq!(t.app.tabs(), ["MAIN", "FORGE", "LAB"]);
+    let bands = |t: &TestApp| -> Vec<String> { t.app.rows.iter().filter(|r| r.node.kind == Kind::FleetBand).map(|r| r.node.name.clone()).collect() };
+    assert_eq!(bands(&t), ["[MAIN]"]);
+    tab(&mut t.app, "LAB");
+    assert_eq!(bands(&t), ["[LAB]"]);
     let lab = t.app.rows.iter().find(|r| r.node.name == "[LAB]").unwrap();
     assert!(!lab.expanded, "a fleet that does not run here starts folded");
     assert!(!t.app.rows.iter().any(|r| r.node.name == "[LAB.OPTICS]-LENS"));
@@ -212,10 +232,12 @@ fn filter_next_match_and_pane_steps() {
 fn flagged_only_stowaways_and_fleet_state_filter() {
     let mut t = demo();
     keys(&mut t.app, "F");
-    let ids: Vec<String> = t.app.rows.iter().filter(|r| matches!(r.node.kind, Kind::Member(_))).map(|r| r.node.id.clone()).collect();
-    assert!(ids.contains(&"M:MAIN/KITS/PIPELINE".to_string()), "needs you is flagged");
-    assert!(ids.contains(&"M:FORGE/IRON/ANVIL".to_string()), "an issue is flagged");
-    assert!(!ids.contains(&"M:MAIN/ARGOS/BOOM".to_string()), "a clean idle ship is not");
+    let ids = |t: &TestApp| -> Vec<String> { t.app.rows.iter().filter(|r| matches!(r.node.kind, Kind::Member(_))).map(|r| r.node.id.clone()).collect() };
+    assert!(ids(&t).contains(&"M:MAIN/KITS/PIPELINE".to_string()), "needs you is flagged");
+    assert!(!ids(&t).contains(&"M:MAIN/ARGOS/BOOM".to_string()), "a clean idle ship is not");
+    tab(&mut t.app, "FORGE");
+    assert!(ids(&t).contains(&"M:FORGE/IRON/ANVIL".to_string()), "an issue is flagged");
+    tab(&mut t.app, "MAIN");
     keys(&mut t.app, "F");
     assert!(t.app.rows.iter().any(|r| r.node.id == "STOW"));
     keys(&mut t.app, "I");
@@ -328,6 +350,7 @@ fn issues_view_lists_every_issue_code_with_its_fix() {
 #[test]
 fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
     let mut t = demo();
+    tab(&mut t.app, "FORGE");
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     for (row, code) in [
@@ -359,18 +382,22 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
 #[test]
 fn pane_dots_at_row_start_in_herdr_colours() {
     let mut t = demo();
-    let buf = draw(&mut t.app, 200, 60);
-    let ls = lines(&buf);
-    for (row, dot, color) in [
-        ("[MAIN]-ADMIRAL", "\u{25cb}", mono::GREEN),
-        ("[MAIN.ARGOS]-COMMODORE", "\u{25cf}", mono::YELLOW),
-        ("[FORGE]-ADMIRAL", "\u{25cf}", mono::CYAN),
-        ("scratch-run", "\u{00b7}", mono::COMMENT),
+    for (fleet, row, dot, color) in [
+        ("MAIN", "[MAIN]-ADMIRAL", "\u{25cb}", mono::GREEN),
+        ("MAIN", "[MAIN.ARGOS]-COMMODORE", "\u{25cf}", mono::YELLOW),
+        ("FORGE", "[FORGE]-ADMIRAL", "\u{25cf}", mono::CYAN),
+        ("FORGE", "scratch-run", "\u{00b7}", mono::COMMENT),
     ] {
+        tab(&mut t.app, fleet);
+        let buf = draw(&mut t.app, 200, 60);
+        let ls = lines(&buf);
         let y = ls.iter().position(|l| l.contains(row)).unwrap();
         assert_eq!(buf[(2, y as u16)].symbol(), dot, "{row}");
         assert_eq!(buf[(2, y as u16)].fg, color, "{row}");
     }
+    tab(&mut t.app, "MAIN");
+    let buf = draw(&mut t.app, 200, 60);
+    let ls = lines(&buf);
     // KITS commodore's pane is blocked: needs you, and the dot is red
     let y = ls.iter().position(|l| l.contains("[MAIN.KITS]-COMMODORE")).unwrap();
     assert_eq!(buf[(2, y as u16)].fg, mono::PINK);
@@ -468,7 +495,7 @@ fn open_attaches_a_background_session_in_a_new_pane() {
     assert!(p.panes[0].0.cmd.contains(&"attach".to_string()));
     t.app.begin(&p).unwrap();
     let calls = t.mux.calls.lock().unwrap().clone();
-    assert!(calls[0].starts_with("open ") && calls[0].contains("attach") && calls[0].contains("workspace: \"MAIN.ARGOS\"") && calls[0].contains("label: \"BOLT\""), "{calls:?}");
+    assert!(calls[0].starts_with("open ") && calls[0].contains("attach") && calls[0].contains("workspace: \"MAIN.ARGOS\"") && calls[0].contains("label: \"MAIN.ARGOS.BOLT\""), "{calls:?}");
     // an interactive lead is not attached; it lives in its terminal
     goto(&mut t.app, "M:MAIN/ARGOS");
     assert!(t.app.available(Act::Open).unwrap_err().contains("interactive"));
@@ -784,6 +811,70 @@ fn bug45_a_missing_or_absurd_age_shows_a_question_mark() {
         assert!(age.contains(" ? "), "{name}: AGE shows ?: {l}");
     }
     // no session at all: the cell stays empty
+    tab(&mut t.app, "FORGE");
+    let ls = lines(&draw(&mut t.app, 200, 60));
     let l = ls.iter().find(|l| l.contains("[FORGE.IRON]-QUENCH")).unwrap();
     assert!(!l.contains(" ? "), "{l}");
+}
+
+// ------------------------------------------------------------------ fleet tabs
+
+#[test]
+fn a_tab_per_fleet_and_tab_keys_switch_them() {
+    let mut t = demo();
+    assert_eq!(t.app.tabs(), ["MAIN", "FORGE", "LAB"], "every stowaway of the demo sits in a fleet's folders");
+    assert_eq!(t.app.tab.as_deref(), Some("MAIN"), "the first tab shows first");
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    assert!(ls[1].contains("1 MAIN") && ls[1].contains("2 FORGE") && ls[1].contains("3 LAB"), "tab bar: {}", ls[1]);
+    assert!(ls[1].contains("!2"), "MAIN's tab says two members need you: {}", ls[1]);
+    press(&mut t.app, KeyCode::Tab);
+    assert_eq!(t.app.tab.as_deref(), Some("FORGE"));
+    assert_eq!(t.app.current().unwrap().node.id, "F:FORGE", "the cursor starts at the tab's top");
+    press(&mut t.app, KeyCode::Tab);
+    press(&mut t.app, KeyCode::Tab);
+    assert_eq!(t.app.tab.as_deref(), Some("MAIN"), "wraps");
+    press(&mut t.app, KeyCode::BackTab);
+    assert_eq!(t.app.tab.as_deref(), Some("LAB"));
+    keys(&mut t.app, "2");
+    assert_eq!(t.app.tab.as_deref(), Some("FORGE"));
+    keys(&mut t.app, "9");
+    assert_eq!(t.app.tab.as_deref(), Some("FORGE"), "no tab 9: nothing happens");
+    // a jump to a row on another tab (needs-you list, issue list) shows that tab
+    assert!(t.app.goto_id("M:MAIN/KITS/PIPELINE"));
+    assert_eq!(t.app.tab.as_deref(), Some("MAIN"));
+}
+
+#[test]
+fn stowaways_show_on_their_fleets_tab_and_the_rest_on_unassigned() {
+    let mut b = fixtures::demo();
+    let mut loose = b.snap.stowaways[0].clone();
+    loose.session_id = "dd44dd44-0000-4000-8000-000000000000".into();
+    loose.name = "loose-run".into();
+    loose.cwd = "/home/u/.claude-nimitz/scratch".into();
+    b.snap.stowaways.push(loose);
+    let mut t = fixture_app(b, false);
+    assert_eq!(t.app.tabs(), ["MAIN", "FORGE", "LAB", admiralty::view::UNASSIGNED]);
+    let stow = |t: &TestApp| -> Vec<String> { t.app.rows.iter().filter(|r| r.node.kind == Kind::Stowaway).map(|r| r.node.name.clone()).collect() };
+    assert_eq!(stow(&t), ["one-off probe", "[KITS]-LEAD"], "MAIN: the ones in MAIN's folders");
+    tab(&mut t.app, "FORGE");
+    assert_eq!(stow(&t), ["scratch-run"]);
+    tab(&mut t.app, admiralty::view::UNASSIGNED);
+    assert_eq!(stow(&t), ["loose-run"], "under the nimitz home, in no fleet's folders");
+    assert!(!t.app.rows.iter().any(|r| r.node.kind == Kind::FleetBand), "no fleet on the unassigned tab");
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.lines().nth(1).unwrap().contains("4 unassigned"), "{}", s.lines().nth(1).unwrap());
+    assert!(s.contains("in no fleet's folders"), "the band says what the list is");
+}
+
+#[test]
+fn a_name_search_spans_every_fleet() {
+    let mut t = demo();
+    keys(&mut t.app, "/anvil");
+    press(&mut t.app, KeyCode::Enter);
+    assert_eq!(t.app.tab.as_deref(), Some("MAIN"));
+    assert!(t.app.rows.iter().any(|r| r.node.id == "M:FORGE/IRON/ANVIL"), "found on another fleet's tab");
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.lines().nth(1).unwrap().contains("search: every fleet"), "{}", s.lines().nth(1).unwrap());
+    press(&mut t.app, KeyCode::Esc);
+    assert!(!t.app.rows.iter().any(|r| r.node.id == "M:FORGE/IRON/ANVIL"), "cleared: the tab again");
 }

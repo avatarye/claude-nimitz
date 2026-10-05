@@ -1165,16 +1165,16 @@ fn layout_spec_lays_out_leads_and_attaches_live_ships() {
     let spec = layout::plan(&w.env, &snap, Some("BETA"), false, &Caller::User, false);
     assert_eq!(spec.workspaces.len(), 1);
     let t = &spec.workspaces[0].tabs[0];
-    assert_eq!((spec.workspaces[0].label.as_str(), t.label.as_str(), &t.kind), ("BETA", "ADMIRAL", &TabKind::Start));
+    assert_eq!((spec.workspaces[0].label.as_str(), t.label.as_str(), &t.kind), ("BETA", "BETA.ADMIRAL", &TabKind::Start));
     assert!(t.cmd.contains(&"-c".to_string()));
     assert_eq!(spec.plan.steps.len(), 1);
     // ships: an Attach tab per live ship, in its squadron's workspace
     let mut spec = layout::plan(&w.env, &snap, Some("MAIN"), true, &Caller::User, false);
     let argos = spec.workspaces.iter().find(|w| w.label == "MAIN.ARGOS").unwrap();
-    let clean = argos.tabs.iter().find(|t| t.label == "CLEAN").unwrap().clone();
+    let clean = argos.tabs.iter().find(|t| t.label == "MAIN.ARGOS.CLEAN").unwrap().clone();
     assert_eq!(clean.kind, TabKind::Attach);
     assert_eq!(clean.cmd[1], "attach");
-    assert!(!argos.tabs.iter().any(|t| t.label == "STOPPED"), "a stopped ship gets no tab");
+    assert!(!argos.tabs.iter().any(|t| t.label == "MAIN.ARGOS.STOPPED"), "a stopped ship gets no tab");
     // a ship already shown in a pane is dropped
     let before = spec.plan.steps.len();
     layout::drop_shown(&mut spec, &[clean.session_id.clone().unwrap()]);

@@ -269,6 +269,40 @@ pub struct View<'a> {
     pub panes: &'a [Pane],
     pub icons: &'a Icons,
     pub now: f64,
+    /// the tab shown: a fleet id, or UNASSIGNED; None shows every fleet
+    pub tab: Option<&'a str>,
+}
+
+/// The tab of stowaways that no one fleet's folders hold (`~` is never in a fleet name).
+pub const UNASSIGNED: &str = "~UNASSIGNED";
+
+/// What a tab is called on screen.
+pub fn tab_title(tab: &str) -> String {
+    if tab == UNASSIGNED {
+        "unassigned".into()
+    } else {
+        tab.to_string()
+    }
+}
+
+/// The tabs, in order: every fleet (a broken one too), then UNASSIGNED when a
+/// stowaway belongs to no fleet.
+pub fn tabs(snap: &Snapshot) -> Vec<String> {
+    let mut out: Vec<String> = snap.fleets.iter().map(|f| f.id.0.clone()).collect();
+    for f in broken_fleets(snap) {
+        if !out.contains(&f.0) {
+            out.push(f.0);
+        }
+    }
+    if snap.stowaways.iter().any(|s| nimitz_core::snapshot::stowaway_fleet(snap, s).is_none()) {
+        out.push(UNASSIGNED.into());
+    }
+    out
+}
+
+/// The tab a stowaway shows in.
+pub fn stowaway_tab(snap: &Snapshot, s: &SessionInfo) -> String {
+    nimitz_core::snapshot::stowaway_fleet(snap, s).unwrap_or_else(|| UNASSIGNED.into())
 }
 
 fn worst_of(issues: &[Issue]) -> Option<Severity> {
@@ -669,8 +703,10 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
             || m.session.as_ref().map(|s| s.name.to_lowercase().contains(&q)).unwrap_or(false)
             || m.crew.iter().any(|c| c.label.to_lowercase().contains(&q))
     };
+    // a name filter searches every fleet; otherwise the tab's fleet only
+    let on_tab = |fleet: &str| !q.is_empty() || v.tab.map(|t| t == fleet).unwrap_or(true);
     let mut out = vec![];
-    for f in &snap.fleets {
+    for f in snap.fleets.iter().filter(|f| on_tab(f.id.fleet())) {
         let state = FleetState::of(f);
         if !v.fleet_states[state.index()] {
             continue;
@@ -714,12 +750,14 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
     }
     // fleets whose config does not load: core leaves them out; show them broken
     if q.is_empty() {
-        for fid in broken_fleets(snap) {
+        for fid in broken_fleets(snap).into_iter().filter(|f| on_tab(f.fleet())) {
             out.push(broken_band(snap, &fid, v));
         }
     }
-    if v.show_stowaways && !snap.stowaways.is_empty() && q.is_empty() && !v.flagged_only {
-        let live = snap.stowaways.iter().filter(|s| s.pid.is_some()).count();
+    // a fleet's tab lists the stowaways in its folders; UNASSIGNED the rest
+    let stowaways: Vec<&SessionInfo> = snap.stowaways.iter().filter(|s| v.tab.map(|t| stowaway_tab(snap, s) == t).unwrap_or(true)).collect();
+    if v.show_stowaways && !stowaways.is_empty() && q.is_empty() && !v.flagged_only {
+        let live = stowaways.iter().filter(|s| s.pid.is_some()).count();
         let mut n = Node::new("STOW".into(), Kind::StowBand);
         n.default_expand = true;
         n.icon = v.icons.stowaway;
@@ -729,9 +767,14 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
         n.kind_text = "group".into();
         n.frame = Some(mono::PINK);
         n.band_bg = Some(mono::T_PINK);
-        n.detail = vec![Span::styled("sessions in fleet scope with no labels — adopt or remove", st(mono::SOFT))];
-        n.title_right = vec![Span::styled(format!("{live} live / {} total", snap.stowaways.len()), bold(mono::PINK))];
-        n.children = snap.stowaways.iter().map(|s| stow_node(s, snap, v)).collect();
+        let scope = match v.tab {
+            Some(UNASSIGNED) => "sessions under the nimitz home, in no fleet's folders, with no labels — adopt or remove",
+            Some(_) => "sessions in this fleet's folders with no labels — adopt or remove",
+            None => "sessions in fleet scope with no labels — adopt or remove",
+        };
+        n.detail = vec![Span::styled(scope, st(mono::SOFT))];
+        n.title_right = vec![Span::styled(format!("{live} live / {} total", stowaways.len()), bold(mono::PINK))];
+        n.children = stowaways.iter().map(|s| stow_node(s, snap, v)).collect();
         out.push(n);
     }
     out

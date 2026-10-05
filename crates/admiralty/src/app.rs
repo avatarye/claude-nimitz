@@ -94,6 +94,9 @@ pub struct Saved {
     pub flagged_only: bool,
     pub show_stowaways: bool,
     pub split: String,
+    /// the fleet tab shown (a fleet id, or view::UNASSIGNED)
+    #[serde(default)]
+    pub tab: Option<String>,
 }
 
 pub struct App {
@@ -109,6 +112,8 @@ pub struct App {
     pub show_stowaways: bool,
     pub flagged_only: bool,
     pub fleet_states: [bool; 7],
+    /// the fleet tab shown (a fleet id, or view::UNASSIGNED); fixed up on each rebuild
+    pub tab: Option<String>,
     pub modal: Option<Modal>,
     pub toast: Option<Toast>,
     pub icons: &'static Icons,
@@ -127,13 +132,15 @@ pub struct App {
 }
 
 pub const HELP: &[(&str, &str)] = &[
+    ("tab / shift-tab", "next / previous fleet tab (each fleet, then unassigned stowaways)"),
+    ("1 - 9", "fleet tab N"),
     ("j / k", "down / up"),
     ("h / l", "fold or go to parent / unfold or go to first child"),
     ("gg / G", "top / bottom"),
     ("ctrl-d / ctrl-u", "half page down / up"),
     ("ctrl-e / ctrl-y", "scroll the detail pane"),
     ("space", "fold / unfold"),
-    ("/  n / N", "filter by name; next / previous match"),
+    ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane (else fold / unfold)"),
     ("J / K", "next / previous row with a pane"),
     ("!", "everything waiting on you"),
@@ -166,6 +173,7 @@ impl App {
             show_stowaways: true,
             flagged_only: false,
             fleet_states: [true; 7],
+            tab: None,
             modal: None,
             toast: None,
             icons: if ascii { &ASCII } else { &NERD },
@@ -206,6 +214,7 @@ impl App {
                 Split::Horizontal => "horizontal",
             }
             .into(),
+            tab: self.tab.clone(),
         }
     }
 
@@ -219,6 +228,7 @@ impl App {
         }
         self.flagged_only = s.flagged_only;
         self.show_stowaways = s.show_stowaways;
+        self.tab = s.tab.clone();
         self.split = match s.split.as_str() {
             "vertical" => Split::Vertical,
             "horizontal" => Split::Horizontal,
@@ -273,6 +283,11 @@ impl App {
         let keep = self.rows.get(self.cursor).map(|r| r.node.id.clone());
         let now = self.now();
         let Some(b) = &self.bundle else { return };
+        // the tab shown must exist: else the first one
+        let tabs = crate::view::tabs(&b.snap);
+        if !self.tab.as_ref().is_some_and(|t| tabs.contains(t)) {
+            self.tab = tabs.first().cloned();
+        }
         let view = View {
             filter: &self.filter,
             flagged_only: self.flagged_only,
@@ -281,6 +296,7 @@ impl App {
             panes: &b.panes,
             icons: self.icons,
             now,
+            tab: self.tab.as_deref(),
         };
         let nodes = build_nodes(&b.snap, &view);
         self.rows = flatten(&nodes, &self.expanded);
@@ -329,7 +345,15 @@ impl App {
         self.toast = Some(Toast { msg: msg.into(), style, at: Instant::now() });
     }
 
+    /// Put the cursor on the row with this id, showing its tab first when the
+    /// row lives on another one.
     pub fn goto_id(&mut self, id: &str) -> bool {
+        if !self.rows.iter().any(|r| r.node.id == id) {
+            if let Some(t) = self.tab_of_row(id).filter(|t| Some(t) != self.tab.as_ref()) {
+                self.tab = Some(t);
+                self.rebuild();
+            }
+        }
         if let Some(i) = self.rows.iter().position(|r| r.node.id == id) {
             self.cursor = i;
             true
@@ -338,8 +362,26 @@ impl App {
         }
     }
 
+    /// The tab a row id belongs to: its stowaway's tab (`SW:<sid>`), else the
+    /// fleet its id names (`F:F`, `M:F/SQ/X`, `C:F/SQ/X:crew`, ...).
+    pub fn tab_of_row(&self, row_id: &str) -> Option<String> {
+        let (kind, rest) = row_id.split_once(':')?;
+        let b = self.bundle.as_ref()?;
+        if kind == "SW" {
+            return b.snap.stowaways.iter().find(|s| s.session_id == rest).map(|s| crate::view::stowaway_tab(&b.snap, s));
+        }
+        let fleet = rest.split([':', '/']).next()?;
+        crate::view::tabs(&b.snap).into_iter().find(|t| t == fleet)
+    }
+
     /// Show a row by id even if a filter or a fold hides it.
     pub fn reveal(&mut self, row_id: &str, member: Option<&Id>) {
+        // a row on another tab: show that tab
+        let tab = member.map(|id| id.fleet().to_string()).or_else(|| self.tab_of_row(row_id));
+        if tab.is_some() && tab != self.tab {
+            self.tab = tab;
+            self.rebuild();
+        }
         if let Some(id) = member {
             self.expanded.insert(format!("F:{}", id.fleet()), true);
             if let Some(sq) = id.squadron() {
@@ -357,6 +399,42 @@ impl App {
             self.rebuild();
             self.goto_id(row_id);
         }
+    }
+
+    /// The tabs as the view has them now.
+    pub fn tabs(&self) -> Vec<String> {
+        self.bundle.as_ref().map(|b| crate::view::tabs(&b.snap)).unwrap_or_default()
+    }
+
+    /// Show tab `i` (wrapping), cursor on its first row.
+    fn show_tab(&mut self, i: i64) {
+        let tabs = self.tabs();
+        if tabs.is_empty() {
+            return;
+        }
+        let i = i.rem_euclid(tabs.len() as i64) as usize;
+        if self.tab.as_deref() != Some(tabs[i].as_str()) {
+            self.tab = Some(tabs[i].clone());
+            self.cursor = 0;
+            self.rebuild();
+        }
+    }
+
+    /// Show the tab named `tab` (a fleet id, or view::UNASSIGNED), if it exists.
+    pub fn show_fleet(&mut self, tab: &str) -> bool {
+        match self.tabs().iter().position(|t| t == tab) {
+            Some(i) => {
+                self.show_tab(i as i64);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn step_tab(&mut self, by: i64) {
+        let tabs = self.tabs();
+        let at = self.tab.as_ref().and_then(|t| tabs.iter().position(|x| x == t)).unwrap_or(0) as i64;
+        self.show_tab(at + by);
     }
 
     fn set_expanded(&mut self, id: &str, open: bool) {
@@ -747,6 +825,11 @@ impl App {
         let last = self.rows.len().saturating_sub(1);
         match (k.code, ctrl) {
             (KeyCode::Char('q'), _) => return Some(Effect::Quit),
+            (KeyCode::Tab, _) => self.step_tab(1),
+            (KeyCode::BackTab, _) => self.step_tab(-1),
+            (KeyCode::Char(c @ '1'..='9'), false) if ((c as usize) - ('1' as usize)) < self.tabs().len() => {
+                self.show_tab(c as i64 - '1' as i64)
+            }
             (KeyCode::Char('j') | KeyCode::Down, _) => self.cursor = (self.cursor + 1).min(last),
             (KeyCode::Char('k') | KeyCode::Up, _) => self.cursor = self.cursor.saturating_sub(1),
             (KeyCode::Char('h') | KeyCode::Left, _) => self.fold(),

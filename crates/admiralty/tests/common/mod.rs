@@ -110,6 +110,11 @@ pub fn goto(app: &mut App, id: &str) {
     assert!(app.goto_id(id), "no row {id}; rows: {:?}", app.rows.iter().map(|r| r.node.id.clone()).collect::<Vec<_>>());
 }
 
+/// Show a fleet's tab (or view::UNASSIGNED).
+pub fn tab(app: &mut App, fleet: &str) {
+    assert!(app.show_fleet(fleet), "no tab {fleet}; tabs: {:?}", app.tabs());
+}
+
 pub fn toast(app: &App) -> String {
     app.toast.as_ref().map(|t| t.msg.clone()).unwrap_or_default()
 }

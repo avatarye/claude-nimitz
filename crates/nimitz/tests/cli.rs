@@ -562,7 +562,7 @@ fn layout_herdr() {
     // --ships: attach tabs for live ships; stopped ones are skipped
     let r = sb.run(&["layout", "herdr", "MAIN", "--ships", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("tab CLEAN in workspace MAIN.ARGOS"), "{}", r.out);
+    assert!(r.out.contains("tab MAIN.ARGOS.CLEAN in workspace MAIN.ARGOS"), "{}", r.out);
     assert!(r.out.contains("MAIN/ARGOS/STOPPED is not live; no tab"), "{}", r.out);
     assert!(sb.calls().contains(" attach "), "{}", sb.calls());
 }

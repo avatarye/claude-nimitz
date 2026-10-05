@@ -12,7 +12,7 @@ pub fn workspace_of(id: &Id) -> String {
     nimitz_core::layout::workspace_of(id)
 }
 
-/// Tab label: ADMIRAL, COMMODORE, the ship's name, or `~task`.
+/// Tab label: `F.ADMIRAL`, `F.SQ.COMMODORE`, `F.SQ.SHIP` or `F.SQ.~task`.
 pub fn tab_of(id: &Id) -> String {
     nimitz_core::layout::tab_of(id)
 }

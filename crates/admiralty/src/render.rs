@@ -40,8 +40,10 @@ pub fn body_areas(app: &App, body: Rect) -> (Rect, Rect, bool) {
 pub fn draw(app: &mut App, f: &mut Frame) {
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), area);
-    let [top, body, bottom] = Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    let [top, tabs, body, bottom] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)]).areas(area);
     f.render_widget(Paragraph::new(top_line(app, top.width as usize)).style(Style::new().bg(mono::BG_HI)), top);
+    f.render_widget(Paragraph::new(tab_line(app, tabs.width as usize)).style(Style::new().bg(mono::BG)), tabs);
     let (left, right, _) = body_areas(app, body);
     draw_list(app, f, left);
     let compact = right.height < 16;
@@ -71,6 +73,47 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         Some(Modal::Form(form)) => draw_form(f, area, form),
         None => {}
     }
+}
+
+/// One tab per fleet, then `unassigned` when stowaways sit in no fleet's
+/// folders: `1 HOME`, with `!n` where members need you. The shown tab is
+/// inverted. A tab that does not fit is cut whole; the shown one always shows.
+fn tab_line(app: &App, width: usize) -> Line<'static> {
+    let Some(b) = &app.bundle else { return Line::default() };
+    let need = |tab: &str| -> usize {
+        b.snap.fleets.iter().filter(|f| f.id.0 == tab).flat_map(crate::view::fleet_members).filter(|m| m.status == nimitz_core::Status::NeedsYou).count()
+    };
+    let tabs = crate::view::tabs(&b.snap);
+    let mut parts: Vec<(Vec<Span<'static>>, bool)> = vec![];
+    let searching = !app.filter.trim().is_empty();
+    if searching {
+        parts.push((vec![Span::styled(" search: every fleet ".to_string(), Style::new().fg(mono::BG).bg(mono::YELLOW).add_modifier(Modifier::BOLD)), Span::raw(" ")], true));
+    }
+    for (i, t) in tabs.iter().enumerate() {
+        let on = !searching && app.tab.as_deref() == Some(t.as_str());
+        let key = if i < 9 { format!("{} ", i + 1) } else { String::new() };
+        let style = if on { Style::new().fg(mono::BG).bg(mono::GOLD).add_modifier(Modifier::BOLD) } else { st(mono::SOFT) };
+        let mut sp = vec![Span::styled(format!(" {key}{} ", crate::view::tab_title(t)), style)];
+        let n = need(t);
+        if n > 0 {
+            sp.push(Span::styled(format!("!{n} "), bold(mono::PINK)));
+        }
+        sp.push(Span::raw(" "));
+        parts.push((sp, on));
+    }
+    let w = |v: &[Span]| v.iter().map(|s| s.content.width()).sum::<usize>();
+    let mut used = parts.iter().filter(|(_, on)| *on).map(|(sp, _)| w(sp)).sum::<usize>();
+    let mut out = vec![];
+    for (sp, on) in parts {
+        let n = w(&sp);
+        if on || used + n <= width {
+            if !on {
+                used += n;
+            }
+            out.extend(sp);
+        }
+    }
+    Line::from(out)
 }
 
 fn top_line(app: &App, width: usize) -> Line<'static> {

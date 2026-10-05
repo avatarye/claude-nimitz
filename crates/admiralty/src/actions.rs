@@ -316,18 +316,9 @@ fn member_id(target: &Target) -> Option<Id> {
 }
 
 /// The pane a member opens in, as `nimitz` places it: workspace `F` or
-/// `F.SQ`, tab ADMIRAL, COMMODORE, the ship's name or `~task`.
+/// `F.SQ`, tab `F.ADMIRAL`, `F.SQ.COMMODORE`, `F.SQ.SHIP` or `F.SQ.~task`.
 pub fn place_for(id: &Id) -> Place {
-    let workspace = match id.squadron() {
-        Some(sq) => format!("{}.{sq}", id.fleet()),
-        None => id.fleet().to_string(),
-    };
-    let label = match id.role() {
-        Role::Admiral => "ADMIRAL".into(),
-        Role::Commodore => "COMMODORE".into(),
-        _ => id.parts().get(2).map(|s| s.to_string()).unwrap_or_default(),
-    };
-    Place::Tab { workspace, label }
+    Place::Tab { workspace: nimitz_core::layout::workspace_of(id), label: nimitz_core::layout::tab_of(id) }
 }
 
 /// Without a multiplexer a plan that must open a pane (an admiral or commodore

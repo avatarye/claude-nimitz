@@ -398,6 +398,34 @@ fn idle_hint(needs: &str) -> bool {
 
 /// A folder as a comparable string: the real path (of its longest existing
 /// prefix), no trailing slash.
+/// The fleet a stowaway belongs to: the fleet of the member whose folder it
+/// sits in; else the fleet whose own folder holds it (the deepest); else the
+/// fleet a `legacy` issue names for it. None: in fleet scope (under
+/// NIMITZ_HOME) but in no one fleet's folders.
+pub fn stowaway_fleet(snap: &Snapshot, s: &SessionInfo) -> Option<String> {
+    let cn = norm_dir(&s.cwd);
+    for f in &snap.fleets {
+        if all_members(f).iter().any(|m| m.cwd.as_deref().is_some_and(|c| norm_dir(c) == cn)) {
+            return Some(f.id.fleet().to_string());
+        }
+    }
+    let c = crate::env::canon(std::path::Path::new(&s.cwd));
+    let under = snap
+        .fleets
+        .iter()
+        .map(|f| (f, crate::env::canon(std::path::Path::new(&f.dir))))
+        .filter(|(_, d)| !d.as_os_str().is_empty() && c.starts_with(d))
+        .max_by_key(|(_, d)| d.components().count());
+    if let Some((f, _)) = under {
+        return Some(f.id.fleet().to_string());
+    }
+    let short = s.short_id.clone().unwrap_or_else(|| s.session_id.chars().take(8).collect());
+    snap.issues
+        .iter()
+        .filter(|i| i.code == "legacy" && (i.message.contains(&short) || i.fix.as_deref().is_some_and(|f| f.contains(&s.session_id))))
+        .find_map(|i| i.id.as_ref().map(|id| id.fleet().to_string()))
+}
+
 pub(crate) fn norm_dir(d: &str) -> String {
     let t = d.trim_end_matches('/');
     crate::env::canon(std::path::Path::new(t)).to_string_lossy().trim_end_matches('/').to_string()

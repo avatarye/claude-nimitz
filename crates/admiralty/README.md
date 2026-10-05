@@ -27,6 +27,11 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 - Top bar: fleets, live sessions, how many need you, error and warning counts,
   the multiplexer (or a MONITOR-ONLY badge), a Claude Code version warning.
+- A tab bar under the top bar: one tab per fleet (`1 HOME  2 MAIN ...`, with
+  `!n` where members need you), then `unassigned` when a stowaway sits under the
+  nimitz home in no fleet's folders. A tab shows only its fleet. `tab` /
+  `shift-tab` step through them, `1`-`9` pick one; a jump to a row on another
+  tab (`!`, `i`) shows that tab; a `/` search spans every fleet.
 - One gold double-line frame per fleet. Its title band is tinted by the fleet's
   state (pink needs you, purple broken, green busy, cyan idle, orange no
   admiral, grey inactive, dim elsewhere), with `icon n / icon n` status and issue
@@ -34,7 +39,9 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 - A rounded frame per squadron inside its fleet, tinted the same way, with its
   comms rule; ships and tenders are rows; crew, tasks and extra job rows sit
   under their member with tree guides.
-- A pink STOWAWAYS frame for unlabelled sessions in fleet scope. A session of
+- A pink STOWAWAYS frame for unlabelled sessions in fleet scope, on the tab of
+  the fleet that holds them (a member's folder, else the fleet's own folder,
+  else the fleet its `legacy` issue names; `unassigned` otherwise). A session of
   the old fleet-skill fleets (issue `legacy`) has its own orange history marker,
   and `x` then `d` adopts it as the identity its fix names.
 - Band counts read `icon n` (`!2 / *3 / -1`: needs you, busy, idle ...; red and orange
@@ -51,10 +58,11 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 ## Keys
 
-`j/k h/l gg/G ctrl-d/u space`, `/` filter, `n/N`, `enter` jump to the pane,
+`tab/shift-tab 1-9` fleet tabs, `j/k h/l gg/G ctrl-d/u space`, `/` filter
+(every fleet), `n/N`, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
-row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach in a
-new pane, `x` actions (stop, relaunch, sweep, rm, adopt, remove from config;
+row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, tender, stowaway) in a
+new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (stop, relaunch, sweep, rm, adopt, remove from config;
 on a fleet band also `layout herdr [--ships]` and removing a machine; sweep is
 scoped to the row: member, squadron or fleet),
 `m` message (admiral and commodore: typed into their pane; ships: relayed by

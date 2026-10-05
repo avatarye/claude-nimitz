@@ -264,6 +264,14 @@ impl Mux for Herdr {
                     out.push(self.pane_in_tab(&ws, tab_id)?);
                     continue;
                 }
+                // a tab from before full names (`COMMODORE` for `F.SQ.COMMODORE`):
+                // reuse it, and give it its full name
+                let short = tab_label.strip_prefix(&format!("{ws_label}.")).map(normalize_label);
+                if let Some((tab_id, _)) = existing.iter().find(|(_, l)| short.as_deref() == Some(normalize_label(l).as_str())) {
+                    let _ = self.run(&["tab", "rename", tab_id, tab_label]);
+                    out.push(self.pane_in_tab(&ws, tab_id)?);
+                    continue;
+                }
                 let (tab, pane) = match fresh_tab.take() {
                     Some((tab, pane)) => {
                         self.run(&["tab", "rename", &tab, tab_label])?;

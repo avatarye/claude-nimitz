@@ -42,6 +42,7 @@ fn main() {
         ("layout: rerun is idempotent (reuses by label, reruns nothing)", layout_idempotent),
         ("layout: fills only the missing tab", layout_partial),
         ("layout: loose label variants match (skill normalisation)", layout_loose_labels),
+        ("layout: a short tab name from before full names is reused and renamed", layout_short_tab_renamed),
         ("errors: workspace create failure propagates", error_workspace_create),
         ("errors: pane run failure propagates", error_pane_run),
     ];
@@ -396,6 +397,25 @@ fn layout_loose_labels() {
     assert_eq!(refs, vec![pane_ref("w1:p1", "w1:t1", "w1"), pane_ref("w1:p2", "w1:t2", "w1")]);
     assert_eq!(w.world()["workspaces"].as_array().expect("ws").len(), 1, "argos == [ARGOS]-FLEET");
     assert!(w.pane("w1:p1").get("ran").is_none(), "reused panes keep their processes");
+}
+
+fn layout_short_tab_renamed() {
+    // a squadron workspace laid out by nimitz 0.3.0: its tab is plain COMMODORE
+    let w = World::new(Some(json!({
+        "next_ws": 2,
+        "workspaces": [{"workspace_id": "w1", "label": "HOME.GITHUB", "focused": false, "active_tab_id": "w1:t1"}],
+        "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "COMMODORE", "focused": true}],
+        "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/fleet/github"}]
+    })));
+    let p = LayoutPlan {
+        workspaces: vec![("HOME.GITHUB".into(), vec![("HOME.GITHUB.COMMODORE".into(), cmdv(&["claude", "-c"]), PathBuf::from("/fleet/github"))])],
+    };
+    let refs = w.mux().layout(&p).expect("layout");
+    assert_eq!(refs, vec![pane_ref("w1:p1", "w1:t1", "w1")]);
+    let tabs = w.world()["tabs"].as_array().expect("tabs").clone();
+    assert_eq!(tabs.len(), 1, "no second tab: {tabs:?}");
+    assert_eq!(tabs[0]["label"], "HOME.GITHUB.COMMODORE", "renamed to its full name");
+    assert!(w.pane("w1:p1").get("ran").is_none(), "a reused pane keeps its process");
 }
 
 // ---------- error paths ----------

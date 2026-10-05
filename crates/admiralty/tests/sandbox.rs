@@ -57,6 +57,7 @@ fn every_broken_shape_of_the_sandbox_shows_up() {
         assert!(codes.iter().any(|c| c == want), "{want} in {codes:?}");
     }
     assert!(!snap.stowaways.is_empty(), "the sandbox has stowaways");
+    tab(&mut app, "MAIN");
     let s = screen(&mut app, 200, 60);
     assert!(s.contains("[MAIN.ARGOS]-DRIFT"));
     assert!(s.contains("STOWAWAYS"));
@@ -271,7 +272,7 @@ fn layout_goes_to_the_multiplexer_from_cores_plan() {
     let o = actions::apply(&app.ctx.env, &p);
     app.finish(&p, &o);
     let calls = mux.calls.lock().unwrap().clone();
-    assert!(calls.contains(&"layout MAIN.ARGOS/CLEAN".to_string()), "{calls:?}");
+    assert!(calls.contains(&"layout MAIN.ARGOS/MAIN.ARGOS.CLEAN".to_string()), "{calls:?}");
     assert!(toast(&app).starts_with("layout:"), "{}", toast(&app));
 }
 
@@ -338,6 +339,7 @@ fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
     let s = std::fs::read_to_string(&t).unwrap();
     std::fs::write(&t, s + "\nname = \"oops\n").unwrap();
     let mut app = app_on(&w, TestMux::default());
+    tab(&mut app, "MAIN");
     let buf = draw(&mut app, 200, 60);
     let ls = lines(&buf);
     assert!(ls.iter().any(|l| l.contains("[MAIN]")), "the fleet stays on screen");

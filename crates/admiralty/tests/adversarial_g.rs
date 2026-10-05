@@ -69,6 +69,7 @@ fn bug35_a_broken_squadron_toml_keeps_the_fleet_on_screen() {
     let s = std::fs::read_to_string(&t).unwrap();
     std::fs::write(&t, s + "\nname = \"oops\n").unwrap();
     let mut app = app_on(&w, false);
+    tab(&mut app, "MAIN");
     let sc = screen(&mut app, 120, 40);
     assert!(sc.contains("[MAIN]"), "fleet MAIN (8 live sessions) is gone from the screen:\n{sc}");
 }

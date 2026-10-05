@@ -362,6 +362,32 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_stowaway_belongs_to_the_fleet_whose_folders_hold_it() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let ship_dir = td.path().join("project");
+        std::fs::create_dir_all(&ship_dir).unwrap();
+        let mut snap = snap_for(&env, ship_dir.to_str());
+        let at = |cwd: &str| SessionInfo { cwd: cwd.into(), ..live_session("stray") };
+        let fleet_dir = snap.fleets[0].dir.clone();
+        // in a member's own folder (a user project), and anywhere under the fleet's folder
+        assert_eq!(crate::snapshot::stowaway_fleet(&snap, &at(ship_dir.to_str().unwrap())).as_deref(), Some("MAIN"));
+        assert_eq!(crate::snapshot::stowaway_fleet(&snap, &at(&format!("{fleet_dir}/squadrons/x"))).as_deref(), Some("MAIN"));
+        // under NIMITZ_HOME but in no fleet's folder: unassigned
+        assert_eq!(crate::snapshot::stowaway_fleet(&snap, &at(env.home.join("loose").to_str().unwrap())), None);
+        // a legacy issue names its fleet
+        let s = SessionInfo { session_id: "99999999-bbbb".into(), short_id: Some("99999999".into()), ..at("/elsewhere") };
+        snap.issues.push(Issue {
+            code: "legacy".into(),
+            severity: Severity::Info,
+            message: "stopped session 99999999 (old) belongs to the old fleet".into(),
+            fix: None,
+            id: Some(Id::ship("MAIN", "ARGOS", "ARGOS")),
+        });
+        assert_eq!(crate::snapshot::stowaway_fleet(&snap, &s).as_deref(), Some("MAIN"));
+    }
+
+    #[test]
     fn clean_world_has_no_issues() {
         let (_td, env) = test_env();
         make_fleet(&env);

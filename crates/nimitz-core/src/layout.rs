@@ -51,8 +51,16 @@ pub fn workspace_of(id: &Id) -> String {
     }
 }
 
-/// Tab label: ADMIRAL, COMMODORE, the ship's name, or `~task`.
+/// Tab label, the member's full place: `F.ADMIRAL`, `F.SQ.COMMODORE`,
+/// `F.SQ.SHIP` or `F.SQ.~task`. (Before 0.3.1 the tab was only the last part;
+/// `legacy_tab_of` gives that, so a layout still finds an old tab.)
 pub fn tab_of(id: &Id) -> String {
+    format!("{}.{}", workspace_of(id), legacy_tab_of(id))
+}
+
+/// The short tab label of 0.3.0 and before: ADMIRAL, COMMODORE, the ship's
+/// name or `~task`.
+pub fn legacy_tab_of(id: &Id) -> String {
     match id.role() {
         Role::Admiral => "ADMIRAL".into(),
         Role::Commodore => "COMMODORE".into(),

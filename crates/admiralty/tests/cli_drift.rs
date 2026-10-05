@@ -200,7 +200,7 @@ fn layout_is_cores_plan_and_the_cli_takes_its_command() {
     let lp = p.layout.as_ref().expect("a layout for the mux");
     // --ships: a tab attaching each live ship, in its squadron's workspace
     let argos = lp.workspaces.iter().find(|(w, _)| w == "MAIN.ARGOS").expect("workspace MAIN.ARGOS");
-    assert!(argos.1.iter().any(|(tab, cmd, _)| tab == "CLEAN" && cmd.contains(&"attach".to_string())), "{argos:?}");
+    assert!(argos.1.iter().any(|(tab, cmd, _)| tab == "MAIN.ARGOS.CLEAN" && cmd.contains(&"attach".to_string())), "{argos:?}");
     // the plan's steps are the tabs' commands, nothing else
     let tabs: Vec<&Vec<String>> = lp.workspaces.iter().flat_map(|(_, t)| t.iter().map(|(_, c, _)| c)).collect();
     assert_eq!(p.plan.steps.iter().map(|s| &s.cmd).collect::<Vec<_>>(), tabs);
