@@ -1,6 +1,6 @@
 """Admiralty inside a private, real Herdr server. Never touches the running Herdr.
 
-    ADMIRALTY_WATCH_BIN=target/release/admiralty uv run --no-project python herdr-plugin/tests/e2e_admiralty_in_herdr.py
+    ADMIRALTY_BIN=target/release/admiralty uv run --no-project python herdr-plugin/tests/e2e_admiralty_in_herdr.py
 
 A Herdr client+server in a pseudo-terminal with every HERDR_* unset and
 XDG_CONFIG_HOME / XDG_STATE_HOME in a fresh temp dir (the socket path is checked
@@ -22,7 +22,7 @@ import fcntl, glob, json, os, pty, select, shutil, signal, struct, subprocess, s
 TMP = tempfile.mkdtemp(prefix="adm-herdr-")
 SOCK = os.path.join(TMP, "config", "herdr", "herdr.sock")
 SB = os.path.join(TMP, "sb")
-BIN = os.environ.get("ADMIRALTY_WATCH_BIN", "admiralty")
+BIN = os.environ.get("ADMIRALTY_BIN", "admiralty")
 ISO = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_") and not k.startswith("NIMITZ_")}
 ISO.update(XDG_CONFIG_HOME=os.path.join(TMP, "config"), XDG_STATE_HOME=os.path.join(TMP, "state"),
            TERM="xterm-256color", SHELL="/bin/sh")

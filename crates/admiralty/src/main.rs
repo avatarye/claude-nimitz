@@ -18,7 +18,7 @@ const USAGE: &str = "usage:
 
 env: NIMITZ_HOME, NIMITZ_STATE, NIMITZ_CLAUDE_HOME, NIMITZ_MUX ... (contracts.md section 2),
      ADMIRALTY_ICONS=ascii (no Nerd Font), ADMIRALTY_STATE (where folds and filters are saved),
-     ADMIRALTY_WATCH_EXIT_AFTER_JUMP=1 (same as --exit-after-jump: quit once a pane jump lands)";
+     ADMIRALTY_EXIT_AFTER_JUMP=1 (same as --exit-after-jump: quit once a pane jump lands)";
 
 enum Source {
     Core,

@@ -38,7 +38,7 @@ if command -v herdr >/dev/null 2>&1; then
     fi
     # 3: the snippet is the toml block after "keys.command" in README.md
     sed -n '/^\[\[keys.command\]\]/,/^description/p' "$root/README.md" > "$tmp/config/herdr/config.toml"
-    if grep -q 'admiralty-watch.toggle' "$tmp/config/herdr/config.toml" \
+    if grep -q 'admiralty.toggle' "$tmp/config/herdr/config.toml" \
         && out=$(iso herdr config check 2>&1) && echo "$out" | grep -q '^config: ok'; then
         ok "README keybinding passes herdr config check"
     else

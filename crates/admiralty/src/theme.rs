@@ -149,7 +149,7 @@ pub struct Icons {
 
 pub const NERD: Icons = Icons {
     fleet: "\u{f0100}",     // nf-md-anchor
-    admiral: "\u{f01a5}",   // nf-md-crown (lead glyph from admiralty-watch)
+    admiral: "\u{f01a5}",   // nf-md-crown (the lead glyph)
     squadron: "\u{f024}",   // nf-fa-flag
     commodore: "\u{f0a3}",  // nf-fa-certificate (rank rosette)
     ship: "\u{f21a}",       // nf-fa-ship

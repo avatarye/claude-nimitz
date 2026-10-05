@@ -1,4 +1,4 @@
-# herdr-admiralty-watch
+# Admiralty for Herdr
 
 A [Herdr](https://herdr.dev) plugin that calls up `admiralty`
 ([claude-nimitz](../README.md), `crates/admiralty`), the live fleet tree, over
@@ -8,14 +8,12 @@ whatever you are doing. Press the key to open it; press it again, quit it with
 Needs Herdr 0.9 and `admiralty` on `PATH` or in `~/.cargo/bin`
 (`cargo install --path crates/admiralty`; it has `--exit-after-jump`).
 
-The plugin id stays `admiralty-watch` on purpose: an existing install keeps its
-`herdr plugin link`, its state dir, and the `admiralty-watch.toggle` keybinding
-with no re-linking. Only the binary it runs changed, from the retired
-`admiralty-watch` repo to claude-nimitz's `admiralty`.
+The plugin id is `admiralty` (until nimitz 0.3.0 it was `admiralty-watch`; see
+Install for the switch).
 
 ## How it works
 
-One action, `admiralty-watch.toggle`, runs `bin/toggle.sh`:
+One action, `admiralty.toggle`, runs `bin/toggle.sh`:
 
 | State when you press the key | Result |
 | --- | --- |
@@ -24,8 +22,7 @@ One action, `admiralty-watch.toggle`, runs `bin/toggle.sh`:
 | watch open in another tab | closes there, opens here |
 
 The overlay runs `bin/watch.sh`, which runs `admiralty` with
-`ADMIRALTY_WATCH_EXIT_AFTER_JUMP=1` (the binary keeps the `ADMIRALTY_WATCH_`
-env prefix). The overlay is a Herdr plugin pane, so it closes
+`ADMIRALTY_EXIT_AFTER_JUMP=1`. The overlay is a Herdr plugin pane, so it closes
 when that process exits: on `q`, and right after `enter` lands on an agent's pane.
 Sending a message with `m` keeps the watch up. A jump that fails, or an agent with no pane, leaves the watch up with
 the reason in its status line.
@@ -38,16 +35,16 @@ keys working. It takes the whole tab, not a floating box.
 
 The state dir (`$HERDR_PLUGIN_STATE_DIR/pane_id`) holds the id of the watch pane the
 toggle opened. A stale id fails `pane get`; an id that now names another pane fails
-the label check (`Admiralty Watch`), so the toggle never closes a pane it did not open.
+the label check (`Admiralty`), so the toggle never closes a pane it did not open.
 
 ## Install
 
     herdr plugin link <claude-nimitz repo>/herdr-plugin
-    herdr plugin list          # admiralty-watch ... enabled
+    herdr plugin list          # admiralty ... enabled
 
-Already linked from the old `herdr-admiralty-watch` repo? Re-link once so the
-path points here (`herdr plugin unlink admiralty-watch`, then the link above);
-the keybinding does not change.
+Linked as `admiralty-watch` before? Unlink that first so two copies never run
+(`herdr plugin unlink admiralty-watch`), link this one, and change the
+keybinding's `command` from `admiralty.toggle` to `admiralty.toggle`.
 
 Then add this to `~/.config/herdr/config.toml`. `alt+f` (f for fleet) is a direct
 key, one press with no prefix; it is free in Herdr's defaults and in the current
@@ -57,8 +54,8 @@ config. `prefix+f` also works if you would rather keep it behind the prefix:
 [[keys.command]]
 key = "alt+f"
 type = "plugin_action"
-command = "admiralty-watch.toggle"
-description = "admiralty watch"
+command = "admiralty.toggle"
+description = "admiralty fleet tree"
 ```
 
 Check and load it:
@@ -67,25 +64,27 @@ Check and load it:
     herdr server reload-config
 
 The action also shows in Herdr's action list, and `herdr plugin action invoke
-toggle --plugin admiralty-watch` runs it from a shell.
+toggle --plugin admiralty` runs it from a shell.
 
 ### Options
 
 `bin/watch.sh` reads these from the Herdr server's environment. Extra arguments
-can also go in a file, read when `ADMIRALTY_WATCH_ARGS` is unset, with no restart:
-`$(herdr plugin config-dir admiralty-watch)/args`.
+can also go in a file, read when `ADMIRALTY_ARGS` is unset, with no restart:
+`$(herdr plugin config-dir admiralty)/args`.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `ADMIRALTY_WATCH_BIN` | `admiralty` on PATH, then `~/.cargo/bin` | binary to run |
-| `ADMIRALTY_WATCH_ARGS` | the `args` file, else none | extra arguments, e.g. `--sandbox /tmp/aw-sb` |
-| `ADMIRALTY_WATCH_EXIT_AFTER_JUMP` | `1` | `0` keeps the watch up after a jump |
+| `ADMIRALTY_BIN` | `admiralty` on PATH, then `~/.cargo/bin` | binary to run |
+| `ADMIRALTY_ARGS` | the `args` file, else none | extra arguments, e.g. `--sandbox /tmp/aw-sb` |
+| `ADMIRALTY_EXIT_AFTER_JUMP` | `1` | `0` keeps the watch up after a jump |
+
+The `ADMIRALTY_WATCH_*` names of 0.3.0 still work when the new ones are unset.
 
 ## Uninstall
 
 Remove the `[[keys.command]]` block, then:
 
-    herdr plugin unlink admiralty-watch
+    herdr plugin unlink admiralty
     herdr server reload-config
 
 ## Tests
@@ -107,7 +106,7 @@ checks panes and tabs through that server's API. It stops only that server.
 ## Human test checklist
 
 1. Sandbox first: `admiralty sandbox create /tmp/aw-sb`, then
-   `d=$(herdr plugin config-dir admiralty-watch); mkdir -p "$d"; echo "--sandbox /tmp/aw-sb" > "$d/args"`.
+   `d=$(herdr plugin config-dir admiralty); mkdir -p "$d"; echo "--sandbox /tmp/aw-sb" > "$d/args"`.
    Delete that file before step 6.
 2. In any pane, `ctrl+g f`: the watch covers the tab, focused.
 3. `ctrl+g f` again: it closes and you are back in the pane you came from.

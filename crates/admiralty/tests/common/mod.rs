@@ -87,6 +87,12 @@ pub fn lines(buf: &Buffer) -> Vec<String> {
     (0..a.height).map(|y| (0..a.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect()
 }
 
+/// The ADMIRALTY status bar: the line right above the key bar.
+pub fn status_bar(app: &mut App, w: u16) -> String {
+    let ls = lines(&draw(app, w, 24));
+    ls[ls.len() - 2].clone()
+}
+
 pub fn screen(app: &mut App, w: u16, h: u16) -> String {
     lines(&draw(app, w, h)).join("\n")
 }

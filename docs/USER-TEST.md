@@ -8,7 +8,7 @@ Date: 2026-10-04. Branch: `dev`. For: you, before the first real use.
 | --- | --- |
 | `nimitz` (CLI, hook, plugin) | All commands in `nimitz help`. Tested in the sandbox and on real Claude Code (ACME 2.1.288). |
 | `admiralty` (TUI) | Fleet and squadron frames, issues view, forms, actions. Screens in `docs/screens/`. |
-| Herdr plugin (`herdr-plugin/`) | Same plugin id `admiralty-watch`; now runs `admiralty`. |
+| Herdr plugin (`herdr-plugin/`) | Plugin id `admiralty` (was `admiralty-watch`); runs `admiralty`. |
 | Main fleet | Migrated to `~/.claude-nimitz/main` (Dropbox). 10 squadrons, 29 ships. No session was started or stopped. |
 | Tests | 315 unit, sandbox and CLI tests, none skipped; 55 adversarial bugs found, all fixed and re-tested; 4 rounds on real Claude Code, including history checks on every relaunch path. Reports: `docs/test/report-round1.md`. |
 
@@ -18,9 +18,10 @@ Date: 2026-10-04. Branch: `dev`. For: you, before the first real use.
 2. `cargo install --path crates/nimitz` and `cargo install --path crates/admiralty`
 3. Plugin: run the command that `nimitz doctor` prints (marketplace add, then install).
 4. `nimitz init --label west-mac`, then `nimitz doctor`. Every line must be `[OK]`.
-5. Herdr: the linked plugin is still `~/Github/herdr-admiralty-watch`.
-   Re-link it to `~/Github/claude-nimitz/herdr-plugin` (`herdr plugin link`),
-   then reload. `alt+f` then opens `admiralty`.
+5. Herdr: `herdr plugin unlink admiralty-watch` (the old id, wherever it was linked
+   from), then `herdr plugin link ~/Github/claude-nimitz/herdr-plugin`.
+   In `~/.config/herdr/config.toml` change the key's `command` to
+   `admiralty.toggle`, then `herdr server reload-config`. `alt+f` opens `admiralty`.
 
 ## 3. Look first (read-only)
 

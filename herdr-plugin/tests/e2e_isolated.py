@@ -8,7 +8,7 @@ binds prefix+f to it, and runs the admiralty TUI (claude-nimitz) against its
 sandbox (fake claude) with nimitz-mux's fake herdr as its multiplexer, so the
 jump lands in the fake's call log and never on a real pane. Presses real keys and checks
 pane state through the private server's API. Stops only that server, after
-checking its socket path. ADMIRALTY_WATCH_BIN picks the binary (default:
+checking its socket path. ADMIRALTY_BIN picks the binary (default:
 `admiralty` on PATH, e.g. target/debug/admiralty for an uninstalled build).
 """
 
@@ -22,9 +22,9 @@ SOCK = os.path.join(TMP, "config", "herdr", "herdr.sock")
 SANDBOX = os.path.join(TMP, "aw-sb")
 ISO = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
 FAKE = os.path.join(TMP, "fake-herdr")
-BIN = ISO.get("ADMIRALTY_WATCH_BIN", "admiralty")
+BIN = ISO.get("ADMIRALTY_BIN", "admiralty")
 ISO.update(XDG_CONFIG_HOME=os.path.join(TMP, "config"), XDG_STATE_HOME=os.path.join(TMP, "state"),
-           TERM="xterm-256color", ADMIRALTY_WATCH_ARGS=f"--sandbox {SANDBOX}",
+           TERM="xterm-256color", ADMIRALTY_ARGS=f"--sandbox {SANDBOX}",
            NIMITZ_MUX="herdr", NIMITZ_HERDR_BIN=os.path.join(TMP, "fake-herdr.sh"))
 FAILS = []
 
@@ -38,7 +38,7 @@ def setup():
     os.makedirs(os.path.join(TMP, "config", "herdr"))
     with open(os.path.join(TMP, "config", "herdr", "config.toml"), "w") as f:
         f.write('onboarding = false\n[keys]\nprefix = "ctrl+g"\n\n[[keys.command]]\nkey = "prefix+f"\n'
-                'type = "plugin_action"\ncommand = "admiralty-watch.toggle"\ndescription = "admiralty watch"\n')
+                'type = "plugin_action"\ncommand = "admiralty.toggle"\ndescription = "admiralty"\n')
     subprocess.run([BIN, "sandbox", "create", SANDBOX], check=True, capture_output=True)
     # the admiral's session, in a pane of the fake herdr: the row the jump targets
     env = dict(os.environ)
@@ -149,7 +149,7 @@ def main():
             pump(fd, 2)
         check("prefix+f opens the watch, focused", len(p) == 2 and state() == p[1], (p, state()))
         info = json.loads(h("pane", "get", p[1])[1])["result"]["pane"]
-        check("its pane label is the one toggle.sh checks", info.get("label") == "Admiralty Watch", info)
+        check("its pane label is the one toggle.sh checks", info.get("label") == "Admiralty", info)
         check("the watch renders", any("admiralty" in l.lower() for l in SCR.display), "no header")
         toggle(); check("prefix+f again closes it", panes() == p[:1], panes())
         toggle(); key(fd, "q", wait=3); check("q closes it", len(panes()) == 1, panes())

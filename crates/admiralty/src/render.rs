@@ -40,8 +40,9 @@ pub fn body_areas(app: &App, body: Rect) -> (Rect, Rect, bool) {
 pub fn draw(app: &mut App, f: &mut Frame) {
     let area = f.area();
     f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), area);
-    let [top, tabs, body, bottom] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    // fleet tabs on top; the ADMIRALTY status bar sits right above the key bar
+    let [tabs, body, top, bottom] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
     f.render_widget(Paragraph::new(top_line(app, top.width as usize)).style(Style::new().bg(mono::BG_HI)), top);
     f.render_widget(Paragraph::new(tab_line(app, tabs.width as usize)).style(Style::new().bg(mono::BG)), tabs);
     let (left, right, _) = body_areas(app, body);

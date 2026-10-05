@@ -16,7 +16,7 @@ admiralty --sandbox DIR            # a fake world: `admiralty sandbox create DIR
 admiralty --demo                   # fixture data with a multiplexer; nothing runs
 admiralty --demo-monitor           # fixture data, no multiplexer
 admiralty dump [--width N] [...]   # the list as plain text
-admiralty --exit-after-jump        # quit once a pane jump lands (ADMIRALTY_WATCH_EXIT_AFTER_JUMP=1; the Herdr plugin sets it)
+admiralty --exit-after-jump        # quit once a pane jump lands (ADMIRALTY_EXIT_AFTER_JUMP=1; the Herdr plugin sets it)
 ```
 
 `ADMIRALTY_ICONS=ascii` for a terminal without a Nerd Font. Folds, filters and
@@ -25,9 +25,10 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 ## Layout
 
-- Top bar: fleets, live sessions, how many need you, error and warning counts,
-  the multiplexer (or a MONITOR-ONLY badge), a Claude Code version warning.
-- A tab bar under the top bar: one tab per fleet (`1 HOME  2 MAIN ...`, with
+- Status bar (the ADMIRALTY line, at the bottom right above the key bar):
+  fleets, live sessions, how many need you, error and warning counts, the
+  multiplexer (or a MONITOR-ONLY badge), a Claude Code version warning.
+- A tab bar on the top line: one tab per fleet (`1 HOME  2 MAIN ...`, with
   `!n` where members need you), then `unassigned` when a stowaway sits under the
   nimitz home in no fleet's folders. A tab shows only its fleet. `tab` /
   `shift-tab` step through them, `1`-`9` pick one; a jump to a row on another

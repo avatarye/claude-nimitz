@@ -1,18 +1,18 @@
 #!/bin/sh
-# Toggle the admiralty-watch overlay.
+# Toggle the admiralty overlay.
 #   open in this tab       -> close it
 #   open in another tab    -> close it there, open it here
 #   not open               -> open it here, focused
-# The id of the pane this script opened is kept in the plugin state dir. A stale id
+# The id of the overlay this script opened is kept in the plugin state dir. A stale id
 # (the watch quit on its own) fails `pane get`; one that now names some other pane
 # (ids can restart with the server) fails the label check and is left alone.
 set -u
 
 herdr=${HERDR_BIN_PATH:-herdr}
-plugin=${HERDR_PLUGIN_ID:-admiralty-watch}
-state_dir=${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}/herdr-admiralty-watch}
+plugin=${HERDR_PLUGIN_ID:-admiralty}
+state_dir=${HERDR_PLUGIN_STATE_DIR:-${TMPDIR:-/tmp}/herdr-admiralty}
 state=$state_dir/pane_id
-label="Admiralty Watch" # the [[panes]] title, which Herdr reports as the pane label
+label="Admiralty" # the [[panes]] title, which Herdr reports as the pane label
 
 mkdir -p "$state_dir" || exit 1
 

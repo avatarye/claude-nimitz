@@ -250,7 +250,7 @@ fn flagged_only_stowaways_and_fleet_state_filter() {
     press(&mut t.app, KeyCode::Esc);
     assert!(!t.app.rows.iter().any(|r| r.node.id == "F:FORGE"));
     let s = screen(&mut t.app, 200, 50);
-    assert!(s.contains("filtered: no broken (f clears)"), "top bar says what the filter hides:\n{}", s.lines().next().unwrap());
+    assert!(s.contains("filtered: no broken (f clears)"), "the status bar says what the filter hides:\n{}", s.lines().rev().nth(1).unwrap());
 }
 
 #[test]
@@ -677,7 +677,8 @@ fn at_80x24_the_essentials_stay_on_screen() {
     let mut t = fixture_app(fixtures::demo_monitor_only(), false);
     goto(&mut t.app, "M:FORGE/IRON/ANVIL");
     let ls = lines(&draw(&mut t.app, 80, 24));
-    assert!(ls[0].contains("MONITOR-ONLY"), "header keeps the mux state: {}", ls[0]);
+    let status = &ls[ls.len() - 2];
+    assert!(status.contains("MONITOR-ONLY"), "the status bar, above the key bar, keeps the mux state: {status}");
     assert!(ls[23].contains("? help") && ls[23].contains("q quit"), "footer keeps help and quit: {}", ls[23]);
     let row = ls.iter().find(|l| l.contains("[FORGE.IRON]-AN") && l.contains("ship")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
     assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
@@ -753,7 +754,7 @@ fn bug43_messages_are_sanitised_in_preview_command_and_send_and_empty_ones_refus
 fn the_header_shortens_counts_instead_of_cutting_words() {
     for w in [200u16, 120, 100, 80, 60, 50] {
         let mut t = demo();
-        let top = lines(&draw(&mut t.app, w, 24))[0].clone();
+        let top = status_bar(&mut t.app, w);
         assert!(!top.contains("warni ") && !top.trim_end().ends_with("warni"), "{w}: {top}");
         let words: Vec<&str> = top.split_whitespace().collect();
         let last = words.last().copied().unwrap_or("");
@@ -763,7 +764,7 @@ fn the_header_shortens_counts_instead_of_cutting_words() {
         );
     }
     let mut t = demo();
-    let top80 = lines(&draw(&mut t.app, 80, 24))[0].clone();
+    let top80 = status_bar(&mut t.app, 80);
     assert!(top80.contains("6 warn") || top80.contains("6w"), "80 columns keep the warning count: {top80}");
 }
 
@@ -780,11 +781,11 @@ fn a_filter_is_always_marked_in_the_header_even_when_saved_and_narrow() {
     again.fixed_now = Some(fixtures::NOW);
     again.apply(fixtures::demo());
     for w in [200u16, 120, 80, 60, 50] {
-        let top = lines(&draw(&mut again, w, 24))[0].clone();
+        let top = status_bar(&mut again, w);
         assert!(top.contains("filtered:") || top.contains("FILTERED"), "{w}: no filter marker: {top}");
         assert!(top.contains("esc") && top.contains('F'), "{w}: the marker says how to clear it: {top}");
     }
-    let top = lines(&draw(&mut again, 200, 24))[0].clone();
+    let top = status_bar(&mut again, 200);
     assert!(top.contains("filtered: \"anvil\", flagged (esc/F clears)"), "{top}");
 }
 
@@ -825,8 +826,9 @@ fn a_tab_per_fleet_and_tab_keys_switch_them() {
     assert_eq!(t.app.tabs(), ["MAIN", "FORGE", "LAB"], "every stowaway of the demo sits in a fleet's folders");
     assert_eq!(t.app.tab.as_deref(), Some("MAIN"), "the first tab shows first");
     let ls = lines(&draw(&mut t.app, 200, 60));
-    assert!(ls[1].contains("1 MAIN") && ls[1].contains("2 FORGE") && ls[1].contains("3 LAB"), "tab bar: {}", ls[1]);
-    assert!(ls[1].contains("!2"), "MAIN's tab says two members need you: {}", ls[1]);
+    assert!(ls[0].contains("1 MAIN") && ls[0].contains("2 FORGE") && ls[0].contains("3 LAB"), "tab bar on top: {}", ls[0]);
+    assert!(ls[0].contains("!2"), "MAIN's tab says two members need you: {}", ls[0]);
+    assert!(ls[ls.len() - 2].contains("ADMIRALTY"), "the status bar sits right above the key bar: {}", ls[ls.len() - 2]);
     press(&mut t.app, KeyCode::Tab);
     assert_eq!(t.app.tab.as_deref(), Some("FORGE"));
     assert_eq!(t.app.current().unwrap().node.id, "F:FORGE", "the cursor starts at the tab's top");
@@ -862,7 +864,7 @@ fn stowaways_show_on_their_fleets_tab_and_the_rest_on_unassigned() {
     assert_eq!(stow(&t), ["loose-run"], "under the nimitz home, in no fleet's folders");
     assert!(!t.app.rows.iter().any(|r| r.node.kind == Kind::FleetBand), "no fleet on the unassigned tab");
     let s = screen(&mut t.app, 200, 60);
-    assert!(s.lines().nth(1).unwrap().contains("4 unassigned"), "{}", s.lines().nth(1).unwrap());
+    assert!(s.lines().next().unwrap().contains("4 unassigned"), "{}", s.lines().next().unwrap());
     assert!(s.contains("in no fleet's folders"), "the band says what the list is");
 }
 
@@ -874,7 +876,7 @@ fn a_name_search_spans_every_fleet() {
     assert_eq!(t.app.tab.as_deref(), Some("MAIN"));
     assert!(t.app.rows.iter().any(|r| r.node.id == "M:FORGE/IRON/ANVIL"), "found on another fleet's tab");
     let s = screen(&mut t.app, 200, 60);
-    assert!(s.lines().nth(1).unwrap().contains("search: every fleet"), "{}", s.lines().nth(1).unwrap());
+    assert!(s.lines().next().unwrap().contains("search: every fleet"), "{}", s.lines().next().unwrap());
     press(&mut t.app, KeyCode::Esc);
     assert!(!t.app.rows.iter().any(|r| r.node.id == "M:FORGE/IRON/ANVIL"), "cleared: the tab again");
 }

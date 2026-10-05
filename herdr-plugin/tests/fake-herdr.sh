@@ -9,7 +9,7 @@ echo "$*" >> "$dir/calls"
 case "$*" in
     "pane get "*)
         line=$(grep "^$3 " "$dir/panes") || { echo '{"error":{"code":"pane_not_found"}}' >&2; exit 1; }
-        set -- $line "Admiralty Watch"
+        set -- $line "Admiralty"
         printf '{"id":"cli:pane:get","result":{"pane":{"label":"%s","pane_id":"%s","tab_id":"%s"},"type":"pane_info"}}\n' "$3" "$1" "$2"
         ;;
     "plugin pane close "*)
@@ -21,7 +21,7 @@ case "$*" in
         n=$(( $(cat "$dir/next" 2>/dev/null || echo 1) + 1 )); echo "$n" > "$dir/next"
         tab=${HERDR_TAB_ID:-w1:t1}
         echo "${tab%%:*}:p$n $tab" >> "$dir/panes"
-        printf '{"id":"cli:plugin","result":{"plugin_pane":{"entrypoint":"watch","pane":{"pane_id":"%s","tab_id":"%s"},"plugin_id":"admiralty-watch"},"type":"plugin_pane_opened"}}\n' "${tab%%:*}:p$n" "$tab"
+        printf '{"id":"cli:plugin","result":{"plugin_pane":{"entrypoint":"watch","pane":{"pane_id":"%s","tab_id":"%s"},"plugin_id":"admiralty"},"type":"plugin_pane_opened"}}\n' "${tab%%:*}:p$n" "$tab"
         ;;
     *) echo "[fake herdr] unsupported: $*" >&2; exit 2 ;;
 esac
