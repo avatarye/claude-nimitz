@@ -52,6 +52,7 @@ impl Ctx {
 
 const USAGE: &str = "\
 usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
+       nimitz --version
 
   init [--label L]                 data root, machine label, trust check, doctor
   doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs
@@ -100,6 +101,10 @@ fn dispatch(argv: Vec<String>) -> i32 {
                 Some(base) => nimitz_mux::fake::fake_herdr(std::path::Path::new(base), &argv[2..]),
                 None => 2,
             }
+        }
+        "--version" | "-V" | "version" => {
+            println!("nimitz {}", env!("CARGO_PKG_VERSION"));
+            return 0;
         }
         "" | "help" | "--help" | "-h" => {
             println!("{USAGE}");

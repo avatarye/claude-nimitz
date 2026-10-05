@@ -803,6 +803,14 @@ fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
 }
 
 #[test]
+fn version_prints_the_crate_version() {
+    for flag in ["--version", "-V", "version"] {
+        let r = raw(&BTreeMap::new(), &[flag], &[], None);
+        assert_eq!((r.code, r.out.trim()), (0, format!("nimitz {}", env!("CARGO_PKG_VERSION")).as_str()), "{flag}");
+    }
+}
+
+#[test]
 fn hook_is_fast() {
     let sb = Sb::new(false);
     let input = r#"{"session_id":"s","source":"startup"}"#;
