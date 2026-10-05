@@ -74,6 +74,14 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             crate::notify::clear(env, id, str_at(&input, "session_id").as_deref());
         }
     }
+    // A labelled session starts (startup, resume, clear, compact): hand it its role's rules.
+    let mut rules = None;
+    if event == "SessionStart" {
+        if let Some(id) = labels.get("NIMITZ_ID").map(|i| Id(i.clone())).filter(|i| labels.get("NIMITZ_ROLE").map(String::as_str) == Some(i.role().as_str())) {
+            rules = Some(crate::rules::VERSION);
+            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
+        }
+    }
     let tool_event = matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure");
     if !tool_event || is_signal || tool.as_deref() == Some("AskUserQuestion") {
         let line = json!({
@@ -88,6 +96,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             "to": to,
             "pid": unsafe { libc::getppid() } as i64,
             "labels": labels,
+            "rules": rules,
         });
         append_line(env, &line.to_string());
     }
@@ -395,7 +404,10 @@ mod tests {
         let (_td, env) = world();
         let id = Id::ship("MAIN", "ARGOS", "ARGOS");
         let start = serde_json::json!({"session_id": "s9", "source": "resume", "hook_event_name": "SessionStart"});
-        assert!(handle(&env, "SessionStart", &start.to_string(), &labels_of(&env, &id)).is_empty());
+        // a labelled start gets its role's rules as context, and the line says which version
+        let out: Value = serde_json::from_str(&handle(&env, "SessionStart", &start.to_string(), &labels_of(&env, &id))).unwrap();
+        assert_eq!(out["hookSpecificOutput"]["hookEventName"], "SessionStart");
+        assert_eq!(out["hookSpecificOutput"]["additionalContext"], crate::rules::text(&id));
         // a tool call that is not a signal is not logged (they fire for every tool)
         let read = serde_json::json!({"session_id": "s9", "tool_name": "Read"});
         handle(&env, "PreToolUse", &read.to_string(), &labels_of(&env, &id));
@@ -408,9 +420,20 @@ mod tests {
         assert_eq!(events[0].session_id.as_deref(), Some("s9"));
         assert_eq!(events[0].source.as_deref(), Some("resume"));
         assert_eq!(events[0].labels.get("NIMITZ_ID").map(String::as_str), Some("MAIN/ARGOS/ARGOS"));
+        assert_eq!(events[0].rules, Some(crate::rules::VERSION));
         assert!(events[0].pid.unwrap_or(0) > 0, "the pid is the Claude Code process (the hook's parent)");
         assert_eq!(events[1].tool_name.as_deref(), Some("SendMessage"));
         assert!(events[1].reason.as_deref().unwrap_or("").starts_with("denied:"), "{:?}", events[1].reason);
+    }
+
+    #[test]
+    fn an_unlabelled_or_mislabelled_start_gets_no_rules() {
+        let (_td, env) = world();
+        let start = r#"{"session_id": "s1", "source": "startup"}"#;
+        assert!(handle(&env, "SessionStart", start, &vars(&[])).is_empty(), "the user's own session");
+        let wrong = vars(&[("NIMITZ_ID", "MAIN/ARGOS/ARGOS"), ("NIMITZ_ROLE", "commodore")]);
+        assert!(handle(&env, "SessionStart", start, &wrong).is_empty(), "role and id disagree");
+        assert_eq!(crate::evidence::events(&env).last().unwrap().rules, None);
     }
 
     #[test]
@@ -475,7 +498,7 @@ mod tests {
         assert!(handle(&env, "SomeNewEventInANewVersion", "{}", &labels_of(&env, &id)).is_empty());
         // an unwritable state dir loses the line but still returns
         let bad = Env { state: std::path::PathBuf::from("/dev/null/nope"), ..env.clone() };
-        assert!(handle(&bad, "SessionStart", "{}", &labels_of(&env, &id)).is_empty());
+        assert!(handle(&bad, "SessionStart", "{}", &labels_of(&env, &id)).contains("additionalContext"), "the rules still go out");
     }
 
     #[test]

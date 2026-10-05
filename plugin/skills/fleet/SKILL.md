@@ -72,7 +72,8 @@ types the text into the commodore's pane.
 | Task | Command |
 | --- | --- |
 | First run on a machine | `nimitz init --label <label>`, then `nimitz doctor` |
-| Check the setup | `nimitz doctor` (`--fix` sets `crossSessionInbound`) |
+| Check the setup | `nimitz doctor` (`--fix` sets `crossSessionInbound` and replaces role briefs an older nimitz wrote) |
+| A role's rules | `nimitz rules <id>` (what every member gets at session start) |
 | See everything | `nimitz status` |
 | Find problems | `nimitz check [<id>]` |
 | New fleet | `nimitz fleet new <F> [--machine <label>]` |

@@ -54,7 +54,8 @@ const USAGE: &str = "\
 usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
 
   init [--label L]                 data root, machine label, trust check, doctor
-  doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats
+  doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs
+  rules [<id>]                     the role rules nimitz hands a member at session start
   status [--json]                  the fleets, their members and issues
   check [<id>]                     integrity check of <id>, its parents and everything under it
   fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)
@@ -119,6 +120,7 @@ fn dispatch(argv: Vec<String>) -> i32 {
     let r = match cmd.as_str() {
         "init" => setup::init(&ctx),
         "doctor" => setup::doctor(&ctx),
+        "rules" => setup::rules(&ctx),
         "status" => members::status(&ctx),
         "check" => members::check(&ctx),
         "fleet" => crud::fleet(&ctx),

@@ -442,24 +442,14 @@ pub(crate) fn toml_out<T: serde::Serialize>(v: &T) -> String {
     toml::to_string_pretty(v).unwrap_or_default()
 }
 
+/// An admiral's CLAUDE.md: who it is; its rules come from `rules` at session start.
 pub(crate) fn admiral_claude_md(fleet: &str) -> String {
-    format!(
-        "# [{fleet}]-ADMIRAL\n\n\
-         You are the admiral of fleet {fleet}. You watch the fleet, ask and order\n\
-         its commodores, and run `nimitz` inside your own fleet (`--plan` first,\n\
-         `--yes` once the user agrees). `nimitz status` gives the picture.\n"
-    )
+    crate::rules::brief(&Id::admiral(fleet))
 }
 
+/// A commodore's CLAUDE.md: who it is; its rules come from `rules` at session start.
 pub(crate) fn commodore_claude_md(fleet: &str, sq: &str) -> String {
-    format!(
-        "# [{fleet}.{sq}]-COMMODORE\n\n\
-         You are the commodore of squadron {sq} in fleet {fleet}. Your brief is\n\
-         SQUADRON.md. You take orders from your admiral and the user, dispatch work\n\
-         to your ships with signals, start a ship you need with\n\
-         `nimitz start {fleet}/{sq}/<SHIP>`, and run one-off jobs as tenders with\n\
-         `nimitz tender {fleet}/{sq} <task>`.\n"
-    )
+    crate::rules::brief(&Id::commodore(fleet, sq))
 }
 
 pub(crate) fn squadron_md(fleet: &str, sq: &str, brief: &str) -> String {

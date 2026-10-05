@@ -171,6 +171,8 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
     out.extend(crate::registry::health(env));
     // needs-you notices that never reached the commodore
     out.extend(crate::notify::issues(env).into_iter().filter(|i| scoped(i)));
+    // briefs an older nimitz wrote; live sessions on older rules
+    out.extend(crate::rules::issues(env, snap).into_iter().filter(|i| scoped(i)));
     for f in &fleets {
         if id.map(|t| t.fleet() == f.config.fleet).unwrap_or(true) {
             out.extend(crate::config::validate(env, f).into_iter().filter(|i| scoped(i)));

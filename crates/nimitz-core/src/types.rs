@@ -227,6 +227,9 @@ pub struct Event {
     pub pid: Option<i64>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// SessionStart only: the rules version the hook handed the session
+    #[serde(default)]
+    pub rules: Option<u32>,
 }
 
 // ------------------------------------------------------------------ snapshot

@@ -112,11 +112,19 @@ it is per machine and outlives every fleet (`registry::machine_label`).
 ```json
 {"ts": 1790900000.1, "event": "SessionStart", "session_id": "...", "source": "startup",
  "reason": null, "agent_id": null, "tool_name": null, "to": null, "pid": 12345,
- "labels": {"NIMITZ_ID": "MAIN/ARGOS/ARGOS", "NIMITZ_ROLE": "ship", "...": "..."}}
+ "labels": {"NIMITZ_ID": "MAIN/ARGOS/ARGOS", "NIMITZ_ROLE": "ship", "...": "..."}, "rules": 1}
 ```
 
 `pid` is the hook's parent (the Claude Code process). The hook never blocks,
 never fails the session (always exit 0), and returns in a few ms.
+
+Role rules: a labelled session's SessionStart (startup, resume, clear, compact,
+fork) gets its role's rules (`nimitz-core/rules/*.md`, compiled in; `nimitz
+rules <id>` prints them) as `additionalContext`, and the line records `rules`
+(the version). `check` reports `rules.old` for a live member that started on
+older rules, and `brief.old` for an admiral's or commodore's CLAUDE.md that an
+older nimitz generated; `doctor --fix` replaces those and leaves a hand-edited
+brief alone. A brief holds only who the member is and the user's notes.
 
 `needs/<id with / as %2F>.json`: the needs-you notice of a ship or tender that
 blocks on the user (PreToolUse `AskUserQuestion`, `PermissionRequest`, or a

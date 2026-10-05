@@ -784,6 +784,25 @@ fn only_the_member_itself_delivers_its_notice() {
 }
 
 #[test]
+fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
+    let sb = Sb::new(false);
+    let r = sb.run(&["rules", "MAIN/ARGOS"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("## Commodore of MAIN/ARGOS") && r.out.contains("[nimitz needs-you]"), "{}", r.out);
+    assert_eq!(sb.run(&["rules"]).code, 2, "the user names the id");
+    let own = sb.run_as("MAIN/ARGOS/CLEAN", &["rules"]);
+    assert!(own.out.contains("## Ship of MAIN/ARGOS"), "a member: its own: {}", own.out);
+    // the SessionStart hook hands the same text over as context
+    let input = r#"{"session_id":"s-r","source":"compact","hook_event_name":"SessionStart"}"#;
+    let h = raw(&sb.vars, &["hook", "SessionStart"], &[("NIMITZ_ID", "MAIN/ARGOS"), ("NIMITZ_ROLE", "commodore")], Some(input));
+    let v: Value = serde_json::from_str(h.out.trim()).expect("hook JSON");
+    assert_eq!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap(), r.out);
+    // a live member whose session started before the rules: check names it
+    let c = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
+    assert!(c.out.contains("rules.old") && c.out.contains("/compact"), "{}", c.out);
+}
+
+#[test]
 fn hook_is_fast() {
     let sb = Sb::new(false);
     let input = r#"{"session_id":"s","source":"startup"}"#;
@@ -858,9 +877,21 @@ fn init_and_doctor_in_an_empty_world() {
     std::fs::create_dir_all(b.join("claude_home")).unwrap();
     std::fs::write(b.join("claude_home/.claude.json"), format!(r#"{{"projects":{{"{}":{{"hasTrustDialogAccepted":true}}}}}}"#, p("nimitz"))).unwrap();
     std::fs::write(b.join("claude_home/settings.json"), r#"{"enabledPlugins":{"nimitz@claude-nimitz":true},"model":"x"}"#).unwrap();
+    // a fleet whose admiral brief an older nimitz wrote, and a squadron brief edited by hand
+    for args in [vec!["fleet", "new", "TOP", "--yes"], vec!["squadron", "new", "TOP/SQ", "--brief", "x", "--yes"]] {
+        let r = raw(&vars, &args, &[], None);
+        assert_eq!(r.code, 0, "{args:?}: {}", r.out);
+    }
+    let adm = b.join("nimitz/top/admiral/CLAUDE.md");
+    let old = "# [TOP]-ADMIRAL\n\nYou are the admiral of fleet TOP. You watch the fleet and talk to its\ncommodores (questions only). You never start, stop or edit anything:\n`nimitz status` for the picture, and the user for every change.\n";
+    std::fs::write(&adm, old).unwrap();
+    let sq = b.join("nimitz/top/squadrons/sq/CLAUDE.md");
+    std::fs::write(&sq, "# mine\n").unwrap();
     let d = raw(&vars, &["doctor"], &[], None);
     assert_eq!(d.code, 1, "{}", d.out);
     assert!(d.out.contains("crossSessionInbound is unset"), "{}", d.out);
+    assert!(d.out.contains("TOP: ") && d.out.contains("written by an older nimitz"), "{}", d.out);
+    assert!(d.out.contains("TOP/SQ: ") && d.out.contains("edited by hand"), "{}", d.out);
     assert!(d.out.contains("[OK] native claude"), "{}", d.out);
     assert!(d.out.contains("[OK] hooks"), "{}", d.out);
     let f = raw(&vars, &["doctor", "--fix", "--yes"], &[], None);
@@ -868,6 +899,9 @@ fn init_and_doctor_in_an_empty_world() {
     let s: Value = serde_json::from_str(&std::fs::read_to_string(b.join("claude_home/settings.json")).unwrap()).unwrap();
     assert_eq!(s["crossSessionInbound"], "accept");
     assert_eq!(s["model"], "x", "other settings kept");
+    let brief = std::fs::read_to_string(&adm).unwrap();
+    assert!(brief.contains("`nimitz rules TOP` prints them") && !brief.contains("questions only"), "{brief}");
+    assert_eq!(std::fs::read_to_string(&sq).unwrap(), "# mine\n", "a hand-edited brief is left alone");
     assert_eq!(raw(&vars, &["doctor"], &[], None).code, 0);
 }
 

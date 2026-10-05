@@ -141,6 +141,7 @@ pub(crate) fn parse_event_line(line: &str) -> Option<Event> {
         to: s(&v, "to"),
         pid: v.get("pid").and_then(|p| p.as_i64()),
         labels,
+        rules: v.get("rules").and_then(|r| r.as_u64()).map(|r| r as u32),
     })
 }
 

@@ -6,8 +6,17 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 /// The events the plugin registers (plugin/hooks/hooks.json).
-pub const HOOK_EVENTS: [&str; 8] =
-    ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "SubagentStart", "SubagentStop", "PreToolUse"];
+pub const HOOK_EVENTS: [&str; 9] = [
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "Stop",
+    "Notification",
+    "SubagentStart",
+    "SubagentStop",
+    "PreToolUse",
+    "PermissionRequest",
+];
 
 /// Fields nimitz reads in Claude Code's files (the pinned formats).
 const SESSION_FIELDS: [&str; 4] = ["pid", "sessionId", "status", "kind"];
@@ -124,6 +133,20 @@ impl Report {
     }
 }
 
+/// `nimitz rules [<id>]`: the rules the SessionStart hook hands `id` (a member
+/// caller: its own when no id is given). Read-only.
+pub fn rules(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&[])?;
+    ctx.args.at_most(1)?;
+    let id = match (ctx.args.pos.first(), &ctx.caller) {
+        (Some(x), _) => crate::members::parse_id(x)?,
+        (None, nimitz_core::Caller::Member { id, .. }) => id.clone(),
+        (None, nimitz_core::Caller::User) => return Err("missing id (F, F/SQ, F/SQ/SHIP or F/SQ/~task)".into()),
+    };
+    print!("{}", nimitz_core::rules::text(&id));
+    Ok(0)
+}
+
 pub fn doctor(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--fix"])?;
     ctx.args.at_most(0)?;
@@ -230,6 +253,40 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
                 why: "set crossSessionInbound to accept in the user settings".into(),
             });
         }
+    }
+
+    // Role briefs (CLAUDE.md of admirals and commodores): an older generated
+    // one is replaced; a hand-edited one is left alone (the rules reach the
+    // session at its start either way).
+    let mut current = 0;
+    for (id, p, state) in nimitz_core::rules::briefs(env) {
+        use nimitz_core::rules::BriefState;
+        let write = |r: &mut Report, why: &str| {
+            r.fixes.steps.push(Step {
+                id: Some(id.clone()),
+                cmd: vec!["write".into(), p.to_string_lossy().into_owned(), nimitz_core::rules::brief(&id)],
+                cwd: None,
+                why: format!("{why} {}", p.display()),
+            })
+        };
+        match state {
+            BriefState::Current => current += 1,
+            BriefState::Old => {
+                r.err(&format!("{id}: {} was written by an older nimitz", p.display()), Some("nimitz doctor --fix"));
+                write(&mut r, "write the current brief to");
+            }
+            BriefState::Missing => {
+                r.err(&format!("{id}: no brief at {}", p.display()), Some("nimitz doctor --fix"));
+                write(&mut r, "write the brief");
+            }
+            BriefState::Custom => r.warn(
+                &format!("{id}: {} is edited by hand; nimitz leaves it alone (the role's rules still arrive at session start)", p.display()),
+                Some(&format!("compare it with `nimitz rules {id}`")),
+            ),
+        }
+    }
+    if current > 0 {
+        r.ok(&format!("{current} role brief(s) current (rules v{})", nimitz_core::rules::VERSION));
     }
 
     // Pinned formats: only the fields nimitz reads.
