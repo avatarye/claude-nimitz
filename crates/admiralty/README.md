@@ -20,7 +20,7 @@ admiralty --exit-after-jump        # quit once a pane jump lands (ADMIRALTY_EXIT
 ```
 
 `ADMIRALTY_ICONS=ascii` for a terminal without a Nerd Font. Folds, filters and
-the split are saved to `$NIMITZ_STATE/admiralty-ui.json` (`ADMIRALTY_STATE`
+the fleet tab are saved to `$NIMITZ_STATE/admiralty-ui.json` (`ADMIRALTY_STATE`
 moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 ## Layout
@@ -33,26 +33,34 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   nimitz home in no fleet's folders. A tab shows only its fleet. `tab` /
   `shift-tab` step through them, `1`-`9` pick one; a jump to a row on another
   tab (`!`, `i`) shows that tab; a `/` search spans every fleet.
-- One gold double-line frame per fleet. Its title band is tinted by the fleet's
-  state (pink needs you, purple broken, green busy, cyan idle, orange no
-  admiral, grey inactive, dim elsewhere), with `icon n / icon n` status and issue
-  counts on the right. The admiral is the first row inside.
-- A rounded frame per squadron inside its fleet, tinted the same way, with its
-  comms rule; ships and tenders are rows; crew, tasks and extra job rows sit
-  under their member with tree guides.
-- A pink STOWAWAYS frame for unlabelled sessions in fleet scope, on the tab of
+- Colours are theme A, "Monokai refined" (`docs/design/admiralty-ui`): five
+  hues with one meaning each (pink needs you, the only filled chip; orange
+  error; yellow warning and legacy; green busy; cyan focus, key hints and fix
+  commands) and four neutral steps (faint not started, muted ages and paths,
+  body text and idle, bright live names). Bands sit on one raised background,
+  never tinted; frames are neutral unless they need you (pink) or do not load
+  (orange). On the cursor row and band, faint and muted text is lifted.
+- One double-line frame per fleet, its state word on the title band, with
+  `icon n / icon n` status and issue counts on the right (info issues are not
+  counted). The admiral is the first row inside.
+- A rounded frame per squadron inside its fleet, with its comms rule; ships and
+  tenders are rows; crew, tasks and extra job rows sit under their member with
+  tree guides.
+- A STOWAWAYS frame for unlabelled sessions in fleet scope, on the tab of
   the fleet that holds them (a member's folder, else the fleet's own folder,
   else the fleet its `legacy` issue names; `unassigned` otherwise). A session of
-  the old fleet-skill fleets (issue `legacy`) has its own orange history marker,
+  the old fleet-skill fleets (issue `legacy`) has its own yellow history marker,
   and `x` then `d` adopts it as the identity its fix names.
-- Band counts read `icon n` (`!2 / *3 / -1`: needs you, busy, idle ...; red and orange
+- Band counts read `icon n` (`!2 / *3 / -1`: needs you, busy, idle ...; orange and yellow
   triangles are errors and warnings), right-aligned as a group; under 100 columns only
   needs-you and errors stay. `?` has a legend for every icon.
 - Columns NAME / STATUS / AGE / KIND / DETAIL line up across all frames. NAME
-  starts with the pane dot (yellow working, red blocked, teal done, green
-  idle, grey unknown) and an issue mark coloured by severity; DETAIL lists the
+  starts with the pane dot (green working, pink blocked, grey done, plain
+  idle, faint unknown) and an issue mark coloured by severity; DETAIL lists the
   issue codes.
-- Detail pane (beside when 150+ columns, below otherwise; `v` / `s`): a large
+- Detail panel (`w` opens and closes it, `esc` closes it; closed at start, so
+  the list takes the full width): it floats over the right of the list and
+  follows the cursor row. A large
   picture of the row's kind, status, WHY THIS STATUS (core's reasons), ISSUES
   with their `nimitz` fix commands, the session, and what each key does here or
   why it will not.
@@ -68,7 +76,7 @@ on a fleet band also `layout herdr [--ships]` and removing a machine; sweep is
 scoped to the row: member, squadron or fleet),
 `m` message (admiral and commodore: typed into their pane; ships: relayed by
 their commodore), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
-from config, `y` yank the session id, `I` stowaways, `f` fleet-state filter, `F`
+from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` fleet-state filter, `F`
 flagged only, `R` refresh, `?` help, `q` quit.
 
 Every action and form shows the exact `nimitz` command and core's plan steps

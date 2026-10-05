@@ -111,6 +111,15 @@ impl Act {
         }
     }
 
+    /// The key that does this from the main list: its own key when the list
+    /// binds one (a, u, A, D), else `x` (the actions menu) then its menu key.
+    pub fn main_key(self) -> String {
+        match self {
+            Act::Start | Act::Up | Act::Open | Act::ConfigRm => self.key().to_string(),
+            other => format!("x {}", other.key()),
+        }
+    }
+
     fn needs_mux(self) -> bool {
         matches!(self, Act::Up | Act::Open | Act::Layout | Act::LayoutShips)
     }

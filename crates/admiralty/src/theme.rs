@@ -4,33 +4,45 @@
 use nimitz_core::{Role, Severity, Status};
 use ratatui::style::{Color, Modifier, Style};
 
-/// Monokai palette.
+/// Theme A, "Monokai refined" (docs/design/admiralty-ui, direction 2): warm
+/// olive neutrals and Monokai's own hues, each hue with one meaning. Five hues:
+/// NEEDS (needs you, the only filled chip), ERROR, WARN, BUSY, and ACCENT (focus:
+/// the active tab, key hints, fix commands). Everything else is neutral, with
+/// four brightness steps: FAINT, MUTED, FG, STRONG. No tinted bands; frames are
+/// LINE, except a squadron or fleet that needs you (NEEDS) or does not load (ERROR).
+/// Text tokens are at least 3.8:1 on BG and lifted on the cursor row.
 pub mod mono {
     use ratatui::style::Color;
+    /// screen background
     pub const BG: Color = Color::Rgb(0x27, 0x28, 0x22);
-    pub const BG_HI: Color = Color::Rgb(0x3e, 0x3d, 0x32); // line highlight
-    pub const SEL: Color = Color::Rgb(0x5b, 0x59, 0x4a); // cursor row
-    pub const FG: Color = Color::Rgb(0xf8, 0xf8, 0xf2);
-    pub const COMMENT: Color = Color::Rgb(0x75, 0x71, 0x5e);
-    pub const DIM: Color = Color::Rgb(0x5a, 0x58, 0x4b);
-    pub const SOFT: Color = Color::Rgb(0xcf, 0xcf, 0xc2);
-    pub const PINK: Color = Color::Rgb(0xf9, 0x26, 0x72);
-    pub const ORANGE: Color = Color::Rgb(0xfd, 0x97, 0x1f);
-    pub const YELLOW: Color = Color::Rgb(0xe6, 0xdb, 0x74);
-    pub const GREEN: Color = Color::Rgb(0xa6, 0xe2, 0x2e);
-    pub const CYAN: Color = Color::Rgb(0x66, 0xd9, 0xef);
-    pub const PURPLE: Color = Color::Rgb(0xae, 0x81, 0xff);
-    // dark tints for title bands
-    pub const T_PINK: Color = Color::Rgb(0x55, 0x1e, 0x35);
-    pub const T_GREEN: Color = Color::Rgb(0x31, 0x40, 0x16);
-    pub const T_CYAN: Color = Color::Rgb(0x1d, 0x3a, 0x42);
-    pub const T_ORANGE: Color = Color::Rgb(0x4d, 0x33, 0x12);
-    pub const T_GREY: Color = Color::Rgb(0x36, 0x36, 0x2f);
-    pub const T_DIM: Color = Color::Rgb(0x2d, 0x2e, 0x28);
-    pub const GOLD: Color = Color::Rgb(0xff, 0xc6, 0x3a);
-    pub const T_GOLD: Color = Color::Rgb(0x4a, 0x3c, 0x14);
-    pub const GOLD_DIM: Color = Color::Rgb(0x8a, 0x72, 0x2e);
-    pub const T_PURPLE: Color = Color::Rgb(0x38, 0x2a, 0x55);
+    /// raised: band rows, status and key bars
+    pub const BG_HI: Color = Color::Rgb(0x2f, 0x30, 0x2a);
+    /// the cursor row
+    pub const SEL: Color = Color::Rgb(0x4a, 0x49, 0x39);
+    /// frames and tree guides
+    pub const LINE: Color = Color::Rgb(0x4e, 0x4d, 0x42);
+    /// not started, kind, inert detail, separators (4.1:1)
+    pub const FAINT: Color = Color::Rgb(0x8a, 0x86, 0x72);
+    /// ages, headers, paths, info issues, key labels (6.0:1)
+    pub const MUTED: Color = Color::Rgb(0xaa, 0xa5, 0x8f);
+    /// body text, idle sessions (11.8:1)
+    pub const FG: Color = Color::Rgb(0xe6, 0xe6, 0xdc);
+    /// names of live sessions, titles (13.9:1)
+    pub const STRONG: Color = Color::Rgb(0xf8, 0xf8, 0xf2);
+    /// needs you: text, and the only filled chip on screen (5.1:1)
+    pub const NEEDS: Color = Color::Rgb(0xff, 0x5c, 0x93);
+    /// errors, a config that does not load (6.8:1)
+    pub const ERROR: Color = Color::Rgb(0xfd, 0x97, 0x1f);
+    /// warnings, no admiral, legacy, stowaways (8.7:1)
+    pub const WARN: Color = Color::Rgb(0xd8, 0xc7, 0x66);
+    /// busy, pane working, crew running (9.6:1)
+    pub const BUSY: Color = Color::Rgb(0xa6, 0xe2, 0x2e);
+    /// focus: active tab, key hints, fix commands (9.0:1)
+    pub const ACCENT: Color = Color::Rgb(0x66, 0xd9, 0xef);
+    // older names, kept for the call sites that mean the same step
+    pub const COMMENT: Color = MUTED;
+    pub const SOFT: Color = MUTED;
+    pub const DIM: Color = FAINT;
 }
 
 pub fn st(c: Color) -> Style {
@@ -66,27 +78,33 @@ pub fn status_glyph(s: Status) -> &'static str {
 
 pub fn status_color(s: Status) -> Color {
     match s {
-        Status::NeedsYou => mono::PINK,
-        Status::Busy => mono::GREEN,
-        Status::Idle => mono::YELLOW,
-        Status::Stopped => mono::COMMENT,
-        Status::NotStarted => mono::DIM,
-        Status::Unknown => mono::PURPLE,
+        Status::NeedsYou => mono::NEEDS,
+        Status::Busy => mono::BUSY,
+        Status::Idle => mono::FG,
+        Status::Stopped => mono::MUTED,
+        Status::NotStarted => mono::FAINT,
+        Status::Unknown => mono::MUTED,
     }
 }
 
+/// Needs-you is the one filled chip; the rest is coloured text.
 pub fn status_style(s: Status) -> Style {
     match s {
-        Status::NeedsYou => bold(mono::PINK),
+        Status::NeedsYou => chip(mono::NEEDS),
         other => st(status_color(other)),
     }
 }
 
+/// Dark text on a filled background, bold.
+pub fn chip(c: Color) -> Style {
+    Style::new().fg(mono::BG).bg(c).add_modifier(Modifier::BOLD)
+}
+
 pub fn severity_color(s: Severity) -> Color {
     match s {
-        Severity::Error => mono::PINK,
-        Severity::Warn => mono::ORANGE,
-        Severity::Info => mono::CYAN,
+        Severity::Error => mono::ERROR,
+        Severity::Warn => mono::WARN,
+        Severity::Info => mono::MUTED,
     }
 }
 
@@ -107,13 +125,15 @@ pub fn pane_dot(state: &str) -> &'static str {
     }
 }
 
+/// The pane dot reuses the status hues: working is busy, blocked needs you,
+/// idle and done stay neutral.
 pub fn pane_color(state: &str) -> Color {
     match state {
-        "working" => mono::YELLOW,
-        "blocked" => mono::PINK,
-        "done" => mono::CYAN,
-        "idle" => mono::GREEN,
-        _ => mono::COMMENT,
+        "working" => mono::BUSY,
+        "blocked" => mono::NEEDS,
+        "done" => mono::MUTED,
+        "idle" => mono::FG,
+        _ => mono::FAINT,
     }
 }
 

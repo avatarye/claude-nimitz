@@ -4,7 +4,7 @@
 mod common;
 
 use admiralty::actions::{self, Act, Target};
-use admiralty::app::{Effect, Modal, Split};
+use admiralty::app::{Effect, Modal};
 use admiralty::fixtures;
 use admiralty::forms::Form;
 use admiralty::theme::mono;
@@ -25,8 +25,13 @@ fn each_fleet_is_a_gold_double_frame_with_squadron_frames_inside() {
         let ls = lines(&buf);
         let tag = format!("[{fleet}]");
         let y = ls.iter().position(|l| l.contains(&tag) && l.starts_with('\u{2554}')).unwrap_or_else(|| panic!("{tag} band"));
-        let gold = if fleet == "LAB" { mono::GOLD_DIM } else { mono::GOLD };
-        assert_eq!(buf[(0, y as u16)].fg, gold, "{tag} frame is gold (dimmed when it runs elsewhere)");
+        // theme A: frames are neutral, except one that needs you or does not load
+        let frame = match fleet {
+            "MAIN" => mono::NEEDS,
+            "FORGE" => mono::ERROR,
+            _ => mono::LINE,
+        };
+        assert_eq!(buf[(0, y as u16)].fg, frame, "{tag} frame");
         assert_eq!(ls.iter().filter(|l| l.starts_with('\u{2554}')).count(), 1, "only {tag} on its tab");
     }
     tab(&mut t.app, "MAIN");
@@ -38,10 +43,10 @@ fn each_fleet_is_a_gold_double_frame_with_squadron_frames_inside() {
     // and close before the fleet does
     assert!(ls.iter().any(|l| l.starts_with("\u{2551}\u{2570}")));
     assert!(ls.iter().any(|l| l.starts_with('\u{255a}')));
-    // stowaways: their own pink frame at top level
+    // stowaways: their own frame at top level, neutral like the rest
     let y = ls.iter().position(|l| l.contains("STOWAWAYS")).unwrap();
     assert!(ls[y].starts_with('\u{256d}'));
-    assert_eq!(buf[(0, y as u16)].fg, mono::PINK);
+    assert_eq!(buf[(0, y as u16)].fg, mono::LINE);
 }
 
 #[test]
@@ -53,7 +58,8 @@ fn title_band_is_tinted_by_state_with_counts_on_the_right() {
     let ls = lines(&buf);
     let y = ls.iter().position(|l| l.contains("[FORGE]") && l.contains("broken")).unwrap() as u16;
     let x = (ls[y as usize].find("broken").unwrap()) as u16; // ASCII before it
-    assert_eq!(buf[(x - 2, y)].bg, mono::T_PURPLE, "broken fleet band is purple-tinted");
+    assert_eq!(buf[(x - 2, y)].bg, mono::BG_HI, "no tinted bands: every band on the raised background");
+    assert_eq!(buf[(x, y)].fg, mono::ERROR, "the state word carries the hue");
     // right side: `icon n`, slashes between, right-aligned as a group
     let band = &ls[y as usize];
     assert!(band.contains("^10 / ^3 / *2 / -1 / x2 / o3 / ?1"), "{band}");
@@ -72,7 +78,7 @@ fn band_counts_are_a_right_aligned_group_and_narrow_bands_keep_the_key_ones() {
     // every band's group ends at the same column (nested bands too, other tabs too)
     let end = |ls: &[String], has: &str| {
         let l = ls.iter().find(|l| l.contains(has)).unwrap();
-        let c: Vec<char> = l.chars().take(130).collect();
+        let c: Vec<char> = l.chars().collect();
         let corner = c.iter().rposition(|ch| "\u{2557}\u{256e}".contains(*ch)).unwrap();
         c[..corner].iter().rposition(|ch| *ch != ' ').unwrap()
     };
@@ -139,6 +145,7 @@ fn several_fleets_in_config_order_and_an_elsewhere_fleet_is_folded() {
 fn renders_at_narrow_and_wide_sizes() {
     for (w, h) in [(100, 30), (200, 50), (60, 20), (300, 80)] {
         let mut t = demo();
+        keys(&mut t.app, "w");
         let s = screen(&mut t.app, w, h);
         assert!(s.contains("ADMIRALTY"), "{w}x{h}");
         assert!(s.contains("NAME"), "{w}x{h}");
@@ -147,29 +154,56 @@ fn renders_at_narrow_and_wide_sizes() {
 }
 
 #[test]
-fn split_is_auto_by_width_and_v_s_switch_it_and_it_sticks() {
+fn the_detail_panel_floats_over_the_list_on_w_and_follows_the_cursor() {
     let mut t = demo();
+    // closed at start: the list takes the whole width
+    assert!(!t.app.detail_open);
     let ls = lines(&draw(&mut t.app, 200, 50));
-    let y_wide = ls.iter().position(|l| l.contains(" detail ")).unwrap();
-    assert!(y_wide <= 2, "wide: detail beside the list");
-    let ls = lines(&draw(&mut t.app, 100, 40));
-    let y_narrow = ls.iter().position(|l| l.contains(" detail ")).unwrap();
-    assert!(y_narrow > 10, "narrow: detail below the list");
-    keys(&mut t.app, "v");
-    assert_eq!(t.app.split, Split::Vertical);
-    let ls = lines(&draw(&mut t.app, 100, 40));
-    assert!(ls.iter().position(|l| l.contains(" detail ")).unwrap() <= 2);
-    keys(&mut t.app, "s");
-    assert_eq!(t.app.split, Split::Horizontal);
-    // folds, filters and split are saved and come back
-    keys(&mut t.app, "F");
-    let state = t.dir.path().join("ui.json");
-    let saved = std::fs::read_to_string(&state).unwrap();
-    assert!(saved.contains("horizontal") && saved.contains("\"flagged_only\": true"), "{saved}");
+    assert!(!ls.iter().any(|l| l.contains("w/esc close")), "no detail panel until `w`");
+    let band = ls.iter().find(|l| l.contains("[MAIN]") && l.contains("needs you")).unwrap();
+    assert!(band.trim_end().chars().count() > 190, "the list spans the window: {band}");
+    // `w` floats it over the right part; the list keeps its rows
+    keys(&mut t.app, "w");
+    let ls = lines(&draw(&mut t.app, 200, 50));
+    let y = ls.iter().position(|l| l.contains(" detail ") && l.contains("w/esc close")).expect("the panel's title");
+    assert!(y <= 2, "it starts at the top of the body");
+    assert!(ls[y].find(" detail ").unwrap() > 100, "on the right: {}", ls[y]);
+    assert!(ls.iter().any(|l| l.contains("[MAIN]") && l.contains("needs you")), "the list is still there");
+    // it follows the cursor row
+    goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
+    assert!(screen(&mut t.app, 200, 50).contains("[MAIN.ARGOS]-BOOM"));
+    goto(&mut t.app, "M:MAIN/KITS/PIPELINE");
+    let s = screen(&mut t.app, 200, 50);
+    assert!(s.contains("NEEDS YOU") || s.contains("PIPELINE"), "{s}");
+    // esc closes it; `w` toggles; nothing advertises the old split keys
+    press(&mut t.app, KeyCode::Esc);
+    assert!(!t.app.detail_open);
+    keys(&mut t.app, "ww");
+    assert!(!t.app.detail_open);
+    let s = screen(&mut t.app, 200, 50);
+    assert!(s.lines().last().unwrap().contains("w detail") && !s.contains("v/s"), "key bar: {}", s.lines().last().unwrap());
+    assert!(admiralty::app::HELP.iter().any(|(k, d)| *k == "w" && d.contains("detail")));
+    assert!(!admiralty::app::HELP.iter().any(|(k, _)| k.contains("v / s")));
+    // `s` and `v` no longer do anything on the list
+    let before = t.app.rows.len();
+    keys(&mut t.app, "sv");
+    assert!(t.app.modal.is_none() && !t.app.detail_open && t.app.rows.len() == before);
+}
+
+#[test]
+fn a_saved_state_with_the_old_split_setting_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("ui.json");
+    std::fs::write(
+        &state,
+        r#"{"expanded": {"F:MAIN": false}, "filter": "", "fleet_states": [true, true, true, true, true, true, true], "flagged_only": true, "show_stowaways": true, "split": "horizontal", "tab": "FORGE"}"#,
+    )
+    .unwrap();
     let ctx = admiralty::actions::Ctx { env: fixtures::demo_env(), mux: Box::new(TestMux::default()), live: false, exit_after_jump: false };
-    let again = admiralty::app::App::new(ctx, Some(state), true);
-    assert_eq!(again.split, Split::Horizontal);
-    assert!(again.flagged_only);
+    let app = admiralty::app::App::new(ctx, Some(state), true);
+    assert!(app.flagged_only, "the rest of the saved state came back");
+    assert_eq!(app.tab.as_deref(), Some("FORGE"));
+    assert!(!app.detail_open, "the detail panel starts closed whatever was saved");
 }
 
 // ------------------------------------------------------------------ keys
@@ -285,7 +319,7 @@ fn help_has_a_legend_line_for_each_icon() {
     let mut t = demo();
     keys(&mut t.app, "?");
     let s = screen(&mut t.app, 200, 80);
-    for what in ["errors (red) and warnings", "needs you: waiting", "busy", "stowaway: a session", "pane dot: idle", "Band counts read"] {
+    for what in ["errors (orange) and warnings (yellow)", "needs you: waiting", "busy", "stowaway: a session", "pane dot: idle", "Band counts read"] {
         assert!(s.contains(what), "legend has {what}");
     }
 }
@@ -306,7 +340,10 @@ fn help_lists_every_key() {
     let mut t = demo();
     keys(&mut t.app, "?");
     let s = screen(&mut t.app, 200, 50);
-    for k in ["gg / G", "ctrl-d / ctrl-u", "J / K", "c / e / D", "v / s", "f / F"] {
+    for k in ["gg / G", "ctrl-d / ctrl-u", "J / K", "c / e / D", "f / F"] {
+        assert!(s.contains(k), "help shows {k}");
+    }
+    for k in ["w  ", "floating detail panel"] {
         assert!(s.contains(k), "help shows {k}");
     }
     press(&mut t.app, KeyCode::Esc);
@@ -367,9 +404,10 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
         let x = col_of(&ls, row, "^ ") as u16; // the issue mark before the name
         assert!(x < col_of(&ls, row, row.trim()) as u16);
         let c = buf[(x, y)].fg;
-        assert!(c == mono::PINK || c == mono::ORANGE, "{row} mark is coloured by severity");
+        assert!(c == mono::ERROR || c == mono::WARN, "{row} mark is coloured by severity");
     }
     goto(&mut t.app, "M:FORGE/IRON/ANVIL");
+    keys(&mut t.app, "w");
     let s = screen(&mut t.app, 200, 60);
     assert!(s.contains("WHY THIS STATUS"));
     assert!(s.contains("ISSUES (2)"));
@@ -383,10 +421,11 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
 fn pane_dots_at_row_start_in_herdr_colours() {
     let mut t = demo();
     for (fleet, row, dot, color) in [
-        ("MAIN", "[MAIN]-ADMIRAL", "\u{25cb}", mono::GREEN),
-        ("MAIN", "[MAIN.ARGOS]-COMMODORE", "\u{25cf}", mono::YELLOW),
-        ("FORGE", "[FORGE]-ADMIRAL", "\u{25cf}", mono::CYAN),
-        ("FORGE", "scratch-run", "\u{00b7}", mono::COMMENT),
+        // the pane dot reuses the status hues: idle and done neutral, working busy
+        ("MAIN", "[MAIN]-ADMIRAL", "\u{25cb}", mono::FG),
+        ("MAIN", "[MAIN.ARGOS]-COMMODORE", "\u{25cf}", mono::BUSY),
+        ("FORGE", "[FORGE]-ADMIRAL", "\u{25cf}", mono::MUTED),
+        ("FORGE", "scratch-run", "\u{00b7}", mono::FAINT),
     ] {
         tab(&mut t.app, fleet);
         let buf = draw(&mut t.app, 200, 60);
@@ -398,9 +437,9 @@ fn pane_dots_at_row_start_in_herdr_colours() {
     tab(&mut t.app, "MAIN");
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
-    // KITS commodore's pane is blocked: needs you, and the dot is red
+    // KITS commodore's pane is blocked: needs you, and the dot takes the needs-you hue
     let y = ls.iter().position(|l| l.contains("[MAIN.KITS]-COMMODORE")).unwrap();
-    assert_eq!(buf[(2, y as u16)].fg, mono::PINK);
+    assert_eq!(buf[(2, y as u16)].fg, mono::NEEDS);
     assert!(ls[y].contains("needs you"));
     let boom = ls.iter().find(|l| l.contains("[MAIN.ARGOS]-BOOM")).unwrap();
     assert!(boom.starts_with("\u{2551}\u{2502}  "), "no pane: no dot: {boom}");
@@ -619,7 +658,7 @@ fn a_legacy_session_has_its_own_marker_and_adopt_is_prefilled() {
     let y = ls.iter().position(|l| l.contains("[KITS]-LEAD")).unwrap();
     let x = col_of(&ls, "[KITS]-LEAD", "L ");
     assert!(x < col_of(&ls, "[KITS]-LEAD", "[KITS]-LEAD"), "marker before the name: {}", ls[y]);
-    assert_eq!(buf[(x as u16, y as u16)].fg, mono::ORANGE);
+    assert_eq!(buf[(x as u16, y as u16)].fg, mono::WARN);
     assert!(ls[y].contains("legacy"));
     goto(&mut t.app, "SW:ab99ab99-0000-4000-8000-000000000000");
     assert_eq!(t.app.legacy_adopt(), Some(("ab99ab99".into(), "MAIN/KITS".into())));
@@ -682,6 +721,9 @@ fn at_80x24_the_essentials_stay_on_screen() {
     assert!(ls[23].contains("? help") && ls[23].contains("q quit"), "footer keeps help and quit: {}", ls[23]);
     let row = ls.iter().find(|l| l.contains("[FORGE.IRON]-AN") && l.contains("ship")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
     assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
+    // the floating panel, opened on the same small screen
+    keys(&mut t.app, "w");
+    let ls = lines(&draw(&mut t.app, 80, 24));
     let s = ls.join("\n");
     assert!(s.contains("WHY THIS STATUS"), "a short detail pane still shows the reasons:\n{s}");
     // and ctrl-e scrolls it to the fix

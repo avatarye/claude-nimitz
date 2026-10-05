@@ -98,28 +98,30 @@ impl FleetState {
         }
     }
 
+    /// Every band sits on the one raised background: no tinted bands.
     pub fn tint(self) -> Color {
+        mono::BG_HI
+    }
+
+    /// the state word's colour
+    pub fn color(self) -> Color {
         match self {
-            FleetState::NeedsYou => mono::T_PINK,
-            FleetState::Broken => mono::T_PURPLE,
-            FleetState::Busy => mono::T_GREEN,
-            FleetState::Idle => mono::T_CYAN,
-            FleetState::NoAdmiral => mono::T_ORANGE,
-            FleetState::Inactive => mono::T_GREY,
-            FleetState::Elsewhere => mono::T_DIM,
+            FleetState::NeedsYou => mono::NEEDS,
+            FleetState::Broken => mono::ERROR,
+            FleetState::Busy => mono::BUSY,
+            FleetState::Idle => mono::FG,
+            FleetState::NoAdmiral => mono::WARN,
+            FleetState::Inactive => mono::MUTED,
+            FleetState::Elsewhere => mono::FAINT,
         }
     }
 
-    /// bright colour for the fleet's frame and title
-    pub fn color(self) -> Color {
+    /// the frame: neutral, unless it needs you or does not load
+    pub fn frame(self) -> Color {
         match self {
-            FleetState::NeedsYou => mono::PINK,
-            FleetState::Broken => mono::PURPLE,
-            FleetState::Busy => mono::GREEN,
-            FleetState::Idle => mono::CYAN,
-            FleetState::NoAdmiral => mono::ORANGE,
-            FleetState::Inactive => mono::COMMENT,
-            FleetState::Elsewhere => mono::DIM,
+            FleetState::NeedsYou => mono::NEEDS,
+            FleetState::Broken => mono::ERROR,
+            _ => mono::LINE,
         }
     }
 
@@ -335,7 +337,7 @@ pub fn age_or_unknown(seconds: f64) -> String {
 }
 
 fn crew_node(parent: &str, c: &Crew, kids: &HashMap<String, Vec<&Crew>>, now: f64, icons: &Icons, depth: usize) -> Node {
-    let style = if c.running { st(mono::GREEN) } else { st(mono::COMMENT) };
+    let style = if c.running { st(mono::BUSY) } else { st(mono::COMMENT) };
     let mut n = Node::new(format!("C:{parent}:{}", c.agent_id), Kind::Crew);
     n.icon = if c.teammate { icons.teammate } else { icons.crew };
     n.icon_style = style;
@@ -371,8 +373,8 @@ fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons) -> Vec<Node>
 fn task_node(parent: &str, t: &Task, icons: &Icons) -> Node {
     let (icon, c) = match t.status.as_str() {
         "completed" => (icons.completed, mono::COMMENT),
-        "in_progress" => (icons.in_progress, mono::GREEN),
-        _ => (icons.pending, mono::YELLOW),
+        "in_progress" => (icons.in_progress, mono::BUSY),
+        _ => (icons.pending, mono::MUTED),
     };
     let mut n = Node::new(format!("T:{parent}:{}", t.id), Kind::Task);
     n.icon = icon;
@@ -387,7 +389,7 @@ fn task_node(parent: &str, t: &Task, icons: &Icons) -> Node {
 
 fn extra_row_node(parent: &str, s: &SessionInfo, now: f64, icons: &Icons) -> Node {
     let live = s.pid.is_some();
-    let style = if live { st(mono::PINK) } else { st(mono::DIM) };
+    let style = if live { st(mono::ERROR) } else { st(mono::DIM) };
     let mut n = Node::new(format!("X:{parent}:{}", s.session_id), Kind::ExtraRow);
     n.member = Some(nimitz_core::Id(parent.to_string()));
     n.session_id = Some(s.session_id.clone());
@@ -425,7 +427,7 @@ fn issue_spans(issues: &[Issue], icons: &Icons) -> Vec<Span<'static>> {
     let Some(w) = worst_of(issues) else { return vec![] };
     let codes: Vec<&str> = issues.iter().map(|i| i.code.as_str()).collect();
     if is_legacy(&issues.iter().collect::<Vec<_>>()) {
-        return vec![Span::styled(format!("{} {}  ", icons.legacy, codes.join(", ")), bold(mono::ORANGE))];
+        return vec![Span::styled(format!("{} {}  ", icons.legacy, codes.join(", ")), bold(mono::WARN))];
     }
     vec![Span::styled(format!("{} {}  ", icons.issue, codes.join(", ")), bold(theme::severity_color(w)))]
 }
@@ -433,10 +435,14 @@ fn issue_spans(issues: &[Issue], icons: &Icons) -> Vec<Span<'static>> {
 fn member_node(m: &Member, v: &View) -> Node {
     let live = member_live(m);
     let style = status_style(m.status);
-    let name_style = match m.role {
-        Role::Admiral if live => bold(mono::GOLD),
-        Role::Commodore if live => bold(mono::CYAN),
-        _ => style,
+    // a name is text, never a chip: needs-you in its hue, a live session strong,
+    // the rest by its status (faint when not started)
+    let name_style = if m.status == Status::NeedsYou {
+        bold(mono::NEEDS)
+    } else if live {
+        bold(mono::STRONG)
+    } else {
+        st(theme::status_color(m.status))
     };
     let mut n = Node::new(format!("M:{}", m.id.0), Kind::Member(m.role));
     n.member = Some(m.id.clone());
@@ -463,11 +469,11 @@ fn member_node(m: &Member, v: &View) -> Node {
             .and_then(|s| s.waiting_for.clone())
             .or_else(|| m.reasons.first().cloned())
             .unwrap_or_default();
-        n.detail.push(Span::styled(why, st(mono::PINK)));
+        n.detail.push(Span::styled(why, st(mono::NEEDS)));
     } else if n.detail.is_empty() {
         let running = m.crew.iter().filter(|c| c.running).count();
         if running > 0 {
-            n.detail.push(Span::styled(format!("{running} crew running"), st(mono::GREEN)));
+            n.detail.push(Span::styled(format!("{running} crew running"), st(mono::BUSY)));
         } else if let Some(r) = m.reasons.first() {
             n.detail.push(Span::styled(r.clone(), st(mono::COMMENT)));
         }
@@ -495,12 +501,13 @@ pub struct Count {
 pub fn status_counts(members: &[&Member], issues: &[&Issue], icons: &Icons) -> Vec<Count> {
     let mut out = vec![];
     let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
-    let others = issues.len() - errors;
+    // info issues are not counted: they stay muted on their own rows
+    let others = issues.iter().filter(|i| i.severity == Severity::Warn).count();
     if errors > 0 {
-        out.push(Count { icon: icons.issue, n: errors, style: bold(mono::PINK), key: true });
+        out.push(Count { icon: icons.issue, n: errors, style: bold(mono::ERROR), key: true });
     }
     if others > 0 {
-        out.push(Count { icon: icons.issue, n: others, style: bold(mono::ORANGE), key: false });
+        out.push(Count { icon: icons.issue, n: others, style: bold(mono::WARN), key: false });
     }
     for status in [Status::NeedsYou, Status::Busy, Status::Idle, Status::Stopped, Status::NotStarted, Status::Unknown] {
         let n = members.iter().filter(|m| m.status == status).count();
@@ -529,17 +536,17 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
     let own_issues: Vec<&Issue> = sq.issues.iter().chain(members.iter().flat_map(|m| m.issues.iter())).collect();
     let state = FleetState::of_squadron(f, sq);
     let load_errors: Vec<&Issue> = sq.issues.iter().filter(|i| is_load_error(i) && i.id.as_ref() == Some(&sq.id)).collect();
-    let color = if load_errors.is_empty() { state.color() } else { mono::PINK };
+    let (color, frame) = if load_errors.is_empty() { (state.color(), state.frame()) } else { (mono::ERROR, mono::ERROR) };
     let sq_name = sq.id.squadron().unwrap_or("?").to_string();
     let mut n = Node::new(format!("SQ:{}", sq.id.0), Kind::SquadronBand);
     n.member = Some(sq.id.clone());
     n.default_expand = true;
     n.icon = v.icons.squadron;
-    n.icon_style = bold(color);
+    n.icon_style = bold(mono::MUTED);
     n.name = sq_name;
-    n.name_style = bold(mono::FG);
+    n.name_style = bold(mono::STRONG);
     n.kind_text = "squadron".into();
-    n.frame = Some(color);
+    n.frame = Some(frame);
     n.band_bg = Some(state.tint());
     n.worst = worst_of(&sq.issues);
     n.issue_count = sq.issues.len();
@@ -559,7 +566,7 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
 
 fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
     let live = s.pid.is_some();
-    let style = if live { bold(mono::PINK) } else { st(mono::COMMENT) };
+    let style = if live { bold(mono::WARN) } else { st(mono::COMMENT) };
     let mut n = Node::new(format!("SW:{}", s.session_id), Kind::Stowaway);
     n.session_id = Some(s.session_id.clone());
     n.icon = v.icons.stowaway;
@@ -568,7 +575,7 @@ fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
     n.name_style = style;
     n.status = (
         if live { format!("{} live", v.icons.s_busy) } else { format!("{} dead", v.icons.s_stopped) },
-        if live { st(mono::PINK) } else { st(mono::COMMENT) },
+        if live { st(mono::WARN) } else { st(mono::COMMENT) },
     );
     n.age = s.started_at.map(|t| age_or_unknown(v.now - t)).unwrap_or_else(|| "?".into());
     n.kind_text = "stowaway".into();
@@ -584,11 +591,11 @@ fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
     let fix = issues.iter().find_map(|i| i.fix.clone());
     n.detail = vec![];
     if n.legacy {
-        n.detail.push(Span::styled(format!("{} legacy  ", v.icons.legacy), bold(mono::ORANGE)));
+        n.detail.push(Span::styled(format!("{} legacy  ", v.icons.legacy), bold(mono::WARN)));
     }
     n.detail.push(Span::styled(format!("no labels  {}", s.cwd), st(mono::SOFT)));
     if let Some(fx) = fix {
-        n.detail.push(Span::styled(format!("   fix: {fx}"), st(mono::CYAN)));
+        n.detail.push(Span::styled(format!("   fix: {fx}"), st(mono::ACCENT)));
     }
     n
 }
@@ -651,7 +658,7 @@ fn error_notes(id: &nimitz_core::Id, errors: &[&Issue]) -> Vec<Node> {
             out.push(note(id, out.len(), line.to_string(), st(mono::FG)));
         }
         if let Some(fx) = &e.fix {
-            out.push(note(id, out.len(), format!("fix: {fx}"), bold(mono::CYAN)));
+            out.push(note(id, out.len(), format!("fix: {fx}"), bold(mono::ACCENT)));
         }
     }
     out
@@ -665,27 +672,27 @@ fn broken_band(snap: &Snapshot, id: &nimitz_core::Id, v: &View) -> Node {
     n.member = Some(id.clone());
     n.default_expand = true;
     n.icon = if fleet { v.icons.fleet } else { v.icons.squadron };
-    n.icon_style = bold(mono::PINK);
+    n.icon_style = bold(mono::ERROR);
     n.name = if fleet { format!("[{}]", id.0) } else { id.squadron().unwrap_or("?").to_string() };
-    n.name_style = bold(mono::PINK);
+    n.name_style = bold(mono::ERROR);
     n.kind_text = if fleet { "fleet".into() } else { "squadron".into() };
-    n.frame = Some(mono::PINK);
-    n.band_bg = Some(mono::T_PURPLE);
+    n.frame = Some(mono::ERROR);
+    n.band_bg = Some(mono::BG_HI);
     n.worst = Some(Severity::Error);
-    n.detail = vec![Span::styled("config does not load", bold(mono::PINK))];
+    n.detail = vec![Span::styled("config does not load", bold(mono::ERROR))];
     let errors: Vec<&Issue> = all_issues(snap)
         .into_iter()
         .filter(|i| is_load_error(i) && i.id.as_ref().map(|x| x == id || (fleet && x.fleet() == id.fleet())).unwrap_or(false))
         .collect();
     n.issue_count = errors.len();
-    n.counts = vec![Count { icon: v.icons.issue, n: errors.len(), style: bold(mono::PINK), key: true }];
+    n.counts = vec![Count { icon: v.icons.issue, n: errors.len(), style: bold(mono::ERROR), key: true }];
     n.children = error_notes(id, &errors);
     let unlisted = unlisted_sessions(snap, id);
     if unlisted > 0 {
         let k = n.children.len();
         n.children.push(note(id, k, 
             format!("{unlisted} session(s) labelled for {} keep running outside the config (i lists them)", id.0),
-            bold(mono::ORANGE),
+            bold(mono::WARN),
         ));
     }
     n
@@ -720,11 +727,11 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
         n.member = Some(f.id.clone());
         n.default_expand = f.machine.is_some();
         n.icon = v.icons.fleet;
-        n.icon_style = bold(mono::GOLD);
+        n.icon_style = bold(mono::STRONG);
         n.name = format!("[{}]", f.id.0);
-        n.name_style = bold(mono::GOLD);
+        n.name_style = bold(mono::STRONG);
         n.kind_text = "fleet".into();
-        n.frame = Some(state.color());
+        n.frame = Some(state.frame());
         n.band_bg = Some(state.tint());
         n.worst = worst_of(&f.issues);
         n.issue_count = f.issues.len();
@@ -760,20 +767,22 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
         let live = stowaways.iter().filter(|s| s.pid.is_some()).count();
         let mut n = Node::new("STOW".into(), Kind::StowBand);
         n.default_expand = true;
+        // a warning while one is live; nothing to shout about otherwise
+        let hue = if live > 0 { mono::WARN } else { mono::MUTED };
         n.icon = v.icons.stowaway;
-        n.icon_style = bold(mono::PINK);
+        n.icon_style = bold(hue);
         n.name = "STOWAWAYS".into();
-        n.name_style = bold(mono::PINK);
+        n.name_style = bold(hue);
         n.kind_text = "group".into();
-        n.frame = Some(mono::PINK);
-        n.band_bg = Some(mono::T_PINK);
+        n.frame = Some(mono::LINE);
+        n.band_bg = Some(mono::BG_HI);
         let scope = match v.tab {
             Some(UNASSIGNED) => "sessions under the nimitz home, in no fleet's folders, with no labels — adopt or remove",
             Some(_) => "sessions in this fleet's folders with no labels — adopt or remove",
             None => "sessions in fleet scope with no labels — adopt or remove",
         };
         n.detail = vec![Span::styled(scope, st(mono::SOFT))];
-        n.title_right = vec![Span::styled(format!("{live} live / {} total", stowaways.len()), bold(mono::PINK))];
+        n.title_right = vec![Span::styled(format!("{live} live / {} total", stowaways.len()), bold(hue))];
         n.children = stowaways.iter().map(|s| stow_node(s, snap, v)).collect();
         out.push(n);
     }

@@ -93,7 +93,7 @@ pub fn name_cell(r: &Row, width: usize, icons: &Icons) -> Vec<Span<'static>> {
         None => Span::raw("  "),
     };
     let mark = match n.worst {
-        _ if n.legacy => Span::styled(format!("{} ", icons.legacy), bold(mono::ORANGE)),
+        _ if n.legacy => Span::styled(format!("{} ", icons.legacy), bold(mono::WARN)),
         Some(sev) => Span::styled(format!("{} ", icons.issue), bold(severity_color(sev))),
         None => Span::raw("  "),
     };
@@ -184,6 +184,11 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
     let color = n.frame.unwrap_or(mono::SOFT);
     let bg = if selected { mono::SEL } else { n.band_bg.unwrap_or(mono::BG_HI) };
     let b = Style::new().bg(bg);
+    // on the cursor band, faint and muted text is lifted so it stays readable
+    let lift = |s: Style| match s.fg {
+        Some(c) if selected && (c == mono::FAINT || c == mono::MUTED) => s.fg(mono::FG),
+        _ => s,
+    };
     let marker = if n.children.is_empty() {
         "\u{25b8}"
     } else if r.expanded {
@@ -191,26 +196,26 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
     } else {
         "\u{25b8}"
     };
-    let mut left = vec![Span::styled(format!(" {marker} "), b.fg(if n.children.is_empty() { mono::DIM } else { color }))];
+    let mut left = vec![Span::styled(format!(" {marker} "), lift(b.fg(if n.children.is_empty() { mono::FAINT } else { color })))];
     if let Some(state) = &n.pane_state {
         left.push(Span::styled(format!("{} ", pane_dot(state)), b.fg(pane_color(state)).add_modifier(Modifier::BOLD)));
     }
-    left.push(Span::styled(format!("{} ", n.icon), b.patch(n.icon_style)));
-    left.push(Span::styled(n.name.clone(), b.patch(n.name_style).add_modifier(Modifier::BOLD)));
+    left.push(Span::styled(format!("{} ", n.icon), lift(b.patch(n.icon_style))));
+    left.push(Span::styled(n.name.clone(), lift(b.patch(n.name_style)).add_modifier(Modifier::BOLD)));
     if !n.detail.is_empty() {
         left.push(Span::styled("   ", b));
-        left.extend(n.detail.iter().map(|s| Span::styled(s.content.clone(), b.patch(s.style))));
+        left.extend(n.detail.iter().map(|s| Span::styled(s.content.clone(), lift(b.patch(s.style)))));
     }
-    let mut right: Vec<Span<'static>> = n.title_right.iter().map(|s| Span::styled(s.content.clone(), b.patch(s.style))).collect();
+    let mut right: Vec<Span<'static>> = n.title_right.iter().map(|s| Span::styled(s.content.clone(), lift(b.patch(s.style)))).collect();
     // counts: `icon n`, slashes between them, right-aligned as a group; a narrow
     // band keeps only needs-you and errors
     let narrow = width < NARROW_BAND;
     let shown: Vec<&crate::view::Count> = n.counts.iter().filter(|c| !narrow || c.key).collect();
     for (i, c) in shown.iter().enumerate() {
         if i > 0 {
-            right.push(Span::styled(" / ", b.fg(mono::DIM)));
+            right.push(Span::styled(" / ", lift(b.fg(mono::FAINT))));
         }
-        right.push(Span::styled(format!("{}{}", c.icon, c.n), b.patch(c.style)));
+        right.push(Span::styled(format!("{}{}", c.icon, c.n), lift(b.patch(c.style))));
     }
     right.push(Span::styled(" ".repeat(pad_right), b));
     let room = width.saturating_sub(2);
@@ -225,14 +230,13 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
     out
 }
 
-/// Gold for a fleet's frame; dimmed for a fleet that does not run here.
+/// A fleet's frame: neutral, or the hue of what it needs (its frame colour);
+/// error when its config does not load.
 fn fleet_edge(r: &Row) -> Style {
     if r.node.children.iter().any(|c| c.kind == crate::view::Kind::Note) {
-        bold(mono::PINK) // its config does not load
-    } else if r.node.frame == Some(mono::DIM) {
-        st(mono::GOLD_DIM)
+        bold(mono::ERROR) // its config does not load
     } else {
-        bold(mono::GOLD)
+        st(r.node.frame.unwrap_or(mono::LINE))
     }
 }
 
@@ -245,7 +249,7 @@ pub fn selectable(line: Line<'static>, selected: bool) -> Line<'static> {
         .spans
         .into_iter()
         .map(|s| match s.style.fg {
-            Some(c) if c == mono::DIM || c == mono::COMMENT => Span::styled(s.content, s.style.fg(mono::SOFT)),
+            Some(c) if c == mono::FAINT || c == mono::MUTED => Span::styled(s.content, s.style.fg(mono::FG)),
             _ => s,
         })
         .collect::<Vec<_>>();
@@ -264,7 +268,7 @@ pub fn frame_lines(rows: &[Row], width: u16, cursor: usize, icons: &Icons) -> Ve
         let (corners, v, bottom, edge) = match head.section {
             Section::FleetBand => (("\u{2554}", "\u{2557}"), "\u{2551}", ("\u{255a}", "\u{2550}", "\u{255d}"), fleet_edge(head)),
             _ => {
-                let c = head.node.frame.unwrap_or(mono::PINK);
+                let c = head.node.frame.unwrap_or(mono::LINE);
                 (("\u{256d}", "\u{256e}"), "\u{2502}", ("\u{2570}", "\u{2500}", "\u{256f}"), st(c))
             }
         };

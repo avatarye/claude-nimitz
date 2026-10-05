@@ -74,7 +74,7 @@ fn effect(app: &mut App, e: Effect, terminal: &mut Term, cmd_tx: &mpsc::Sender<C
         }
         Effect::Run(p) => {
             if app.busy.is_some() {
-                app.notify("An action is still running; wait for it.", crate::theme::st(crate::theme::mono::YELLOW));
+                app.notify("An action is still running; wait for it.", crate::theme::st(crate::theme::mono::WARN));
             } else if app.begin(&p).is_ok() {
                 let env = app.ctx.env.clone();
                 let tx = done_tx.clone();
@@ -90,12 +90,12 @@ fn effect(app: &mut App, e: Effect, terminal: &mut Term, cmd_tx: &mpsc::Sender<C
                 let edited = edit_in_editor(&text);
                 match init_terminal() {
                     Ok(t) => *terminal = t,
-                    Err(e) => app.notify(format!("terminal: {e}"), crate::theme::st(crate::theme::mono::PINK)),
+                    Err(e) => app.notify(format!("terminal: {e}"), crate::theme::st(crate::theme::mono::ERROR)),
                 }
                 let _ = terminal.clear();
                 match edited {
                     Ok(t) => app.editor_done(t),
-                    Err(e) => app.notify(format!("$EDITOR: {e}"), crate::theme::st(crate::theme::mono::PINK)),
+                    Err(e) => app.notify(format!("$EDITOR: {e}"), crate::theme::st(crate::theme::mono::ERROR)),
                 }
             }
         }

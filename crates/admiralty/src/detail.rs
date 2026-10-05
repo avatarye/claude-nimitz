@@ -20,7 +20,7 @@ fn kv(k: &str, v: impl Into<String>) -> Line<'static> {
 }
 
 fn heading(t: &str) -> Line<'static> {
-    Line::styled(t.to_string(), bold(mono::PURPLE))
+    Line::styled(t.to_string(), bold(mono::STRONG))
 }
 
 fn blank() -> Line<'static> {
@@ -63,7 +63,7 @@ pub fn detail_with_art(app: &App, width: usize, compact: bool) -> Vec<Line<'stat
         return lines;
     }
     let style = match r.node.kind {
-        Kind::FleetBand => bold(mono::GOLD),
+        Kind::FleetBand => bold(mono::STRONG),
         Kind::SquadronBand | Kind::StowBand => r.node.frame.map(bold).unwrap_or_default(),
         _ => r.node.icon_style.add_modifier(Modifier::BOLD),
     };
@@ -115,7 +115,7 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             }
         }
         (Kind::StowBand, _) => vec![
-            Line::styled("STOWAWAYS", bold(mono::PINK)),
+            Line::styled("STOWAWAYS", bold(mono::WARN)),
             blank(),
             Line::styled("Sessions in a fleet's folders that carry no NIMITZ_* labels.", st(mono::SOFT)),
             Line::styled("nimitz did not start them, so nothing binds them to an identity.", st(mono::SOFT)),
@@ -156,7 +156,7 @@ fn broken_detail(snap: &Snapshot, id: &nimitz_core::Id, width: usize) -> Vec<Lin
         .filter(|i| i.id.as_ref().map(|x| x == id || (fleet && x.fleet() == id.fleet())).unwrap_or(false))
         .collect();
     let mut v = vec![
-        Line::styled(format!("{} {}", if fleet { "FLEET" } else { "SQUADRON" }, id.0), bold(mono::PINK)),
+        Line::styled(format!("{} {}", if fleet { "FLEET" } else { "SQUADRON" }, id.0), bold(mono::ERROR)),
         blank(),
         Line::styled("Its config does not load, so nimitz cannot show or start its members.", st(mono::SOFT)),
         Line::styled("Their sessions keep running; fix the file and the frame comes back.", st(mono::SOFT)),
@@ -168,13 +168,13 @@ fn broken_detail(snap: &Snapshot, id: &nimitz_core::Id, width: usize) -> Vec<Lin
             v.extend(wrap(vec![Span::raw("  "), Span::styled(l.to_string(), st(mono::FG))], width, 2));
         }
         if let Some(fx) = &e.fix {
-            v.extend(wrap(vec![Span::styled("  fix  ", st(mono::COMMENT)), Span::styled(fx.clone(), bold(mono::CYAN))], width, 7));
+            v.extend(wrap(vec![Span::styled("  fix  ", st(mono::COMMENT)), Span::styled(fx.clone(), bold(mono::ACCENT))], width, 7));
         }
     }
     let n = crate::view::unlisted_sessions(snap, id);
     if n > 0 {
         v.push(blank());
-        v.push(Line::styled(format!("{n} session(s) are labelled for {} but outside the config; `i` lists them.", id.0), bold(mono::ORANGE)));
+        v.push(Line::styled(format!("{n} session(s) are labelled for {} but outside the config; `i` lists them.", id.0), bold(mono::WARN)));
     }
     v
 }
@@ -199,7 +199,7 @@ fn issues_block(title: &str, issues: &[&Issue], width: usize) -> Vec<Line<'stati
         ]));
         v.extend(wrap(vec![Span::raw(" ".repeat(4)), Span::styled(i.message.clone(), st(mono::FG))], width, 4));
         if let Some(fx) = &i.fix {
-            v.extend(wrap(vec![Span::raw(" ".repeat(4)), Span::styled("fix  ", st(mono::COMMENT)), Span::styled(fx.clone(), bold(mono::CYAN))], width, 9));
+            v.extend(wrap(vec![Span::raw(" ".repeat(4)), Span::styled("fix  ", st(mono::COMMENT)), Span::styled(fx.clone(), bold(mono::ACCENT))], width, 9));
         }
     }
     v
@@ -210,7 +210,7 @@ fn fleet_detail(f: &Fleet, now: f64, width: usize) -> Vec<Line<'static>> {
     let members = fleet_members(f);
     let live = members.iter().filter(|m| crate::view::member_live(m)).count();
     let mut v = vec![
-        Line::from(vec![Span::styled(format!("FLEET [{}]", f.id.0), bold(mono::GOLD))]),
+        Line::from(vec![Span::styled(format!("FLEET [{}]", f.id.0), bold(mono::STRONG))]),
         blank(),
         Line::from(vec![Span::styled(format!("{:<KEY_W$}", "state"), st(mono::COMMENT)), Span::styled(state.label().to_uppercase(), bold(state.color()))]),
         kv("machine", f.machine.clone().unwrap_or_else(|| "not in fleet.toml machines: does not run here".into())),
@@ -268,7 +268,7 @@ fn session_lines(s: &SessionInfo, now: f64, expected_name: Option<&str>) -> Vec<
     match expected_name {
         Some(e) if e != s.name => v.push(Line::from(vec![
             Span::styled(format!("{:<KEY_W$}", "name"), st(mono::COMMENT)),
-            Span::styled(s.name.clone(), bold(mono::PINK)),
+            Span::styled(s.name.clone(), bold(mono::WARN)),
             Span::styled(format!("   expected {e}"), st(mono::SOFT)),
         ])),
         _ => v.push(kv("name", s.name.clone())),
@@ -278,7 +278,7 @@ fn session_lines(s: &SessionInfo, now: f64, expected_name: Option<&str>) -> Vec<
         v.push(kv("started", format!("{} ago", crate::view::age_or_unknown(now - t))));
     }
     if s.labels.is_empty() {
-        v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "labels"), st(mono::COMMENT)), Span::styled("none", bold(mono::ORANGE))]));
+        v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "labels"), st(mono::COMMENT)), Span::styled("none", bold(mono::WARN))]));
     } else {
         let id = s.labels.get("NIMITZ_ID").cloned().unwrap_or_default();
         v.push(kv("labels", format!("NIMITZ_ID={id}  (+{} more)", s.labels.len().saturating_sub(1))));
@@ -302,7 +302,7 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
     }
     if let Some(w) = m.session.as_ref().and_then(|s| s.waiting_for.clone()) {
         v.push(blank());
-        v.push(Line::styled("NEEDS YOU", bold(mono::PINK)));
+        v.push(Line::styled("NEEDS YOU", bold(mono::NEEDS)));
         v.push(Line::styled(format!("  {w}"), st(mono::FG)));
     }
     if !m.reasons.is_empty() {
@@ -336,8 +336,8 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
         for x in &m.extra_rows {
             let live = x.pid.is_some();
             v.push(Line::from(vec![
-                Span::styled(format!("  {:<10}", x.short_id.clone().unwrap_or_default()), if live { bold(mono::PINK) } else { st(mono::SOFT) }),
-                Span::styled(if live { "live copy".into() } else { x.state.clone().unwrap_or("stopped".into()) }, if live { bold(mono::PINK) } else { st(mono::COMMENT) }),
+                Span::styled(format!("  {:<10}", x.short_id.clone().unwrap_or_default()), if live { bold(mono::ERROR) } else { st(mono::SOFT) }),
+                Span::styled(if live { "live copy".into() } else { x.state.clone().unwrap_or("stopped".into()) }, if live { bold(mono::ERROR) } else { st(mono::COMMENT) }),
             ]));
         }
     }
@@ -359,17 +359,17 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
 
 fn stowaway_detail(snap: &Snapshot, s: &SessionInfo, now: f64, width: usize) -> Vec<Line<'static>> {
     let mut v = vec![
-        Line::styled(if s.name.is_empty() { s.session_id.clone() } else { s.name.clone() }, bold(mono::PINK)),
+        Line::styled(if s.name.is_empty() { s.session_id.clone() } else { s.name.clone() }, bold(mono::WARN)),
         blank(),
         Line::from(vec![
             Span::styled(format!("{:<KEY_W$}", "status"), st(mono::COMMENT)),
-            Span::styled(if s.pid.is_some() { "LIVE STOWAWAY" } else { "STOPPED STOWAWAY" }, bold(mono::PINK)),
+            Span::styled(if s.pid.is_some() { "LIVE STOWAWAY" } else { "STOPPED STOWAWAY" }, bold(mono::WARN)),
         ]),
         Line::styled("A session in fleet scope with no NIMITZ_* labels.", st(mono::SOFT)),
     ];
     let issues: Vec<&Issue> = crate::view::stowaway_issues(snap, s);
     if issues.iter().any(|i| i.code == "legacy") {
-        v.push(Line::styled("Its name says it belongs to an old fleet-skill fleet: adopt it to bring it under nimitz.", st(mono::ORANGE)));
+        v.push(Line::styled("Its name says it belongs to an old fleet-skill fleet: adopt it to bring it under nimitz.", st(mono::WARN)));
     }
     v.extend(issues_block("ISSUES", &issues, width));
     v.push(blank());
@@ -381,7 +381,7 @@ fn stowaway_detail(snap: &Snapshot, s: &SessionInfo, now: f64, width: usize) -> 
 fn extra_detail(owner: &str, s: &SessionInfo, now: f64) -> Vec<Line<'static>> {
     let live = s.pid.is_some();
     let mut v = vec![
-        Line::styled(format!("job row {}", s.short_id.clone().unwrap_or_default()), bold(if live { mono::PINK } else { mono::FG })),
+        Line::styled(format!("job row {}", s.short_id.clone().unwrap_or_default()), bold(if live { mono::ERROR } else { mono::FG })),
         blank(),
         Line::styled(
             if live { format!("A second live session for {owner}: one identity, two sessions.") } else { format!("A stale job row of {owner} (a copy or an old session).") },
@@ -400,7 +400,7 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     // keys closed only for want of a multiplexer are listed once, at the end
     let mut no_mux: Vec<String> = vec![];
     let mut line = |v: &mut Vec<Line<'static>>, key: &str, r: Result<String, String>| match r {
-        Ok(t) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::YELLOW)), Span::styled(t, st(mono::FG))])),
+        Ok(t) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::ACCENT)), Span::styled(t, st(mono::FG))])),
         Err(why) if why == crate::actions::MONITOR_ONLY => no_mux.push(key.to_string()),
         Err(why) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::DIM)), Span::styled(why, st(mono::COMMENT))])),
     };
@@ -420,12 +420,12 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
         let r = app.available(a);
         if a == Act::Adopt {
             if let Some((_, id)) = app.legacy_adopt() {
-                line(&mut v, "d", Ok(format!("adopt this legacy session as {id}")));
+                line(&mut v, "x d", Ok(format!("adopt this legacy session as {id}")));
                 continue;
             }
         }
         if r.is_ok() || (member_like && matches!(a, Act::Start | Act::Open)) {
-            line(&mut v, &a.key().to_string(), r.map(|_| a.label().to_string()));
+            line(&mut v, &a.main_key(), r.map(|_| a.label().to_string()));
         }
     }
     if member_like {
@@ -438,7 +438,7 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     if !no_mux.is_empty() {
         v.push(Line::from(vec![
             Span::styled(format!("  {:<4}", no_mux.join(" ")), bold(mono::DIM)),
-            Span::styled(format!("  {}", crate::actions::MONITOR_ONLY), st(mono::ORANGE)),
+            Span::styled(format!("  {}", crate::actions::MONITOR_ONLY), st(mono::WARN)),
         ]));
     }
     v.push(Line::styled("  x   all actions   c create   e edit   D remove from config", st(mono::COMMENT)));

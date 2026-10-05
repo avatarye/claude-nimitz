@@ -15,16 +15,6 @@ use crate::forms::{Form, FormKey};
 use crate::theme::{bold, mono, st, Icons, ASCII, NERD};
 use crate::view::{all_issues, build_nodes, flatten, FleetState, Kind, Row, Section, View};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Split {
-    /// side by side when the window is wide enough, else stacked
-    Auto,
-    /// list left, detail right (vim `v`)
-    Vertical,
-    /// list above, detail below (vim `s`)
-    Horizontal,
-}
-
 /// One line of the `!` list.
 #[derive(Clone, Debug)]
 pub struct NeedItem {
@@ -93,7 +83,8 @@ pub struct Saved {
     pub fleet_states: Vec<bool>,
     pub flagged_only: bool,
     pub show_stowaways: bool,
-    pub split: String,
+    // `split` (the side or bottom detail pane before 0.3.1) is no longer kept;
+    // a saved state that has it still loads (unknown fields are ignored)
     /// the fleet tab shown (a fleet id, or view::UNASSIGNED)
     #[serde(default)]
     pub tab: Option<String>,
@@ -117,7 +108,8 @@ pub struct App {
     pub modal: Option<Modal>,
     pub toast: Option<Toast>,
     pub icons: &'static Icons,
-    pub split: Split,
+    /// the floating detail panel (`w`); closed at start
+    pub detail_open: bool,
     /// fixtures: a frozen clock so ages never move
     pub fixed_now: Option<f64>,
     pub state_path: Option<PathBuf>,
@@ -138,7 +130,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("h / l", "fold or go to parent / unfold or go to first child"),
     ("gg / G", "top / bottom"),
     ("ctrl-d / ctrl-u", "half page down / up"),
-    ("ctrl-e / ctrl-y", "scroll the detail pane"),
+    ("ctrl-e / ctrl-y", "scroll the detail panel (when open)"),
     ("space", "fold / unfold"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane (else fold / unfold)"),
@@ -154,7 +146,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
     ("f / F", "filter fleets by state / flagged rows only"),
-    ("v / s", "split: detail beside / below"),
+    ("w", "detail: open or close the floating detail panel (esc closes it too)"),
     ("R", "refresh now"),
     ("? / q", "help / quit"),
 ];
@@ -177,7 +169,7 @@ impl App {
             modal: None,
             toast: None,
             icons: if ascii { &ASCII } else { &NERD },
-            split: Split::Auto,
+            detail_open: false,
             fixed_now: None,
             state_path,
             busy: None,
@@ -208,12 +200,6 @@ impl App {
             fleet_states: self.fleet_states.to_vec(),
             flagged_only: self.flagged_only,
             show_stowaways: self.show_stowaways,
-            split: match self.split {
-                Split::Auto => "auto",
-                Split::Vertical => "vertical",
-                Split::Horizontal => "horizontal",
-            }
-            .into(),
             tab: self.tab.clone(),
         }
     }
@@ -229,11 +215,6 @@ impl App {
         self.flagged_only = s.flagged_only;
         self.show_stowaways = s.show_stowaways;
         self.tab = s.tab.clone();
-        self.split = match s.split.as_str() {
-            "vertical" => Split::Vertical,
-            "horizontal" => Split::Horizontal,
-            _ => Split::Auto,
-        };
         self.last_saved = Some(s);
     }
 
@@ -650,7 +631,7 @@ impl App {
     fn open_or_say(&mut self, f: Result<Form, String>) {
         match f {
             Ok(f) => self.open_form(f),
-            Err(e) => self.notify(format!("edit: {e}"), st(mono::YELLOW)),
+            Err(e) => self.notify(format!("edit: {e}"), st(mono::WARN)),
         }
     }
 
@@ -727,13 +708,13 @@ impl App {
         if let (Act::Layout | Act::LayoutShips, Target::Fleet(f)) = (act, self.target()) {
             match actions::prepare_layout(&self.ctx, b.mux_caps, &b.snap, &b.panes, &f, act == Act::LayoutShips) {
                 Ok(p) => self.modal = Some(Modal::Confirm(p)),
-                Err(why) => self.notify(format!("layout: not available. {why}"), st(mono::YELLOW)),
+                Err(why) => self.notify(format!("layout: not available. {why}"), st(mono::WARN)),
             }
             return None;
         }
         match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {
             Ok(p) => self.modal = Some(Modal::Confirm(p)),
-            Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::YELLOW)),
+            Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),
         }
         None
     }
@@ -743,18 +724,18 @@ impl App {
         let r = self.current()?.clone();
         let b = self.bundle.as_ref()?;
         match actions::jump_target(b.mux_caps, r.node.pane_id.as_deref(), &b.panes) {
-            Ok(pane) if !self.ctx.live => self.notify(format!("demo data: would focus pane {}", pane.pane_id), st(mono::YELLOW)),
+            Ok(pane) if !self.ctx.live => self.notify(format!("demo data: would focus pane {}", pane.pane_id), st(mono::WARN)),
             Ok(pane) => match self.ctx.mux.focus(&pane) {
                 Ok(()) => {
                     actions::log(&self.ctx.env, "focus", &pane.pane_id);
                     if self.ctx.exit_after_jump {
                         return Some(Effect::Quit);
                     }
-                    self.notify(format!("Focused {}", pane.pane_id), st(mono::GREEN));
+                    self.notify(format!("Focused {}", pane.pane_id), st(mono::BUSY));
                 }
-                Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::PINK)),
+                Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
             },
-            Err(why) => self.notify(format!("No pane to jump to for {}: {why}", r.node.name), st(mono::YELLOW)),
+            Err(why) => self.notify(format!("No pane to jump to for {}: {why}", r.node.name), st(mono::WARN)),
         }
         None
     }
@@ -764,9 +745,9 @@ impl App {
         match sid {
             Some(s) => {
                 copy_to_clipboard(&s);
-                self.notify(format!("Yanked {s}"), st(mono::GREEN));
+                self.notify(format!("Yanked {s}"), st(mono::BUSY));
             }
-            None => self.notify("No session on this row.", st(mono::YELLOW)),
+            None => self.notify("No session on this row.", st(mono::WARN)),
         }
     }
 
@@ -850,7 +831,9 @@ impl App {
             }
             (KeyCode::Char('/'), _) => self.editing_filter = true,
             (KeyCode::Esc, _) => {
-                if !self.filter.is_empty() {
+                if self.detail_open {
+                    self.detail_open = false;
+                } else if !self.filter.is_empty() {
                     self.filter.clear();
                     self.rebuild();
                 }
@@ -865,12 +848,12 @@ impl App {
             }
             (KeyCode::Char('J'), _) => {
                 if !self.step_where(1, |r| r.node.pane_id.is_some()) {
-                    self.notify("No row has a pane.", st(mono::YELLOW));
+                    self.notify("No row has a pane.", st(mono::WARN));
                 }
             }
             (KeyCode::Char('K'), _) => {
                 if !self.step_where(-1, |r| r.node.pane_id.is_some()) {
-                    self.notify("No row has a pane.", st(mono::YELLOW));
+                    self.notify("No row has a pane.", st(mono::WARN));
                 }
             }
             (KeyCode::Char('!'), _) => self.modal = Some(Modal::Needs { items: self.needs(), sel: 0 }),
@@ -886,8 +869,10 @@ impl App {
                 self.rebuild();
             }
             (KeyCode::Char('R'), _) => return Some(Effect::Refresh),
-            (KeyCode::Char('v'), _) => self.split = Split::Vertical,
-            (KeyCode::Char('s'), _) => self.split = Split::Horizontal,
+            (KeyCode::Char('w'), _) => {
+                self.detail_open = !self.detail_open;
+                self.detail_scroll = 0;
+            }
             (KeyCode::Char('y'), _) => self.yank(),
             (KeyCode::Char('a'), _) => return self.start_act(Act::Start),
             (KeyCode::Char('u'), _) => {
@@ -895,7 +880,7 @@ impl App {
                     let b = self.bundle.as_ref()?;
                     match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &Target::Fleet(Id(f)), Act::Up, None) {
                         Ok(p) => self.modal = Some(Modal::Confirm(p)),
-                        Err(why) => self.notify(format!("up: not available. {why}"), st(mono::YELLOW)),
+                        Err(why) => self.notify(format!("up: not available. {why}"), st(mono::WARN)),
                     }
                 }
             }
@@ -908,11 +893,11 @@ impl App {
             (KeyCode::Char('c'), _) => self.modal = Some(Modal::Menu { title: "create".into(), items: self.create_menu(), sel: 0 }),
             (KeyCode::Char('e'), _) => match self.edit_action() {
                 Ok((_, a)) => return self.run_menu(a),
-                Err(why) => self.notify(format!("edit: {why}"), st(mono::YELLOW)),
+                Err(why) => self.notify(format!("edit: {why}"), st(mono::WARN)),
             },
             (KeyCode::Char('m'), _) => match self.message_plan() {
                 Ok(plan) => self.modal = Some(Modal::Message { plan, text: String::new() }),
-                Err(why) => self.notify(format!("message: not available. {why}"), st(mono::YELLOW)),
+                Err(why) => self.notify(format!("message: not available. {why}"), st(mono::WARN)),
             },
             _ => {}
         }
@@ -978,9 +963,9 @@ impl App {
                         match issues.get(sel).and_then(|i| i.fix.clone()) {
                             Some(fix) => {
                                 copy_to_clipboard(&fix);
-                                self.notify(format!("Yanked {fix}"), st(mono::GREEN));
+                                self.notify(format!("Yanked {fix}"), st(mono::BUSY));
                             }
-                            None => self.notify("This issue has no fix command.", st(mono::YELLOW)),
+                            None => self.notify("This issue has no fix command.", st(mono::WARN)),
                         }
                         self.modal = Some(Modal::Issues { sel });
                     }
@@ -999,7 +984,7 @@ impl App {
                                     self.rebuild();
                                     self.goto_id("STOW");
                                 }
-                                None => self.notify("This issue is about the machine, not one row.", st(mono::YELLOW)),
+                                None => self.notify("This issue is about the machine, not one row.", st(mono::WARN)),
                             }
                         }
                     }
@@ -1025,7 +1010,7 @@ impl App {
                     Some(it) => match it.enabled {
                         Ok(()) => return self.run_menu(it.action),
                         Err(why) => {
-                            self.notify(format!("{}: not available. {why}", it.label), st(mono::YELLOW));
+                            self.notify(format!("{}: not available. {why}", it.label), st(mono::WARN));
                             self.modal = Some(Modal::Menu { title, items, sel });
                         }
                     },
@@ -1035,7 +1020,7 @@ impl App {
             Modal::Confirm(p) => match k.code {
                 KeyCode::Char('y') | KeyCode::Enter if p.plan.ok() => {
                     if !self.ctx.live {
-                        self.notify(format!("{}: demo data, nothing ran. The plan above is what core would do.", p.act.word()), st(mono::YELLOW));
+                        self.notify(format!("{}: demo data, nothing ran. The plan above is what core would do.", p.act.word()), st(mono::WARN));
                         return None;
                     }
                     return Some(Effect::Run(p));
@@ -1047,7 +1032,7 @@ impl App {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
                     if nimitz_mux::sanitize_text(&text).is_empty() {
-                        self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::YELLOW));
+                        self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::WARN));
                         self.modal = Some(Modal::Message { plan, text });
                     } else {
                         self.send_message(&plan, &text);
@@ -1083,7 +1068,7 @@ impl App {
                         if form.ok() {
                             self.modal = Some(Modal::Confirm(form.pending()));
                         } else {
-                            self.notify("The form has errors; fix the fields marked in red.", st(mono::PINK));
+                            self.notify("The form has errors; fix the fields marked in red.", st(mono::ERROR));
                             self.modal = Some(Modal::Form(form));
                         }
                     }
@@ -1095,7 +1080,7 @@ impl App {
 
     fn send_message(&mut self, plan: &MessagePlan, text: &str) {
         if !self.ctx.live {
-            self.notify(format!("demo data: would type into {}'s pane {}", plan.via, plan.pane.pane_id), st(mono::YELLOW));
+            self.notify(format!("demo data: would type into {}'s pane {}", plan.via, plan.pane.pane_id), st(mono::WARN));
             return;
         }
         let body = actions::message_text(plan, text);
@@ -1103,9 +1088,9 @@ impl App {
             Ok(()) => {
                 actions::log(&self.ctx.env, "message", &format!("{} via {}: {}", plan.to, plan.via, nimitz_mux::sanitize_text(text)));
                 let how = if plan.relay { format!(" (relayed by {})", plan.via) } else { String::new() };
-                self.notify(format!("Sent to {}{how}", plan.to), st(mono::GREEN));
+                self.notify(format!("Sent to {}{how}", plan.to), st(mono::BUSY));
             }
-            Err(e) => self.notify(format!("Not sent to {}: {e}", plan.via), st(mono::PINK)),
+            Err(e) => self.notify(format!("Not sent to {}: {e}", plan.via), st(mono::ERROR)),
         }
     }
 
@@ -1133,7 +1118,7 @@ impl App {
         actions::log(&self.ctx.env, p.act.word(), &p.command);
         match actions::open_panes(&self.ctx, p) {
             Err(e) => {
-                self.notify(format!("{}: {e}", p.act.word()), st(mono::PINK));
+                self.notify(format!("{}: {e}", p.act.word()), st(mono::ERROR));
                 return Err(e);
             }
             Ok(opened) if p.layout.is_some() => {
@@ -1150,7 +1135,7 @@ impl App {
         self.busy = None;
         let (ok, msg) = actions::outcome_text(p, o);
         actions::log(&self.ctx.env, &format!("{} result", p.act.word()), &msg);
-        self.notify(msg, if ok { st(mono::GREEN) } else { bold(mono::PINK) });
+        self.notify(msg, if ok { st(mono::BUSY) } else { bold(mono::ERROR) });
     }
 
     /// Counts for the top bar: (fleets, live, need you, errors, warnings).

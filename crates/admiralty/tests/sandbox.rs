@@ -344,7 +344,7 @@ fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
     let ls = lines(&buf);
     assert!(ls.iter().any(|l| l.contains("[MAIN]")), "the fleet stays on screen");
     let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).expect("the squadron stays on screen");
-    assert_eq!(buf[(1, y as u16)].fg, admiralty::theme::mono::PINK, "its frame is red");
+    assert_eq!(buf[(1, y as u16)].fg, admiralty::theme::mono::ERROR, "its frame takes the error hue");
     let all = ls.join("\n");
     assert!(all.contains("squadron.toml") && all.contains("164:13"), "the file and line, in full:\n{all}");
     assert!(all.contains("invalid basic string"), "the parse error's own words");
