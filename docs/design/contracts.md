@@ -118,6 +118,16 @@ it is per machine and outlives every fleet (`registry::machine_label`).
 `pid` is the hook's parent (the Claude Code process). The hook never blocks,
 never fails the session (always exit 0), and returns in a few ms.
 
+`needs/<id with / as %2F>.json`: the needs-you notice of a ship or tender that
+blocks on the user (PreToolUse `AskUserQuestion`, `PermissionRequest`, or a
+blocking `Notification`): `{ts, id, session_id, kind: question|permission|prompt,
+event, tool_use_id, detail, delivery: pending|delivered|failed, delivery_note,
+delivered_at}`. The hook writes it and starts `nimitz __notify <id>` detached
+(only the member's own labels may run it), which types the notice into the
+commodore's pane, retrying `NIMITZ_NOTIFY_RETRY` s (default 600) while that pane
+is blocked or missing. The member's next UserPromptSubmit, Stop or SessionEnd
+removes the file; `check` reports `notify.failed` for one that failed.
+
 ## 6. Evidence and state (core)
 
 Order: (1) session file + `kill(pid,0)` (read the first JSON value only),

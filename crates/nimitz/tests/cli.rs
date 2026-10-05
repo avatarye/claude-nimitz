@@ -569,7 +569,8 @@ fn layout_herdr() {
 
 // ------------------------------------------------------------------ hook
 
-const EVENTS: [&str; 8] = ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "SubagentStart", "SubagentStop", "PreToolUse"];
+const EVENTS: [&str; 9] =
+    ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "SubagentStart", "SubagentStop", "PreToolUse", "PermissionRequest"];
 
 #[test]
 fn hook_always_exits_zero_even_on_garbage() {
@@ -617,6 +618,120 @@ fn hook_denies_a_signal_the_chain_forbids() {
     // no labels (the user's own session): not ours to rule
     let r = raw(&sb.vars, &["hook", "PreToolUse"], &[], Some(&msg("[MAIN.BOREAL]-COMMODORE")));
     assert_eq!(r.out.trim(), "");
+}
+
+// ------------------------------------------------------------------ needs-you
+
+const ASK: &str = r#"{"session_id":"s-clean","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"t1",
+  "tool_input":{"questions":[{"question":"Ship the fix to main?","header":"Ship","multiSelect":false,
+  "options":[{"label":"Yes","description":"merge now"},{"label":"No","description":"wait for review"}]}]}}"#;
+const CLEAN: [(&str, &str); 3] = [("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_ROLE", "ship"), ("NIMITZ_NOTIFY_RETRY", "0")];
+
+impl Sb {
+    /// The notice on file for `id` once its delivery has finished (or None).
+    fn notice(&self, id: &str) -> Option<Value> {
+        let p = self.base.join("state/needs").join(format!("{}.json", id.replace('/', "%2F")));
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let v: Option<Value> = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            match &v {
+                Some(n) if n["delivery"] == "pending" && std::time::Instant::now() < end => {}
+                _ => return v,
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    fn prompts(&self, pane: &str) -> Vec<String> {
+        let w: Value = serde_json::from_slice(&std::fs::read(self.base.join("herdr/world.json")).unwrap()).unwrap();
+        let p = w["panes"].as_array().unwrap().iter().find(|p| p["pane_id"] == pane).cloned().unwrap_or_default();
+        p["prompts"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
+    }
+}
+
+#[test]
+fn a_ship_that_asks_the_user_tells_its_commodore_with_the_question_in_full() {
+    let sb = Sb::new(true);
+    sb.pane_for("MAIN/ARGOS");
+    let t = std::time::Instant::now();
+    let r = raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "the hook does not wait for the delivery");
+    assert_eq!((r.code, r.out.trim()), (0, ""), "no decision: the question still shows");
+    let n = sb.notice("MAIN/ARGOS/CLEAN").expect("a notice");
+    assert_eq!(n["delivery"], "delivered", "{n}");
+    let typed = sb.prompts("w1:p2");
+    assert_eq!(typed.len(), 1, "{typed:?}");
+    let t = &typed[0];
+    assert!(t.starts_with("[nimitz needs-you] (a notice from nimitz, not from the user) MAIN/ARGOS/CLEAN (ship"), "{t}");
+    assert!(t.contains("Q1: Ship the fix to main? [Ship] Options: (1) Yes: merge now; (2) No: wait for review"), "{t}");
+    // the same dialog's Notification is not a second notice
+    let note = r#"{"session_id":"s-clean","notification_type":"permission_prompt","message":"Claude needs your input"}"#;
+    raw(&sb.vars, &["hook", "Notification"], &CLEAN, Some(note));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(sb.prompts("w1:p2").len(), 1);
+    // the event log says why
+    let ev = std::fs::read_to_string(sb.base.join("state/events.jsonl")).unwrap();
+    assert!(ev.lines().any(|l| l.contains("\"needs-you: question\"") && l.contains("AskUserQuestion")), "{ev}");
+    // answered: the next Stop closes the notice
+    raw(&sb.vars, &["hook", "Stop"], &CLEAN, Some(r#"{"session_id":"s-clean"}"#));
+    assert!(sb.notice("MAIN/ARGOS/CLEAN").is_none());
+}
+
+#[test]
+fn a_tender_permission_prompt_reaches_its_commodore() {
+    let sb = Sb::new(true);
+    sb.pane_for("MAIN/ARGOS");
+    let input = r#"{"session_id":"s-t","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"git push --force"}}"#;
+    let tender = [("NIMITZ_ID", "MAIN/ARGOS/~fix"), ("NIMITZ_ROLE", "tender"), ("NIMITZ_PARENT", "MAIN/ARGOS"), ("NIMITZ_NOTIFY_RETRY", "0")];
+    let r = raw(&sb.vars, &["hook", "PermissionRequest"], &tender, Some(input));
+    assert_eq!((r.code, r.out.trim()), (0, ""), "no decision: the prompt still shows");
+    assert_eq!(sb.notice("MAIN/ARGOS/~fix").unwrap()["delivery"], "delivered");
+    let typed = sb.prompts("w1:p2").join("\n");
+    assert!(typed.contains("MAIN/ARGOS/~fix (tender") && typed.contains("permission") && typed.contains("git push --force"), "{typed}");
+}
+
+#[test]
+fn a_notice_that_cannot_be_delivered_is_a_check_issue() {
+    let sb = Sb::new(true);
+    // the commodore is live but in no pane
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "failed", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("not live in a herdr pane"), "{n}");
+    let r = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
+    assert!(r.out.contains("notify.failed") && r.out.contains("Ship the fix to main?"), "{}", r.out);
+    // a pane busy with its own dialog is never typed into
+    sb.pane_for("MAIN/ARGOS");
+    sb.herdr_world(|w| w["panes"][1]["agent_status"] = Value::from("blocked"));
+    raw(&sb.vars, &["hook", "Stop"], &CLEAN, Some(r#"{"session_id":"s-clean"}"#));
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert!(n["delivery_note"].as_str().unwrap().contains("blocked on a dialog of its own"), "{n}");
+    assert!(sb.prompts("w1:p2").is_empty());
+    // no multiplexer in the member's env
+    raw(&sb.vars, &["hook", "Stop"], &CLEAN, Some(r#"{"session_id":"s-clean"}"#));
+    let mut nomux = CLEAN.to_vec();
+    nomux.push(("NIMITZ_MUX", "none"));
+    raw(&sb.vars, &["hook", "PreToolUse"], &nomux, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert!(n["delivery_note"].as_str().unwrap().contains("no multiplexer"), "{n}");
+}
+
+#[test]
+fn only_the_member_itself_delivers_its_notice() {
+    let sb = Sb::new(true);
+    sb.pane_for("MAIN/ARGOS");
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    sb.notice("MAIN/ARGOS/CLEAN");
+    let before = sb.prompts("w1:p2").len();
+    // the user, another ship, a commodore: refused, nothing typed
+    assert_eq!(raw(&sb.vars, &["__notify", "MAIN/ARGOS/CLEAN"], &[], None).code, 2);
+    assert_eq!(sb.run_as("MAIN/ARGOS/OTHER", &["__notify", "MAIN/ARGOS/CLEAN"]).code, 2);
+    assert_eq!(sb.run_as("MAIN/ARGOS", &["__notify", "MAIN/ARGOS/CLEAN"]).code, 2);
+    assert_eq!(sb.prompts("w1:p2").len(), before);
+    // an admiral's or commodore's own question is not a notice (the user watches its pane)
+    let lead = [("NIMITZ_ID", "MAIN/ARGOS"), ("NIMITZ_ROLE", "commodore")];
+    raw(&sb.vars, &["hook", "PreToolUse"], &lead, Some(ASK));
+    assert!(sb.notice("MAIN/ARGOS").is_none());
 }
 
 #[test]

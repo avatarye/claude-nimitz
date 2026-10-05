@@ -6,6 +6,7 @@
 mod args;
 mod crud;
 mod members;
+mod notify;
 mod out;
 mod run;
 mod sandbox_cmd;
@@ -86,6 +87,7 @@ fn dispatch(argv: Vec<String>) -> i32 {
     // The hook and the fakes come first and stay lean: no parsing, no snapshot.
     match cmd.as_str() {
         "hook" => return hook(argv.get(1).map(String::as_str).unwrap_or("")),
+        "__notify" => return notify::deliver_cmd(argv.get(1).map(String::as_str).unwrap_or("")),
         "__fake-claude" => {
             return match argv.get(1) {
                 Some(base) => nimitz_core::sandbox::fake_claude(std::path::Path::new(base), &argv[2..]),
@@ -151,13 +153,17 @@ fn usage_error(e: &str) -> i32 {
 }
 
 /// `nimitz hook <Event>`: read stdin, log the event, print a decision if any.
-/// Always exit 0: a hook must never fail the session.
+/// A needs-you notice goes to a detached delivery process, so the session never
+/// waits for it. Always exit 0: a hook must never fail the session.
 fn hook(event: &str) -> i32 {
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let vars: HashMap<String, String> = std::env::vars().collect();
     let env = Env::from_vars(&vars);
-    let out = nimitz_core::hook::handle(&env, event, &stdin, &vars);
+    let (out, notice) = nimitz_core::hook::handle_full(&env, event, &stdin, &vars);
+    if let Some(n) = notice {
+        notify::spawn_delivery(&env, &n);
+    }
     if !out.is_empty() {
         println!("{out}");
     }

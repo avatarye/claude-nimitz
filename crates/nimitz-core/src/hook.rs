@@ -1,11 +1,14 @@
 //! `nimitz hook <Event>` logic: append an Event; for PreToolUse SendMessage, decide
-//! allow/deny from the comms rule (contracts.md sections 5, plan-v3 section 7). Owner: core-sessions.
+//! allow/deny from the comms rule (contracts.md sections 5, plan-v3 section 7);
+//! when a ship or tender blocks on the user (AskUserQuestion, PermissionRequest,
+//! a blocking Notification), record a needs-you notice for its commodore
+//! (`notify`). Owner: core-sessions.
 //!
 //! The hook runs inside every Claude Code session, so it must be fast and must
 //! never fail the session: errors are swallowed, the exit code is the CLI's job
 //! (always 0). One `write` of one line with `O_APPEND`, so concurrent hooks never
-//! interleave. PreToolUse/PostToolUse are logged only for `SendMessage` (they fire
-//! for every tool call; nothing else reads them).
+//! interleave. PreToolUse/PostToolUse are logged only for `SendMessage` and
+//! `AskUserQuestion` (they fire for every tool call; nothing else reads them).
 use crate::env::Env;
 use crate::types::*;
 use serde_json::{json, Value};
@@ -17,10 +20,16 @@ const LABELS: [&str; 6] = ["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NI
 /// Handle one hook call. `stdin` is Claude Code's hook JSON; `vars` the hook's env.
 /// Returns the text to print on stdout (empty, or a decision JSON). Never panics.
 pub fn handle(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, String>) -> String {
+    handle_full(env, event, stdin, vars).0
+}
+
+/// `handle`, plus the needs-you notice this call recorded (the caller delivers
+/// it without blocking the session). Never panics.
+pub fn handle_full(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, String>) -> (String, Option<crate::notify::Notice>) {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle_inner(env, event, stdin, vars))).unwrap_or_default()
 }
 
-fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, String>) -> String {
+fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, String>) -> (String, Option<crate::notify::Notice>) {
     let input: Value = serde_json::from_str(stdin.trim()).unwrap_or(Value::Null);
     let mut labels: BTreeMap<String, String> =
         LABELS.iter().filter_map(|k| vars.get(*k).filter(|v| !v.is_empty()).map(|v| (k.to_string(), v.clone()))).collect();
@@ -54,8 +63,19 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             .to_string();
         }
     }
+    // A ship or tender now blocks on the user: record it for its commodore.
+    // Moving on (a prompt, a stop, the end) closes its notice.
+    let mut notice = None;
+    if let Some(n) = crate::notify::from_hook(event, &input, &labels) {
+        reason = Some(format!("needs-you: {}", n.kind));
+        notice = crate::notify::record(env, n);
+    } else if matches!(event, "UserPromptSubmit" | "Stop" | "SessionEnd") {
+        if let Some(id) = labels.get("NIMITZ_ID") {
+            crate::notify::clear(env, id, str_at(&input, "session_id").as_deref());
+        }
+    }
     let tool_event = matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure");
-    if !tool_event || is_signal {
+    if !tool_event || is_signal || tool.as_deref() == Some("AskUserQuestion") {
         let line = json!({
             "ts": crate::evidence::now(),
             "event": event,
@@ -71,7 +91,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
         });
         append_line(env, &line.to_string());
     }
-    out
+    (out, notice)
 }
 
 fn str_at(v: &Value, k: &str) -> Option<String> {

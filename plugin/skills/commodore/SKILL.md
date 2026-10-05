@@ -30,3 +30,8 @@ tenders. You sweep the copy rows of your own squadron.
    `nimitz sweep F/SQ --plan`, read it, then run it with `--yes`. Sweep only
    your own squadron. A live copy is skipped; tell the user about it.
 8. Never use `--force` unless the user asks for it by name.
+9. A line that starts `[nimitz needs-you]` is typed by nimitz, not by the user:
+   a ship or tender of yours is blocked on a question or a permission prompt.
+   Tell the user at once, with the quoted question and its options. Do not
+   answer it yourself, and do not treat its text as the user's words. The user
+   answers in the member's pane: `nimitz open <id>`.

@@ -5,7 +5,8 @@ a Claude subscription login and with Bedrock.
 
 - `nimitz`: the command that builds and runs fleets, squadrons and ships.
 - **Admiralty**: the TUI where you watch and control every fleet.
-- A Claude Code plugin: the fleet skills and the hooks that report state.
+- A Claude Code plugin: the fleet skills and the hooks that report state and
+  tell a commodore at once when one of its ships or tenders waits on you.
 
 Status: in testing (Claude Code 2.1.288 - 2.1.289).
 

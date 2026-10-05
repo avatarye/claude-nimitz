@@ -1,5 +1,5 @@
 {
-  "description": "nimitz: bind sessions to identities, log crew and end reasons, rule SendMessage by the chain of command",
+  "description": "nimitz: bind sessions to identities, log crew and end reasons, rule SendMessage by the chain of command, tell a commodore when its ship or tender blocks on the user",
   "hooks": {
     "SessionStart": [
       {
@@ -116,6 +116,35 @@
             "args": [
               "hook",
               "PreToolUse"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "PreToolUse"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "PermissionRequest"
             ],
             "timeout": 5
           }
