@@ -504,19 +504,26 @@ fn row11_an_interactive_member_in_the_background_refuses() {
 // ------------------------------------------------------------------ row 12
 
 #[test]
-fn row12_a_version_out_of_range_refuses_launches_until_force() {
+fn row12_a_newer_version_warns_and_launches_an_older_one_refuses_until_force() {
     let w = world();
+    let id = w.ship("FRESH");
+    // newer than tested: a warning that says so, and the launch goes ahead (0.3.2)
     w.set_cc_version("2.9.99");
     let snap = w.snap();
     assert!(!snap.compat_ok);
-    let id = w.ship("FRESH");
     let plan = w.start(&snap, &id, false);
-    assert!(has(&plan.refusals, "cc.version"), "{:?}", codes(&plan.refusals));
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let warn = plan.warnings.iter().find(|i| i.code == "cc.version").expect("the version is still named");
+    assert!(warn.message.contains("tested up to") && warn.message.contains("launches go ahead"), "{}", warn.message);
+    // below the floor: refused, and --force overrides
+    w.set_cc_version("2.0.1");
+    let snap = snapshot::snapshot(&w.env, &mut snapshot::Cache::default());
+    assert!(has(&sessions::plan_start(&w.env, &snap, &id, &Caller::User, false).refusals, "cc.version"));
     let forced = w.start(&snap, &id, true);
     assert!(forced.ok(), "{:?}", forced.refusals);
     assert!(has(&forced.warnings, "cc.version"), "--force keeps the warning");
-    // below the range is an error as well
-    w.set_cc_version("2.0.1");
+    // an untested pre-release refuses too
+    w.set_cc_version("2.9.99-beta");
     let snap = snapshot::snapshot(&w.env, &mut snapshot::Cache::default());
     assert!(has(&sessions::plan_start(&w.env, &snap, &id, &Caller::User, false).refusals, "cc.version"));
 }

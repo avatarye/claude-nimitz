@@ -184,7 +184,10 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         None => r.err(&format!("native claude {} does not answer --version", env.native_claude_bin), Some("set NIMITZ_NATIVE_CLAUDE_BIN")),
         Some(v) => match nimitz_core::compat::position(&range, v) {
             0 => r.ok(&format!("native claude {} is {v} (supported {} - {})", resolved(&env.native_claude_bin), range.min, range.max)),
-            1 => r.warn(&format!("Claude Code {v} is newer than the tested range {} - {}: launches refuse", range.min, range.max), Some("--force on a launch, or wait for the range to widen")),
+            1 => r.warn(
+                &format!("Claude Code {v} is newer than nimitz is tested with (tested up to {}); launches go ahead", range.max),
+                Some("nothing to do; report anything odd, and the tested range widens with the next nimitz"),
+            ),
             _ => r.err(&format!("Claude Code {v} is older than the supported floor {}", range.min), Some("update Claude Code")),
         },
     }

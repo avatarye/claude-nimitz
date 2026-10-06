@@ -801,7 +801,7 @@ fn the_header_shortens_counts_instead_of_cutting_words() {
         let words: Vec<&str> = top.split_whitespace().collect();
         let last = words.last().copied().unwrap_or("");
         assert!(
-            ["warnings", "warn", "(i)", "range", "unsupported", "CC!"].iter().any(|x| last.ends_with(x)) || last.ends_with('w') || last.ends_with('e') || last.ends_with('!'),
+            ["warnings", "warn", "(i)", "range", "unsupported", "untested", "CC!"].iter().any(|x| last.ends_with(x)) || last.ends_with(")") || last.ends_with('w') || last.ends_with('e') || last.ends_with('!'),
             "{w}: the header ends on a whole piece, not a cut word: {top:?}"
         );
     }

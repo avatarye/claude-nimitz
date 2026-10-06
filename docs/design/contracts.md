@@ -176,7 +176,7 @@ Each finding is an `Issue` with a stable `code`:
 | `lineage.broken` | registry's current session id has no job row and no transcript |
 | `role.background` | an admiral or commodore is a background session |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
-| `cc.version` | Claude Code outside `compat.toml` (a pre-release such as `2.1.288-beta` is outside unless `prerelease = [...]` lists it; Error) |
+| `cc.version` | Claude Code outside `compat.toml`: newer than `max` (the highest tested) is a Warn and launches go ahead; below `min`, unknown, or a pre-release `prerelease = [...]` does not list is an Error |
 | `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
 | `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
 | `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); `check` lists all, `check F` / `check F/SQ` / `check F/SQ/SHIP` those in the target's folders (fleet or squadron nimitz folders, or a member folder under the target); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
@@ -239,7 +239,8 @@ target. For each member, one action from this table:
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
 | folder missing or untrusted | refuse with the fix |
 | admiral/commodore is a background session | refuse; fix: attach and keep it in a terminal |
-| Claude Code version out of range | refuse launches (read-only still works); `--force` overrides |
+| Claude Code version newer than tested | warn ("tested up to X"); launches go ahead |
+| Claude Code version below the floor, unknown, or an unlisted pre-release | refuse launches (read-only still works); `--force` overrides |
 | session file has extra bytes | read the first JSON value; not an issue |
 | a live old-fleet or unlabelled session in the member's folder (`legacy`) | refuse; fix: stop it in the old fleet, or adopt it (then stop + start = the labels-missing row) |
 

@@ -205,26 +205,27 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
         }
     }
 
-    // Claude Code version against the compiled range (launches refuse outside it).
+    // Claude Code version against the compiled range: below the floor, unknown or
+    // an untested pre-release is an error (launches refuse; --force overrides);
+    // above the highest tested version only a warning (launches go ahead).
     if !snap.compat_ok {
         let c = crate::compat::supported();
         let range = format!("the supported range {} - {}", c.min, c.max);
-        let (sev, message) = match snap.cc_version.as_deref() {
-            None => (Severity::Error, format!("Claude Code's version could not be read (`{} --version` gave none); {range}", env.native_claude_bin)),
-            Some(v) if v.contains('-') => (Severity::Error, format!("Claude Code {v} is a pre-release that compat.toml does not list; {range}")),
+        let refuse = Some("read-only commands still work; `--force` overrides launches".to_string());
+        let (sev, message, fix) = match snap.cc_version.as_deref() {
+            None => (Severity::Error, format!("Claude Code's version could not be read (`{} --version` gave none); {range}", env.native_claude_bin), refuse),
+            Some(v) if v.contains('-') => (Severity::Error, format!("Claude Code {v} is a pre-release that compat.toml does not list; {range}"), refuse),
             Some(v) => match crate::compat::position(&c, v) {
-                1 => (Severity::Warn, format!("Claude Code {v} is above {range}")),
-                -1 => (Severity::Error, format!("Claude Code {v} is below {range}")),
-                _ => (Severity::Error, format!("Claude Code version {v:?} is not a version nimitz can compare with {range}")),
+                1 => (
+                    Severity::Warn,
+                    format!("Claude Code {v} is newer than nimitz is tested with (tested up to {}); launches go ahead", c.max),
+                    Some("nothing to do; report anything odd, and the tested range widens with the next nimitz".to_string()),
+                ),
+                -1 => (Severity::Error, format!("Claude Code {v} is below {range}"), Some("update Claude Code (`claude update`)".to_string())),
+                _ => (Severity::Error, format!("Claude Code version {v:?} is not a version nimitz can compare with {range}"), refuse),
             },
         };
-        out.push(Issue {
-            code: "cc.version".into(),
-            severity: sev,
-            message,
-            fix: Some("read-only commands still work; `--force` overrides launches".into()),
-            id: None,
-        });
+        out.push(Issue { code: "cc.version".into(), severity: sev, message, fix, id: None });
     }
 
     // Stowaways: the whole-world check lists them all; `check_tree` of a fleet,

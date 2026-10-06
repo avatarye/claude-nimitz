@@ -655,26 +655,10 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
             _ => plan.warnings.push(i),
         }
     }
-    // A version above the range is only a warning for read-only commands, but it
-    // refuses a launch until the tier-2 tests widen the range (plan-v3 8.1).
-    if !snap.compat_ok && !force {
-        let i = match plan.warnings.iter().position(|i| i.code == "cc.version") {
-            Some(at) => Issue { severity: Severity::Error, ..plan.warnings.remove(at) },
-            None => issue(
-                "cc.version",
-                Severity::Error,
-                match snap.cc_version.as_deref() {
-                    Some(v) => format!("Claude Code {v} is outside the supported range"),
-                    None => format!("Claude Code's version is unknown (`{} --version` gave no version)", env.native_claude_bin),
-                },
-                Some("re-run the same nimitz command with --force (read-only commands work as they are)".into()),
-                None,
-            ),
-        };
-        if !plan.refusals.iter().any(|r| r.code == "cc.version") {
-            plan.refusals.push(i);
-        }
-    }
+    // The version: `check` makes it an error below the floor, when unknown, or
+    // for an untested pre-release (those refuse, --force overrides); above the
+    // highest tested version it is a warning and the launch goes ahead, so a
+    // nightly Claude Code update never stops a fleet (0.3.2).
 }
 
 /// Start `id` and every missing parent, top-down. Runs `check` first.

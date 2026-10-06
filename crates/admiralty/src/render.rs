@@ -224,7 +224,14 @@ fn top_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static
     let mut opt = vec![];
     if !b.snap.compat_ok {
         let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
-        opt.push(Span::styled(pick(format!("   Claude Code {ver} outside the supported range"), format!("   CC {ver} unsupported"), " CC!".into()), bold(mono::WARN)));
+        let c = nimitz_core::compat::supported();
+        let newer = !ver.contains('-') && nimitz_core::compat::position(&c, &ver) == 1;
+        let (full, short) = if newer {
+            (format!("   Claude Code {ver} newer than tested ({})", c.max), format!("   CC {ver} untested"))
+        } else {
+            (format!("   Claude Code {ver} outside the supported range"), format!("   CC {ver} unsupported"))
+        };
+        opt.push(Span::styled(pick(full, short, " CC!".into()), bold(if newer { mono::WARN } else { mono::ERROR })));
     }
     (v, opt)
 }

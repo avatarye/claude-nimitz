@@ -1,4 +1,6 @@
 # Claude Code versions this nimitz build supports (plan-v3.md section 8).
-# Compiled into nimitz-core at build time; widen only after the tier-2 tests pass.
+# Compiled into nimitz-core at build time. `min` is the floor: below it launches
+# refuse. `max` is the highest version tested: a newer one only warns ("tested
+# up to max") and launches go ahead. Raise `max` after the tier-2 tests pass.
 min = "2.1.288"
 max = "2.1.289"

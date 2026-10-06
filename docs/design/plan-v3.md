@@ -198,9 +198,12 @@ Each `nimitz` release has a supported range of Claude Code versions, in
 `nimitz` launch check the installed version:
 
 - inside the range: run;
-- above the range: warn; run read-only commands; refuse launches until the
-  version passes the tests (you can override with `--force`);
-- below the range: refuse.
+- above the range (newer than any version tested): warn, "tested up to X",
+  and run, launches too (since 0.3.2: a nightly Claude Code update must not
+  stop a fleet). `max` in `compat.toml` is the highest version tested;
+- below the range, an unknown version, or a pre-release `compat.toml` does
+  not list: refuse launches (read-only commands still work; `--force`
+  overrides).
 
 `docs/pinned-formats.md` lists the fields `nimitz` reads in each file and hook.
 `doctor` checks only those fields, so a new field (such as `scratchpad_dir`) does

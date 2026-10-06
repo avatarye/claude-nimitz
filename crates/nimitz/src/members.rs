@@ -93,8 +93,11 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
     }
     let cc = snap.cc_version.clone().unwrap_or_else(|| format!("unknown (`{} --version` gave no version)", ctx.env.native_claude_bin));
     let machine = snap.machine.clone().unwrap_or("(no label)".into());
+    let c = nimitz_core::compat::supported();
     if snap.compat_ok {
         out::ok(&format!("machine {machine}; Claude Code {cc} (supported)"));
+    } else if snap.cc_version.as_deref().is_some_and(|v| !v.contains('-') && nimitz_core::compat::position(&c, v) == 1) {
+        out::warn(&format!("machine {machine}; Claude Code {cc} is newer than nimitz is tested with (tested up to {}); launches go ahead", c.max));
     } else {
         out::warn(&format!("machine {machine}; Claude Code {cc} is outside the supported range: launches refuse"));
     }
