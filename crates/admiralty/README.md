@@ -76,7 +76,7 @@ on a fleet band also `layout herdr [--ships]` and removing a machine; sweep is
 scoped to the row: member, squadron or fleet),
 `m` message (admiral and commodore: typed into their pane; ships: relayed by
 their commodore), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
-from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` fleet-state filter, `F`
+from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
 flagged only, `R` refresh, `?` help, `q` quit.
 
 Every action and form shows the exact `nimitz` command and core's plan steps

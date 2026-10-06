@@ -715,9 +715,8 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
     let mut out = vec![];
     for f in snap.fleets.iter().filter(|f| on_tab(f.id.fleet())) {
         let state = FleetState::of(f);
-        if !v.fleet_states[state.index()] {
-            continue;
-        }
+        // The `f` state filter works on squadrons: a tab shows one fleet, so
+        // hiding the fleet itself would only blank the tab (BUG: squadron filter).
         let shown_any = fleet_members(f).iter().any(|m| matches(m));
         if (!q.is_empty() || v.flagged_only) && !shown_any {
             continue;
@@ -744,10 +743,19 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
         if matches(&f.admiral) {
             n.children.push(member_node(&f.admiral, v));
         }
+        let mut hidden = 0;
         for sq in &f.squadrons {
+            if !v.fleet_states[FleetState::of_squadron(f, sq).index()] {
+                hidden += 1;
+                continue;
+            }
             if let Some(sn) = squadron_node(f, sq, v, &matches) {
                 n.children.push(sn);
             }
+        }
+        if hidden > 0 {
+            let k = n.children.len();
+            n.children.push(note(&f.id, k, format!("{hidden} squadron(s) hidden by the state filter (f changes it)"), st(mono::MUTED)));
         }
         // squadrons the config names but could not load: a broken frame each
         for sq in broken_squadrons(snap, f) {

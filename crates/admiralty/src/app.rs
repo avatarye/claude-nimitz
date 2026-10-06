@@ -145,7 +145,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("c / e / D", "create fleet, squadron, ship, tender / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
-    ("f / F", "filter fleets by state / flagged rows only"),
+    ("f / F", "filter squadrons by state / flagged rows only"),
     ("w", "detail: open or close the floating detail panel (esc closes it too)"),
     ("R", "refresh now"),
     ("? / q", "help / quit"),

@@ -922,3 +922,32 @@ fn a_name_search_spans_every_fleet() {
     press(&mut t.app, KeyCode::Esc);
     assert!(!t.app.rows.iter().any(|r| r.node.id == "M:FORGE/IRON/ANVIL"), "cleared: the tab again");
 }
+
+#[test]
+fn the_state_filter_hides_squadrons_on_a_fleet_tab() {
+    // MAIN's tab holds squadrons in different states; `f` must hide the
+    // squadrons whose state is unticked, not the whole fleet (or nothing)
+    let mut t = demo();
+    let snap = t.app.bundle.as_ref().unwrap().snap.clone();
+    let main = snap.fleets.iter().find(|f| f.id.0 == "MAIN").unwrap();
+    let states: Vec<(String, admiralty::view::FleetState)> =
+        main.squadrons.iter().map(|sq| (format!("SQ:{}", sq.id.0), admiralty::view::FleetState::of_squadron(main, sq))).collect();
+    let shown = |t: &TestApp| -> Vec<String> { t.app.rows.iter().filter(|r| r.node.kind == Kind::SquadronBand).map(|r| r.node.id.clone()).collect() };
+    assert_eq!(shown(&t).len(), states.len(), "every squadron at first");
+    // untick the state of the first squadron
+    let (gone, state) = states[0].clone();
+    let at = admiralty::view::FleetState::ALL.iter().position(|s| *s == state).unwrap();
+    keys(&mut t.app, "f");
+    for _ in 0..at {
+        keys(&mut t.app, "j");
+    }
+    keys(&mut t.app, " ");
+    press(&mut t.app, KeyCode::Esc);
+    let now = shown(&t);
+    assert!(!now.contains(&gone), "{gone} ({state:?}) is hidden: {now:?}");
+    for (id, s) in &states {
+        assert_eq!(now.contains(id), *s != state, "{id} ({s:?})");
+    }
+    assert!(t.app.rows.iter().any(|r| r.node.id == "F:MAIN"), "the fleet itself stays on its tab");
+    assert!(t.app.rows.iter().any(|r| r.node.name.contains("hidden by the state filter")), "a note says what is hidden");
+}

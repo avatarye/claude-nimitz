@@ -484,7 +484,7 @@ fn draw_fleet_filter(f: &mut Frame, area: Rect, on: &[bool; 7], sel: usize) {
     lines.push(keys_line(&[("space", "toggle"), ("a", "all"), ("esc", "close")]));
     let r = centered(area, 46, lines.len() as u16 + 2);
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).block(modal_block("fleet filter".into(), mono::ACCENT)), r);
+    f.render_widget(Paragraph::new(lines).block(modal_block("squadrons by state".into(), mono::ACCENT)), r);
 }
 
 fn draw_needs(f: &mut Frame, area: Rect, items: &[NeedItem], sel: usize) {
