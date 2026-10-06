@@ -712,6 +712,22 @@ impl App {
             }
             return None;
         }
+        // `A` on a session that is shown already: jump there, open nothing new
+        if act == Act::Open && self.available(Act::Open).is_ok() {
+            if let Some(pane) = actions::existing_open(&self.ctx, &b.snap, &self.target()) {
+                match self.ctx.mux.focus(&pane) {
+                    Ok(()) => {
+                        actions::log(&self.ctx.env, "focus", &pane.pane_id);
+                        self.notify(format!("Open already: focused pane {}", pane.pane_id), st(mono::BUSY));
+                        if self.ctx.exit_after_jump {
+                            return Some(Effect::Quit);
+                        }
+                    }
+                    Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
+                }
+                return None;
+            }
+        }
         match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {
             Ok(p) => self.modal = Some(Modal::Confirm(p)),
             Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),

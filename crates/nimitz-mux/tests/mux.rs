@@ -43,6 +43,9 @@ fn main() {
         ("layout: fills only the missing tab", layout_partial),
         ("layout: loose label variants match (skill normalisation)", layout_loose_labels),
         ("layout: a short tab name from before full names is reused and renamed", layout_short_tab_renamed),
+        ("open_or_focus: a pane showing the session is focused, nothing opens", reuse_by_session),
+        ("open_or_focus: the tab named for it is focused, nothing opens", reuse_by_tab_name),
+        ("open_or_focus: nothing there yet opens a new tab", reuse_none_opens),
         ("errors: workspace create failure propagates", error_workspace_create),
         ("errors: pane run failure propagates", error_pane_run),
     ];
@@ -416,6 +419,54 @@ fn layout_short_tab_renamed() {
     assert_eq!(tabs.len(), 1, "no second tab: {tabs:?}");
     assert_eq!(tabs[0]["label"], "HOME.GITHUB.COMMODORE", "renamed to its full name");
     assert!(w.pane("w1:p1").get("ran").is_none(), "a reused pane keeps its process");
+}
+
+fn opened_tabs(w: &World) -> usize {
+    w.world()["tabs"].as_array().expect("tabs").len()
+}
+
+fn reuse_by_session() {
+    let w = World::new(None);
+    let place = Place::Tab { workspace: "MAIN.ARGOS".into(), label: "MAIN.ARGOS.LEAD".into() };
+    let before = opened_tabs(&w);
+    // pane w1:p2 shows session 6666...: that is the one
+    let (p, reused) = nimitz_mux::open_or_focus(&w.mux(), &cmdv(&["claude", "attach", "66666666"]), Path::new("/w"), place, Some("66666666-7777-8888-9999-000000000000")).expect("open_or_focus");
+    assert!(reused);
+    assert_eq!(p.pane_id, "w1:p2");
+    assert_eq!(opened_tabs(&w), before, "no new tab");
+    assert!(w.calls().iter().any(|c| c[..2] == ["agent".to_string(), "focus".to_string()] && c[2] == "w1:p2"), "{:?}", w.calls());
+}
+
+fn reuse_by_tab_name() {
+    // an earlier `nimitz open` left tab HOME.GITHUB.NIMITZ_DEV in workspace HOME.GITHUB
+    let w = World::new(Some(json!({
+        "next_ws": 2,
+        "workspaces": [{"workspace_id": "w1", "label": "HOME.GITHUB", "focused": false, "active_tab_id": "w1:t1"}],
+        "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "HOME.GITHUB.COMMODORE", "focused": true},
+                 {"tab_id": "w1:t2", "workspace_id": "w1", "label": "HOME.GITHUB.NIMITZ_DEV", "focused": false}],
+        "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/sq"},
+                  {"pane_id": "w1:p2", "tab_id": "w1:t2", "workspace_id": "w1", "cwd": "/dev"}]
+    })));
+    let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
+    let (p, reused) = nimitz_mux::open_or_focus(&w.mux(), &cmdv(&["claude", "attach", "9aacf927"]), Path::new("/dev"), place, Some("not-in-any-pane")).expect("open_or_focus");
+    assert!(reused, "found by its tab name");
+    assert_eq!(p, pane_ref("w1:p2", "w1:t2", "w1"));
+    assert_eq!(opened_tabs(&w), 2, "no new tab");
+    assert!(w.pane("w1:p2").get("ran").is_none(), "nothing ran in it again");
+}
+
+fn reuse_none_opens() {
+    let w = World::new(None);
+    let place = Place::Tab { workspace: "ADMIRALTY".into(), label: "MAIN.ARGOS.CLEAN".into() };
+    let before = opened_tabs(&w);
+    let (p, reused) = nimitz_mux::open_or_focus(&w.mux(), &cmdv(&["claude", "attach", "2287e6e4"]), Path::new("/clean"), place.clone(), Some("no-such-session")).expect("open");
+    assert!(!reused);
+    assert_eq!(opened_tabs(&w), before + 1, "a new tab");
+    assert_eq!(w.pane(&p.pane_id)["ran"], json!(["claude attach 2287e6e4"]));
+    // and a second call finds that tab
+    let (again, reused) = nimitz_mux::open_or_focus(&w.mux(), &cmdv(&["claude", "attach", "2287e6e4"]), Path::new("/clean"), place, Some("no-such-session")).expect("again");
+    assert!(reused && again.pane_id == p.pane_id, "{again:?}");
+    assert_eq!(opened_tabs(&w), before + 1);
 }
 
 // ---------- error paths ----------

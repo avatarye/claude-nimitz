@@ -176,6 +176,18 @@ impl Mux for Herdr {
         "herdr"
     }
 
+    fn existing(&self, session_id: Option<&str>, place: &Place) -> Option<PaneRef> {
+        if let Some(p) = session_id.and_then(|sid| self.panes().into_iter().find(|p| p.session_id.as_deref() == Some(sid))) {
+            return Some(p.pane);
+        }
+        // the tab nimitz names for it (`F.SQ.SHIP`), in its workspace
+        let Place::Tab { workspace, label } = place else { return None };
+        let (ws, want_ws, want) = (self.workspaces().ok()?, normalize_label(workspace), normalize_label(label));
+        let (ws_id, _, _) = ws.into_iter().find(|(_, l, _)| normalize_label(l) == want_ws)?;
+        let (tab_id, _) = self.tabs(&ws_id).ok()?.into_iter().find(|(_, l)| normalize_label(l) == want)?;
+        self.pane_in_tab(&ws_id, &tab_id).ok()
+    }
+
     fn caps(&self) -> Caps {
         Caps { open: true, focus: true, type_text: true, layout: true }
     }

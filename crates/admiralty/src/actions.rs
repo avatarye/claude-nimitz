@@ -448,6 +448,20 @@ pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fl
 }
 
 /// `open`: attach to a running background session in a new pane.
+/// The pane or tab that already shows the session `A` would attach to (its
+/// session in a pane, or the tab nimitz names for it), if one is open.
+pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Option<PaneRef> {
+    let (sid, place) = match target {
+        Target::Member(id) => (find_member(snap, id)?.session.as_ref()?.session_id.clone(), place_for(id)),
+        Target::Stowaway(sid) => {
+            let s = snap.stowaways.iter().find(|s| &s.session_id == sid)?;
+            (s.session_id.clone(), Place::Tab { workspace: "STOWAWAYS".into(), label: s.name.clone() })
+        }
+        _ => return None,
+    };
+    ctx.mux.existing(Some(&sid), &place)
+}
+
 fn plan_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<Pending, String> {
     let (id, s) = match target {
         Target::Member(id) => {

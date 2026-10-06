@@ -19,6 +19,8 @@ use ratatui::Terminal;
 #[derive(Clone, Default)]
 pub struct TestMux {
     pub calls: Arc<Mutex<Vec<String>>>,
+    /// tabs `open` made: (workspace, label, pane id), so `existing` finds them
+    pub tabs: Arc<Mutex<Vec<(String, String, String)>>>,
 }
 
 impl Mux for TestMux {
@@ -33,7 +35,15 @@ impl Mux for TestMux {
     }
     fn open(&self, cmd: &[String], cwd: &Path, place: Place) -> Result<PaneRef, MuxError> {
         self.calls.lock().unwrap().push(format!("open {:?} in {} at {:?}", cmd, cwd.display(), place));
+        if let Place::Tab { workspace, label } = &place {
+            self.tabs.lock().unwrap().push((workspace.clone(), label.clone(), "new".into()));
+        }
         Ok(PaneRef { pane_id: "new".into(), tab_id: None, workspace_id: None })
+    }
+    fn existing(&self, _session_id: Option<&str>, place: &Place) -> Option<PaneRef> {
+        let Place::Tab { workspace, label } = place else { return None };
+        let tabs = self.tabs.lock().unwrap();
+        tabs.iter().find(|(w, l, _)| w == workspace && l == label).map(|(_, _, p)| PaneRef { pane_id: p.clone(), tab_id: None, workspace_id: None })
     }
     fn focus(&self, pane: &PaneRef) -> Result<(), MuxError> {
         self.calls.lock().unwrap().push(format!("focus {}", pane.pane_id));

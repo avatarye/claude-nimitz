@@ -535,6 +535,13 @@ fn open_attaches_a_background_session_in_a_new_pane() {
     t.app.begin(&p).unwrap();
     let calls = t.mux.calls.lock().unwrap().clone();
     assert!(calls[0].starts_with("open ") && calls[0].contains("attach") && calls[0].contains("workspace: \"MAIN.ARGOS\"") && calls[0].contains("label: \"MAIN.ARGOS.BOLT\""), "{calls:?}");
+    // `A` again: its tab MAIN.ARGOS.BOLT is open, so jump there and open nothing
+    keys(&mut t.app, "A");
+    assert!(t.app.modal.is_none(), "no confirm: nothing would be created");
+    let calls = t.mux.calls.lock().unwrap().clone();
+    assert_eq!(calls.iter().filter(|c| c.starts_with("open ")).count(), 1, "{calls:?}");
+    assert_eq!(calls.last().map(String::as_str), Some("focus new"), "{calls:?}");
+    assert!(toast(&t.app).contains("Open already"), "{}", toast(&t.app));
     // an interactive lead is not attached; it lives in its terminal
     goto(&mut t.app, "M:MAIN/ARGOS");
     assert!(t.app.available(Act::Open).unwrap_err().contains("interactive"));

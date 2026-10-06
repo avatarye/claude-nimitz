@@ -426,12 +426,23 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
     };
     let cwd = m.cwd.clone().unwrap_or_else(|| ".".into());
     let cmd = nimitz_core::claude::attach(&ctx.env, &short);
-    plan.steps.push(Step { id: Some(id.clone()), cmd: cmd.clone(), cwd: Some(cwd.clone()), why: "attach in a new tab; detaching leaves it running".into() });
+    let place = run::place_for(&id);
+    let sid = m.session.as_ref().map(|s| s.session_id.clone());
+    // a tab already named for it (`F.SQ.SHIP`, an earlier `open` or `layout --ships`): show that one
+    if let Some(p) = mux.existing(sid.as_deref(), &place) {
+        plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["focus".into(), p.pane_id.clone()], cwd: None, why: format!("its tab {} is open already", run::tab_of(&id)) });
+    } else {
+        plan.steps.push(Step { id: Some(id.clone()), cmd: cmd.clone(), cwd: Some(cwd.clone()), why: "attach in a new tab; detaching leaves it running".into() });
+    }
     // Attaching changes no session: no confirmation needed.
     match out::gate(&plan, ctx.plan_only(), true) {
         out::Go::Exit(c) => Ok(c),
-        out::Go::Run => match mux.open(&cmd, std::path::Path::new(&cwd), run::place_for(&id)) {
-            Ok(p) => {
+        out::Go::Run => match nimitz_mux::open_or_focus(mux.as_ref(), &cmd, std::path::Path::new(&cwd), place, sid.as_deref()) {
+            Ok((p, true)) => {
+                out::ok(&format!("{id} is open already; focused pane {}", p.pane_id));
+                Ok(0)
+            }
+            Ok((p, false)) => {
                 out::ok(&format!("{id} attached in pane {}", p.pane_id));
                 Ok(0)
             }

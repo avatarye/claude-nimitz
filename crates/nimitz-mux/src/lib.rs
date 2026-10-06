@@ -69,6 +69,27 @@ pub trait Mux {
     fn focus(&self, pane: &PaneRef) -> Result<(), MuxError>;
     fn type_text(&self, pane: &PaneRef, text: &str) -> Result<(), MuxError>;
     fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError>;
+
+    /// A pane that already shows this session (the agent the multiplexer sees
+    /// in it), else the tab `place` names (a `Place::Tab`, by its label in its
+    /// workspace), if either is open. An adapter that cannot list tabs matches
+    /// by session only.
+    fn existing(&self, session_id: Option<&str>, place: &Place) -> Option<PaneRef> {
+        let _ = place;
+        let sid = session_id?;
+        self.panes().into_iter().find(|p| p.session_id.as_deref() == Some(sid)).map(|p| p.pane)
+    }
+}
+
+/// Show `session_id` at `place`: focus the pane or tab that already shows it
+/// (`Mux::existing`), else open `cmd` there. Returns the pane and whether it
+/// was already open (nothing new was created).
+pub fn open_or_focus(mux: &dyn Mux, cmd: &[String], cwd: &Path, place: Place, session_id: Option<&str>) -> Result<(PaneRef, bool), MuxError> {
+    if let Some(p) = mux.existing(session_id, &place) {
+        mux.focus(&p)?;
+        return Ok((p, true));
+    }
+    mux.open(cmd, cwd, place).map(|p| (p, false))
 }
 
 pub mod fake;

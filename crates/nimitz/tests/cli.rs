@@ -576,6 +576,27 @@ fn open_attaches_a_ship_and_focuses_a_pane() {
 }
 
 #[test]
+fn open_reuses_the_tab_it_opened_before() {
+    let sb = Sb::new(true);
+    let tabs = |sb: &Sb| -> usize {
+        let w: Value = serde_json::from_slice(&std::fs::read(sb.base.join("herdr/world.json")).unwrap()).unwrap();
+        w["tabs"].as_array().unwrap().iter().filter(|t| t["label"] == "MAIN.ARGOS.CLEAN").count()
+    };
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("attached in pane"), "{}", r.out);
+    assert_eq!(tabs(&sb), 1);
+    // again: the tab named MAIN.ARGOS.CLEAN is there; focus it, open nothing
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert!(r.out.contains("its tab MAIN.ARGOS.CLEAN is open already"), "{}", r.out);
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("is open already; focused pane"), "{}", r.out);
+    assert_eq!(tabs(&sb), 1, "no second tab");
+    assert!(sb.calls().contains("\"agent\",\"focus\""), "{}", sb.calls());
+}
+
+#[test]
 fn signal_types_or_relays_and_members_use_sendmessage() {
     let sb = Sb::new(true);
     assert_eq!(sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]).code, 1, "no pane yet");
