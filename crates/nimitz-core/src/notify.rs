@@ -206,10 +206,16 @@ pub fn clear(env: &Env, id: &str, session_id: Option<&str>) {
     }
 }
 
+/// Is the notice on file still `n`? Its `ts` went through JSON, which need not
+/// give back the same f64 bit for bit, so compare to a microsecond.
+pub fn is_same(on_file: &Notice, n: &Notice) -> bool {
+    (on_file.ts - n.ts).abs() < 1e-6 && on_file.session_id == n.session_id && on_file.kind == n.kind
+}
+
 /// Write the outcome of a delivery, unless the notice on file has moved on.
 pub fn set_delivery(env: &Env, n: &Notice, delivery: &str, note: Option<String>) {
     let Some(mut cur) = read(env, &n.id) else { return };
-    if cur.ts != n.ts {
+    if !is_same(&cur, n) {
         return; // superseded or answered meanwhile
     }
     cur.delivery = delivery.into();
@@ -353,6 +359,21 @@ mod tests {
         record(&env, second).unwrap();
         set_delivery(&env, &first, "failed", Some("late".into()));
         assert_eq!(read(&env, "MAIN/ARGOS/CLEAN").unwrap().delivery, "pending");
+    }
+
+    #[test]
+    fn a_timestamp_that_does_not_round_trip_still_names_the_same_notice() {
+        let (_td, env) = test_env();
+        let mut n = from_hook("PreToolUse", &ask(), &labels("MAIN/ARGOS/CLEAN", "ship")).unwrap();
+        n.ts = 1791248138.3454630; // many digits: JSON may hand back a neighbour
+        write(&env, &n).unwrap();
+        let mut off = n.clone();
+        off.ts = f64::from_bits(n.ts.to_bits() + 1); // one ULP away, as a parse can be
+        set_delivery(&env, &off, "delivered", None);
+        assert_eq!(read(&env, "MAIN/ARGOS/CLEAN").unwrap().delivery, "delivered");
+        // a different notice (later, or another kind) is not the same one
+        let later = Notice { ts: n.ts + 1.0, ..n.clone() };
+        assert!(!is_same(&read(&env, "MAIN/ARGOS/CLEAN").unwrap(), &later));
     }
 
     #[test]

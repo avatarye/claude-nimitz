@@ -89,7 +89,7 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
             },
         };
         // answered or replaced meanwhile: nothing left to deliver
-        if notify::read(env, &n.id).map(|c| c.ts) != Some(n.ts) {
+        if !notify::read(env, &n.id).is_some_and(|c| notify::is_same(&c, n)) {
             return ("delivered", "the member moved on before delivery".into());
         }
         if Instant::now() + POLL > deadline {
