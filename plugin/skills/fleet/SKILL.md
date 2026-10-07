@@ -86,9 +86,9 @@ types the text into the commodore's pane.
 | Bring a fleet up | `nimitz up <F>` (needs Herdr) |
 | Start one member | `nimitz start <id>` (admiral and commodore open in a Herdr tab) |
 | Stop one member | `nimitz stop <id>`; one copy of two: `nimitz stop <short id>` |
-| New session id, labels restored | `nimitz relaunch <id>` |
-| Remove stale rows | `nimitz sweep [<id>]` (a commodore: `nimitz sweep <F/SQ>`), or one row: `nimitz rm <short id>` |
-| A session with no labels | `nimitz adopt <session> <id>`, or `nimitz rm <session>` |
+| Same session id and history; labels, name and mode restored | `nimitz relaunch <id>` |
+| Remove stale rows and copies of a member | `nimitz sweep [<id>]` (a commodore: `nimitz sweep <F/SQ>`), or one row: `nimitz rm <short id>`. A background copy is stopped and removed; a copy with no job (interactive, SDK) is ended in its own terminal |
+| A session with no labels (a stowaway) | `nimitz adopt <session> <id>`, or `nimitz rm <session>`; a live one with no job: end it in its terminal |
 | Show a member | `nimitz open <id>` |
 | Herdr workspaces for fleets | `nimitz layout herdr [<F>]` |
 | Move a fleet-skill fleet | `nimitz migrate fleet-skill <old dir>... --into <F>` (plan), then add `--yes` |

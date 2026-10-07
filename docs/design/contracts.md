@@ -217,7 +217,14 @@ the live session file's `sessionId`, else `state.json` `resumeSessionId`, else
 its birth `sessionId` (`SessionInfo::birth_id` keeps the birth id when the
 conversation moved: `/clear`, `/branch`). A live process with no job
 (interactive, SDK) is its own row, even on a job's conversation. The CLI
-cross-check joins the same way. `jobs/pins.json` gives `pinned` (the daemon
+cross-check joins the same way. Not rows at all (plan-v4 section 6): a
+session labelled for another `NIMITZ_HOME` (`registry::other_home`; the hook
+writes no line for it either: no issue, no fix, no row), and, for
+`snapshot::TRANSIENT_GRACE_S` (120 s) after its session file appeared (the
+earliest of the file's birth time, its mtime and `startedAt`), a `spare: true`
+session file (the agent view's "new session" or draft) and a picker (a live
+process with no job, no transcript and no SessionStart yet); after the grace
+time they are classified like any other row. `jobs/pins.json` gives `pinned` (the daemon
 never idle-retires a pinned job; `status` says so).
 
 Snapshot types (serde-serializable; `nimitz status --json` prints them):
@@ -267,15 +274,16 @@ Each finding is an `Issue` with a stable `code`:
 | `labels.missing` | the identity's current session has no labels (e.g. resumed with flags, legacy). Only a session in its lineage (or its registry current) can be its current session; an unlabelled row outside the lineage never is |
 | `labels.mismatch` | labels name another identity |
 | `dup.live` | two live sessions for one identity |
-| `copy.rows` | extra job rows of the identity: its own stale rows, and copies. An unlabelled row is a copy only when named exactly `<expected name>-<word>-<word>` (or a legacy name plus two words), or unnamed with its job row recording a fork of a lineage session. Any other row in a member's folder is a stowaway (or `legacy` by name), never copy.rows, dup.live or labels.missing |
+| `copy.rows` | extra job rows of the identity that are its own stale rows (labelled, or in its lineage) and not copies (below) |
+| `copy` | a copy of a ship's conversation (plan-v4 section 6; Warn, one per copy, `SessionInfo::copy` says how): an unlabelled session in the ship's folder whose transcript shares the root of a lineage conversation (`evidence::transcript_root`: the first uuid and the first message; a `/branch`, `/fork`, `--fork-session` or `--bg -c` copies the transcript), or that resumes a lineage session id that is not the conversation now (a process with no job on the conversation now is `held`, not a copy), or that carries the ship's exact name (or an old fleet name); anywhere, a row named `<expected name>-<word>-<word>` (Claude Code's copy name) or unnamed with a job row recording a fork of a lineage session. A copy is never the current session, never `dup.live`, `held` or `name.taken`. Fix per kind: a background job, `nimitz sweep <id>` (stop, then rm); a process with no job (interactive, SDK), "end it in its terminal" with the `tmux` pane from the session file when there is one |
 | `lineage.broken` | the registry's session (the conversation now) has no job row and no transcript |
-| `held` | a background member's conversation runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`); nimitz can neither stop nor resume it there (Warn; fix: end that process in its host, then `nimitz start`) (M13). Such a row is never a copy or a second live session of the member |
+| `held` | a background member's conversation (the one it runs now) runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`); nimitz can neither stop nor resume it there (Warn; fix: end that process in its host, then `nimitz start`) (M13). Such a row is never a copy or a second live session of the member; a process with no job on an older lineage conversation is a `copy` |
 | `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml`: newer than `max` (the highest tested) is a Warn and launches go ahead; below `min`, unknown, or a pre-release `prerelease = [...]` does not list is an Error |
 | `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
 | `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
-| `stowaway` | an unlabelled session under `NIMITZ_HOME` or in a member's folder itself (not its subfolders); `check` lists all, `check F` / `check F/SQ` / `check F/SQ/SHIP` those in the target's folders (fleet or squadron nimitz folders, or a member folder under the target); live: fix is stop, then `rm`; stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
+| `stowaway` | an unlabelled session under `NIMITZ_HOME` (outside ship folders) or in a lead's folder itself (not its subfolders). A ship's folder may be shared by several ships and by the user's own work: an unlabelled session there is the user's own and is not shown at all, unless it is a `copy` of a ship in that folder (plan-v4 section 6). `check` lists all, `check F` / `check F/SQ` / `check F/SQ/SHIP` those in the target's folders (fleet or squadron nimitz folders, or a member folder under the target). Fix per kind: a live background job, stop, then `rm`; a live process with no job (interactive, SDK), "end it in its terminal" (with its `tmux` pane when the session file names one); stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
 | `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`). The name alone decides (another agent in a member's folder is a stowaway). Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |
 
 Refusal-only codes (in `Plan.refusals`, not from `check`):
@@ -343,8 +351,12 @@ Rules that hold in every row: never resume a live session; never pass flags to
 a resume that must keep the id; `stop`/`rm` through the native binary and verify
 by re-reading; never touch a session that is not in the identity's lineage.
 
-Authority for `sweep`: the user, any scope; a commodore, its own squadron only
-(the stale copy rows of its own ships). Admiral, ship: none.
+Authority for `sweep`: the user, any scope; an admiral, its own fleet; a
+commodore, its own squadron only (the stale rows and copies of its own
+ships); ship: none. `sweep` removes a member's stale rows (stopped only; a
+live stale row is skipped with `dup.live`) and its copies (a live background
+copy is stopped, then removed, in the same plan; a copy with no job is named
+with "end it in its terminal" and left).
 Core owns a plan for every mutating command, including `fleet set`,
 `squadron set`, `machine rm`, retire (`sessions::plan_retire`: `ship|squadron|fleet rm`,
 session and config steps in one plan, one verified `apply`) and the layout

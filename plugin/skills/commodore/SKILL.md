@@ -31,9 +31,11 @@ config.
 6. When `nimitz` refuses with a `fix:` that is not yours to run (for example
    `nimitz relaunch`, `nimitz stop <short id>`), tell the user
    the fix. Do not work around it.
-7. Copy rows of your ships (`copy.rows` in `nimitz check F/SQ`): run
-   `nimitz sweep F/SQ --plan`, read it, then run it with `--yes`. Sweep only
-   your own squadron. A live copy is skipped; tell the user about it.
+7. Stale rows and copies of your ships (`copy.rows`, `copy` in `nimitz check
+   F/SQ`): run `nimitz sweep F/SQ --plan`, read it, then run it with `--yes`.
+   Sweep only your own squadron. A background copy is stopped and removed; a
+   copy with no job (an interactive or SDK process) cannot be ended by
+   nimitz: tell the user to end it in its terminal.
 8. Never use `--force` unless the user asks for it by name.
 9. A line that starts `[nimitz needs-you]` is typed by nimitz, not by the user:
    a ship of yours is blocked on a question or a permission prompt.
