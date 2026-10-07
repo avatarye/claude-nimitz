@@ -251,6 +251,47 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         }
         snap.fleets.push(fleet);
     }
+    // A fleet whose fleet.toml does not parse (M8): it still shows, from its
+    // folder, the registry and the labels, with the parse error on the fleet
+    // and in every member's reasons (so its live sessions get no `rm` fixes,
+    // and the other fleets are not blocked).
+    for (fid, dir, err) in crate::config::unreadable_fleets(env) {
+        let fc = FleetOnDisk { dir: dir.clone(), config: FleetConfig { fleet: fid.fleet().to_string(), ..Default::default() }, squadrons: vec![], machine: None };
+        let prefix = format!("{}/", fid.0);
+        let mut under: Vec<String> = reg.identities.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
+        under.extend(by_identity.keys().filter(|k| k.starts_with(&prefix)).cloned());
+        under.sort();
+        under.dedup();
+        // the fleet carries the error once; its members say so in their reasons
+        let unread = |m: &mut Member| m.reasons.insert(0, format!("config unreadable: {}", err.message));
+        let mut admiral = build_member(env, cache, &fc, &fid, &reg, &mut by_identity, &labels, &events);
+        unread(&mut admiral);
+        let mut fleet = Fleet { id: fid.clone(), dir: dir.to_string_lossy().into_owned(), machine: None, admiral, squadrons: vec![], issues: vec![err.clone()] };
+        for k in under {
+            let id = Id(k);
+            let Some(sq) = id.squadron() else { continue };
+            let sqid = Id::commodore(fid.fleet(), sq);
+            if !fleet.squadrons.iter().any(|s| s.id == sqid) {
+                let mut commodore = build_member(env, cache, &fc, &sqid, &reg, &mut by_identity, &labels, &events);
+                if commodore.cwd.is_none() {
+                    commodore.cwd = Some(dir.join("squadrons").join(sq.to_lowercase()).to_string_lossy().into_owned());
+                }
+                unread(&mut commodore);
+                fleet.squadrons.push(Squadron { id: sqid.clone(), commodore, ships: vec![], tenders: vec![], comms: Comms::default(), issues: vec![] });
+            }
+            if id == sqid {
+                continue;
+            }
+            let mut m = build_member(env, cache, &fc, &id, &reg, &mut by_identity, &labels, &events);
+            unread(&mut m);
+            if let Some(squadron) = fleet.squadrons.iter_mut().find(|s| s.id == sqid) {
+                squadron.ships.push(m);
+            }
+        }
+        // the fleet carries the error; not once more at the bottom of status
+        snap.issues.retain(|i| *i != err);
+        snap.fleets.push(fleet);
+    }
     // this machine's label: from a fleet that runs here, else the one `init` saved
     snap.machine = snap.fleets.iter().find_map(|f| f.machine.clone()).or_else(|| crate::registry::machine_label(env));
 
@@ -514,6 +555,10 @@ fn build_member(
             } else if p.status.as_deref() == Some("busy") {
                 reasons.push("session file: status busy".into());
                 Status::Busy
+            } else if p.status.as_deref() == Some("shell") {
+                // an idle turn with background work (a shell command) still running
+                reasons.push("session file: status shell (background work running)".into());
+                Status::Busy
             } else if let Some(n) = job.needs.as_ref().filter(|n| !idle_hint(n)) {
                 reasons.push(format!("job row left a question: {n}"));
                 Status::NeedsYou
@@ -631,5 +676,19 @@ fn build_member(
     // are known).
     m.issues = crate::sessions::session_issues(env, &m);
     m.issues.extend(crate::sessions::registry_issues(env, &mut cache.files, &m, reg));
+    // Remote Control on a live row: anyone with the claude.ai link drives the
+    // member, and a resume reconnects it (M9).
+    for r in primary.iter().chain(rows.iter()).filter(|r| r.live()) {
+        if let Some(bridge) = &r.bridge_session_id {
+            let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+            m.issues.push(Issue {
+                code: "rc.exposed".into(),
+                severity: Severity::Warn,
+                message: format!("{id}'s session {short} is connected to Remote Control (bridge {bridge}); a resume reconnects it"),
+                fix: Some(format!("run /remote-control in that session to turn it off (nimitz open {id}, then /remote-control), or archive it on claude.ai/code")),
+                id: Some(id.clone()),
+            });
+        }
+    }
     m
 }

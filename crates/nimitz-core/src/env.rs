@@ -88,6 +88,13 @@ pub fn is_git_worktree(root: &Path) -> bool {
     root.join(".git").is_file()
 }
 
+/// When `root` became a repository (epoch seconds): the birth time of its
+/// `.git` (folder or worktree file). None when the file system keeps no birth
+/// time: "cannot tell", never a guess from a later write.
+pub fn git_birth(root: &Path) -> Option<f64> {
+    std::fs::metadata(root.join(".git")).ok()?.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs_f64())
+}
+
 /// First `name` on PATH that is a file.
 pub fn which(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;

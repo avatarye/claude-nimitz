@@ -966,3 +966,56 @@ fn sandbox_env_tick_and_fakes() {
     let h = raw(&sb.vars, &["__fake-herdr", sb.base.join("herdr").to_str().unwrap(), "agent", "list"], &[], None);
     assert_eq!(h.code, 0, "{}", h.out);
 }
+
+// ------------------------------------------------------------------ 0.4.0: one broken fleet.toml blocks only its fleet (M8), conflict copies (M23)
+
+#[test]
+fn a_broken_fleet_toml_blocks_its_own_fleet_only() {
+    let sb = Sb::new(false);
+    let bad = sb.base.join("nimitz/bad");
+    std::fs::create_dir_all(bad.join("admiral")).unwrap();
+    let file = bad.join("fleet.toml");
+    std::fs::write(&file, "fleet = \"BAD\"\n\n[m").unwrap();
+    let file = file.display().to_string();
+    // status: the other fleets as before, plus the broken one with its error
+    let st = sb.run(&["status"]);
+    assert_eq!(st.code, 0, "{}", st.out);
+    for want in ["MAIN  (", "BETA  (", "BAD  (", &format!("{file}:3:"), "(config.invalid)", &format!("fix: fix {file} line 3, then nimitz check BAD")] {
+        assert!(st.out.contains(want), "{want:?} missing:\n{}", st.out);
+    }
+    assert_eq!(st.out.matches("config.invalid").count(), 1, "once:\n{}", st.out);
+    // check of the broken fleet names the file, the line and the parse error
+    let c = sb.run(&["check", "BAD"]);
+    assert_eq!(c.code, 1, "{}", c.out);
+    assert!(c.out.contains(&format!("{file}:3:")) && c.out.contains("unclosed table"), "{}", c.out);
+    assert!(c.out.contains("[ERROR] check BAD: 1 error(s)"), "{}", c.out);
+    // the healthy fleets check and plan as before
+    let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
+    assert!(!c.out.contains("config.invalid"), "{}", c.out);
+    let p = sb.run(&["start", "MAIN/ARGOS/FRESH", "--plan"]);
+    assert_eq!(p.code, 0, "{}", p.out);
+    assert!(p.out.contains("[PLAN]"), "{}", p.out);
+    // anything aimed at the broken fleet refuses with that error and the one fix
+    for args in [vec!["start", "BAD", "--plan"], vec!["up", "BAD", "--plan"], vec!["fleet", "set", "BAD", "--admiral-mode", "auto", "--plan"]] {
+        let r = sb.run(&args);
+        assert_eq!(r.code, 1, "{args:?}:\n{}", r.out);
+        assert!(r.out.contains(&format!("{file}:3:")) && r.out.contains(&format!("fix {file} line 3")), "{args:?}:\n{}", r.out);
+    }
+}
+
+#[test]
+fn a_dropbox_conflicted_copy_of_a_config_is_a_warning_with_both_names() {
+    let sb = Sb::new(false);
+    let sq_dir = sb.base.join("nimitz/main/squadrons/argos");
+    let copy = sq_dir.join("squadron (box2's conflicted copy 2026-10-07).toml");
+    std::fs::write(&copy, "squadron = \"ARGOS\"\n").unwrap();
+    let c = sb.run(&["check", "MAIN/ARGOS"]);
+    let line = c.out.lines().find(|l| l.contains("config.conflict")).unwrap_or_else(|| panic!("no config.conflict:\n{}", c.out)).to_string();
+    assert!(line.starts_with("[WARN]"), "{line}");
+    assert!(line.contains(&copy.display().to_string()) && line.contains(&sq_dir.join("squadron.toml").display().to_string()), "{line}");
+    assert!(c.out.contains("fix: compare the two files, keep one, delete the other"), "{}", c.out);
+    // not in another squadron's or ship's check
+    assert!(!sb.run(&["check", "MAIN/BOREAL"]).out.contains("config.conflict"));
+    std::fs::remove_file(&copy).unwrap();
+    assert!(!sb.run(&["check", "MAIN/ARGOS"]).out.contains("config.conflict"));
+}

@@ -744,12 +744,20 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
         refuse(&mut plan, "member.unknown", format!("no fleet {fleet} in the config"), None, None);
         return plan;
     };
+    // a fleet.toml that does not parse: that error and its fix, nothing else (M8)
+    let fod = match crate::config::load_fleet(env, fleet) {
+        Ok(fod) => Some(fod),
+        Err(i) if i.code == "config.invalid" => {
+            plan.refusals.push(i);
+            return plan;
+        }
+        Err(_) => None,
+    };
     if f.machine.is_none() {
         refuse(&mut plan, "machine.missing", format!("fleet {fleet} does not run on this machine"), Some(format!("nimitz machine add {fleet} <label>")), None);
         return plan;
     }
     gate(env, &mut plan, snap, Some(&f.id), false);
-    let fod = crate::config::load_fleet(env, fleet).ok();
     let mut ids = vec![f.admiral.id.clone()];
     for sq in &f.squadrons {
         ids.push(sq.commodore.id.clone());

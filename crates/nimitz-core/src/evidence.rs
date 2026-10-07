@@ -30,11 +30,22 @@ pub fn mtime_secs(p: &Path) -> Option<f64> {
     mtime(p).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64())
 }
 
+/// When a file was made (epoch seconds): its birth time. None when the file
+/// system keeps none ("cannot tell"; a later write is no answer).
+pub fn birth_secs(p: &Path) -> Option<f64> {
+    fs::metadata(p).ok()?.created().ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs_f64())
+}
+
 pub(crate) fn s(v: &Value, k: &str) -> Option<String> {
     match v.get(k) {
         Some(Value::String(x)) if !x.is_empty() => Some(x.clone()),
         _ => None,
     }
+}
+
+/// `ts` for readers outside this module.
+pub fn stamp(v: &Value, k: &str) -> Option<f64> {
+    ts(v, k)
 }
 
 /// Epoch milliseconds (number) or an ISO-8601 string, to epoch seconds. An
@@ -293,6 +304,8 @@ pub struct SessionRow {
     pub unreadable: bool,
     /// the session this one was forked from, when the job row records it
     pub forked_from: Option<String>,
+    /// Remote Control is connected: the session file's `bridgeSessionId` (M9)
+    pub bridge_session_id: Option<String>,
 }
 
 impl SessionRow {
@@ -333,6 +346,12 @@ fn norm_kind(k: &str) -> String {
     }
 }
 
+/// Claude Code's own processes (`kind` daemon, daemon-worker): never a member,
+/// never a stowaway, so their session files are not rows.
+fn internal_kind(k: &str) -> bool {
+    matches!(k, "daemon" | "daemon-worker")
+}
+
 /// Rows from the files `claude agents --json --all` reads. None when the
 /// layout is not there (a different Claude Code version, or no Claude Code).
 pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRow>> {
@@ -369,6 +388,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             job_labels: job_labels(&d),
             unreadable: false,
             forked_from: ["forkedFrom", "forkedFromSessionId", "parentSessionId", "resumedFrom"].iter().find_map(|k| s(&d, k)),
+            bridge_session_id: None,
         });
     }
     for p in list(&sess_dir) {
@@ -391,6 +411,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
         }
         let Some(sid) = s(&d, "sessionId") else { continue };
         let kind = norm_kind(&s(&d, "kind").unwrap_or_default());
+        if internal_kind(&kind) {
+            continue;
+        }
         let status = s(&d, "status");
         let live = SessionRow {
             session_id: sid.clone(),
@@ -407,6 +430,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             job_labels: BTreeMap::new(),
             unreadable: false,
             forked_from: None,
+            bridge_session_id: s(&d, "bridgeSessionId"),
         };
         match by_sid.get(&sid) {
             // a live background process: its job row gains pid and status
@@ -416,6 +440,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
                 r.status = live.status;
                 r.status_since = live.status_since;
                 r.waiting_for = live.waiting_for;
+                r.bridge_session_id = live.bridge_session_id;
                 if !live.name.is_empty() {
                     r.name = live.name;
                 }
@@ -455,11 +480,15 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
         .map(|a| {
             a.iter()
                 .filter_map(|r| {
+                    let kind = norm_kind(&s(r, "kind").unwrap_or_default());
+                    if internal_kind(&kind) {
+                        return None;
+                    }
                     Some(SessionRow {
                         session_id: s(r, "sessionId")?,
                         name: s(r, "name").unwrap_or_default(),
                         cwd: s(r, "cwd").unwrap_or_default(),
-                        kind: norm_kind(&s(r, "kind").unwrap_or_default()),
+                        kind,
                         short_id: s(r, "id"),
                         pid: r.get("pid").and_then(|p| p.as_i64()),
                         state: s(r, "state"),
@@ -470,6 +499,7 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         job_labels: BTreeMap::new(),
                         unreadable: false,
                         forked_from: None,
+                        bridge_session_id: s(r, "bridgeSessionId"),
                     })
                 })
                 .collect()
@@ -537,23 +567,26 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
 
 /// Transcripts in a folder's project dir, newest first: (last write, session id).
 pub fn transcripts_in(env: &Env, cwd: &str) -> Vec<(f64, String)> {
-    let mut out: Vec<(f64, String)> = vec![];
+    let mut out: Vec<(f64, String)> = transcript_files_in(env, cwd)
+        .into_iter()
+        .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
+        .collect();
+    out.dedup_by(|a, b| a.1 == b.1);
+    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// The transcript files (`<sid>.jsonl`) in a folder's project dir(s).
+pub fn transcript_files_in(env: &Env, cwd: &str) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = vec![];
     for name in project_dirs(cwd) {
         let proj = env.claude_home.join("projects").join(name);
         out.extend(
             fs::read_dir(&proj)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .map(|e| e.path())
-                        .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-                        .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
-                        .collect::<Vec<_>>()
-                })
+                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false)).collect::<Vec<_>>())
                 .unwrap_or_default(),
         );
     }
-    out.dedup_by(|a, b| a.1 == b.1);
-    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
@@ -670,8 +703,10 @@ pub fn read_tasks(env: &Env, cache: &mut FileCache, team: &str) -> Vec<Task> {
 
 /// Whether Claude Code trusts `dir` (it or a parent has `hasTrustDialogAccepted`),
 /// from `<claude_home>/.claude.json` (the `CLAUDE_CONFIG_DIR` layout) and, when
-/// the Claude home is `~/.claude`, from `~/.claude.json`. The trusted roots are
-/// cached by mtime (the real file is megabytes).
+/// the Claude home is `~/.claude`, from `~/.claude.json`. Inside a git
+/// repository Claude Code keys the trust on the repository (its root or
+/// below), so a parent above the root does not count (M16). The trusted roots
+/// are cached by mtime (the real file is megabytes).
 pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
     let mut files = vec![env.claude_home.join(".claude.json")];
     if env.claude_home.file_name().map(|n| n == ".claude").unwrap_or(false) {
@@ -679,10 +714,9 @@ pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
             files.push(parent.join(".claude.json"));
         }
     }
-    // Claude Code records real paths (/private/tmp for /tmp): try both forms
-    let want = Path::new(dir.trim_end_matches('/'));
-    let real = crate::env::canon(want);
-    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root) || real.starts_with(root)))
+    // Claude Code records real paths (/private/tmp for /tmp): the keys come in both forms
+    let keys = crate::env::trust_keys(Path::new(dir.trim_end_matches('/')));
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| keys.contains(root)))
 }
 
 fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {

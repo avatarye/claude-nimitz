@@ -42,6 +42,7 @@ impl Row {
             job_labels: Default::default(),
             unreadable: false,
             forked_from: None,
+            bridge_session_id: None,
         }
     }
 }

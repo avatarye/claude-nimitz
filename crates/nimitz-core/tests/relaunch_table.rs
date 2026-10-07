@@ -553,12 +553,45 @@ fn row13_a_session_file_with_extra_bytes_is_read_not_flagged() {
 fn issue_config_invalid_and_config_layout() {
     let w = world();
     sandbox::break_a_config(&w.base, "BAD");
+    // the broken fleet's commodore is live, known by its labels only
+    let sq = Id::commodore("BAD", "SQ");
+    let sq_dir = w.env.fleet_dir("BAD").join("squadrons/sq");
+    std::fs::create_dir_all(&sq_dir).unwrap();
+    let sid = sandbox::live_session(&w.base, &sq, sq_dir.to_str().unwrap(), false);
     let snap = w.snap();
-    assert!(has(&snap.issues, "config.invalid"), "the BAD fleet does not parse: {:?}", codes(&snap.issues));
-    // a config error with no identity blocks every start, by design (check.rs)
-    assert!(!w.start(&snap, &w.ship("FRESH"), false).ok());
+    // M8: the broken fleet still shows, with the parse error on it and on its members
+    let bad = snap.fleets.iter().find(|f| f.id.fleet() == "BAD").expect("the BAD fleet shows");
+    let file = w.env.fleet_dir("BAD").join("fleet.toml").display().to_string();
+    let err = bad.issues.iter().find(|i| i.code == "config.invalid").expect("the fleet carries its parse error");
+    assert!(err.message.contains(&format!("{file}:1:")), "file, line and parse error: {}", err.message);
+    assert_eq!(err.fix.as_deref(), Some(format!("fix {file} line 1, then nimitz check BAD").as_str()));
+    assert_eq!(err.id, Some(Id::admiral("BAD")));
+    assert!(bad.admiral.reasons[0].starts_with("config unreadable:"), "{:?}", bad.admiral.reasons);
+    let m = w.member(&snap, &sq);
+    assert_eq!(m.status, Status::Idle, "{:?}", m.reasons);
+    assert_eq!(m.session.as_ref().map(|s| s.session_id.as_str()), Some(sid.as_str()));
+    assert_eq!(m.cwd.as_deref(), sq_dir.to_str(), "a commodore known only by its labels still has its squadron folder");
+    // `check BAD` also runs the NIMITZ_HOME layout rule
+    std::fs::write(w.env.home.join("CLAUDE.md"), "x").unwrap();
+    assert!(has(&nimitz_core::check::check_tree(&w.env, &snap, Some(&Id::admiral("BAD"))), "config.layout"));
+    std::fs::remove_file(w.env.home.join("CLAUDE.md")).unwrap();
+    assert!(!snap.issues.iter().any(|i| i.code == "config.invalid"), "the fleet carries the error; not the snapshot too: {:?}", codes(&snap.issues));
+    // the other fleets are not blocked: FRESH starts, and its check is clean of it
+    assert!(w.start(&snap, &w.ship("FRESH"), false).ok());
+    assert!(!has(&nimitz_core::check::check(&w.env, &snap, Some(&w.ship("FRESH"))), "config.invalid"));
+    // `check BAD` (and anything under it) names the error; a start there refuses with it
+    for target in [Id::admiral("BAD"), sq.clone()] {
+        let issues = nimitz_core::check::check_tree(&w.env, &snap, Some(&target));
+        let found: Vec<&Issue> = issues.iter().filter(|i| i.code == "config.invalid").collect();
+        assert_eq!(found.len(), 1, "once, for {target}: {issues:?}");
+        assert_eq!(found[0], err);
+        let plan = w.start(&snap, &target, false);
+        assert!(!plan.ok() && plan.refusals.contains(err), "{target}: {:?}", plan.refusals);
+    }
     let all = nimitz_core::check::check(&w.env, &snap, None);
     assert!(has(&all, "config.layout"), "{:?}", codes(&all));
+    let parse: Vec<&Issue> = all.iter().filter(|i| i.message.contains("does not parse")).collect();
+    assert_eq!(parse.len(), 1, "{parse:#?}");
     // a start inside the LAYOUT fleet refuses while the CLAUDE.md is there
     let plan = w.start(&snap, &Id::admiral("LAYOUT"), false);
     assert!(has(&plan.refusals, "config.layout"), "{:?}", codes(&plan.refusals));
