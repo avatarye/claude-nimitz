@@ -325,7 +325,7 @@ pub fn registry_issues(env: &Env, cache: &mut crate::evidence::FileCache, m: &Me
     // wake, and not a later one of the lineage (a lost hook line, a hand
     // edit): the row wins, and a relaunch brings the two together
     if let Some(p) = m.session.as_ref().filter(|p| p.pid.is_none() && p.short_id.is_some()) {
-        if let Some(stale) = wake_target(env, &m.id, p).stale {
+        if let Some(stale) = wake_target_in(reg.identities.get(&m.id.0), p).stale {
             out.push(issue(
                 "lineage.stale",
                 Severity::Warn,
@@ -826,12 +826,17 @@ pub struct WakeTarget {
 /// `WakeTarget` of `id`'s row `p` (every wake path uses it: `wake_steps`,
 /// `plan_relaunch`, restore's attach-wake).
 pub fn wake_target(env: &Env, id: &Id, p: &SessionInfo) -> WakeTarget {
-    let row_now = p.session_id.clone();
     let rec = crate::registry::load(env).identities.remove(&id.0);
-    let Some(reg) = rec.as_ref().and_then(|r| r.session.clone()).filter(|s| *s != row_now) else {
+    wake_target_in(rec.as_ref(), p)
+}
+
+/// `wake_target` on a registry record already loaded (the snapshot's).
+pub fn wake_target_in(rec: Option<&IdentityRecord>, p: &SessionInfo) -> WakeTarget {
+    let row_now = p.session_id.clone();
+    let Some(reg) = rec.and_then(|r| r.session.clone()).filter(|s| *s != row_now) else {
         return WakeTarget { session: row_now, relabel: false, stale: None };
     };
-    let pos = |sid: &str| rec.as_ref().and_then(|r| r.lineage.iter().rposition(|l| l.session_id == sid));
+    let pos = |sid: &str| rec.and_then(|r| r.lineage.iter().rposition(|l| l.session_id == sid));
     match (pos(&reg), pos(&row_now)) {
         (Some(a), Some(b)) if a > b => WakeTarget { session: reg, relabel: true, stale: None },
         _ => WakeTarget { session: row_now, relabel: false, stale: Some(reg) },
