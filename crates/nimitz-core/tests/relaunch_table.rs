@@ -1819,3 +1819,62 @@ fn wake_steps_wakes_by_exact_id_and_refuses_a_live_job() {
     let adm = w.member(&snap, &Id::admiral("MAIN"));
     assert_eq!(sessions::wake_steps(&w.env, &adm, "", adm.cwd.as_deref().unwrap()).unwrap_err().code, "session.live");
 }
+
+// ------------------------------------------------------------------ pins (plan-v4 section 7, M24)
+
+/// AV-1 / M24: a lead's job is pinned after it starts, so the daemon never
+/// idle-retires it; a relaunch (rm, then resume) unpins and pins again; a pin
+/// nimitz did not make is never touched; ships are not pinned.
+#[test]
+fn m24_a_leads_job_is_pinned_after_a_start_and_unpinned_when_its_row_goes() {
+    let w = world();
+    let pins = |w: &World| nimitz_core::evidence::pins(&w.env);
+    assert!(pins(&w).is_empty());
+    // a stopped lead woken by id: pinned, and remembered as nimitz's own
+    let adm = Id::admiral("MAIN");
+    let out = sessions::apply(&w.env, &sessions::plan_stop(&w.env, &w.snap(), &adm, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    let plan = w.start(&w.snap(), &adm, false);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let job = w.member(&w.snap(), &adm).session.unwrap().short_id.unwrap();
+    assert_eq!(pins(&w), [job.clone()]);
+    assert_eq!(nimitz_core::pins::own(&w.env), [job.clone()]);
+    assert!(out.ran[0].2.ends_with("; pinned"), "{}", out.ran[0].2);
+    assert!(w.member(&w.snap(), &adm).session.unwrap().pinned);
+    // a cold-launched lead too
+    let beta = Id::admiral("BETA");
+    let out = sessions::apply(&w.env, &w.start(&w.snap(), &beta, false));
+    assert!(out.verified, "{:?}", out.issues);
+    let beta_job = w.member(&w.snap(), &beta).session.unwrap().short_id.unwrap();
+    assert_eq!(pins(&w), [job.clone(), beta_job.clone()]);
+    // a ship is not pinned
+    let out = sessions::apply(&w.env, &w.start(&w.snap(), &w.ship("STOPPED"), false));
+    assert!(out.verified, "{:?}", out.issues);
+    assert_eq!(pins(&w).len(), 2);
+    // someone else's pin (the agent view's Ctrl+T) stays through a sweep of that row
+    let copies = w.ship("COPIES");
+    let extra = w.member(&w.snap(), &copies).extra_rows[0].short_id.clone().unwrap();
+    assert_eq!(w.fake(&["__pin", &extra]).0, 0);
+    let out = sessions::apply(&w.env, &sessions::plan_sweep(&w.env, &w.snap(), Some(&copies), &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(&extra)), "the row went");
+    assert!(pins(&w).contains(&extra), "the user's pin stays: it is not nimitz's");
+    // a relaunch of the lead: the rm drops the pin, the resume with flags keeps
+    // the job id and pins it again, once
+    let out = sessions::apply(&w.env, &sessions::plan_relaunch(&w.env, &w.snap(), &adm, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(out.ran.iter().any(|(_, _, t)| t.ends_with("; unpinned")) && out.ran.last().unwrap().2.ends_with("; pinned"), "{:?}", out.ran);
+    let job2 = w.member(&w.snap(), &adm).session.unwrap().short_id.unwrap();
+    assert_eq!(job2, job, "Claude Code keeps the id");
+    let p = pins(&w);
+    assert_eq!(p.iter().filter(|x| **x == job).count(), 1, "{p:?}");
+    assert_eq!(p.len(), 3, "{p:?}");
+    // retire the lead's row for good: fleet rm needs nothing live, so stop it, then rm its row
+    let out = sessions::apply(&w.env, &sessions::plan_stop(&w.env, &w.snap(), &beta, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    let out = sessions::apply(&w.env, &sessions::plan_retire(&w.env, &w.snap(), &Caller::User, &beta));
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(!pins(&w).contains(&beta_job), "retired: unpinned ({:?})", pins(&w));
+    assert!(!nimitz_core::pins::own(&w.env).contains(&beta_job));
+}

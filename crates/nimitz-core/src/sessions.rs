@@ -1817,6 +1817,17 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                                 return out;
                             }
                         }
+                        // a lead stays up: pin its job (plan-v4 section 7); a
+                        // pin that cannot be written is a warning, not a failed start
+                        if id.role().lead() {
+                            if let Some(job) = &job {
+                                match crate::pins::pin(env, job) {
+                                    Ok(true) => note(&mut out, "; pinned"),
+                                    Ok(false) => {}
+                                    Err(e) => out.issues.push(issue("pin.failed", Severity::Warn, format!("{id}'s job {job} could not be pinned ({e}); the daemon may retire it when idle"), Some(format!("nimitz relaunch {id}  # pins it again")), Some(id.clone()))),
+                                }
+                            }
+                        }
                         started.push((id.clone(), sid, step.cwd.clone()))
                     }
                     Err(mut issues) => {
@@ -1843,6 +1854,10 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 if find_row(env, &short).is_some() {
                     out.issues.push(issue("step.failed", Severity::Error, format!("rm {short} ran but the row is still there; nothing after it ran"), None, step.id.clone()));
                     return out; // a resume with flags would now make an empty copy
+                }
+                // the row is gone: so is nimitz's pin of it (M24); other pins stay
+                if crate::pins::unpin(env, &short).unwrap_or(false) {
+                    note(&mut out, "; unpinned");
                 }
             }
             Kind::Bind | Kind::Other | Kind::Config => unreachable!(),
@@ -1874,6 +1889,13 @@ fn wait_crash_window(env: &Env, sid: &str) -> Option<String> {
             return None;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Add to the text of the step that ran last (one line per step).
+fn note(out: &mut Outcome, text: &str) {
+    if let Some(last) = out.ran.last_mut() {
+        last.2.push_str(text);
     }
 }
 
