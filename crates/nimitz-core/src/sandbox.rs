@@ -439,8 +439,8 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let fleet_toml = e.fleet_dir("MAIN").join("fleet.toml");
     let raw = fs::read_to_string(&fleet_toml).map_err(|e| e.to_string())?;
     fs::write(&fleet_toml, raw.replace(&format!("hostname = \"{}\"", e.hostname), &format!("hostname = \"{HOST}\""))).map_err(|e| e.to_string())?;
-    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "ARGOS", "Everything the relaunch table needs.", Comms::default()))?;
-    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "BOREAL", "A squadron whose commodore runs as a background job.", Comms::Mode("commodore-only".into())))?;
+    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "ARGOS", "Everything the relaunch table needs.", Comms::default(), None))?;
+    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "BOREAL", "A squadron whose commodore runs as a background job.", Comms::Mode("commodore-only".into()), None))?;
 
     let mut dirs: HashMap<&str, String> = HashMap::new();
     for (ship, _) in SHIPS {

@@ -379,7 +379,7 @@ impl Form {
                     errs.insert("comms", e);
                     Comms::default()
                 });
-                nimitz_core::config::plan_squadron_new(env, self.get("fleet"), self.get("squadron").trim(), self.get("brief").trim(), comms)
+                nimitz_core::config::plan_squadron_new(env, self.get("fleet"), self.get("squadron").trim(), self.get("brief").trim(), comms, None)
             }
             FormKind::NewShip | FormKind::EditShip(_) => {
                 if let Some(e) = name_err(self.get("ship"), "ship") {

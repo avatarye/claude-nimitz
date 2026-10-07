@@ -601,13 +601,21 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
     plan
 }
 
-pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: Comms) -> Plan {
+pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: Comms, mode: Option<&str>) -> Plan {
     let mut plan = Plan { summary: format!("create squadron {fleet}/{sq}"), ..Default::default() };
     let id = Id::commodore(fleet, sq);
     if !valid_name(sq) {
         refuse(&mut plan, "config.invalid", format!("squadron name {sq:?} is not [A-Z0-9_]+"), None, Some(id.clone()));
         return plan;
     }
+    // the squadron's default permission mode for its ships (`--mode`)
+    let permission_mode = match mode {
+        None => None,
+        Some(m) => match mode_change(&mut plan, Some(m), &id) {
+            Some(v) => v,
+            None => return plan,
+        },
+    };
     let f = match load_fleet_for_write(env, fleet) {
         Ok(f) => f,
         Err(i) => {
@@ -624,7 +632,7 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: C
         squadron: sq.into(),
         brief: Some("SQUADRON.md".into()),
         comms,
-        permission_mode: None,
+        permission_mode,
         ships: vec![],
     };
     plan.steps = vec![
@@ -1269,7 +1277,7 @@ pub(crate) mod tests {
     /// MAIN fleet with squadron ARGOS and ship ARGOS (managed folder here).
     pub fn make_fleet(env: &Env) {
         apply_ok(env, &plan_fleet_new(env, "MAIN", "test-mac"));
-        apply_ok(env, &plan_squadron_new(env, "MAIN", "ARGOS", "Build the asset generator.", Comms::default()));
+        apply_ok(env, &plan_squadron_new(env, "MAIN", "ARGOS", "Build the asset generator.", Comms::default(), None));
         let ship = ShipDef {
             name: "ARGOS".into(),
             prompt: Some("You are ARGOS.".into()),
@@ -1420,7 +1428,7 @@ pub(crate) mod tests {
     fn a_broken_squadron_does_not_hide_the_fleet() {
         let (_td, env) = test_env();
         make_fleet(&env);
-        apply_ok(&env, &plan_squadron_new(&env, "MAIN", "BOREAL", "", Comms::default()));
+        apply_ok(&env, &plan_squadron_new(&env, "MAIN", "BOREAL", "", Comms::default(), None));
         let bad = env.fleet_dir("MAIN").join("squadrons/argos/squadron.toml");
         std::fs::write(&bad, std::fs::read_to_string(&bad).unwrap() + "\nname = \"oops\n").unwrap();
         let (fleets, issues) = load_all(&env);
@@ -1435,7 +1443,7 @@ pub(crate) mod tests {
         assert_eq!(un.len(), 1);
         assert_eq!(un[0].0, Id::commodore("MAIN", "ARGOS"));
         // writes refuse while a squadron file is broken (a rewrite could lose it)
-        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default()).ok());
+        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default(), None).ok());
         assert!(!plan_machine_add_on(&env, "MAIN", "other", Some("other-host"), vec![]).ok());
         assert!(load_fleet(&env, "MAIN").is_ok());
     }
@@ -1625,8 +1633,8 @@ pub(crate) mod tests {
         make_fleet(&env);
         assert!(!plan_fleet_new(&env, "MAIN", "test-mac").ok()); // exists
         assert!(!plan_fleet_new(&env, "bad name", "test-mac").ok());
-        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default()).ok()); // exists
-        assert!(!plan_squadron_new(&env, "NOPE", "X", "", Comms::default()).ok()); // no fleet
+        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default(), None).ok()); // exists
+        assert!(!plan_squadron_new(&env, "NOPE", "X", "", Comms::default(), None).ok()); // no fleet
         let dup = ShipDef { name: "ARGOS".into(), prompt: Some("p".into()), ..Default::default() };
         assert!(!plan_ship_new(&env, "MAIN", "ARGOS", dup).ok());
         let nested = ShipDef {

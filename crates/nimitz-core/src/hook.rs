@@ -452,7 +452,7 @@ mod tests {
     fn world() -> (tempfile::TempDir, Env) {
         let (td, env) = test_env();
         make_fleet(&env);
-        let plan = crate::config::plan_squadron_new(&env, "MAIN", "BOREAL", "Quiet squadron.", Comms::Mode("commodore-only".into()));
+        let plan = crate::config::plan_squadron_new(&env, "MAIN", "BOREAL", "Quiet squadron.", Comms::Mode("commodore-only".into()), None);
         crate::config::tests::apply_ok(&env, &plan);
         for name in ["ONE", "TWO"] {
             let ship = ShipDef {

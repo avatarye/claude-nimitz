@@ -103,9 +103,9 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
     let (fleet, sq) = (parts[0], parts[1]);
     let plan = match verb {
         "new" => {
-            ctx.args.allow(&["--brief", "--comms"])?;
+            ctx.args.allow(&["--brief", "--comms", "--mode"])?;
             let comms = ctx.args.value("--comms").map(parse_comms).transpose()?.unwrap_or_default();
-            config::plan_squadron_new(&ctx.env, fleet, sq, ctx.args.value("--brief").unwrap_or(""), comms)
+            config::plan_squadron_new(&ctx.env, fleet, sq, ctx.args.value("--brief").unwrap_or(""), comms, ctx.args.value("--mode"))
         }
         "set" => {
             ctx.args.allow(&["--brief", "--comms", "--mode"])?;

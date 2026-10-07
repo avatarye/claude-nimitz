@@ -1345,6 +1345,39 @@ fn a_wake_by_a_non_birth_id_is_a_copy_and_sweep_keeps_the_own_row() {
     assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"], now.as_str());
 }
 
+/// `squadron new --mode M` sets the squadron's default permission mode for
+/// its ships (contracts.md section 3), as USAGE says; a bad mode is refused
+/// (acceptance F2).
+#[test]
+fn squadron_new_takes_a_mode() {
+    let sb = Sb::new(false);
+    let r = sb.run(&["squadron", "new", "MAIN/MODED", "--brief", "x", "--mode", "default", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let toml = std::fs::read_to_string(sb.base.join("nimitz/main/squadrons/moded/squadron.toml")).unwrap();
+    assert!(toml.contains("permission_mode = \"default\""), "{toml}");
+    let r = sb.run(&["squadron", "new", "MAIN/MODED2", "--brief", "x", "--mode", "bogus", "--plan"]);
+    assert_ne!(r.code, 0);
+    assert!(r.out.contains("config.invalid") && r.out.contains("bogus"), "{}", r.out);
+}
+
+/// `start` of a live member and `up` with every member live say why the plan
+/// is empty, with --plan and with --yes (acceptance F3, M25).
+#[test]
+fn empty_plans_say_why() {
+    let sb = Sb::new(false);
+    for flag in ["--plan", "--yes"] {
+        let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", flag]);
+        assert_eq!(r.code, 0, "{}", r.out);
+        assert!(r.out.contains("nothing to do: MAIN/ARGOS/CLEAN is live"), "{flag}: {}", r.out);
+    }
+    assert_eq!(sb.run(&["up", "BETA", "--yes"]).code, 0);
+    for flag in ["--plan", "--yes"] {
+        let r = sb.run(&["up", "BETA", flag]);
+        assert_eq!(r.code, 0, "{}", r.out);
+        assert!(r.out.contains("nothing to do: every member of BETA on this machine (1) is live"), "{flag}: {}", r.out);
+    }
+}
+
 /// A job killed in its first turn has no transcript on disk yet. A start right
 /// after is the daemon's crash window (apply waits for its restart), never
 /// `history.lost` with a `--fresh` fix that would make a duplicate (e2e case 6).

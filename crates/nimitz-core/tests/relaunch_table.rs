@@ -675,7 +675,7 @@ fn every_start_step_is_a_background_launch_leads_too() {
     let fresh = w.start(&snap, &w.ship("FRESH"), false);
     assert!(fresh.steps[0].cmd.contains(&"--bg".to_string()));
     // a lead with no history at all: a cold launch with the lead prompt
-    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default());
+    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default(), None);
     assert!(nimitz_core::config::apply_config_plan(&w.env, &plan).verified);
     let id = Id::commodore("MAIN", "NEWSQ");
     let plan = w.start(&w.snap(), &id, false);
@@ -1192,7 +1192,7 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
 #[test]
 fn a_commodore_whose_old_lead_ran_elsewhere_says_why_it_starts_fresh() {
     let w = world();
-    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default());
+    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default(), None);
     assert!(nimitz_core::config::apply_config_plan(&w.env, &plan).verified);
     std::fs::write(w.env.fleet_dir("MAIN").join("legacy.toml"), "[names]\n\"[NEWSQ]-LEAD\" = \"MAIN/NEWSQ\"\n").unwrap();
     let id = Id::commodore("MAIN", "NEWSQ");
