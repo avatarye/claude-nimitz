@@ -1485,7 +1485,8 @@ fn a_draft_spare_in_a_lead_folder_is_not_an_intruder() {
     // pre-warmed an hour ago (startedAt), claimed now (the file's mtime)
     let old = (nimitz_core::evidence::now() - 3600.0) * 1000.0;
     let f = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions/424242.json");
-    std::fs::write(&f, serde_json::json!({"pid": 1, "sessionId": "spare-draft-0000", "cwd": dir, "kind": "interactive", "entrypoint": "cli", "spare": true, "name": "spare-draft-0000", "status": "idle", "startedAt": old}).to_string()).unwrap();
+    // the shape cli-L3b saw: the view claims a pre-warmed `bg-spare` job (a `jobId`, its own id as the name)
+    std::fs::write(&f, serde_json::json!({"pid": 1, "sessionId": "spare-draft-0000", "jobId": "spare-dr", "cwd": dir, "kind": "bg", "entrypoint": "cli", "spare": true, "name": "spare-dr", "status": "idle", "startedAt": old}).to_string()).unwrap();
     // the real draft fires a SessionStart `startup` the moment the view claims it (byhand 2c-live)
     let ev = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("events.jsonl");
     let line = serde_json::json!({"ts": nimitz_core::evidence::now(), "event": "SessionStart", "session_id": "spare-draft-0000", "source": "startup", "reason": null, "pid": 1, "labels": {}, "rules": null, "job": null, "kind": "interactive", "entrypoint": "cli", "binding": null, "cwd": dir});

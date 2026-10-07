@@ -105,7 +105,9 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         // its age is its last touch, and a long-lived one is touched again and
         // again): hidden only while it has no conversation. A dispatched job
         // that was a pre-warmed spare keeps `spare` and is never hidden.
-        let mut picker = || r.live() && r.short_id.is_none() && (r.spare || !started.contains(r.session_id.as_str())) && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none();
+        // (a spare may carry a `jobId`: the view claims a pre-warmed
+        // `bg-spare` job, cli-L3b; a dispatched one grows a transcript)
+        let mut picker = || r.live() && (r.spare || (r.short_id.is_none() && !started.contains(r.session_id.as_str()))) && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none();
         if young && picker() {
             transient.push(r.session_id.clone());
             return false;

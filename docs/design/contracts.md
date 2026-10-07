@@ -286,7 +286,10 @@ view's draft or "new session", `spare: true`, is one until it has a
 conversation; in a lead's folder too: no `lead.intruder` for a draft, inside
 FAIL-2); after the grace time, or once it has a conversation, it is classified
 like any other row (the agent view's draft fires a SessionStart `startup`
-the moment it is claimed, so a spare is a picker whether or not it has one).
+the moment it is claimed, so a spare is a picker whether or not it has one;
+and it may carry a `jobId`, the pre-warmed `bg-spare` job the view claimed,
+cli-L3b: a spare is a picker with or without a job, until it has a
+conversation).
 A member's row is the registry's `job`, for a lead too: a hand rm + resume
 binds the new job beside an older labelled stray, and the registry job stays
 the lead (the stray is its `lead.intruder`; neither a relaunch's `dup.live`
