@@ -114,9 +114,16 @@ pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
     m
 }
 
-/// `--settings` JSON: the labels as env, plus `worktree.bgIsolation none` for background sessions.
+/// The permission rule every member gets: it may run `nimitz` (the authority
+/// table in `sessions::may_run` decides what each role may do with it).
+pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
+
+/// `--settings` JSON: the labels as env, `permissions.allow` for `nimitz`,
+/// plus `worktree.bgIsolation none` for background sessions. It is per
+/// launch and lives in the job's `respawnFlags`, so a restart keeps it and a
+/// relaunch (every flag again) re-adds it.
 pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
-    let mut v = serde_json::json!({ "env": labels_for(env, id) });
+    let mut v = serde_json::json!({ "env": labels_for(env, id), "permissions": { "allow": [NIMITZ_ALLOW] } });
     if background {
         v["worktree"] = serde_json::json!({ "bgIsolation": "none" });
     }
@@ -196,12 +203,17 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&c[7]).unwrap();
         assert_eq!(v["env"]["NIMITZ_ID"], "F/SQ/S");
         assert_eq!(v["worktree"]["bgIsolation"], "none");
+        assert_eq!(v["permissions"]["allow"], serde_json::json!([NIMITZ_ALLOW]), "every member may run nimitz");
         assert_eq!(c.last().unwrap(), "go");
         // resume: native binary, no flags at all
         assert_eq!(resume_bg(&env, "sid"), vec!["/n/claude", "--bg", "--resume", "sid"]);
-        // interactive sessions have no worktree key
+        // a relaunch passes every flag again, the permission rule with them
+        let r = relaunch_bg(&env, &id, "", "sid");
+        assert_eq!(&r[..4], &["claude", "--bg", "--resume", "sid"]);
+        assert!(r.last().unwrap().contains("\"Bash(nimitz *)\""), "{r:?}");
+        // interactive sessions have no worktree key, but the permission rule too
         let i = interactive(&env, &Id::commodore("F", "SQ"), "", true);
         assert_eq!(&i[..4], &["claude", "-c", "--name", "[F.SQ]-COMMODORE"]);
-        assert!(!i[5].contains("worktree"));
+        assert!(!i[5].contains("worktree") && i[5].contains("\"Bash(nimitz *)\""), "{}", i[5]);
     }
 }

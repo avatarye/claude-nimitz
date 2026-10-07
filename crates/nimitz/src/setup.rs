@@ -5,7 +5,7 @@ use nimitz_core::{Plan, Step};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// The events the plugin registers (plugin/hooks/hooks.json).
+/// The events the binary needs the plugin to register (plugin/hooks/hooks.json).
 pub const HOOK_EVENTS: [&str; 9] = [
     "SessionStart",
     "SessionEnd",
@@ -17,6 +17,69 @@ pub const HOOK_EVENTS: [&str; 9] = [
     "PreToolUse",
     "PermissionRequest",
 ];
+
+/// The PreToolUse matchers the binary needs: the signal rule and the
+/// needs-you notice. A per-turn rules update on PreToolUse
+/// (`hook::UPDATE_EVENTS`) needs an entry with no matcher as well.
+const PRE_TOOL_MATCHERS: [&str; 2] = ["SendMessage", "AskUserQuestion"];
+
+/// Every (event, matcher) the plugin must register; `None` is "any entry".
+fn needed_hooks() -> Vec<(&'static str, Option<&'static str>)> {
+    let mut v: Vec<(&str, Option<&str>)> = HOOK_EVENTS.iter().map(|e| (*e, None)).collect();
+    v.extend(PRE_TOOL_MATCHERS.iter().map(|m| ("PreToolUse", Some(*m))));
+    if nimitz_core::hook::UPDATE_EVENTS.contains(&"PreToolUse") {
+        v.push(("PreToolUse", Some("")));
+    }
+    v
+}
+
+/// The (event, matcher) pairs a hooks.json (the plugin's, or a settings
+/// file's `hooks`) registers with a `nimitz hook <Event>` command. A missing
+/// matcher reads as "" (every tool).
+fn registered_hooks(hooks: &Value) -> Vec<(String, String)> {
+    let mut out = vec![];
+    let Some(events) = hooks.as_object() else { return out };
+    for (event, entries) in events {
+        for entry in entries.as_array().into_iter().flatten() {
+            let calls_nimitz = entry["hooks"].as_array().into_iter().flatten().any(|h| {
+                let cmd = h["command"].as_str().unwrap_or("");
+                let args: Vec<&str> = h["args"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                cmd.contains("nimitz") && (args.contains(&"hook") || cmd.contains(" hook "))
+            });
+            if calls_nimitz {
+                out.push((event.clone(), entry["matcher"].as_str().unwrap_or("").to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// What `needed_hooks` lacks in `registered`, named for the user.
+fn missing_hooks(registered: &[(String, String)]) -> Vec<String> {
+    needed_hooks()
+        .into_iter()
+        .filter(|(e, m)| !registered.iter().any(|(re, rm)| re == e && m.map(|m| m == rm || rm.is_empty() || rm == "*").unwrap_or(true)))
+        .map(|(e, m)| match m {
+            Some("") => format!("{e} (every tool)"),
+            Some(m) => format!("{e} (matcher {m})"),
+            None => e.to_string(),
+        })
+        .collect()
+}
+
+/// The installed nimitz plugin's hooks.json: `NIMITZ_PLUGIN_HOOKS` (tests),
+/// else the `installPath` of the `nimitz@...` entry in Claude Code's
+/// `plugins/installed_plugins.json`.
+fn plugin_hooks_path(ctx: &Ctx) -> Option<PathBuf> {
+    if let Some(p) = ctx.vars.get("NIMITZ_PLUGIN_HOOKS").filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    let installed = read_json(&ctx.env.claude_home.join("plugins/installed_plugins.json"))?;
+    let plugins = installed.get("plugins")?.as_object()?;
+    let (_, entries) = plugins.iter().find(|(k, _)| k.starts_with("nimitz@"))?;
+    let path = entries.as_array()?.iter().find_map(|e| e["installPath"].as_str())?;
+    Some(PathBuf::from(path).join("hooks/hooks.json"))
+}
 
 /// Fields nimitz reads in Claude Code's files (the pinned formats).
 const SESSION_FIELDS: [&str; 4] = ["pid", "sessionId", "status", "kind"];
@@ -141,7 +204,7 @@ pub fn rules(ctx: &Ctx) -> Result<i32, String> {
     let id = match (ctx.args.pos.first(), &ctx.caller) {
         (Some(x), _) => crate::members::parse_id(x)?,
         (None, nimitz_core::Caller::Member { id, .. }) => id.clone(),
-        (None, nimitz_core::Caller::User) => return Err("missing id (F, F/SQ, F/SQ/SHIP or F/SQ/~task)".into()),
+        (None, nimitz_core::Caller::User) => return Err("missing id (F, F/SQ or F/SQ/SHIP)".into()),
     };
     print!("{}", nimitz_core::rules::text(&id));
     Ok(0)
@@ -222,10 +285,28 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         .and_then(Value::as_object)
         .map(|m| m.iter().any(|(k, v)| k.starts_with("nimitz@") && v.as_bool() == Some(true)))
         .unwrap_or(false);
-    let hooks = settings.get("hooks").map(Value::to_string).unwrap_or_default();
-    let missing: Vec<&str> = HOOK_EVENTS.iter().copied().filter(|e| !(hooks.contains(&format!("\"{e}\"")) && hooks.contains("nimitz"))).collect();
+    let in_settings = settings.get("hooks").map(registered_hooks).unwrap_or_default();
+    let missing = missing_hooks(&in_settings);
     if plugin_on {
-        r.ok("hooks: the nimitz plugin is enabled");
+        // The installed copy of the plugin must register every event the
+        // binary needs; a plugin updated on disk is read again by /reload-plugins.
+        match plugin_hooks_path(ctx) {
+            Some(p) => match read_json(&p) {
+                Some(v) => {
+                    let lacks = missing_hooks(&registered_hooks(v.get("hooks").unwrap_or(&Value::Null)));
+                    if lacks.is_empty() {
+                        r.ok(&format!("hooks: the nimitz plugin is enabled and {} registers every event nimitz needs", p.display()));
+                    } else {
+                        r.err(
+                            &format!("hooks: the installed nimitz plugin ({}) does not register {}", p.display(), lacks.join(", ")),
+                            Some("/reload-plugins in each live session (a new session reads the plugin again), then nimitz doctor"),
+                        );
+                    }
+                }
+                None => r.err(&format!("hooks: the nimitz plugin is enabled but {} is missing or not JSON", p.display()), Some(&plugin_install_fix())),
+            },
+            None => r.warn("hooks: the nimitz plugin is enabled; its installed copy is not listed in plugins/installed_plugins.json, so its hooks were not checked", Some(&plugin_install_fix())),
+        }
     } else if missing.is_empty() {
         r.ok("hooks: nimitz hook commands are in the user settings");
     } else {
@@ -406,5 +487,29 @@ mod tests {
         let fix = plugin_install_fix();
         assert!(fix.starts_with("claude plugin marketplace add ") && fix.ends_with("claude plugin install nimitz@claude-nimitz"), "{fix}");
         assert!(!fix.contains('<'), "no placeholder: {fix}");
+    }
+
+    /// The plugin in this repo registers every event the binary needs; a
+    /// copy that lacks one (an older install) is named, matcher and all.
+    #[test]
+    fn the_repo_plugin_registers_every_needed_hook() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/hooks/hooks.json");
+        let v = read_json(&p).expect("plugin/hooks/hooks.json");
+        let reg = registered_hooks(&v["hooks"]);
+        assert!(missing_hooks(&reg).is_empty(), "{:?}", missing_hooks(&reg));
+        assert!(reg.contains(&("PreToolUse".to_string(), "SendMessage".to_string())), "{reg:?}");
+        // drop UserPromptSubmit and the AskUserQuestion matcher: both named
+        let mut old = v["hooks"].clone();
+        old.as_object_mut().unwrap().remove("UserPromptSubmit");
+        old["PreToolUse"].as_array_mut().unwrap().retain(|e| e["matcher"] != "AskUserQuestion");
+        let lacks = missing_hooks(&registered_hooks(&old));
+        assert_eq!(lacks, vec!["UserPromptSubmit".to_string(), "PreToolUse (matcher AskUserQuestion)".to_string()]);
+        // an entry with no matcher covers every tool; a command that is not nimitz counts for nothing
+        let any = serde_json::json!({"PreToolUse": [{"hooks": [{"type": "command", "command": "nimitz", "args": ["hook", "PreToolUse"]}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "other-tool", "args": ["hook", "Stop"]}]}]});
+        let reg = registered_hooks(&any);
+        assert_eq!(reg, vec![("PreToolUse".to_string(), String::new())]);
+        let lacks = missing_hooks(&reg);
+        assert!(lacks.contains(&"Stop".to_string()) && !lacks.iter().any(|l| l.starts_with("PreToolUse")), "{lacks:?}");
     }
 }

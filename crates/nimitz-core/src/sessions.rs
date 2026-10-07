@@ -305,10 +305,19 @@ pub fn may_config(caller: &Caller, scope: &Id) -> Result<(), String> {
 }
 
 /// May `caller` run this fix itself (`nimitz <verb> ...`)? Read-only commands
-/// always; the rest by the authority table for the id the command names. A
-/// command that names a session by its short id, or that only you run (init,
-/// fleet new / rm, machine, migrate, doctor), is not a member's.
+/// (`status`, `check`, `rules`, `doctor` without `--fix`) always; `signal` by
+/// the chain of command (`hook::may_signal`; with no `env` a ship may signal
+/// only its commodore and its admiral); a ship's `sweep` of itself; the rest
+/// by the authority table for the id the command names. A command that names
+/// a session by its short id, or that only you run (init, fleet new / rm,
+/// machine, migrate, doctor --fix), is not a member's.
 pub fn may_run(caller: &Caller, fix: &str) -> bool {
+    may_run_in(None, caller, fix)
+}
+
+/// `may_run` with the config at hand (a ship's `signal` to another ship goes
+/// by the squadron's comms rule).
+pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
     let Caller::Member { id: me, role } = caller else { return true };
     let w: Vec<&str> = fix.split_whitespace().take_while(|x| *x != "#").collect();
     if w.first() != Some(&"nimitz") {
@@ -323,11 +332,19 @@ pub fn may_run(caller: &Caller, fix: &str) -> bool {
     let in_fleet = |t: &Id| *role == Role::Admiral && t.fleet() == me.fleet();
     let in_squadron = |t: &Id| *role == Role::Commodore && (t == me || t.parent().as_ref() == Some(me));
     match w.get(1).copied() {
-        Some("status") | Some("check") => true,
+        Some("status") | Some("check") | Some("rules") => true,
+        Some("doctor") => !w.contains(&"--fix"),
+        Some("signal") => id_at(2).is_some_and(|t| {
+            let strict = || Comms::Mode("commodore-only".into());
+            match env {
+                Some(env) => crate::hook::may_signal(env, me, &t.name()).is_ok(),
+                None => crate::hook::signal_table(me, &t, &strict).is_ok(),
+            }
+        }),
         Some("start") | Some("stop") | Some("relaunch") | Some("rm") => id_at(2).is_some_and(|t| may_start(caller, &t, "start").is_ok()),
         Some("sweep") => match id_at(2) {
             None => w.len() == 2 && matches!(role, Role::Admiral | Role::Commodore),
-            Some(t) => in_fleet(&t) || in_squadron(&t),
+            Some(t) => in_fleet(&t) || in_squadron(&t) || (*role == Role::Ship && t == *me),
         },
         Some("adopt") => id_at(3).is_some_and(|t| may_start(caller, &t, "adopt as").is_ok()),
         Some("up") => id_at(2).is_some_and(|t| in_fleet(&t)),
@@ -1199,8 +1216,13 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
             }
             Box::new(move |m: &Id| m.fleet() == fleet)
         }
+        // a ship: its own stale copy rows, nothing else
+        Caller::Member { id: me, role: Role::Ship } if id == Some(me) => {
+            let me = me.clone();
+            Box::new(move |m: &Id| *m == me)
+        }
         Caller::Member { id: me, .. } => {
-            refuse(&mut plan, "authority", format!("{} may not sweep; you, its admiral or its commodore do", me.name()), None, id.cloned());
+            refuse(&mut plan, "authority", format!("{} may sweep only itself (nimitz sweep {}); you, its admiral or its commodore sweep the rest", me.name(), me), None, id.cloned());
             return plan;
         }
     };
@@ -1878,9 +1900,60 @@ mod tests {
         for fix in ["nimitz fleet new G", "nimitz fleet rm F", "nimitz machine add F box", "nimitz init", "nimitz stop 1a2b3c4d", "nimitz start G/SQ/S", "claude rm x"] {
             assert!(!may_run(&admiral, fix), "the user's: {fix}");
         }
-        assert!(may_run(&a_ship, "nimitz status") && may_run(&a_ship, "nimitz check F/SQ/S"));
-        assert!(!may_run(&a_ship, "nimitz start F/SQ/S"));
         assert!(may_run(&own, "nimitz start F/SQ/S  # if it holds work"), "a comment is not an argument");
+        // a ship (plan-v4 section 12): every read-only command, signal within
+        // its comms, sweep of itself; nothing that changes another member
+        for fix in ["nimitz status", "nimitz status --json", "nimitz check F/SQ/S", "nimitz check F", "nimitz rules", "nimitz rules F/SQ", "nimitz doctor", "nimitz sweep F/SQ/S"] {
+            assert!(may_run(&a_ship, fix), "a ship's: {fix}");
+        }
+        for fix in [
+            "nimitz start F/SQ/S",
+            "nimitz stop F/SQ/S",
+            "nimitz relaunch F/SQ/S",
+            "nimitz rm F/SQ/S",
+            "nimitz sweep F/SQ",
+            "nimitz sweep F/SQ/T",
+            "nimitz sweep",
+            "nimitz ship set F/SQ/S --mode auto",
+            "nimitz doctor --fix",
+            "nimitz adopt sid F/SQ/S",
+            "nimitz up F",
+            "nimitz open F/SQ/S",
+        ] {
+            assert!(!may_run(&a_ship, fix), "not a ship's: {fix}");
+        }
+        // signal: the chain of command; with no config a ship reaches only its commodore and admiral
+        assert!(may_run(&a_ship, "nimitz signal F/SQ hello") && may_run(&a_ship, "nimitz signal F hello"));
+        assert!(!may_run(&a_ship, "nimitz signal F/SQ/T hello") && !may_run(&a_ship, "nimitz signal F/ZZ hello"));
+        assert!(may_run(&own, "nimitz signal F/SQ/S go") && may_run(&own, "nimitz signal F report"));
+        assert!(!may_run(&own, "nimitz signal F/ZZ/X go"));
+        assert!(may_run(&admiral, "nimitz signal F/SQ/S go") && may_run(&admiral, "nimitz signal F/ZZ go"));
+        assert!(!may_run(&admiral, "nimitz signal G/SQ go") && !may_run(&admiral, "nimitz signal F go"), "not another fleet, not itself");
+        // and with the config: the squadron's comms rule decides ship to ship
+        let (_td, env) = crate::config::tests::test_env();
+        crate::config::tests::make_fleet(&env); // MAIN/ARGOS, comms open
+        let argos = Caller::Member { id: Id::ship("MAIN", "ARGOS", "ARGOS"), role: Role::Ship };
+        assert!(may_run_in(Some(&env), &argos, "nimitz signal MAIN/ARGOS/OTHER hi"), "open comms");
+        assert!(!may_run_in(Some(&env), &argos, "nimitz signal MAIN/ZZ/OTHER hi"), "open within the squadron only");
+        assert!(!may_run_in(Some(&env), &argos, "nimitz signal OTHER hi"), "another fleet's admiral");
+    }
+
+    #[test]
+    fn a_ship_sweeps_only_itself() {
+        let (_td, env) = crate::config::tests::test_env();
+        crate::config::tests::make_fleet(&env);
+        let snap = crate::check::tests::snap_for(&env, None);
+        let me = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let ship = Caller::Member { id: me.clone(), role: Role::Ship };
+        let p = plan_sweep(&env, &snap, Some(&me), &ship);
+        assert!(p.ok(), "{:?}", p.refusals);
+        assert_eq!(p.summary, "sweep MAIN/ARGOS/ARGOS");
+        for target in [None, Some(Id::commodore("MAIN", "ARGOS")), Some(Id::admiral("MAIN"))] {
+            let p = plan_sweep(&env, &snap, target.as_ref(), &ship);
+            assert_eq!(p.refusals.len(), 1, "{target:?}: {:?}", p.refusals);
+            assert_eq!(p.refusals[0].code, "authority");
+            assert!(p.refusals[0].message.contains("nimitz sweep MAIN/ARGOS/ARGOS"), "{}", p.refusals[0].message);
+        }
     }
 
     #[test]

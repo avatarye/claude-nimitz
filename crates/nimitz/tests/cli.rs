@@ -595,6 +595,32 @@ fn signal_types_or_relays_and_members_use_sendmessage() {
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/BOREAL", "hi", "--yes"]);
     assert_eq!(r.code, 1);
     assert!(r.out.contains("comms.denied"), "{}", r.out);
+    // 0.4.0: a ship replies to its admiral, and the admiral reaches a ship; both
+    // still go by SendMessage, which the refusal says
+    for (who, to) in [("MAIN/ARGOS/CLEAN", "MAIN"), ("MAIN", "MAIN/ARGOS/CLEAN")] {
+        let r = sb.run_as(who, &["signal", to, "hi", "--yes"]);
+        assert_eq!(r.code, 1);
+        assert!(r.out.contains("the chain allows it") && r.out.contains("SendMessage"), "{who} -> {to}: {}", r.out);
+    }
+}
+
+#[test]
+fn a_ship_runs_the_read_only_commands_and_sweeps_itself() {
+    let sb = Sb::new(false);
+    let ship = "MAIN/ARGOS/CLEAN";
+    for args in [vec!["status"], vec!["check", "MAIN"], vec!["rules"], vec!["doctor"]] {
+        let r = sb.run_as(ship, &args);
+        assert!(!r.out.contains("(authority)"), "{args:?}: {}", r.out);
+    }
+    let r = sb.run_as(ship, &["sweep", ship, "--plan"]);
+    assert_eq!(r.code, 0, "its own stale rows: {}", r.out);
+    let r = sb.run_as(ship, &["sweep", "MAIN/ARGOS", "--plan"]);
+    assert_eq!(r.code, 1);
+    assert!(r.out.contains("(authority)") && r.out.contains("may sweep only itself"), "{}", r.out);
+    // a fix a ship may not run itself is marked for its commodore / the user
+    let r = sb.run_as(ship, &["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert!(r.out.contains("(authority)"), "{}", r.out);
+    assert!(!r.out.lines().any(|l| l.trim_start().starts_with("fix: nimitz start")), "{}", r.out);
 }
 
 #[test]
@@ -827,9 +853,28 @@ fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
     let h = raw(&sb.vars, &["hook", "SessionStart"], &[("NIMITZ_ID", "MAIN/ARGOS"), ("NIMITZ_ROLE", "commodore")], Some(input));
     let v: Value = serde_json::from_str(h.out.trim()).expect("hook JSON");
     assert_eq!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap(), r.out);
-    // a live member whose session started before the rules: check names it
+    // a live member whose session started before versioned rules (the sandbox's
+    // SessionStart lines carry no `rules`): check names it (Info, nothing to
+    // do: the hook hands it the update with its next prompt)
+    let delivered = sb.base.join("state/rules-delivered.json");
     let c = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
-    assert!(c.out.contains("rules.old") && c.out.contains("/compact"), "{}", c.out);
+    assert!(c.out.contains("rules.old") && c.out.contains("next prompt") && !c.out.contains("/compact"), "{}", c.out);
+    // its next prompt: the UserPromptSubmit hook hands over the changelog and the full text, once
+    let clean = sb.member("MAIN/ARGOS/CLEAN");
+    let sid = clean["session"]["session_id"].as_str().unwrap();
+    let prompt = format!(r#"{{"session_id":"{sid}","hook_event_name":"UserPromptSubmit","prompt":"go"}}"#);
+    let labels = [("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_ROLE", "ship")];
+    let u = raw(&sb.vars, &["hook", "UserPromptSubmit"], &labels, Some(&prompt));
+    let v: Value = serde_json::from_str(u.out.trim()).expect("hook JSON");
+    let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(ctx.starts_with(&format!("nimitz rules updated v0→v{}", nimitz_core::rules::VERSION)) && ctx.contains("## Ship of MAIN/ARGOS"), "{ctx}");
+    assert!(ctx.contains("- v1:") && ctx.contains("- v2:"), "the whole changelog from v0: {ctx}");
+    assert!(raw(&sb.vars, &["hook", "UserPromptSubmit"], &labels, Some(&prompt)).out.trim().is_empty(), "once per version");
+    let rec: Value = serde_json::from_str(&std::fs::read_to_string(&delivered).unwrap()).unwrap();
+    assert_eq!(rec[format!("session:{sid}")]["version"], nimitz_core::rules::VERSION, "no job id readable here: keyed by session");
+    let c = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
+    assert!(!c.out.contains("MAIN/ARGOS/CLEAN: runs on nimitz rules"), "delivered; its parents still wait for their next prompt:\n{}", c.out);
+    assert!(c.out.contains("MAIN/ARGOS: runs on nimitz rules v0"), "{}", c.out);
 }
 
 #[test]
@@ -931,7 +976,26 @@ fn init_and_doctor_in_an_empty_world() {
     assert!(d.out.contains("TOP: ") && d.out.contains("written by an older nimitz"), "{}", d.out);
     assert!(d.out.contains("TOP/SQ: ") && d.out.contains("edited by hand"), "{}", d.out);
     assert!(d.out.contains("[OK] native claude"), "{}", d.out);
-    assert!(d.out.contains("[OK] hooks"), "{}", d.out);
+    assert!(d.out.contains("[WARN] hooks: the nimitz plugin is enabled; its installed copy is not listed"), "no installed_plugins.json yet:\n{}", d.out);
+    // the installed plugin's hooks.json: found through installed_plugins.json; every event present is OK
+    let repo_hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/hooks/hooks.json");
+    let install = b.join("claude_home/plugins/cache/claude-nimitz/nimitz/0.4.0");
+    std::fs::create_dir_all(install.join("hooks")).unwrap();
+    std::fs::copy(&repo_hooks, install.join("hooks/hooks.json")).unwrap();
+    std::fs::write(
+        b.join("claude_home/plugins/installed_plugins.json"),
+        format!(r#"{{"version": 2, "plugins": {{"nimitz@claude-nimitz": [{{"scope": "user", "installPath": "{}", "version": "0.4.0"}}]}}}}"#, install.display()),
+    )
+    .unwrap();
+    let d = raw(&vars, &["doctor"], &[], None);
+    assert!(d.out.contains("[OK] hooks: the nimitz plugin is enabled and") && d.out.contains("registers every event nimitz needs"), "{}", d.out);
+    // an older installed copy lacks an event: named, with /reload-plugins as the fix (NIMITZ_PLUGIN_HOOKS points doctor at a file)
+    let mut old: Value = serde_json::from_str(&std::fs::read_to_string(&repo_hooks).unwrap()).unwrap();
+    old["hooks"].as_object_mut().unwrap().remove("UserPromptSubmit");
+    let old_path = b.join("old-hooks.json");
+    std::fs::write(&old_path, old.to_string()).unwrap();
+    let d = raw(&vars, &["doctor"], &[("NIMITZ_PLUGIN_HOOKS", old_path.to_str().unwrap())], None);
+    assert!(d.out.contains("does not register UserPromptSubmit") && d.out.contains("fix: /reload-plugins"), "{}", d.out);
     let f = raw(&vars, &["doctor", "--fix", "--yes"], &[], None);
     assert_eq!(f.code, 0, "{}", f.out);
     let s: Value = serde_json::from_str(&std::fs::read_to_string(b.join("claude_home/settings.json")).unwrap()).unwrap();

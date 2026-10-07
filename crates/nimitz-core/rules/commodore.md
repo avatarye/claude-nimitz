@@ -10,7 +10,8 @@
   only when you need it now; a one-off job is a subagent of your own (the
   Agent tool), or a ship.
 - Take orders from your admiral as you would the user's: plan first, run a
-  change once the user has agreed.
+  change once the user has agreed. Your admiral may also signal your ships
+  directly; a ship tells you when it did.
 - A line that starts `[nimitz needs-you]` is typed by nimitz, not the user: a
   ship of yours is blocked on a question or a permission prompt.
   Tell the user at once, with the quoted question and its options. Do not

@@ -30,16 +30,16 @@ pub fn refusal(code: &str, message: String, fix: Option<String>, id: Option<Id>)
     Issue { code: code.into(), severity: Severity::Error, message, fix, id }
 }
 
-/// A member caller sees only fixes it may run itself (`sessions::may_run`, the
-/// authority table); any other fix becomes "ask the user to run: ..." (BUG-51).
-/// The user sees every fix as is.
-pub fn fixes_for(caller: &nimitz_core::Caller, plan: &mut Plan) {
+/// A member caller sees only fixes it may run itself (`sessions::may_run_in`,
+/// the authority table); any other fix becomes "ask the user to run: ..."
+/// (BUG-51). The user sees every fix as is.
+pub fn fixes_for(env: &nimitz_core::env::Env, caller: &nimitz_core::Caller, plan: &mut Plan) {
     if *caller == nimitz_core::Caller::User {
         return;
     }
     for i in plan.refusals.iter_mut().chain(plan.warnings.iter_mut()) {
         if let Some(f) = i.fix.take() {
-            i.fix = Some(if nimitz_core::sessions::may_run(caller, &f) { f } else { format!("ask the user to run: {f}") });
+            i.fix = Some(if nimitz_core::sessions::may_run_in(Some(env), caller, &f) { f } else { format!("ask the user to run: {f}") });
         }
     }
 }
