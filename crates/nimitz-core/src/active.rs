@@ -84,12 +84,19 @@ pub fn load(env: &Env) -> Option<ActiveSet> {
 }
 
 /// The Herdr identity of this process's env, when it runs inside Herdr.
+/// None is "unknown": the set keeps what was recorded before.
 pub fn herdr_identity(vars: &HashMap<String, String>) -> Option<HerdrIdentity> {
     let get = |k: &str| vars.get(k).filter(|v| !v.is_empty()).cloned();
     // a named session (`NIMITZ_HERDR_SESSION`, passed as `--session`) is the
     // identity whatever the pane env says; else the pane env, inside Herdr
     if let Some(s) = get("NIMITZ_HERDR_SESSION") {
         return Some(HerdrIdentity { session: Some(s), socket: None });
+    }
+    // a member's env is its launch env, or the daemon's after a respawn:
+    // the user's live `HERDR_*`, whatever world its `NIMITZ_HOME` names
+    // (acc-D F6). Only the user's own command records a pane env.
+    if !matches!(crate::sessions::caller_from_env(vars), Caller::User) {
+        return None;
     }
     if vars.get("HERDR_ENV").map(String::as_str) != Some("1") {
         return None;
@@ -125,8 +132,9 @@ fn status_word(s: Status) -> &'static str {
 /// The set as the snapshot and the mux see it now: every live member, with
 /// the pane that shows its conversation (any id of its job) when one does.
 /// With no mux (`shown` None: a `status` over ssh), the places recorded
-/// before (`prev`) stay for a member still on the same job, and so does the
-/// recorded Herdr identity: a look from outside Herdr forgets no tab.
+/// before (`prev`) stay for a member still on the same job. The recorded
+/// Herdr identity stays whenever this call has none (`herdr` None: outside
+/// Herdr, or a member's command): a look from outside Herdr forgets no tab.
 pub fn from_snapshot(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrIdentity>, prev: Option<&ActiveSet>) -> ActiveSet {
     let mut members = BTreeMap::new();
     let all = snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter()))));
@@ -162,7 +170,7 @@ pub fn from_snapshot(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrId
         };
         members.insert(m.id.0.clone(), ActiveMember { job: s.short_id.clone(), session: s.session_id.clone(), status: status_word(m.status).into(), waiting_for: s.waiting_for.clone(), attached, place });
     }
-    let herdr = if seen.is_some() { herdr } else { herdr.or_else(|| prev.and_then(|p| p.herdr.clone())) };
+    let herdr = herdr.or_else(|| prev.and_then(|p| p.herdr.clone()));
     ActiveSet { version: VERSION, at: crate::evidence::now(), machine: snap.machine.clone(), herdr, members }
 }
 
@@ -371,5 +379,31 @@ mod tests {
         assert_eq!(herdr_identity(&v(&[("HERDR_ENV", "1")])), Some(HerdrIdentity::default()));
         let h = herdr_identity(&v(&[("HERDR_ENV", "1"), ("HERDR_SESSION", "NIMITZ"), ("NIMITZ_HERDR_SESSION", "nimitz-e2e")])).unwrap();
         assert_eq!((h.session.as_deref(), h.socket), (Some("nimitz-e2e"), None), "the named session wins over the pane env");
+    }
+
+    /// Acc-D F6: a daemon-respawned member inherits the daemon's env, the
+    /// user's live `HERDR_*`, in whatever world its labels name. A member's
+    /// command never records that as the set's Herdr identity: unknown,
+    /// and the set keeps what the user's own command recorded.
+    #[test]
+    fn a_members_inherited_herdr_env_is_no_identity_and_the_recorded_one_stays() {
+        let v = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<_, _>>();
+        let pane = [("HERDR_ENV", "1"), ("HERDR_SESSION", "NIMITZ"), ("HERDR_SOCKET_PATH", "/s/herdr.sock")];
+        let member = [("NIMITZ_ID", "F/SQ/S1"), ("NIMITZ_ROLE", "ship")];
+        assert_eq!(herdr_identity(&v(&[pane.as_slice(), member.as_slice()].concat())), None);
+        assert_eq!(herdr_identity(&v(&[pane.as_slice(), &[("NIMITZ_ID", "F"), ("NIMITZ_ROLE", "admiral")]].concat())), None, "a lead too");
+        assert_eq!(herdr_identity(&v(&[pane.as_slice(), &[("NIMITZ_ID", "F/SQ/S1")]].concat())), None, "partial labels: not the user either");
+        let named = herdr_identity(&v(&[pane.as_slice(), member.as_slice(), &[("NIMITZ_HERDR_SESSION", "nimitz-e2e")]].concat())).unwrap();
+        assert_eq!(named.session.as_deref(), Some("nimitz-e2e"), "a named session is explicit, whoever runs");
+        // the set: a member's write (herdr None), with a mux seen or not, keeps the recorded identity
+        let recorded = HerdrIdentity { session: Some("NIMITZ".into()), socket: Some("/s/herdr.sock".into()) };
+        let prev = ActiveSet { herdr: Some(recorded.clone()), ..Default::default() };
+        let snap = Snapshot { taken_at: 0.0, machine: Some("m1".into()), fleets: vec![], stowaways: vec![], issues: vec![], cc_version: None, compat_ok: true };
+        let seen = Seen::default();
+        assert_eq!(from_snapshot(&snap, Some(&seen), None, Some(&prev)).herdr.as_ref(), Some(&recorded));
+        assert_eq!(from_snapshot(&snap, None, None, Some(&prev)).herdr.as_ref(), Some(&recorded));
+        assert_eq!(from_snapshot(&snap, Some(&seen), None, None).herdr, None, "nothing recorded, nothing known");
+        let other = HerdrIdentity { session: Some("nimitz-e2e".into()), socket: None };
+        assert_eq!(from_snapshot(&snap, Some(&seen), Some(other.clone()), Some(&prev)).herdr.as_ref(), Some(&other), "a known identity replaces the recorded one");
     }
 }

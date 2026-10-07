@@ -974,6 +974,57 @@ fn only_the_member_itself_delivers_its_notice() {
     assert!(sb.notice("MAIN/ARGOS").is_none());
 }
 
+/// Acc-D F6: a daemon-respawned ship inherits the daemon's env, the user's
+/// live `HERDR_*`, in whatever world its labels name. Its own `status`
+/// records no Herdr identity from that env, and its needs-you delivery never
+/// goes by it alone: nothing explicit and no server recorded by the user's
+/// own command means no multiplexer; a recorded server is the `--session`
+/// of every call of the delivery.
+#[test]
+fn a_delivery_never_uses_an_inherited_herdr_env_alone() {
+    let sb = Sb::new(true);
+    sb.pane_for("MAIN/ARGOS");
+    let active = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("active.json");
+    // (the user's own status above, inside the fake Herdr, recorded its
+    // identity: forget it, as a world the user never looked at from Herdr)
+    let mut set: Value = serde_json::from_slice(&std::fs::read(&active).unwrap()).unwrap();
+    set["herdr"] = Value::Null;
+    std::fs::write(&active, set.to_string()).unwrap();
+    // the respawned ship's env: HERDR_* inherited, no NIMITZ_MUX of its own
+    let mut inherited = sb.vars.clone();
+    inherited.remove("NIMITZ_MUX");
+    inherited.insert("HERDR_SESSION".into(), "NIMITZ".into());
+    inherited.insert("HERDR_SOCKET_PATH".into(), "/live/herdr.sock".into());
+    let r = raw(&inherited, &["status"], &CLEAN, None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let act: Value = serde_json::from_slice(&std::fs::read(&active).unwrap()).unwrap();
+    assert!(act["herdr"].is_null(), "a member's status records no identity from its env: {act}");
+    raw(&inherited, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "failed", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("no multiplexer"), "{n}");
+    assert!(sb.prompts("w1:p2").is_empty(), "nothing typed anywhere");
+    // the user's own status inside Herdr records the server (by name here);
+    // the ship's next delivery goes to that server, named on every call
+    let r = raw(&sb.vars, &["status"], &[("NIMITZ_HERDR_SESSION", "nimitz-test")], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let act: Value = serde_json::from_slice(&std::fs::read(&active).unwrap()).unwrap();
+    assert_eq!(act["herdr"]["session"], "nimitz-test", "{act}");
+    raw(&inherited, &["hook", "Stop"], &CLEAN, Some(r#"{"session_id":"s-clean"}"#));
+    let before = sb.calls().lines().count();
+    raw(&inherited, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "delivered", "{n}");
+    assert!(!sb.prompts("w1:p2").is_empty());
+    let log = sb.calls();
+    let calls: Vec<&str> = log.lines().skip(before).collect();
+    assert!(!calls.is_empty() && calls.iter().all(|c| c.contains("\"--session\",\"nimitz-test\"")), "{calls:?}");
+    // and the ship's status, run again, leaves the recorded identity alone
+    raw(&inherited, &["status"], &CLEAN, None);
+    let act: Value = serde_json::from_slice(&std::fs::read(&active).unwrap()).unwrap();
+    assert_eq!(act["herdr"]["session"], "nimitz-test", "{act}");
+}
+
 #[test]
 fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
     let sb = Sb::new(false);

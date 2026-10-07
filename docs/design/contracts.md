@@ -568,8 +568,15 @@ could not be read (`pane process-info` failed) is `tab.unreadable`, fix
 the tab": never typed into, never a second tab.
 
 Herdr identity (R-29): the env is the identity. `NIMITZ_HERDR_SESSION` when
-set (it is also the `--session` of every call); else, inside Herdr,
-`HERDR_SESSION` and `HERDR_SOCKET_PATH` as the server put them in the pane.
+set (it is also the `--session` of every call); else, inside Herdr and only
+for the user's own command, `HERDR_SESSION` and `HERDR_SOCKET_PATH` as the
+server put them in the pane. A member's command (`NIMITZ_*` labels in its
+env) records none: its env is its launch env, or the daemon's after a respawn
+(the user's live `HERDR_*`, whatever world its `NIMITZ_HOME` names; acc-D
+F6), so the identity is unknown and the set keeps the one recorded before.
+The hook path runs no Herdr command on inherited `HERDR_*` alone: a needs-you
+delivery (`nimitz __notify`) takes an explicit `NIMITZ_MUX`/`NIMITZ_HERDR_SESSION`
+as given, else the recorded identity as its `--session`, else no multiplexer.
 The E22 hazard (the CLI may resolve a named session's socket regardless of
 the env) is accepted: the shape nimitz reads comes from the same `herdr`
 invocation in the same env as the identity it records, so the two name the

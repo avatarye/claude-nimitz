@@ -64,12 +64,41 @@ fn commodore_session(env: &Env, cid: &Id) -> Option<String> {
     m.session.as_ref().filter(|s| s.pid.is_some() && s.copy.is_none()).map(|s| s.session_id.clone())
 }
 
+/// The multiplexer a delivery types into. An explicit setting (`NIMITZ_MUX`
+/// other than auto, `NIMITZ_HERDR_SESSION`) is the member's env as given.
+/// Else the delivery never goes by inherited `HERDR_*` alone: a
+/// daemon-respawned member inherits the daemon's env, the user's live
+/// Herdr, in whatever world its `NIMITZ_HOME` names (acc-D F6). The server
+/// is the one the user's own nimitz commands recorded in `active.json`
+/// (`active::herdr_identity`: a member's command records none), named as
+/// the `--session` of every call; with nothing recorded, no multiplexer.
+fn delivery_mux(env: &Env, vars: &HashMap<String, String>) -> Box<dyn nimitz_mux::Mux> {
+    let set = |k: &str| vars.get(k).is_some_and(|v| !v.is_empty());
+    let explicit = vars.get("NIMITZ_MUX").is_some_and(|m| !m.is_empty() && m != "auto") || set("NIMITZ_HERDR_SESSION");
+    if explicit {
+        return nimitz_mux::detect(vars);
+    }
+    let mut v = vars.clone();
+    match nimitz_core::active::load(env).and_then(|a| a.herdr) {
+        Some(h) => {
+            v.insert("NIMITZ_MUX".into(), "herdr".into());
+            if let Some(s) = h.session {
+                v.insert("NIMITZ_HERDR_SESSION".into(), s);
+            }
+        }
+        None => {
+            v.insert("NIMITZ_MUX".into(), "none".into());
+        }
+    }
+    nimitz_mux::detect(&v)
+}
+
 fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duration) -> (&'static str, String) {
     let id = Id(n.id.clone());
     let cid = Id::commodore(id.fleet(), id.squadron().unwrap_or_default());
-    let mux = nimitz_mux::detect(vars);
+    let mux = delivery_mux(env, vars);
     if !mux.caps().type_text {
-        return ("failed", format!("no multiplexer in the member's env can type into {cid}'s pane ({})", mux.name()));
+        return ("failed", format!("no multiplexer in the member's env can type into {cid}'s pane ({}); only an explicit NIMITZ_MUX, or the Herdr server a nimitz command of the user recorded in active.json, is used", mux.name()));
     }
     let text = n.text();
     let deadline = Instant::now() + retry;
