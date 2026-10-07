@@ -1163,6 +1163,13 @@ fn doctor_flags_a_changed_format() {
     std::fs::write(&one, r#"{"pid": 1, "sessionId": "x"}"#).unwrap();
     let d = sb.run(&["doctor"]);
     assert!(d.out.contains("lacks status, kind"), "{}", d.out);
+    // a job row with no name (a copy of a running job): not a format problem (acceptance F5)
+    std::fs::write(&one, r#"{"pid": 1, "sessionId": "x", "status": "idle", "kind": "bg"}"#).unwrap();
+    let jobs = sb.base.join("claude_home/jobs/0a0a0a0a");
+    std::fs::create_dir_all(&jobs).unwrap();
+    std::fs::write(jobs.join("state.json"), r#"{"sessionId": "0a0a0a0a-0000-4000-8000-000000000000", "state": "done", "cwd": "/w"}"#).unwrap();
+    let d = sb.run(&["doctor"]);
+    assert!(!d.out.contains("lacks") && d.out.contains("carry every field nimitz reads"), "{}", d.out);
 }
 
 #[test]

@@ -2071,7 +2071,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of waking {id}") }, rc, t));
                     }
                     // the daemon's rm lands a moment after `claude rm` returns
-                    let gone = (0..30).any(|_| find_row(env, &copy).is_none() || { std::thread::sleep(std::time::Duration::from_millis(100)); false });
+                    let gone = row_gone_within(env, &copy, 3.0);
                     out.issues.push(issue(
                         "step.failed",
                         Severity::Error,
@@ -2176,9 +2176,24 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
 /// wake (r3-e2e finding 12: about a second after the SessionEnd).
 const SETTLE_WAIT_S: f64 = 5.0;
 
+/// Is the job row `short` gone, now or within `secs` (polled)? The daemon's
+/// rm lands a moment after `claude rm` returns (acceptance env F2).
+pub fn row_gone_within(env: &Env, short: &str, secs: f64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
+    loop {
+        if find_row(env, short).is_none() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Wait until `claude agents` lists `job` with no pid and a state other than
 /// `running`, at most `secs`; a CLI that cannot be read ends the wait.
-fn wait_settled(env: &Env, job: &str, secs: f64) {
+pub fn wait_settled(env: &Env, job: &str, secs: f64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
     loop {
         let settled = match crate::claude::agents(env) {

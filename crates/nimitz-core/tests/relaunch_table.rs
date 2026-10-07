@@ -2155,3 +2155,26 @@ fn an_attach_never_wakes_a_job_the_start_would_relabel() {
     let t = nimitz_core::layout::attach_tab(&w.env, &parked).expect("a clean stopped job attaches");
     assert!(t.wakes);
 }
+
+/// The two pollers `apply` uses around a wake: `row_gone_within` (the daemon's
+/// rm lands a moment after `claude rm` returns) and `wait_settled` (the
+/// daemon lists a stopped job as running for a moment).
+#[test]
+fn the_wake_pollers_return_at_once_when_there_is_nothing_to_wait_for() {
+    let w = world();
+    let snap = w.snap();
+    let live = w.member(&snap, &w.ship("CLEAN")).session.unwrap().short_id.unwrap();
+    let stopped = w.member(&snap, &w.ship("STOPPED")).session.unwrap().short_id.unwrap();
+    let t = std::time::Instant::now();
+    assert!(sessions::row_gone_within(&w.env, "00000000", 2.0), "no such row: gone at once");
+    assert!(t.elapsed().as_secs_f64() < 1.0);
+    let t = std::time::Instant::now();
+    assert!(!sessions::row_gone_within(&w.env, &stopped, 0.4), "a row that stays");
+    assert!(t.elapsed().as_secs_f64() >= 0.4);
+    let t = std::time::Instant::now();
+    sessions::wait_settled(&w.env, &stopped, 2.0);
+    assert!(t.elapsed().as_secs_f64() < 1.5, "a stopped job is settled");
+    let t = std::time::Instant::now();
+    sessions::wait_settled(&w.env, &live, 0.5);
+    assert!(t.elapsed().as_secs_f64() >= 0.5, "a running job is waited for, up to the limit");
+}
