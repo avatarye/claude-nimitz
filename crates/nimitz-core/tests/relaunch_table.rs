@@ -264,7 +264,10 @@ fn bug53_a_resume_with_flags_while_the_row_exists_is_an_empty_copy_so_apply_refu
 // ------------------------------------------------------------------ row 6
 
 #[test]
-fn row6_no_row_but_a_transcript_continues_with_c_in_a_pane() {
+fn row6_no_row_but_a_transcript_resumes_it_as_a_background_job_with_every_flag() {
+    // 0.4.0 (plan-v4 section 5): a lead's conversation with no job row and a
+    // transcript (a 0.3.x interactive lead that ended) is resumed by its exact
+    // id with every flag; never `-c`, never a pane
     let w = world();
     let snap = w.snap();
     let id = Id::admiral("BETA");
@@ -272,32 +275,24 @@ fn row6_no_row_but_a_transcript_continues_with_c_in_a_pane() {
     assert_eq!(m.session, None);
     assert_eq!(m.status, Status::Stopped);
     assert!(m.reasons[0].contains("transcript"), "{:?}", m.reasons);
+    let transcript_id = nimitz_core::registry::load(&w.env).identities[&id.0].session.clone().unwrap();
     let plan = w.start(&snap, &id, false);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let steps = w.steps_of(&plan, &id);
     assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].cmd, claude::interactive(&w.env, &id, "", true));
-    assert!(!steps[0].cmd.contains(&"--permission-mode".to_string()), "no mode set: Claude Code's own default");
+    assert_eq!(steps[0].cmd, claude::relaunch_bg(&w.env, &id, "", &transcript_id));
+    assert!(!steps[0].cmd.contains(&"-c".to_string()) && !steps[0].cmd.contains(&"--permission-mode".to_string()), "never -c; no mode set: Claude Code's own default");
     assert_eq!(steps[0].cwd.as_deref(), m.cwd.as_deref());
-    // core never starts an interactive member: apply leaves it to the CLI's pane
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
-    assert!(out.ran[0].2.contains("pane"), "{}", out.ran[0].2);
-    assert!(w.member(&w.snap(), &id).session.is_none(), "core started nothing itself");
-
-    // What the CLI does with the pane step: open it (here: run it in place), then
-    // bind and verify. `claude -c` keeps the transcript's id (probe P0.8).
-    let transcript_id = nimitz_core::evidence::transcripts_in(&w.env, m.cwd.as_deref().unwrap())[0].1.clone();
-    let since = nimitz_core::evidence::now() - 0.001;
-    let (rc, text) = claude::run(&steps[0].cmd, steps[0].cwd.as_deref());
-    assert_eq!(rc, 0, "{text}");
-    let sid = sessions::bind_started(&w.env, &id, steps[0].cwd.as_deref(), since, None, "resume", 5.0).expect("bound and verified");
-    assert_eq!(sid, transcript_id, "-c continues the same session");
     let after = w.member(&w.snap(), &id);
-    assert_eq!(after.session.as_ref().map(|p| p.kind.as_str()), Some("interactive"));
+    let s = after.session.as_ref().expect("a job row now");
+    assert_eq!((s.kind.as_str(), s.session_id.as_str()), ("background", transcript_id.as_str()), "the same conversation, as a job");
+    assert!(s.short_id.is_some() && s.pid.is_some());
     assert!(matches!(after.status, Status::Idle), "{:?}", after.reasons);
     assert!(after.issues.is_empty(), "{:?}", after.issues);
-    assert_eq!(nimitz_core::registry::load(&w.env).identities[&id.0].session.as_deref(), Some(sid.as_str()));
+    let rec = nimitz_core::registry::load(&w.env).identities[&id.0].clone();
+    assert_eq!((rec.session.as_deref(), rec.job.as_deref()), (Some(transcript_id.as_str()), s.short_id.as_deref()));
 }
 
 // ------------------------------------------------------------------ row 7
@@ -667,13 +662,28 @@ fn up_starts_ships_in_depends_on_order() {
 }
 
 #[test]
-fn an_interactive_step_is_marked_for_a_pane_and_a_background_one_is_not() {
+fn every_start_step_is_a_background_launch_leads_too() {
+    // plan-v4 section 7: no member opens in a pane; a lead's cold launch is
+    // `claude --bg` with its name, the settings and a prompt
     let w = world();
     let snap = w.snap();
     let beta = sessions::plan_start(&w.env, &snap, &Id::admiral("BETA"), &Caller::User, false);
-    assert!(sessions::is_pane_step(&beta.steps[0]), "an admiral opens in a pane");
+    assert!(beta.steps[0].cmd.contains(&"--bg".to_string()) && !beta.steps[0].cmd.contains(&"-c".to_string()), "{:?}", beta.steps[0].cmd);
     let fresh = w.start(&snap, &w.ship("FRESH"), false);
-    assert!(!sessions::is_pane_step(&fresh.steps[0]), "a ship is a background session");
+    assert!(fresh.steps[0].cmd.contains(&"--bg".to_string()));
+    // a lead with no history at all: a cold launch with the lead prompt
+    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default());
+    assert!(nimitz_core::config::apply_config_plan(&w.env, &plan).verified);
+    let id = Id::commodore("MAIN", "NEWSQ");
+    let plan = w.start(&w.snap(), &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let step = w.steps_of(&plan, &id)[0].clone();
+    assert_eq!(step.cmd, claude::launch_bg(&w.env, &id, "", Some(&claude::lead_prompt(&id))));
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let m = w.member(&w.snap(), &id);
+    assert_eq!(m.session.as_ref().map(|s| s.kind.as_str()), Some("background"));
+    assert_eq!(m.status, Status::Idle);
 }
 
 // ------------------------------------------------------------------ the other commands
@@ -703,12 +713,16 @@ fn stop_then_resume_keeps_one_id_and_one_row() {
 }
 
 #[test]
-fn stop_refuses_an_interactive_member_and_a_dead_ship() {
+fn stop_takes_a_live_lead_like_a_ship_and_refuses_a_dead_ship() {
     let w = world();
     let snap = w.snap();
+    // a lead is a job (0.4.0): `claude stop <job>` through the native binary
     let plan = sessions::plan_stop(&w.env, &snap, &Id::admiral("MAIN"), &Caller::User);
-    assert!(!plan.ok());
-    assert!(plan.refusals[0].message.contains("interactive"), "{:?}", plan.refusals);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert_eq!(&plan.steps[0].cmd[..2], &[w.env.native_claude_bin.clone(), "stop".to_string()]);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    assert_eq!(w.member(&w.snap(), &Id::admiral("MAIN")).status, Status::Stopped);
     let plan = sessions::plan_stop(&w.env, &snap, &w.ship("STOPPED"), &Caller::User);
     assert!(plan.refusals[0].message.contains("not live"), "{:?}", plan.refusals);
 }
@@ -782,18 +796,18 @@ fn a_commodore_revives_its_ship_while_the_admiral_is_down() {
         }
     }
     let snap = w.snap();
-    assert_eq!(w.member(&snap, &adm).status, Status::Stopped);
+    assert_eq!(w.member(&snap, &adm).status, Status::Parked, "{:?}", w.member(&snap, &adm).reasons);
     let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
     let ship = w.ship("FRESH");
     let plan = sessions::plan_start(&w.env, &snap, &ship, &own, false);
     assert!(plan.ok(), "the admiral being down is not the commodore's to fix: {:?}", plan.refusals);
     assert!(plan.steps.iter().all(|s| s.id.as_ref() == Some(&ship)), "the commodore starts only its ship: {:?}", plan.steps);
     assert!(plan.warnings.iter().any(|i| i.id.as_ref() == Some(&adm)), "{:?}", plan.warnings);
-    // you, top-down: the admiral first (a pane step), then the ship
+    // you, top-down: the admiral first (woken by its exact id), then the ship
     let plan = sessions::plan_start(&w.env, &snap, &ship, &Caller::User, false);
     assert!(plan.ok(), "{:?}", plan.refusals);
     assert_eq!(plan.steps[0].id.as_ref(), Some(&adm));
-    assert!(sessions::is_pane_step(&plan.steps[0]));
+    assert_eq!(plan.steps[0].cmd, claude::resume_bg(&w.env, &adm_sid));
     assert_eq!(plan.steps.last().unwrap().id.as_ref(), Some(&ship));
 }
 
@@ -1182,7 +1196,7 @@ fn a_commodore_whose_old_lead_ran_elsewhere_says_why_it_starts_fresh() {
     let plan = w.start(&w.snap(), &id, false);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let step = w.steps_of(&plan, &id)[0].clone();
-    assert!(sessions::is_pane_step(&step));
+    assert!(step.cmd.contains(&"--bg".to_string()) && !step.cmd.contains(&"--resume".to_string()), "a cold launch: {:?}", step.cmd);
     assert!(step.why.contains("[NEWSQ]-LEAD") && step.why.contains("another folder"), "{}", step.why);
 }
 
@@ -1231,26 +1245,32 @@ fn retire_a_squadron_or_fleet_refuses_while_anything_in_it_is_live() {
 }
 
 #[test]
-fn layout_spec_lays_out_leads_and_attaches_live_ships() {
-    use nimitz_core::layout::{self, TabKind};
+fn layout_spec_attaches_live_leads_and_with_ships_live_ships() {
+    use nimitz_core::layout;
     let w = world();
     let snap = w.snap();
-    // MAIN's admiral and ARGOS's commodore run already; BOREAL's is in the background (refused, so skipped)
+    // every live lead gets a tab that attaches to its job (plan-v4 section 7)
     let spec = layout::plan(&w.env, &snap, Some("MAIN"), false, &Caller::User, false);
-    assert!(spec.workspaces.is_empty(), "{:?}", spec.workspaces);
-    assert!(spec.plan.warnings.iter().any(|i| i.code == "layout.skip"));
-    // BETA's admiral ended with a transcript: a Start tab with `claude -c`
+    assert_eq!(spec.plan.summary, "layout herdr MAIN");
+    let labels: Vec<(String, Vec<String>)> = spec.workspaces.iter().map(|w| (w.label.clone(), w.tabs.iter().map(|t| t.label.clone()).collect())).collect();
+    assert_eq!(labels, vec![("MAIN".to_string(), vec!["MAIN.ADMIRAL".to_string()]), ("MAIN.ARGOS".into(), vec!["MAIN.ARGOS.COMMODORE".into()]), ("MAIN.BOREAL".into(), vec!["MAIN.BOREAL.COMMODORE".into()])]);
+    for t in spec.workspaces.iter().flat_map(|w| w.tabs.iter()) {
+        assert_eq!(t.cmd, claude::attach(&w.env, t.session_id.as_deref().map(|s| &s[..8]).unwrap()), "the tab attaches to the lead's job");
+        assert_eq!(t.cmd[0], w.env.native_claude_bin);
+    }
+    assert_eq!(spec.plan.steps.len(), 3);
+    // BETA's admiral is not live: no tab, `nimitz start` first
     let spec = layout::plan(&w.env, &snap, Some("BETA"), false, &Caller::User, false);
-    assert_eq!(spec.workspaces.len(), 1);
-    let t = &spec.workspaces[0].tabs[0];
-    assert_eq!((spec.workspaces[0].label.as_str(), t.label.as_str(), &t.kind), ("BETA", "BETA.ADMIRAL", &TabKind::Start));
-    assert!(t.cmd.contains(&"-c".to_string()));
-    assert_eq!(spec.plan.steps.len(), 1);
-    // ships: an Attach tab per live ship, in its squadron's workspace
+    assert!(spec.workspaces.is_empty(), "{:?}", spec.workspaces);
+    let skip = spec.plan.warnings.iter().find(|i| i.code == "layout.skip").unwrap();
+    assert!(skip.message.contains("nimitz start BETA"), "{}", skip.message);
+    // an admiral with no fleet argument lays out its own, and the summary says which
+    let adm = Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral };
+    assert_eq!(layout::plan(&w.env, &snap, None, false, &adm, false).plan.summary, "layout herdr MAIN");
+    // ships: an attach tab per live ship, in its squadron's workspace
     let mut spec = layout::plan(&w.env, &snap, Some("MAIN"), true, &Caller::User, false);
     let argos = spec.workspaces.iter().find(|w| w.label == "MAIN.ARGOS").unwrap();
     let clean = argos.tabs.iter().find(|t| t.label == "MAIN.ARGOS.CLEAN").unwrap().clone();
-    assert_eq!(clean.kind, TabKind::Attach);
     assert_eq!(clean.cmd[1], "attach");
     assert!(!argos.tabs.iter().any(|t| t.label == "MAIN.ARGOS.STOPPED"), "a stopped ship gets no tab");
     // a ship already shown in a pane is dropped

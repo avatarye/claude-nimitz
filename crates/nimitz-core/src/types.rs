@@ -38,8 +38,10 @@ impl Role {
             Role::Ship => "ship",
         }
     }
-    /// Admirals and commodores are interactive sessions; ships background.
-    pub fn interactive(self) -> bool {
+    /// Admirals and commodores lead; every member, leads too, runs as a
+    /// Claude Code background job (plan-v4 section 7). A lead's job is pinned
+    /// and attached to in its Herdr tab; a ship's parks and wakes on demand.
+    pub fn lead(self) -> bool {
         matches!(self, Role::Admiral | Role::Commodore)
     }
 }

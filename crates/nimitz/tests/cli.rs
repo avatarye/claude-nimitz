@@ -500,29 +500,25 @@ fn start_is_top_down_admiral_commodore_ship() {
     let ids: Vec<&str> = v["steps"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
     assert_eq!(ids, vec!["TOP", "TOP/SQ", "TOP/SQ/S1"], "{}", p.out);
 
-    // no mux: the interactive members refuse, and nothing starts
+    // every member is a background job (0.4.0): no multiplexer needed, nothing
+    // opens a pane; the leads launch `--bg` with their prompt, top-down
     let r = raw(&sb.vars, &["start", "TOP/SQ/S1", "--yes"], &[("NIMITZ_MUX", "none")], None);
-    assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("mux.none"), "{}", r.out);
-    assert!(!live(&sb.member("TOP/SQ/S1")));
-
-    let r = sb.run(&["start", "TOP/SQ/S1", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    let calls = sb.calls();
-    let a = calls.find("[TOP]-ADMIRAL").expect("admiral opened");
-    let c = calls.find("[TOP.SQ]-COMMODORE").expect("commodore opened");
-    assert!(a < c, "admiral before commodore");
-    let (oa, oc, os) = (r.out.find("[TOP]-ADMIRAL").unwrap(), r.out.find("[TOP.SQ]-COMMODORE").unwrap(), r.out.find("[TOP.SQ]-S1").unwrap());
-    assert!(oa < oc && oc < os, "top-down in the run:\n{}", r.out);
-    assert!(live(&sb.member("TOP/SQ/S1")));
-    assert_eq!(r.out.matches("[TOP]-ADMIRAL").count(), 1, "the launch line is printed once (in the plan):\n{}", r.out);
-    // the panes never bound (the fake runs nothing): a second start focuses them, --force opens anew
+    let calls = std::fs::read_to_string(sb.base.join("calls.log")).unwrap_or_default();
+    let a = calls.find("[TOP]-ADMIRAL").expect("admiral launched");
+    let c = calls.find("[TOP.SQ]-COMMODORE").expect("commodore launched");
+    let s = calls.find("[TOP.SQ]-S1").expect("ship launched");
+    assert!(a < c && c < s, "top-down:\n{calls}");
+    assert!(!calls.contains("\"-c\"") && !sb.calls().contains("pane"), "never `-c`, never a pane:\n{calls}\n{}", sb.calls());
+    for id in ["TOP", "TOP/SQ", "TOP/SQ/S1"] {
+        let m = sb.member(id);
+        assert!(live(&m), "{id}: {m}");
+        assert_eq!(m["session"]["kind"], "background", "{id}");
+    }
+    assert_eq!(r.out.matches("--name [TOP]-ADMIRAL").count(), 1, "the launch line is printed once (in the plan):\n{}", r.out);
+    // a second start finds everything live and does nothing
     let r = sb.run(&["start", "TOP", "--yes"]);
-    assert!(r.out.contains("already opening in pane"), "{}", r.out);
-    let n = |c: &str| c.lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("[TOP]-ADMIRAL")).count();
-    assert_eq!(n(&sb.calls()), 1, "{}", sb.calls());
-    sb.run(&["start", "TOP", "--yes", "--force"]);
-    assert_eq!(n(&sb.calls()), 2, "{}", sb.calls());
+    assert!(r.out.contains("nothing to do"), "{}", r.out);
 }
 
 #[test]
@@ -604,14 +600,15 @@ fn ship_rm_stops_and_removes_rows_first() {
 // ------------------------------------------------------------------ mux commands
 
 #[test]
-fn up_needs_a_mux() {
+fn up_needs_no_mux() {
+    // 0.4.0: every member is a job, so `up` runs anywhere; `layout herdr` attaches later
     let sb = Sb::new(false);
-    let r = sb.run(&["up", "MAIN", "--plan"]);
-    assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("needs a multiplexer"), "{}", r.out);
-    let sb = Sb::new(true);
-    let r = sb.run(&["up", "MAIN", "--plan"]);
-    assert!(r.out.contains("[PLAN] up MAIN"), "{}", r.out);
+    let r = sb.run(&["up", "BETA", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("[PLAN] up BETA") && r.out.contains("--bg") && !r.out.contains("mux.none"), "{}", r.out);
+    let r = sb.run(&["up", "BETA", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(live(&sb.member("BETA")));
 }
 
 #[test]
@@ -626,7 +623,14 @@ fn open_attaches_a_ship_and_focuses_a_pane() {
     let r = sb.run(&["open", "MAIN/ARGOS"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(sb.calls().contains("\"agent\",\"focus\",\"w1:p2\""), "{}", sb.calls());
-    assert_eq!(sb.run(&["open", "MAIN"]).code, 1, "live admiral outside the mux");
+    // a lead is a job too: `open` attaches to it in its tab (F.ADMIRAL)
+    let r = sb.run(&["open", "MAIN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("attached in pane") && sb.calls().contains("MAIN.ADMIRAL"), "{}\n{}", r.out, sb.calls());
+    // not live: say so, with the start
+    let r = sb.run(&["open", "BETA"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("not live") && r.out.contains("nimitz start BETA"), "{}", r.out);
 }
 
 #[test]
@@ -653,7 +657,12 @@ fn open_reuses_the_tab_it_opened_before() {
 #[test]
 fn signal_types_or_relays_and_members_use_sendmessage() {
     let sb = Sb::new(true);
-    assert_eq!(sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]).code, 1, "no pane yet");
+    // no tab shows the commodore yet: one is attached first, then typed into
+    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--plan"]);
+    assert!(r.out.contains("has no tab yet") && r.out.contains(" attach "), "{}", r.out);
+    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.calls().contains("MAIN.ARGOS.COMMODORE") && sb.calls().contains("\"agent\",\"prompt\""), "{}", sb.calls());
     sb.pane_for("MAIN/ARGOS");
     let r = sb.run(&["signal", "MAIN/ARGOS", "status?", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -703,11 +712,19 @@ fn layout_herdr() {
     let r = raw(&sb.vars, &["layout", "herdr", "--yes"], &[("NIMITZ_MUX", "none"), ("HERDR_ENV", "1")], None);
     assert!(r.out.contains("NIMITZ_MUX=none turns the multiplexer off") && !r.out.contains("run nimitz inside Herdr"), "{}", r.out);
     let sb = Sb::new(true);
-    let r = sb.run(&["layout", "herdr", "BETA", "--yes"]);
+    // every live lead gets a tab that attaches to its job; a lead that is not
+    // live gets none (`nimitz start` first)
+    let r = sb.run(&["layout", "herdr", "MAIN", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(sb.calls().contains("[BETA]-ADMIRAL"), "{}", sb.calls());
-    let r = sb.run(&["layout", "herdr", "MAIN", "--plan"]);
-    assert!(r.out.contains("running already"), "live members are left alone:\n{}", r.out);
+    assert!(r.out.contains("tab MAIN.ADMIRAL in workspace MAIN") && r.out.contains("tab MAIN.ARGOS.COMMODORE in workspace MAIN.ARGOS"), "{}", r.out);
+    assert!(sb.calls().contains(" attach ") && sb.calls().contains("MAIN.ADMIRAL") && !sb.calls().contains("\"-c\""), "{}", sb.calls());
+    let r = sb.run(&["layout", "herdr", "BETA", "--plan"]);
+    assert!(r.out.contains("BETA is not live") && r.out.contains("nimitz start BETA"), "{}", r.out);
+    // again: the tabs are there already (by label), so nothing is attached twice
+    let r = sb.run(&["layout", "herdr", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let runs = sb.calls().lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("attach")).count();
+    assert_eq!(runs, 3, "one attach per lead, once:\n{}", sb.calls());
     assert_eq!(sb.run_as("MAIN/ARGOS", &["layout", "herdr", "--yes"]).code, 1);
     // --ships: attach tabs for live ships; stopped ones are skipped
     let r = sb.run(&["layout", "herdr", "MAIN", "--ships", "--yes"]);

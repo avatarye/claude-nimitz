@@ -631,15 +631,11 @@ fn build_member(
             status
         }
         None => {
-            // No row at all. An interactive member may have ended, leaving its
-            // transcript (resume with `claude -c`); otherwise it never started.
-            let transcript =
-                id.role().interactive() && cwd.as_deref().map(|c| !evidence::transcripts_in(env, c).is_empty()).unwrap_or(false);
+            // No row at all: the registry's conversation may still have its
+            // transcript (a resume with every flag continues it); otherwise it
+            // never started, or its history is gone.
             let current_transcript = current.as_deref().and_then(|sid| evidence::transcript(env, &mut cache.files, cwd.as_deref(), sid));
-            if transcript {
-                reasons.push("no session row; a transcript in its folder (continue with -c)".into());
-                Status::Stopped
-            } else if let Some(t) = current_transcript {
+            if let Some(t) = current_transcript {
                 if crate::sessions::pending_relaunch(env, id).is_some() {
                     reasons.push("an interrupted relaunch: its row was removed before the resume ran (nimitz start recovers it)".into());
                 }

@@ -500,14 +500,18 @@ fn bug43_signal_text_is_not_typed_with_control_characters() {
 }
 
 #[test]
-fn bug47_a_second_start_does_not_open_a_second_admiral_pane() {
+fn bug47_a_second_start_does_not_start_a_second_admiral() {
     let sb = Sb::new(true);
+    // the admiral's process is gone (a parked job); the first start wakes it
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
-    sb.run(&["start", "MAIN", "--yes"]);
-    sb.run(&["start", "MAIN", "--yes"]); // the first pane has not bound yet
-    let calls = std::fs::read_to_string(sb.dir("herdr/calls.jsonl")).unwrap_or_default();
-    let runs = calls.lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("[MAIN]-ADMIRAL")).count();
-    assert_eq!(runs, 1, "two panes now run `claude -c` for the admiral:\n{calls}");
+    let r = sb.run(&["start", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = sb.run(&["start", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("nothing to do"), "the second start finds it live:\n{}", r.out);
+    let calls = std::fs::read_to_string(sb.dir("calls.log")).unwrap_or_default();
+    let wakes = calls.lines().filter(|l| l.contains("--resume") || l.contains("\"--bg\",\"--name\",\"[MAIN]-ADMIRAL\"")).count();
+    assert_eq!(wakes, 1, "one wake, as itself, never a second job:\n{calls}");
 }
 
 #[test]

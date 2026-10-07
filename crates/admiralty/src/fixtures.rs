@@ -103,7 +103,7 @@ fn fleet_main() -> Fleet {
         Id::admiral(f),
         Status::Idle,
         &["session file: status idle for 4m", "pid 4100 alive"],
-        Some(session(&Id::admiral(f), "aa11aa11", Some(4100), "interactive", Some("idle"), None, 7200.0, true)),
+        Some(session(&Id::admiral(f), "aa11aa11", Some(4100), "background", Some("idle"), None, 7200.0, true)),
     );
     admiral.crew = vec![crew("tm-scribe", None, "minutes-scribe", "general-purpose", true, true, 40.0)];
 
@@ -113,7 +113,7 @@ fn fleet_main() -> Fleet {
         sq.clone(),
         Status::Busy,
         &["session file: status busy for 1m"],
-        Some(session(&sq, "ab22ab22", Some(4200), "interactive", Some("busy"), None, 5400.0, true)),
+        Some(session(&sq, "ab22ab22", Some(4200), "background", Some("busy"), None, 5400.0, true)),
     );
     commodore.tasks = vec![
         Task { id: "1".into(), subject: "data importer".into(), status: "in_progress".into(), owner: Some("BOLT".into()) },
@@ -160,7 +160,7 @@ fn fleet_main() -> Fleet {
         sq.clone(),
         Status::NeedsYou,
         &["session file: status waiting, waitingFor permission prompt"],
-        Some(session(&sq, "af66af66", Some(4400), "interactive", Some("waiting"), Some("permission prompt"), 3000.0, true)),
+        Some(session(&sq, "af66af66", Some(4400), "background", Some("waiting"), Some("permission prompt"), 3000.0, true)),
     );
     let docs_id = Id::ship(f, "KITS", "DOCS");
     let docs = member(
@@ -219,7 +219,7 @@ fn fleet_forge() -> Fleet {
         sq.clone(),
         Status::Stopped,
         &["job row, no pid", "resumed with flags earlier: labels gone"],
-        Some(session(&sq, "cb22cb22", None, "interactive", None, None, 90000.0, false)),
+        Some(session(&sq, "cb22cb22", None, "background", None, None, 90000.0, false)),
     );
     commodore.issues = vec![issue(
         "labels.missing",
@@ -367,7 +367,7 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
     // a session of the old fleet-skill fleets, recognised by its name
     let s3 = SessionInfo {
         session_id: "ab99ab99-0000-4000-8000-000000000000".into(),
-        short_id: Some("ab99ab99".into()),
+        short_id: None,
         pid: Some(6300),
         kind: "interactive".into(),
         state: None,

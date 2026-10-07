@@ -1,5 +1,6 @@
 //! Needs-you delivery: type a blocked ship's notice into its
-//! commodore's pane, the way `nimitz signal` reaches an interactive member.
+//! commodore's pane (the tab attached to the commodore's job), the way
+//! `nimitz signal` reaches a lead.
 //!
 //! The hook records the notice (`nimitz_core::notify`) and starts
 //! `nimitz __notify <id>` detached, in its own session, so the member never
@@ -55,7 +56,7 @@ pub fn deliver_cmd(id: &str) -> i32 {
 }
 
 /// The commodore's live session id: the registry's current binding, else a
-/// live interactive session holding the commodore's name.
+/// live session holding the commodore's name.
 fn commodore_session(env: &Env, cid: &Id) -> Option<String> {
     let rows = nimitz_core::evidence::rows_from_files(env, &mut Default::default()).unwrap_or_default();
     let live = |sid: &str| rows.iter().any(|r| r.session_id == sid && r.live());
@@ -63,7 +64,7 @@ fn commodore_session(env: &Env, cid: &Id) -> Option<String> {
     if let Some(cur) = reg.identities.get(&cid.0).and_then(|r| r.session.clone()).filter(|s| live(s)) {
         return Some(cur);
     }
-    rows.iter().find(|r| r.live() && r.kind == "interactive" && r.name == cid.name()).map(|r| r.session_id.clone())
+    rows.iter().find(|r| r.live() && r.name == cid.name()).map(|r| r.session_id.clone())
 }
 
 fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duration) -> (&'static str, String) {

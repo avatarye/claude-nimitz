@@ -4,10 +4,10 @@
 //! Every `plan_*` only reads and returns a `Plan`; nothing changes until
 //! `apply`. A plan step's command is real argv (`claude ...`) except the
 //! internal `["bind", <id>, <session id>, <via>]` step, which `apply` performs
-//! itself (a registry write, not a process). A step whose command is not a
-//! `--bg` launch and names an interactive member (admiral, commodore) is never
-//! run by `apply`: the CLI opens it in a mux pane (plan-v3 section 13); core
-//! never depends on the mux.
+//! itself (a registry write, not a process). Every member, leads too, is a
+//! Claude Code background job (plan-v4 section 7): `apply` runs every step;
+//! a lead's Herdr tab only attaches (`layout::attach_tab`), so core never
+//! depends on the mux.
 use crate::env::Env;
 use crate::types::*;
 use std::collections::HashMap;
@@ -444,7 +444,8 @@ fn refuse_legacy(plan: &mut Plan, m: &Member) -> bool {
 }
 
 /// One member's action per contracts.md section 8. Appends steps or refusals.
-fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: bool) {
+fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: StartOpts) {
+    let force = opts.force;
     let Some((fleet, m)) = member(snap, id) else {
         refuse(plan, "member.unknown", format!("{id} is not in any fleet config"), Some("nimitz status  # the ids that exist".into()), Some(id.clone()));
         return;
@@ -538,11 +539,7 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
         // from its folder (row 4). A resume restores the saved name too, so a
         // drifted name must go the relaunch way instead.
         Some(p) if p.labels.get("NIMITZ_ID") == Some(&id.0) && !needs_relabel => {
-            if m.role.interactive() {
-                plan.steps.push(step(id, crate::claude::interactive(env, id, &mode, true), "continue the interactive session in a pane"));
-            } else {
-                plan.steps.push(step(id, crate::claude::resume_bg(env, &p.session_id), "resume keeps the id, name, mode and labels (probe 2c1)"));
-            }
+            plan.steps.push(step(id, crate::claude::resume_bg(env, &p.session_id), "resume keeps the id, name, mode and labels (probe 2c1)"));
         }
         // stopped without labels (or with a drifted name): a flag-free resume
         // would keep neither; rm the row, then resume with every flag (row 5)
@@ -566,10 +563,7 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
             let current = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.session.clone());
             let has_log = |sid: &String| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(&cwd), sid).is_some();
             let kept = pending_relaunch(env, id).filter(has_log).or_else(|| current.filter(has_log));
-            // no row: an interactive member continues its transcript with `-c` (row 6)
-            if m.role.interactive() && !crate::evidence::transcripts_in(env, &cwd).is_empty() {
-                plan.steps.push(step(id, crate::claude::interactive(env, id, &mode, true), "continue the interactive session in a pane"));
-            } else if let (false, Some(sid)) = (m.role.interactive(), kept) {
+            if let Some(sid) = kept {
                 let interrupted = pending_relaunch(env, id).as_deref() == Some(sid.as_str());
                 let why = if interrupted {
                     format!("recovering an interrupted relaunch: resume {} with every flag (its row was removed; Claude Code keeps the id)", &sid[..sid.len().min(8)])
@@ -589,11 +583,11 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
                 plan.steps.extend(steps);
             } else {
                 cold_launch(env, plan, &fod, id, m.role, &mode, &cwd); // row 7
-                if m.role.interactive() {
+                if m.role.lead() {
                     if let Some(old) = legacy_names_of(&fod, id).first() {
                         if let Some(last) = plan.steps.last_mut() {
                             last.why = format!(
-                                "first launch in a pane: the old {old} ran in another folder, and Claude Code resumes a conversation only in its own folder"
+                                "first launch: the old {old} ran in another folder, and Claude Code resumes a conversation only in its own folder"
                             );
                         }
                     }
@@ -647,11 +641,12 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
                 why: "cold launch with the prompt from squadron.toml".into(),
             });
         }
+        // a lead is a background job too (plan-v4 section 7); its tab attaches
         Role::Admiral | Role::Commodore => plan.steps.push(Step {
             id: Some(id.clone()),
-            cmd: crate::claude::interactive(env, id, mode, false),
+            cmd: crate::claude::launch_bg(env, id, mode, Some(&crate::claude::lead_prompt(id))),
             cwd: Some(cwd.to_string()),
-            why: "first launch of an interactive member, in a pane".into(),
+            why: "cold launch of a lead as a background job; `nimitz open` attaches to it".into(),
         }),
     }
 }
@@ -676,8 +671,23 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
     // nightly Claude Code update never stops a fleet (0.3.2).
 }
 
+/// The flags of `nimitz start`: `--force` (a cold launch over a broken
+/// lineage or an untested Claude Code), `--fresh` (a cold launch that starts
+/// a new lineage entry, the fix for `history.lost`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct StartOpts {
+    pub force: bool,
+    pub fresh: bool,
+}
+
 /// Start `id` and every missing parent, top-down. Runs `check` first.
 pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: bool) -> Plan {
+    plan_start_with(env, snap, id, caller, StartOpts { force, fresh: false })
+}
+
+/// `plan_start` with every flag.
+pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opts: StartOpts) -> Plan {
+    let force = opts.force;
     let mut plan = Plan { summary: format!("start {id} (top-down)"), ..Default::default() };
     // Authority first (BUG-51): a caller who may not start the target gets that
     // one refusal, and nothing else (no other refusals, warnings or fixes).
@@ -726,7 +736,8 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
         if already_refused(&plan, &link) {
             continue; // the gate found something that no step can fix
         }
-        start_member(env, &mut plan, snap, &link, force);
+        // `--fresh` is for the target alone; a parent wakes as usual
+        start_member(env, &mut plan, snap, &link, StartOpts { force, fresh: opts.fresh && link == *id });
     }
     // A `legacy` warning is about starting that member; a running parent left
     // alone does not make the target's start a second agent anywhere (BUG-38).
@@ -797,7 +808,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
         }
         gate(env, &mut plan, snap, Some(&id), false);
         if !already_refused(&plan, &id) {
-            start_member(env, &mut plan, snap, &id, false);
+            start_member(env, &mut plan, snap, &id, StartOpts::default());
         }
     }
     dedup_issues(&mut plan);
@@ -828,12 +839,6 @@ fn in_dependency_order(ids: Vec<Id>, deps: &[(String, Vec<String>)]) -> Vec<Id> 
         out.extend(take);
     }
     out
-}
-
-/// Is this step one the CLI must open in a multiplexer pane (an interactive
-/// member) instead of running itself? `apply` never runs these.
-pub fn is_pane_step(step: &Step) -> bool {
-    classify(step) == Kind::Interactive
 }
 
 /// The fork rule (BUG-53, probe P0.9 case A2): a `--resume <id>` with flags
@@ -905,18 +910,16 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
         return plan;
     };
-    if m.role.interactive() && p.kind != "background" {
+    // a process with no job (an interactive 0.3.x lead, an SDK host): nimitz
+    // can neither stop nor resume it there
+    let Some(short) = &p.short_id else {
         refuse(
             &mut plan,
             "session.interactive",
-            format!("{id} is an interactive session; end it in its own terminal"),
+            format!("{id} runs in a process with no job ({}, pid {}); end it in its own terminal", p.entrypoint.as_deref().unwrap_or(&p.kind), p.pid.unwrap_or(0)),
             Some("type /exit in its pane".into()),
             Some(id.clone()),
         );
-        return plan;
-    }
-    let Some(short) = &p.short_id else {
-        refuse(&mut plan, "session.none", format!("{id}'s session {} has no job id to stop", p.session_id), None, Some(id.clone()));
         return plan;
     };
     plan.steps.push(Step {
@@ -1012,19 +1015,6 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "session.unreadable", format!("{id}'s session file cannot be read; its process may be live"), Some("nimitz status  # read it again in a moment".into()), Some(id.clone()));
         return plan;
     }
-    if m.role.interactive() {
-        if m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
-            refuse(&mut plan, "session.interactive", format!("{id} is live; end it in its pane first"), Some("type /exit in its pane".into()), Some(id.clone()));
-            return plan;
-        }
-        plan.steps.push(Step {
-            id: Some(id.clone()),
-            cmd: crate::claude::interactive(env, id, &mode, true),
-            cwd: Some(cwd),
-            why: "reopen the interactive session with its name and labels, in a pane".into(),
-        });
-        return plan;
-    }
     let Some(p) = &m.session else {
         refuse(&mut plan, "session.none", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
         return plan;
@@ -1041,7 +1031,7 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         return plan;
     }
     if p.pid.is_some() && p.short_id.is_none() {
-        refuse(&mut plan, "session.none", format!("{id} is live with no job id; cannot stop it"), None, Some(id.clone()));
+        refuse(&mut plan, "session.interactive", format!("{id} is live in a process with no job; end it in its own terminal first"), Some("type /exit in its pane".into()), Some(id.clone()));
         return plan;
     }
     plan.steps.extend(relabel_steps(env, id, &mode, p, &cwd));
@@ -1376,7 +1366,9 @@ enum Kind {
     Bind,
     /// a config step (`mkdir`, `write`, `archive`), run by `config::apply_config_plan`
     Config,
-    Interactive,
+    /// a command `apply` never runs (`claude attach`, a step with no `--bg`):
+    /// the multiplexer's, or no plan of core's
+    Other,
     Launch,
     Resume { session_id: String },
     Relaunch,
@@ -1391,7 +1383,7 @@ fn classify(step: &Step) -> Kind {
         ["mkdir", _] | ["write", _, _] | ["archive", _] => Kind::Config,
         [_, "stop", short] => Kind::Stop { short: short.to_string() },
         [_, "rm", short] => Kind::Rm { short: short.to_string() },
-        _ if !step.cmd.contains(&"--bg".to_string()) => Kind::Interactive,
+        _ if !step.cmd.contains(&"--bg".to_string()) => Kind::Other,
         _ => match step.cmd.iter().position(|a| a == "--resume") {
             Some(i) if step.cmd.len() == i + 2 && !step.cmd.iter().any(|a| a == "--settings") => {
                 Kind::Resume { session_id: step.cmd[i + 1].clone() }
@@ -1542,11 +1534,6 @@ fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
 }
 
 /// Run a plan's steps, then re-read state and verify (never trust exit codes alone).
-///
-/// Pane steps (interactive members, `is_pane_step`) are not run: they appear in
-/// `ran` with code 0 and a text starting `pane:`. They sit at the top of a
-/// top-down plan, so the CLI opens them first, calls `bind_started` for each,
-/// and then calls `apply`. `verified` speaks for the steps `apply` ran.
 pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     let mut out = Outcome::default();
     if !plan.ok() {
@@ -1612,9 +1599,10 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 }
             }
         }
-        if kind == Kind::Interactive {
-            out.ran.push((step.clone(), 0, "pane: open this command in a terminal pane, then bind_started".into()));
-            continue;
+        if kind == Kind::Other {
+            out.ran.push((step.clone(), -1, "not run".into()));
+            out.issues.push(issue("step.failed", Severity::Error, format!("not a step apply runs: {}", step.cmd.join(" ")), None, step.id.clone()));
+            return out;
         }
         if kind == Kind::Config {
             let one = Plan { summary: step.why.clone(), steps: vec![step.clone()], ..Default::default() };
@@ -1720,7 +1708,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     return out; // a resume with flags would now make an empty copy
                 }
             }
-            Kind::Bind | Kind::Interactive | Kind::Config => unreachable!(),
+            Kind::Bind | Kind::Other | Kind::Config => unreachable!(),
         }
     }
     // Verify again once every step ran (an rm must not have hit the new row).
@@ -1990,7 +1978,7 @@ mod tests {
         assert_eq!(classify(&s(&["claude", "--bg", "--resume", "sid"])), Kind::Resume { session_id: "sid".into() });
         assert_eq!(classify(&s(&["claude", "--bg", "--resume", "sid", "--name", "n", "--settings", "{}"])), Kind::Relaunch);
         assert_eq!(classify(&s(&["claude", "--bg", "--name", "n", "--settings", "{}", "p"])), Kind::Launch);
-        assert_eq!(classify(&s(&["claude", "-c", "--name", "n", "--settings", "{}"])), Kind::Interactive);
+        assert_eq!(classify(&s(&["/n/claude", "attach", "j1"])), Kind::Other, "an attach is the multiplexer's, never apply's");
         assert_eq!(classify(&s(&["/n/claude", "stop", "j1"])), Kind::Stop { short: "j1".into() });
         assert_eq!(classify(&s(&["bind", "F/SQ/S", "sid", "adopt"])), Kind::Bind);
         assert_eq!(classify(&s(&["write", "/x/squadron.toml", "body"])), Kind::Config);

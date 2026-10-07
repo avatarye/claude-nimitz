@@ -542,9 +542,12 @@ fn open_attaches_a_background_session_in_a_new_pane() {
     assert_eq!(calls.iter().filter(|c| c.starts_with("open ")).count(), 1, "{calls:?}");
     assert_eq!(calls.last().map(String::as_str), Some("focus new"), "{calls:?}");
     assert!(toast(&t.app).contains("Open already"), "{}", toast(&t.app));
-    // an interactive lead is not attached; it lives in its terminal
+    // a lead is a job too (0.4.0): `A` attaches to it in its own tab
     goto(&mut t.app, "M:MAIN/ARGOS");
-    assert!(t.app.available(Act::Open).unwrap_err().contains("interactive"));
+    assert!(t.app.available(Act::Open).is_ok());
+    // a process with no job (an old interactive lead) is not attached; it lives in its terminal
+    goto(&mut t.app, "SW:ab99ab99-0000-4000-8000-000000000000");
+    assert!(t.app.available(Act::Open).unwrap_err().contains("no job"));
 }
 
 // ------------------------------------------------------------------ monitor-only
@@ -559,11 +562,12 @@ fn no_multiplexer_means_monitor_only_with_the_reason_shown() {
     keys(&mut t.app, "a");
     assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "{}", toast(&t.app));
     press(&mut t.app, KeyCode::Esc);
-    // a commodore does: refused, with the reason
+    // a commodore is a job too (0.4.0): no pane to open, so no multiplexer needed
     goto(&mut t.app, "M:FORGE/MOLD");
     keys(&mut t.app, "a");
-    assert!(t.app.modal.is_none());
-    assert!(toast(&t.app).contains("monitor-only"), "{}", toast(&t.app));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "{}", toast(&t.app));
+    press(&mut t.app, KeyCode::Esc);
+    // open, message and jump need one
     goto(&mut t.app, "M:MAIN/KITS/DOCS");
     keys(&mut t.app, "A");
     assert!(toast(&t.app).contains("monitor-only"));

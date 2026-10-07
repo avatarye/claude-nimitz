@@ -197,25 +197,18 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
     let fleet = ctx.args.need(0, "fleet")?;
     parse_id(fleet)?;
     let snap = ctx.snap();
-    let mut plan = ses::plan_up(&ctx.env, &snap, fleet, &ctx.caller);
-    let mux = ctx.mux();
-    if !mux.caps().open {
-        plan.refusals.push(refusal(
-            "mux.none",
-            "`nimitz up` runs a whole fleet and needs a multiplexer for its admiral and commodores".into(),
-            Some(nimitz_mux::missing_mux_fix(&ctx.vars)),
-            None,
-        ));
-    }
-    Ok(run::session_plan(ctx, plan))
+    Ok(run::session_plan(ctx, ses::plan_up(&ctx.env, &snap, fleet, &ctx.caller)))
 }
 
+/// `nimitz start <id> [--force] [--fresh]`: `--fresh` is a cold launch that
+/// starts a new lineage entry (the fix for `history.lost`).
 pub fn start(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&[])?;
+    ctx.args.allow(&["--fresh"])?;
     ctx.args.at_most(1)?;
     let id = parse_id(ctx.args.need(0, "id")?)?;
     let snap = ctx.snap();
-    Ok(run::session_plan(ctx, ses::plan_start(&ctx.env, &snap, &id, &ctx.caller, ctx.force())))
+    let opts = ses::StartOpts { force: ctx.force(), fresh: ctx.args.flag("--fresh") };
+    Ok(run::session_plan(ctx, ses::plan_start_with(&ctx.env, &snap, &id, &ctx.caller, opts)))
 }
 
 pub fn stop(ctx: &Ctx) -> Result<i32, String> {
@@ -271,8 +264,9 @@ pub fn adopt(ctx: &Ctx) -> Result<i32, String> {
 // ------------------------------------------------------------------ signal, open
 
 /// `nimitz signal <id> <text>`: you type to an admiral or commodore in its
-/// pane; a ship gets it relayed through its commodore (plan-v3 13).
-/// Sessions signal each other with SendMessage; the hook rules those.
+/// attached tab (opened first when it has none); a ship gets it relayed
+/// through its commodore (plan-v3 13). Sessions signal each other with
+/// SendMessage; the hook rules those.
 pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     let id = parse_id(ctx.args.need(0, "id")?)?;
@@ -297,7 +291,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         return Ok(finish_plan(ctx, &plan));
     };
     // Who gets the typing: the member itself, or its commodore for a ship.
-    let (via, text) = if m.role.interactive() {
+    let (via, text) = if m.role.lead() {
         (m, text)
     } else {
         let cid = Id::commodore(id.fleet(), id.squadron().unwrap_or_default());
@@ -319,34 +313,58 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         ));
         return Ok(finish_plan(ctx, &plan));
     }
-    let pane = via.session.as_ref().filter(|_| live(via)).and_then(|s| run::pane_of(mux.as_ref(), &s.session_id));
-    let Some(pane) = pane else {
-        plan.refusals.push(refusal(
-            "mux.nopane",
-            format!("{} is not live in a {} pane", via.id, mux.name()),
-            Some(format!("nimitz start {}", via.id)),
-            Some(via.id.clone()),
-        ));
+    if !live(via) {
+        plan.refusals.push(refusal("session.none", format!("{} is not live", via.id), Some(format!("nimitz start {}", via.id)), Some(via.id.clone())));
         return Ok(finish_plan(ctx, &plan));
-    };
-    plan.steps.push(Step {
-        id: Some(via.id.clone()),
-        cmd: vec!["type".into(), pane.pane_id.clone(), text.clone()],
-        cwd: None,
-        why: if via.id == id { "type into its pane".into() } else { format!("you reach {id} through its commodore") },
-    });
+    }
+    // its attached tab; with no tab, one is opened first (plan-v4 section 7)
+    let pane = via.session.as_ref().and_then(|s| run::pane_of(mux.as_ref(), &s.session_id));
+    let why = if via.id == id { "type into its attached tab".to_string() } else { format!("you reach {id} through its commodore") };
+    match &pane {
+        Some(p) => plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), p.pane_id.clone(), text.clone()], cwd: None, why }),
+        None => {
+            let tab = match nimitz_core::layout::attach_tab(&ctx.env, via) {
+                Ok(t) => t,
+                Err(i) => {
+                    plan.refusals.push(Issue { severity: Severity::Error, ..i });
+                    return Ok(finish_plan(ctx, &plan));
+                }
+            };
+            plan.steps.push(Step { id: Some(via.id.clone()), cmd: tab.cmd, cwd: Some(tab.cwd), why: format!("{} has no tab yet: attach it in tab {} first", via.id, tab.label) });
+            plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), "<the new pane>".into(), text.clone()], cwd: None, why });
+        }
+    }
     match ctx.gate(&plan) {
         out::Go::Exit(code) => Ok(code),
-        out::Go::Run => match mux.type_text(&pane, &text) {
-            Ok(()) => {
-                out::ok(&format!("typed to {} in pane {}", via.id, pane.pane_id));
-                Ok(0)
+        out::Go::Run => {
+            let pane = match pane {
+                Some(p) => p,
+                None => match run::attach_in_tab(mux.as_ref(), &ctx.env, via) {
+                    Ok((p, _)) => {
+                        out::ok(&format!("{} attached in pane {}", via.id, p.pane_id));
+                        p
+                    }
+                    Err(Ok(i)) => {
+                        out::issue(&i);
+                        return Ok(1);
+                    }
+                    Err(Err(e)) => {
+                        out::error(&format!("opening {}'s tab failed: {e}", via.id));
+                        return Ok(1);
+                    }
+                },
+            };
+            match mux.type_text(&pane, &text) {
+                Ok(()) => {
+                    out::ok(&format!("typed to {} in pane {}", via.id, pane.pane_id));
+                    Ok(0)
+                }
+                Err(e) => {
+                    out::error(&format!("typing to {} failed: {e}  # the tab may still be attaching; run the signal again in a moment", via.id));
+                    Ok(1)
+                }
             }
-            Err(e) => {
-                out::error(&format!("typing to {} failed: {e}", via.id));
-                Ok(1)
-            }
-        },
+        }
     }
 }
 
@@ -358,7 +376,8 @@ fn finish_plan(ctx: &Ctx, plan: &Plan) -> i32 {
     }
 }
 
-/// `nimitz open <id>`: focus its pane, or attach a background member in a new tab.
+/// `nimitz open <id>`: focus the pane that shows the member, or attach to its
+/// job in its tab (`claude attach <job>`; detach with ctrl-z).
 pub fn open(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
@@ -395,33 +414,25 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
             },
         };
     }
-    if m.role.interactive() {
-        let (msg, fix) = if live(m) {
-            (format!("{id} runs in a terminal outside {}; switch to that terminal", mux.name()), None)
-        } else {
-            (format!("{id} is not running"), Some(format!("nimitz start {id}")))
-        };
-        plan.refusals.push(refusal("mux.nopane", msg, fix, Some(id)));
-        return Ok(finish_plan(ctx, &plan));
-    }
-    let Some(short) = m.session.as_ref().and_then(|s| s.short_id.clone()) else {
-        plan.refusals.push(refusal("config.invalid", format!("{id} has no background session to attach to"), Some(format!("nimitz start {id}")), Some(id)));
-        return Ok(finish_plan(ctx, &plan));
+    let tab = match nimitz_core::layout::attach_tab(&ctx.env, m) {
+        Ok(t) => t,
+        Err(i) => {
+            // not live, or a process with no job: say so, with what to do
+            let fix = if live(m) { None } else { Some(format!("nimitz start {id}")) };
+            plan.refusals.push(refusal("session.none", i.message, fix, Some(id)));
+            return Ok(finish_plan(ctx, &plan));
+        }
     };
-    let cwd = m.cwd.clone().unwrap_or_else(|| ".".into());
-    let cmd = nimitz_core::claude::attach(&ctx.env, &short);
-    let place = run::place_for(&id);
-    let sid = m.session.as_ref().map(|s| s.session_id.clone());
-    // a tab already named for it (`F.SQ.SHIP`, an earlier `open` or `layout --ships`): show that one
-    if let Some(p) = mux.existing(sid.as_deref(), &place) {
-        plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["focus".into(), p.pane_id.clone()], cwd: None, why: format!("its tab {} is open already", run::tab_of(&id)) });
+    // a tab already named for it (`F.ADMIRAL`, `F.SQ.SHIP`: an earlier `open` or a layout): show that one
+    if let Some(p) = mux.existing(tab.session_id.as_deref(), &run::place_for(&id)) {
+        plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["focus".into(), p.pane_id.clone()], cwd: None, why: format!("its tab {} is open already", tab.label) });
     } else {
-        plan.steps.push(Step { id: Some(id.clone()), cmd: cmd.clone(), cwd: Some(cwd.clone()), why: "attach in a new tab; detaching leaves it running".into() });
+        plan.steps.push(Step { id: Some(id.clone()), cmd: tab.cmd.clone(), cwd: Some(tab.cwd.clone()), why: "attach in a new tab; detaching (ctrl-z) leaves it running".into() });
     }
     // Attaching changes no session: no confirmation needed.
     match out::gate(&plan, ctx.plan_only(), true) {
         out::Go::Exit(c) => Ok(c),
-        out::Go::Run => match nimitz_mux::open_or_focus(mux.as_ref(), &cmd, std::path::Path::new(&cwd), place, sid.as_deref()) {
+        out::Go::Run => match run::attach_in_tab(mux.as_ref(), &ctx.env, m) {
             Ok((p, true)) => {
                 out::ok(&format!("{id} is open already; focused pane {}", p.pane_id));
                 Ok(0)
@@ -430,7 +441,11 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
                 out::ok(&format!("{id} attached in pane {}", p.pane_id));
                 Ok(0)
             }
-            Err(e) => {
+            Err(Ok(i)) => {
+                out::issue(&i);
+                Ok(1)
+            }
+            Err(Err(e)) => {
                 out::error(&format!("open failed: {e}"));
                 Ok(1)
             }
@@ -441,8 +456,8 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
 // ------------------------------------------------------------------ layout
 
 /// `nimitz layout herdr [<F>]`: a workspace per fleet (admiral) and per
-/// squadron (commodore). A member that is not running gets a tab that starts it
-/// (the step `nimitz start` would run); a running one is left where it is.
+/// squadron (commodore), with a tab attaching each live lead (`--ships`: each
+/// live ship too). A member that is not live gets no tab (`nimitz start` first).
 pub fn layout(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--ships"])?;
     ctx.args.at_most(2)?;
@@ -486,7 +501,7 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
         out::Go::Exit(code) => Ok(code),
         out::Go::Run => match mux.layout(&lp) {
             Ok(panes) => {
-                out::ok(&format!("layout ready: {} pane(s); members bind at their SessionStart (`nimitz status`)", panes.len()));
+                out::ok(&format!("layout ready: {} pane(s) attached; detach with ctrl-z", panes.len()));
                 Ok(0)
             }
             Err(e) => {

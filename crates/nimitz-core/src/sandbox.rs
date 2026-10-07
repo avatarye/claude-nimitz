@@ -475,7 +475,9 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let argos_dir = fod.squadrons.iter().find(|(_, s)| s.squadron == "ARGOS").map(|(d, _)| d.clone()).ok_or("ARGOS dir")?;
     let boreal_dir = fod.squadrons.iter().find(|(_, s)| s.squadron == "BOREAL").map(|(d, _)| d.clone()).ok_or("BOREAL dir")?;
 
-    // BETA: an admiral that ended and left only its transcript (row 6).
+    // BETA: a 0.3.x admiral that ended and left only its transcript, bound in
+    // the registry as its conversation (no job): a start resumes it with every
+    // flag as a background job (row 6, the lead migration).
     apply_cfg(&e, &crate::config::plan_fleet_new(&e, "BETA", "sandbox"))?;
     let beta_toml = e.fleet_dir("BETA").join("fleet.toml");
     let raw = fs::read_to_string(&beta_toml).map_err(|e| e.to_string())?;
@@ -494,22 +496,23 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
         S { live, labels, ..Default::default() }
     }
 
-    // The admiral: interactive, live, clean (so a ship's start needs no parent work).
+    // The admiral: a live, clean background job (every member is one in
+    // 0.4.0), so a ship's start needs no parent work.
     let adm = Id::admiral("MAIN");
-    let (_, adm_sid) = w.session(&adm.name(), &admiral_dir, S { kind: "interactive", live: true, status: "busy", labels: Some(&adm), ..Default::default() });
+    let (_, adm_sid) = w.session(&adm.name(), &admiral_dir, S { status: "busy", ..bg(true, Some(&adm)) });
     w.bind(&adm, &admiral_dir, &adm_sid, "launch");
     let team = format!("session-{}", &adm_sid[..8]);
     w.subagent(&adm_sid, &admiral_dir, "planner-1", "planner", 5.0, true, &team);
     w.subagent(&adm_sid, &admiral_dir, "worker-1", "Draft the order", 4000.0, false, &team);
     w.task(&team, 1, "Plan the sortie", "in_progress");
 
-    // ARGOS's commodore: interactive, live, clean.
+    // ARGOS's commodore: a live, clean background job.
     let argos = Id::commodore("MAIN", "ARGOS");
     let argos_dir_s = argos_dir.to_string_lossy().into_owned();
-    let (_, argos_sid) = w.session(&argos.name(), &argos_dir_s, S { kind: "interactive", live: true, labels: Some(&argos), ..Default::default() });
+    let (_, argos_sid) = w.session(&argos.name(), &argos_dir_s, bg(true, Some(&argos)));
     w.bind(&argos, &argos_dir_s, &argos_sid, "launch");
 
-    // BOREAL's commodore: a background job (every member is one in 0.4.0).
+    // BOREAL's commodore: a background job too, in a commodore-only squadron.
     let boreal = Id::commodore("MAIN", "BOREAL");
     let boreal_dir_s = boreal_dir.to_string_lossy().into_owned();
     let (_, boreal_sid) = w.session(&boreal.name(), &boreal_dir_s, bg(true, Some(&boreal)));
@@ -603,9 +606,10 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
         write_json(&reg_path, &reg);
     }
 
-    // BETA's admiral: a transcript only (row 6).
+    // BETA's admiral: a transcript only, known to the registry (row 6).
     let _ = fs::create_dir_all(&beta_admiral);
-    w.transcript(&beta_admiral, &Id::admiral("BETA").name(), 86400.0);
+    let beta_sid = w.transcript(&beta_admiral, &Id::admiral("BETA").name(), 86400.0);
+    w.bind(&Id::admiral("BETA"), &beta_admiral, &beta_sid, "launch");
 
     // A stowaway: an unlabelled session in the fleet's own folder.
     w.session("quick look at the logs", &argos_dir_s, bg(true, None));
