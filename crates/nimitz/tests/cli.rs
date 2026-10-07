@@ -1130,6 +1130,14 @@ fn init_and_doctor_in_an_empty_world() {
     std::fs::write(&old_path, old.to_string()).unwrap();
     let d = raw(&vars, &["doctor"], &[("NIMITZ_PLUGIN_HOOKS", old_path.to_str().unwrap())], None);
     assert!(d.out.contains("does not register UserPromptSubmit") && d.out.contains("fix: /reload-plugins"), "{}", d.out);
+    // a copy whose SessionStart entry is one command string: a Warn, reinstall + /reload-plugins
+    let mut stringy: Value = serde_json::from_str(&std::fs::read_to_string(&repo_hooks).unwrap()).unwrap();
+    stringy["hooks"]["SessionStart"] = serde_json::json!([{"hooks": [{"type": "command", "command": "nimitz hook SessionStart", "timeout": 5}]}]);
+    let stringy_path = b.join("stringy-hooks.json");
+    std::fs::write(&stringy_path, stringy.to_string()).unwrap();
+    let d = raw(&vars, &["doctor"], &[("NIMITZ_PLUGIN_HOOKS", stringy_path.to_str().unwrap())], None);
+    assert!(d.out.contains("[WARN] hooks:") && d.out.contains("gives SessionStart as a command string") && d.out.contains("claude plugin install nimitz@claude-nimitz, then /reload-plugins"), "{}", d.out);
+    assert!(d.out.contains("registers every event nimitz needs"), "still registered: {}", d.out);
     let f = raw(&vars, &["doctor", "--fix", "--yes"], &[], None);
     assert_eq!(f.code, 0, "{}", f.out);
     let s: Value = serde_json::from_str(&std::fs::read_to_string(b.join("claude_home/settings.json")).unwrap()).unwrap();
@@ -1257,4 +1265,75 @@ fn walkdir(d: &Path) -> Vec<PathBuf> {
         }
     }
     v
+}
+
+/// A job killed in its first turn has no transcript on disk yet. A start right
+/// after is the daemon's crash window (apply waits for its restart), never
+/// `history.lost` with a `--fresh` fix that would make a duplicate (e2e case 6).
+#[test]
+fn a_crashed_job_is_resumed_not_judged_history_lost() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let (short, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let o = Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(["__crash", &short]).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let log = walkdir(&sb.base.join("claude_home/projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
+    std::fs::remove_file(&log).unwrap();
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("--resume {sid}")) && !r.out.contains("history.lost") && !r.out.contains("--fresh"), "{}", r.out);
+    // the window closes with no restart: the resume runs (a `startup` would report history.lost then)
+    let r = raw(&sb.vars, &["start", "MAIN/ARGOS/CLEAN", "--yes"], &[("NIMITZ_CRASH_WINDOW", "0")], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
+}
+
+/// A job labelled for another `NIMITZ_HOME` never appears (plan-v4 section
+/// 6), not even through the registry: its hook runs with that home in its
+/// own env (the label is the env), so with one `NIMITZ_STATE` shared by two
+/// homes it binds the identity here. The reader drops such a record (e2e
+/// case 11: the member stayed "Stopped" on the other home's transcript and a
+/// start would have resumed the other home's conversation).
+#[test]
+fn a_job_labelled_for_another_home_never_binds_the_member() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    assert!(matches!(m["status"].as_str(), Some("Stopped" | "Parked")), "{m}");
+    // the job's saved labels and its hook lines name another home (they always agree: one --settings)
+    let relabel = |v: &mut Value| v["env"]["NIMITZ_HOME"] = Value::from("/elsewhere/nimitz");
+    let p = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join(&job).join("state.json");
+    let mut d: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let flags = d["respawnFlags"].as_array_mut().unwrap();
+    let i = flags.iter().position(|x| x == "--settings").unwrap();
+    let mut s: Value = serde_json::from_str(flags[i + 1].as_str().unwrap()).unwrap();
+    relabel(&mut s);
+    flags[i + 1] = Value::from(s.to_string());
+    std::fs::write(&p, d.to_string()).unwrap();
+    let ev = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("events.jsonl");
+    let lines: Vec<String> = std::fs::read_to_string(&ev)
+        .unwrap()
+        .lines()
+        .map(|l| {
+            let mut e: Value = serde_json::from_str(l).unwrap();
+            if e["session_id"] == sid.as_str() {
+                e["labels"]["NIMITZ_HOME"] = Value::from("/elsewhere/nimitz");
+            }
+            e.to_string()
+        })
+        .collect();
+    std::fs::write(&ev, lines.join("\n") + "\n").unwrap();
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    assert_eq!(m["status"], "NotStarted", "{m}");
+    assert!(m["session"].is_null() && m["extra_rows"].as_array().unwrap().is_empty(), "{m}");
+    let r = sb.run(&["status", "--json"]);
+    assert!(!r.out.contains(&job) && !r.out.contains(&sid), "the other home's job shows: {}", r.out);
+    assert!(m["issues"].as_array().unwrap().is_empty(), "no issue, no fix: {m}");
+    // a start is a cold launch, never a resume of the other home's conversation
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("cold launch") && !r.out.contains("--resume"), "{}", r.out);
+    // a read never writes: the record is still in the file until the next update
+    let raw = std::fs::read_to_string(PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json")).unwrap();
+    assert!(raw.contains(&job));
 }

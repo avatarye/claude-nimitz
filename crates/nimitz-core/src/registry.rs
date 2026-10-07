@@ -47,7 +47,26 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<(Registry, bool)> {
     // and keeps the old file as `registry.json.v1`.
     crate::migrate::retire_tenders(&mut r);
     crate::migrate::registry_v2(env, &mut r);
+    drop_other_homes(env, &mut r);
     Ok((r, v1))
+}
+
+/// Drop every identity bound to a job of another `NIMITZ_HOME` (the job's
+/// saved labels, `respawnFlags`, name it). Such a session never appears
+/// (plan-v4 section 6), and its record is not this home's either: its hook
+/// ran with that home in its own env (the label is the env), so when two
+/// homes share one `NIMITZ_STATE` it bound the identity here. A read drops
+/// it in memory; the next write saves without it.
+fn drop_other_homes(env: &Env, r: &mut Registry) {
+    let jobs = env.claude_home.join("jobs");
+    let foreign = |job: &str| {
+        std::fs::read(jobs.join(job).join("state.json"))
+            .ok()
+            .and_then(|b| crate::evidence::first_json(&b))
+            .map(|d| other_home(env, &crate::evidence::job_labels(&d)))
+            .unwrap_or(false)
+    };
+    r.identities.retain(|_, rec| !rec.job.as_deref().is_some_and(foreign));
 }
 
 fn fresh(env: &Env) -> Registry {

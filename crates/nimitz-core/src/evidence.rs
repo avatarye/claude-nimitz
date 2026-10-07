@@ -321,7 +321,7 @@ pub fn daemon_retired(env: &Env, short: &str, since: Option<f64>) -> Option<Stri
 
 /// The NIMITZ_* labels in a job row's saved launch options: `savedSettings` (a
 /// `--settings` JSON string) or `respawnFlags` (argv: `--settings <json>`).
-fn job_labels(d: &Value) -> BTreeMap<String, String> {
+pub(crate) fn job_labels(d: &Value) -> BTreeMap<String, String> {
     let mut settings: Vec<String> = vec![];
     if let Some(x) = s(d, "savedSettings") {
         settings.push(x);
@@ -1024,5 +1024,32 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, "background");
         assert!(rows[0].live());
+    }
+
+    /// The daemon's retire reasons seen so far, verbatim (2.1.292): `settled,
+    /// idle 61m`, `idle-prompt, idle 61m`, and `abandoned-stale, idle 48h,
+    /// worker 2.1.289 (daemon 2.1.292)`. The parser takes any text after the
+    /// colon; the newest line of the job counts, and none older than `since`.
+    #[test]
+    fn daemon_retire_reason_is_any_text_after_the_colon() {
+        let (_td, env) = crate::config::tests::test_env();
+        std::fs::create_dir_all(&env.claude_home).unwrap();
+        std::fs::write(
+            env.claude_home.join("daemon.log"),
+            "[2026-09-19T22:10:17.241Z] [bg] bg retire 0abc1234: idle-prompt, idle 61m\n\
+             [2026-09-19T22:10:17.505Z] [bg] bg settled 0abc1234 (done)\n\
+             [2026-10-07T01:47:03.070Z] [bg] bg retire 9cdceb2d: settled, idle 61m\n\
+             [2026-10-07T05:14:03.119Z] [bg] bg retire 0abc1234: abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)\n\
+             [2026-10-07T05:14:03.594Z] [bg] bg settled 0abc1234 (done)\n",
+        )
+        .unwrap();
+        assert_eq!(daemon_retired(&env, "0abc1234", None).as_deref(), Some("abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)"));
+        assert_eq!(daemon_retired(&env, "9cdceb2d", None).as_deref(), Some("settled, idle 61m"));
+        // a job started after its last retire: that line is an earlier retire, not this one
+        let after = parse_iso("2026-10-07T05:20:00.000Z").unwrap();
+        assert_eq!(daemon_retired(&env, "0abc1234", Some(after)), None);
+        let between = parse_iso("2026-10-01T00:00:00.000Z").unwrap();
+        assert_eq!(daemon_retired(&env, "0abc1234", Some(between)).as_deref(), Some("abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)"));
+        assert_eq!(daemon_retired(&env, "deadbeef", None), None);
     }
 }
