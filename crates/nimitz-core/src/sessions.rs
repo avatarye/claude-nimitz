@@ -1363,14 +1363,21 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         );
         return plan;
     }
-    let current = binding.iter().any(|(_, m)| m.session.as_ref().map(|p| p.session_id == row.session_id).unwrap_or(false));
-    if current {
+    let current = binding.iter().find(|(_, m)| m.session.as_ref().map(|p| p.session_id == row.session_id).unwrap_or(false)).map(|(_, m)| m.id.clone());
+    if let Some(member) = current {
+        // a member's own row goes with the member: a relaunch replaces it, a
+        // retire removes it (acceptance env F7)
+        let retire = match member.role() {
+            Role::Admiral => "fleet rm",
+            Role::Commodore => "squadron rm",
+            Role::Ship => "ship rm",
+        };
         refuse(
             &mut plan,
             "lineage.current",
-            format!("session {} is an identity's current session; removing it breaks the lineage", row.session_id),
-            Some("nimitz relaunch <id>  # if you mean to replace it".into()),
-            None,
+            format!("session {} is {member}'s current session; its row goes with the member, never alone", row.session_id),
+            Some(format!("nimitz relaunch {member}  # replaces the row (same conversation); nimitz {retire} {member} retires the member")),
+            Some(member.clone()),
         );
         return plan;
     }

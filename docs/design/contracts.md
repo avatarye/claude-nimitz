@@ -381,7 +381,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `session.interactive` | the member runs in a process with no job (a 0.3.x interactive lead, an SDK host): `stop` and `relaunch` cannot reach it; end it in its own terminal (`/exit`) |
 | `session.live` | also `wake_steps` of a live job: a resume of a live job starts a copy |
 | `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
-| `lineage.current` | `rm` of an identity's current session (it would break the lineage) |
+| `lineage.current` | `rm` of a member's current session: its row goes with the member, never alone (fix: `nimitz relaunch <id>` replaces it, `nimitz ship|squadron|fleet rm <id>` retires the member) |
 | `tender.retired` | (info) a job row of a 0.3.x tender, history only (fix: `nimitz rm <short>`, after `nimitz stop <short>` while live) |
 | `step.failed` | a step of an applied plan failed (or a lock could not be taken); nothing after it ran |
 
