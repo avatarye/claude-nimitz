@@ -710,23 +710,37 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
     let projects = env.claude_home.join("projects");
     for c in cwd.map(project_dirs).unwrap_or_default() {
         let p = projects.join(c).join(format!("{sid}.jsonl"));
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     if let Some(d) = find_session_dir(env, cache, sid) {
         let p = d.with_extension("jsonl");
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     for e in fs::read_dir(&projects).ok()?.filter_map(|e| e.ok()) {
         let p = e.path().join(format!("{sid}.jsonl"));
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     None
+}
+
+/// A transcript that holds at least one message (a line with a `uuid`). A
+/// stub `claude stop` writes after the real file was moved away has none: a
+/// resume of it would start the conversation over (acceptance env F5), so it
+/// is no transcript. Only the head of the file is read.
+pub fn has_message(p: &Path) -> bool {
+    let Ok(f) = fs::File::open(p) else { return false };
+    if !f.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        return false;
+    }
+    let mut head = vec![0u8; 64 * 1024];
+    let n = std::io::Read::read(&mut std::io::Read::take(f, head.len() as u64), &mut head).unwrap_or(0);
+    String::from_utf8_lossy(&head[..n]).contains("\"uuid\"")
 }
 
 /// How much of a transcript the root reader reads at most: the metadata
