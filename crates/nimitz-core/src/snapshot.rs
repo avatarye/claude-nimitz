@@ -90,8 +90,10 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             return false;
         }
         let young = r.appeared_at.is_some_and(|t| now - t < TRANSIENT_GRACE_S);
-        let picker = r.live() && r.short_id.is_none() && !started.contains(r.session_id.as_str()) && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none();
-        if young && (r.spare || picker) {
+        // a dispatched job that was a pre-warmed spare keeps `spare`: never hidden
+        let spare = r.spare && r.short_id.is_none();
+        let mut picker = || r.live() && r.short_id.is_none() && !started.contains(r.session_id.as_str()) && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none();
+        if young && (spare || picker()) {
             transient.push(r.session_id.clone());
             return false;
         }
@@ -227,7 +229,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         let mut roots: Vec<String> = vec![];
         if let Some(rec) = reg.identities.get(&id.0) {
             for sid in rec.session_ids() {
-                if let Some(p) = evidence::transcript(env, &mut cache.files, Some(cwd), sid) {
+                if let Some(p) = evidence::transcript_missing_cached(env, &mut cache.files, Some(cwd), sid) {
                     roots.extend(evidence::transcript_root(&mut cache.files, &p));
                 }
             }

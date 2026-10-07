@@ -102,6 +102,8 @@ pub struct FileCache {
     trust: HashMap<PathBuf, (SystemTime, Vec<PathBuf>)>,
     /// `transcript_root` per transcript, by mtime
     roots: HashMap<PathBuf, (SystemTime, Vec<String>)>,
+    /// lineage transcripts not found, and when (`transcript_missing_cached`)
+    missing: HashMap<String, f64>,
     events: EventTail,
 }
 
@@ -710,18 +712,23 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
     None
 }
 
-/// How many lines of a transcript the root reader looks at: the metadata
-/// lines (custom-title, agent-name, mode, snapshots) come first, then the
-/// attachments and the first user message.
-const ROOT_LINES: usize = 64;
+/// How much of a transcript the root reader reads at most: the metadata
+/// lines (custom-title, agent-name, mode) come first, then one
+/// `file-history-snapshot` per turn (a copy hoists every one of them above
+/// its first uuid line), then the attachments and the first user message.
+const ROOT_BYTES: usize = 4 * 1024 * 1024;
+/// How long a lineage transcript that was not found stays "missing" before
+/// `transcript_missing` looks for it again (the lookup scans every project dir).
+const MISSING_AGAIN_S: f64 = 60.0;
 
 /// The root of a conversation: the uuids near the top of its transcript (the
 /// first line that carries a `uuid`, the chain root, and the first `user` or
 /// `assistant` message with its `parentUuid`). A copy of a conversation
 /// (`/branch`, `/fork`, `--fork-session`, `--bg -c`) copies the transcript,
 /// so it shares these; a fresh conversation (`/clear`) has its own. Only the
-/// first lines are read, cached by (path, mtime). Empty when the transcript
-/// has no message yet.
+/// head of the file is read (`ROOT_BYTES`; lines without a uuid cost nothing
+/// but their bytes), cached by (path, mtime). Empty when the transcript has
+/// no message yet.
 pub fn transcript_root(cache: &mut FileCache, jsonl: &Path) -> Vec<String> {
     let Some(m) = mtime(jsonl) else { return vec![] };
     if let Some((t, root)) = cache.roots.get(jsonl) {
@@ -729,13 +736,23 @@ pub fn transcript_root(cache: &mut FileCache, jsonl: &Path) -> Vec<String> {
             return root.clone();
         }
     }
+    let out = fs::File::open(jsonl).map(|f| root_of_reader(std::io::BufReader::new(f))).unwrap_or_default();
+    cache.roots.insert(jsonl.to_path_buf(), (m, out.clone()));
+    out
+}
+
+fn root_of_reader(r: impl std::io::BufRead) -> Vec<String> {
     let mut out: Vec<String> = vec![];
-    if let Ok(f) = fs::File::open(jsonl) {
-        use std::io::BufRead;
-        for line in std::io::BufReader::new(f).lines().take(ROOT_LINES).map_while(Result::ok) {
-            if !line.contains("\"uuid\"") {
-                continue;
-            }
+    let mut read = 0usize;
+    for line in r.lines().map_while(Result::ok) {
+        read += line.len() + 1;
+        if read > ROOT_BYTES {
+            break;
+        }
+        if !line.contains("\"uuid\"") {
+            continue;
+        }
+        {
             let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
             let Some(uuid) = s(&v, "uuid") else { continue };
             let message = matches!(s(&v, "type").as_deref(), Some("user") | Some("assistant"));
@@ -751,8 +768,24 @@ pub fn transcript_root(cache: &mut FileCache, jsonl: &Path) -> Vec<String> {
     }
     out.sort();
     out.dedup();
-    cache.roots.insert(jsonl.to_path_buf(), (m, out.clone()));
     out
+}
+
+/// `transcript`, for a lineage conversation whose file may be gone: a miss is
+/// remembered for `MISSING_AGAIN_S`, so the scan of every project dir is not
+/// repeated on each refresh.
+pub fn transcript_missing_cached(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str) -> Option<PathBuf> {
+    let t = now();
+    if cache.missing.get(sid).is_some_and(|at| t - at < MISSING_AGAIN_S) {
+        return None;
+    }
+    let found = transcript(env, cache, cwd, sid);
+    if found.is_none() {
+        cache.missing.insert(sid.to_string(), t);
+    } else {
+        cache.missing.remove(sid);
+    }
+    found
 }
 
 /// Transcripts in a folder's project dir, newest first: (last write, session id).
@@ -958,6 +991,30 @@ mod tests {
         assert_eq!(e.labels.get("NIMITZ_ID").map(String::as_str), Some("F"));
         assert!(parse_event_line("{\"event\": 3}").is_none());
         assert!(parse_event_line("garbage").is_none());
+    }
+
+    #[test]
+    fn the_root_of_a_real_shaped_transcript_head_is_found_past_the_snapshots() {
+        // a copy hoists every file-history-snapshot (one per turn) above its
+        // first uuid line: 200 of them must not hide the root
+        let mut head = String::new();
+        head.push_str("{\"type\": \"custom-title\", \"customTitle\": \"[E2E.SQ]-S1\", \"sessionId\": \"s\"}\n");
+        head.push_str("{\"type\": \"agent-name\", \"agentName\": \"S1\", \"sessionId\": \"s\"}\n");
+        head.push_str("{\"type\": \"mode\", \"mode\": \"default\", \"sessionId\": \"s\"}\n");
+        for i in 0..200 {
+            head.push_str(&format!("{{\"type\": \"file-history-snapshot\", \"messageId\": \"m{i:04}\", \"snapshot\": {{\"trackedFileBackups\": {{}}, \"timestamp\": \"2026-10-07T00:00:00.000Z\"}}, \"isSnapshotUpdate\": false}}\n"));
+        }
+        head.push_str("{\"parentUuid\": null, \"isSidechain\": false, \"attachment\": {}, \"type\": \"attachment\", \"uuid\": \"f0afe4e5\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"f0afe4e5\", \"isSidechain\": false, \"attachment\": {}, \"type\": \"attachment\", \"uuid\": \"0061d5f7\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"0061d5f7\", \"isSidechain\": false, \"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"reply ok\"}, \"uuid\": \"05fb9112\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"05fb9112\", \"type\": \"assistant\", \"uuid\": \"30290373\"}\n");
+        let root = root_of_reader(std::io::Cursor::new(head.as_bytes()));
+        assert_eq!(root, ["0061d5f7", "05fb9112", "f0afe4e5"]);
+        // no message yet: no root
+        assert!(root_of_reader(std::io::Cursor::new(b"{\"type\": \"custom-title\"}\n")).is_empty());
+        // the byte bound stops a file whose head is all snapshots
+        let big = "{\"type\": \"file-history-snapshot\", \"snapshot\": \"x\"}\n".repeat(ROOT_BYTES / 40);
+        assert!(root_of_reader(std::io::Cursor::new(format!("{big}{{\"type\": \"user\", \"uuid\": \"late\"}}\n").as_bytes())).is_empty());
     }
 
     #[test]

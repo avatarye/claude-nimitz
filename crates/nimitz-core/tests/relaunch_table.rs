@@ -1601,7 +1601,7 @@ fn bug55_an_impostor_with_the_labels_never_counts_as_the_member() {
 }
 
 #[test]
-fn name_taken_by_a_hand_copy_in_the_folder_offers_only_stop() {
+fn a_copy_by_name_in_the_folder_is_swept_and_a_holder_elsewhere_is_name_taken() {
     let w = world();
     let snap = w.snap();
     // TAKEN's holder runs in TAKEN's own folder: a copy, swept, never adopted

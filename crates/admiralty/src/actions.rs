@@ -80,7 +80,7 @@ impl Act {
             Act::Open => "open: attach in a new pane",
             Act::Stop => "stop",
             Act::Relaunch => "relaunch (same session id and history; labels, name and mode restored)",
-            Act::Sweep => "sweep stale job rows",
+            Act::Sweep => "sweep: stop and remove copies, remove stale job rows",
             Act::Rm => "rm job rows (transcripts kept)",
             Act::Adopt => "adopt as a ship",
             Act::ConfigRm => "remove from the config",

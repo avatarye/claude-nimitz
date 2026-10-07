@@ -252,8 +252,13 @@ its birth `sessionId` (`SessionInfo::birth_id` keeps the birth id when the
 conversation moved: `/clear`, `/branch`). A live process with no job
 (interactive, SDK) is its own row, even on a job's conversation. The CLI
 cross-check joins the same way. Not rows at all (plan-v4 section 6): a
-session labelled for another `NIMITZ_HOME` (`registry::other_home`; the hook
-writes no line for it either: no issue, no fix, no row), and, for
+background job of another `NIMITZ_HOME` (its `respawnFlags` labels say so,
+`registry::other_home`; the hook writes no line for it either: no issue, no
+fix, no row). An interactive or SDK session of another home carries no labels
+anywhere nimitz can read (its labels live in that process's env only, and the
+hook of this home writes no line), so it cannot be recognised: it is
+classified as an unlabelled session (the user's own in a ship folder, a
+stowaway elsewhere in scope). Also not rows, for
 `snapshot::TRANSIENT_GRACE_S` (120 s) after its session file appeared (the
 earliest of the file's birth time, its mtime and `startedAt`), a `spare: true`
 session file (the agent view's "new session" or draft) and a picker (a live

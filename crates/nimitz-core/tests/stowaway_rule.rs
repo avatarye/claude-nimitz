@@ -292,11 +292,12 @@ fn cli_g4_sweep_stops_and_removes_background_copies_after_one_confirm() {
     assert!(rows.iter().any(|r| r.short_id.as_deref() == Some(job.as_str())));
     let m = w.member(&w.snap(), &id);
     assert!(!has(&m.issues, "copy") && m.extra_rows.is_empty(), "{:?}", m.issues);
-    // a commodore sweeps its own ships' copies too; a ship may not
+    // a commodore sweeps its own ships' copies too; a ship only itself
     let me = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
     assert!(sessions::plan_sweep(&w.env, &w.snap(), Some(&id), &me).ok());
     let ship = Caller::Member { id: id.clone(), role: Role::Ship };
-    assert!(!sessions::plan_sweep(&w.env, &w.snap(), Some(&id), &ship).ok());
+    assert!(sessions::plan_sweep(&w.env, &w.snap(), Some(&id), &ship).ok());
+    assert!(!sessions::plan_sweep(&w.env, &w.snap(), Some(&w.ship("CLEAN")), &ship).ok());
 }
 
 #[test]
@@ -402,4 +403,19 @@ fn a_live_background_stowaway_keeps_the_stop_then_rm_fix() {
     let i = check::check(&w.env, &snap, None).into_iter().find(|i| i.code == "stowaway" && i.message.contains("quick look at the logs")).unwrap();
     let fix = i.fix.unwrap();
     assert!(fix.starts_with("nimitz stop ") && fix.contains(", then nimitz rm "), "{fix}");
+}
+
+#[test]
+fn a_dispatched_job_that_was_a_pre_warmed_spare_is_never_hidden() {
+    let w = world();
+    let (id, job, _, _) = clean(&w);
+    // the daemon claimed a spare for the ship's job: the session file keeps `spare: true`
+    let p = w.base.join("claude_home/sessions").join(format!("{job}.json"));
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    v["spare"] = json!(true);
+    v["startedAt"] = json!((evidence::now() * 1000.0) as i64);
+    std::fs::write(&p, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let m = w.member(&w.snap(), &id);
+    assert_eq!(m.status, Status::Idle, "{:?}", m.reasons);
+    assert_eq!(m.session.as_ref().and_then(|s| s.short_id.as_deref()), Some(job.as_str()));
 }
