@@ -1278,7 +1278,13 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
         refuse(&mut plan, "session.none", format!("session {} is not a live background session", row.session_id), None, owner);
         return plan;
     };
-    plan.steps.push(Step { id: owner, cmd: crate::claude::stop(env, &short), cwd: None, why });
+    plan.steps.push(Step { id: owner.clone(), cmd: crate::claude::stop(env, &short), cwd: None, why });
+    // a copy goes with its stop (as `sweep` does): once stopped, a copy that
+    // was never prompted has no name, no labels and no transcript, so no
+    // nimitz command sees its row again (cli-N1)
+    if row.copy.is_some() {
+        plan.steps.push(Step { id: owner, cmd: crate::claude::rm(env, &short), cwd: None, why: format!("a copy's row goes with its stop ({}); the transcript stays", copy_how(&row)) });
+    }
     plan
 }
 

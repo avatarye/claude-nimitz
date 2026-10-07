@@ -403,8 +403,8 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `machine.missing` | the fleet does not run on this machine |
 | `session.unknown` | the target names no member's session, no stowaway and no holder of a fleet name |
 | `session.none` | the action needs a (live, background) session and there is none |
-| `session.live` | the action needs the session stopped first (`rm`, retire) |
-| `session.interactive` | the member runs in a process with no job (a 0.3.x interactive lead, an SDK host): `stop` and `relaunch` cannot reach it; end it in its own terminal (`/exit`) |
+| `session.live` | the action needs the session stopped first (`rm`, retire). `nimitz stop <short>` of a copy plans its `rm` with the stop, as `sweep` does: a never-prompted copy has no name, no labels and no transcript once stopped, and no command would see its row again (cli-N1) |
+| `session.interactive` | the member runs in a process with no job (a 0.3.x interactive lead, an SDK host, a `claude --resume` of its conversation by hand: `held`): `stop` and `relaunch` cannot reach it, and never answer `session.none` or `dup.live` with a `nimitz stop <sid>` that cannot work (cli-18); the fix is the held one: end that process in its host, then `nimitz start` |
 | `session.live` | also `wake_steps` of a live job: a resume of a live job starts a copy |
 | `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
 | `lineage.current` | `rm` of a member's current session: its row goes with the member, never alone (fix: `nimitz relaunch <id>` replaces it, `nimitz ship|squadron|fleet rm <id>` retires the member) |
