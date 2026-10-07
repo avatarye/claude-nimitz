@@ -30,7 +30,11 @@ pub struct ShapePane {
     pub tab_id: String,
     pub workspace_id: String,
     pub cwd: String,
+    /// the session the pane shows (a claim its foreground backs)
     pub session_id: Option<String>,
+    /// the multiplexer's own claim, backed or not (only the agent view test reads it)
+    #[serde(default)]
+    pub claimed: Option<String>,
     pub foreground: Option<Vec<String>>,
     /// the pid of what runs in the foreground, when the mux read it
     pub foreground_pid: Option<i64>,
@@ -280,9 +284,16 @@ impl Ctx<'_> {
         if !same {
             return Some(false);
         }
-        // the attach of the member's job, but the pane shows another agent:
-        // the agent view (`/exit` inside the attach, R-24) or a copy
-        Some(p.session_id.is_none())
+        // the attach of the member's job, but Herdr says the pane shows
+        // another agent (its own hook ran in this pane): the agent view
+        // (`/exit` inside the attach, R-24) or a copy
+        // A claim that names ANOTHER member's session is that member's hook
+        // naming the pane by an inherited HERDR_PANE_ID (a ship launched from
+        // here), not the agent view: the attach still runs, so the pane is
+        // the member's. The view's draft spare and a copy carry no labels and
+        // name no member.
+        let other = |sid: &String| !(sid == &s.session_id || s.birth_id.as_deref() == Some(sid) || (s.short_id.is_some() && self.job_of.get(sid) == s.short_id.as_ref())) && !self.member_of.get(sid).is_some_and(|o| o != &m.id);
+        Some(p.session_id.is_none() && !p.claimed.as_ref().is_some_and(other))
     }
 
     /// The pane that holds `h`'s conversation interactively: it shows that

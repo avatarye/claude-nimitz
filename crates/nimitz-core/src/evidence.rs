@@ -258,10 +258,37 @@ pub fn row_labels(r: &SessionRow, by_pid: &HashMap<(i64, String), BTreeMap<Strin
     let saved = || is_labelled(&r.job_labels).then(|| r.job_labels.clone());
     let newest = || by_sid.get(&r.session_id).cloned();
     let own = || r.pid.and_then(|p| by_pid.get(&(p, r.session_id.clone())).cloned());
+    // a job: its row's saved labels decide alone (a job launched without
+    // labels carries the daemon's inherited ones in its env, and in its hook
+    // lines: `job_backs_labels`); a job whose row is not written yet, or a
+    // pre-warmed spare's, has none to show
+    if r.short_id.is_some() {
+        return saved().unwrap_or_default();
+    }
     match r.pid {
         Some(_) => own().or_else(saved).or_else(newest).unwrap_or_default(),
         None => saved().or_else(newest).unwrap_or_default(),
     }
+}
+
+/// Do a background job's NIMITZ_* labels come from its own launch? Claude
+/// Code's daemon hands its own environment to every job it starts, so a
+/// daemon started from a labelled lead's shell gives that lead's labels to
+/// every job launched without labels of its own (the user's `claude --bg`, a
+/// hand copy, the agent view's draft). A job's labels count only when its row
+/// saved them (`--settings` in `respawnFlags`) and they name the same id.
+/// `None`: nothing to judge by (no job: an interactive or SDK process, whose
+/// env is its labels; or a job whose row is not written yet).
+pub fn job_backs_labels(claude_home: &Path, job: Option<&str>, labels: &BTreeMap<String, String>) -> Option<bool> {
+    let saved = job_saved_labels(claude_home, job?)?;
+    Some(is_labelled(&saved) && saved.get("NIMITZ_ID") == labels.get("NIMITZ_ID"))
+}
+
+/// The NIMITZ_* labels a job's launch saved (`respawnFlags --settings`);
+/// `None` when the job has no row (yet).
+pub fn job_saved_labels(claude_home: &Path, job: &str) -> Option<BTreeMap<String, String>> {
+    let d = std::fs::read(claude_home.join("jobs").join(job).join("state.json")).ok().and_then(|b| first_json(&b))?;
+    Some(job_labels(&d))
 }
 
 /// The key a row's labels and copy verdict are kept under: its job (short
@@ -360,7 +387,9 @@ pub(crate) fn job_labels(d: &Value) -> BTreeMap<String, String> {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
         if let Some(env) = v.get("env").and_then(|e| e.as_object()) {
             for (k, x) in env {
-                if let (true, Some(x)) = (k.starts_with("NIMITZ_"), x.as_str()) {
+                // the identity labels only (a launch may also carry nimitz's
+                // own state paths: `claude::settings_json`)
+                if let (true, Some(x)) = (["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_HOME"].contains(&k.as_str()), x.as_str()) {
                     out.insert(k.clone(), x.to_string());
                 }
             }
@@ -1102,4 +1131,91 @@ mod tests {
         assert!(!has_message(&td.path().join("missing.jsonl")));
     }
 
+}
+
+/// Does what runs in a pane back its multiplexer's claim that the pane shows
+/// session `sid`? Herdr learns a pane's session from its own SessionStart
+/// hook, which names the pane by the process's inherited `HERDR_PANE_ID`: a
+/// background job carries the pane id of whoever launched it (or the
+/// daemon's), so the claim alone can name the wrong pane (a ship's session in
+/// its commodore's pane). A claim stands when a foreground process
+/// (`procs`: argv and pid) names the session (`--resume <sid>`), attaches to
+/// its job (`claude attach <job>`), or has a session file
+/// (`sessions/<pid>.json`) that names it.
+pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], sid: &str) -> bool {
+    let job_of = |short: &str| -> bool {
+        if sid.starts_with(short) {
+            return true;
+        }
+        let row = std::fs::read(claude_home.join("jobs").join(short).join("state.json")).ok().and_then(|b| first_json(&b));
+        if row.as_ref().is_some_and(|v| ["sessionId", "resumeSessionId"].iter().any(|k| v.get(k).and_then(|x| x.as_str()) == Some(sid))) {
+            return true;
+        }
+        std::fs::read_dir(claude_home.join("sessions")).into_iter().flatten().flatten().filter_map(|e| std::fs::read(e.path()).ok().and_then(|b| first_json(&b))).any(|v| v.get("jobId").and_then(|x| x.as_str()) == Some(short) && v.get("sessionId").and_then(|x| x.as_str()) == Some(sid))
+    };
+    procs.iter().any(|(argv, pid)| {
+        argv.iter().any(|a| a == sid)
+            || argv.windows(2).any(|w| w[0] == "attach" && job_of(&w[1]))
+            || pid.is_some_and(|p| {
+                std::fs::read(claude_home.join("sessions").join(format!("{p}.json"))).ok().and_then(|b| first_json(&b)).and_then(|v| v.get("sessionId").and_then(|x| x.as_str()).map(|x| x == sid)).unwrap_or(false)
+            })
+    })
+}
+
+/// The session a pane's foreground runs, read from the processes themselves
+/// (no multiplexer claim): a foreground pid's session file (an interactive
+/// session in the pane). What a pane shows when Herdr's claim is not backed.
+/// Not an attach client's job: an attach may show the agent view instead
+/// (R-24), which only Herdr's claim tells.
+pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
+    // only a Claude Code process (a stale session file whose pid another
+    // program reuses names nothing): `claude`, or the native binary under
+    // `.../claude/versions/<v>`
+    let is_claude = |argv: &Vec<String>| {
+        argv.first().is_some_and(|a0| Path::new(a0).file_name().is_some_and(|n| n.to_string_lossy().starts_with("claude")) || a0.contains("/claude/versions/"))
+            // an npm install runs `node .../@anthropic-ai/claude-code/cli.js`
+            || argv.get(1).is_some_and(|a1| a1.contains("claude-code/cli"))
+    };
+    procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(_, pid)| {
+        let v = std::fs::read(claude_home.join("sessions").join(format!("{}.json", (*pid)?))).ok().and_then(|b| first_json(&b))?;
+        v.get("sessionId").and_then(|x| x.as_str()).map(String::from)
+    })
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::claim_backed;
+
+    /// A pane's session claim stands on its foreground: the session named in
+    /// the argv, an attach of its job (state.json or a session file), or the
+    /// foreground pid's session file. A claude process whose own session file
+    /// names another session does not back it (a ship's id in its
+    /// commodore's pane).
+    #[test]
+    fn a_claim_stands_only_on_what_runs_in_the_pane() {
+        let td = tempfile::tempdir().unwrap();
+        let ch = td.path();
+        std::fs::create_dir_all(ch.join("sessions")).unwrap();
+        std::fs::create_dir_all(ch.join("jobs/aaaa1111")).unwrap();
+        std::fs::write(ch.join("jobs/aaaa1111/state.json"), r#"{"sessionId":"aaaa1111-birth","resumeSessionId":"s-after-clear"}"#).unwrap();
+        std::fs::write(ch.join("sessions/700.json"), r#"{"pid":700,"sessionId":"s-commodore","jobId":null}"#).unwrap();
+        let p = |argv: &[&str], pid: Option<i64>| vec![(argv.iter().map(|x| x.to_string()).collect::<Vec<_>>(), pid)];
+        assert!(claim_backed(ch, &p(&["claude", "--resume", "s-ship"], None), "s-ship"));
+        assert!(claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-after-clear"));
+        assert!(claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "aaaa1111-birth"));
+        assert!(claim_backed(ch, &p(&["claude"], Some(700)), "s-commodore"));
+        // the misattribution: the commodore's process, Herdr says the ship's session
+        assert!(!claim_backed(ch, &p(&["claude"], Some(700)), "s-ship"));
+        assert!(!claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-ship"));
+        assert!(!claim_backed(ch, &p(&["zsh"], Some(1)), "s-ship"));
+        assert!(!claim_backed(ch, &[], "s-ship"), "an unreadable foreground backs nothing");
+        // what the pane runs, from the processes alone
+        assert_eq!(super::session_of_foreground(ch, &p(&["claude"], Some(700))).as_deref(), Some("s-commodore"));
+        assert_eq!(super::session_of_foreground(ch, &p(&["claude", "attach", "aaaa1111"], None)), None, "an attach may show the agent view");
+        assert_eq!(super::session_of_foreground(ch, &p(&["zsh"], Some(1))), None);
+        // a stale session file of a reused pid: the program is not claude
+        assert_eq!(super::session_of_foreground(ch, &p(&["vim"], Some(700))), None);
+        assert_eq!(super::session_of_foreground(ch, &p(&["/home/u/.local/share/claude/versions/2.1.292"], Some(700))).as_deref(), Some("s-commodore"));
+        assert_eq!(super::session_of_foreground(ch, &p(&["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"], Some(700))).as_deref(), Some("s-commodore"), "an npm install");
+    }
 }

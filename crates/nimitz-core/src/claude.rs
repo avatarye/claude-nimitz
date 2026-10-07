@@ -54,10 +54,44 @@ impl Row {
 }
 
 /// Run a command to completion with stdin closed: (exit code, stdout + stderr).
+/// Every `claude` process nimitz starts begins with none of the caller's
+/// session state: a member's labels go only through `--settings`. Claude
+/// Code's daemon is started by whichever `claude` call finds none running and
+/// keeps that process's environment for every job it starts; a daemon started
+/// from a labelled lead's shell labelled every unlabelled job as that lead
+/// and gave them its pane and its messaging socket. Removed (a denylist of
+/// session state; Claude Code's own: `CLAUDE_CODE_ENTRYPOINT`,
+/// `CLAUDE_CODE_MESSAGING_*` are per session, every other `CLAUDE_CODE_*` and
+/// `ANTHROPIC_*` is the user's config and passes): nimitz's identity and
+/// multiplexer names, every `HERDR_*`, `CLAUDE_PID`, `CLAUDECODE`,
+/// `CLAUDE_BG_*`, and the session-scoped `CLAUDE_CODE_*` below.
+pub fn scrub_child_env(c: &mut Command) {
+    const NAMES: &[&str] = &[
+        "NIMITZ_ID", "NIMITZ_ROLE", "NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_PARENT",
+        "NIMITZ_MUX", "NIMITZ_HERDR_SESSION", "NIMITZ_HERDR_SOCKET", "NIMITZ_HOOK_PID", "NIMITZ_HOOK_SESSION_FILE",
+        "CLAUDE_PID", "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+        // per session too (Claude Code strips them for its own children): the
+        // launching job's attended mode, tmp dir and effort level, an SDK host's flags
+        "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_JOB_DIR", "CLAUDE_EFFORT",
+        "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH", "CLAUDE_CODE_SDK_READS_SESSION_STATE",
+        "CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE",
+    ];
+    const PREFIXES: &[&str] = &["HERDR_", "CLAUDE_BG_", "CLAUDE_CODE_RESUME_", "CLAUDE_BRIDGE_"];
+    for (k, _) in std::env::vars_os() {
+        let k = k.to_string_lossy().into_owned();
+        if NAMES.contains(&k.as_str()) || PREFIXES.iter().any(|p| k.starts_with(p)) {
+            c.env_remove(&k);
+        }
+    }
+}
+
 pub fn run(cmd: &[String], cwd: Option<&str>) -> (i32, String) {
     let Some(bin) = cmd.first() else { return (-1, "empty command".into()) };
     let mut c = Command::new(bin);
     c.args(&cmd[1..]).stdin(Stdio::null());
+    scrub_child_env(&mut c);
     if let Some(d) = cwd {
         c.current_dir(d);
     }
@@ -72,9 +106,10 @@ pub fn run(cmd: &[String], cwd: Option<&str>) -> (i32, String) {
 
 /// `claude agents --json --all` through the native binary.
 pub fn agents(env: &Env) -> Result<Vec<Row>, String> {
-    let out = Command::new(&env.native_claude_bin)
-        .args(["agents", "--json", "--all"])
-        .stdin(Stdio::null())
+    let mut c = Command::new(&env.native_claude_bin);
+    c.args(["agents", "--json", "--all"]).stdin(Stdio::null());
+    scrub_child_env(&mut c);
+    let out = c
         .output()
         .map_err(|e| format!("`claude agents --json --all` failed: {e}"))?;
     let v = crate::evidence::first_json(&out.stdout).ok_or_else(|| {
@@ -129,7 +164,15 @@ pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 /// launch and lives in the job's `respawnFlags`, so a restart keeps it and a
 /// relaunch (every flag again) re-adds it.
 pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
-    let mut v = serde_json::json!({ "env": labels_for(env, id), "permissions": { "allow": [NIMITZ_ALLOW] } });
+    let mut vars = labels_for(env, id);
+    // nimitz's own places: the member's hook writes where this nimitz reads,
+    // whatever env the daemon that runs the job was started with (its env is
+    // not the caller's)
+    vars.insert("NIMITZ_STATE".to_string(), env.state.to_string_lossy().into_owned());
+    vars.insert("NIMITZ_CLAUDE_HOME".to_string(), env.claude_home.to_string_lossy().into_owned());
+    // (and the machine name it knows: an alias the caller set holds inside the job's hook)
+    vars.insert("NIMITZ_HOSTNAME".to_string(), env.hostname.clone());
+    let mut v = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
     if background {
         v["worktree"] = serde_json::json!({ "bgIsolation": "none" });
     }

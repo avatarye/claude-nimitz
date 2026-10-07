@@ -147,6 +147,7 @@ pub fn parse_snapshot(v: &Value) -> Result<Shape, String> {
                         title: s(p, "terminal_title_stripped"),
                         agent: agent_kind.get(&id).filter(|k| !k.is_empty()).cloned(),
                         session_id: agent.and_then(|a| a.session_id.clone()),
+                        claimed: agent.and_then(|a| a.session_id.clone()),
                         state: agent.map(|a| a.state.clone()).unwrap_or_else(|| s(p, "agent_status")),
                         foreground: None,
                         foreground_pid: None,
@@ -158,7 +159,7 @@ pub fn parse_snapshot(v: &Value) -> Result<Shape, String> {
     // an agent whose pane the panes list lacks (never seen; kept for safety)
     for a in agents {
         if !panes.iter().any(|p| p.pane.pane_id == a.pane.pane_id) {
-            panes.push(ShapePane { pane: a.pane, cwd: a.cwd, title: a.title, agent: Some("claude".into()), session_id: a.session_id, state: a.state, foreground: None, foreground_pid: None });
+            panes.push(ShapePane { pane: a.pane, cwd: a.cwd, title: a.title, agent: Some("claude".into()), claimed: a.session_id.clone(), session_id: a.session_id, state: a.state, foreground: None, foreground_pid: None });
         }
     }
     panes.sort_by(|a, b| a.pane.pane_id.cmp(&b.pane.pane_id));
@@ -261,9 +262,49 @@ impl Herdr {
         v
     }
 
+    /// Every foreground process of a pane: argv and pid (`pane process-info`).
+    fn foreground_procs(&self, pane_id: &str) -> Result<Vec<(Vec<String>, Option<i64>)>, MuxError> {
+        let v = self.run(&["pane", "process-info", "--pane", pane_id])?;
+        let procs = parse_process_info(&v).map_err(MuxError::Failed)?;
+        let pids = process_pids(&v);
+        Ok(procs.into_iter().enumerate().map(|(i, a)| (a, pids.get(i).copied().flatten())).collect())
+    }
+
+    /// Keep a pane's session claim only when its foreground backs it
+    /// (`evidence::claim_backed`): Herdr's own hook names the pane by the
+    /// process's inherited `HERDR_PANE_ID`, which a background job brings
+    /// from whoever launched it. An unreadable foreground drops the claim.
+    /// The session a pane shows: Herdr's claim when the foreground backs it,
+    /// else the session the foreground itself runs (a commodore's pane that a
+    /// ship's hook claimed still shows the commodore), else none.
+    fn shown(&self, pane_id: &str, claim: &str, procs: Option<&[(Vec<String>, Option<i64>)]>) -> Option<String> {
+        let home = nimitz_core::env::Env::from_vars(&std::env::vars().collect()).claude_home;
+        let read;
+        let procs = match procs {
+            Some(p) => p,
+            None => {
+                read = self.foreground_procs(pane_id).unwrap_or_default();
+                &read[..]
+            }
+        };
+        if nimitz_core::evidence::claim_backed(&home, procs, claim) {
+            return Some(claim.to_string());
+        }
+        nimitz_core::evidence::session_of_foreground(&home, procs)
+    }
+
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
         let mut cmd = Command::new(&self.bin);
         cmd.args(self.argv(args));
+        // a named server (a session name or a recorded socket) is the only
+        // one spoken to: the child herdr inherits this process's env, so
+        // whatever HERDR_* came with it (a pane's, or the daemon's for a
+        // member) goes, and only the recorded socket is set
+        if self.session.is_some() || self.socket.is_some() {
+            for k in ["HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_CLIENT_SOCKET_PATH"] {
+                cmd.env_remove(k);
+            }
+        }
         if let Some(sock) = &self.socket {
             cmd.env("HERDR_SOCKET_PATH", sock);
         }
@@ -417,15 +458,24 @@ impl Mux for Herdr {
     fn shape(&self, foregrounds: bool) -> Result<Shape, MuxError> {
         let v = self.run(&["api", "snapshot"])?;
         let mut shape = parse_snapshot(&v).map_err(MuxError::Failed)?;
-        if foregrounds {
-            for p in shape.panes.iter_mut() {
-                // one process-info per pane: what runs (the first non-shell) and its pid
-                let Ok(v) = self.run(&["pane", "process-info", "--pane", &p.pane.pane_id]) else { continue };
-                let Ok(procs) = parse_process_info(&v) else { continue };
-                let pids = process_pids(&v);
-                let at = procs.iter().position(|argv| !crate::is_shell(argv));
-                p.foreground = Some(at.map(|i| procs[i].clone()).unwrap_or_default());
-                p.foreground_pid = at.and_then(|i| pids.get(i).copied().flatten());
+        for p in shape.panes.iter_mut() {
+            // a pane that claims a session is read in any case (the claim
+            // must be backed); every pane when the foregrounds were asked for
+            if !foregrounds && p.session_id.is_none() {
+                continue;
+            }
+            // one process-info per pane: what runs (the first non-shell) and its pid
+            let procs = self.foreground_procs(&p.pane.pane_id).ok();
+            p.claimed = p.session_id.clone();
+            if let Some(sid) = p.session_id.clone() {
+                p.session_id = self.shown(&p.pane.pane_id, &sid, Some(procs.as_deref().unwrap_or(&[])));
+            }
+            if foregrounds {
+                if let Some(procs) = procs {
+                    let at = procs.iter().position(|(argv, _)| !crate::is_shell(argv));
+                    p.foreground = Some(at.map(|i| procs[i].0.clone()).unwrap_or_default());
+                    p.foreground_pid = at.and_then(|i| procs[i].1);
+                }
             }
         }
         Ok(shape)
@@ -441,7 +491,13 @@ impl Mux for Herdr {
 
     /// Agent panes Herdr knows about; empty on any error (same as not inside Herdr).
     fn panes(&self) -> Vec<Pane> {
-        self.run(&["agent", "list"]).map(|v| parse_panes(&v)).unwrap_or_default()
+        let mut panes = self.run(&["agent", "list"]).map(|v| parse_panes(&v)).unwrap_or_default();
+        for p in panes.iter_mut() {
+            if let Some(sid) = p.session_id.clone() {
+                p.session_id = self.shown(&p.pane.pane_id, &sid, None);
+            }
+        }
+        panes
     }
 
     fn open(&self, cmd: &[String], cwd: &Path, place: Place) -> Result<PaneRef, MuxError> {

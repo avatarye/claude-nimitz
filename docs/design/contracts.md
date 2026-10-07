@@ -113,6 +113,44 @@ Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 
 ## 5. Registry and events (`NIMITZ_STATE`)
 
+**Every `claude` nimitz starts begins without the caller's session state**
+(`claude::scrub_child_env`, on launch, wake, relaunch, stop, rm, `agents` and
+the version checks; a denylist): nimitz's identity and multiplexer names
+(`NIMITZ_ID`, `_ROLE`, `_FLEET`, `_SQUADRON`, `_PARENT`, `_MUX`, `_HERDR_*`,
+`_HOOK_*`), every `HERDR_*`, `CLAUDE_PID`, `CLAUDECODE`, `CLAUDE_BG_*`,
+`CLAUDE_CODE_RESUME_*` and the per-session `CLAUDE_CODE_ENTRYPOINT`,
+`_EXECPATH`, `_MESSAGING_SOCKET`, `_MESSAGING_TOKEN`, `_SESSION_ID`,
+`_BRIDGE_SESSION_ID`, `_CHILD_SESSION`, `_SESSION_ATTENDED`, `_SDK_HAS_OAUTH_REFRESH`,
+`_SDK_READS_SESSION_STATE`, `_HOST_WORKTREE*`, `CLAUDE_BRIDGE_*`, `CLAUDE_JOB_DIR` and
+`CLAUDE_EFFORT` (the launching session's own). Everything else passes: the user's
+`CLAUDE_CODE_*` and `ANTHROPIC_*` config (auth, proxy, provider, tuning;
+Claude Code copies a job's provider settings from the launching command),
+and nimitz's own config. A member's labels go only through `--settings`,
+which also carries nimitz's `NIMITZ_STATE`, `NIMITZ_CLAUDE_HOME` and `NIMITZ_HOSTNAME`, so the
+member's hook writes where this nimitz reads whatever env the daemon has. A daemon that such a call
+happens to start keeps a clean environment, whoever ran nimitz. The `claude
+attach <job>` typed into a Herdr pane runs in that pane's shell, with the
+pane's own env.
+
+**A background job's labels are the ones its launch saved.** Claude Code's
+daemon hands its own environment to every job it starts, so a daemon started
+from a labelled lead's shell (an interactive 0.3.x lead that ran `claude --bg`)
+labels every job launched without labels of its own (the user's `claude --bg`,
+a hand copy, the agent view's draft) as that lead. A job's `NIMITZ_*` count
+only when its row saved them (`--settings` in `respawnFlags`) and they name the
+same id (`evidence::job_backs_labels`); otherwise the session is unlabelled,
+in the hook (no binding, no rules, no signal authority, no needs-you), in a
+replay, and in the snapshot (`row_labels`: a job row's saved labels decide).
+Once backed, the effects use the saved labels, not the env's (an inherited
+key the launch did not name stays out). The SessionStart hook waits up to
+500 ms for a new job's row; still none, the session is left unlabelled for now
+(no rules: its first prompt gets them in full through `rules::update_for`; no
+binding), the event line keeps the env's labels, and `status` replays it,
+binding only when the row then backs them (so does the launch's own wait,
+`wait_for_binding`, and its check). Only SessionStart waits for a row. A spare (`spare: true`) is never
+labelled. A process
+with no job (interactive, SDK) is labelled by its env, as before.
+
 `registry.json` (atomic write: temp + rename; `registry.lock` with `flock`; every
 save also writes `registry.json.bak`, the last good copy). **A registry never
 shrinks except by an explicit removal** (none exists in 0.4.0): every write
@@ -569,6 +607,21 @@ when it could not be read (never typed into). `herdr::parse_snapshot` is the
 pure reader; the test `fixture_snapshot_shape` runs it on the 0.9.3 capture
 and on the fake's `api snapshot`, which must carry the same field set.
 
+A pane's session is taken only when its foreground backs Herdr's claim
+(`evidence::claim_backed`, applied in the adapter to `panes()` and `shape()`):
+a foreground process names the session (`--resume <sid>`), attaches to its
+job (`claude attach <job>`), or has a session file (`sessions/<pid>.json`)
+that names it. Herdr learns a pane's session from its own SessionStart hook,
+which names the pane by the process's inherited `HERDR_PANE_ID`; a background
+job inherits the pane id of whoever launched it (or the daemon's), so the
+claim alone can put a ship in its commodore's pane. An unbacked claim leaves
+the pane with no session (`ShapePane.claimed` keeps it for the agent-view
+test, R-24; a claim that names another member's session is that member's
+hook, not the agent view); the pane then shows the session its foreground
+pid's session file names, if any. A pane whose foreground cannot be read
+(`pane process-info` fails) shows no session at all. The cost: one `pane
+process-info` per claimed pane on `status` and on every `panes()` read.
+
 `NIMITZ_STATE/active.json` (`nimitz_core::active`, version 1): the members
 live at the last write, by id: `{job, session, status (busy|idle|needs-you|
 unknown), waiting_for, attached, place {workspace_id, workspace, tab_id, tab,
@@ -609,8 +662,11 @@ No member's command and no hook path runs a Herdr command on inherited
 `HERDR_*` alone (`active::member_mux_vars`): a member's `status`, `up`,
 `layout`, `restore` and a needs-you delivery (`nimitz __notify`) take an
 explicit `NIMITZ_MUX`/`NIMITZ_HERDR_SESSION` as given, else the recorded
-identity's session name as `--session`, else no multiplexer (a record with no
-session name is no multiplexer too). Only the user's own command detects
+identity's session name as `--session` (with its socket when recorded), else
+the recorded default server's socket (`NIMITZ_HERDR_SOCKET`), else no
+multiplexer. The herdr child of such a call gets that server only: its
+inherited `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `HERDR_CLIENT_SOCKET_PATH`
+are removed, and only the recorded socket is set. Only the user's own command detects
 Herdr from its env.
 The E22 hazard (the CLI may resolve a named session's socket regardless of
 the env) is accepted: the shape nimitz reads comes from the same `herdr`

@@ -58,6 +58,50 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     if !crate::evidence::is_labelled(&labels) {
         labels.clear();
     }
+    // The Claude Code process (the hook's parent); a sandbox names it. A hook
+    // written as one command string runs under `sh -c`: then the parent is a
+    // shell and the Claude Code process is its parent (r3-e2e.md finding 7).
+    let given: i64 = vars.get("NIMITZ_HOOK_PID").and_then(|p| p.parse().ok()).unwrap_or_else(|| unsafe { libc::getppid() } as i64);
+    let pid = if vars.get("NIMITZ_HOOK_SESSION_FILE").is_some_and(|p| !p.is_empty()) {
+        given // the sandbox names the session file; the pid is its own
+    } else {
+        claude_pid(given, |p| env.claude_home.join("sessions").join(format!("{p}.json")).is_file(), parent_of)
+    };
+    // A background job's labels count only when its own launch saved them: the
+    // daemon passes its environment on, so a daemon started from a labelled
+    // lead's shell labels every unlabelled job as that lead
+    // (`evidence::job_backs_labels`). A job whose row is not written yet is
+    // judged later (no binding now; `status` replays the line).
+    let session = session_file(env, vars, pid);
+    let job_of_session = str_at(&session, "jobId");
+    // (a pre-warmed spare, the agent view's draft, is never anyone's member)
+    if session.get("spare").and_then(Value::as_bool) == Some(true) {
+        labels.clear();
+    }
+    // The env's labels go on the event line as they were (a replay judges
+    // them again against the job's row); every effect here (binding, rules,
+    // signal authority, needs-you) uses only labels the job's row backs. A
+    // job whose row is not written yet is waited for a moment, then left
+    // unlabelled for now: no rules, no binding; its first prompt gets the
+    // rules (`rules::update_for`) and `status` replays the line.
+    let line_labels = labels.clone();
+    if !labels.is_empty() {
+        if let Some(job) = job_of_session.as_deref() {
+            let mut saved = crate::evidence::job_saved_labels(&env.claude_home, job);
+            // (only a SessionStart waits: a later event of a job whose row is gone pays nothing)
+            let deadline = std::time::Instant::now() + if event == "SessionStart" { ROW_WAIT } else { std::time::Duration::ZERO };
+            while saved.is_none() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                saved = crate::evidence::job_saved_labels(&env.claude_home, job);
+            }
+            labels = match saved {
+                // the launch's own labels, not the env's (an inherited key the
+                // settings did not name stays out)
+                Some(sv) if crate::evidence::is_labelled(&sv) && sv.get("NIMITZ_ID") == labels.get("NIMITZ_ID") => sv,
+                _ => BTreeMap::new(),
+            };
+        }
+    }
     let tool = str_at(&input, "tool_name");
     let is_signal = tool.as_deref() == Some("SendMessage");
     let to = input.get("tool_input").and_then(|t| str_at(t, "to").or_else(|| str_at(t, "recipient")));
@@ -101,21 +145,11 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             crate::notify::clear(env, id, str_at(&input, "session_id").as_deref());
         }
     }
-    // The Claude Code process (the hook's parent); a sandbox names it. A hook
-    // written as one command string runs under `sh -c`: then the parent is a
-    // shell and the Claude Code process is its parent (r3-e2e.md finding 7).
-    let given: i64 = vars.get("NIMITZ_HOOK_PID").and_then(|p| p.parse().ok()).unwrap_or_else(|| unsafe { libc::getppid() } as i64);
-    let pid = if vars.get("NIMITZ_HOOK_SESSION_FILE").is_some_and(|p| !p.is_empty()) {
-        given // the sandbox names the session file; the pid is its own
-    } else {
-        claude_pid(given, |p| env.claude_home.join("sessions").join(format!("{p}.json")).is_file(), parent_of)
-    };
     // A labelled session starts (startup, resume, clear, compact, fork): bind
     // it to its identity (plan-v4 section 3), hand it its role's rules and
     // record the delivery. On a per-turn event, a session that runs on older
     // rules gets the update (once per version per job).
     let mut rules = None;
-    let mut session = Value::Null;
     let mut binding = None;
     // one clock for the line's `ts` and the lineage `at`: a line the hook
     // bound is older than the registry it wrote, so `status` never replays it
@@ -125,7 +159,6 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
         if crate::registry::other_home(env, &labels) {
             return (out, notice);
         }
-        session = session_file(env, vars, pid);
         if let Some(id) = crate::registry::identity_of(env, &labels) {
             let sid = str_at(&input, "session_id").unwrap_or_default();
             rules = Some(crate::rules::VERSION);
@@ -174,7 +207,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             "tool_name": tool,
             "to": to,
             "pid": pid,
-            "labels": labels,
+            "labels": line_labels,
             "rules": rules,
             // SessionStart: the process's job, kind and entrypoint (per pid, M21:
             // the name is read from the session file later, never from here)
@@ -222,6 +255,10 @@ fn session_file(env: &Env, vars: &HashMap<String, String>, pid: i64) -> Value {
     };
     std::fs::read(path).ok().and_then(|b| crate::evidence::first_json(&b)).unwrap_or(Value::Null)
 }
+
+/// How long the SessionStart hook waits for a new job's row (its launch's
+/// saved labels) before it leaves the session unlabelled for now.
+const ROW_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// How long the hook waits for `registry.lock`: a hook never hangs a session.
 const LOCK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
@@ -561,6 +598,7 @@ mod tests {
         let sessions = env.claude_home.join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join(format!("{ppid}.json")), r#"{"pid": 1, "sessionId": "s-a", "jobId": "9cdceb2d", "kind": "bg"}"#).unwrap();
+        job_row(&env, "9cdceb2d", "s-a");
         handle(&env, "SessionStart", r#"{"session_id": "s-a", "source": "startup"}"#, &labels_of(&env, &id));
         let d = crate::rules::delivered(&env, "9cdceb2d").expect("keyed by the job");
         assert_eq!((d.version, d.session_id.as_str()), (crate::rules::VERSION, "s-a"));
@@ -640,10 +678,79 @@ mod tests {
         handle(env, "SessionStart", &input.to_string(), &vars)
     }
 
+    /// A job row of the ship MAIN/ARGOS/ARGOS as nimitz launches it (its
+    /// labels saved in `respawnFlags`).
     fn job_row(env: &Env, short: &str, sid: &str) {
+        job_row_of_home(env, short, sid, &Id::ship("MAIN", "ARGOS", "ARGOS"), &env.home.to_string_lossy());
+    }
+
+    /// A job row with no labels of its own: a job the daemon started for an
+    /// unlabelled launch (it still carries the daemon's inherited labels in
+    /// its env, so in its hook's env).
+    fn bare_job_row(env: &Env, short: &str, sid: &str) {
         let p = env.claude_home.join("jobs").join(short).join("state.json");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, serde_json::json!({"sessionId": sid, "resumeSessionId": sid, "state": "running"}).to_string()).unwrap();
+        std::fs::write(p, serde_json::json!({"sessionId": sid, "resumeSessionId": sid, "state": "running", "respawnFlags": []}).to_string()).unwrap();
+    }
+
+    /// The daemon hands its environment to every job it starts; a daemon
+    /// started from a labelled lead's shell labels an unlabelled `claude --bg`
+    /// as that lead. Such a job's labels never count: no binding, no rules, no
+    /// signal authority.
+    #[test]
+    fn a_job_that_inherited_a_leads_labels_from_the_daemon_is_unlabelled() {
+        let (_td, env) = world();
+        let lead = Id::commodore("MAIN", "ARGOS");
+        let cwd = "/tmp/users-own-work".to_string();
+        bare_job_row(&env, "u1", "s-user");
+        let out = start(&env, &lead, "s-user", "startup", 21, Some("u1"), &cwd);
+        assert!(!out.contains("additionalContext"), "no rules for an inherited label: {out}");
+        assert!(crate::registry::load(&env).identities.get(&lead.0).map_or(true, |r| r.session.as_deref() != Some("s-user")), "never bound to the lead");
+        let e = crate::evidence::events(&env).pop().unwrap();
+        assert!(e.binding.is_none(), "nothing judged a member: {:?}", e.binding);
+        // (the line keeps the env's labels; a replay judges them against the row)
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 0, "a replay binds nothing either");
+        // and its SendMessage is not the lead's
+        let mut v = labels_of(&env, &lead);
+        v.insert("NIMITZ_HOOK_PID".into(), "21".into());
+        let input = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN.ARGOS]-ARGOS"}});
+        assert!(handle(&env, "PreToolUse", &input.to_string(), &v).is_empty(), "not judged as the commodore");
+        // a job whose row is not written yet (after the hook's short wait): no
+        // rules, nothing bound now; the row then shows: a bare one (an
+        // inherited label) never binds on replay, a launch's one does
+        // (both in the lead's own folder: only the labels' backing decides)
+        let lead_dir = crate::registry::identity_folder(&env, &crate::registry::load(&env), &lead).unwrap().to_string_lossy().into_owned();
+        let out = start(&env, &lead, "s-early", "startup", 22, Some("u2"), &lead_dir);
+        assert!(!out.contains("additionalContext"), "no rules on an unbacked label: {out}");
+        assert!(crate::evidence::events(&env).pop().unwrap().binding.is_none());
+        bare_job_row(&env, "u2", "s-early");
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 0, "an inherited label never binds on replay");
+        let out = start(&env, &lead, "s-late", "startup", 23, Some("u3"), &lead_dir);
+        assert!(!out.contains("additionalContext"));
+        job_row_of_home(&env, "u3", "s-late", &lead, &env.home.to_string_lossy());
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 1, "a launch's row written late binds on replay");
+        assert_eq!(crate::registry::load(&env).identities[&lead.0].job.as_deref(), Some("u3"));
+    }
+
+    /// The agent view's pre-warmed spare is never anyone's member, whatever
+    /// labels it inherited: no rules, no binding, no signal authority.
+    #[test]
+    fn a_spare_is_never_labelled_in_the_hook() {
+        let (_td, env) = world();
+        let lead = Id::commodore("MAIN", "ARGOS");
+        let cwd = "/tmp/lead-folder".to_string();
+        // a spare whose own row even saved the lead's labels: still nobody's
+        job_row_of_home(&env, "sp1", "s-spare", &lead, &env.home.to_string_lossy());
+        let file = env.claude_home.join("sessions").join("31.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, serde_json::json!({"pid": 31, "sessionId": "s-spare", "jobId": "sp1", "spare": true, "kind": "bg", "cwd": cwd}).to_string()).unwrap();
+        let mut v = labels_of(&env, &lead);
+        v.insert("NIMITZ_HOOK_PID".into(), "31".into());
+        let input = serde_json::json!({"session_id": "s-spare", "source": "startup", "hook_event_name": "SessionStart", "cwd": cwd});
+        assert!(!handle(&env, "SessionStart", &input.to_string(), &v).contains("additionalContext"));
+        assert!(crate::registry::load(&env).identities.get(&lead.0).map_or(true, |r| r.session.as_deref() != Some("s-spare")));
+        let send = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN.ARGOS]-ARGOS"}});
+        assert!(handle(&env, "PreToolUse", &send.to_string(), &v).is_empty(), "no commodore authority");
     }
 
     #[test]
@@ -682,11 +789,13 @@ mod tests {
         assert_eq!(crate::registry::load(&env).identities[&id.0].lineage.len(), 3);
         // j1's row gone (claude rm), a new job resumes the conversation: rebound
         std::fs::remove_dir_all(env.claude_home.join("jobs").join("j1")).unwrap();
+        job_row(&env, "j3", "s3");
         start(&env, &id, "s3", "resume", 14, Some("j3"), &cwd);
         let rec = crate::registry::load(&env).identities[&id.0].clone();
         assert_eq!(rec.job.as_deref(), Some("j3"));
         assert_eq!(rec.lineage.last().map(|l| (l.session_id.as_str(), l.job.as_deref(), l.via.as_str())), Some(("s3", Some("j3"), "resume")));
         // the same labels in another folder: an impostor, not bound (BUG-30, BUG-55)
+        job_row(&env, "j7", "s7");
         start(&env, &id, "s7", "startup", 15, Some("j7"), "/somewhere/else");
         assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("elsewhere"));
         assert_eq!(crate::registry::load(&env).identities[&id.0].job.as_deref(), Some("j3"));
@@ -1046,6 +1155,7 @@ mod tests {
             serde_json::json!({"pid": runner, "sessionId": "s-sh", "jobId": "9cdceb2d", "kind": "background", "entrypoint": "cli", "cwd": cwd}).to_string(),
         )
         .unwrap();
+        job_row(&env, "9cdceb2d", "s-sh");
         let mut v = labels_of(&env, &id);
         v.insert("NIMITZ_HOOK_PID".into(), me.to_string());
         let start = serde_json::json!({"session_id": "s-sh", "source": "startup", "cwd": cwd}).to_string();

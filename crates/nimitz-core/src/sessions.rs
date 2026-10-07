@@ -105,7 +105,11 @@ pub(crate) fn held_of(m: &Member) -> Option<&SessionInfo> {
 /// `/exit` (then `nimitz start` runs it as a job, plan-v4 section 7); any
 /// other holder is ended in its host.
 pub(crate) fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
-    let interactive_lead = m.role.lead() && r.kind == "interactive" && r.entrypoint.as_deref().unwrap_or("cli") == "cli";
+    // (a lead with a job, live or parked, is no 0.3.x lead: the holder is a
+    // by-hand resume of a conversation of its lineage)
+    let has_job = m.session.as_ref().is_some_and(|p| p.short_id.is_some());
+    let job_live = m.session.as_ref().is_some_and(|p| p.pid.is_some() && p.short_id.is_some());
+    let interactive_lead = m.role.lead() && !has_job && r.kind == "interactive" && r.entrypoint.as_deref().unwrap_or("cli") == "cli";
     let (what, fix) = if interactive_lead {
         (
             format!("{} runs as a 0.3.x interactive lead (pid {}, no job); nimitz cannot stop or resume it there", m.id, r.pid.unwrap_or(0)),
@@ -120,7 +124,10 @@ pub(crate) fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
                 r.pid.unwrap_or(0),
                 r.entrypoint.as_deref().unwrap_or(&r.kind)
             ),
-            format!("end that process in its host, then nimitz start {}", m.id),
+            // a live member is relaunched (start would do nothing), a stopped one started
+            // a live member needs nothing more once that process ends (the
+            // relaunch refusal adds its own step); a stopped one is started
+            if job_live { "end that process in its host".to_string() } else { format!("end that process in its host, then nimitz start {}", m.id) },
         )
     };
     issue("held", Severity::Warn, what, Some(fix), Some(m.id.clone()))
@@ -1200,8 +1207,11 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         return plan;
     };
     // its conversation runs in a process with no job (a `claude --resume`
-    // by hand, an SDK host): nimitz cannot stop it there (cli-18)
-    if let Some(h) = held_of(m) {
+    // by hand, an SDK host) while its own job is not live: nimitz cannot stop
+    // it there (cli-18). A live job is stopped as ever, whatever else holds
+    // an older conversation of its lineage
+    let job_live = m.session.as_ref().is_some_and(|p| p.pid.is_some() && p.short_id.is_some());
+    if let Some(h) = held_of(m).filter(|_| !job_live) {
         let i = held_issue(m, h);
         refuse(&mut plan, "session.interactive", i.message, i.fix, Some(id.clone()));
         return plan;
@@ -1337,7 +1347,9 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
     // `nimitz stop <sid>` that cannot work)
     if let Some(h) = held_of(m) {
         let i = held_issue(m, h);
-        refuse(&mut plan, "session.interactive", i.message, i.fix, Some(id.clone()));
+        let live = m.session.as_ref().is_some_and(|p| p.pid.is_some() && p.short_id.is_some());
+        let fix = i.fix.map(|f| if live { format!("{f}, then nimitz relaunch {id}") } else { f });
+        refuse(&mut plan, "session.interactive", i.message, fix, Some(id.clone()));
         return plan;
     }
     // (a lead's live intruder is not its second session: it stays the
@@ -1811,7 +1823,15 @@ fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64, cwd: Option<
             _ => false,
         };
         for e in crate::evidence::events_cached(env, &mut cache).iter().rev() {
-            if e.ts >= since && e.event == "SessionStart" && e.labels.get("NIMITZ_ID") == Some(&id.0) {
+            // a job's line counts only when its row backs the labels (the line
+            // keeps the env's labels; a polluted daemon's job carries them too)
+            // (a line written while the session file was unreadable names no
+            // job: its job comes from the rows before its labels are trusted)
+            let backed = || {
+                let job = e.job.clone().or_else(|| e.session_id.as_deref().and_then(|sid| rows.iter().find(|r| r.session_id == sid)).and_then(|r| r.short_id.clone()));
+                job.is_none() || crate::evidence::job_backs_labels(&env.claude_home, job.as_deref(), &e.labels) == Some(true)
+            };
+            if e.ts >= since && e.event == "SessionStart" && e.labels.get("NIMITZ_ID") == Some(&id.0) && backed() {
                 if let Some(sid) = e.session_id.as_ref().filter(|s| !elsewhere(s)) {
                     return Some((sid.clone(), e.source.clone()));
                 }
@@ -1910,7 +1930,9 @@ fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
             Some(id.clone()),
         ));
     }
-    if labels.get(sid).map(|l| l.get("NIMITZ_ID") != Some(&id.0)).unwrap_or(true) {
+    // a job's labels are its row's saved ones (the env's on the line may be inherited)
+    let have = if row.short_id.is_some() { Some(row.job_labels.clone()) } else { labels.get(sid).cloned() };
+    if have.map(|l| l.get("NIMITZ_ID") != Some(&id.0)).unwrap_or(true) {
         out.push(issue(
             "labels.missing",
             Severity::Error,
@@ -2506,6 +2528,40 @@ pub fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The post-launch wait binds a job's SessionStart only when the job's row
+    /// backs the labels on the line: a polluted daemon's job (no saved labels)
+    /// that starts during a launch is never taken for the member.
+    #[test]
+    fn the_launch_wait_skips_a_job_whose_row_does_not_back_its_labels() {
+        let (_td, env) = crate::config::tests::test_env();
+        let id = Id::ship("F", "SQ", "S");
+        std::fs::create_dir_all(&env.state).unwrap();
+        let row = |short: &str, sid: &str, labelled: bool| {
+            let flags = if labelled { serde_json::json!(["--settings", serde_json::json!({"env": {"NIMITZ_ID": id.0, "NIMITZ_ROLE": "ship"}}).to_string()]) } else { serde_json::json!([]) };
+            let p = env.claude_home.join("jobs").join(short).join("state.json");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, serde_json::json!({"sessionId": sid, "state": "running", "respawnFlags": flags}).to_string()).unwrap();
+        };
+        let line = |sid: &str, job: &str| serde_json::json!({"ts": 10.0, "event": "SessionStart", "session_id": sid, "source": "startup", "job": job, "kind": "bg",
+            "labels": {"NIMITZ_ID": id.0, "NIMITZ_ROLE": "ship"}}).to_string();
+        row("p1", "s-polluted", false);
+        std::fs::write(env.events_path(), line("s-polluted", "p1") + "\n").unwrap();
+        assert_eq!(wait_for_binding(&env, &id, 1.0, 0.0, None), None, "an inherited label is no binding");
+        row("m1", "s-member", true);
+        std::fs::write(env.events_path(), line("s-polluted", "p1") + "\n" + &line("s-member", "m1") + "\n").unwrap();
+        assert_eq!(wait_for_binding(&env, &id, 1.0, 0.0, None).map(|(s, _)| s).as_deref(), Some("s-member"));
+        // a job-less line (the session file was unreadable at SessionStart) of a
+        // polluted job: the job comes from the rows, and its labels are not backed
+        let jobless = serde_json::json!({"ts": 11.0, "event": "SessionStart", "session_id": "s-polluted2", "source": "startup", "kind": "unknown",
+            "labels": {"NIMITZ_ID": id.0, "NIMITZ_ROLE": "ship"}}).to_string();
+        row("p2", "s-polluted2", false);
+        let sf = env.claude_home.join("sessions").join("77.json");
+        std::fs::create_dir_all(sf.parent().unwrap()).unwrap();
+        std::fs::write(&sf, serde_json::json!({"pid": std::process::id(), "sessionId": "s-polluted2", "jobId": "p2", "kind": "bg", "cwd": "/w"}).to_string()).unwrap();
+        std::fs::write(env.events_path(), jobless + "\n").unwrap();
+        assert_eq!(wait_for_binding(&env, &id, 1.0, 0.0, None), None, "a job-less line of a polluted job is no binding");
+    }
 
     #[test]
     fn names_round_trip() {

@@ -1055,6 +1055,25 @@ fn r24_a_tab_left_in_the_agent_view_is_never_typed_into() {
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
 }
 
+/// A ship launched from its commodore's attach pane inherits that pane's
+/// HERDR_PANE_ID, and Herdr's own hook then claims the pane for the ship.
+/// That is not the agent view: the commodore's attach still runs there, so
+/// restore leaves the tab alone (no tab.agentview, nothing typed, one tab).
+#[test]
+fn r24b_a_ships_claim_on_its_commodores_attach_pane_is_not_the_agent_view() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let ship = sb.sid("MAIN/ARGOS/CLEAN");
+    sb.set_pane(&pane, |p| p["agent_session"]["value"] = json!(ship));
+    let before = sb.n_runs();
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("tab.agentview") && !r.out.contains("close that pane"), "{}", r.out);
+    assert_eq!(sb.n_runs(), before, "nothing typed into the working attach");
+    assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
+}
+
 #[test]
 fn r25_a_leads_job_removed_under_its_tab_resumes_with_every_flag_and_repins() {
     let sb = Sb::new(true);

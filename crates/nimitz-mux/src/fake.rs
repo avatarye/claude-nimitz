@@ -113,7 +113,10 @@ fn opts(rest: &[&str]) -> std::collections::HashMap<String, String> {
 
 pub fn fake_herdr(base: &Path, args: &[String]) -> i32 {
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(base.join("calls.jsonl")) {
-        let _ = writeln!(f, "{}", json!({ "args": args }));
+        // the server-naming env the call ran with (a test asserts what a
+        // member's herdr child really got, not the map nimitz built)
+        let env: serde_json::Map<String, Value> = ["HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_CLIENT_SOCKET_PATH", "HERDR_ENV"].iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), Value::from(v)))).collect();
+        let _ = writeln!(f, "{}", json!({ "args": args, "env": env }));
     }
     let mut world: Value = fs::read(base.join("world.json"))
         .ok()
@@ -404,7 +407,10 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                 return err("pane:process-info", "pane_not_found", &format!("pane {target} not found"));
             };
             // the foreground process group: the shell alone when idle (herdr-shape.md, PaneProcessInfo)
-            let argv: Vec<String> = p.get("foreground").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["zsh".into()]);
+            // (a pane that shows an agent and names no foreground runs that
+            // session: `claude --resume <its id>`, which backs Herdr's claim)
+            let shown = p.pointer("/agent_session/value").and_then(Value::as_str).map(|sid| vec!["claude".to_string(), "--resume".into(), sid.into()]);
+            let argv: Vec<String> = p.get("foreground").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).or(shown).unwrap_or_else(|| vec!["zsh".into()]);
             let pid = p.get("pid").and_then(Value::as_i64).unwrap_or(4242);
             let proc_ = json!({"pid": pid, "name": argv.first().cloned().unwrap_or_default(), "argv0": argv.first().cloned().unwrap_or_default(),
                                "argv": argv, "cmdline": argv.join(" "), "cwd": s(p, "cwd")});

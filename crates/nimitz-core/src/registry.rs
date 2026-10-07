@@ -567,6 +567,11 @@ pub fn apply_start(r: &mut Registry, id: &Id, cwd: &str, folder: Option<&Path>, 
 /// runs that session, if one does.
 pub fn apply_event(env: &Env, r: &mut Registry, e: &Event) -> Binding {
     let (Some(sid), Some(id)) = (e.session_id.as_deref(), identity_of(env, &e.labels)) else { return Binding::None };
+    // a job's labels count only when its own launch saved them (the daemon's
+    // inherited labels do not; `evidence::job_backs_labels`)
+    if e.job.is_some() && crate::evidence::job_backs_labels(&env.claude_home, e.job.as_deref(), &e.labels) != Some(true) {
+        return Binding::None;
+    }
     if e.kind.is_none() && e.job.is_none() {
         let rec = r.identities.get(&id.0);
         if rec.and_then(|x| x.session.as_deref()) == Some(sid) {
@@ -709,6 +714,15 @@ fn write_unlocked(env: &Env, r: &mut Registry) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A job row as nimitz launches it: the identity's labels saved in
+    /// `respawnFlags` (a job's labels count only when its launch saved them).
+    fn labelled_row(env: &Env, short: &str, sid: &str, id: &Id) {
+        let settings = serde_json::json!({"env": {"NIMITZ_ID": id.0, "NIMITZ_ROLE": id.role().as_str()}}).to_string();
+        let p = env.claude_home.join("jobs").join(short).join("state.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::json!({"sessionId": sid, "resumeSessionId": sid, "state": "running", "respawnFlags": ["--settings", settings]}).to_string()).unwrap();
+    }
+
     use super::*;
     use crate::config::tests::test_env;
 
@@ -818,6 +832,7 @@ mod tests {
         let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
         update(&env, |r| bind_job(r, &ship, Role::Ship, &ship.name(), "/w", Some("j1"), "s1", "launch", 1.0)).unwrap();
         update(&env, |r| bind(r, &Id::admiral("MAIN"), Role::Admiral, "[MAIN]-ADMIRAL", "/a", "a1", "launch", 2.0)).unwrap();
+        labelled_row(&env, "j1", "s-new", &ship);
         std::fs::remove_file(env.registry_path()).unwrap();
         // only the lines newer than the copy are replayed over it: an older
         // line (one the copy already holds, or a stale one) changes nothing
@@ -930,6 +945,7 @@ mod tests {
         let (_td, env) = test_env();
         let id = Id::ship("MAIN", "ARGOS", "ARGOS");
         update(&env, |r| bind_job(r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s1", "launch", 1.0)).unwrap();
+        labelled_row(&env, "j1", "s2", &id);
         let stamp = load(&env).updated_at;
         let line = |ts: f64, sid: &str, job: &str, binding: Option<&str>| Event {
             ts,
@@ -980,6 +996,7 @@ mod tests {
         let id = Id::ship("MAIN", "ARGOS", "ARGOS");
         let folder = crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, &id)).unwrap().to_string_lossy().into_owned();
         update(&env, |r| bind_job(r, &id, Role::Ship, &id.name(), &folder, Some("j1"), "s1", "launch", 1.0)).unwrap();
+        labelled_row(&env, "j1", "s1", &id);
         let stamp = load(&env).updated_at;
         let line = |ts: f64, sid: &str, source: &str, cwd: &str| Event {
             ts,

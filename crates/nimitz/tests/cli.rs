@@ -1033,8 +1033,9 @@ fn a_delivery_never_uses_an_inherited_herdr_env_alone() {
 /// A member's own command never reaches a Herdr through its inherited env
 /// (a daemon-restarted worker has the daemon's, the user's live HERDR_*):
 /// only an explicit NIMITZ_MUX / NIMITZ_HERDR_SESSION, or the server the
-/// user's own command recorded by its session name. A record with no
-/// session name is no multiplexer, never the inherited socket.
+/// user's own command recorded (by its session name, or the default
+/// server's socket). The herdr child gets only that server: no inherited
+/// HERDR_SESSION or HERDR_SOCKET_PATH.
 #[test]
 fn a_members_command_never_reaches_herdr_through_its_inherited_env() {
     let sb = Sb::new(true);
@@ -1049,6 +1050,7 @@ fn a_members_command_never_reaches_herdr_through_its_inherited_env() {
     inherited.insert("HERDR_ENV".into(), "1".into());
     inherited.insert("HERDR_SESSION".into(), "NIMITZ".into());
     inherited.insert("HERDR_SOCKET_PATH".into(), "/live/herdr.sock".into());
+    inherited.insert("HERDR_CLIENT_SOCKET_PATH".into(), "/live/herdr-client.sock".into());
     // nothing recorded: a ship's status and a commodore's up make no herdr call
     forget(Value::Null);
     let before = sb.calls().lines().count();
@@ -1061,12 +1063,32 @@ fn a_members_command_never_reaches_herdr_through_its_inherited_env() {
     let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
     assert_eq!(n["delivery"], "failed", "{n}");
     assert!(n["delivery_note"].as_str().unwrap().contains("run nimitz status inside Herdr once"), "{n}");
-    // a record of the default server (no session name): its recorded socket,
-    // never the inherited one
+    // what the member's herdr CHILD gets (the fake logs its env per call)
+    let child_env = |from: usize| -> Vec<(Value, Value)> {
+        sb.calls().lines().skip(from).map(|l| serde_json::from_str::<Value>(l).unwrap()).map(|c| (c["args"].clone(), c["env"].clone())).collect()
+    };
+    // a record of the default server (no session name) beside an inherited
+    // HERDR_SESSION: every call goes to the recorded socket, no session name
     forget(serde_json::json!({"socket": "/recorded/herdr.sock"}));
-    let hv: std::collections::HashMap<String, String> = inherited.clone().into_iter().collect();
-    let mux = nimitz_core::active::member_mux_vars(&nimitz_core::env::Env::from_vars(&hv), &hv);
-    assert_eq!((mux.get("NIMITZ_MUX").map(String::as_str), mux.get("NIMITZ_HERDR_SOCKET").map(String::as_str), mux.get("HERDR_SOCKET_PATH")), (Some("herdr"), Some("/recorded/herdr.sock"), None));
+    let from = sb.calls().lines().count();
+    assert_eq!(raw(&inherited, &["status"], &CLEAN, None).code, 0);
+    let got = child_env(from);
+    assert!(!got.is_empty(), "the member's status read the recorded server");
+    for (args, env) in &got {
+        assert_eq!(env["HERDR_SOCKET_PATH"], "/recorded/herdr.sock", "{args} {env}");
+        assert!(env.get("HERDR_SESSION").is_none() && env.get("HERDR_CLIENT_SOCKET_PATH").is_none() && !args.to_string().contains("--session"), "{args} {env}");
+    }
+    // a record by session name (a test server): --session on every call, and
+    // neither the inherited HERDR_SESSION nor HERDR_SOCKET_PATH reaches the child
+    forget(serde_json::json!({"session": "nimitz-test"}));
+    let from = sb.calls().lines().count();
+    assert_eq!(raw(&inherited, &["status"], &CLEAN, None).code, 0);
+    let got = child_env(from);
+    assert!(!got.is_empty());
+    for (args, env) in &got {
+        assert!(args.to_string().contains("\"--session\",\"nimitz-test\""), "{args}");
+        assert!(env.get("HERDR_SESSION").is_none() && env.get("HERDR_SOCKET_PATH").is_none() && env.get("HERDR_CLIENT_SOCKET_PATH").is_none(), "{args} {env}");
+    }
     // the user's own command still detects from its env
     let r = raw(&inherited, &["status"], &[], None);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -1701,6 +1723,39 @@ fn a_held_member_gives_held_only_and_stop_or_relaunch_say_session_interactive() 
     assert!(r.out.contains("--bg --resume"), "{}", r.out);
 }
 
+/// A lead whose job is live is stopped as ever, even while an older
+/// conversation of its lineage is open interactively by hand (the held rule
+/// is for a member whose own job is not live).
+#[test]
+fn stop_of_a_live_lead_beside_an_interactive_older_conversation_stops_its_job() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN");
+    let (job, birth, dir) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string(), m["cwd"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(&dir).args(args).output().unwrap();
+    assert!(fake(&["__inside", &job, "clear"]).status.success());
+    let mid = sb.member("MAIN")["session"]["session_id"].as_str().unwrap().to_string();
+    assert_ne!(mid, birth);
+    assert!(fake(&["__inside", &job, "clear"]).status.success());
+    // an older conversation of its lineage, opened interactively by hand in the folder
+    let o = fake(&["--resume", &mid]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stdout));
+    let held = sb.member("MAIN");
+    assert!(held["extra_rows"].as_array().unwrap().iter().any(|r| r["session_id"] == mid.as_str()), "the interactive process is on the lead's lineage: {held}");
+    let r = sb.run(&["stop", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("stop {job}")) && !r.out.contains("session.interactive"), "{}", r.out);
+    // relaunch keeps refusing while a process with no job holds a
+    // conversation of the lineage, and names that process (not a 0.3.x lead)
+    let r = sb.run(&["relaunch", "MAIN", "--plan"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("session.interactive") && r.out.contains(&mid) && !r.out.contains("0.3.x") && r.out.contains("then nimitz relaunch MAIN"), "{}", r.out);
+    // and status says only to end that process (the live job needs nothing more)
+    let st = sb.member("MAIN");
+    let held = st["issues"].as_array().unwrap().iter().find(|i| i["code"] == "held").expect("held");
+    assert_eq!(held["fix"], "end that process in its host", "{st}");
+    assert!(fake(&["__end", &mid]).status.success());
+}
+
 /// `/clear`, then a crash: the start never plans `rm <own job>` for the
 /// member's own row (acceptance cli-31: before F1 the own row read as a stale
 /// copy once it was parked after a /clear).
@@ -1782,6 +1837,112 @@ fn a_closed_pipe_never_panics() {
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(!err.contains("panicked") && !err.contains("Broken pipe"), "{err}");
     assert!(o.status.code() == Some(0) || o.status.signal() == Some(13) || o.status.code() == Some(141), "{:?}", o.status);
+}
+
+/// Herdr's own hook names a pane by the process's inherited HERDR_PANE_ID,
+/// so a background ship launched from its commodore's pane reports the
+/// commodore's pane as its own. nimitz takes a pane's session only when the
+/// pane's foreground backs it: the ship is never shown in the lead's pane.
+#[test]
+fn a_ship_is_never_shown_in_its_commodores_pane_on_herdrs_word_alone() {
+    let sb = Sb::new(true);
+    sb.pane_for("MAIN/ARGOS");
+    let commodore = sb.member("MAIN/ARGOS")["session"]["session_id"].as_str().unwrap().to_string();
+    let ship = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string();
+    // the commodore runs in the pane; Herdr's agent list says the ship's session
+    sb.herdr_world(|w| {
+        w["panes"][1]["foreground"] = serde_json::json!(["claude", "--resume", commodore]);
+        w["panes"][1]["agent_session"]["value"] = Value::from(ship.as_str());
+    });
+    let s = sb.status();
+    let fleets = s["fleets"].as_array().unwrap();
+    let all: Vec<&Value> = fleets.iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter().flat_map(|q| q["ships"].as_array().unwrap().iter())).collect();
+    let clean = all.iter().find(|m| m["id"] == "MAIN/ARGOS/CLEAN").unwrap();
+    assert!(clean["pane"].is_null(), "the ship is not in the commodore's pane: {clean}");
+    // a backed claim still stands: the pane's foreground names the ship's session
+    sb.herdr_world(|w| w["panes"][1]["foreground"] = serde_json::json!(["claude", "--resume", ship]));
+    let s = sb.status();
+    let clean = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter().flat_map(|q| q["ships"].as_array().unwrap().iter())).find(|m| m["id"] == "MAIN/ARGOS/CLEAN").cloned().unwrap();
+    assert_eq!(clean["pane"], "w1:p2", "{clean}");
+    // the pid path, as on real Herdr: an interactive commodore (the pane's
+    // foreground pid names its session file), the ship's claim on the pane:
+    // the ship is not there, the commodore is (its own process says so)
+    sb.herdr_world(|w| {
+        w["panes"][1]["foreground"] = serde_json::json!(["claude"]);
+        w["panes"][1]["pid"] = Value::from(424242);
+        w["panes"][1]["agent_session"]["value"] = Value::from(ship.as_str());
+    });
+    std::fs::write(sb.base.join("claude_home/sessions/424242.json"), serde_json::json!({"pid": 424242, "sessionId": commodore, "kind": "interactive"}).to_string()).unwrap();
+    let s = sb.status();
+    let ships: Vec<&Value> = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter().flat_map(|q| q["ships"].as_array().unwrap().iter())).collect();
+    assert!(ships.iter().find(|m| m["id"] == "MAIN/ARGOS/CLEAN").unwrap()["pane"].is_null());
+    let cmd = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter()).find(|q| q["commodore"]["id"] == "MAIN/ARGOS").unwrap()["commodore"].clone();
+    assert_eq!(cmd["pane"], "w1:p2", "the commodore, from its own process: {cmd}");
+    std::fs::remove_file(sb.base.join("claude_home/sessions/424242.json")).unwrap();
+}
+
+/// Every claude nimitz starts begins with none of the caller's session state:
+/// a commodore (labels, its Herdr pane, its messaging socket in the env) that
+/// starts a ship hands none of it to the launch, so a daemon that launch
+/// happens to start never labels unlabelled jobs as that commodore. Account
+/// settings (`CLAUDE_CODE_USE_*`) pass.
+#[test]
+fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
+    let sb = Sb::new(false);
+    let log = sb.base.join("calls.log");
+    let from = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+    let r = raw(
+        &sb.vars,
+        &["start", "MAIN/ARGOS/STOPPED", "--yes"],
+        &[
+            ("NIMITZ_ID", "MAIN/ARGOS"),
+            ("NIMITZ_ROLE", "commodore"),
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w4:p1"),
+            ("HERDR_SESSION", "NIMITZ"),
+            ("HERDR_SOCKET_PATH", "/live/herdr.sock"),
+            ("CLAUDE_CODE_MESSAGING_SOCKET", "/run/user/1000/cc-socks/1.sock"),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("CLAUDE_PID", "1"),
+            ("CLAUDE_CODE_SESSION_ATTENDED", "1"),
+            ("CLAUDE_JOB_DIR", "/home/u/.claude/jobs/x"),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "tok"),
+            ("CLAUDE_CODE_SUBAGENT_MODEL", "haiku"),
+        ],
+        None,
+    );
+    assert_eq!(r.code, 0, "{}", r.out);
+    let calls: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().skip(from).map(|l| serde_json::from_str(l).unwrap()).collect();
+    let launch = calls.iter().find(|c| c["args"].as_array().unwrap().iter().any(|a| a == "--resume" || a == "--bg")).expect("the launch reached claude");
+    let env = launch["env"].as_object().unwrap();
+    for k in ["NIMITZ_ID", "NIMITZ_ROLE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SESSION", "HERDR_SOCKET_PATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ATTENDED"] {
+        assert!(!env.contains_key(k), "{k} reached the claude child: {launch}");
+    }
+    // the user's own config passes (auth, provider, tuning): only session state goes
+    for (k, v) in [("CLAUDE_CODE_USE_BEDROCK", "1"), ("CLAUDE_CODE_OAUTH_TOKEN", "tok"), ("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")] {
+        assert_eq!(env.get(k).and_then(Value::as_str), Some(v), "{k} must pass: {launch}");
+    }
+    // every claude call of the run (agents, stop, rm, resume) is scrubbed alike
+    for c in &calls {
+        assert!(!c["env"].as_object().unwrap().keys().any(|k| k.starts_with("NIMITZ_ID") || k == "HERDR_PANE_ID"), "{c}");
+    }
+}
+
+/// A hook always exits 0, even when Claude Code has closed its pipe before
+/// the hook writes its context (no SIGPIPE death, no panic).
+#[test]
+fn a_hook_with_a_closed_pipe_still_exits_zero() {
+    let sb = Sb::new(false);
+    let mut c = Command::new(EXE);
+    c.env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).envs([("NIMITZ_ID", "MAIN/ARGOS"), ("NIMITZ_ROLE", "commodore")]).args(["hook", "SessionStart"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    drop(child.stdout.take()); // Claude Code went away before reading
+    child.stdin.take().unwrap().write_all(br#"{"session_id":"s-pipe","source":"compact","hook_event_name":"SessionStart"}"#).unwrap();
+    let o = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("panicked"), "{err}");
+    assert_eq!(o.status.code(), Some(0), "{:?}", o.status);
 }
 
 /// `nimitz rm <lead>` with no stale rows says what removes its own row: a

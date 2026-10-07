@@ -677,19 +677,20 @@ fn cli_l1_labels_are_kept_per_pid_so_a_stray_process_does_not_strip_the_member()
         ..Default::default()
     };
     let events = vec![ev(7, true), ev(9, false)];
-    let row = |pid: Option<i64>| evidence::SessionRow {
+    let row = |pid: Option<i64>, job: bool| evidence::SessionRow {
         session_id: "s1".into(),
         name: "[F.SQ]-S".into(),
         cwd: "/w".into(),
         kind: "background".into(),
-        short_id: Some("j1".into()),
+        short_id: job.then(|| "j1".to_string()),
         pid,
         state: None,
         status: None,
         status_since: None,
         started_at: None,
         waiting_for: None,
-        job_labels: Default::default(),
+        // the member's launch saved its labels (0.4.0: a job's labels are those)
+        job_labels: if job { [("NIMITZ_ID".to_string(), "F/SQ/S".to_string()), ("NIMITZ_ROLE".to_string(), "ship".to_string())].into() } else { Default::default() },
         unreadable: false,
         forked_from: None,
         bridge_session_id: None,
@@ -700,12 +701,12 @@ fn cli_l1_labels_are_kept_per_pid_so_a_stray_process_does_not_strip_the_member()
         terminal: None,
         appeared_at: None,
     };
-    let labels = evidence::session_labels(&events, &[row(Some(7))]);
+    let labels = evidence::session_labels(&events, &[row(Some(7), true)]);
     assert_eq!(labels["s1"].get("NIMITZ_ID").map(String::as_str), Some("F/SQ/S"));
-    // the stray process's own row reads unlabelled
-    let labels = evidence::session_labels(&events, &[row(Some(9))]);
+    // the stray process (a `-p --resume`, no job) reads unlabelled
+    let labels = evidence::session_labels(&events, &[row(Some(9), false)]);
     assert!(labels["s1"].is_empty());
-    // a stopped row with no saved labels: the newest SessionStart decides (as before)
-    let labels = evidence::session_labels(&events, &[row(None)]);
+    // a stopped row with no job and no saved labels: the newest SessionStart decides (as before)
+    let labels = evidence::session_labels(&events, &[row(None, false)]);
     assert!(labels["s1"].is_empty());
 }

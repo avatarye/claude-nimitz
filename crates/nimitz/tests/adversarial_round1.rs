@@ -413,12 +413,15 @@ fn bug27_the_missing_squadron_fix_runs() {
 fn bug29_a_session_that_lost_its_labels_is_flagged() {
     // Real Claude Code: after its row is removed, `--resume <id> --name X` continues the SAME
     // id with no labels (SessionStart source resume, labels {}).
+    // (0.4.0: a job's labels are the ones its launch saved, so the shape is a
+    // new job whose launch saved none)
     let sb = Sb::new(false);
     let sid = sb.sid("MAIN/ARGOS/CLEAN");
-    let line = serde_json::json!({"ts": 4.0e9, "event": "SessionStart", "session_id": sid, "source": "resume", "reason": null,
-        "agent_id": null, "tool_name": null, "to": null, "pid": 1, "labels": {}});
-    let ev = sb.dir("state/events.jsonl");
-    sb.edit(&ev, |s| format!("{s}{line}\n"));
+    let job = sb.member("MAIN/ARGOS/CLEAN").unwrap()["session"]["short_id"].as_str().unwrap().to_string();
+    let dir = sb.dir("dirs/main/clean");
+    sb.claude(&dir, &["stop", &job]);
+    sb.claude(&dir, &["rm", &job]);
+    sb.claude(&dir, &["--bg", "--resume", &sid, "--name", "[MAIN.ARGOS]-CLEAN"]);
     let c = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
     assert!(c.out.contains("labels.missing"), "the newest SessionStart carried no labels; nimitz still trusts an older one:\n{}", c.out);
 }
