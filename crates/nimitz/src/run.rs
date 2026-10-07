@@ -26,6 +26,21 @@ pub fn pane_of(mux: &dyn Mux, session_id: &str) -> Option<PaneRef> {
     mux.panes().into_iter().find(|p| p.session_id.as_deref() == Some(session_id)).map(|p| p.pane)
 }
 
+/// Wait up to `secs` for a pane to show `session_id` (an attach that just
+/// ran), polling the mux. None when none does in time.
+pub fn wait_for_session(mux: &dyn Mux, session_id: &str, secs: f64) -> Option<PaneRef> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs.max(0.0));
+    loop {
+        if let Some(p) = pane_of(mux, session_id) {
+            return Some(p);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
 pub fn refusal(code: &str, message: String, fix: Option<String>, id: Option<Id>) -> Issue {
     Issue { code: code.into(), severity: Severity::Error, message, fix, id }
 }

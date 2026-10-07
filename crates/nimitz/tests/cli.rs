@@ -703,12 +703,15 @@ fn open_reuses_the_tab_it_opened_before() {
 #[test]
 fn signal_types_or_relays_and_members_use_sendmessage() {
     let sb = Sb::new(true);
-    // no tab shows the commodore yet: one is attached first, then typed into
+    // no tab shows the commodore yet: one is attached first; the text is typed
+    // only once a pane shows the session (the fake herdr never shows one, so
+    // nothing is typed and the user is told)
     let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--plan"]);
     assert!(r.out.contains("has no tab yet") && r.out.contains(" attach "), "{}", r.out);
-    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    assert!(sb.calls().contains("MAIN.ARGOS.COMMODORE") && sb.calls().contains("\"agent\",\"prompt\""), "{}", sb.calls());
+    let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "hello", "--yes"], &[("NIMITZ_SIGNAL_WAIT", "0")], None);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("attached in pane") && r.out.contains("nothing was typed"), "{}", r.out);
+    assert!(sb.calls().contains("MAIN.ARGOS.COMMODORE") && !sb.calls().contains("\"agent\",\"prompt\""), "{}", sb.calls());
     sb.pane_for("MAIN/ARGOS");
     let r = sb.run(&["signal", "MAIN/ARGOS", "status?", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);

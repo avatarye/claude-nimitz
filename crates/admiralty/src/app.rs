@@ -719,8 +719,9 @@ impl App {
                     return None;
                 }
                 Ok(nimitz_mux::TabState::Missing) => {}
-                Err(e) => {
-                    self.notify(format!("Cannot see what its tab runs ({e}); nothing is typed into it"), st(mono::ERROR));
+                Err(i) => {
+                    let fix = i.fix.as_deref().map(|f| format!("  fix: {f}")).unwrap_or_default();
+                    self.notify(format!("{}: {}{fix}", i.code, i.message), st(mono::ERROR));
                     return None;
                 }
             }

@@ -343,7 +343,16 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                     Ok(a) => {
                         let p = attached_pane(&a);
                         out::ok(&format!("{} attached in pane {}", via.id, p.pane_id));
-                        p
+                        // the attach takes a moment: type only once the pane shows the session
+                        let sid = via.session.as_ref().map(|s| s.session_id.clone()).unwrap_or_default();
+                        let wait: f64 = ctx.vars.get("NIMITZ_SIGNAL_WAIT").and_then(|v| v.parse().ok()).unwrap_or(SIGNAL_ATTACH_WAIT_S);
+                        match run::wait_for_session(mux.as_ref(), &sid, wait) {
+                            Some(p) => p,
+                            None => {
+                                out::error(&format!("pane {} does not show {}'s session after {wait} s; nothing was typed. Run the signal again once it is attached", p.pane_id, via.id));
+                                return Ok(1);
+                            }
+                        }
                     }
                     Err(i) => {
                         out::issue(&i);
@@ -364,6 +373,10 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         }
     }
 }
+
+/// How long `signal` waits for a tab it just attached to show the session
+/// (`NIMITZ_SIGNAL_WAIT` overrides it; tests set 0).
+const SIGNAL_ATTACH_WAIT_S: f64 = 10.0;
 
 /// Print a refused (or empty) plan and return its exit code.
 fn finish_plan(ctx: &Ctx, plan: &Plan) -> i32 {
@@ -413,7 +426,8 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
     }
     let tab = match nimitz_core::layout::attach_tab(&ctx.env, m) {
         Ok(t) => t,
-        Err(i) if i.code == "history.lost" => {
+        Err(i) if i.severity == Severity::Error => {
+            // history.lost, name.drift, labels.missing: the start's business first
             plan.refusals.push(i);
             return Ok(finish_plan(ctx, &plan));
         }
@@ -457,12 +471,20 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
                 out::ok(&format!("{id} is open already; focused pane {}", p.pane_id));
                 Ok(0)
             }
+            Ok(nimitz_mux::Attached::Claimed(p)) if tab.wakes => {
+                out::ok(&format!("{id}: the attach in its tab's pane {} wakes the parked job; check with nimitz status {id} in a moment", p.pane_id));
+                Ok(0)
+            }
+            Ok(nimitz_mux::Attached::Opened(p)) if tab.wakes => {
+                out::ok(&format!("{id}: the attach in pane {} wakes the parked job; check with nimitz status {id} in a moment", p.pane_id));
+                Ok(0)
+            }
             Ok(nimitz_mux::Attached::Claimed(p)) => {
-                out::ok(&format!("{id} attached in its tab's pane {}{wake}", p.pane_id));
+                out::ok(&format!("{id} attached in its tab's pane {}", p.pane_id));
                 Ok(0)
             }
             Ok(nimitz_mux::Attached::Opened(p)) => {
-                out::ok(&format!("{id} attached in pane {}{wake}", p.pane_id));
+                out::ok(&format!("{id} attached in pane {}", p.pane_id));
                 Ok(0)
             }
             Err(i) => {

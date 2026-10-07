@@ -441,7 +441,29 @@ job); `layout herdr` (every live lead; `--ships` every live ship), `nimitz
 open`, `signal` to a lead with no tab, Admiralty's `A` and a restore build on
 it. The CLI's `run::attach_in_tab(mux, env, member)` focuses the pane or tab
 that shows it already, else opens it (`nimitz_mux::open_or_focus`). Detach is
-ctrl-z; `/exit` inside an attach opens the agent view.
+ctrl-z; `/exit` inside an attach opens the agent view. A wake by attach keeps
+the relaunch table's checks (a drifted name or missing labels: `nimitz start`
+relabels first; a lost transcript: `history.lost`); the CLI says "the attach
+wakes the parked job; check with nimitz status <id> in a moment", never
+"[OK] attached", for a wake. `signal` into a tab it just attached waits up
+to 10 s (`NIMITZ_SIGNAL_WAIT`) for a pane to show the session before it
+types; otherwise it types nothing and says so.
+
+Every Herdr reply nimitz reads is parsed by a pure function over the JSON
+(`herdr::parse_process_info`, `foreground_of`, `workspaces_in`, `tabs_in`,
+`pane_rows_in`, `agents_in`/`parse_panes`, `created_workspace`,
+`created_tab`, `created_pane`), and the tests
+`crates/nimitz-mux/tests/mux.rs` `fixture_process_info`,
+`fixture_snapshot_lists` and `fixture_create_replies` MUST run them on the
+real captures in `crates/nimitz-mux/tests/fixtures/herdr-0.9.3/`
+(`process-info.json`: `result.process_info.foreground_processes[]`;
+`snapshot.json`: `result.snapshot.{workspaces,tabs,panes,agents}`, the same
+rows the list replies carry under `result.{workspaces,tabs,panes,agents}`)
+and on the schema's create replies (`workspace_created` = `result.workspace`
+WorkspaceInfo with `active_tab_id`, `tab_created` = `result.tab` TabInfo,
+`pane_created` = `result.pane`; no `root_pane`: the new tab's pane comes from
+`pane list`). The fake Herdr emits these exact shapes. A `process-info`
+reply with no list is an error, never an idle shell.
 
 ## 9. Mux trait (`nimitz-mux`)
 

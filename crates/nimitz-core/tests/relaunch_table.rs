@@ -2128,3 +2128,24 @@ fn fresh_on_a_live_member_says_stop_it_first() {
     assert_eq!(plan.refusals[0].code, "session.live");
     assert_eq!(plan.refusals[0].fix.as_deref(), Some("nimitz stop MAIN/ARGOS/CLEAN, then nimitz start MAIN/ARGOS/CLEAN --fresh"));
 }
+
+/// A wake by attach keeps the relaunch table's checks: a stopped job under a
+/// drifted name (or without labels) is not attached; `nimitz start` relabels
+/// it first. A clean parked job attaches (and wakes).
+#[test]
+fn an_attach_never_wakes_a_job_the_start_would_relabel() {
+    let w = world();
+    let id = w.ship("CLEAN");
+    let short = w.member(&w.snap(), &id).session.unwrap().short_id.unwrap();
+    assert_eq!(w.fake(&["__inside", &short, "rename", "sb1"]).0, 0);
+    assert_eq!(w.fake(&["stop", &short]).0, 0);
+    let m = w.member(&w.snap(), &id);
+    let e = nimitz_core::layout::attach_tab(&w.env, &m).unwrap_err();
+    assert_eq!((e.code.as_str(), e.severity), ("name.drift", Severity::Error));
+    assert_eq!(e.fix.as_deref(), Some(format!("nimitz start {id}  # relabels it, then nimitz open {id}").as_str()));
+    let bare = w.member(&w.snap(), &w.ship("BARE"));
+    assert_eq!(nimitz_core::layout::attach_tab(&w.env, &bare).unwrap_err().code, "labels.missing");
+    let parked = w.member(&w.snap(), &w.ship("STOPPED"));
+    let t = nimitz_core::layout::attach_tab(&w.env, &parked).expect("a clean stopped job attaches");
+    assert!(t.wakes);
+}

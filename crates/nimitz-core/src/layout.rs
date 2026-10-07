@@ -88,14 +88,22 @@ pub fn attach_tab(env: &Env, m: &Member) -> Result<TabSpec, Issue> {
         return Err(skip(id, format!("{id} runs in a process with no job ({}); nothing to attach to", s.entrypoint.as_deref().unwrap_or(&s.kind))));
     };
     let wakes = !live(m);
-    if wakes && crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), m.cwd.as_deref(), &s.session_id).is_none() {
-        return Err(Issue {
-            code: "history.lost".into(),
-            severity: Severity::Error,
-            message: format!("{id}'s conversation {} has no transcript; an attach would wake it with no history", s.session_id),
-            fix: Some(format!("nimitz start {id} --fresh")),
-            id: Some(id.clone()),
-        });
+    if wakes {
+        // the relaunch table's checks hold for a wake by attach too: a drifted
+        // name or missing labels need the relabel (`nimitz start` does it),
+        // and a lost transcript the cold launch
+        if let Some(i) = crate::sessions::session_issues(env, m).into_iter().find(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing")) {
+            return Err(Issue { fix: Some(format!("nimitz start {id}  # relabels it, then nimitz open {id}")), ..i });
+        }
+        if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), m.cwd.as_deref(), &s.session_id).is_none() {
+            return Err(Issue {
+                code: "history.lost".into(),
+                severity: Severity::Error,
+                message: format!("{id}'s conversation {} has no transcript; an attach would wake it with no history", s.session_id),
+                fix: Some(format!("nimitz start {id} --fresh")),
+                id: Some(id.clone()),
+            });
+        }
     }
     Ok(TabSpec {
         label: tab_of(id),

@@ -46,10 +46,24 @@ fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
-/// Agent rows (`herdr agent list` / fake world) -> panes. Public so the fake
-/// and the adapter agree on one parse.
+// ------------------------------------------------------------------ reply parsing (pure)
+//
+// Every reply nimitz reads, as a function of the JSON alone, so the committed
+// samples of a real Herdr (`tests/fixtures/herdr-0.9.3/`) test them. Reply
+// shapes come from the API schema (protocol 22, `herdr api schema`):
+// `{"id", "result": {"type": "<variant>", ...}}`.
+
+/// `agent list` (`agent_list`: `result.agents[]` of AgentInfo), and the
+/// snapshot's `result.snapshot.agents[]`: the panes that show an agent.
 pub fn parse_panes(v: &Value) -> Vec<Pane> {
-    let Some(list) = v.pointer("/result/agents").and_then(Value::as_array) else { return vec![] };
+    agents_in(v.pointer("/result/agents").unwrap_or(&Value::Null))
+}
+
+/// AgentInfo rows -> panes (`pane_id`, `tab_id`, `workspace_id`,
+/// `agent_session.value`, `terminal_title_stripped`, `agent_status`,
+/// `foreground_cwd` else `cwd`).
+pub fn agents_in(list: &Value) -> Vec<Pane> {
+    let Some(list) = list.as_array() else { return vec![] };
     list.iter()
         .filter(|a| !s(a, "pane_id").is_empty())
         .map(|a| Pane {
@@ -67,6 +81,104 @@ pub fn parse_panes(v: &Value) -> Vec<Pane> {
             },
         })
         .collect()
+}
+
+/// WorkspaceInfo rows (`workspace list`'s `result.workspaces[]`, the
+/// snapshot's `result.snapshot.workspaces[]`) -> (workspace_id, label, active_tab_id).
+pub fn workspaces_in(list: &Value) -> Vec<(String, String, String)> {
+    list.as_array().map(|a| a.iter().map(|w| (s(w, "workspace_id"), s(w, "label"), s(w, "active_tab_id"))).filter(|(id, _, _)| !id.is_empty()).collect()).unwrap_or_default()
+}
+
+/// TabInfo rows (`tab list`'s `result.tabs[]`, the snapshot's `result.snapshot.tabs[]`) -> (tab_id, label).
+pub fn tabs_in(list: &Value) -> Vec<(String, String)> {
+    list.as_array().map(|a| a.iter().map(|t| (s(t, "tab_id"), s(t, "label"))).filter(|(id, _)| !id.is_empty()).collect()).unwrap_or_default()
+}
+
+/// PaneInfo rows (`pane list`'s `result.panes[]`, the snapshot's
+/// `result.snapshot.panes[]`) -> pane refs, in pane id order.
+pub fn pane_rows_in(list: &Value) -> Vec<PaneRef> {
+    let mut v: Vec<PaneRef> = list
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|p| !s(p, "pane_id").is_empty())
+                .map(|p| PaneRef { pane_id: s(p, "pane_id"), tab_id: Some(s(p, "tab_id")).filter(|x| !x.is_empty()), workspace_id: Some(s(p, "workspace_id")).filter(|x| !x.is_empty()) })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
+    v
+}
+
+/// `pane process-info` (`pane_process_info`: `result.process_info` is a
+/// PaneProcessInfo with `foreground_processes[]` of `{pid, name, argv0,
+/// argv[], cmdline, cwd}`; Herdr 0.9.3 nests it so, the flat
+/// `result.foreground_processes` is read as a fallback). The argv of every
+/// foreground process, in order (`argv`, else `cmdline` split, else `name`).
+/// `Err` when the reply carries no list: nothing is typed into a pane whose
+/// foreground is unknown.
+pub fn parse_process_info(v: &Value) -> Result<Vec<Vec<String>>, String> {
+    let list = v
+        .pointer("/result/process_info/foreground_processes")
+        .or_else(|| v.pointer("/result/foreground_processes"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("no foreground_processes in the pane process-info reply: {}", v.get("result").map(|r| r.to_string()).unwrap_or_default()))?;
+    Ok(list
+        .iter()
+        .map(|p| {
+            let mut argv: Vec<String> = p.get("argv").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            if argv.is_empty() {
+                argv = s(p, "cmdline").split_whitespace().map(String::from).collect();
+            }
+            if argv.is_empty() {
+                argv = vec![s(p, "name")].into_iter().filter(|x| !x.is_empty()).collect();
+            }
+            argv
+        })
+        .collect())
+}
+
+/// What runs in a pane, from its foreground processes: the first that is not
+/// a shell; empty when only the shell is there (an idle shell).
+pub fn foreground_of(procs: &[Vec<String>]) -> Vec<String> {
+    procs.iter().find(|argv| !crate::is_shell(argv)).cloned().unwrap_or_default()
+}
+
+/// `workspace create` (`workspace_created`: `result.workspace` is a
+/// WorkspaceInfo with `workspace_id` and `active_tab_id`; a `result.tab` and
+/// `result.root_pane` are read when a reply carries them, the schema lists
+/// neither) -> (workspace_id, tab_id if known, pane_id if known).
+pub fn created_workspace(v: &Value) -> Result<(String, Option<String>, Option<String>), String> {
+    let r = v.get("result").cloned().unwrap_or(Value::Null);
+    let ws = r.pointer("/workspace/workspace_id").and_then(Value::as_str).unwrap_or("").to_string();
+    if ws.is_empty() {
+        return Err(format!("herdr workspace create: no workspace_id in reply {r}"));
+    }
+    let tab = r.pointer("/tab/tab_id").or_else(|| r.pointer("/workspace/active_tab_id")).and_then(Value::as_str).filter(|x| !x.is_empty()).map(String::from);
+    let pane = r.pointer("/root_pane/pane_id").and_then(Value::as_str).filter(|x| !x.is_empty()).map(String::from);
+    Ok((ws, tab, pane))
+}
+
+/// `tab create` (`tab_created`: `result.tab` is a TabInfo; a `result.root_pane`
+/// is read when a reply carries it, the schema lists none) -> (tab_id, pane_id if known).
+pub fn created_tab(v: &Value) -> Result<(String, Option<String>), String> {
+    let r = v.get("result").cloned().unwrap_or(Value::Null);
+    let tab = r.pointer("/tab/tab_id").and_then(Value::as_str).unwrap_or("").to_string();
+    if tab.is_empty() {
+        return Err(format!("herdr tab create: no tab_id in reply {r}"));
+    }
+    let pane = r.pointer("/root_pane/pane_id").and_then(Value::as_str).filter(|x| !x.is_empty()).map(String::from);
+    Ok((tab, pane))
+}
+
+/// `pane split` (`pane_created`: `result.pane` is a PaneInfo) -> (pane_id, tab_id).
+pub fn created_pane(v: &Value) -> Result<(String, String), String> {
+    let p = v.pointer("/result/pane").cloned().unwrap_or(Value::Null);
+    let pane = s(&p, "pane_id");
+    if pane.is_empty() {
+        return Err(format!("herdr pane split: no pane_id in reply {p}"));
+    }
+    Ok((pane, s(&p, "tab_id")))
 }
 
 impl Herdr {
@@ -96,28 +208,29 @@ impl Herdr {
     /// `herdr workspace list` -> [(workspace_id, label, active_tab_id)]
     fn workspaces(&self) -> Result<Vec<(String, String, String)>, MuxError> {
         let v = self.run(&["workspace", "list"])?;
-        let list = v.pointer("/result/workspaces").and_then(Value::as_array).cloned().unwrap_or_default();
-        Ok(list.iter().map(|w| (s(w, "workspace_id"), s(w, "label"), s(w, "active_tab_id"))).collect())
+        Ok(workspaces_in(v.pointer("/result/workspaces").unwrap_or(&Value::Null)))
     }
 
     /// `herdr tab list --workspace <id>` -> [(tab_id, label)]
     fn tabs(&self, workspace_id: &str) -> Result<Vec<(String, String)>, MuxError> {
         let v = self.run(&["tab", "list", "--workspace", workspace_id])?;
-        let list = v.pointer("/result/tabs").and_then(Value::as_array).cloned().unwrap_or_default();
-        Ok(list.iter().map(|t| (s(t, "tab_id"), s(t, "label"))).collect())
+        Ok(tabs_in(v.pointer("/result/tabs").unwrap_or(&Value::Null)))
     }
 
     /// The panes of a tab, in id order (`herdr pane list`).
     fn tab_panes(&self, workspace_id: &str, tab_id: &str) -> Result<Vec<PaneRef>, MuxError> {
         let v = self.run(&["pane", "list"])?;
-        let list = v.pointer("/result/panes").and_then(Value::as_array).cloned().unwrap_or_default();
-        let mut panes: Vec<PaneRef> = list
-            .iter()
-            .filter(|p| s(p, "tab_id") == tab_id)
-            .map(|p| PaneRef { pane_id: s(p, "pane_id"), tab_id: Some(tab_id.to_string()), workspace_id: Some(workspace_id.to_string()) })
-            .collect();
-        panes.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
-        Ok(panes)
+        Ok(pane_rows_in(v.pointer("/result/panes").unwrap_or(&Value::Null))
+            .into_iter()
+            .filter(|p| p.tab_id.as_deref() == Some(tab_id))
+            .map(|p| PaneRef { workspace_id: Some(workspace_id.to_string()), ..p })
+            .collect())
+    }
+
+    /// The first pane of a tab just made (the reply names none, the schema
+    /// lists no `root_pane`): `pane list`.
+    fn first_pane(&self, workspace_id: &str, tab_id: &str) -> Result<String, MuxError> {
+        self.tab_panes(workspace_id, tab_id)?.into_iter().next().map(|p| p.pane_id).ok_or_else(|| MuxError::Failed(format!("herdr pane list: no pane in the new tab {tab_id}")))
     }
 
     /// The pane of a tab to attach in: its first shell pane (a tab can carry
@@ -137,29 +250,33 @@ impl Herdr {
     }
 
     /// `workspace create --label <label> --cwd <cwd> --no-focus`
-    /// -> (workspace_id, root tab_id, root pane_id), all from the reply.
+    /// -> (workspace_id, root tab_id, root pane_id): the workspace and its
+    /// active tab from the reply (WorkspaceInfo), the pane from `pane list`
+    /// when the reply names none.
     fn workspace_create(&self, label: &str, cwd: &str) -> Result<(String, String, String), MuxError> {
         let v = self.run(&["workspace", "create", "--label", label, "--cwd", cwd, "--no-focus"])?;
-        let r = v.pointer("/result").cloned().unwrap_or(Value::Null);
-        let ws = r.pointer("/workspace/workspace_id").and_then(Value::as_str).unwrap_or("").to_string();
-        let tab = r.pointer("/tab/tab_id").and_then(Value::as_str).unwrap_or("").to_string();
-        let pane = r.pointer("/root_pane/pane_id").and_then(Value::as_str).unwrap_or("").to_string();
-        if ws.is_empty() || tab.is_empty() || pane.is_empty() {
-            return Err(MuxError::Failed(format!("herdr workspace create: ids missing in reply {r}")));
-        }
+        let (ws, tab, pane) = created_workspace(&v).map_err(MuxError::Failed)?;
+        let tab = match tab {
+            Some(t) => t,
+            None => self.tabs(&ws)?.into_iter().next().map(|(id, _)| id).ok_or_else(|| MuxError::Failed(format!("herdr tab list: no tab in the new workspace {ws}")))?,
+        };
+        let pane = match pane {
+            Some(p) => p,
+            None => self.first_pane(&ws, &tab)?,
+        };
         Ok((ws, tab, pane))
     }
 
     /// `tab create --workspace <id> --label <label> --cwd <cwd> --no-focus`
-    /// -> (tab_id, root pane_id).
+    /// -> (tab_id, root pane_id): the tab from the reply (TabInfo), the pane
+    /// from `pane list` when the reply names none.
     fn tab_create(&self, workspace_id: &str, label: &str, cwd: &str) -> Result<(String, String), MuxError> {
         let v = self.run(&["tab", "create", "--workspace", workspace_id, "--label", label, "--cwd", cwd, "--no-focus"])?;
-        let r = v.pointer("/result").cloned().unwrap_or(Value::Null);
-        let tab = r.pointer("/tab/tab_id").and_then(Value::as_str).unwrap_or("").to_string();
-        let pane = r.pointer("/root_pane/pane_id").and_then(Value::as_str).unwrap_or("").to_string();
-        if tab.is_empty() || pane.is_empty() {
-            return Err(MuxError::Failed(format!("herdr tab create: ids missing in reply {r}")));
-        }
+        let (tab, pane) = created_tab(&v).map_err(MuxError::Failed)?;
+        let pane = match pane {
+            Some(p) => p,
+            None => self.first_pane(workspace_id, &tab)?,
+        };
         Ok((tab, pane))
     }
 
@@ -199,24 +316,13 @@ impl Mux for Herdr {
     }
 
     /// `herdr pane process-info --pane <id>`: the foreground process group of
-    /// the pane's pty (`foreground_processes[].argv`). The first process that
-    /// is not a shell is what runs; none means an idle shell.
+    /// the pane's pty (`result.process_info.foreground_processes[].argv`). The
+    /// first process that is not a shell is what runs; none means an idle
+    /// shell; a reply with no list is an error (never "idle shell").
     fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError> {
         let v = self.run(&["pane", "process-info", "--pane", &pane.pane_id])?;
-        let procs = v.pointer("/result/foreground_processes").and_then(Value::as_array).cloned().unwrap_or_default();
-        for p in &procs {
-            let mut argv: Vec<String> = p.get("argv").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-            if argv.is_empty() {
-                argv = s(p, "cmdline").split_whitespace().map(String::from).collect();
-            }
-            if argv.is_empty() {
-                argv = vec![s(p, "name")].into_iter().filter(|x| !x.is_empty()).collect();
-            }
-            if !crate::is_shell(&argv) {
-                return Ok(argv);
-            }
-        }
-        Ok(vec![])
+        let procs = parse_process_info(&v).map_err(MuxError::Failed)?;
+        Ok(foreground_of(&procs))
     }
 
     fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError> {
@@ -253,15 +359,8 @@ impl Mux for Herdr {
             }
             Place::Split { next_to } => {
                 let v = self.run(&["pane", "split", &next_to.pane_id, "--direction", "right", "--cwd", &cwd, "--no-focus"])?;
-                let p = v.pointer("/result/pane").cloned().unwrap_or(Value::Null);
-                let pane = s(&p, "pane_id");
-                if pane.is_empty() {
-                    return Err(MuxError::Failed(format!("herdr pane split: no pane_id in reply {p}")));
-                }
-                let tab = {
-                    let t = s(&p, "tab_id");
-                    if t.is_empty() { next_to.tab_id.clone().unwrap_or_default() } else { t }
-                };
+                let (pane, tab) = created_pane(&v).map_err(MuxError::Failed)?;
+                let tab = if tab.is_empty() { next_to.tab_id.clone().unwrap_or_default() } else { tab };
                 (pane, tab, next_to.workspace_id.clone().unwrap_or_default())
             }
         };

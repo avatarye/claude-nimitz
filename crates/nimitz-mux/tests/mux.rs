@@ -49,6 +49,9 @@ fn main() {
         ("attach: a Yazi split is not the tab's pane; the shell pane is", a_split_running_another_program_is_not_the_attach_pane),
         ("attach: nothing there yet opens a new tab", reuse_none_opens),
         ("layout: reruns a command only into a pane that is a shell again", layout_reruns_only_into_a_shell_pane),
+        ("fixtures: process-info (herdr 0.9.3) nests the list under process_info; no list is an error", fixture_process_info),
+        ("fixtures: the snapshot's workspaces, tabs, panes and agents parse like the list replies", fixture_snapshot_lists),
+        ("fixtures: create replies without root_pane resolve the pane through pane list", fixture_create_replies),
         ("errors: workspace create failure propagates", error_workspace_create),
         ("errors: pane run failure propagates", error_pane_run),
     ];
@@ -542,6 +545,83 @@ fn layout_reruns_only_into_a_shell_pane() {
     assert_eq!(w.pane("w2:p1")["ran"], json!(["ccl", "ccl"]), "ran again in the shell pane");
     assert_eq!(w.pane("w2:p2")["ran"], json!(["yazi"]), "yazi still runs there: left alone");
     assert_eq!(opened_tabs(&w), tabs_before, "no duplicate tabs");
+}
+
+// ---------- real replies (tests/fixtures/herdr-0.9.3, anonymised captures) ----------
+
+fn fixture(name: &str) -> Value {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/herdr-0.9.3").join(name);
+    serde_json::from_slice(&fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))).expect("fixture json")
+}
+
+fn fixture_process_info() {
+    use nimitz_mux::herdr::{foreground_of, parse_process_info};
+    let v = fixture("process-info.json");
+    let procs = parse_process_info(&v).expect("the nested list");
+    assert_eq!(procs, vec![cmdv(&["herdr", "pane", "process-info", "--pane", "w4:pT"])]);
+    assert_eq!(foreground_of(&procs), cmdv(&["herdr", "pane", "process-info", "--pane", "w4:pT"]), "not a shell: taken");
+    // the flat shape is read too; no list at all is an error, never an idle shell
+    let flat = json!({"result": {"type": "pane_process_info", "foreground_processes": [{"pid": 1, "name": "zsh", "argv": ["-zsh"]}]}});
+    assert_eq!(foreground_of(&parse_process_info(&flat).unwrap()), Vec::<String>::new(), "only the shell: idle");
+    for bad in [json!({"result": {"type": "pane_process_info", "process_info": {"pane_id": "w1:p1"}}}), json!({"result": {"type": "ok"}}), json!({})] {
+        assert!(parse_process_info(&bad).is_err(), "{bad}");
+    }
+    // argv missing: cmdline, then name
+    let v = json!({"result": {"process_info": {"foreground_processes": [{"pid": 2, "name": "claude", "cmdline": "claude attach 9aacf927"}, {"pid": 3, "name": "yazi"}]}}});
+    assert_eq!(parse_process_info(&v).unwrap(), vec![cmdv(&["claude", "attach", "9aacf927"]), cmdv(&["yazi"])]);
+    // through the adapter: the fake emits the same nesting
+    let w = tab_world(Some(vec!["yazi"]));
+    assert_eq!(w.mux().foreground(&pane_ref("w1:p2", "w1:t2", "w1")).unwrap(), cmdv(&["yazi"]));
+    assert_eq!(w.mux().foreground(&pane_ref("w1:p1", "w1:t1", "w1")).unwrap(), Vec::<String>::new());
+    assert!(w.mux().foreground(&pane_ref("w1:p9", "w1:t1", "w1")).is_err(), "no such pane: an error, never a shell");
+}
+
+fn fixture_snapshot_lists() {
+    use nimitz_mux::herdr::{agents_in, pane_rows_in, parse_panes, tabs_in, workspaces_in};
+    let v = fixture("snapshot.json");
+    let snap = v.pointer("/result/snapshot").expect("result.snapshot");
+    let ws = workspaces_in(&snap["workspaces"]);
+    assert_eq!(ws.len(), 12);
+    assert!(ws.contains(&("w3".into(), "ALPHA".into(), "w3:t1".into())) && ws.contains(&("w5".into(), "BRAVO".into(), "w5:t2".into())), "{ws:?}");
+    let tabs = tabs_in(&snap["tabs"]);
+    assert_eq!(tabs.len(), 12);
+    assert!(tabs.contains(&("w3:t1".into(), "ADMIRAL".into())) && tabs.contains(&("w6:t1".into(), "BRAVO.SQA.COMMODORE".into())), "{tabs:?}");
+    let panes = pane_rows_in(&snap["panes"]);
+    assert_eq!(panes.len(), 14);
+    let in_w4t1: Vec<&str> = panes.iter().filter(|p| p.tab_id.as_deref() == Some("w4:t1")).map(|p| p.pane_id.as_str()).collect();
+    assert_eq!(in_w4t1, ["w4:p1", "w4:pF", "w4:pT"], "a tab with splits, in id order");
+    assert_eq!(panes[0].workspace_id.as_deref(), Some("w1"));
+    let agents = agents_in(&snap["agents"]);
+    assert_eq!(agents.len(), 11);
+    let adm = agents.iter().find(|a| a.pane.pane_id == "w3:p1").unwrap();
+    assert_eq!((adm.title.as_str(), adm.state.as_str(), adm.session_id.as_deref().map(|s| &s[..8]), adm.pane.tab_id.as_deref(), adm.pane.workspace_id.as_deref()), ("[ALPHA]-ADMIRAL", "idle", Some("41a2ca48"), Some("w3:t1"), Some("w3")));
+    assert_eq!(adm.cwd, "/home/user/nimitz/353517");
+    // the same rows under the list replies' paths (`result.agents`, `result.panes`, ...)
+    let as_list = json!({"id": "cli:agent:list", "result": {"type": "agent_list", "agents": snap["agents"]}});
+    assert_eq!(parse_panes(&as_list).len(), 11);
+    assert_eq!(parse_panes(&json!({"result": {"type": "agent_list"}})).len(), 0);
+}
+
+fn fixture_create_replies() {
+    use nimitz_mux::herdr::{created_pane, created_tab, created_workspace};
+    // the schema's shapes: WorkspaceInfo / TabInfo alone, no root_pane
+    let ws = json!({"id": "cli:workspace:create", "result": {"type": "workspace_created", "workspace": {"workspace_id": "w9", "label": "F", "number": 9, "active_tab_id": "w9:t1", "tab_count": 1, "pane_count": 1, "focused": false, "agent_status": "unknown"}}});
+    assert_eq!(created_workspace(&ws).unwrap(), ("w9".into(), Some("w9:t1".into()), None));
+    let tab = json!({"id": "cli:tab:create", "result": {"type": "tab_created", "tab": {"tab_id": "w9:t2", "workspace_id": "w9", "label": "F.SQ.S", "number": 2, "pane_count": 1, "focused": false, "agent_status": "unknown"}}});
+    assert_eq!(created_tab(&tab).unwrap(), ("w9:t2".into(), None));
+    // a reply that does name the pane is taken as is
+    let with = json!({"result": {"type": "tab_created", "tab": {"tab_id": "w9:t3"}, "root_pane": {"pane_id": "w9:p7"}}});
+    assert_eq!(created_tab(&with).unwrap(), ("w9:t3".into(), Some("w9:p7".into())));
+    assert!(created_tab(&json!({"result": {"type": "ok"}})).is_err());
+    assert!(created_workspace(&json!({"result": {"type": "workspace_created"}})).is_err());
+    let split = json!({"result": {"type": "pane_created", "pane": {"pane_id": "w9:p8", "tab_id": "w9:t3", "workspace_id": "w9"}}});
+    assert_eq!(created_pane(&split).unwrap(), ("w9:p8".into(), "w9:t3".into()));
+    // through the adapter (the fake answers with the schema's shapes): the pane comes from `pane list`
+    let w = World::new(None);
+    let r = w.mux().open(&cmdv(&["claude", "attach", "9aacf927"]), Path::new("/x"), Place::Tab { workspace: "NEW".into(), label: "NEW.ADMIRAL".into() }).expect("open");
+    assert_eq!(r, pane_ref("w2:p1", "w2:t1", "w2"));
+    assert_eq!(w.pane("w2:p1")["ran"], json!(["claude attach 9aacf927"]));
+    assert!(w.calls().iter().any(|c| c[..2] == ["pane".to_string(), "list".to_string()]), "{:?}", w.calls());
 }
 
 // ---------- error paths ----------

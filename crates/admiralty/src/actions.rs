@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nimitz_core::env::Env;
 use nimitz_core::{Caller, Id, Member, Outcome, Plan, Role, Snapshot, Step};
-use nimitz_mux::{Caps, LayoutPlan, Mux, MuxError, Pane, PaneRef, Place, TabState};
+use nimitz_mux::{Caps, LayoutPlan, Mux, Pane, PaneRef, Place, TabState};
 
 /// Everything an action needs from the outside world.
 pub struct Ctx {
@@ -419,9 +419,14 @@ pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fl
 /// What the tab `A` would attach in shows now (`nimitz_mux::tab_state`): a
 /// pane with the session (jump there), a plain shell (claim it: the attach
 /// runs there), something else (`tab.taken`: never typed into), or no tab
-/// (`Missing`: open one, after the confirm). `Err` when the pane cannot be
-/// read into. The attach step itself is `plan_open`'s.
-pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<TabState, MuxError> {
+/// (`Missing`: open one, after the confirm). `Err` with the issue when the
+/// attach is refused (`history.lost`, `name.drift`, ...: its fix says what
+/// first) or the pane cannot be read into. The attach step itself is `plan_open`'s.
+pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<TabState, nimitz_core::Issue> {
+    if let Target::Member(id) = target {
+        let m = find_member(snap, id).ok_or_else(|| refusal_issue(id, "not in the snapshot".into()))?;
+        nimitz_core::layout::attach_tab(&ctx.env, m)?;
+    }
     let Ok(p) = plan_open(ctx, snap, target) else { return Ok(TabState::Missing) };
     let Some((step, place)) = p.panes.first() else { return Ok(TabState::Missing) };
     let sid = match target {
@@ -429,7 +434,11 @@ pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<TabS
         Target::Stowaway(sid) => Some(sid.clone()),
         _ => None,
     };
-    nimitz_mux::tab_state(ctx.mux.as_ref(), &step.cmd, place, sid.as_deref())
+    nimitz_mux::tab_state(ctx.mux.as_ref(), &step.cmd, place, sid.as_deref()).map_err(|e| refusal_issue(&member_id(target).unwrap_or(Id("?".into())), format!("cannot see what its tab runs ({e}); nothing is typed into it")))
+}
+
+fn refusal_issue(id: &Id, message: String) -> nimitz_core::Issue {
+    nimitz_core::Issue { code: "mux.failed".into(), severity: nimitz_core::Severity::Error, message, fix: None, id: Some(id.clone()) }
 }
 
 /// `A` on a tab whose pane is a plain shell: run the attach there and focus it.

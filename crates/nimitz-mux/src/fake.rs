@@ -208,7 +208,9 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             let ws = json!({"workspace_id": ws_id, "label": label, "focused": focused,
                             "active_tab_id": s(&tab, "tab_id"), "number": n});
             world["workspaces"].as_array_mut().expect("workspaces").push(ws.clone());
-            ok("workspace:create", json!({"type": "workspace_created", "workspace": ws, "tab": tab, "root_pane": pane}))
+            // the schema's reply: the WorkspaceInfo alone (its active tab; the pane comes from `pane list`)
+            let _ = pane;
+            ok("workspace:create", json!({"type": "workspace_created", "workspace": ws}))
         }
         ["tab", "list", rest @ ..] => {
             let o = opts(rest);
@@ -233,8 +235,9 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                 return err("tab:create", "workspace_not_found", &format!("workspace {ws} not found"));
             }
             let tab = new_tab(world, &ws, o.get("label").map(String::as_str).unwrap_or(""), o.contains_key("focus"));
-            let pane = new_pane(world, &ws, &s(&tab, "tab_id"), o.get("cwd").map(String::as_str).unwrap_or(""));
-            ok("tab:create", json!({"type": "tab_created", "tab": tab, "root_pane": pane}))
+            let _pane = new_pane(world, &ws, &s(&tab, "tab_id"), o.get("cwd").map(String::as_str).unwrap_or(""));
+            // the schema's reply: the TabInfo alone (the pane comes from `pane list`)
+            ok("tab:create", json!({"type": "tab_created", "tab": tab}))
         }
         ["tab", "rename", target, label @ ..] if !label.is_empty() => {
             let mut hit = false;
@@ -262,8 +265,9 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             let argv: Vec<String> = p.get("foreground").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["zsh".into()]);
             let proc_ = json!({"pid": 4242, "name": argv.first().cloned().unwrap_or_default(), "argv0": argv.first().cloned().unwrap_or_default(),
                                "argv": argv, "cmdline": argv.join(" "), "cwd": s(p, "cwd")});
-            ok("pane:process-info", json!({"type": "pane_process_info", "pane_id": target, "shell_pid": 4241, "tty": "/dev/pts/9",
-                                           "foreground_process_group_id": 4242, "foreground_processes": [proc_]}))
+            // as herdr 0.9.3 replies (tests/fixtures/herdr-0.9.3/process-info.json): nested under process_info
+            ok("pane:process_info", json!({"type": "pane_process_info", "process_info": {"pane_id": target, "shell_pid": 4241, "tty": "/dev/pts/9",
+                                           "foreground_process_group_id": 4242, "foreground_processes": [proc_]}}))
         }
         ["pane", "run", target, cmd @ ..] if !cmd.is_empty() => {
             let mut hit = false;
