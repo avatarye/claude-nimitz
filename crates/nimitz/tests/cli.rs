@@ -1929,6 +1929,34 @@ fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
     }
 }
 
+/// The user's own nimitz outside Herdr (no HERDR_ENV, no NIMITZ_MUX: a plain
+/// terminal) reads the Herdr server the user's commands recorded, named on
+/// every call; a recorded server that is not reachable fails a restore with a
+/// fix that names it (and the --jobs-only way), never a bare error.
+#[test]
+fn the_users_nimitz_outside_herdr_uses_the_recorded_server() {
+    let sb = Sb::new(true);
+    let active = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("active.json");
+    std::fs::write(&active, r#"{"version": 1, "at": 1.0, "herdr": {"session": "rec"}, "members": {}}"#).unwrap();
+    let mut outside = sb.vars.clone();
+    outside.remove("NIMITZ_MUX");
+    outside.remove("HERDR_ENV");
+    let from = sb.calls().lines().count();
+    let r = raw(&outside, &["status"], &[], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let calls: Vec<String> = sb.calls().lines().skip(from).map(String::from).collect();
+    assert!(!calls.is_empty() && calls.iter().all(|c| c.contains("\"--session\",\"rec\"")), "the recorded server, named: {calls:?}");
+    // the recorded server gone: a restore says which, and what works
+    let dead = sb.base.join("dead-herdr");
+    std::fs::write(&dead, "#!/bin/sh\necho '{\"error\":{\"code\":\"no_server\",\"message\":\"herdr server not running\"}}' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&dead, std::fs::Permissions::from_mode(0o755)).unwrap();
+    outside.insert("NIMITZ_HERDR_BIN".into(), dead.to_string_lossy().into_owned());
+    let r = raw(&outside, &["restore", "MAIN", "--plan"], &[], None);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("nimitz restore MAIN --jobs-only"), "{}", r.out);
+}
+
 /// A hook always exits 0, even when Claude Code has closed its pipe before
 /// the hook writes its context (no SIGPIPE death, no panic).
 #[test]

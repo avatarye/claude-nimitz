@@ -371,6 +371,7 @@ Four sub-cases; all "before": leads attached, S1 attached, all names standard.
 - Must not: rebuild every tab in the second session, attaching each lead twice.
 - nimitz knows: must record the Herdr identity in `active.json` at every write; must read it from `herdr status` (`session` / socket path) at restore.
 - Built (P9): the identity is the env (`NIMITZ_HERDR_SESSION`, passed as `--session`; else the pane's `HERDR_SESSION` / `HERDR_SOCKET_PATH`), not `herdr status`: the shape nimitz reads and the identity it records come from the same `herdr` invocation in the same env, so they name the same server by construction, and the E22 hazard is accepted on that ground. `--jobs-only` and `--here` as above.
+- Built (fix after 0.4.0): outside Herdr (no `HERDR_ENV`, nothing explicit) the user's own `nimitz` and Admiralty use the server the user's commands recorded in `active.json` (`active::user_mux_vars`), so a restore from a plain terminal runs in session `NIMITZ`; with nothing recorded it refuses `mux.none` as above; a recorded server that is not reachable refuses `mux.failed` with the fix that names it and `--jobs-only` (cli test `the_users_nimitz_outside_herdr_uses_the_recorded_server`).
 - Priority: should.
 
 ### R-30 A member's folder gone, moved, or untrusted

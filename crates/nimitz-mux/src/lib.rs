@@ -349,12 +349,14 @@ pub fn missing_mux_fix(vars: &std::collections::HashMap<String, String>) -> Stri
         _ if herdr_env && resolve_herdr_bin(vars).is_none() => {
             "HERDR_ENV=1 is set but no herdr binary was found: put herdr on PATH, or set NIMITZ_HERDR_BIN".into()
         }
-        _ => "run nimitz inside Herdr (HERDR_ENV is not 1 here)".into(),
+        _ => "run nimitz inside Herdr (HERDR_ENV is not 1 here), or run nimitz status inside Herdr once so it records the server".into(),
     }
 }
 
 /// `NIMITZ_MUX` override, else Herdr when `HERDR_ENV=1` and a herdr binary
-/// resolves (`NIMITZ_HERDR_BIN`, else PATH), else NoMux. Pure in `vars`.
+/// resolves (`NIMITZ_HERDR_BIN`, else PATH), else NoMux. Pure in `vars`. (The
+/// user's own command outside Herdr passes `active::user_mux_vars`, which
+/// names the recorded server with `NIMITZ_MUX=herdr`.)
 pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> {
     match vars.get("NIMITZ_MUX").map(String::as_str) {
         Some("none") => return Box::new(none::NoMux),

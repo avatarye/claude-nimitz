@@ -385,7 +385,8 @@ shows a member under another name) plus reports. Three entry points:
   `registry.lock`, temp file + rename, skipped when nothing changed. A
   member the machine or a crash took down (parked, no retire line) stays in
   the set; one the daemon retired, or that was stopped, goes. A look from
-  outside Herdr keeps the recorded places. The recorded Herdr identity is
+  outside Herdr reads the recorded server (`active::user_mux_vars`) and
+  updates the places from it; with no server recorded it keeps them. The recorded Herdr identity is
   the pane env (`HERDR_SESSION`, `HERDR_SOCKET_PATH`): nimitz runs no other
   Herdr command than the shape readers and those it already used.
 - `NIMITZ_STATE/restore.json`: a run's progress; a run that died partway is

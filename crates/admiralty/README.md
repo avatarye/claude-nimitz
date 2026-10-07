@@ -94,6 +94,10 @@ with `--plan --json` in a sandbox and compares the plans, so the two cannot
 drift. `herdr-plugin/tests/e2e_admiralty_in_herdr.py` runs Admiralty in a
 private Herdr server (pane dots, `m` into an admiral's pane, `A`, enter).
 
+Inside a Herdr pane Admiralty uses that pane's Herdr server; started outside
+Herdr (a terminal, a launcher) it uses the server the user's nimitz commands
+recorded in `active.json`, so it sees the same panes as inside.
+
 With no multiplexer Admiralty is monitor-only: what needs a pane is closed and
 says why (starting an admiral or commodore, `up`, open, attach, jump, typing a
 message); ships start, relaunch and stop as usual, and so do sweep,

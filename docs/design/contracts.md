@@ -27,7 +27,7 @@ and jump), never to starting.
 | `NIMITZ_CLAUDE_HOME` | `~/.claude` | Claude Code's home (sessions/, jobs/, projects/) |
 | `NIMITZ_CLAUDE_BIN` | `claude` on PATH | cold launches (on ACME the wrapper, which adds Bedrock settings) |
 | `NIMITZ_NATIVE_CLAUDE_BIN` | newest `~/.localtools/tools/claude-code/*/claude`, else `claude` on PATH | resume, stop, rm, agents |
-| `NIMITZ_HERDR_BIN` | `herdr` on PATH (only when `HERDR_ENV=1`) | Herdr adapter |
+| `NIMITZ_HERDR_BIN` | `herdr` on PATH (when `HERDR_ENV=1`, or `NIMITZ_MUX=herdr`, which outside Herdr the recorded server sets) | Herdr adapter |
 | `NIMITZ_HERDR_SESSION` | unset (Herdr's own resolution: `HERDR_SESSION`, else the pane's socket) | the named Herdr session every herdr call gets as `--session`; with `NIMITZ_MUX=herdr` it drives a test server from a plain terminal (the checklist), and it is the Herdr identity `active.json` records |
 | `NIMITZ_HERDR_SOCKET` | unset | set by nimitz only (`active::member_mux_vars`): the recorded default Herdr server's socket, passed as `HERDR_SOCKET_PATH` to every herdr call of a member's command; the inherited `HERDR_SOCKET_PATH` never counts there |
 | `NIMITZ_HOSTNAME` | `gethostname()` | machine matching |
@@ -570,7 +570,7 @@ pub trait Mux {
     fn shape(&self, foregrounds: bool) -> Result<Shape, MuxError>; // the whole shape: herdr api snapshot (+ pane process-info per pane)
     fn rename_tab(&self, tab_id: &str, label: &str) -> Result<(), MuxError>; // herdr tab rename
 }
-pub fn detect() -> Box<dyn Mux>;                       // HERDR_ENV=1 -> Herdr, else None
+pub fn detect() -> Box<dyn Mux>;                       // NIMITZ_MUX, else HERDR_ENV=1 -> Herdr, else None (callers pass active::user_mux_vars / member_mux_vars)
 pub fn tab_state(mux, cmd, place, session_id) -> Result<TabState, MuxError>;   // Shown | Shell | Taken { pane, running } | Missing
 pub fn attach(mux, cmd, cwd, place, session_id) -> Result<Attached, AttachError>; // Focused | Claimed | Opened; Err Taken: nothing typed
 ```

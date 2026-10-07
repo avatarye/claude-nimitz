@@ -135,6 +135,21 @@ pub fn user_mux_vars(env: &Env, vars: &HashMap<String, String>) -> HashMap<Strin
     member_mux_vars(env, vars)
 }
 
+/// The fix for a Herdr nimitz could not read when the server came from the
+/// record (`user_mux_vars` outside Herdr): which server it tried, and what
+/// works. `None` when the env named the server itself.
+pub fn recorded_server_fix(env: &Env, vars: &HashMap<String, String>, fleet: Option<&str>) -> Option<String> {
+    let in_herdr = vars.get("HERDR_ENV").map(String::as_str) == Some("1");
+    let explicit = vars.get("NIMITZ_MUX").is_some_and(|m| !m.is_empty() && m != "auto") || vars.get("NIMITZ_HERDR_SESSION").is_some_and(|v| !v.is_empty());
+    if in_herdr || explicit {
+        return None;
+    }
+    let h = load(env).and_then(|a| a.herdr)?;
+    let which = h.session.map(|s| format!("session {s}")).or(h.socket.map(|s| format!("socket {s}"))).unwrap_or_else(|| "the default server".into());
+    let f = fleet.map(|f| format!(" {f}")).unwrap_or_default();
+    Some(format!("the Herdr server recorded in active.json ({which}) is not reachable from here: start it (herdr session attach ...), or run nimitz inside Herdr; or nimitz restore{f} --jobs-only"))
+}
+
 pub fn load(env: &Env) -> Option<ActiveSet> {
     let v = crate::evidence::first_json(&std::fs::read(path(env)).ok()?)?;
     serde_json::from_value(v).ok()
