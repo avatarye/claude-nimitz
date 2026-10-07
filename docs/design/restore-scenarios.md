@@ -52,9 +52,15 @@ workspaces. Fleet config lives in Dropbox (`NIMITZ_HOME`), state per machine
 
 "Restored panes are plain shells" (the Herdr rows above) holds only with
 Herdr's `[session] resume_agents_on_restore` off: at its default (true) the
-server itself runs `claude --resume <session>` in every restored agent pane,
-an interactive process on the member's conversation (a case under study;
-the checklist turns the setting off for its test server).
+server itself runs `claude --resume <session>` in every restored agent pane.
+Measured (r3-e2e.md finding 10, Claude Code 2.1.292): on a live job that is
+refused and the pane is a shell again; on a stopped, parked or removed job
+the conversation opens interactively with no job (`held`), and a `--bg
+--resume` meanwhile starts a copy. So after a reboot plus a Herdr restart
+every lead's pane holds its conversation: restore reports `tab.resumed`
+(fix: `/exit` there, then restore) and never wakes a held member; `nimitz
+doctor` warns while the setting is on. The checklist turns it off for its
+test server and shows the on case in one optional step.
 
 Other facts the scenarios lean on: the job id is stable across every event above
 (plan section 1); `claude attach <job>` on a parked job wakes it as itself
@@ -107,6 +113,7 @@ must have recorded beforehand), priority (must / should / nice).
 - Left: pinned, so normally still live-unattached. Under memory pressure the daemon stops idle pinned sessions too: then parked. Tab: shell in the lead folder.
 - Expected: the tab `F.SQ.COMMODORE` is reused (shell pane): `claude attach <job>` typed there; if parked, the attach wakes it (same job, SessionStart `resume`); nimitz verifies the bind. If the pin is missing (someone unpinned, or `pins.json` was lost), restore re-pins.
 - Must not: open a second `F.SQ.COMMODORE` tab; `--bg --resume` **and** attach (attach alone wakes it; a resume while the attach is waking races into a copy).
+- With `resume_agents_on_restore` on and a Herdr restart in between: Herdr's `claude --resume` holds the parked lead's conversation in that pane (a live lead's is refused, its pane a shell): `tab.resumed`, no wake, until `/exit` there (finding 10).
 - nimitz knows: pane has no agent (`agent list` has no row for it, or `pane list` shows it with no agent), the tab name matches; `pins.json` membership.
 - Priority: must.
 
@@ -181,6 +188,7 @@ Four sub-cases; all "before": leads attached, S1 attached, all names standard.
 - Left: job rows with their last `state` (`working` for S1 and anything mid-turn, `done`/`stopped` for the rest; docs: shown as `failed` within 48 h), `respawnFlags` intact, transcripts intact, `pins.json` intact, stale `~/.claude/sessions/<pid>.json` files possible (dead pids; **pid reuse** after a reboot is real: pid 1234 may be a browser now). Herdr: names and cwds from the snapshot, shells. The daemon starts on the first `claude` call and adopts nothing (`adopted=0`); nothing respawns on its own.
 - Expected (`restore --all` or per fleet): leads: `--bg --resume <session>` (job row exists: native resume) then attach in their tabs; the crash window rule (plan section 5) applies to `working`/`crashed` rows: wait up to 20 s for a daemon restart before resuming; S1 (active, busy at loss) resumed and re-attached, reported `turn.interrupted` Info ("S1 was mid-turn; its last prompt was not finished; re-prompt it"); S2 (active, idle) resumed because it was in the active set; S3 stays parked (it was parked before the loss); G: admiral resumed + attached, ships stay parked. After the resumes every SessionStart must be `resume` (a `startup` means history lost -> `history.lost`, never `[OK]`).
 - Must not: trust a session file by pid alone (check the process is a `claude` with that job, or its start time is after the file's); resume a job whose pid is alive; resume ships not in the active set without `--all`; run two resumes of one job because the first took longer than the poll.
+- With `resume_agents_on_restore` on (the user's config): Herdr's restart runs `claude --resume` in every lead's pane, so every lead's conversation is held interactively (finding 10); restore reports `tab.resumed` per lead with the `/exit` fix and wakes nothing (a wake would make a copy); after the `/exit`s the next restore wakes them by their shell tabs' attach.
 - nimitz knows: `active.json` (members live/attached and their status words at the last write); job rows; event log tail (the last line per job is not a stop SessionEnd: parked). What it cannot know: whether the interrupted turn matters; it reports and leaves the decision to me or the commodore.
 - Priority: must.
 

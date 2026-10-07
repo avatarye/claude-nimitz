@@ -76,6 +76,14 @@ in another plain terminal (detach with Herdr's own detach key), or
 | 18 | Reboot-like loss (R-08): stop the test server and kill the throwaway workers without a `claude stop` hook (the daemon's view of a dead machine) | `herdr --session nimitz-e2e server stop`; `kill -9 <pid of each [NIMITZ_E2E_RESTORE...] worker>` (from `claude agents`); `herdr --session nimitz-e2e server &` | the tabs are back, every pane a plain shell (the setting is off: Herdr resumes nothing itself); `$N status`: both leads `parked` (no SessionEnd); `active.json` still holds both (a crash keeps a member in the set) |
 | 19 | Restore | `$N restore NIMITZ_E2E_RESTORE --plan` then `--yes` | the plan: per lead one `herdr pane run <pane> claude attach <job>` into the shell pane (the attach wakes the parked job); a `pin` step only for a lead whose job is not in `~/.claude/jobs/pins.json` (after step 7 both are pinned, so normally none); after `--yes`: `[OK] <id>: the attach woke it; SessionStart resume of <sid> verified` for both, the same session ids as in step 8 (`$N status --json`), `[OK] ... restored 2 lead(s)`; a `startup` instead of `resume` would be `[ERROR] history.lost`, never `[OK]` |
 
+## Optional: the setting on (your real config)
+
+| # | Action | Command | Expected |
+| --- | --- | --- | --- |
+| 19a | The reboot-like loss again, with Herdr's default on: edit the test config, stop the server, kill the workers, start the server | `sed -i 's/resume_agents_on_restore = false/resume_agents_on_restore = true/' $HERDR_CONFIG_PATH; herdr --session nimitz-e2e server stop; kill -9 <each throwaway worker pid>; herdr --session nimitz-e2e server &` | each lead's pane now runs `claude --resume <sid>` (the conversation, interactive, no job: `claude agents` shows no live pid for the jobs; `$N status` shows each lead parked with a held interactive row) |
+| 19b | Restore | `$N restore NIMITZ_E2E_RESTORE --yes` | no step; per lead `[WARN] ... (tab.resumed)` with the fix `Herdr resumed it in pane <P> (resume_agents_on_restore is on): type /exit there, then nimitz restore NIMITZ_E2E_RESTORE`; `[OK] NIMITZ_E2E_RESTORE: nothing to restore (2 held in a pane ...)`; no `--bg --resume` ran (a wake would make a copy) |
+| 19c | Do the fix | `/exit` in each of the two panes (they drop to shells), then `$N restore NIMITZ_E2E_RESTORE --yes` | two `herdr pane run ... claude attach <job>` steps, `the attach woke it; SessionStart resume` for both, the same session ids; `$N doctor` shows `[WARN] Herdr ...: resume_agents_on_restore is on` with the fix line. Put the setting back to `false` in `$HERDR_CONFIG_PATH` before step 20 |
+
 ## Cleanup
 
 | # | Action | Command | Expected |

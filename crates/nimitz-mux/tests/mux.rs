@@ -568,6 +568,8 @@ fn fixture_process_info() {
     for bad in [json!({"result": {"type": "pane_process_info", "process_info": {"pane_id": "w1:p1"}}}), json!({"result": {"type": "ok"}}), json!({})] {
         assert!(parse_process_info(&bad).is_err(), "{bad}");
     }
+    assert_eq!(nimitz_mux::herdr::process_pids(&v), vec![Some(4242)]);
+    assert!(nimitz_mux::herdr::process_pids(&json!({"result": {"type": "ok"}})).is_empty());
     // argv missing: cmdline, then name
     let v = json!({"result": {"process_info": {"foreground_processes": [{"pid": 2, "name": "claude", "cmdline": "claude attach 9aacf927"}, {"pid": 3, "name": "yazi"}]}}});
     assert_eq!(parse_process_info(&v).unwrap(), vec![cmdv(&["claude", "attach", "9aacf927"]), cmdv(&["yazi"])]);
@@ -686,6 +688,7 @@ fn shape_through_the_adapter() {
     let p1 = shape.panes.iter().find(|p| p.pane.pane_id == "w1:p1").unwrap();
     let p2 = shape.panes.iter().find(|p| p.pane.pane_id == "w1:p2").unwrap();
     assert_eq!(p1.foreground, Some(vec![]), "an idle shell");
+    assert_eq!((p1.foreground_pid, p2.foreground_pid), (None, Some(4242)), "the pid of what runs, none for an idle shell");
     assert_eq!(p2.foreground, Some(cmdv(&["yazi"])));
     assert_eq!(p2.cwd, "/dev");
     let n = w.calls().iter().filter(|c| c[..2] == ["pane".to_string(), "process-info".to_string()]).count();

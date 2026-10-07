@@ -568,6 +568,20 @@ invocation in the same env as the identity it records, so the two name the
 same server by construction; a `--session` changes both together. `herdr
 status` is not run (the shape readers are the only Herdr commands added).
 
+Herdr's agent resume (finding 10, Claude Code 2.1.292): with `[session]
+resume_agents_on_restore = true` (Herdr's default) a restarted server runs
+`claude --resume <session>` in every pane that showed an agent. On a live
+job it is refused ("That session is running in the background (<short>).
+Run `claude attach <short>` ..."), and the pane is a shell again; on a
+stopped, parked or removed job the conversation opens interactively with no
+job (`kind interactive`, `jobId null`), the `held` case, and a `--bg
+--resume` meanwhile starts a copy. `nimitz doctor` reads the Herdr config
+(`HERDR_CONFIG_PATH`, else `~/.config/herdr/config.toml`, never written)
+and warns while the setting is not `false`, with the fix "set
+resume_agents_on_restore = false under [session] in <path>". The shape
+carries each pane's `foreground_pid` (`pane process-info`) so a held
+process is matched by its session, its `--resume <session>` argv or its pid.
+
 The agent view (R-24): a pane whose foreground is the member's exact
 `claude attach <job>` and whose `agent_session` is another session is
 `tab.agentview`. The limit: when Herdr reports no session for such a pane
@@ -594,7 +608,8 @@ member, in chain order:
 | parked ship out of the set | counted parked, left (`--all` wakes it) |
 | stopped ship out of the set (a SessionEnd) | `stopped` Info with `nimitz start <id>`; `--all` wakes it |
 | a live copy, `name.taken`, `labels.mismatch`, `job.unreadable`, a member `check` error (`folder.*`, `ship.elsewhere`) | Error with that fix; nothing runs for it |
-| held (a process with no job) | `lead.interactive` (fix `/exit` then restore) / `held`; nothing runs |
+| held (a process with no job) in a pane of this shape: the pane shows that session, runs `claude --resume <session>`, or runs the process's pid (Herdr's `[session] resume_agents_on_restore = true` after its restart, finding 10) | `tab.resumed` Warn, no step: "Herdr resumed it in pane P (resume_agents_on_restore is on): type /exit there, then nimitz restore F"; counted "held in a pane" in the verdict. A wake meanwhile would start a copy, so a held member is never woken anywhere in a restore |
+| held elsewhere (a 0.3.x interactive lead, an SDK host) | `lead.interactive` (fix `/exit` then restore) / `held`; nothing runs |
 | no row, the registry's conversation has a transcript | `--bg --resume <sid>` with every flag (lineage `via migrate` for a lead that never had a job), then its tab (the attach names the new job) and the pin |
 | no row, no transcript | `not.started` Info, once per fleet (`nimitz up F`); never a cold launch |
 
