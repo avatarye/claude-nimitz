@@ -6,22 +6,40 @@
 //! planner and `apply` end to end. Nothing here touches the real `~/.claude`,
 //! the real `NIMITZ_HOME` or any real session.
 //!
-//! The fake `claude` reproduces what the P0 probes measured on both builds
-//! (`docs/probes/README.md`), including the awkward parts:
+//! The fake `claude` models the job model the round-2 report measured on
+//! Claude Code 2.1.292 (`docs/design/session-mapping/notes/r2-*.md`):
 //!
-//! - `--bg` ignores `--session-id` and says so on stderr (probe 1);
-//! - `--resume <unknown id>`: the session never runs, the row ends `failed`, and
-//!   only SessionEnd fires (probe 2a);
-//! - `--resume` of a **live** session makes a copy with a new id (probe 2, 2b);
-//! - `--resume` of a stopped session with **no flags** keeps the id and the
-//!   saved `--name`, `--permission-mode` and `--settings` (probe 2c1);
-//! - any flag on a resume makes a copy that carries only the flags passed, so a
-//!   `--name`-only resume has no labels and fires no hooks (probe 2c2, 2c3);
-//! - `--bg` refuses an untrusted folder (probe 0);
-//! - two live background sessions may share one name (probe 5).
+//! - a job is a folder `jobs/<short>/state.json` with `sessionId` (the birth
+//!   id), `resumeSessionId` (the conversation now), `respawnFlags` (`--name`,
+//!   `--permission-mode`, `--settings`: what every wake replays), `name`,
+//!   `nameSource` and `state`; a live job also has a session file with
+//!   `jobId`, `kind bg`, `status`, `entrypoint` and `bridgeSessionId`;
+//! - `stop`/`kill` end the process (SessionEnd `other`) and keep the row;
+//!   `rm` removes the row and keeps the transcript; `respawn` restarts it
+//!   (SessionStart `resume`); `attach` on a stopped job wakes it;
+//! - `--bg --resume <id>` of a stopped job with **no flags** wakes that job on
+//!   `<id>` (same short id, `resumeSessionId` moves); with flags, or while the
+//!   job is live, it makes a **copy** (new job, SessionStart `fork`) that
+//!   carries only the flags passed; with no row but a transcript it makes a
+//!   new job named by the short form of `<id>` (cli-03, check 1);
+//! - `--bg` ignores `--session-id` and says so on stderr, and refuses an
+//!   untrusted folder;
+//! - `-p --resume <id>` (an SDK host) runs the conversation in a process with
+//!   no job (`entrypoint sdk-cli`, `jobId null`); on a live job it is refused
+//!   and still fires a SessionEnd with no labels (R-13, M21);
+//! - `__inside <short> clear|branch <name>|resume <id>|rename <name>|fork`
+//!   are what the slash commands do inside an attached job (same job, a new
+//!   session id for clear and branch; `/fork` makes a second labelled job);
+//! - `__retire <short>` is the daemon's idle retire (no SessionEnd, a
+//!   `bg retire` line in `daemon.log`); `__crash <short>` a dead worker (state
+//!   `crashed`, no SessionEnd); `__pin`/`__unpin <short>` edit `jobs/pins.json`;
+//!   `__end <id>` ends an interactive or SDK process.
 //!
 //! Live sandbox sessions record pid 1 (always alive), so the real `kill(pid, 0)`
 //! liveness check works unchanged; a stopped session simply has no session file.
+//! The hooks get a stable fake pid per job (`NIMITZ_HOOK_PID`) and the path of
+//! the session file (`NIMITZ_HOOK_SESSION_FILE`): what real Claude Code gives
+//! them as the parent pid and `sessions/<pid>.json`.
 //!
 //! Hooks: the fake `claude` runs the hook command in `<base>/hook-cmd.json`
 //! (argv; the sandbox writes `[<exe>, "hook"]`) with the session's labels in its
@@ -60,6 +78,12 @@ fn ms(t: f64) -> i64 {
     (t * 1000.0) as i64
 }
 
+/// The pid the hooks of a job (or an interactive session) report: stable per
+/// job, never a live process (the session file says pid 1 for liveness).
+pub fn fake_pid(key: &str) -> i64 {
+    100_000 + key.bytes().fold(0i64, |a, b| (a * 31 + b as i64) % 400_000)
+}
+
 /// Env vars that point nimitz/admiralty at the sandbox.
 pub fn env_for(base: &Path) -> HashMap<String, String> {
     let b = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
@@ -84,6 +108,19 @@ pub fn env(base: &Path) -> crate::env::Env {
 
 fn claude_home(base: &Path) -> PathBuf {
     base.join("claude_home")
+}
+
+fn job_file(base: &Path, short: &str) -> PathBuf {
+    claude_home(base).join("jobs").join(short).join("state.json")
+}
+
+fn session_path(base: &Path, short: &str) -> PathBuf {
+    claude_home(base).join("sessions").join(format!("{short}.json"))
+}
+
+/// The session file of an interactive or SDK process on `sid`.
+fn interactive_path(base: &Path, sid: &str) -> PathBuf {
+    claude_home(base).join("sessions").join(format!("i-{}.json", &sid[..sid.len().min(8)]))
 }
 
 /// Trust both layouts: `<claude_home>/.claude.json` (what `evidence` reads) and
@@ -139,6 +176,29 @@ fn trusted(base: &Path, cwd: &str) -> bool {
             })
             .unwrap_or(false)
     })
+}
+
+/// `respawnFlags` as Claude Code keeps them: `--name`, `--permission-mode`,
+/// `--settings`, each only when given.
+fn respawn_flags(name: &str, mode: &str, settings: Option<&str>) -> Value {
+    let mut f: Vec<String> = vec![];
+    if !name.is_empty() {
+        f.extend(["--name".into(), name.into()]);
+    }
+    if !mode.is_empty() {
+        f.extend(["--permission-mode".into(), mode.into()]);
+    }
+    if let Some(s) = settings {
+        f.extend(["--settings".into(), s.into()]);
+    }
+    json!(f)
+}
+
+/// What a job's `respawnFlags` say: (name, mode, settings).
+fn flags_of(row: &Value) -> (Option<String>, Option<String>, Option<String>) {
+    let argv: Vec<String> = row.get("respawnFlags").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    let after = |flag: &str| argv.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone());
+    (after("--name"), after("--permission-mode"), after("--settings"))
 }
 
 // ------------------------------------------------------------------ world building
@@ -201,22 +261,19 @@ impl World {
         let started = self.now - if o.started_ago == 0.0 { 3600.0 } else { o.started_ago };
         let name = o.name_override.clone().unwrap_or_else(|| name.to_string());
         let labels = o.labels_raw.clone().or_else(|| o.labels_of.or(o.labels).map(|id| crate::claude::labels_for(&env(&self.base), id)));
-        let home = claude_home(&self.base);
+        let settings = labels.as_ref().map(|l| json!({"env": l, "worktree": {"bgIsolation": "none"}}).to_string());
         if kind == "background" {
             let mut row = json!({
-                "sessionId": sid, "name": name, "cwd": cwd,
+                "sessionId": sid, "resumeSessionId": sid, "daemonShort": short, "name": name, "nameSource": "user", "cwd": cwd,
                 "state": if o.state.is_empty() { if o.live { "running" } else { "done" } } else { o.state },
-                "createdAt": ms(started), "tokens": 1200, "inFlight": {"tasks": 0, "queued": 0},
-                // what a flag-free resume restores (probe 2c1)
-                "savedName": name, "savedMode": "bypassPermissions",
+                "createdAt": ms(started), "updatedAt": ms(started), "tokens": 1200, "inFlight": {"tasks": 0, "queued": 0},
+                // what every wake replays (check 2 of the report)
+                "respawnFlags": respawn_flags(&name, "bypassPermissions", settings.as_deref()),
             });
-            if let Some(l) = &labels {
-                row["savedSettings"] = json!(json!({"env": l, "worktree": {"bgIsolation": "none"}}).to_string());
-            }
             if let Some(n) = o.needs {
                 row["needs"] = json!(n);
             }
-            write_json(&home.join("jobs").join(&short).join("state.json"), &row);
+            write_json(&job_file(&self.base, &short), &row);
         }
         if o.live {
             let mut d = json!({
@@ -224,6 +281,7 @@ impl World {
                 "kind": if kind == "background" { "bg" } else { "interactive" }, "name": name,
                 "status": if o.status.is_empty() { "idle" } else { o.status },
                 "statusUpdatedAt": ms(self.now - 60.0), "bridgeSessionId": null,
+                "entrypoint": "cli", "version": CC_VERSION,
             });
             if o.status == "waiting" {
                 d["waitingFor"] = json!("permission prompt");
@@ -231,23 +289,25 @@ impl World {
             if kind == "background" {
                 d["jobId"] = json!(short);
             }
-            write_json(&home.join("sessions").join(format!("{short}.json")), &d);
+            write_json(&session_path(&self.base, &short), &d);
         }
         if let Some(l) = labels {
-            self.event("SessionStart", &sid, Some("startup"), &l, started);
+            let job = (kind == "background").then(|| short.as_str());
+            self.event("SessionStart", &sid, Some("startup"), &l, started, fake_pid(&short), job, kind);
         }
         // every session that ran has a transcript in its folder's project dir
-        let proj = home.join("projects").join(crate::evidence::project_dir_name(cwd));
+        let proj = claude_home(&self.base).join("projects").join(crate::evidence::project_dir_name(cwd));
         let _ = fs::create_dir_all(&proj);
         let _ = fs::write(proj.join(format!("{sid}.jsonl")), format!("{}\n", json!({"type": "user", "cwd": cwd, "sessionId": sid})));
         self.sessions.push((name, sid.clone(), short.clone()));
         (short, sid)
     }
 
-    fn event(&self, event: &str, sid: &str, source: Option<&str>, labels: &std::collections::BTreeMap<String, String>, ts: f64) {
+    #[allow(clippy::too_many_arguments)]
+    fn event(&self, event: &str, sid: &str, source: Option<&str>, labels: &std::collections::BTreeMap<String, String>, ts: f64, pid: i64, job: Option<&str>, kind: &str) {
         append_event(&self.base, &json!({
             "ts": ts, "event": event, "session_id": sid, "source": source,
-            "pid": LIVE_PID, "labels": labels,
+            "pid": pid, "labels": labels, "job": job, "kind": if kind == "background" { "bg" } else { kind }, "entrypoint": "cli",
         }));
     }
 
@@ -292,9 +352,11 @@ impl World {
         );
     }
 
+    /// Bind `sid` as `id`'s conversation; its job too when a job row runs it.
     fn bind(&self, id: &Id, cwd: &str, sid: &str, via: &str) {
         let e = env(&self.base);
-        let _ = crate::registry::update(&e, |r| crate::registry::bind(r, id, id.role(), &id.name(), cwd, sid, via, self.now));
+        let job = self.sessions.iter().find(|(_, s, short)| s == sid && job_file(&self.base, short).is_file()).map(|(_, _, short)| short.clone());
+        let _ = crate::registry::update(&e, |r| crate::registry::bind_job(r, id, id.role(), &id.name(), cwd, job.as_deref(), sid, via, self.now));
     }
 }
 
@@ -371,7 +433,7 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let raw = fs::read_to_string(&fleet_toml).map_err(|e| e.to_string())?;
     fs::write(&fleet_toml, raw.replace(&format!("hostname = \"{}\"", e.hostname), &format!("hostname = \"{HOST}\""))).map_err(|e| e.to_string())?;
     apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "ARGOS", "Everything the relaunch table needs.", Comms::default()))?;
-    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "BOREAL", "A squadron whose commodore went to the background.", Comms::Mode("commodore-only".into())))?;
+    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "BOREAL", "A squadron whose commodore runs as a background job.", Comms::Mode("commodore-only".into())))?;
 
     let mut dirs: HashMap<&str, String> = HashMap::new();
     for (ship, _) in SHIPS {
@@ -445,7 +507,7 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let (_, argos_sid) = w.session(&argos.name(), &argos_dir_s, S { kind: "interactive", live: true, labels: Some(&argos), ..Default::default() });
     w.bind(&argos, &argos_dir_s, &argos_sid, "launch");
 
-    // BOREAL's commodore: a background session (role.background).
+    // BOREAL's commodore: a background job (every member is one in 0.4.0).
     let boreal = Id::commodore("MAIN", "BOREAL");
     let boreal_dir_s = boreal_dir.to_string_lossy().into_owned();
     let (_, boreal_sid) = w.session(&boreal.name(), &boreal_dir_s, bg(true, Some(&boreal)));
@@ -491,12 +553,12 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
                 let (_, sid) = w.session(&id.name(), &cwd, bg(false, Some(&id)));
                 w.bind(&id, &cwd, &sid, "launch");
                 for _ in 0..2 {
-                    let (_, c) = w.session(&id.name(), &cwd, bg(false, Some(&id)));
+                    let (c_short, c) = w.session(&id.name(), &cwd, bg(false, Some(&id)));
                     // a copy is in the lineage but is not current
                     let ev = env(&base);
                     let _ = crate::registry::update(&ev, |r| {
                         if let Some(rec) = r.identities.get_mut(&id.0) {
-                            rec.lineage.push(LineageEntry { session_id: c.clone(), bound_at: w.now, via: "relaunch".into() });
+                            rec.lineage.push(LineageEntry { session_id: c.clone(), job: Some(c_short.clone()), via: "relaunch".into(), at: w.now });
                         }
                     });
                 }
@@ -562,7 +624,7 @@ pub fn break_a_config(base: &Path, fleet: &str) {
 
 /// A live, labelled background session of `id` in `cwd`, bound in the registry
 /// as its current session when `bind` (a member added after `create`). Its
-/// session id.
+/// session id. (The hook binds it anyway; `bind` records nimitz's own `via`.)
 pub fn live_session(base: &Path, id: &Id, cwd: &str, bind: bool) -> String {
     let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
     let e = env(&base);
@@ -571,7 +633,7 @@ pub fn live_session(base: &Path, id: &Id, cwd: &str, bind: bool) -> String {
     let sid = job_state(&base, &short).and_then(|j| j.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default();
     if bind {
         let now = crate::evidence::now();
-        let _ = crate::registry::update(&e, |r| crate::registry::bind(r, id, id.role(), &id.name(), cwd, &sid, "launch", now));
+        let _ = crate::registry::update(&e, |r| crate::registry::bind_job(r, id, id.role(), &id.name(), cwd, Some(&short), &sid, "launch", now));
     }
     sid
 }
@@ -591,17 +653,19 @@ fn apply_cfg(e: &crate::env::Env, plan: &Plan) -> Result<(), String> {
 
 struct Args {
     bg: bool,
+    print: bool,
     name: Option<String>,
     mode: Option<String>,
     settings: Option<String>,
     resume: Option<String>,
     session_id: Option<String>,
     cont: bool,
+    fork: bool,
     prompt: Option<String>,
 }
 
 fn parse(args: &[String]) -> Args {
-    let mut a = Args { bg: false, name: None, mode: None, settings: None, resume: None, session_id: None, cont: false, prompt: None };
+    let mut a = Args { bg: false, print: false, name: None, mode: None, settings: None, resume: None, session_id: None, cont: false, fork: false, prompt: None };
     let mut i = 0;
     while i < args.len() {
         let take = |i: &mut usize| -> Option<String> {
@@ -610,7 +674,9 @@ fn parse(args: &[String]) -> Args {
         };
         match args[i].as_str() {
             "--bg" => a.bg = true,
+            "-p" | "--print" => a.print = true,
             "-c" | "--continue" => a.cont = true,
+            "--fork-session" => a.fork = true,
             "--name" => a.name = take(&mut i),
             "--permission-mode" => a.mode = take(&mut i),
             "--settings" => {
@@ -623,6 +689,9 @@ fn parse(args: &[String]) -> Args {
             }
             "--resume" => a.resume = take(&mut i),
             "--session-id" => a.session_id = take(&mut i),
+            "--input-format" | "--output-format" => {
+                take(&mut i);
+            }
             s if !s.starts_with('-') => a.prompt = Some(s.to_string()),
             _ => {}
         }
@@ -654,21 +723,35 @@ fn labels_from_settings(settings: Option<&String>) -> std::collections::BTreeMap
         .unwrap_or_default()
 }
 
+/// One hook call as the fake process `pid` would make it: `reason` for a
+/// SessionEnd, `session_file` the process's session file (what the hook reads).
+struct Hook<'a> {
+    event: &'a str,
+    sid: &'a str,
+    source: Option<&'a str>,
+    reason: Option<&'a str>,
+    cwd: &'a str,
+    pid: i64,
+    session_file: Option<PathBuf>,
+}
+
 /// Run the configured hook, or `crate::hook::handle` in process.
-fn fire(base: &Path, event: &str, sid: &str, source: Option<&str>, labels: &std::collections::BTreeMap<String, String>, cwd: &str) {
-    let mut input = json!({"session_id": sid, "hook_event_name": event, "cwd": cwd, "transcript_path": "", "scratchpad_dir": ""});
-    if let Some(s) = source {
+fn fire(base: &Path, h: Hook, labels: &std::collections::BTreeMap<String, String>) {
+    let mut input = json!({"session_id": h.sid, "hook_event_name": h.event, "cwd": h.cwd, "transcript_path": "", "scratchpad_dir": ""});
+    if let Some(s) = h.source {
         input["source"] = json!(s);
     }
-    if event == "SessionEnd" {
-        input["reason"] = json!("other"); // what a `claude stop` gave in probe 3
+    if h.event == "SessionEnd" {
+        input["reason"] = json!(h.reason.unwrap_or("other")); // what a `claude stop` gave in probe 3
     }
-    let vars: HashMap<String, String> = env_for(base).into_iter().chain(labels.iter().map(|(k, v)| (k.clone(), v.clone()))).collect();
+    let mut vars: HashMap<String, String> = env_for(base).into_iter().chain(labels.iter().map(|(k, v)| (k.clone(), v.clone()))).collect();
+    vars.insert("NIMITZ_HOOK_PID".into(), h.pid.to_string());
+    vars.insert("NIMITZ_HOOK_SESSION_FILE".into(), h.session_file.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "/nonexistent".into()));
     if let Some(cmd) = read_json(&base.join("hook-cmd.json")).and_then(|v| v.as_array().cloned()) {
         let argv: Vec<String> = cmd.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
         if let Some(bin) = argv.first() {
             let mut c = std::process::Command::new(bin);
-            c.args(&argv[1..]).arg(event).envs(&vars).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null());
+            c.args(&argv[1..]).arg(h.event).envs(&vars).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null());
             if let Ok(mut child) = c.spawn() {
                 if let Some(mut si) = child.stdin.take() {
                     let _ = si.write_all(input.to_string().as_bytes());
@@ -679,7 +762,12 @@ fn fire(base: &Path, event: &str, sid: &str, source: Option<&str>, labels: &std:
         }
     }
     let e = crate::env::Env::from_vars(&vars);
-    let _ = crate::hook::handle(&e, event, &input.to_string(), &vars);
+    let _ = crate::hook::handle(&e, h.event, &input.to_string(), &vars);
+}
+
+/// The hooks of a job: its stable fake pid and its session file.
+fn job_hook<'a>(base: &Path, short: &str, event: &'a str, sid: &'a str, source: Option<&'a str>, cwd: &'a str) -> Hook<'a> {
+    Hook { event, sid, source, reason: None, cwd, pid: fake_pid(short), session_file: Some(session_path(base, short)) }
 }
 
 fn rows(base: &Path) -> Vec<crate::evidence::SessionRow> {
@@ -687,12 +775,17 @@ fn rows(base: &Path) -> Vec<crate::evidence::SessionRow> {
     crate::evidence::rows_from_files(&e, &mut crate::evidence::FileCache::default()).unwrap_or_default()
 }
 
+/// A row by its job id, the conversation it runs now, or its birth id.
 fn find(base: &Path, needle: &str) -> Option<crate::evidence::SessionRow> {
-    rows(base).into_iter().find(|r| r.session_id == needle || r.short_id.as_deref() == Some(needle))
+    rows(base).into_iter().find(|r| r.short_id.as_deref() == Some(needle) || r.session_ids().any(|s| s == needle))
 }
 
 fn job_state(base: &Path, short: &str) -> Option<Value> {
-    read_json(&claude_home(base).join("jobs").join(short).join("state.json"))
+    read_json(&job_file(base, short))
+}
+
+fn save_job(base: &Path, short: &str, j: &Value) {
+    write_json(&job_file(base, short), j);
 }
 
 fn next_id(base: &Path) -> (String, String) {
@@ -715,17 +808,51 @@ fn copy_name(base: &Path, of: &str) -> String {
 
 /// A copy's job row records the session it was forked from.
 fn record_fork(base: &Path, short: &str, from: &str) {
-    let p = claude_home(base).join("jobs").join(short).join("state.json");
-    if let Some(mut j) = read_json(&p) {
+    if let Some(mut j) = job_state(base, short) {
         j["forkedFrom"] = json!(from);
-        write_json(&p, &j);
+        save_job(base, short, &j);
     }
 }
 
-fn transcript_exists(base: &Path, sid: &str) -> bool {
+fn transcript_of(base: &Path, sid: &str) -> Option<PathBuf> {
     fs::read_dir(claude_home(base).join("projects"))
-        .map(|rd| rd.filter_map(|e| e.ok()).any(|e| e.path().join(format!("{sid}.jsonl")).is_file()))
-        .unwrap_or(false)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path().join(format!("{sid}.jsonl")))
+        .find(|p| p.is_file())
+}
+
+fn transcript_exists(base: &Path, sid: &str) -> bool {
+    transcript_of(base, sid).is_some()
+}
+
+/// Append one line to a session's transcript (made under `cwd` when new).
+fn log_line(base: &Path, cwd: &str, sid: &str, line: &Value) {
+    let log = transcript_of(base, sid).unwrap_or_else(|| claude_home(base).join("projects").join(crate::evidence::project_dir_name(cwd)).join(format!("{sid}.jsonl")));
+    if let Some(d) = log.parent() {
+        let _ = fs::create_dir_all(d);
+    }
+    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&log) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// A copy of `old`'s transcript under `new` (what `/branch` and `/fork` do).
+fn copy_transcript(base: &Path, cwd: &str, old: &str, new: &str) {
+    let body = transcript_of(base, old).and_then(|p| fs::read_to_string(p).ok()).unwrap_or_default();
+    log_line(base, cwd, new, &json!({"type": "system", "sessionId": new, "source": "fork", "copyOf": old}));
+    if let Some(p) = transcript_of(base, new) {
+        let _ = fs::write(&p, format!("{body}{}\n", json!({"type": "system", "sessionId": new, "source": "fork"})));
+    }
+}
+
+fn write_session_file(base: &Path, short: &str, sid: &str, cwd: &str, name: &str, t: f64) {
+    write_json(
+        &session_path(base, short),
+        &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "bg", "name": name,
+                "jobId": short, "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null,
+                "entrypoint": "cli", "version": CC_VERSION}),
+    );
 }
 
 /// Make a live background session (a cold launch or a copy) and fire its hooks.
@@ -733,7 +860,8 @@ fn start(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&Strin
     start_as(base, cwd, name, mode, settings, source, labels_fire, None)
 }
 
-/// `start`, optionally keeping a given session id (a resume from a transcript).
+/// `start`, optionally keeping a given session id (a resume from a transcript:
+/// the new job is named by the short form of that id, cli-03).
 #[allow(clippy::too_many_arguments)]
 fn start_as(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&String>, source: &str, labels_fire: bool, keep: Option<&str>) -> String {
     let (short, sid) = match keep {
@@ -742,34 +870,157 @@ fn start_as(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&St
     };
     let t = crate::evidence::now();
     let labels = labels_from_settings(settings);
-    let mut row = json!({"sessionId": sid, "name": name, "cwd": cwd, "state": "running", "createdAt": ms(t),
-                         "tokens": 0, "inFlight": {"tasks": 0, "queued": 0}, "savedName": name, "savedMode": mode});
-    if let Some(s) = settings {
-        row["savedSettings"] = json!(s);
-    }
-    write_json(&claude_home(base).join("jobs").join(&short).join("state.json"), &row);
-    write_json(
-        &claude_home(base).join("sessions").join(format!("{short}.json")),
-        &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "bg", "name": name,
-                "jobId": short, "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null}),
-    );
+    let row = json!({"sessionId": sid, "resumeSessionId": sid, "daemonShort": short, "name": name, "nameSource": if name.is_empty() { "auto" } else { "user" },
+                     "cwd": cwd, "state": "running", "createdAt": ms(t), "updatedAt": ms(t),
+                     "tokens": 0, "inFlight": {"tasks": 0, "queued": 0},
+                     "respawnFlags": respawn_flags(name, mode, settings.map(String::as_str))});
+    save_job(base, &short, &row);
+    write_session_file(base, &short, &sid, cwd, name, t);
     // The conversation: a new id starts an empty transcript (a copy has NO
     // history, BUG-53); a kept id appends to the one it has, wherever it is.
-    let existing = fs::read_dir(claude_home(base).join("projects"))
-        .ok()
-        .and_then(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path().join(format!("{sid}.jsonl"))).find(|p| p.is_file()));
-    let log = existing.unwrap_or_else(|| claude_home(base).join("projects").join(crate::evidence::project_dir_name(cwd)).join(format!("{sid}.jsonl")));
-    if let Some(d) = log.parent() {
-        let _ = fs::create_dir_all(d);
-    }
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&log) {
-        let _ = writeln!(f, "{}", json!({"type": "system", "sessionId": sid, "cwd": cwd, "source": source}));
-    }
+    log_line(base, cwd, &sid, &json!({"type": "system", "sessionId": sid, "cwd": cwd, "source": source}));
     // A copy with no --settings carries no hooks at all, so it fires none (probe 2b, 2c2).
     if labels_fire {
-        fire(base, "SessionStart", &sid, Some(source), &labels, cwd);
+        fire(base, job_hook(base, &short, "SessionStart", &sid, Some(source), cwd), &labels);
     }
     short
+}
+
+/// Wake a stopped job on `sid` (one of its own ids) with its saved options:
+/// same short id, `resumeSessionId` moves, SessionStart `resume` with the
+/// labels its `respawnFlags` carry.
+fn wake(base: &Path, row: &crate::evidence::SessionRow, sid: &str, source: &str) {
+    let short = row.short_id.clone().unwrap_or_default();
+    let t = crate::evidence::now();
+    let Some(mut j) = job_state(base, &short) else { return };
+    let (name, _, settings) = flags_of(&j);
+    let name = j.get("name").and_then(|n| n.as_str()).map(str::to_string).or(name).unwrap_or_else(|| row.name.clone());
+    j["state"] = json!("running");
+    j["resumeSessionId"] = json!(sid);
+    j["updatedAt"] = json!(ms(t));
+    save_job(base, &short, &j);
+    write_session_file(base, &short, sid, &row.cwd, &name, t);
+    let labels = labels_from_settings(settings.as_ref());
+    if !labels.is_empty() {
+        fire(base, job_hook(base, &short, "SessionStart", sid, Some(source), &row.cwd), &labels);
+    }
+}
+
+/// End a job's process: the session file goes, the row stays with `state`,
+/// and (unless `silent`: a crash, a retire) a SessionEnd fires with its labels.
+fn end_job(base: &Path, row: &crate::evidence::SessionRow, state: &str, reason: &str, silent: bool) {
+    let short = row.short_id.clone().unwrap_or_default();
+    let _ = fs::remove_file(session_path(base, &short));
+    if let Some(mut j) = job_state(base, &short) {
+        j["state"] = json!(state);
+        j["updatedAt"] = json!(ms(crate::evidence::now()));
+        save_job(base, &short, &j);
+        if !silent {
+            let (_, _, settings) = flags_of(&j);
+            let labels = labels_from_settings(settings.as_ref());
+            let h = Hook { event: "SessionEnd", sid: &row.session_id, source: None, reason: Some(reason), cwd: &row.cwd, pid: fake_pid(&short), session_file: None };
+            fire(base, h, &labels);
+        }
+    }
+}
+
+/// What `/clear`, `/branch`, `/resume`, `/rename` and `/fork` do inside an
+/// attached job (round 2, area `inside`): the job keeps its short id and pid;
+/// clear and branch move the conversation to a new id (SessionEnd + SessionStart
+/// with the labels, same pid); `/branch` and `/rename` name the session;
+/// `/fork` makes a second job with the labels (SessionStart `fork`).
+fn inside(base: &Path, short: &str, verb: &str, arg: Option<&str>) -> i32 {
+    let Some(row) = find(base, short).filter(|r| r.short_id.as_deref() == Some(short)) else {
+        eprintln!("[fake claude] no job {short}");
+        return 1;
+    };
+    if !row.live() {
+        eprintln!("[fake claude] {short} is not running; attach wakes it first");
+        return 1;
+    }
+    let Some(mut j) = job_state(base, short) else { return 1 };
+    let (_, mode, settings) = flags_of(&j);
+    let labels = labels_from_settings(settings.as_ref());
+    let old = row.session_id.clone();
+    let t = crate::evidence::now();
+    // the conversation moves to `new` in the same process: SessionEnd (old),
+    // then SessionStart (new); `follow` moves `resumeSessionId` too
+    let move_to = |j: &mut Value, new: &str, end_reason: &str, start_source: &str, name: Option<&str>, follow: bool| {
+        fire(base, Hook { reason: Some(end_reason), ..job_hook(base, short, "SessionEnd", &old, None, &row.cwd) }, &labels);
+        if follow {
+            j["resumeSessionId"] = json!(new);
+        }
+        if let Some(n) = name {
+            j["name"] = json!(n);
+            j["nameSource"] = json!("user");
+        }
+        j["updatedAt"] = json!(ms(t));
+        save_job(base, short, j);
+        let name = name.map(str::to_string).unwrap_or_else(|| row.name.clone());
+        write_session_file(base, short, new, &row.cwd, &name, t);
+        fire(base, job_hook(base, short, "SessionStart", new, Some(start_source), &row.cwd), &labels);
+    };
+    match verb {
+        // a fresh conversation; the old one is saved (`/resume` brings it back)
+        "clear" => {
+            let (_, new) = next_id(base);
+            log_line(base, &row.cwd, &new, &json!({"type": "system", "sessionId": new, "source": "clear"}));
+            move_to(&mut j, &new, "clear", "clear", None, true);
+            println!("cleared: {short} now runs {new}");
+        }
+        // a copy of the transcript under a new id; `resumeSessionId` does NOT
+        // follow (3.4d: a stop/start would resume the pre-branch conversation)
+        "branch" => {
+            let (_, new) = next_id(base);
+            copy_transcript(base, &row.cwd, &old, &new);
+            move_to(&mut j, &new, "resume", "fork", arg, false);
+            println!("branched: {short} now runs {new}");
+        }
+        // `/resume <own other id>`: the conversation moves, same pid, same job
+        "resume" => {
+            let Some(target) = arg else { return 2 };
+            if !transcript_exists(base, target) {
+                eprintln!("[fake claude] no conversation {target}");
+                return 1;
+            }
+            move_to(&mut j, target, "resume", "resume", None, true);
+            println!("resumed {target} in {short}");
+        }
+        // `/rename`: the row, the session file and `--name` in respawnFlags (cli-19)
+        "rename" => {
+            let Some(name) = arg else { return 2 };
+            j["name"] = json!(name);
+            j["nameSource"] = json!("user");
+            j["respawnFlags"] = respawn_flags(name, mode.as_deref().unwrap_or(""), settings.as_deref());
+            save_job(base, short, &j);
+            if let Some(mut d) = read_json(&session_path(base, short)) {
+                d["name"] = json!(name);
+                write_json(&session_path(base, short), &d);
+            }
+            println!("renamed {short} to {name}");
+        }
+        // `/fork`: a second background job with the labels and a copy of the conversation (3.8)
+        "fork" => {
+            let (new_short, new) = next_id(base);
+            let name = format!("{} (fork)", row.name);
+            copy_transcript(base, &row.cwd, &old, &new);
+            let nrow = json!({"sessionId": new, "resumeSessionId": new, "daemonShort": new_short, "name": name, "nameSource": "auto",
+                              "cwd": row.cwd, "state": "running", "createdAt": ms(t), "updatedAt": ms(t), "interactiveLineage": true,
+                              "forkedFrom": old, "tokens": 0, "inFlight": {"tasks": 0, "queued": 0},
+                              "respawnFlags": respawn_flags(&name, mode.as_deref().unwrap_or(""), settings.as_deref())});
+            save_job(base, &new_short, &nrow);
+            write_session_file(base, &new_short, &new, &row.cwd, &name, t);
+            if !labels.is_empty() {
+                fire(base, job_hook(base, &new_short, "SessionStart", &new, Some("fork"), &row.cwd), &labels);
+            }
+            println!("forked {short} as {new_short}");
+        }
+        other => {
+            eprintln!("[fake claude] __inside: unknown verb {other}");
+            return 2;
+        }
+    }
+    0
 }
 
 /// The fake `claude`: agents --json, --bg (cold/resume with copy semantics as probed), stop, rm, attach, --version.
@@ -810,7 +1061,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
             return 0;
         }
-        Some("stop") => {
+        Some("stop") | Some("kill") => {
             let Some(target) = args.get(1) else { return 2 };
             let Some(row) = find(&base, target) else {
                 eprintln!("[fake claude] no session {target}");
@@ -821,13 +1072,9 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 return 1;
             }
             let short = row.short_id.clone().unwrap_or_default();
-            let _ = fs::remove_file(home.join("sessions").join(format!("{short}.json")));
-            if let Some(mut j) = job_state(&base, &short) {
-                j["state"] = json!("done");
-                write_json(&home.join("jobs").join(&short).join("state.json"), &j);
-                let labels = labels_from_settings(j.get("savedSettings").and_then(|s| s.as_str()).map(str::to_string).as_ref());
-                fire(&base, "SessionEnd", &row.session_id, None, &labels, &row.cwd);
-            }
+            // an idle job keeps `done`; a working one reads `stopped` (cli-01)
+            let state = if row.status.as_deref() == Some("busy") { "stopped" } else { "done" };
+            end_job(&base, &row, state, "other", false);
             println!("stopped {short}");
             return 0;
         }
@@ -843,18 +1090,92 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             }
             let short = row.short_id.clone().unwrap_or_default();
             let _ = fs::remove_dir_all(home.join("jobs").join(&short));
+            // Claude Code leaves the pin behind (env-G9); nimitz removes its own (M24)
             println!("removed {short}");
             return 0;
         }
+        Some("respawn") => {
+            let Some(target) = args.get(1) else { return 2 };
+            let Some(row) = find(&base, target).filter(|r| r.short_id.is_some()) else {
+                eprintln!("[fake claude] no job {target}");
+                return 1;
+            };
+            if row.live() {
+                let _ = fs::remove_file(session_path(&base, row.short_id.as_deref().unwrap_or_default()));
+            }
+            let sid = row.session_id.clone();
+            wake(&base, &row, &sid, "resume");
+            println!("respawned {}", row.short_id.clone().unwrap_or_default());
+            return 0;
+        }
         Some("attach") => {
+            // attach on a stopped job wakes it as itself (cli-07)
+            if let Some(row) = args.get(1).and_then(|t| find(&base, t)).filter(|r| !r.live() && r.short_id.is_some()) {
+                let sid = row.session_id.clone();
+                wake(&base, &row, &sid, "resume");
+            }
             println!("[fake claude] attached to {} (sandbox: nothing is running)", args.get(1).cloned().unwrap_or_default());
+            return 0;
+        }
+        Some("__inside") => {
+            let (Some(short), Some(verb)) = (args.get(1), args.get(2)) else { return 2 };
+            return inside(&base, short, verb, args.get(3).map(String::as_str));
+        }
+        Some("__retire") | Some("__crash") => {
+            let Some(target) = args.get(1) else { return 2 };
+            let Some(row) = find(&base, target).filter(|r| r.live() && r.short_id.is_some()) else {
+                eprintln!("[fake claude] {target} is not a running job");
+                return 1;
+            };
+            let short = row.short_id.clone().unwrap_or_default();
+            if args[0] == "__retire" {
+                // the daemon's idle retire: no hook, the row untouched (E1)
+                let _ = fs::remove_file(session_path(&base, &short));
+                if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(home.join("daemon.log")) {
+                    let _ = writeln!(f, "bg retire {short}: settled, idle 61m");
+                    let _ = writeln!(f, "bg settled {short} (done)");
+                }
+                println!("retired {short}");
+            } else {
+                // a dead worker: state crashed, no hook (cli-30)
+                end_job(&base, &row, "crashed", "", true);
+                println!("crashed {short}");
+            }
+            return 0;
+        }
+        Some("__pin") | Some("__unpin") => {
+            let Some(short) = args.get(1) else { return 2 };
+            let p = home.join("jobs").join("pins.json");
+            let mut pins: Vec<String> = read_json(&p).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            pins.retain(|x| x != short);
+            if args[0] == "__pin" {
+                pins.push(short.clone());
+            }
+            write_json(&p, &json!(pins));
+            return 0;
+        }
+        Some("__end") => {
+            // an interactive or SDK process ends (`/exit`, stdin closed)
+            let Some(target) = args.get(1) else { return 2 };
+            let p = interactive_path(&base, target);
+            let Some(d) = read_json(&p) else {
+                eprintln!("[fake claude] no interactive session {target}");
+                return 1;
+            };
+            let _ = fs::remove_file(&p);
+            let sid = d.get("sessionId").and_then(|s| s.as_str()).unwrap_or(target).to_string();
+            let labels = read_json(&p.with_extension("labels")).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            let _ = fs::remove_file(p.with_extension("labels"));
+            let reason = if d.get("entrypoint").and_then(|e| e.as_str()) == Some("sdk-cli") { "other" } else { "prompt_input_exit" };
+            let h = Hook { event: "SessionEnd", sid: &sid, source: None, reason: Some(reason), cwd: d.get("cwd").and_then(|c| c.as_str()).unwrap_or(""), pid: fake_pid(&format!("i-{}", &sid[..sid.len().min(8)])), session_file: None };
+            fire(&base, h, &labels);
             return 0;
         }
         _ => {}
     }
 
     if !a.bg {
-        if a.cont || a.name.is_some() {
+        if a.cont || a.name.is_some() || a.resume.is_some() {
             return interactive(&base, &cwd, &a);
         }
         eprintln!("[fake claude] unsupported: {args:?}");
@@ -879,10 +1200,11 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             0
         }
         Some(target) => {
-            let row = match find(&base, target) {
+            let row = match find(&base, target).filter(|r| r.short_id.is_some()) {
                 Some(r) => r,
-                // no job row, but the transcript is there: real Claude Code
-                // continues that same id (with the flags passed; BUG-12)
+                // no job row, but the transcript is there: a new job named by
+                // the short form of that id, which keeps the history (cli-03,
+                // check 1); with flags, those flags (BUG-12)
                 None if transcript_exists(&base, target) => {
                     let name = a.name.clone().unwrap_or_default();
                     let short = start_as(&base, &cwd, &name, &a.mode.clone().unwrap_or_default(), a.settings.as_ref(), "resume", a.settings.is_some(), Some(target));
@@ -892,21 +1214,18 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 None => {
                     // probe 2a: the session never runs; the row ends `failed`; only SessionEnd fires
                     let (short, _) = next_id(&base);
-                    write_json(
-                        &home.join("jobs").join(&short).join("state.json"),
-                        &json!({"sessionId": target, "name": a.name.clone().unwrap_or_default(), "cwd": cwd,
-                                "state": "failed", "createdAt": ms(crate::evidence::now())}),
-                    );
-                    fire(&base, "SessionEnd", target, None, &labels_from_settings(a.settings.as_ref()), &cwd);
+                    save_job(&base, &short, &json!({"sessionId": target, "resumeSessionId": target, "name": a.name.clone().unwrap_or_default(), "cwd": cwd,
+                                "state": "failed", "createdAt": ms(crate::evidence::now()), "respawnFlags": respawn_flags(a.name.as_deref().unwrap_or(""), &mode, a.settings.as_deref())}));
+                    let h = Hook { event: "SessionEnd", sid: target, source: None, reason: Some("other"), cwd: &cwd, pid: fake_pid(&short), session_file: None };
+                    fire(&base, h, &labels_from_settings(a.settings.as_ref()));
                     println!("backgrounded · {target}");
                     return 0;
                 }
             };
             // A prompt is not a flag: `--bg --resume <id> [prompt]` keeps the id (probe 2c1).
-            let flags = a.name.is_some() || a.mode.is_some() || a.settings.is_some();
+            let flags = a.name.is_some() || a.mode.is_some() || a.settings.is_some() || a.fork;
             let saved = row.short_id.as_deref().and_then(|s| job_state(&base, s));
-            let saved_name = saved.as_ref().and_then(|j| j.get("savedName").and_then(|v| v.as_str()).map(str::to_string));
-            let saved_settings = saved.as_ref().and_then(|j| j.get("savedSettings").and_then(|v| v.as_str()).map(str::to_string));
+            let saved_name = saved.as_ref().and_then(|j| j.get("name").and_then(|v| v.as_str()).map(str::to_string));
 
             if row.live() {
                 // probe 2 / 2b: a copy with a new id and only the flags passed (an
@@ -918,24 +1237,9 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 return 0;
             }
             if !flags {
-                // probe 2c1: the same id, with its saved options and labels
-                let name = saved_name.unwrap_or_else(|| row.name.clone());
-                let short = row.short_id.clone().unwrap_or_default();
-                let t = crate::evidence::now();
-                if let Some(mut j) = saved.clone() {
-                    j["state"] = json!("running");
-                    write_json(&home.join("jobs").join(&short).join("state.json"), &j);
-                }
-                write_json(
-                    &home.join("sessions").join(format!("{short}.json")),
-                    &json!({"pid": LIVE_PID, "sessionId": row.session_id, "cwd": row.cwd, "startedAt": ms(t), "kind": "bg",
-                            "name": name, "jobId": short, "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null}),
-                );
-                let labels = labels_from_settings(saved_settings.as_ref());
-                if !labels.is_empty() {
-                    fire(&base, "SessionStart", &row.session_id, Some("resume"), &labels, &row.cwd);
-                }
-                println!("woke session {} with its saved options (--name, --permission-mode, --settings)", row.session_id);
+                // probe 2c1: the same job, woken on <id> with its saved options
+                wake(&base, &row, target, "resume");
+                println!("woke session {target} with its saved options (--name, --permission-mode, --settings)");
                 return 0;
             }
             // probe 2c2 / 2c3: the flags you passed started a copy; the old row stays
@@ -949,31 +1253,51 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
     }
 }
 
-/// An interactive session as a mux pane would run it: it stays live (a session
-/// file, no job row) until the test ends. `-c` continues the newest transcript
-/// in the folder with the same id (`source: resume`, probe P0.8); otherwise a
-/// new id (`startup`). The hooks see the labels from `--settings`.
+/// An interactive session as a mux pane (or an SDK host, `-p`) would run it:
+/// it stays live (a session file, no job row) until `__end`. `-c` continues the
+/// newest transcript in the folder with the same id (`source: resume`, probe
+/// P0.8); `--resume <id>` runs that conversation in this process with no job
+/// (R-12; refused while a job runs it, R-13); otherwise a new id (`startup`).
+/// The hooks see the labels from `--settings`.
 fn interactive(base: &Path, cwd: &str, a: &Args) -> i32 {
     let e = env(base);
     let newest = crate::evidence::transcripts_in(&e, cwd).into_iter().next().map(|(_, sid)| sid);
-    let (sid, source) = match newest.filter(|_| a.cont) {
-        Some(sid) => (sid, "resume"),
-        None => (next_id(base).1, "startup"),
-    };
     let t = crate::evidence::now();
-    let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
-    let proj = claude_home(base).join("projects").join(crate::evidence::project_dir_name(cwd));
-    let _ = fs::create_dir_all(&proj);
-    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(proj.join(format!("{sid}.jsonl"))) {
-        let _ = writeln!(f, "{}", json!({"type": "user", "cwd": cwd, "sessionId": sid}));
-    }
-    write_json(
-        &claude_home(base).join("sessions").join(format!("i-{}.json", &sid[..8])),
-        &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "interactive", "name": name,
-                "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null}),
-    );
     let labels = labels_from_settings(a.settings.as_ref());
-    fire(base, "SessionStart", &sid, Some(source), &labels, cwd);
+    let (sid, source) = match (&a.resume, newest.filter(|_| a.cont)) {
+        (Some(target), _) => {
+            if let Some(row) = find(base, target).filter(|r| r.live() && r.short_id.is_some()) {
+                // refused, and the refused process still fires a SessionEnd with
+                // no labels for the member's id (cli-17, R-13)
+                let short = row.short_id.clone().unwrap_or_default();
+                eprintln!("Error: That session is running in the background ({short}). Run `claude attach {short}` to open it, or `claude stop {short}` first to resume it here.");
+                let (stray, _) = next_id(base);
+                let h = Hook { event: "SessionEnd", sid: &row.session_id, source: None, reason: Some("other"), cwd, pid: fake_pid(&stray), session_file: None };
+                fire(base, h, &Default::default());
+                return 1;
+            }
+            if !transcript_exists(base, target) {
+                eprintln!("[fake claude] no conversation {target}");
+                return 1;
+            }
+            (target.clone(), "resume")
+        }
+        (None, Some(sid)) => (sid, "resume"),
+        (None, None) => (next_id(base).1, "startup"),
+    };
+    let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
+    log_line(base, cwd, &sid, &json!({"type": "user", "cwd": cwd, "sessionId": sid}));
+    let p = interactive_path(base, &sid);
+    write_json(
+        &p,
+        &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "interactive", "name": name,
+                "jobId": null, "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null,
+                "entrypoint": if a.print { "sdk-cli" } else { "cli" }, "version": CC_VERSION}),
+    );
+    // the labels the process carries, for its SessionEnd (`__end`)
+    write_json(&p.with_extension("labels"), &json!(labels));
+    let pid = fake_pid(&format!("i-{}", &sid[..sid.len().min(8)]));
+    fire(base, Hook { event: "SessionStart", sid: &sid, source: Some(source), reason: None, cwd, pid, session_file: Some(p.clone()) }, &labels);
     println!("[fake claude] interactive session {sid} in {cwd} ({source})");
     0
 }

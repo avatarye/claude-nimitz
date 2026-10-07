@@ -54,6 +54,7 @@ fn status_word(s: Status) -> &'static str {
     match s {
         Status::NotStarted => "not-started",
         Status::Stopped => "stopped",
+        Status::Parked => "parked",
         Status::Idle => "idle",
         Status::Busy => "busy",
         Status::NeedsYou => "needs-you",
@@ -145,7 +146,8 @@ fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize
         .unwrap_or("-".into());
     let why = m.reasons.first().cloned().unwrap_or_default();
     let pane = m.pane.as_ref().map(|p| format!("  pane {p}")).unwrap_or_default();
-    out::line(&format!("{pad}{:<width$} {:<11} {:<9} {why}{pane}", m.id.0, status_word(m.status), sess));
+    let pinned = if m.session.as_ref().is_some_and(|s| s.pinned) { "  pinned" } else { "" };
+    out::line(&format!("{pad}{:<width$} {:<11} {:<9} {why}{pane}{pinned}", m.id.0, status_word(m.status), sess));
     let mut issues = m.issues.clone();
     for i in ses::session_issues(env, m) {
         if !issues.iter().any(|x| x.code == i.code && x.message == i.message) {

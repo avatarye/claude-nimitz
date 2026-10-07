@@ -153,6 +153,10 @@ pub(crate) fn parse_event_line(line: &str) -> Option<Event> {
         pid: v.get("pid").and_then(|p| p.as_i64()),
         labels,
         rules: v.get("rules").and_then(|r| r.as_u64()).map(|r| r as u32),
+        job: s(&v, "job"),
+        kind: s(&v, "kind"),
+        entrypoint: s(&v, "entrypoint"),
+        binding: s(&v, "binding"),
     })
 }
 
@@ -226,16 +230,76 @@ pub fn labels_by_session(events: &[Event]) -> HashMap<String, BTreeMap<String, S
     out
 }
 
-/// `labels_by_session`, plus the labels a job row saved (its `--settings`) for
-/// sessions with no event at all: a SessionStart can be lost (BUG-23).
+/// Labels per process: the newest SessionStart of each (pid, session id).
+/// Labels are kept per pid (plan-v4 section 3): a second process on a
+/// member's conversation (a `-p --resume`, an SDK host) does not strip the
+/// member's own process of its labels.
+pub fn labels_by_pid_session(events: &[Event]) -> HashMap<(i64, String), BTreeMap<String, String>> {
+    let mut out = HashMap::new();
+    for e in events.iter().filter(|e| e.event == "SessionStart") {
+        let (Some(pid), Some(sid)) = (e.pid, &e.session_id) else { continue };
+        let labels = if is_labelled(&e.labels) { e.labels.clone() } else { BTreeMap::new() };
+        out.insert((pid, sid.clone()), labels);
+    }
+    out
+}
+
+/// The labels of one row. Live: the SessionStart of its own process (pid and
+/// session id), else what its job row saved (`respawnFlags --settings`), else
+/// the newest SessionStart of the session. Stopped: the job row's saved labels
+/// decide (a resume restores them; a stray process on the conversation does
+/// not change them), else the newest SessionStart of the session.
+pub fn row_labels(r: &SessionRow, by_pid: &HashMap<(i64, String), BTreeMap<String, String>>, by_sid: &HashMap<String, BTreeMap<String, String>>) -> BTreeMap<String, String> {
+    let saved = || is_labelled(&r.job_labels).then(|| r.job_labels.clone());
+    let newest = || by_sid.get(&r.session_id).cloned();
+    let own = || r.pid.and_then(|p| by_pid.get(&(p, r.session_id.clone())).cloned());
+    match r.pid {
+        Some(_) => own().or_else(saved).or_else(newest).unwrap_or_default(),
+        None => saved().or_else(newest).unwrap_or_default(),
+    }
+}
+
+/// Labels per session id, row by row (`row_labels`); where two rows share a
+/// conversation (a job row and a process holding it), the live one's labels
+/// win. Sessions with no row keep their newest SessionStart's labels.
 pub fn session_labels(events: &[Event], rows: &[SessionRow]) -> HashMap<String, BTreeMap<String, String>> {
-    let mut out = labels_by_session(events);
+    let by_sid = labels_by_session(events);
+    let by_pid = labels_by_pid_session(events);
+    let mut out = by_sid.clone();
+    let mut decided: std::collections::HashSet<String> = Default::default();
     for r in rows {
-        if !out.contains_key(&r.session_id) && is_labelled(&r.job_labels) {
-            out.insert(r.session_id.clone(), r.job_labels.clone());
+        if decided.contains(&r.session_id) && r.pid.is_none() {
+            continue;
+        }
+        out.insert(r.session_id.clone(), row_labels(r, &by_pid, &by_sid));
+        if r.pid.is_some() {
+            decided.insert(r.session_id.clone());
         }
     }
     out
+}
+
+/// `jobs/pins.json`: the jobs the daemon never idle-retires (a list of short ids).
+pub fn pins(env: &Env) -> Vec<String> {
+    fs::read(env.claude_home.join("jobs").join("pins.json"))
+        .ok()
+        .and_then(|b| first_json(&b))
+        .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()))
+        .unwrap_or_default()
+}
+
+/// The daemon's last `bg retire <short>: <why>` line in `daemon.log` (under the
+/// Claude home): the job was parked by the daemon, no SessionEnd fired.
+pub fn daemon_retired(env: &Env, short: &str) -> Option<String> {
+    let raw = fs::read(env.claude_home.join("daemon.log")).ok()?;
+    let key = format!("bg retire {short}");
+    String::from_utf8_lossy(&raw)
+        .lines()
+        .filter_map(|l| {
+            let i = l.find(&key)?;
+            Some(l[i + key.len()..].trim_start_matches(':').trim().to_string())
+        })
+        .last()
 }
 
 /// The NIMITZ_* labels in a job row's saved launch options: `savedSettings` (a
@@ -306,6 +370,13 @@ pub struct SessionRow {
     pub forked_from: Option<String>,
     /// Remote Control is connected: the session file's `bridgeSessionId` (M9)
     pub bridge_session_id: Option<String>,
+    /// the job's birth session id (`state.json` `sessionId`) when the
+    /// conversation moved on (`resumeSessionId`, or the live session file)
+    pub birth_id: Option<String>,
+    /// the session file's `entrypoint` (cli, sdk-cli, claude-vscode, ...)
+    pub entrypoint: Option<String>,
+    /// the job is in `jobs/pins.json`
+    pub pinned: bool,
 }
 
 impl SessionRow {
@@ -326,7 +397,14 @@ impl SessionRow {
             name: self.name.clone(),
             cwd: self.cwd.clone(),
             labels,
+            birth_id: self.birth_id.clone(),
+            entrypoint: self.entrypoint.clone(),
+            pinned: self.pinned,
         }
+    }
+    /// Every session id this row answers to: the conversation now and the birth id.
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.session_id.as_str()).chain(self.birth_id.as_deref())
     }
 }
 
@@ -354,6 +432,13 @@ fn internal_kind(k: &str) -> bool {
 
 /// Rows from the files `claude agents --json --all` reads. None when the
 /// layout is not there (a different Claude Code version, or no Claude Code).
+///
+/// A job row (`jobs/<id>/state.json`) and a live session file join by **job
+/// id** (the session file's `jobId`), never by session id (plan-v4 section 4):
+/// the conversation a job runs now is the live session file's `sessionId`,
+/// else `state.json` `resumeSessionId`, else its birth `sessionId`. A live
+/// process with no job (interactive, SDK) is its own row, even on a job's
+/// conversation.
 pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRow>> {
     let sess_dir = env.claude_home.join("sessions");
     let jobs_dir = env.claude_home.join("jobs");
@@ -365,18 +450,25 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
         v.sort();
         v
     };
+    let pins = pins(env);
     let mut rows: Vec<SessionRow> = vec![];
-    let mut by_sid: HashMap<String, usize> = HashMap::new();
+    let mut by_job: HashMap<String, usize> = HashMap::new();
     for jd in list(&jobs_dir) {
         let jid = jd.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+        if jid == "pins.json" {
+            continue;
+        }
         let Some(d) = cache.json(&jd.join("state.json")) else { continue };
-        let Some(sid) = s(&d, "sessionId") else { continue };
-        by_sid.insert(sid.clone(), rows.len());
+        let Some(born) = s(&d, "sessionId") else { continue };
+        let now = s(&d, "resumeSessionId").unwrap_or_else(|| born.clone());
+        by_job.insert(jid.clone(), rows.len());
         rows.push(SessionRow {
-            session_id: sid,
+            birth_id: (now != born).then_some(born),
+            session_id: now,
             name: s(&d, "name").unwrap_or_default(),
             cwd: s(&d, "cwd").unwrap_or_default(),
             kind: "background".into(),
+            pinned: pins.iter().any(|p| *p == jid),
             short_id: Some(jid),
             pid: None,
             state: s(&d, "state"),
@@ -389,6 +481,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             unreadable: false,
             forked_from: ["forkedFrom", "forkedFromSessionId", "parentSessionId", "resumedFrom"].iter().find_map(|k| s(&d, k)),
             bridge_session_id: None,
+            entrypoint: None,
         });
     }
     for p in list(&sess_dir) {
@@ -400,8 +493,8 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             // file named after a job id marks that row; one named after a pid
             // (real Claude Code) is left to the `claude agents` cross-check.
             let stem = p.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
-            if let Some(r) = rows.iter_mut().find(|r| r.short_id.as_deref() == Some(stem.as_str())) {
-                r.unreadable = true;
+            if let Some(&i) = by_job.get(&stem) {
+                rows[i].unreadable = true;
             }
             continue;
         };
@@ -415,12 +508,14 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             continue;
         }
         let status = s(&d, "status");
+        let job = s(&d, "jobId");
         let live = SessionRow {
             session_id: sid.clone(),
             name: s(&d, "name").unwrap_or_default(),
             cwd: s(&d, "cwd").unwrap_or_default(),
             kind: kind.clone(),
-            short_id: s(&d, "jobId"),
+            pinned: job.as_ref().map(|j| pins.contains(j)).unwrap_or(false),
+            short_id: job.clone(),
             pid: Some(pid),
             state: None,
             status: status.clone(),
@@ -431,28 +526,28 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             unreadable: false,
             forked_from: None,
             bridge_session_id: s(&d, "bridgeSessionId"),
+            birth_id: None,
+            entrypoint: s(&d, "entrypoint"),
         };
-        match by_sid.get(&sid) {
-            // a live background process: its job row gains pid and status
-            Some(&i) if kind == "background" => {
+        match job.as_ref().and_then(|j| by_job.get(j)) {
+            // a live background process: its job row gains pid, status and the
+            // conversation it runs now
+            Some(&i) => {
                 let r = &mut rows[i];
+                let born = r.birth_id.take().or_else(|| Some(r.session_id.clone())).filter(|b| *b != sid);
+                r.birth_id = born;
+                r.session_id = live.session_id;
                 r.pid = live.pid;
                 r.status = live.status;
                 r.status_since = live.status_since;
                 r.waiting_for = live.waiting_for;
                 r.bridge_session_id = live.bridge_session_id;
+                r.entrypoint = live.entrypoint;
                 if !live.name.is_empty() {
                     r.name = live.name;
                 }
             }
-            // an interactive process on a session that also has a row: the live one wins
-            Some(&i) => {
-                rows[i] = SessionRow { job_labels: std::mem::take(&mut rows[i].job_labels), forked_from: rows[i].forked_from.take(), ..live }
-            }
-            None => {
-                by_sid.insert(sid, rows.len());
-                rows.push(live)
-            }
+            None => rows.push(live),
         }
     }
     Some(rows)
@@ -500,6 +595,9 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         unreadable: false,
                         forked_from: None,
                         bridge_session_id: s(r, "bridgeSessionId"),
+                        birth_id: None,
+                        entrypoint: None,
+                        pinned: false,
                     })
                 })
                 .collect()

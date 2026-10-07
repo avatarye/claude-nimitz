@@ -5,11 +5,12 @@
 //! (3) events.jsonl (binding and labels), (4) mux panes (the TUI's job, never
 //! core's). A refresh every 2 s re-reads only what changed (mtime caches).
 //!
-//! A row belongs to an identity by its labels (`NIMITZ_ID` from the session's
-//! events) or by the registry's lineage — never by its name alone. `Member::
-//! issues` carries every session-level code of the member: the per-member
-//! rules (`sessions::session_issues`) plus what needs the whole-world view
-//! (name.taken, lineage.broken). Folder and config codes stay with `check`.
+//! A row belongs to an identity by its job (the registry's `job`, plan-v4
+//! section 4), by its conversation (the registry's `session` and lineage) or
+//! by its labels (`NIMITZ_ID` from the session's events) — never by its name
+//! alone. `Member::issues` carries every session-level code of the member: the
+//! per-member rules (`sessions::session_issues`) plus what needs the whole-world
+//! view (name.taken, lineage.broken). Folder and config codes stay with `check`.
 use crate::env::Env;
 use crate::evidence::{self, FileCache, SessionRow};
 use crate::types::*;
@@ -32,8 +33,10 @@ pub struct Cache {
 pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let now = evidence::now();
     let (fleets_cfg, cfg_issues) = crate::config::load_all(env);
-    let reg = crate::registry::load(env);
     let events = evidence::events_cached(env, &mut cache.files);
+    // a SessionStart whose registry write was lost binds now (section 3)
+    crate::registry::replay(env, &events);
+    let reg = crate::registry::load(env);
 
     // Evidence 1: rows from the files. Evidence 2: the CLI, merged in for rows
     // the files missed (never run more than once per CLI_EVERY_S).
@@ -60,8 +63,10 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             r
         })
         .collect();
+    // (joined by job id, never by session id alone: a process with no job on a
+    // stopped job's conversation is its own row, section 4)
     for r in rows.iter_mut().filter(|r| r.pid.is_none()) {
-        if let Some(c) = cli_rows.iter().find(|c| c.session_id == r.session_id && c.pid.is_some()) {
+        if let Some(c) = cli_rows.iter().find(|c| c.session_id == r.session_id && c.short_id == r.short_id && c.pid.is_some()) {
             r.pid = c.pid;
             r.status = c.status.clone().or(Some("unknown".into()));
         }
@@ -81,13 +86,15 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let compat = crate::compat::supported();
     let compat_ok = cc_version.as_deref().map(|v| crate::compat::position(&compat, v) == 0).unwrap_or(false);
 
-    // Rows per identity. The registry's `current` wins (so a session whose
-    // labels name someone else still belongs to the identity that started it,
-    // and shows up as labels.mismatch); then the labels; then the lineage.
+    // Rows per identity. The registry's job wins, then its session (so a
+    // session whose labels name someone else still belongs to the identity
+    // that started it, and shows up as labels.mismatch); then the labels; then
+    // the lineage.
     let mut by_identity: HashMap<String, Vec<SessionRow>> = HashMap::new();
     let mut claimed: HashSet<String> = HashSet::new();
+    let job_of: HashMap<&str, &str> = reg.identities.iter().filter_map(|(id, rec)| Some((rec.job.as_deref()?, id.as_str()))).collect();
     let current_of: HashMap<&str, &str> =
-        reg.identities.iter().filter_map(|(id, rec)| Some((rec.current.as_deref()?, id.as_str()))).collect();
+        reg.identities.iter().filter_map(|(id, rec)| Some((rec.session.as_deref()?, id.as_str()))).collect();
     let lineage_of: HashMap<&str, &str> = reg
         .identities
         .iter()
@@ -125,18 +132,22 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let retired_of: HashMap<&str, &str> = reg
         .retired
         .iter()
-        .flat_map(|(id, rec)| rec.current.iter().chain(rec.lineage.iter().map(|l| &l.session_id)).map(move |s| (s.as_str(), id.as_str())))
+        .flat_map(|(id, rec)| rec.session_ids().map(move |s| (s, id.as_str())))
         .collect();
+    // a job row of a 0.3.x tender is history too
+    let retired_job: HashMap<&str, &str> = reg.retired.iter().filter_map(|(id, rec)| Some((rec.job.as_deref()?, id.as_str()))).collect();
     // labelled sessions in another folder than their identity's (BUG-30)
     let mut misplaced: Vec<(String, SessionRow)> = vec![];
     for r in &rows {
         let by_labels = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(String::as_str);
-        let owner = current_of
-            .get(r.session_id.as_str())
-            .copied()
+        let job = r.short_id.as_deref();
+        let owner = job
+            .and_then(|j| job_of.get(j).copied())
+            .or_else(|| r.session_ids().find_map(|sid| current_of.get(sid).copied()))
             .or_else(|| by_labels.filter(|o| folder_ok(o, &r.cwd)))
-            .or_else(|| lineage_of.get(r.session_id.as_str()).copied())
-            .or_else(|| retired_of.get(r.session_id.as_str()).copied());
+            .or_else(|| r.session_ids().find_map(|sid| lineage_of.get(sid).copied()))
+            .or_else(|| r.session_ids().find_map(|sid| retired_of.get(sid).copied()))
+            .or_else(|| job.and_then(|j| retired_job.get(j).copied()));
         if let Some(owner) = owner {
             by_identity.entry(owner.to_string()).or_default().push(r.clone());
             claimed.insert(r.session_id.clone());
@@ -400,9 +411,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     // A job row that does not parse (BUG-14): its session is unknown, so the
     // identity whose session it may be gets an error and no guessed start.
     for jid in evidence::corrupt_jobs(env) {
-        let owner = reg.identities.iter().find(|(_, rec)| {
-            rec.current.iter().chain(rec.lineage.iter().map(|l| &l.session_id)).any(|sid| sid.starts_with(&jid))
-        });
+        let owner = reg.identities.iter().find(|(_, rec)| rec.job.as_deref() == Some(jid.as_str()) || rec.session_ids().any(|sid| sid.starts_with(&jid)));
         let path = env.claude_home.join("jobs").join(&jid).join("state.json");
         let i = Issue {
             code: "job.unreadable".into(),
@@ -499,6 +508,34 @@ fn for_each_member(f: &mut Fleet, mut each: impl FnMut(&mut Member)) {
     }
 }
 
+/// A job with no live process: stopped when its last event is a SessionEnd
+/// (`claude stop`, `/stop`, an exit), else parked (the daemon retired it, it
+/// crashed, or the machine went down: no SessionEnd fires for those; plan-v4
+/// section 4). Only the job's own processes count: those whose SessionStart
+/// names the job (or a line an older nimitz wrote). A SessionEnd from a pid
+/// that never sent a SessionStart (a refused `-p --resume`) does not count,
+/// nor does a process with no job on the conversation (M21, `held`). A
+/// `failed` row is stopped: it never ran, or ended while the daemon was off
+/// (relaunch table row 8).
+fn parked_or_stopped(env: &Env, p: &SessionRow, events: &[Event]) -> (Status, String) {
+    if p.state.as_deref() == Some("failed") {
+        return (Status::Stopped, "state failed: it never ran, or ended while the daemon was off".into());
+    }
+    let mine = |e: &&Event| e.session_id.as_deref().is_some_and(|sid| p.session_ids().any(|s| s == sid));
+    let of_job = |e: &Event| e.job == p.short_id || (e.job.is_none() && e.kind.is_none());
+    let started: HashSet<i64> = events.iter().filter(|e| e.event == "SessionStart" && of_job(e)).filter_map(|e| e.pid).collect();
+    let last = events.iter().rev().filter(mine).find(|e| (e.event == "SessionStart" && of_job(e)) || (e.event == "SessionEnd" && e.pid.is_some_and(|pid| started.contains(&pid))));
+    if let Some(end) = last.filter(|e| e.event == "SessionEnd") {
+        return (Status::Stopped, format!("SessionEnd event, reason {}", end.reason.as_deref().unwrap_or("not given")));
+    }
+    let why = match (p.short_id.as_deref().and_then(|j| evidence::daemon_retired(env, j)), p.state.as_deref()) {
+        (Some(r), _) => format!("parked: the daemon retired it ({r}); a start wakes it"),
+        (None, Some("crashed")) => "parked: state crashed, no SessionEnd; the daemon restarts it, else a start wakes it".into(),
+        _ => "parked: no SessionEnd (retired, crashed or stopped with the machine); a start wakes it".into(),
+    };
+    (Status::Parked, why)
+}
+
 /// One member: its rows, status, reasons, crew, tasks and whole-world issues.
 #[allow(clippy::too_many_arguments)]
 fn build_member(
@@ -518,25 +555,29 @@ fn build_member(
     let mut rows = by_identity.remove(&id.0).unwrap_or_default();
     let mut reasons = vec![];
 
-    // Primary: the registry's current session when its row exists; else the
-    // newest live row; else the newest row; but only among rows that are the
-    // identity's own (in its lineage, or carrying its labels). A copy found by
-    // its name or fork link is never the current session.
-    let current = rec.and_then(|r| r.current.clone());
+    // Primary: the registry's job when its row exists (plan-v4 section 4);
+    // else the row running the registry's session; else the newest live row;
+    // else the newest row; but only among rows that are the identity's own (in
+    // its lineage, or carrying its labels). A copy found by its name or fork
+    // link is never the current session. A process holding the conversation
+    // with no job (`held`) never beats the job row.
+    let current = rec.and_then(|r| r.session.clone());
     let own = |r: &SessionRow| {
-        rec.map(|x| x.lineage.iter().any(|l| l.session_id == r.session_id) || x.current.as_deref() == Some(r.session_id.as_str())).unwrap_or(false)
+        rec.map(|x| x.job.is_some() && x.job == r.short_id || r.session_ids().any(|sid| x.session_ids().any(|y| y == sid))).unwrap_or(false)
             || labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0)
     };
-    let primary_at = current
-        .as_ref()
-        .and_then(|cur| rows.iter().position(|r| &r.session_id == cur))
+    let primary_at = rec
+        .and_then(|x| x.job.as_deref())
+        .and_then(|job| rows.iter().position(|r| r.short_id.as_deref() == Some(job)))
+        .or_else(|| current.as_ref().and_then(|cur| rows.iter().position(|r| r.short_id.is_some() && r.session_ids().any(|sid| sid == cur))))
+        .or_else(|| current.as_ref().and_then(|cur| rows.iter().position(|r| &r.session_id == cur)))
         .or_else(|| {
             rows.iter()
                 .enumerate()
                 .filter(|(_, r)| own(r))
                 .max_by(|(_, a), (_, b)| {
-                    (a.live(), a.started_at.unwrap_or(0.0))
-                        .partial_cmp(&(b.live(), b.started_at.unwrap_or(0.0)))
+                    (a.live(), a.short_id.is_some(), a.started_at.unwrap_or(0.0))
+                        .partial_cmp(&(b.live(), b.short_id.is_some(), b.started_at.unwrap_or(0.0)))
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|(i, _)| i)
@@ -581,10 +622,9 @@ fn build_member(
                 p.short_id.as_deref().unwrap_or("?"),
                 p.state.as_deref().unwrap_or("?")
             ));
-            if let Some(end) = events.iter().rev().find(|e| e.event == "SessionEnd" && e.session_id.as_deref() == Some(p.session_id.as_str())) {
-                reasons.push(format!("SessionEnd event, reason {}", end.reason.as_deref().unwrap_or("not given")));
-            }
-            Status::Stopped
+            let (status, why) = parked_or_stopped(env, p, events);
+            reasons.push(why);
+            status
         }
         None => {
             // No row at all. An interactive member may have ended, leaving its
@@ -628,6 +668,10 @@ fn build_member(
                 }
             }
         }
+    }
+
+    if primary.as_ref().map(|p| p.pinned).unwrap_or(false) {
+        reasons.push("pinned (jobs/pins.json): the daemon never idle-retires it".into());
     }
 
     // Crew and tasks for the live primary.

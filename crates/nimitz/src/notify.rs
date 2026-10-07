@@ -60,7 +60,7 @@ fn commodore_session(env: &Env, cid: &Id) -> Option<String> {
     let rows = nimitz_core::evidence::rows_from_files(env, &mut Default::default()).unwrap_or_default();
     let live = |sid: &str| rows.iter().any(|r| r.session_id == sid && r.live());
     let reg = nimitz_core::registry::load(env);
-    if let Some(cur) = reg.identities.get(&cid.0).and_then(|r| r.current.clone()).filter(|s| live(s)) {
+    if let Some(cur) = reg.identities.get(&cid.0).and_then(|r| r.session.clone()).filter(|s| live(s)) {
         return Some(cur);
     }
     rows.iter().find(|r| r.live() && r.kind == "interactive" && r.name == cid.name()).map(|r| r.session_id.clone())

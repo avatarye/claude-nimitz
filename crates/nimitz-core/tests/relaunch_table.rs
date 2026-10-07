@@ -194,7 +194,7 @@ fn row4_stopped_with_labels_resumes_with_no_flags_and_keeps_the_id() {
     assert_eq!(after.labels.get("NIMITZ_ID"), Some(&id.0));
     let reg = nimitz_core::registry::load(&w.env);
     let rec = &reg.identities[&id.0];
-    assert_eq!(rec.current.as_ref(), Some(&before.session_id));
+    assert_eq!(rec.session.as_ref(), Some(&before.session_id));
     assert_eq!(rec.lineage.last().unwrap().via, "resume");
 }
 
@@ -297,7 +297,7 @@ fn row6_no_row_but_a_transcript_continues_with_c_in_a_pane() {
     assert_eq!(after.session.as_ref().map(|p| p.kind.as_str()), Some("interactive"));
     assert!(matches!(after.status, Status::Idle), "{:?}", after.reasons);
     assert!(after.issues.is_empty(), "{:?}", after.issues);
-    assert_eq!(nimitz_core::registry::load(&w.env).identities[&id.0].current.as_deref(), Some(sid.as_str()));
+    assert_eq!(nimitz_core::registry::load(&w.env).identities[&id.0].session.as_deref(), Some(sid.as_str()));
 }
 
 // ------------------------------------------------------------------ row 7
@@ -387,7 +387,7 @@ fn sweep_removes_stale_rows_without_starting_anything() {
     assert!(out.verified, "{:?}", out.issues);
     let after = w.member(&w.snap(), &id);
     assert!(after.extra_rows.is_empty());
-    assert_eq!(after.status, Status::Stopped, "sweep starts nothing");
+    assert_eq!(after.status, Status::Parked, "sweep starts nothing (no SessionEnd ever: parked)");
 }
 
 #[test]
@@ -471,20 +471,19 @@ fn an_untrusted_folder_also_stops_the_fake_claude_itself() {
 // ------------------------------------------------------------------ row 11
 
 #[test]
-fn row11_an_interactive_member_in_the_background_refuses() {
+fn row11_a_lead_that_runs_as_a_background_job_is_a_member_like_any_other() {
+    // 0.4.0: every member is a job (plan-v4 section 1); `role.background` is gone
     let w = world();
     let snap = w.snap();
     let id = Id::commodore("MAIN", "BOREAL");
     let m = w.member(&snap, &id);
     assert_eq!(m.session.as_ref().unwrap().kind, "background");
+    assert_eq!(m.status, Status::Idle);
+    assert!(m.issues.is_empty(), "{:?}", m.issues);
     let plan = w.start(&snap, &id, false);
-    let i = plan.refusals.iter().find(|i| i.code == "role.background").expect("role.background");
-    assert!(i.fix.as_deref().unwrap_or("").contains("attach"));
-    // and a ship under it refuses too: the chain is started top-down
-    let mut snap2 = snap.clone();
-    let _ = &mut snap2;
+    assert!(plan.ok() && plan.steps.is_empty(), "live and clean: nothing to do: {plan:?}");
     let ship_plan = w.start(&snap, &w.ship("CLEAN"), false);
-    assert!(ship_plan.ok(), "a ship of another squadron is unaffected: {:?}", ship_plan.refusals);
+    assert!(ship_plan.ok(), "{:?}", ship_plan.refusals);
 }
 
 // ------------------------------------------------------------------ row 12
@@ -743,9 +742,10 @@ fn up_starts_the_whole_fleet_and_refuses_for_a_member_caller() {
     let plan = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
     // MAIN has broken members, so `up` refuses and names each one
     assert!(!plan.ok());
-    for code in ["name.drift", "labels.missing", "dup.live", "role.background", "folder.missing", "lineage.broken"] {
+    for code in ["name.drift", "labels.missing", "dup.live", "folder.missing", "lineage.broken"] {
         assert!(has(&plan.refusals, code), "{code} missing from {:?}", codes(&plan.refusals));
     }
+    assert!(!has(&plan.refusals, "role.background"), "a background lead is a job like every member (0.4.0)");
     // BETA is clean: up plans its admiral only
     let plan = sessions::plan_up(&w.env, &snap, "BETA", &Caller::User);
     assert!(plan.ok(), "{:?}", plan.refusals);
@@ -841,7 +841,7 @@ fn a_0_3_x_tender_is_retired_history_only() {
     assert!(!reg.identities.contains_key(tid), "no member");
     let rec = &reg.retired[tid];
     assert_eq!(rec.lineage.len(), 1, "its history stays");
-    let sid = rec.current.clone().unwrap();
+    let sid = rec.session.clone().unwrap();
     let snap = w.snap();
     assert!(find_member(&snap, &Id(tid.into())).is_none());
     assert!(!snap.fleets.iter().flat_map(|f| f.squadrons.iter()).flat_map(|s| s.ships.iter()).any(|m| m.id.0.contains('~')), "never listed");
@@ -879,7 +879,7 @@ fn adopt_binds_a_stowaway_and_warns_that_labels_come_later() {
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
     let reg = nimitz_core::registry::load(&w.env);
-    assert_eq!(reg.identities[&id.0].current.as_deref(), Some(stow.session_id.as_str()));
+    assert_eq!(reg.identities[&id.0].session.as_deref(), Some(stow.session_id.as_str()));
     assert_eq!(reg.identities[&id.0].lineage.last().unwrap().via, "adopt");
     // the adopted session now belongs to the ship, which has no labels yet
     let m = w.member(&w.snap(), &id);

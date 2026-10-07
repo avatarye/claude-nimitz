@@ -60,6 +60,7 @@ pub fn status_word(s: Status) -> &'static str {
         Status::Busy => "busy",
         Status::Idle => "idle",
         Status::Stopped => "stopped",
+        Status::Parked => "parked",
         Status::NotStarted => "not started",
         Status::Unknown => "unknown",
     }
@@ -71,6 +72,7 @@ pub fn status_glyph(s: Status) -> &'static str {
         Status::Busy => "*",
         Status::Idle => "-",
         Status::Stopped => "x",
+        Status::Parked => "z",
         Status::NotStarted => "o",
         Status::Unknown => "?",
     }
@@ -82,6 +84,7 @@ pub fn status_color(s: Status) -> Color {
         Status::Busy => mono::BUSY,
         Status::Idle => mono::FG,
         Status::Stopped => mono::MUTED,
+        Status::Parked => mono::MUTED,
         Status::NotStarted => mono::FAINT,
         Status::Unknown => mono::MUTED,
     }
@@ -231,7 +234,7 @@ impl Icons {
             Status::NeedsYou => self.s_needs,
             Status::Busy => self.s_busy,
             Status::Idle => self.s_idle,
-            Status::Stopped => self.s_stopped,
+            Status::Stopped | Status::Parked => self.s_stopped,
             Status::NotStarted => self.s_off,
             Status::Unknown => self.s_unknown,
         }

@@ -43,6 +43,9 @@ impl Row {
             unreadable: false,
             forked_from: None,
             bridge_session_id: None,
+            birth_id: None,
+            entrypoint: None,
+            pinned: false,
         }
     }
 }

@@ -186,34 +186,62 @@ pub struct FleetOnDisk {
 
 // ------------------------------------------------------------------ registry
 
+/// One conversation an identity had (registry v2, plan-v4 section 2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LineageEntry {
     pub session_id: String,
-    pub bound_at: f64,
-    /// launch | resume | relaunch | adopt | migrate
+    /// the job (short id) that ran it, when known
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    /// launch | resume | relaunch | clear | branch | fork | compact | adopt | migrate | hook
     pub via: String,
+    /// when it was bound (a v1 file says `bound_at`)
+    #[serde(alias = "bound_at")]
+    pub at: f64,
 }
 
+/// An identity's anchor: the job (short id) and the conversation it runs now.
+/// A v1 file says `current` for `session` and has no `job`;
+/// `registry::load` migrates it (`migrate::registry_v2`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct IdentityRecord {
     pub role: Role,
     pub name: String,
     pub cwd: String,
-    pub current: Option<String>,
+    /// the Claude Code job (short id); None before the first bind
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    /// the conversation now (session id)
+    #[serde(default, alias = "current")]
+    pub session: Option<String>,
     #[serde(default)]
     pub lineage: Vec<LineageEntry>,
 }
+
+/// The registry format this nimitz writes.
+pub const REGISTRY_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Registry {
     pub version: u32,
     pub machine: String,
+    /// when it was last written (epoch seconds): `status` replays SessionStart
+    /// lines newer than this (plan-v4 section 3)
+    #[serde(default)]
+    pub updated_at: f64,
     #[serde(default)]
     pub identities: BTreeMap<String, IdentityRecord>,
     /// identities of roles that no longer exist (0.3.x tenders), kept as
     /// history by `migrate::retire_tenders`; never members, never started
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retired: BTreeMap<String, IdentityRecord>,
+}
+
+impl IdentityRecord {
+    /// Every session id the identity ever ran: the one now, then the lineage.
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        self.session.iter().map(String::as_str).chain(self.lineage.iter().map(|l| l.session_id.as_str()))
+    }
 }
 
 // ------------------------------------------------------------------ events
@@ -242,6 +270,18 @@ pub struct Event {
     /// SessionStart only: the rules version the hook handed the session
     #[serde(default)]
     pub rules: Option<u32>,
+    /// SessionStart only, from `sessions/<pid>.json`: the job (short id) the
+    /// process runs; null for an interactive or SDK process
+    #[serde(default)]
+    pub job: Option<String>,
+    /// SessionStart only: the session file's `kind` and `entrypoint`
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    /// SessionStart only: what the hook did with the registry (`Binding`)
+    #[serde(default)]
+    pub binding: Option<String>,
 }
 
 // ------------------------------------------------------------------ snapshot
@@ -250,6 +290,9 @@ pub struct Event {
 pub enum Status {
     NotStarted,
     Stopped,
+    /// a job with no live process that nobody stopped (the daemon retired it,
+    /// it crashed, or the machine went down): not an error; a start wakes it
+    Parked,
     Idle,
     Busy,
     NeedsYou,
@@ -293,6 +336,16 @@ pub struct SessionInfo {
     pub cwd: String,
     /// labels found for this session (events or saved options); empty if none
     pub labels: BTreeMap<String, String>,
+    /// the job's birth session id (`state.json` `sessionId`) when the
+    /// conversation moved on (`/clear`, `/branch`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth_id: Option<String>,
+    /// the session file's `entrypoint` (cli, sdk-cli, claude-vscode, ...)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    /// the job is in `jobs/pins.json`: the daemon never idle-retires it
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

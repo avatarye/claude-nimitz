@@ -38,6 +38,9 @@ fn session(id: &Id, sid: &str, pid: Option<i64>, kind: &str, status: Option<&str
         name: id.name(),
         cwd: cwd_of(id),
         labels: if with_labels { labels(id) } else { BTreeMap::new() },
+        birth_id: None,
+        entrypoint: None,
+        pinned: false,
     }
 }
 
@@ -340,6 +343,9 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         name: "scratch-run".into(),
         cwd: "/home/u/.claude-nimitz/forge/squadrons/IRON".into(),
         labels: BTreeMap::new(),
+        birth_id: None,
+        entrypoint: None,
+        pinned: false,
     };
     let s2 = SessionInfo {
         session_id: "ef22ef22-0000-4000-8000-000000000000".into(),
@@ -354,6 +360,9 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         name: "one-off probe".into(),
         cwd: "/home/u/.claude-nimitz/main/admiral".into(),
         labels: BTreeMap::new(),
+        birth_id: None,
+        entrypoint: None,
+        pinned: false,
     };
     // a session of the old fleet-skill fleets, recognised by its name
     let s3 = SessionInfo {
@@ -369,6 +378,9 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         name: "[KITS]-LEAD".into(),
         cwd: "/home/u/.claude-nimitz/main/squadrons/KITS".into(),
         labels: BTreeMap::new(),
+        birth_id: None,
+        entrypoint: None,
+        pinned: false,
     };
     let issues = vec![
         issue("legacy", Severity::Warn, "`[KITS]-LEAD` is a session of the old fleet-skill fleet KITS", Some("nimitz adopt ab99ab99 MAIN/KITS"), None),
