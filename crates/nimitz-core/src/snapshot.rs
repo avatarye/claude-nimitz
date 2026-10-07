@@ -521,7 +521,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
                 let short = r.short_id.as_deref().unwrap_or(&r.session_id);
                 let fix = match &r.short_id {
                     Some(j) => format!("nimitz stop {j}  # then nimitz rm {j}"),
-                    None => format!("end it in its terminal{}", r.terminal.as_deref().map(|t| format!(" ({t})")).unwrap_or_default()),
+                    None => format!("end it in its terminal{}: /exit, or close the host", r.terminal.as_deref().map(|t| format!(" ({t})")).unwrap_or_default()),
                 };
                 m.issues.push(Issue {
                     code: "lead.intruder".into(),

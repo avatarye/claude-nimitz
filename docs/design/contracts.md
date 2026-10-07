@@ -332,7 +332,7 @@ Each finding is an `Issue` with a stable `code`:
 | `copy` | a copy of a ship's conversation (plan-v4 section 6; Warn, one per copy, `SessionInfo::copy` says how): an unlabelled session in the ship's folder whose transcript shares the root of a lineage conversation (`evidence::transcript_root`: the first uuid and the first message; a `/branch`, `/fork`, `--fork-session` or `--bg -c` copies the transcript), or that resumes a lineage session id that is not the conversation now (a process with no job on the conversation now is `held`, not a copy), or that carries the ship's exact name (or an old fleet name); anywhere, a row named `<expected name>-<word>-<word>` (Claude Code's copy name) or unnamed with a job row recording a fork of a lineage session. A copy is never the current session, never `dup.live`, `held` or `name.taken`. Fix per kind: a background job, `nimitz sweep <id>` (stop, then rm); a process with no job (interactive, SDK), "end it in its terminal" with the `tmux` pane from the session file when there is one |
 | `lineage.broken` | the registry's session (the conversation now) has no job row and no transcript |
 | `held` | a member's conversation (any role; the one it runs now) runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`, a 0.3.x interactive lead); nimitz can neither stop nor resume it there, and `start` of that member refuses until it ends (a resume would start a copy); a held parent is live for the chain (its ships start, the warning rides along) (Warn in `check`; fix: end that process in its host, then `nimitz start`; for a 0.3.x lead: "end the interactive lead with /exit, then run nimitz start <id> again", which brings the same conversation back as a job, lineage `via migrate`) (M13). Such a row is never a copy or a second live session of the member; a process with no job on an older lineage conversation is a `copy` |
-| `lead.intruder` | a lead's folder is exclusive: a live session there that is not the lead's own (its job, a held process on its conversation, a live copy) is an intruder (Error; one fix per kind: a background job `nimitz stop <short>` then `nimitz rm <short>`; an interactive or SDK process "end it in its terminal", with the session file's terminal when it says). A retired tender's row stays `tender.retired` only; `check` lists such a row as the lead's intruder, not as a stowaway as well; it rides along a start as a warning (the lead's own job is apart from it) |
+| `lead.intruder` | a lead's folder is exclusive: a live session there that is not the lead's own (its job, a held process on its conversation, a live copy) is an intruder (Error; one fix per kind: a background job `nimitz stop <short>` then `nimitz rm <short>`; an interactive or SDK process "end it in its terminal (tmux ...): /exit, or close the host", with the session file's terminal when it says). A retired tender's row stays `tender.retired` only; `check` lists such a row as the lead's intruder, not as a stowaway as well; it rides along a start as a warning (the lead's own job is apart from it) |
 | `history.lost` | a resume would run with no history: the member's job row is there but its conversation has no transcript in any project dir (no launch; fix `nimitz start <id> --fresh`: a cold launch that starts a new lineage entry and drops the old rows); or a resume came back with SessionStart `startup` instead of `resume` (Claude Code found no history; the start is never verified) (M5, E8). A lead with no transcript and no row gets a cold launch, never a fleet-wide `lineage.broken` (M11) |
 | `pin.failed` | a lead's job could not be pinned (`pins.json.lock` held); the start stands (Warn; fix `nimitz relaunch`) |
 | `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
@@ -440,7 +440,7 @@ attach <job>` in its folder, labelled `F.ADMIRAL` / `F.SQ.COMMODORE` /
 job); `layout herdr` (every live lead; `--ships` every live ship), `nimitz
 open`, `signal` to a lead with no tab, Admiralty's `A` and a restore build on
 it. The CLI's `run::attach_in_tab(mux, env, member)` focuses the pane or tab
-that shows it already, else opens it (`nimitz_mux::open_or_focus`). Detach is
+that shows it already, else opens it (`nimitz_mux::attach`). Detach is
 ctrl-z; `/exit` inside an attach opens the agent view. A wake by attach keeps
 the relaunch table's checks (a drifted name or missing labels: `nimitz start`
 relabels first; a lost transcript: `history.lost`); the CLI says "the attach
@@ -459,10 +459,12 @@ real captures in `crates/nimitz-mux/tests/fixtures/herdr-0.9.3/`
 (`process-info.json`: `result.process_info.foreground_processes[]`;
 `snapshot.json`: `result.snapshot.{workspaces,tabs,panes,agents}`, the same
 rows the list replies carry under `result.{workspaces,tabs,panes,agents}`)
-and on the schema's create replies (`workspace_created` = `result.workspace`
-WorkspaceInfo with `active_tab_id`, `tab_created` = `result.tab` TabInfo,
-`pane_created` = `result.pane`; no `root_pane`: the new tab's pane comes from
-`pane list`). The fake Herdr emits these exact shapes. A `process-info`
+and on the schema's create replies (`ResponseResult`: `workspace_created` =
+`result.workspace` WorkspaceInfo + `result.tab` TabInfo + `result.root_pane`
+PaneInfo, all required; `tab_created` = `result.tab` + `result.root_pane`;
+a split replies `pane_info` = `result.pane`). The new tab's pane is read from
+`root_pane`; `active_tab_id` + `pane list` stand in only when a reply names
+no tab or pane. The fake Herdr emits these exact shapes. A `process-info`
 reply with no list is an error, never an idle shell.
 
 ## 9. Mux trait (`nimitz-mux`)

@@ -604,24 +604,32 @@ fn fixture_snapshot_lists() {
 
 fn fixture_create_replies() {
     use nimitz_mux::herdr::{created_pane, created_tab, created_workspace};
-    // the schema's shapes: WorkspaceInfo / TabInfo alone, no root_pane
-    let ws = json!({"id": "cli:workspace:create", "result": {"type": "workspace_created", "workspace": {"workspace_id": "w9", "label": "F", "number": 9, "active_tab_id": "w9:t1", "tab_count": 1, "pane_count": 1, "focused": false, "agent_status": "unknown"}}});
-    assert_eq!(created_workspace(&ws).unwrap(), ("w9".into(), Some("w9:t1".into()), None));
-    let tab = json!({"id": "cli:tab:create", "result": {"type": "tab_created", "tab": {"tab_id": "w9:t2", "workspace_id": "w9", "label": "F.SQ.S", "number": 2, "pane_count": 1, "focused": false, "agent_status": "unknown"}}});
-    assert_eq!(created_tab(&tab).unwrap(), ("w9:t2".into(), None));
-    // a reply that does name the pane is taken as is
-    let with = json!({"result": {"type": "tab_created", "tab": {"tab_id": "w9:t3"}, "root_pane": {"pane_id": "w9:p7"}}});
-    assert_eq!(created_tab(&with).unwrap(), ("w9:t3".into(), Some("w9:p7".into())));
+    // the schema's ResponseResult shapes: workspace_created carries workspace, tab
+    // and root_pane; tab_created carries tab and root_pane; a split replies pane_info
+    let ws = json!({"id": "cli:workspace:create", "result": {"type": "workspace_created",
+        "workspace": {"workspace_id": "w9", "label": "F", "number": 9, "active_tab_id": "w9:t1", "tab_count": 1, "pane_count": 1, "focused": false, "agent_status": "unknown"},
+        "tab": {"tab_id": "w9:t1", "workspace_id": "w9", "label": "1", "number": 1, "pane_count": 1, "focused": false, "agent_status": "unknown"},
+        "root_pane": {"pane_id": "w9:p1", "tab_id": "w9:t1", "workspace_id": "w9", "terminal_id": "term_1", "focused": false, "agent_status": "unknown", "revision": 1}}});
+    assert_eq!(created_workspace(&ws).unwrap(), ("w9".into(), Some("w9:t1".into()), Some("w9:p1".into())));
+    let tab = json!({"id": "cli:tab:create", "result": {"type": "tab_created",
+        "tab": {"tab_id": "w9:t2", "workspace_id": "w9", "label": "F.SQ.S", "number": 2, "pane_count": 1, "focused": false, "agent_status": "unknown"},
+        "root_pane": {"pane_id": "w9:p2", "tab_id": "w9:t2", "workspace_id": "w9", "terminal_id": "term_2", "focused": false, "agent_status": "unknown", "revision": 1}}});
+    assert_eq!(created_tab(&tab).unwrap(), ("w9:t2".into(), Some("w9:p2".into())));
+    let split = json!({"result": {"type": "pane_info", "pane": {"pane_id": "w9:p8", "tab_id": "w9:t3", "workspace_id": "w9"}}});
+    assert_eq!(created_pane(&split).unwrap(), ("w9:p8".into(), "w9:t3".into()));
     assert!(created_tab(&json!({"result": {"type": "ok"}})).is_err());
     assert!(created_workspace(&json!({"result": {"type": "workspace_created"}})).is_err());
-    let split = json!({"result": {"type": "pane_created", "pane": {"pane_id": "w9:p8", "tab_id": "w9:t3", "workspace_id": "w9"}}});
-    assert_eq!(created_pane(&split).unwrap(), ("w9:p8".into(), "w9:t3".into()));
-    // through the adapter (the fake answers with the schema's shapes): the pane comes from `pane list`
+    // through the adapter (the fake answers with those shapes): the direct path, no pane list needed
     let w = World::new(None);
     let r = w.mux().open(&cmdv(&["claude", "attach", "9aacf927"]), Path::new("/x"), Place::Tab { workspace: "NEW".into(), label: "NEW.ADMIRAL".into() }).expect("open");
     assert_eq!(r, pane_ref("w2:p1", "w2:t1", "w2"));
     assert_eq!(w.pane("w2:p1")["ran"], json!(["claude attach 9aacf927"]));
-    assert!(w.calls().iter().any(|c| c[..2] == ["pane".to_string(), "list".to_string()]), "{:?}", w.calls());
+    assert!(!w.calls().iter().any(|c| c[..2] == ["pane".to_string(), "list".to_string()]), "the reply names the pane: {:?}", w.calls());
+    // the fallback, apart: a reply with no tab or pane gives None, which the adapter resolves
+    let bare_ws = json!({"result": {"type": "workspace_created", "workspace": {"workspace_id": "w9", "active_tab_id": "w9:t1"}}});
+    assert_eq!(created_workspace(&bare_ws).unwrap(), ("w9".into(), Some("w9:t1".into()), None));
+    let bare_tab = json!({"result": {"type": "tab_created", "tab": {"tab_id": "w9:t2"}}});
+    assert_eq!(created_tab(&bare_tab).unwrap(), ("w9:t2".into(), None));
 }
 
 // ---------- error paths ----------

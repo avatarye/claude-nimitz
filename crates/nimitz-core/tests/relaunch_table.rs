@@ -2009,7 +2009,7 @@ fn i10_a_live_session_in_a_lead_folder_is_an_intruder_with_one_fix_per_kind() {
     let m = w.member(&w.snap(), &adm);
     let i = m.issues.iter().find(|i| i.code == "lead.intruder").expect("lead.intruder: {m:?}");
     assert!(i.message.contains("a look around") && i.message.contains("cli"), "{}", i.message);
-    assert_eq!(i.fix.as_deref(), Some("end it in its terminal"));
+    assert_eq!(i.fix.as_deref(), Some("end it in its terminal: /exit, or close the host"));
     assert!(!has(&m.issues, "dup.live") && !has(&m.issues, "held"), "{:?}", m.issues);
     // with the terminal named in its session file, the fix names it
     let sess = std::fs::read_dir(w.env.claude_home.join("sessions")).unwrap().flatten().map(|e| e.path()).find(|p| std::fs::read_to_string(p).unwrap_or_default().contains("a look around")).unwrap();
@@ -2018,7 +2018,7 @@ fn i10_a_live_session_in_a_lead_folder_is_an_intruder_with_one_fix_per_kind() {
     std::fs::write(&sess, v.to_string()).unwrap();
     let m = w.member(&w.snap(), &adm);
     let i = m.issues.iter().find(|i| i.code == "lead.intruder").unwrap();
-    assert_eq!(i.fix.as_deref(), Some("end it in its terminal (tmux main:@1.%3)"));
+    assert_eq!(i.fix.as_deref(), Some("end it in its terminal (tmux main:@1.%3): /exit, or close the host"));
     // a 0.3.x tender's row in a lead folder stays tender.retired only
     let t = w.rows().into_iter().find(|r| r.name == "[MAIN.ARGOS]-COMMODORE/fixci").unwrap();
     let (rc, _) = w.fake(&["respawn", t.short_id.as_deref().unwrap()]);

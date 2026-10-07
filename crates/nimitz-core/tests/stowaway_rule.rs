@@ -389,7 +389,7 @@ fn r_10_a_picker_with_no_transcript_and_no_session_start_is_ignored_for_the_grac
     assert!(!issues.iter().any(|i| i.code == "stowaway" && i.message.contains(&sid)), "{issues:?}");
     let i = issues.into_iter().find(|i| i.code == "lead.intruder" && i.message.contains("98651002") && i.id == Some(Id::commodore("MAIN", "ARGOS"))).unwrap();
     let fix = i.fix.unwrap();
-    assert_eq!(fix, "end it in its terminal (tmux probe:@1.%1)");
+    assert_eq!(fix, "end it in its terminal (tmux probe:@1.%1): /exit, or close the host");
     assert!(!fix.contains("nimitz stop"), "{fix}");
 }
 

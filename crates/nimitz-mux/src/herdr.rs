@@ -144,10 +144,11 @@ pub fn foreground_of(procs: &[Vec<String>]) -> Vec<String> {
     procs.iter().find(|argv| !crate::is_shell(argv)).cloned().unwrap_or_default()
 }
 
-/// `workspace create` (`workspace_created`: `result.workspace` is a
-/// WorkspaceInfo with `workspace_id` and `active_tab_id`; a `result.tab` and
-/// `result.root_pane` are read when a reply carries them, the schema lists
-/// neither) -> (workspace_id, tab_id if known, pane_id if known).
+/// `workspace create` (`workspace_created`, ResponseResult: `result.workspace`
+/// a WorkspaceInfo, `result.tab` the root TabInfo, `result.root_pane` its
+/// PaneInfo, all required) -> (workspace_id, tab_id, pane_id). A reply that
+/// names no tab or pane (an older or a stricter Herdr) gives None for them,
+/// and the adapter derives them from `active_tab_id` and `pane list`.
 pub fn created_workspace(v: &Value) -> Result<(String, Option<String>, Option<String>), String> {
     let r = v.get("result").cloned().unwrap_or(Value::Null);
     let ws = r.pointer("/workspace/workspace_id").and_then(Value::as_str).unwrap_or("").to_string();
@@ -159,8 +160,10 @@ pub fn created_workspace(v: &Value) -> Result<(String, Option<String>, Option<St
     Ok((ws, tab, pane))
 }
 
-/// `tab create` (`tab_created`: `result.tab` is a TabInfo; a `result.root_pane`
-/// is read when a reply carries it, the schema lists none) -> (tab_id, pane_id if known).
+/// `tab create` (`tab_created`, ResponseResult: `result.tab` a TabInfo and
+/// `result.root_pane` its PaneInfo, both required) -> (tab_id, pane_id). A
+/// reply that names no pane gives None, and the adapter derives it from
+/// `pane list`.
 pub fn created_tab(v: &Value) -> Result<(String, Option<String>), String> {
     let r = v.get("result").cloned().unwrap_or(Value::Null);
     let tab = r.pointer("/tab/tab_id").and_then(Value::as_str).unwrap_or("").to_string();
@@ -171,7 +174,8 @@ pub fn created_tab(v: &Value) -> Result<(String, Option<String>), String> {
     Ok((tab, pane))
 }
 
-/// `pane split` (`pane_created`: `result.pane` is a PaneInfo) -> (pane_id, tab_id).
+/// `pane split` (`pane_info`: `result.pane` is a PaneInfo; `pane_created` is
+/// the event's tag, not the reply's) -> (pane_id, tab_id).
 pub fn created_pane(v: &Value) -> Result<(String, String), String> {
     let p = v.pointer("/result/pane").cloned().unwrap_or(Value::Null);
     let pane = s(&p, "pane_id");
@@ -227,8 +231,8 @@ impl Herdr {
             .collect())
     }
 
-    /// The first pane of a tab just made (the reply names none, the schema
-    /// lists no `root_pane`): `pane list`.
+    /// The first pane of a tab just made, when the reply named no
+    /// `root_pane` (a fallback; the schema requires it): `pane list`.
     fn first_pane(&self, workspace_id: &str, tab_id: &str) -> Result<String, MuxError> {
         self.tab_panes(workspace_id, tab_id)?.into_iter().next().map(|p| p.pane_id).ok_or_else(|| MuxError::Failed(format!("herdr pane list: no pane in the new tab {tab_id}")))
     }
@@ -250,9 +254,9 @@ impl Herdr {
     }
 
     /// `workspace create --label <label> --cwd <cwd> --no-focus`
-    /// -> (workspace_id, root tab_id, root pane_id): the workspace and its
-    /// active tab from the reply (WorkspaceInfo), the pane from `pane list`
-    /// when the reply names none.
+    /// -> (workspace_id, root tab_id, root pane_id), all from the reply
+    /// (`workspace`, `tab`, `root_pane`); `active_tab_id` and `pane list`
+    /// stand in only when a reply names no tab or pane.
     fn workspace_create(&self, label: &str, cwd: &str) -> Result<(String, String, String), MuxError> {
         let v = self.run(&["workspace", "create", "--label", label, "--cwd", cwd, "--no-focus"])?;
         let (ws, tab, pane) = created_workspace(&v).map_err(MuxError::Failed)?;
@@ -268,8 +272,8 @@ impl Herdr {
     }
 
     /// `tab create --workspace <id> --label <label> --cwd <cwd> --no-focus`
-    /// -> (tab_id, root pane_id): the tab from the reply (TabInfo), the pane
-    /// from `pane list` when the reply names none.
+    /// -> (tab_id, root pane_id), both from the reply (`tab`, `root_pane`);
+    /// `pane list` stands in only when a reply names no pane.
     fn tab_create(&self, workspace_id: &str, label: &str, cwd: &str) -> Result<(String, String), MuxError> {
         let v = self.run(&["tab", "create", "--workspace", workspace_id, "--label", label, "--cwd", cwd, "--no-focus"])?;
         let (tab, pane) = created_tab(&v).map_err(MuxError::Failed)?;

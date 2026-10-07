@@ -208,9 +208,8 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             let ws = json!({"workspace_id": ws_id, "label": label, "focused": focused,
                             "active_tab_id": s(&tab, "tab_id"), "number": n});
             world["workspaces"].as_array_mut().expect("workspaces").push(ws.clone());
-            // the schema's reply: the WorkspaceInfo alone (its active tab; the pane comes from `pane list`)
-            let _ = pane;
-            ok("workspace:create", json!({"type": "workspace_created", "workspace": ws}))
+            // the schema's reply (ResponseResult workspace_created): workspace, tab and root_pane
+            ok("workspace:create", json!({"type": "workspace_created", "workspace": ws, "tab": tab, "root_pane": pane}))
         }
         ["tab", "list", rest @ ..] => {
             let o = opts(rest);
@@ -235,9 +234,9 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                 return err("tab:create", "workspace_not_found", &format!("workspace {ws} not found"));
             }
             let tab = new_tab(world, &ws, o.get("label").map(String::as_str).unwrap_or(""), o.contains_key("focus"));
-            let _pane = new_pane(world, &ws, &s(&tab, "tab_id"), o.get("cwd").map(String::as_str).unwrap_or(""));
-            // the schema's reply: the TabInfo alone (the pane comes from `pane list`)
-            ok("tab:create", json!({"type": "tab_created", "tab": tab}))
+            let pane = new_pane(world, &ws, &s(&tab, "tab_id"), o.get("cwd").map(String::as_str).unwrap_or(""));
+            // the schema's reply (ResponseResult tab_created): tab and root_pane
+            ok("tab:create", json!({"type": "tab_created", "tab": tab, "root_pane": pane}))
         }
         ["tab", "rename", target, label @ ..] if !label.is_empty() => {
             let mut hit = false;
@@ -301,7 +300,8 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             }
             let (ws, tab) = (s(p, "workspace_id"), s(p, "tab_id"));
             let pane = new_pane(world, &ws, &tab, o.get("cwd").map(String::as_str).unwrap_or(""));
-            ok("pane:split", json!({"type": "pane_created", "pane": pane}))
+            // the schema's reply to a split: pane_info (pane_created is an event tag)
+            ok("pane:split", json!({"type": "pane_info", "pane": pane}))
         }
         _ => {
             eprintln!("[fake herdr] unsupported: {a:?}");
