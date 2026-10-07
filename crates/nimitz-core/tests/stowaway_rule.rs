@@ -363,6 +363,11 @@ fn cli_05_a_spare_session_file_is_ignored_for_the_grace_time() {
     let sq = w.member(&w.snap(), &Id::commodore("MAIN", "ARGOS")).cwd.unwrap();
     // the agent view's "new session": `spare: true`, no labels, in a fleet folder
     let sid = w.session_file("28f3d8a7", &sq, json!({"spare": true, "kind": "bg"}));
+    // the real draft fires a SessionStart `startup` the moment the view claims it (byhand 2c-live)
+    let line = json!({"ts": evidence::now(), "event": "SessionStart", "session_id": sid, "source": "startup", "reason": null, "pid": sandbox::LIVE_PID, "labels": {}, "rules": null, "job": null, "kind": "interactive", "entrypoint": "cli", "binding": null, "cwd": sq});
+    let mut all = std::fs::read_to_string(w.env.events_path()).unwrap_or_default();
+    all.push_str(&format!("{line}\n"));
+    std::fs::write(w.env.events_path(), all).unwrap();
     let snap = w.snap();
     assert!(!stowaway(&snap, &sid), "{:?}", snap.stowaways);
     assert!(!check::check(&w.env, &snap, None).iter().any(|i| i.code == "stowaway" && i.message.contains(&sid)));

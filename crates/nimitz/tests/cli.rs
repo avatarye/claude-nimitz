@@ -1435,6 +1435,12 @@ fn a_draft_spare_in_a_lead_folder_is_not_an_intruder() {
     let old = (nimitz_core::evidence::now() - 3600.0) * 1000.0;
     let f = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions/424242.json");
     std::fs::write(&f, serde_json::json!({"pid": 1, "sessionId": "spare-draft-0000", "cwd": dir, "kind": "interactive", "entrypoint": "cli", "spare": true, "name": "spare-draft-0000", "status": "idle", "startedAt": old}).to_string()).unwrap();
+    // the real draft fires a SessionStart `startup` the moment the view claims it (byhand 2c-live)
+    let ev = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("events.jsonl");
+    let line = serde_json::json!({"ts": nimitz_core::evidence::now(), "event": "SessionStart", "session_id": "spare-draft-0000", "source": "startup", "reason": null, "pid": 1, "labels": {}, "rules": null, "job": null, "kind": "interactive", "entrypoint": "cli", "binding": null, "cwd": dir});
+    let mut all = std::fs::read_to_string(&ev).unwrap_or_default();
+    all.push_str(&format!("{line}\n"));
+    std::fs::write(&ev, all).unwrap();
     let s = sb.status();
     let text = s.to_string();
     assert!(!text.contains("spare-draft-0000"), "the draft spare shows: {text}");
