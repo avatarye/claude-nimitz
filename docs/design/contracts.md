@@ -671,7 +671,9 @@ parents only),
 `open <id>`, `restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`,
 `layout herdr [<fleet>] [--ships]` (an alias of restore, shape only), `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
-`__fake-herdr`. The fake `claude` (`sandbox.rs`) models the job model of the
+`__fake-herdr`. A closed pipe (`nimitz status --json | head`) ends the process
+quietly with SIGPIPE (exit 141), never a panic. `rm <lead>` with no stale rows
+names what removes its own row (`relaunch`, or `fleet|squadron rm`). The fake `claude` (`sandbox.rs`) models the job model of the
 round-2 report: `--bg`, `--bg --resume` (wake a stopped job; a copy under an
 auto-generated name with `--name` ignored while the job's process is alive,
 whatever its state; or a new job named by the short resumed id after `rm`),

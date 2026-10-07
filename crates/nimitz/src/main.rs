@@ -82,6 +82,11 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
 ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship)";
 
 fn main() {
+    // a closed pipe (`nimitz status --json | head`) ends the process quietly,
+    // as every command-line tool does (SIGPIPE, exit 141), never with a panic
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let argv: Vec<String> = std::env::args().skip(1).collect();
     std::process::exit(dispatch(argv));
 }
