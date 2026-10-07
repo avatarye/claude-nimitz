@@ -473,6 +473,24 @@ impl E2e {
         std::thread::sleep(secs(2));
     }
 
+    /// Run `line` in a fresh private tmux window started in `cwd` (an
+    /// interactive `claude`, say); waits until the pane shows `want`.
+    fn tmux_run(&self, cwd: &Path, line: &str, want: &str) {
+        let _ = self.tx(&["kill-session", "-t", "e2e"]);
+        let (code, out) = self.tx(&["new-session", "-d", "-s", "e2e", "-x", "180", "-y", "50", "-c", cwd.to_str().unwrap()]);
+        assert_eq!(code, 0, "tmux new-session: {out}");
+        self.tx(&["send-keys", "-t", "e2e", "-l", line]);
+        self.tx(&["send-keys", "-t", "e2e", "Enter"]);
+        let shown = self.wait(60, || Some(self.pane()).filter(|p| p.contains(want)));
+        assert!(shown.is_some(), "{line} did not show {want}:\n{}", self.pane());
+        std::thread::sleep(secs(3));
+    }
+
+    /// The issues of member `id` in `status --json`: (code, fix).
+    fn member_issues(&self, id: &str) -> Vec<(String, String)> {
+        self.member(id).and_then(|m| m["issues"].as_array().cloned()).unwrap_or_default().iter().map(|i| (i["code"].as_str().unwrap_or("").to_string(), i["fix"].as_str().unwrap_or("").to_string())).collect()
+    }
+
     /// Type one line into the attached session.
     fn type_line(&self, text: &str) {
         self.tx(&["send-keys", "-t", "e2e", "-l", text]);
@@ -1183,3 +1201,191 @@ fn e2e_14_raw_birth_id_wake_after_branch_returns_the_pre_branch_conversation() {
     w.finish();
 }
 
+
+// ------------------------------------------------------------------ final acceptance (re-runs of the first pass's FAIL rows)
+
+/// Acceptance cli-18: a stopped ship whose conversation is resumed
+/// interactively in its folder is `held` only (one issue), and `stop` and
+/// `relaunch` refuse it with the held fix; after `/exit`, start wakes it.
+#[test]
+fn e2e_15_accept_cli18_a_held_member_gives_held_only() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(15);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let m = w.start_ship_idle();
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    w.ok(&["stop", &w.ship(), "--yes"]);
+    w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
+    w.tmux_run(&w.ship_dir(), &format!("'{}' --model haiku --resume {sid}", w.native), "\u{276f}");
+    let held = w.wait(45, || Some(w.member_issues(&w.ship())).filter(|v| v.iter().any(|(c, _)| c == "held")));
+    let codes = held.expect("held").into_iter().map(|(c, _)| c).collect::<Vec<_>>();
+    println!("cli-18 issues: {codes:?}");
+    assert_eq!(codes, vec!["held".to_string()], "held only");
+    for cmd in [vec!["stop", &w.ship(), "--plan"], vec!["relaunch", &w.ship(), "--plan"]] {
+        let (code, out) = w.nz(&cmd.iter().map(|s| &**s).collect::<Vec<_>>());
+        println!("{cmd:?}: {out}");
+        assert!(code != 0 && out.contains("session.interactive"), "{out}");
+    }
+    w.type_line("/exit");
+    w.wait(45, || w.member(&w.ship()).filter(|m| !m["issues"].as_array().unwrap().iter().any(|i| i["code"] == "held"))).expect("held gone after /exit");
+    let out = w.ok(&["start", &w.ship(), "--yes"]);
+    println!("{out}");
+    assert!(out.contains(&format!("backgrounded \u{b7} {job}")) && out.contains("verified by re-reading"), "{out}");
+    w.finish();
+}
+
+/// Acceptance cli-L8 / cli-K1: an interactive process with the admiral's
+/// name in its folder is the admiral's `lead.intruder` only (no second
+/// `name.taken`), with the terminal fix; a ship under it still starts.
+#[test]
+fn e2e_16_accept_clil8_an_interactive_namesake_is_the_leads_intruder_only() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(16);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let adm = w.fleet.clone();
+    let name = nimitz_core::Id(adm.clone()).name();
+    w.tmux_run(&w.fleet_dir().join("admiral"), &format!("'{}' --model haiku --name '{name}'", w.native), "\u{276f}");
+    let got = w.wait(45, || Some(w.member_issues(&adm)).filter(|v| v.iter().any(|(c, _)| c == "lead.intruder"))).expect("lead.intruder");
+    println!("cli-L8 issues: {got:?}");
+    assert!(!got.iter().any(|(c, _)| c == "name.taken" || c == "dup.live"), "{got:?}");
+    assert!(got.iter().any(|(c, f)| c == "lead.intruder" && f.contains("end it in its terminal")), "{got:?}");
+    let (code, out) = w.nz(&["start", &w.ship(), "--plan"]);
+    println!("{out}");
+    assert_eq!(code, 0, "a ship under it still starts: {out}");
+    w.type_line("/exit");
+    w.wait(30, || Some(w.member_issues(&adm)).filter(|v| !v.iter().any(|(c, _)| c == "lead.intruder"))).expect("intruder gone after /exit");
+    w.finish();
+}
+
+/// Acceptance cli-N1: a hand `--bg --resume` of the live ship makes a copy;
+/// `nimitz stop <copy>` removes its row too (it would be invisible after).
+#[test]
+fn e2e_17_accept_clin1_stop_of_a_copy_removes_its_row() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(17);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let m = w.start_ship_idle();
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &sid]);
+    println!("hand resume of the live ship: {code} {out}");
+    let copy = w.wait(45, || w.ship_rows().into_iter().find(|j| *j != job)).expect("a copy row");
+    w.wait(30, || Some(w.member_issues(&w.ship())).filter(|v| v.iter().any(|(c, _)| c == "copy"))).expect("the copy is named");
+    let out = w.ok(&["stop", &copy, "--yes"]);
+    println!("{out}");
+    assert!(out.contains(&format!("rm {copy}")), "the stop removes the copy's row: {out}");
+    w.wait(30, || Some(w.ship_rows()).filter(|r| !r.contains(&copy))).expect("the copy row is gone");
+    let ship = w.member(&w.ship()).unwrap();
+    assert_eq!(ship["session"]["short_id"], job.as_str(), "the ship untouched: {ship}");
+    w.finish();
+}
+
+/// Acceptance cli-L3b / 3.5: `/exit` inside the attached admiral drops into
+/// the agent view, whose draft spare sits in the admiral's folder: no
+/// `lead.intruder` and no stowaway while the view is open.
+#[test]
+fn e2e_18_accept_clil3b_the_agent_views_draft_in_a_lead_folder_is_not_an_intruder() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(18);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let adm = w.fleet.clone();
+    let a = w.member(&adm).unwrap();
+    let job = a["session"]["short_id"].as_str().unwrap().to_string();
+    w.attach(&w.fleet_dir().join("admiral"), &job, &nimitz_core::Id(adm.clone()).name());
+    w.type_line("/exit");
+    // the agent view claims a draft spare in the admiral's folder
+    let dir = w.fleet_dir().join("admiral").to_string_lossy().into_owned();
+    let spare = w.wait(30, || {
+        std::fs::read_dir(home().join(".claude/sessions")).into_iter().flatten().flatten().map(|e| read_json(&e.path())).find(|v| v["spare"] == true && v["cwd"].as_str() == Some(dir.as_str()) && v["pid"].as_i64().map(nimitz_core::evidence::pid_alive).unwrap_or(false))
+    });
+    let pane = w.pane();
+    let spare = spare.unwrap_or_else(|| panic!("no draft spare in the admiral folder after /exit:\n{pane}"));
+    let codes = w.issue_codes();
+    println!("cli-L3b: draft spare {} (job {}) in the admiral folder; issues {codes:?}", spare["sessionId"], spare["jobId"]);
+    assert!(!codes.iter().any(|(c, _)| c == "lead.intruder" || c == "stowaway"), "{codes:?}");
+    w.finish();
+}
+
+/// Acceptance E9: no job row and no transcript is `history.lost` with the
+/// `--fresh` fix (never lineage.broken / --force); `--fresh` plans the cold
+/// launch with no error line.
+#[test]
+fn e2e_19_accept_e9_no_row_and_no_transcript_is_history_lost_with_fresh() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(19);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let m = w.start_ship_idle();
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    w.ok(&["stop", &w.ship(), "--yes"]);
+    w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
+    let (code, out) = w.claude(&w.base, &["rm", &job]);
+    assert_eq!(code, 0, "{out}");
+    let t = w.transcript(&w.ship_dir(), &sid).expect("a transcript");
+    std::fs::rename(&t, t.with_extension("aside")).unwrap();
+    let (code, out) = w.nz(&["start", &w.ship(), "--plan"]);
+    println!("E9 plan: {out}");
+    assert!(code != 0 && out.contains("history.lost") && out.contains("--fresh") && !out.contains("lineage.broken") && !out.contains("--force"), "{out}");
+    let (code, out) = w.nz(&["start", &w.ship(), "--fresh", "--plan"]);
+    println!("E9 --fresh plan: {out}");
+    assert!(code == 0 && !out.contains("[ERROR]"), "{out}");
+    w.finish();
+}
+
+/// Acceptance N2 / N15: `squadron new --mode` is taken; a start of a live
+/// member and an `up` of a fleet that is all live say why nothing happens.
+#[test]
+fn e2e_20_accept_n2_n15_mode_flag_and_empty_plans_say_why() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(20);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let (code, out) = w.nz(&["squadron", "new", &format!("{}/SQ2", w.fleet), "--mode", "default", "--plan"]);
+    println!("N2: {out}");
+    assert!(code == 0 && !out.contains("unknown flag"), "{out}");
+    w.start_ship_idle();
+    let (_, out) = w.nz(&["start", &w.ship(), "--plan"]);
+    println!("N15 start: {out}");
+    assert!(out.contains("nothing to do"), "{out}");
+    let (_, out) = w.nz(&["up", &w.fleet, "--plan"]);
+    println!("N15 up: {out}");
+    assert!(out.contains("nothing to do"), "{out}");
+    w.finish();
+}
+
+/// Acceptance 3.8: `/fork` in the attached admiral (after its first turn)
+/// makes a labelled bg copy "<name> ⑂" in the admiral folder: it is the
+/// admiral's `lead.intruder` (stop then rm), never `dup.live`; a ship under
+/// it still starts; the admiral keeps its own job.
+#[test]
+fn e2e_21_accept_3_8_a_fork_of_a_lead_is_its_intruder() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(21);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let adm = w.fleet.clone();
+    let job = w.member(&adm).unwrap()["session"]["short_id"].as_str().unwrap().to_string();
+    w.attach(&w.fleet_dir().join("admiral"), &job, &nimitz_core::Id(adm.clone()).name());
+    w.type_line("/fork");
+    let fork = w.wait(60, || w.jobs_in(&w.fleet_dir().join("admiral")).into_iter().find(|j| *j != job));
+    w.detach();
+    let fork = fork.expect("a fork job in the admiral folder");
+    let got = w.wait(45, || Some(w.member_issues(&adm)).filter(|v| v.iter().any(|(c, _)| c == "lead.intruder"))).expect("lead.intruder");
+    println!("3.8 issues: {got:?}");
+    assert!(!got.iter().any(|(c, _)| c == "dup.live"), "{got:?}");
+    assert!(got.iter().any(|(c, f)| c == "lead.intruder" && f.contains(&format!("nimitz stop {fork}"))), "{got:?}");
+    assert_eq!(w.member(&adm).unwrap()["session"]["short_id"], job.as_str(), "the admiral keeps its job");
+    let (code, out) = w.nz(&["start", &w.ship(), "--plan"]);
+    assert_eq!(code, 0, "{out}");
+    w.finish();
+}
