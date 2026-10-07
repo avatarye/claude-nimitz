@@ -885,6 +885,10 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
             })
             .unwrap_or(false);
         if running_clean {
+            if link == *id {
+                // the target itself: the empty plan says why (M25)
+                plan.warnings.push(issue("session.live", Severity::Info, format!("nothing to do: {id} is live"), None, Some(id.clone())));
+            }
             continue; // row 1 for a parent: nothing, and no authority needed
         }
         // a parent held by a process with no job (a 0.3.x interactive admiral
@@ -975,6 +979,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
             .unwrap_or_default();
         ids.extend(in_dependency_order(here, &deps));
     }
+    let mut live_already = 0usize;
     for id in ids {
         let clean_live = member(snap, &id)
             .map(|(_, m)| {
@@ -983,6 +988,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
             })
             .unwrap_or(false);
         if clean_live {
+            live_already += 1;
             continue;
         }
         // a held member (a 0.3.x interactive lead still running) is live for
@@ -995,6 +1001,10 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
         if !already_refused(&plan, &id) {
             start_member(env, &mut plan, snap, &id, StartOpts::default());
         }
+    }
+    if plan.steps.is_empty() && plan.refusals.is_empty() && live_already > 0 {
+        // the empty plan says why (M25)
+        plan.warnings.push(issue("session.live", Severity::Info, format!("nothing to do: every member of {fleet} on this machine ({live_already}) is live"), None, Some(Id::admiral(fleet))));
     }
     dedup_issues(&mut plan);
     mark_repairs(&mut plan);
