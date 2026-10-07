@@ -97,6 +97,10 @@ lock (same rules). Labels are kept **per pid** in evidence, not per session id.
   The SessionStart that follows must have `source resume` for a resume; `startup`
   instead means Claude Code lost the history: report `history.lost`, never
   `[OK] verified`.
+- A job whose pid is alive is never resumed, whatever its `state` (a `done` job
+  stays alive and answers its inbox until `claude stop`): `--bg --resume` of a live
+  job starts a COPY with an auto-generated name (2.1.292, P8 research). Live =
+  running; only a job with no live pid is resumed.
 - Crash window: a job with `state crashed`, or `working` with no live pid, is waited
   for (up to 20 s, polling) before any resume; the daemon usually restarts it.
 - `relaunch` = stop, `claude rm`, `--bg --resume <session>` with every flag (as now).
@@ -174,7 +178,8 @@ forms, and their tests. Migration: v1 tender identities move to `retired` (secti
   round-2 isolation rules: `env -i` for every child, fleets `NIMITZ_E2E*` under
   `~/.cache/nimitz-e2e`, project settings that point hooks at the test binary and
   **disable the live plugin** for the test session (`"enabledPlugins":
-  {"nimitz@claude-nimitz": false}`), never the Herdr CLI, never a live session.
+  {"nimitz@claude-nimitz": false}`), never the Herdr CLI, never a live session. Pick the model with `--model haiku` on
+  the command line (project settings `model` is not honoured for `--bg`).
 - Acceptance: a full run of the matrix's by-hand manipulations against a 0.4.0
   throwaway fleet; the verdicts go into the report.
 
