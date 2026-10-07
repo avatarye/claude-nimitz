@@ -51,22 +51,51 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<(Registry, bool)> {
     Ok((r, v1))
 }
 
-/// Drop every identity bound to a job of another `NIMITZ_HOME` (the job's
-/// saved labels, `respawnFlags`, name it). Such a session never appears
-/// (plan-v4 section 6), and its record is not this home's either: its hook
-/// ran with that home in its own env (the label is the env), so when two
-/// homes share one `NIMITZ_STATE` it bound the identity here. A read drops
-/// it in memory; the next write saves without it.
+/// Strip every binding to a job of another `NIMITZ_HOME` (the job's saved
+/// labels, `respawnFlags`, name it). Such a session never appears (plan-v4
+/// section 6), and its binding is not this home's either: its hook ran with
+/// that home in its own env (the label is the env), so when two homes share
+/// one `NIMITZ_STATE` it bound the identity here. The record keeps this
+/// home's own history: the foreign lineage entries go, `job` and `session`
+/// fall back to the newest entry left, and an identity with nothing of its
+/// own left goes. A read strips in memory; the next write saves the result.
 fn drop_other_homes(env: &Env, r: &mut Registry) {
     let jobs = env.claude_home.join("jobs");
-    let foreign = |job: &str| {
-        std::fs::read(jobs.join(job).join("state.json"))
-            .ok()
-            .and_then(|b| crate::evidence::first_json(&b))
-            .map(|d| other_home(env, &crate::evidence::job_labels(&d)))
-            .unwrap_or(false)
-    };
-    r.identities.retain(|_, rec| !rec.job.as_deref().is_some_and(foreign));
+    let mut named: Vec<String> = r.identities.values().flat_map(|rec| rec.job.iter().chain(rec.lineage.iter().filter_map(|l| l.job.as_ref())).cloned()).collect();
+    named.sort();
+    named.dedup();
+    let foreign: std::collections::BTreeSet<String> = named
+        .into_iter()
+        .filter(|job| {
+            std::fs::read(jobs.join(job).join("state.json"))
+                .ok()
+                .and_then(|b| crate::evidence::first_json(&b))
+                .map(|d| other_home(env, &crate::evidence::job_labels(&d)))
+                .unwrap_or(false)
+        })
+        .collect();
+    if foreign.is_empty() {
+        return;
+    }
+    // only a record the foreign job touched changes; every other record stays
+    // as it is (an empty lineage, or a session outside the lineage such as a
+    // v1-migrated current, are not this rule's to judge)
+    r.identities.retain(|_, rec| {
+        let before = rec.lineage.len();
+        rec.lineage.retain(|l| !l.job.as_ref().is_some_and(|j| foreign.contains(j)));
+        let job_foreign = rec.job.as_ref().is_some_and(|j| foreign.contains(j));
+        let touched = job_foreign || rec.lineage.len() != before;
+        if !touched {
+            return true;
+        }
+        if job_foreign {
+            rec.job = rec.lineage.last().and_then(|l| l.job.clone());
+        }
+        if !rec.session.as_ref().is_some_and(|s| rec.lineage.iter().any(|l| &l.session_id == s)) {
+            rec.session = rec.lineage.last().map(|l| l.session_id.clone());
+        }
+        !rec.lineage.is_empty()
+    });
 }
 
 fn fresh(env: &Env) -> Registry {
@@ -834,5 +863,47 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(load(&env).identities.len(), 40);
+    }
+
+    /// A foreign job's binding is stripped from the record it touched; every
+    /// other record stays byte-identical, whatever its shape (an empty
+    /// lineage, a session outside the lineage as a v1-migrated current has).
+    #[test]
+    fn a_foreign_binding_touches_only_its_own_record() {
+        let (_td, env) = test_env();
+        // a job row of another home, and one of this home
+        for (job, home) in [("f0f0f0f0", "/elsewhere/nimitz"), ("a1a1a1a1", env.home.to_string_lossy().as_ref())] {
+            let settings = serde_json::json!({"env": {"NIMITZ_FLEET": "MAIN", "NIMITZ_SQUADRON": "SQ", "NIMITZ_ROLE": "ship", "NIMITZ_ID": "MAIN/SQ/A", "NIMITZ_HOME": home}}).to_string();
+            let row = serde_json::json!({"sessionId": format!("{job}-sid"), "state": "done", "name": "[MAIN.SQ]-A", "cwd": "/w", "respawnFlags": ["--settings", settings]});
+            let dir = env.claude_home.join("jobs").join(job);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("state.json"), row.to_string()).unwrap();
+        }
+        let entry = |sid: &str, job: Option<&str>, via: &str, at: f64| LineageEntry { session_id: sid.into(), job: job.map(str::to_string), via: via.into(), at };
+        let rec = |job: Option<&str>, session: Option<&str>, lineage: Vec<LineageEntry>| IdentityRecord { role: Role::Ship, name: "[MAIN.SQ]-X".into(), cwd: "/w".into(), job: job.map(str::to_string), session: session.map(str::to_string), lineage };
+        let mut r = Registry { version: REGISTRY_VERSION, machine: "m".into(), ..Default::default() };
+        // touched: this home's history, then the foreign hook's binding on top
+        r.identities.insert("MAIN/SQ/A".into(), rec(Some("f0f0f0f0"), Some("f0f0f0f0-sid"), vec![entry("a1a1a1a1-sid", Some("a1a1a1a1"), "launch", 1.0), entry("f0f0f0f0-sid", Some("f0f0f0f0"), "launch", 2.0)]));
+        // untouched, each shape: an empty lineage; a v1-migrated current outside
+        // its lineage; a plain record; one whose job row does not exist
+        r.identities.insert("MAIN/SQ/EMPTY".into(), rec(None, None, vec![]));
+        r.identities.insert("MAIN/SQ/V1".into(), rec(Some("a1a1a1a1"), Some("current-not-in-lineage"), vec![entry("old-sid", None, "launch", 1.0)]));
+        r.identities.insert("MAIN/SQ/PLAIN".into(), rec(Some("a1a1a1a1"), Some("a1a1a1a1-sid"), vec![entry("a1a1a1a1-sid", Some("a1a1a1a1"), "launch", 1.0)]));
+        r.identities.insert("MAIN/SQ/GONE".into(), rec(Some("deadbeef"), Some("x"), vec![entry("x", Some("deadbeef"), "resume", 1.0)]));
+        save(&env, &r).unwrap();
+        let before: std::collections::BTreeMap<String, String> = r.identities.iter().map(|(k, v)| (k.clone(), serde_json::to_string(v).unwrap())).collect();
+        let after = load(&env);
+        for k in ["MAIN/SQ/EMPTY", "MAIN/SQ/V1", "MAIN/SQ/PLAIN", "MAIN/SQ/GONE"] {
+            assert_eq!(serde_json::to_string(&after.identities[k]).unwrap(), before[k], "{k} changed");
+        }
+        let a = &after.identities["MAIN/SQ/A"];
+        assert_eq!((a.job.as_deref(), a.session.as_deref(), a.lineage.len()), (Some("a1a1a1a1"), Some("a1a1a1a1-sid"), 1), "{a:?}");
+        // only the foreign binding, nothing of its own left: the record goes
+        let mut r2 = r.clone();
+        r2.identities.insert("MAIN/SQ/A".into(), rec(Some("f0f0f0f0"), Some("f0f0f0f0-sid"), vec![entry("f0f0f0f0-sid", Some("f0f0f0f0"), "launch", 2.0)]));
+        save(&env, &r2).unwrap();
+        let after = load(&env);
+        assert!(!after.identities.contains_key("MAIN/SQ/A"));
+        assert_eq!(after.identities.len(), 4);
     }
 }

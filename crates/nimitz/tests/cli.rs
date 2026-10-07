@@ -1282,10 +1282,52 @@ fn a_crashed_job_is_resumed_not_judged_history_lost() {
     let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains(&format!("--resume {sid}")) && !r.out.contains("history.lost") && !r.out.contains("--fresh"), "{}", r.out);
-    // the window closes with no restart: the resume runs (a `startup` would report history.lost then)
+    // the window closes with no restart and the transcript is still gone: no
+    // raw resume (it would run with no history); history.lost with the --fresh fix
     let r = raw(&sb.vars, &["start", "MAIN/ARGOS/CLEAN", "--yes"], &[("NIMITZ_CRASH_WINDOW", "0")], None);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("history.lost") && r.out.contains("nimitz start MAIN/ARGOS/CLEAN --fresh") && r.out.contains("not run"), "{}", r.out);
+    assert!(!live(&sb.member("MAIN/ARGOS/CLEAN")), "a resume ran anyway");
+    let r = raw(&sb.vars, &["start", "MAIN/ARGOS/CLEAN", "--fresh", "--yes"], &[("NIMITZ_CRASH_WINDOW", "0")], None);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(live(&m) && m["session"]["session_id"] != sid.as_str(), "{m}");
+}
+
+/// A record that holds this home's own history and a binding another home's
+/// hook made on top of it keeps the history: only the foreign job, session
+/// and lineage entries are stripped on load.
+#[test]
+fn a_foreign_binding_is_stripped_and_this_homes_history_kept() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    // another home's job: a done row whose saved labels name /elsewhere/nimitz
+    let other = "fd52a81e";
+    let p = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join(other).join("state.json");
+    let mut d: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let other_sid = d["sessionId"].as_str().unwrap().to_string();
+    let flags = d["respawnFlags"].as_array_mut().unwrap();
+    let i = flags.iter().position(|x| x == "--settings").unwrap();
+    let mut s: Value = serde_json::from_str(flags[i + 1].as_str().unwrap()).unwrap();
+    s["env"]["NIMITZ_HOME"] = Value::from("/elsewhere/nimitz");
+    flags[i + 1] = Value::from(s.to_string());
+    std::fs::write(&p, d.to_string()).unwrap();
+    // its hook bound the ship to it, on top of the ship's own history
+    let reg_path = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json");
+    let mut reg: Value = serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    let rec = &mut reg["identities"]["MAIN/ARGOS/STOPPED"];
+    rec["job"] = Value::from(other);
+    rec["session"] = Value::from(other_sid.as_str());
+    rec["lineage"].as_array_mut().unwrap().push(serde_json::json!({"session_id": other_sid, "job": other, "via": "launch", "at": 1791400000.0}));
+    std::fs::write(&reg_path, reg.to_string()).unwrap();
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    assert_eq!((m["session"]["short_id"].as_str(), m["session"]["session_id"].as_str()), (Some(job.as_str()), Some(sid.as_str())), "{m}");
+    assert!(matches!(m["status"].as_str(), Some("Stopped" | "Parked")), "{m}");
+    assert!(!m.to_string().contains(other) && !m.to_string().contains(&other_sid), "{m}");
+    // a start wakes this home's conversation
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert!(r.out.contains(&format!("--resume {sid}")), "{}", r.out);
 }
 
 /// A job labelled for another `NIMITZ_HOME` never appears (plan-v4 section

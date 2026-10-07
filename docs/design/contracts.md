@@ -177,13 +177,15 @@ is `binding` `none`), `registry::apply_start` says what happened:
 | same | another `jobId` whose job row still exists | nothing rebound: two jobs claim one identity | `dup.job` |
 | same | `jobId` null (interactive or SDK) | nothing bound: a process with no job holds the conversation | `held` |
 | same | a `cwd` that is not the identity's folder (the registry's `cwd`, else the config) | nothing bound: an impostor (BUG-30, BUG-55) | `elsewhere` |
-| labels of another `NIMITZ_HOME` | any | ignored by every reader. The hook itself cannot tell (its env is the session's env, and the `--settings` label wins over a project settings env, so `env.home` is the label): with one `NIMITZ_STATE` shared by two homes it writes its line and binds the identity there. `registry::load` drops an identity whose job row's saved labels name another home (`drop_other_homes`), so no reader uses that record (r3-e2e.md finding 1) | - |
+| labels of another `NIMITZ_HOME` | any | ignored by every reader. The hook itself cannot tell (its env is the session's env, and the `--settings` label wins over a project settings env, so `env.home` is the label): with one `NIMITZ_STATE` shared by two homes it writes its line and binds the identity there. `registry::load` strips such a binding (`drop_other_homes`: the lineage entries of a job whose row's saved labels name another home go, `job` and `session` fall back to the newest entry left, an identity with nothing of its own goes), so no reader uses it and this home's own history stays (r3-e2e.md finding 1) | - |
 | no labels | any | the line only (the snapshot classifies it) | - |
 
 The name is never taken from the SessionStart moment: the snapshot reads it
 from the session file (M21). A SessionEnd from a pid that never sent a
 SessionStart (a refused `-p --resume` fires one with no labels) is ignored by
-every reader (M21). The hook takes one clock for the line's `ts` and the
+every reader (M21); so is the SessionEnd of a string-form hook whose session
+file is already gone when it fires (the chain cannot be checked, so the line
+carries the shell's pid). `doctor` warns about the form. The hook takes one clock for the line's `ts` and the
 lineage `at`, and writes the registry before the line, so a line it bound is
 older than `updated_at`. If a hook's registry write is lost (`binding` `none`),
 `status` replays SessionStart lines newer than `updated_at` in time order under
@@ -542,8 +544,8 @@ do nothing).
    section 2. Never point a test at the real `~/.claude` or `~/.claude-nimitz`.
 2. Real Claude Code sessions only in the e2e harness: folders `~/.cache/nimitz-e2e/nimitz-e2e-*/`,
    fleet names starting `NIMITZ_E2E` (so session names are `[NIMITZ_E2E...]-*`),
-   stopped and removed at the end, verified. Their transcript folders under
-   `~/.claude/projects/` stay; the user removes them.
+   stopped and removed at the end, verified. The harness deletes its own
+   transcript folders under `~/.claude/projects/` (`*nimitz-e2e-<n>-<pid>*`) too.
 3. Never stop, resume, message or rename any session you did not start.
 4. Never touch the user's Herdr session; Herdr tests use a private server (temp
    `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, all `HERDR_*` unset).
