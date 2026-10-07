@@ -234,10 +234,9 @@ fn bind_start(env: &Env, id: &Id, input: &Value, session: &Value, sid: &str, now
     let job = str_at(session, "jobId");
     let source = str_at(input, "source");
     let cwd = str_at(input, "cwd").or_else(|| str_at(session, "cwd")).unwrap_or_default();
-    let jobs = env.claude_home.join("jobs");
     crate::registry::try_update(env, LOCK_BUDGET, |r| {
         let folder = crate::registry::identity_folder(env, r, id);
-        crate::registry::apply_start(r, id, &cwd, folder.as_deref(), job.as_deref(), sid, source.as_deref(), now, |j| jobs.join(j).join("state.json").is_file())
+        crate::registry::apply_start(r, id, &cwd, folder.as_deref(), job.as_deref(), sid, source.as_deref(), now, |j| crate::registry::job_row_of_this_home(env, j))
     })
     .unwrap_or(crate::registry::Binding::None)
 }
@@ -708,6 +707,111 @@ mod tests {
         vars.insert("NIMITZ_HOME".into(), real);
         handle(&env, "SessionStart", &input.to_string(), &vars);
         assert_eq!(crate::evidence::events(&env).len(), 1);
+    }
+
+    /// A job row as a real launch leaves it: `respawnFlags` carry the
+    /// `--settings` whose env names the labels, `home` included.
+    fn job_row_of_home(env: &Env, short: &str, sid: &str, id: &Id, home: &str) {
+        let mut labels = crate::claude::labels_for(env, id);
+        labels.insert("NIMITZ_HOME".into(), home.into());
+        let settings = serde_json::json!({"env": labels}).to_string();
+        let p = env.claude_home.join("jobs").join(short).join("state.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::json!({"sessionId": sid, "resumeSessionId": sid, "state": "running", "respawnFlags": ["--settings", settings]}).to_string()).unwrap();
+    }
+
+    /// Acc-D F1, reproduced: two homes share one `NIMITZ_STATE` (the hook's
+    /// state comes from a project settings env; its home is the session's
+    /// own `--settings` label). The hook of a session labelled for ANOTHER
+    /// home runs with that home as its env: every job of this home is
+    /// "other" to it. It used to load the registry stripped of them and save
+    /// that: the leads and the ship's history gone, and the daemon-restarted
+    /// ship then bound alone with a lone `resume`. Now a writer works on
+    /// what is on disk, and a write that drops an identity is refused.
+    #[test]
+    fn a_hook_of_another_home_in_a_shared_state_never_strips_this_homes_registry() {
+        let (_td, env) = world();
+        let home = env.home.to_string_lossy().into_owned();
+        let adm = Id::admiral("MAIN");
+        let com = Id::commodore("MAIN", "ARGOS");
+        let s1 = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let s2 = Id::ship("MAIN", "BOREAL", "ONE");
+        let folder = |id: &Id| crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, id)).unwrap().to_string_lossy().into_owned();
+        for (id, job, sid, pid) in [(&adm, "70528a56", "sa", 21), (&com, "b14fca85", "sc", 22), (&s1, "e0441656", "s1", 23)] {
+            job_row_of_home(&env, job, sid, id, &home);
+            start(&env, id, sid, "startup", pid, Some(job), &folder(id));
+        }
+        let before = std::fs::read_to_string(env.registry_path()).unwrap();
+        assert_eq!(crate::registry::load(&env).identities.len(), 3);
+        // the other home's session: an SDK host (no job) in S2's folder, its
+        // labels and its env naming /elsewhere, the same state and claude home
+        let other = Env { home: std::path::PathBuf::from("/elsewhere/nimitz"), ..env.clone() };
+        let file = env.claude_home.join("sessions").join("24.json");
+        std::fs::write(&file, serde_json::json!({"pid": 24, "sessionId": "s2", "cwd": folder(&s2), "kind": "interactive", "entrypoint": "sdk-cli", "jobId": null}).to_string()).unwrap();
+        let mut vars = labels_of(&env, &s2);
+        vars.insert("NIMITZ_HOME".into(), "/elsewhere/nimitz".into());
+        vars.insert("NIMITZ_HOOK_PID".into(), "24".into());
+        let input = serde_json::json!({"session_id": "s2", "source": "resume", "hook_event_name": "SessionStart", "cwd": folder(&s2)});
+        handle(&other, "SessionStart", &input.to_string(), &vars);
+        let e = crate::evidence::events(&env).pop().unwrap();
+        assert_eq!((e.labels.get("NIMITZ_HOME").map(String::as_str), e.binding.as_deref()), (Some("/elsewhere/nimitz"), Some("held")));
+        assert_eq!(std::fs::read_to_string(env.registry_path()).unwrap(), before, "the registry is not written at all: nothing bound");
+        // the same hook bound to a job of its home: the one record it touched
+        // changes, every other stays byte for byte
+        job_row_of_home(&env, "f0f0f0f0", "s2", &s2, "/elsewhere/nimitz");
+        std::fs::write(&file, serde_json::json!({"pid": 24, "sessionId": "s2", "cwd": folder(&s2), "kind": "bg", "entrypoint": "cli", "jobId": "f0f0f0f0"}).to_string()).unwrap();
+        let input = serde_json::json!({"session_id": "s2", "source": "startup", "hook_event_name": "SessionStart", "cwd": folder(&s2)});
+        handle(&other, "SessionStart", &input.to_string(), &vars);
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("bound"));
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        let was: serde_json::Value = serde_json::from_str(&before).unwrap();
+        for id in [&adm, &com, &s1] {
+            assert_eq!(raw["identities"][&id.0], was["identities"][&id.0], "{id} changed");
+        }
+        assert_eq!(raw["identities"][&s2.0]["job"], "f0f0f0f0", "on disk, the other home's binding sits next to this home's");
+        // this home's readers never see it; this home's own records are whole
+        let mine = crate::registry::load(&env);
+        assert_eq!(mine.identities.len(), 3, "{:?}", mine.identities.keys());
+        assert_eq!(mine.identities[&s1.0].lineage.iter().map(|l| l.via.as_str()).collect::<Vec<_>>(), ["launch"]);
+        // the daemon restarts S1 (its env is the daemon's, its home label this one): same, nothing lost
+        start(&env, &s1, "s1", "resume", 25, Some("e0441656"), &folder(&s1));
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("same"));
+        let after = crate::registry::load(&env);
+        assert_eq!(after.identities.len(), 3);
+        assert_eq!(after.identities[&s1.0].lineage.iter().map(|l| l.via.as_str()).collect::<Vec<_>>(), ["launch"]);
+        assert!(after.identities.contains_key(&adm.0) && after.identities.contains_key(&com.0));
+    }
+
+    /// The other side of a shared state: a binding the other home's hook
+    /// left on an identity of this home never keeps this home's own job from
+    /// binding (its row is not a row of this home, so no `dup.job`), and its
+    /// folder (the record's `cwd` is the other home's) never makes this
+    /// home's own session an impostor.
+    #[test]
+    fn a_foreign_binding_on_an_identity_neither_dups_nor_misplaces_this_homes_own_start() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let cwd = crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, &id)).unwrap().to_string_lossy().into_owned();
+        job_row_of_home(&env, "f0f0f0f0", "s-theirs", &id, "/elsewhere/nimitz");
+        let other = Env { home: std::path::PathBuf::from("/elsewhere/nimitz"), ..env.clone() };
+        std::fs::create_dir_all(env.claude_home.join("sessions")).unwrap();
+        std::fs::write(env.claude_home.join("sessions").join("31.json"), serde_json::json!({"pid": 31, "sessionId": "s-theirs", "cwd": "/elsewhere/ship", "kind": "bg", "entrypoint": "cli", "jobId": "f0f0f0f0"}).to_string()).unwrap();
+        let mut vars = labels_of(&env, &id);
+        vars.insert("NIMITZ_HOME".into(), "/elsewhere/nimitz".into());
+        vars.insert("NIMITZ_HOOK_PID".into(), "31".into());
+        handle(&other, "SessionStart", &serde_json::json!({"session_id": "s-theirs", "source": "startup", "cwd": "/elsewhere/ship"}).to_string(), &vars);
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("bound"));
+        assert!(crate::registry::load(&env).identities.get(&id.0).is_none(), "nothing of this home's: no record in this home's view");
+        // this home's own launch of the identity
+        job_row_of_home(&env, "a1a1a1a1", "s-mine", &id, &env.home.to_string_lossy());
+        start(&env, &id, "s-mine", "startup", 32, Some("a1a1a1a1"), &cwd);
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("bound"));
+        let rec = crate::registry::load(&env).identities[&id.0].clone();
+        assert_eq!((rec.job.as_deref(), rec.session.as_deref(), rec.cwd.as_str()), (Some("a1a1a1a1"), Some("s-mine"), cwd.as_str()));
+        assert_eq!(rec.lineage.iter().map(|l| (l.job.as_deref(), l.via.as_str())).collect::<Vec<_>>(), [(Some("a1a1a1a1"), "launch")]);
+        // and on disk both bindings sit side by side
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        assert_eq!(raw["identities"][&id.0]["lineage"].as_array().unwrap().len(), 2);
     }
 
     #[test]
