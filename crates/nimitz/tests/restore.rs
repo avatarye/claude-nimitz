@@ -1285,3 +1285,30 @@ fn walkdir(d: &Path) -> Vec<PathBuf> {
     }
     v
 }
+
+/// A lead that `/branch`ed, then stopped, with a shell tab: the attach would
+/// wake it natively on the pre-branch conversation (resumeSessionId follows
+/// /clear only, r3-e2e finding 11), so restore wakes it with every flag onto
+/// the branch first, then opens the tab (review item 3).
+#[test]
+fn r_a_branched_lead_with_a_shell_tab_is_woken_with_every_flag_then_opened() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    sb.shell(&pane);
+    let out = sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__inside", &job, "branch", "[MAIN.ARGOS]-COMMODORE"]);
+    let branch = out.split_whitespace().last().unwrap().to_string();
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["stop", &job]);
+    // stopped: the row would wake on the pre-branch conversation; the registry says the branch
+    assert_ne!(sb.member("MAIN/ARGOS")["session"]["session_id"], branch.as_str());
+    let reg: Value = serde_json::from_slice(&std::fs::read(PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json")).unwrap()).unwrap();
+    assert_eq!(reg["identities"]["MAIN/ARGOS"]["session"], branch.as_str());
+    let r = sb.run(&["restore", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("rm {job}")) && r.out.contains(&format!("--resume {branch} --name")), "{}", r.out);
+    assert!(!r.out.contains("the attach wakes the parked job"), "no native wake by attach:\n{}", r.out);
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert!(sb.live("MAIN/ARGOS"), "{r}");
+    assert_eq!(sb.member("MAIN/ARGOS")["session"]["session_id"], branch.as_str(), "the branch is what runs");
+}

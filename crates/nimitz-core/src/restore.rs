@@ -667,7 +667,10 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                     // a pane runs its attach already: Claude Code is waking it
                     rp.plan.warnings.push(issue("attaching", Severity::Info, format!("{id}'s tab (pane {}) runs its attach already; it wakes the job", pane.pane_id), None, Some(id.clone())));
                 }
-                TabMatch::Shell { pane, rename, .. } if wants_tab && !needs_relabel => match crate::layout::attach_tab(env, m) {
+                // (an attach wakes natively, on the row's conversation: after a
+                // /branch or /resume the registry's later conversation needs the
+                // wake-with-every-flag first, finding 11)
+                TabMatch::Shell { pane, rename, .. } if wants_tab && !needs_relabel && !crate::sessions::wake_target(env, id, s).relabel => match crate::layout::attach_tab(env, m) {
                     Ok(tab) => {
                         count(rep, lead);
                         rp.steps.push(RestoreStep::Claim { id: id.clone(), pane, rename, cmd: tab.cmd, cwd: tab.cwd, session: s.session_id.clone(), wakes: true });
