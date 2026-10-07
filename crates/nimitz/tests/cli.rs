@@ -1130,6 +1130,14 @@ fn init_and_doctor_in_an_empty_world() {
     std::fs::write(&old_path, old.to_string()).unwrap();
     let d = raw(&vars, &["doctor"], &[("NIMITZ_PLUGIN_HOOKS", old_path.to_str().unwrap())], None);
     assert!(d.out.contains("does not register UserPromptSubmit") && d.out.contains("fix: /reload-plugins"), "{}", d.out);
+    // a copy whose SessionStart entry is one command string: a Warn, reinstall + /reload-plugins
+    let mut stringy: Value = serde_json::from_str(&std::fs::read_to_string(&repo_hooks).unwrap()).unwrap();
+    stringy["hooks"]["SessionStart"] = serde_json::json!([{"hooks": [{"type": "command", "command": "nimitz hook SessionStart", "timeout": 5}]}]);
+    let stringy_path = b.join("stringy-hooks.json");
+    std::fs::write(&stringy_path, stringy.to_string()).unwrap();
+    let d = raw(&vars, &["doctor"], &[("NIMITZ_PLUGIN_HOOKS", stringy_path.to_str().unwrap())], None);
+    assert!(d.out.contains("[WARN] hooks:") && d.out.contains("gives SessionStart as a command string") && d.out.contains("claude plugin install nimitz@claude-nimitz, then /reload-plugins"), "{}", d.out);
+    assert!(d.out.contains("registers every event nimitz needs"), "still registered: {}", d.out);
     let f = raw(&vars, &["doctor", "--fix", "--yes"], &[], None);
     assert_eq!(f.code, 0, "{}", f.out);
     let s: Value = serde_json::from_str(&std::fs::read_to_string(b.join("claude_home/settings.json")).unwrap()).unwrap();

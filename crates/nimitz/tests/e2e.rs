@@ -568,9 +568,11 @@ fn e2e_01_launch_binds_job_and_session_and_delivers_rules() {
     // the delivery record, per job; the rules reached the session
     let d = w.deliveries();
     assert_eq!((d[&job]["version"].as_u64(), d[&job]["via"].as_str()), (Some(nimitz_core::rules::VERSION as u64), Some("SessionStart")), "{d}");
+    // the transcript records the SessionStart context as an attachment line;
+    // it can land a moment after the turn ends
     let t = w.transcript(&w.ship_dir(), &sid).expect("transcript");
-    let text = std::fs::read_to_string(&t).unwrap();
-    assert!(text.contains("nimitz fleet rules"), "the rules text is not in the transcript {}", t.display());
+    let seen = w.wait(30, || std::fs::read_to_string(&t).ok().filter(|text| text.contains("nimitz fleet rules")));
+    assert!(seen.is_some(), "the rules text is not in the transcript {}", t.display());
     assert!(w.issue_codes().iter().all(|(c, _)| c == "cc.version"), "issues: {:?}", w.issue_codes());
     w.finish();
 }

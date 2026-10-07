@@ -150,7 +150,11 @@ it is per machine and outlives every fleet (`registry::machine_label`).
  "job": "9cdceb2d", "kind": "bg", "entrypoint": "cli", "binding": "bound"}
 ```
 
-`pid` is the hook's parent (the Claude Code process). The hook never blocks,
+`pid` is the hook's parent (the Claude Code process); when the parent has no
+session file but its own parent has one, that one (a hook given as one command
+string runs under `sh -c`, so the parent is a shell: `hook::claude_pid`, one
+step only; `doctor` warns about such an entry in the installed plugin). The
+hook never blocks,
 never fails the session (always exit 0), and returns in a few ms. Labels are
 kept **per pid**: a second process on a member's conversation (a `-p
 --resume`, an SDK host) does not strip the member's own process of its labels

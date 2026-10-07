@@ -80,6 +80,11 @@ Command: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=4`.
    through `sh -c`, so the hook's parent pid is the shell and
    `sessions/<ppid>.json` does not exist: every SessionStart binds `none`. The
    plugin's hooks.json uses the args form; so must any project-level copy.
+   Hardened since: the hook tries the parent's parent once (`/proc/<ppid>/stat`
+   field 4) and takes it only when its session file exists (`hook::claude_pid`,
+   unit-tested on a fake chain and on the real one), so a string-form copy still
+   binds; `doctor` warns about a string-form entry in the installed plugin with
+   the reinstall + `/reload-plugins` fix.
 8. **`start <ship>` is top-down**: a bare ship test launches the admiral and the
    commodore too (each a tool-using Opus turn). The harness launches both leads by
    hand with their exact labels and names and a one-word prompt; a live, clean lead
