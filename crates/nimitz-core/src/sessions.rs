@@ -2014,7 +2014,8 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         let (rc, t) = crate::claude::run(&cmd, None);
                         out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of waking {id}") }, rc, t));
                     }
-                    let gone = find_row(env, &copy).is_none();
+                    // the daemon's rm lands a moment after `claude rm` returns
+                    let gone = (0..30).any(|_| find_row(env, &copy).is_none() || { std::thread::sleep(std::time::Duration::from_millis(100)); false });
                     out.issues.push(issue(
                         "step.failed",
                         Severity::Error,
