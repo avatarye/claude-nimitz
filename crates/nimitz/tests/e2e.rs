@@ -525,6 +525,17 @@ impl Drop for E2e {
             let _ = self.claude(&self.base, &["stop", job]);
             let _ = self.claude(&self.base, &["rm", job]);
         }
+        // a row the daemon writes a moment late (a spare it claimed in a test
+        // folder, a job settling): a second pass after a short wait
+        std::thread::sleep(secs(3));
+        let mut late: Vec<String> = self.rows().into_iter().map(|(j, _, _, _)| j).filter(|j| !j.is_empty()).collect();
+        late.sort();
+        late.dedup();
+        for job in &late {
+            let _ = self.claude(&self.base, &["stop", job]);
+            let _ = self.claude(&self.base, &["rm", job]);
+        }
+        let jobs: Vec<String> = jobs.into_iter().chain(late).collect();
         // a process with no job (none expected): end it so nothing of ours lives on
         for _ in self.rows().iter().filter(|(j, _, live, _)| *live && j.is_empty()) {
             println!("[WARN] e2e #{}: a live process with no job under {} is left", self.n, self.base.display());
