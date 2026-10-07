@@ -577,7 +577,14 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     for f in &mut snap.fleets {
         let mut fix = |m: &mut Member| {
             let own: HashSet<&str> = m.session.iter().chain(m.extra_rows.iter()).map(|s| s.session_id.as_str()).collect();
-            let others: Vec<SessionInfo> = all_rows_info.iter().filter(|r| !own.contains(r.session_id.as_str())).cloned().collect();
+            // one issue per row (plan-v4 section 6): a row that is this lead's
+            // intruder (named so above) is not its name.taken as well
+            let intruders: HashSet<String> = m.issues.iter().filter(|i| i.code == "lead.intruder").filter_map(|i| i.message.split("live session ").nth(1).and_then(|s| s.split(' ').next()).map(str::to_string)).collect();
+            let others: Vec<SessionInfo> = all_rows_info
+                .iter()
+                .filter(|r| !own.contains(r.session_id.as_str()) && !intruders.contains(r.short_id.as_deref().unwrap_or(r.session_id.as_str())))
+                .cloned()
+                .collect();
             if let Some(i) = crate::sessions::name_taken_issue(m, &others) {
                 m.issues.push(i);
             }
