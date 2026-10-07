@@ -181,7 +181,11 @@ older than `updated_at`. If a hook's registry write is lost (`binding` `none`),
 `status` replays SessionStart lines newer than `updated_at` in time order under
 the lock with the same rules, the folder rule included (`registry::replay`; a
 line the hook judged `dup.job`, `held` or `elsewhere` is not replayed); it
-writes only when a line binds something. A registry file that is there but
+writes only when a line binds something. A replayed line that bound nothing
+(judged held) is not probed again: `NIMITZ_STATE/replay.json` keeps the `ts`
+of the newest line judged, at least 5 s old (a late hook line, which takes its
+`ts` before waiting for the lock, is never hidden behind it), and lines at or
+before it are skipped. A registry file that is there but
 cannot be read (EACCES, EIO) is never written over: `update` fails, a read
 sees a fresh registry. A nimitz launch
 binds the started session itself (`sessions::bind_started`, with the job that
@@ -274,8 +278,9 @@ live pid is **Stopped** when the last event of the job's own processes (the
 SessionStart lines that name the job, and the SessionEnd lines from those
 pids; the session id alone decides only for a line an older nimitz wrote) is a
 SessionEnd (`claude stop`, `/stop`, an exit) or its state is `failed`, else
-**Parked** (the daemon retired it: a `[<stamp>] [bg] retire <id>: ...` line in
-the Claude home's `daemon.log` newer than the job's last start, named in the
+**Parked** (the daemon retired it: a `[2026-10-07T01:47:03.070Z] [bg] bg retire
+<id>: settled, idle 61m` line in the Claude home's `daemon.log` newer than the
+job's last start, named in the
 reason; it crashed; or the machine went down: no SessionEnd fires for those).
 Parked is not an error; `start` wakes it by id.
 A live row goes by its session file.
