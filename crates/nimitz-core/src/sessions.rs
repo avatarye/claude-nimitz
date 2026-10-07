@@ -1199,6 +1199,13 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
         return plan;
     };
+    // its conversation runs in a process with no job (a `claude --resume`
+    // by hand, an SDK host): nimitz cannot stop it there (cli-18)
+    if let Some(h) = held_of(m) {
+        let i = held_issue(m, h);
+        refuse(&mut plan, "session.interactive", i.message, i.fix, Some(id.clone()));
+        return plan;
+    }
     let Some(p) = m.session.as_ref().filter(|p| p.pid.is_some()) else {
         refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
         return plan;
@@ -1312,6 +1319,14 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "session.none", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
         return plan;
     };
+    // its conversation runs in a process with no job: a relaunch would start
+    // a copy; end that process first (cli-18: never `dup.live` with a
+    // `nimitz stop <sid>` that cannot work)
+    if let Some(h) = held_of(m) {
+        let i = held_issue(m, h);
+        refuse(&mut plan, "session.interactive", i.message, i.fix, Some(id.clone()));
+        return plan;
+    }
     // (a lead's live intruder is not its second session: it stays the
     // intruder, with its own fix, and the relaunch goes on)
     if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some() && !lead_intruder_row(m, r)) {
