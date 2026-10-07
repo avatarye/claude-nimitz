@@ -230,6 +230,9 @@ Admiral comms:
 
 ### 12.1 What P8 built
 
+The rules v2 text says every member, leads too, is a background job; that lands
+with P3 (section 7), so P3 merges before the release that ships rules v2.
+
 Live rules (`nimitz-core/src/rules.rs`, `hook.rs`):
 - `rules::VERSION` is 2; `rules::CHANGELOG` holds one entry per version. A
   SessionStart records its delivery in `NIMITZ_STATE/rules-delivered.json`
@@ -267,14 +270,23 @@ nimitz for every member: `claude::settings_json` adds
 `"permissions":{"allow":["Bash(nimitz *)"]}` to every launch (cold, relaunch,
 interactive); a native resume carries it in `respawnFlags`.
 
-A ship's authority (`sessions::may_run_in`; the CLI enforces each row):
+The role table (`sessions::may_run_in` for the fixes a member is shown; the
+CLI enforces every row, and the test `every_command_goes_by_the_role_table`
+runs every command of the dispatch table as every role, `--plan` and `--yes`):
 
-| Command | A ship may | Enforced by |
-| --- | --- | --- |
-| `status`, `check [<id>]`, `rules [<id>]`, `doctor` (no `--fix`) | always | `may_run` (read-only; the commands take any caller) |
-| `signal <id> <text>` | its commodore, its admiral, other ships as the squadron's comms rule allows | `may_run_in` -> `hook::may_signal`; the command itself refuses every member with "use SendMessage" (`comms.denied`), as before |
-| `sweep <own id>` | its own stale copy rows (a live row is skipped) | `plan_sweep` (a ship: only itself) |
-| everything else (`start`, `stop`, `relaunch`, `rm`, `adopt`, `up`, `layout`, `open`, config, `doctor --fix`, `sweep` of anything else) | never | `may_start`, `may_config`, `plan_sweep`, the user-only commands |
+| Command | admiral `F` | commodore `F/SQ` | ship `F/SQ/S` | Enforced by |
+| --- | --- | --- | --- | --- |
+| `status`, `check [<id>]`, `rules [<id>]`, `doctor` (no `--fix`) | yes | yes | yes | read-only; the commands take any caller |
+| `doctor --fix`, `init`, `fleet new\|rm`, `machine add\|rm`, `migrate`, `open`, `sandbox` | no | no | no | `authority` refusal in the command (`crud::authority(None)`, `setup`, `members::open`, `sandbox_cmd`) |
+| `fleet set F`, `squadron new\|rm F/SQ`, `up F`, `layout herdr [F]` | its fleet | no | no | `may_config`, `plan_up`, `layout::plan` |
+| `squadron set F/SQ`, `ship new\|set\|rm F/SQ/S` | its fleet | its squadron | no | `may_config` |
+| `start`, `stop`, `relaunch`, `rm`, `adopt` | its fleet, not itself | its ships | no | `may_start` (every `plan_*`) |
+| `sweep [<id>]` | its fleet | its squadron | itself (its own stale rows; a live row is skipped) | `plan_sweep` |
+| `signal <id> <text>` | by the signal table | by the signal table | by the signal table | `may_run_in` -> `hook::may_signal` for the fixes shown; the command itself refuses every member with "use SendMessage" (`comms.denied`), never `authority` |
+
+Before P8 the CLI refused `layout` for every member while the docs and
+`layout::plan` gave an admiral its own fleet; the CLI now lets core's
+authority decide (an admiral lays out its own fleet).
 
 Admiral comms (`hook::signal_table`): admiral -> every member of its fleet but
 itself; commodore -> its admiral, its ships; ship -> its commodore, its admiral

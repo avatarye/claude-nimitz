@@ -104,37 +104,52 @@ pub fn delivered_version(env: &Env, key: &str, session_id: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// How long a hook tries for `rules-delivered.lock` before it gives up (the
+/// hook must stay fast, and an update it cannot record is not handed out).
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Record that `key` now has `VERSION`: read-modify-write under
-/// `rules-delivered.lock`, written as a temp file and renamed.
-pub fn record_delivery(env: &Env, key: &str, session_id: &str, via: &str) {
+/// `rules-delivered.lock` (tried for `LOCK_WAIT`), written as a temp file and
+/// renamed. False when the record could not be written.
+pub fn record_delivery(env: &Env, key: &str, session_id: &str, via: &str) -> bool {
     let path = delivered_path(env);
-    let Some(dir) = path.parent() else { return };
+    let Some(dir) = path.parent() else { return false };
     let _ = std::fs::create_dir_all(dir);
-    let Ok(lock) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")) else { return };
-    {
+    let Ok(lock) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")) else { return false };
+    let locked = {
         use std::os::unix::io::AsRawFd;
-        unsafe {
-            libc::flock(lock.as_raw_fd(), libc::LOCK_EX);
+        let until = std::time::Instant::now() + LOCK_WAIT;
+        loop {
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                break true;
+            }
+            if std::time::Instant::now() >= until {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    };
+    if !locked {
+        return false;
     }
     let mut all = read_deliveries(env);
     all.insert(key.to_string(), Delivery { version: VERSION, at: crate::evidence::now(), session_id: session_id.to_string(), via: via.to_string() });
     let tmp = path.with_extension("json.tmp");
-    if serde_json::to_vec_pretty(&all).ok().and_then(|b| std::fs::write(&tmp, b).ok()).is_some() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
+    serde_json::to_vec_pretty(&all).ok().and_then(|b| std::fs::write(&tmp, b).ok()).is_some() && std::fs::rename(&tmp, &path).is_ok()
 }
 
 /// The update `id`'s session (recorded under `key`) must get now: None when
 /// it already runs on `VERSION`. Records the delivery; the caller hands the
 /// text to the session as context. One text per version per key, whichever
-/// per-turn hook event comes first.
+/// per-turn hook event comes first. No record, no update: a record that
+/// cannot be written (the state folder is read-only, the lock is held) would
+/// hand the same text out at every prompt; `check` shows `rules.old` (and
+/// `registry.readonly`) instead.
 pub fn update_for(env: &Env, id: &Id, key: &str, session_id: &str, via: &str) -> Option<String> {
     let had = delivered_version(env, key, session_id);
-    if had >= VERSION {
+    if had >= VERSION || !record_delivery(env, key, session_id, via) {
         return None;
     }
-    record_delivery(env, key, session_id, via);
     Some(update_text(id, had))
 }
 
@@ -368,6 +383,20 @@ mod tests {
         // an unreadable record file is no record (the update goes out again, never a panic)
         std::fs::write(delivered_path(&env), "{not json").unwrap();
         assert!(update_for(&env, &id, "job1", "s1", "UserPromptSubmit").is_some());
+        // no record, no update: a state folder that cannot be written hands nothing out
+        // (else the same text would go out at every prompt); check's rules.old shows it
+        let bad = Env { state: std::path::PathBuf::from("/dev/null/nope"), ..env.clone() };
+        assert!(!record_delivery(&bad, "job1", "s1", "UserPromptSubmit"));
+        assert_eq!(update_for(&bad, &id, "job2", "s2", "UserPromptSubmit"), None);
+        // a lock another hook holds: tried for a moment, then skipped, never a hang
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(delivered_path(&env).with_extension("lock")).unwrap();
+        use std::os::unix::io::AsRawFd;
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let t = std::time::Instant::now();
+        assert_eq!(update_for(&env, &id, "job3", "s3", "UserPromptSubmit"), None);
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) };
+        assert!(update_for(&env, &id, "job3", "s3", "UserPromptSubmit").is_some(), "free again: delivered and recorded");
     }
 
     #[test]

@@ -121,35 +121,51 @@ fn dispatch(argv: Vec<String>) -> i32 {
         return usage_error(&e);
     }
     let ctx = Ctx { env: Env::from_vars(&vars), caller: nimitz_core::sessions::caller_from_env(&vars), vars, args };
-    let r = match cmd.as_str() {
-        "init" => setup::init(&ctx),
-        "doctor" => setup::doctor(&ctx),
-        "rules" => setup::rules(&ctx),
-        "status" => members::status(&ctx),
-        "check" => members::check(&ctx),
-        "fleet" => crud::fleet(&ctx),
-        "squadron" => crud::squadron(&ctx),
-        "ship" => crud::ship(&ctx),
-        "machine" => crud::machine(&ctx),
-        "migrate" => crud::migrate(&ctx),
-        "up" => members::up(&ctx),
-        "start" => members::start(&ctx),
-        "stop" => members::stop(&ctx),
-        "relaunch" => members::relaunch(&ctx),
-        "rm" => members::rm(&ctx),
-        "sweep" => members::sweep(&ctx),
-        "adopt" => members::adopt(&ctx),
-        "signal" => members::signal(&ctx),
-        "open" => members::open(&ctx),
-        "layout" => members::layout(&ctx),
-        "sandbox" => sandbox_cmd::sandbox(&ctx),
-        other => Err(format!("unknown command {other:?}")),
+    let r = match COMMANDS.iter().find(|(name, _)| *name == cmd) {
+        Some((_, run)) => run(&ctx),
+        None => Err(format!("unknown command {cmd:?}")),
     };
     match r {
         Ok(code) => code,
         Err(e) => usage_error(&e),
     }
 }
+
+/// Every command that takes a `Ctx` (parsed args, the caller from the
+/// labels), in usage order. The hidden `__commands` prints the names, so the
+/// authority test runs every one of them as every role: a command added here
+/// fails that test until its row is in plan-v4 section 12.1.
+const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
+    ("init", setup::init),
+    ("doctor", setup::doctor),
+    ("rules", setup::rules),
+    ("status", members::status),
+    ("check", members::check),
+    ("fleet", crud::fleet),
+    ("squadron", crud::squadron),
+    ("ship", crud::ship),
+    ("machine", crud::machine),
+    ("migrate", crud::migrate),
+    ("up", members::up),
+    ("start", members::start),
+    ("stop", members::stop),
+    ("relaunch", members::relaunch),
+    ("rm", members::rm),
+    ("sweep", members::sweep),
+    ("adopt", members::adopt),
+    ("signal", members::signal),
+    ("open", members::open),
+    ("layout", members::layout),
+    ("sandbox", sandbox_cmd::sandbox),
+    ("__commands", |_| {
+        for (name, _) in COMMANDS {
+            if !name.starts_with("__") {
+                println!("{name}");
+            }
+        }
+        Ok(0)
+    }),
+];
 
 fn usage_error(e: &str) -> i32 {
     out::error(e);

@@ -213,6 +213,19 @@ pub fn rules(ctx: &Ctx) -> Result<i32, String> {
 pub fn doctor(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--fix"])?;
     ctx.args.at_most(0)?;
+    // The report is every member's; the fixes (the user's settings.json, the
+    // briefs) are yours alone.
+    if ctx.args.flag("--fix") && ctx.caller != nimitz_core::Caller::User {
+        let plan = Plan {
+            summary: "doctor fixes".into(),
+            refusals: vec![refusal("authority", "`nimitz doctor --fix` is yours alone; a member runs `nimitz doctor` (the report) only".into(), None, None)],
+            ..Default::default()
+        };
+        return Ok(match ctx.gate(&plan) {
+            out::Go::Exit(c) => c.max(1),
+            out::Go::Run => 1,
+        });
+    }
     Ok(doctor_report(ctx, ctx.args.flag("--fix")))
 }
 

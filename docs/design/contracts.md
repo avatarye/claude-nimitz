@@ -144,7 +144,11 @@ the version last delivered. On a per-turn event (`hook::UPDATE_EVENTS`:
 UserPromptSubmit) of a labelled session whose delivered version (the record,
 else its newest SessionStart `rules`, else 0) is older than the binary's, the
 hook outputs `additionalContext` `nimitz rules updated vN→vM` + the changelog
-after N + the full text, once per version per key; else nothing. `check`
+after N + the full text, once per version per key; else nothing. No record,
+no update: the hook tries `rules-delivered.lock` for 1 s, and when the record
+cannot be written (lock held, state folder read-only) it hands nothing out
+rather than the same text at every prompt; `check` shows `rules.old` (and
+`registry.readonly`) until the record is written. `check`
 reports `rules.old` (Info, no fix) for a live member still on older rules, and
 `brief.old` for an admiral's or commodore's CLAUDE.md that an older nimitz
 generated; `doctor --fix` replaces those and leaves a hand-edited brief alone.

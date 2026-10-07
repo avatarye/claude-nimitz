@@ -374,6 +374,74 @@ fn a_ship_starts_nothing_and_an_admiral_only_in_its_own_fleet() {
     assert_ne!(r.code, 0, "nothing to do is still not the caller's to do: {}", r.out);
 }
 
+/// plan-v4 section 12.1, the role table: every command the binary has
+/// (`nimitz __commands`, the dispatch table) runs as an admiral, a commodore
+/// and a ship, with `--plan` and `--yes`. A row the role may run never says
+/// `(authority)` (it may refuse for another reason); every other row exits 1
+/// with `(authority)`. A command that is not in this table fails the test.
+#[test]
+fn every_command_goes_by_the_role_table() {
+    // (command, the rest of the argv, admiral MAIN, commodore MAIN/ARGOS, ship MAIN/ARGOS/CLEAN)
+    const TABLE: &[(&str, &[&str], [bool; 3])] = &[
+        ("init", &["--label", "box"], [false, false, false]),
+        ("doctor", &[], [true, true, true]),
+        ("doctor", &["--fix"], [false, false, false]),
+        ("rules", &[], [true, true, true]),
+        ("status", &[], [true, true, true]),
+        ("check", &["MAIN"], [true, true, true]),
+        ("fleet", &["new", "ZED"], [false, false, false]),
+        ("fleet", &["set", "MAIN", "--admiral-mode", "auto"], [true, false, false]),
+        ("fleet", &["rm", "BETA"], [false, false, false]),
+        ("squadron", &["new", "MAIN/EXTRA", "--brief", "x"], [true, false, false]),
+        ("squadron", &["set", "MAIN/ARGOS", "--comms", "open"], [true, true, false]),
+        ("squadron", &["rm", "MAIN/ARGOS"], [true, false, false]),
+        ("ship", &["new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "x"], [true, true, false]),
+        ("ship", &["set", "MAIN/ARGOS/CLEAN", "--mode", "auto"], [true, true, false]),
+        ("ship", &["rm", "MAIN/ARGOS/FRESH"], [true, true, false]),
+        ("machine", &["add", "MAIN", "box2", "--hostname", "box2"], [false, false, false]),
+        ("machine", &["rm", "MAIN", "box2"], [false, false, false]),
+        ("migrate", &["fleet-skill", "/nonexistent-nimitz", "--into", "MAIN"], [false, false, false]),
+        ("up", &["MAIN"], [true, false, false]),
+        ("start", &["MAIN/ARGOS/STOPPED"], [true, true, false]),
+        ("stop", &["MAIN/ARGOS/CLEAN"], [true, true, false]),
+        ("relaunch", &["MAIN/ARGOS/CLEAN"], [true, true, false]),
+        ("rm", &["MAIN/ARGOS/STOPPED"], [true, true, false]),
+        ("sweep", &["MAIN/ARGOS/CLEAN"], [true, true, true]),
+        ("sweep", &["MAIN/ARGOS"], [true, true, false]),
+        ("sweep", &["MAIN"], [true, false, false]),
+        ("adopt", &["00000000-0000", "MAIN/ARGOS/FRESH"], [true, true, false]),
+        // every member signals with SendMessage: no authority refusal, comms.denied instead
+        ("signal", &["MAIN/ARGOS", "hi"], [true, true, true]),
+        ("open", &["MAIN/ARGOS/CLEAN"], [false, false, false]),
+        ("layout", &["herdr", "MAIN"], [true, false, false]),
+        ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false]),
+    ];
+    let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];
+    let listed = Sb::new(false).run(&["__commands"]);
+    assert_eq!(listed.code, 0, "{}", listed.out);
+    for cmd in listed.out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        assert!(TABLE.iter().any(|(c, _, _)| *c == cmd), "`nimitz {cmd}` has no row in the role table (plan-v4 section 12.1)");
+    }
+    for (i, who) in roles.iter().enumerate() {
+        // one world per role and form, so a `--yes` run changes nothing for the next row
+        for form in ["--plan", "--yes"] {
+            let sb = Sb::new(false);
+            for (cmd, rest, may) in TABLE {
+                let mut args = vec![*cmd];
+                args.extend(rest.iter().copied());
+                args.push(form);
+                let r = sb.run_as(who, &args);
+                let authority = r.out.contains("(authority)");
+                if may[i] {
+                    assert!(!authority, "{who} may run `nimitz {}`:\n{}", args.join(" "), r.out);
+                } else {
+                    assert!(authority && r.code != 0, "{who} may not run `nimitz {}` (exit {}):\n{}", args.join(" "), r.code, r.out);
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn config_changes_go_by_the_same_scopes_and_whole_fleets_stay_yours() {
     let sb = Sb::new(false);
