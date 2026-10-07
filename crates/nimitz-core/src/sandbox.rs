@@ -1170,8 +1170,10 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 }
                 println!("retired {short}");
             } else {
-                // a dead worker: state crashed, no hook (cli-30)
-                end_job(&base, &row, "crashed", "", true);
+                // a dead worker: state crashed (or the state given: `blocked`,
+                // `done` for a kill -9 that left the state untouched), no hook (cli-30)
+                let state = args.get(2).map(String::as_str).unwrap_or("crashed");
+                end_job(&base, &row, state, "", true);
                 println!("crashed {short}");
             }
             return 0;

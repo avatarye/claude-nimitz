@@ -408,7 +408,7 @@ target. For each member, one action from this table:
 | no row, no transcript | cold launch (ship: prompt from config; lead: `claude::lead_prompt`), `--bg` for every role; also a lead whose registry session has no transcript (never `lineage.broken` for a lead) |
 | row `failed` / unknown id | mark lineage broken; cold launch only with `--force` (ships) |
 | `--fresh` | a cold launch whatever the rows (the `history.lost` fix): a new lineage entry `via launch`; the member's stopped rows are removed after it |
-| a job in the crash window (`state crashed`, or `working` with no live pid) | `apply` waits up to `NIMITZ_CRASH_WINDOW` s for the daemon's restart before any resume or relaunch of it; restarted, its steps are skipped ("the daemon restarted it") |
+| a job in the crash window (`sessions::in_crash_window`: no live pid, and `state crashed` or `working`, or a parked row (no SessionEnd) changed within `CRASH_RECENT_S` = 30 s: a kill -9 of a `blocked` or `done` job, which the 2.1.292 daemon restarts within about 10 s, env F3) | `apply` waits up to `NIMITZ_CRASH_WINDOW` s for the daemon's restart before any resume or relaunch of it; restarted, its steps are skipped ("the daemon restarted it"); not restarted and the transcript still missing, `history.lost` |
 | a live process with no job on the conversation (`held`) | refuse: end it first (a resume would start a copy, cli-L2) |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
 | folder missing or untrusted | refuse with the fix |

@@ -731,7 +731,8 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
     // any resume. Its transcript may not be on disk yet (killed in its first
     // turn), so it is not judged `history.lost` here; a resume that comes
     // back `startup` reports it then (e2e case 6).
-    let crash_window = matches!(p.state.as_deref(), Some("crashed") | Some("working"));
+    let recent = p.status_since.is_some_and(|t| crate::evidence::now() - t < CRASH_RECENT_S);
+    let crash_window = matches!(p.state.as_deref(), Some("crashed") | Some("working")) || (m.status == Status::Parked && recent);
     if !crash_window && crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &p.session_id).is_none() {
         return Err(issue(
             "history.lost",
@@ -2068,6 +2069,45 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     out
 }
 
+/// How long `apply` waits for the daemon to settle a stopped job before a
+/// wake (r3-e2e finding 12: about a second after the SessionEnd).
+const SETTLE_WAIT_S: f64 = 5.0;
+
+/// Wait until `claude agents` lists `job` with no pid and a state other than
+/// `running`, at most `secs`; a CLI that cannot be read ends the wait.
+fn wait_settled(env: &Env, job: &str, secs: f64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
+    loop {
+        let settled = match crate::claude::agents(env) {
+            Ok(rows) => rows.iter().find(|r| r.id.as_deref() == Some(job)).map(|r| r.pid.is_none() && r.state.as_deref() != Some("running")).unwrap_or(true),
+            Err(_) => true,
+        };
+        if settled || std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
+
+/// A job whose process went away this recently with no SessionEnd (a kill
+/// -9 of a `blocked` or `done` job, state untouched) is in the crash window
+/// too: the 2.1.292 daemon restarts it within about 10 s (acceptance env F3).
+pub const CRASH_RECENT_S: f64 = 30.0;
+
+/// The crash window (plan-v4 section 5): no live pid, and the state is
+/// `crashed` or `working`, or the row is parked (no SessionEnd) and changed
+/// within `CRASH_RECENT_S`.
+pub fn in_crash_window(env: &Env, r: &crate::evidence::SessionRow, events: &[crate::types::Event]) -> bool {
+    if r.live() {
+        return false;
+    }
+    if matches!(r.state.as_deref(), Some("crashed") | Some("working")) {
+        return true;
+    }
+    let recent = r.status_since.is_some_and(|t| crate::evidence::now() - t < CRASH_RECENT_S);
+    recent && crate::snapshot::parked_or_stopped(env, r, events).0 == Status::Parked
+}
+
 /// The crash window: a job that is `crashed`, or `working` with no live pid,
 /// may be restarted by the daemon. Of the members about to be woken (`(id,
 /// session id)`), wait once, up to `env.crash_window_s` for all of them
@@ -2078,7 +2118,8 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
 /// never waited for.
 pub fn wait_crash_window(env: &Env, waking: &[(Id, String)]) -> Vec<(Id, String)> {
     let row = |sid: &str| find_row_by_session(env, sid);
-    let in_window = |r: &crate::evidence::SessionRow| !r.live() && matches!(r.state.as_deref(), Some("crashed") | Some("working"));
+    let events = crate::evidence::events(env);
+    let in_window = |r: &crate::evidence::SessionRow| in_crash_window(env, r, &events);
     let mut pending: Vec<(Id, String, String, String)> = waking
         .iter()
         .filter_map(|(id, sid)| row(sid).filter(in_window).map(|r| (id.clone(), sid.clone(), r.short_id.clone().unwrap_or_default(), r.state.clone().unwrap_or_else(|| "?".into()))))

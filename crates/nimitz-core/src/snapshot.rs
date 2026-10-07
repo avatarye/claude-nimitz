@@ -656,7 +656,7 @@ fn for_each_member(f: &mut Fleet, mut each: impl FnMut(&mut Member)) {
 /// nor does a process with no job on the conversation (M21, `held`). A
 /// `failed` row is stopped: it never ran, or ended while the daemon was off
 /// (relaunch table row 8).
-fn parked_or_stopped(env: &Env, p: &SessionRow, events: &[Event]) -> (Status, String) {
+pub(crate) fn parked_or_stopped(env: &Env, p: &SessionRow, events: &[Event]) -> (Status, String) {
     if p.state.as_deref() == Some("failed") {
         return (Status::Stopped, "state failed: it never ran, or ended while the daemon was off".into());
     }
