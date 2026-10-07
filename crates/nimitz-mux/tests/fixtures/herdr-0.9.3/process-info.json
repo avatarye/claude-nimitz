@@ -1,0 +1,26 @@
+{
+ "id": "cli:pane:process_info",
+ "result": {
+  "process_info": {
+   "foreground_process_group_id": 4242,
+   "foreground_processes": [
+    {
+     "argv": [
+      "herdr",
+      "pane",
+      "process-info",
+      "--pane",
+      "w4:pT"
+     ],
+     "cmdline": "herdr pane process-info --pane w4:pT",
+     "cwd": "/home/user/work/x",
+     "name": "herdr",
+     "pid": 4242
+    }
+   ],
+   "pane_id": "w4:pT",
+   "shell_pid": 4200
+  },
+  "type": "pane_process_info"
+ }
+}
