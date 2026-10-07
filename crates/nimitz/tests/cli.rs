@@ -1177,3 +1177,35 @@ fn a_dropbox_conflicted_copy_of_a_config_is_a_warning_with_both_names() {
     std::fs::remove_file(&copy).unwrap();
     assert!(!sb.run(&["check", "MAIN/ARGOS"]).out.contains("config.conflict"));
 }
+
+/// E8: a lost transcript is `history.lost` from the CLI too, and `--fresh` is
+/// the way on (a cold launch, verified).
+#[test]
+fn start_refuses_a_lost_history_and_fresh_cold_launches() {
+    let sb = Sb::new(false);
+    let sid = sb.member("MAIN/ARGOS/STOPPED")["session"]["session_id"].as_str().unwrap().to_string();
+    let log = walkdir(&sb.base.join("claude_home/projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
+    std::fs::remove_file(log).unwrap();
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(history.lost)") && r.out.contains("nimitz start MAIN/ARGOS/STOPPED --fresh"), "{}", r.out);
+    assert!(!r.out.contains("--resume"), "no launch planned:\n{}", r.out);
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--fresh", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("verified by re-reading"), "{}", r.out);
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    assert!(live(&m) && m["session"]["session_id"] != sid, "{m}");
+}
+
+fn walkdir(d: &Path) -> Vec<PathBuf> {
+    let mut v = vec![];
+    for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            v.extend(walkdir(&p));
+        } else {
+            v.push(p);
+        }
+    }
+    v
+}

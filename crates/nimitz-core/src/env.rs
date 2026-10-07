@@ -12,6 +12,9 @@ pub struct Env {
     pub herdr_bin: Option<String>,
     pub hostname: String,
     pub mux: Option<String>,
+    /// how long a start waits for the daemon to restart a crashed job before
+    /// it resumes the job itself (`NIMITZ_CRASH_WINDOW`, seconds; default 20)
+    pub crash_window_s: f64,
 }
 
 /// `$HOME` from the given vars first (tests), then the process env.
@@ -160,6 +163,7 @@ impl Env {
             herdr_bin,
             hostname: get("NIMITZ_HOSTNAME").map(|h| h.to_lowercase()).unwrap_or_else(local_hostname),
             mux: get("NIMITZ_MUX"),
+            crash_window_s: get("NIMITZ_CRASH_WINDOW").and_then(|v| v.parse().ok()).unwrap_or(20.0),
         }
     }
 

@@ -35,7 +35,12 @@
 //! - `__retire <short>` is the daemon's idle retire (no SessionEnd, a
 //!   `bg retire` line in `daemon.log`); `__crash <short>` a dead worker (state
 //!   `crashed`, no SessionEnd); `__pin`/`__unpin <short>` edit `jobs/pins.json`;
-//!   `__end <id>` ends an interactive or SDK process.
+//!   `__end <id>` ends an interactive or SDK process;
+//! - two knobs in `world.json` model what a resume cannot see coming:
+//!   `copy_on_resume` (a flag-free resume of a stopped job races the daemon's
+//!   restart: a copy is started with the "started a copy as X" note and the
+//!   job comes back live by itself, cli-31) and `resume_loses_history` (the
+//!   wake fires SessionStart `startup`: Claude Code found no transcript, E8).
 //!
 //! Live sandbox sessions record pid 1 (always alive), so the real `kill(pid, 0)`
 //! liveness check works unchanged; a stopped session simply has no session file.
@@ -794,6 +799,11 @@ fn save_job(base: &Path, short: &str, j: &Value) {
     write_json(&job_file(base, short), j);
 }
 
+/// A boolean knob in `world.json` (`copy_on_resume`, `resume_loses_history`).
+fn knob(base: &Path, name: &str) -> bool {
+    read_json(&base.join("world.json")).and_then(|w| w.get(name).and_then(|v| v.as_bool())).unwrap_or(false)
+}
+
 fn next_id(base: &Path) -> (String, String) {
     let mut w = read_json(&base.join("world.json")).unwrap_or(json!({}));
     let n = w.get("next").and_then(|v| v.as_u64()).unwrap_or(1) + 1;
@@ -907,6 +917,8 @@ fn wake(base: &Path, row: &crate::evidence::SessionRow, sid: &str, source: &str)
     save_job(base, &short, &j);
     write_session_file(base, &short, sid, &row.cwd, &name, t);
     let labels = labels_from_settings(settings.as_ref());
+    // the transcript is gone: Claude Code starts the id over (E8, 5a)
+    let source = if knob(base, "resume_loses_history") { "startup" } else { source };
     if !labels.is_empty() {
         fire(base, job_hook(base, &short, "SessionStart", sid, Some(source), &row.cwd), &labels);
     }
@@ -1252,6 +1264,21 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                     eprintln!("note: --name is ignored for a copy of a running session");
                 }
                 println!("session {} is already running in the background, so this started a copy as {short}", row.session_id);
+                return 0;
+            }
+            if !flags && knob(&base, "copy_on_resume") {
+                // cli-31: the resume raced the daemon's restart of the job: a copy
+                // (no labels, `respawnFlags []`) with the note, and the job itself
+                // comes back live right after
+                let name = saved_name.clone().unwrap_or_else(|| row.name.clone());
+                let short = start(&base, &cwd, &name, "", None, "fork", false);
+                record_fork(&base, &short, &row.session_id);
+                if let Some(mut j) = job_state(&base, &short) {
+                    j["respawnFlags"] = json!([]);
+                    save_job(&base, &short, &j);
+                }
+                wake(&base, &row, target, "resume");
+                println!("note: session {} is already running in the background, so this started a copy as {short}. `claude attach {}` opens the original.", row.session_id, row.short_id.clone().unwrap_or_default());
                 return 0;
             }
             if !flags {

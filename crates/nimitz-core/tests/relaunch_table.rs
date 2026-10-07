@@ -1636,3 +1636,186 @@ fn name_taken_by_a_hand_copy_in_the_folder_offers_only_stop() {
     let i = w.member(&w.snap(), &id).issues.into_iter().find(|i| i.code == "name.taken").unwrap();
     assert!(i.fix.as_deref().unwrap().contains("or adopt it"), "{:?}", i.fix);
 }
+
+// ------------------------------------------------------------------ recovery by exact id (plan-v4 section 5)
+
+impl World {
+    fn set_knob(&self, name: &str, on: bool) {
+        let p = self.base.join("world.json");
+        let mut j: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        j[name] = serde_json::json!(on);
+        std::fs::write(&p, serde_json::to_vec_pretty(&j).unwrap()).unwrap();
+    }
+    /// Remove the transcript of `sid` wherever it is.
+    fn lose_transcript(&self, sid: &str) {
+        let p = evidence::transcript(&self.env, &mut evidence::FileCache::default(), None, sid).expect("a transcript");
+        std::fs::remove_file(p).unwrap();
+    }
+    fn fake(&self, args: &[&str]) -> (i32, String) {
+        let mut cmd = vec![self.env.native_claude_bin.clone()];
+        cmd.extend(args.iter().map(|a| a.to_string()));
+        claude::run(&cmd, None)
+    }
+}
+
+/// E8 / 5a / M5: a stopped job whose transcript is gone. A resume would start
+/// the id over in silence; nimitz refuses with `history.lost` before any
+/// launch, and `--fresh` is the cold launch that starts a new lineage entry.
+#[test]
+fn e8_a_lost_transcript_is_history_lost_before_any_launch_and_fresh_cold_launches() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let old = w.member(&w.snap(), &id).session.unwrap();
+    w.lose_transcript(&old.session_id);
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    assert!(!plan.ok() && plan.steps.is_empty(), "no launch: {plan:?}");
+    let i = plan.refusals.iter().find(|i| i.code == "history.lost").expect("history.lost");
+    assert_eq!(i.severity, Severity::Error);
+    assert_eq!(i.fix.as_deref().map(|f| f.split("  #").next().unwrap()), Some(format!("nimitz start {id} --fresh").as_str()));
+    // --force does not get around a lost history; --fresh does, with a cold launch
+    assert!(!w.start(&snap, &id, true).ok());
+    let plan = sessions::plan_start_with(&w.env, &snap, &id, &Caller::User, sessions::StartOpts { force: false, fresh: true });
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let steps = w.steps_of(&plan, &id);
+    assert_eq!(steps[0].cmd, claude::launch_bg(&w.env, &id, "", Some("You are [MAIN.ARGOS]-STOPPED.")));
+    assert!(steps[1].cmd.contains(&"rm".to_string()) && steps[1].cmd.contains(old.short_id.as_ref().unwrap()), "the old row goes after: {:?}", steps[1].cmd);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.member(&w.snap(), &id);
+    let s = after.session.unwrap();
+    assert_ne!(s.session_id, old.session_id, "a new conversation");
+    assert!(s.pid.is_some() && after.extra_rows.is_empty(), "live, and the old row is gone");
+    let rec = nimitz_core::registry::load(&w.env).identities[&id.0].clone();
+    assert_eq!(rec.lineage.last().map(|l| (l.session_id.as_str(), l.via.as_str())), Some((s.session_id.as_str(), "launch")));
+    assert_eq!(rec.lineage.len(), 2, "the old entry stays as history");
+}
+
+/// M11: a lead that exits before its first prompt leaves no transcript. It
+/// gets a cold launch; never a `lineage.broken` that would refuse every start
+/// in its fleet.
+#[test]
+fn m11_a_lead_with_no_transcript_cold_launches_and_blocks_nothing() {
+    let w = world();
+    let adm = Id::admiral("BETA");
+    let sid = nimitz_core::registry::load(&w.env).identities[&adm.0].session.clone().unwrap();
+    w.lose_transcript(&sid);
+    let snap = w.snap();
+    let m = w.member(&snap, &adm);
+    assert!(!has(&m.issues, "lineage.broken"), "{:?}", m.issues);
+    assert!(!nimitz_core::check::check(&w.env, &snap, Some(&adm)).iter().any(|i| i.code == "lineage.broken"));
+    let plan = w.start(&snap, &adm, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let step = w.steps_of(&plan, &adm)[0].clone();
+    assert_eq!(step.cmd, claude::launch_bg(&w.env, &adm, "", Some(&claude::lead_prompt(&adm))));
+    // a ship's registry session with no row and no transcript stays lineage.broken (5b)
+    let broken = w.member(&snap, &w.ship("BROKEN"));
+    assert!(has(&broken.issues, "lineage.broken"));
+}
+
+/// 1g / cli-31 / G8: a resume that races the daemon's restart. Claude Code
+/// answers with "started a copy as X": the step fails, the copy is stopped
+/// and removed in the same run, and the member is never "[OK] verified".
+#[test]
+fn g8_a_copy_note_fails_the_step_and_removes_the_copy_in_the_same_run() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    w.set_knob("copy_on_resume", true);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(!out.verified);
+    let i = out.issues.iter().find(|i| i.code == "step.failed").expect("the step failed");
+    assert!(i.message.contains("started a copy as") && i.message.contains("stopped and removed"), "{}", i.message);
+    let copy = out.ran[0].2.split("copy as ").nth(1).unwrap()[..8].to_string();
+    let cmds: Vec<String> = out.ran.iter().map(|(s, _, _)| s.cmd[1..].join(" ")).collect();
+    assert!(cmds.contains(&format!("stop {copy}")) && cmds.contains(&format!("rm {copy}")), "{cmds:?}");
+    assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(&copy)), "the copy row is gone");
+    // the job itself came back live under its own id, with its row alone
+    let after = w.member(&w.snap(), &id);
+    assert!(after.session.as_ref().unwrap().pid.is_some() && after.extra_rows.is_empty(), "{after:?}");
+    assert!(after.issues.is_empty(), "{:?}", after.issues);
+}
+
+/// M5 / E8: Claude Code found no history and started the id over: the
+/// SessionStart says `startup`, not `resume`. `history.lost`, never verified.
+#[test]
+fn m5_a_resume_that_starts_fresh_is_history_lost_never_verified() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let plan = w.start(&w.snap(), &id, false);
+    w.set_knob("resume_loses_history", true);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(!out.verified);
+    let i = out.issues.iter().find(|i| i.code == "history.lost").expect("history.lost: {out:?}");
+    assert!(i.message.contains("`startup`"), "{}", i.message);
+    assert!(i.fix.as_deref().unwrap().contains("--fresh"));
+}
+
+/// cli-30: a crashed job (state `crashed`, no pid) is the daemon's to restart
+/// for about 20 s. A start in that window waits; restarted, nothing is
+/// resumed (a resume would make a copy); not restarted, the resume runs.
+#[test]
+fn cli30_the_crash_window_waits_for_the_daemon_before_a_resume() {
+    let w = world();
+    let id = w.ship("CLEAN");
+    let short = w.member(&w.snap(), &id).session.unwrap().short_id.unwrap();
+    let (rc, _) = w.fake(&["__crash", &short]);
+    assert_eq!(rc, 0);
+    let snap = w.snap();
+    let m = w.member(&snap, &id);
+    assert_eq!(m.status, Status::Parked, "{:?}", m.reasons);
+    assert!(m.reasons.iter().any(|r| r.contains("crashed")), "{:?}", m.reasons);
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok() && plan.steps[0].cmd.contains(&"--resume".to_string()), "{plan:?}");
+    // the daemon restarts it inside the window: the resume is skipped
+    let env = Env { crash_window_s: 2.0, ..w.env.clone() };
+    let bin = w.env.native_claude_bin.clone();
+    let daemon = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        claude::run(&[bin, "respawn".into(), short], None)
+    });
+    let t = std::time::Instant::now();
+    let out = sessions::apply(&env, &plan);
+    daemon.join().unwrap();
+    assert!(t.elapsed() < std::time::Duration::from_secs(2), "it did not wait the whole window");
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(out.ran[0].2.contains("the daemon restarted"), "{}", out.ran[0].2);
+    let after = w.member(&w.snap(), &id);
+    assert!(after.session.as_ref().unwrap().pid.is_some() && after.extra_rows.is_empty());
+    // no restart within the window: the resume runs, as itself
+    let (rc, _) = w.fake(&["__crash", after.session.as_ref().unwrap().short_id.as_deref().unwrap()]);
+    assert_eq!(rc, 0);
+    let env = Env { crash_window_s: 0.3, ..w.env.clone() };
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    let out = sessions::apply(&env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(out.ran[0].2.contains("woke session"), "{}", out.ran[0].2);
+    let after = w.member(&w.snap(), &id);
+    assert_eq!(after.session.as_ref().unwrap().short_id.as_deref(), Some(after.session.as_ref().unwrap().short_id.as_deref().unwrap()));
+    assert!(after.extra_rows.is_empty(), "one row for life");
+}
+
+/// `wake_steps` is the one builder for waking a member by its exact id (a
+/// restore uses it too): it refuses a live job and a member with no row.
+#[test]
+fn wake_steps_wakes_by_exact_id_and_refuses_a_live_job() {
+    let w = world();
+    let snap = w.snap();
+    let stopped = w.member(&snap, &w.ship("STOPPED"));
+    let steps = sessions::wake_steps(&w.env, &stopped, "bypassPermissions", stopped.cwd.as_deref().unwrap()).unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].cmd, claude::resume_bg(&w.env, &stopped.session.as_ref().unwrap().session_id));
+    let bare = w.member(&snap, &w.ship("BARE"));
+    let steps = sessions::wake_steps(&w.env, &bare, "bypassPermissions", bare.cwd.as_deref().unwrap()).unwrap();
+    assert_eq!(steps.len(), 2, "rm the row, then resume with every flag: {steps:?}");
+    let live = w.member(&snap, &w.ship("CLEAN"));
+    assert_eq!(sessions::wake_steps(&w.env, &live, "", live.cwd.as_deref().unwrap()).unwrap_err().code, "session.live");
+    let fresh = w.member(&snap, &w.ship("FRESH"));
+    assert_eq!(sessions::wake_steps(&w.env, &fresh, "", fresh.cwd.as_deref().unwrap()).unwrap_err().code, "session.none");
+    // a lead woken by its id goes the same way (never -c)
+    let adm = w.member(&snap, &Id::admiral("MAIN"));
+    assert_eq!(sessions::wake_steps(&w.env, &adm, "", adm.cwd.as_deref().unwrap()).unwrap_err().code, "session.live");
+}

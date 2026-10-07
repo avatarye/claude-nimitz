@@ -247,8 +247,13 @@ pub fn lock_holder(cwd: &str) -> Option<String> {
 }
 
 /// Issues that need the registry: lineage.broken (the current session id has no
-/// job row and no transcript). Called by `snapshot` for every member.
+/// job row and no transcript). Called by `snapshot` for every member. A lead
+/// with no transcript gets a cold launch instead (plan-v4 section 5): an
+/// error on an admiral would refuse every start in its fleet.
 pub fn registry_issues(env: &Env, cache: &mut crate::evidence::FileCache, m: &Member, reg: &Registry) -> Vec<Issue> {
+    if m.role.lead() {
+        return vec![];
+    }
     let Some(rec) = reg.identities.get(&m.id.0) else { return vec![] };
     let Some(current) = rec.session.as_deref() else { return vec![] };
     let known = m.session.iter().chain(m.extra_rows.iter()).any(|r| r.session_id == current || r.birth_id.as_deref() == Some(current));
@@ -516,8 +521,22 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
         plan.refusals.push(e.clone());
         return;
     }
-    let needs_relabel = session_errs.iter().any(|i| ROW_FIXES[..2].contains(&i.code.as_str()));
     plan.warnings.extend(session_errs);
+
+    // `--fresh`: a cold launch that starts a new lineage entry; the old rows
+    // (their history gone, `history.lost`) go after it
+    if opts.fresh {
+        let before = plan.steps.len();
+        cold_launch(env, plan, &fod, id, m.role, &mode, &cwd);
+        if plan.steps.len() > before {
+            for r in m.session.iter().chain(m.extra_rows.iter()).filter(|r| r.pid.is_none()) {
+                if let Some(short) = &r.short_id {
+                    plan.steps.push(step(id, crate::claude::rm(env, short), "drop the old row: its history is not coming back (--fresh)"));
+                }
+            }
+        }
+        return;
+    }
 
     let lineage_broken = m.issues.iter().any(|i| i.code == "lineage.broken");
     match &m.session {
@@ -535,15 +554,14 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
             }
             cold_launch(env, plan, &fod, id, m.role, &mode, &cwd);
         }
-        // stopped with its labels and its name: resume = native binary, NO flags,
-        // from its folder (row 4). A resume restores the saved name too, so a
-        // drifted name must go the relaunch way instead.
-        Some(p) if p.labels.get("NIMITZ_ID") == Some(&id.0) && !needs_relabel => {
-            plan.steps.push(step(id, crate::claude::resume_bg(env, &p.session_id), "resume keeps the id, name, mode and labels (probe 2c1)"));
-        }
-        // stopped without labels (or with a drifted name): a flag-free resume
-        // would keep neither; rm the row, then resume with every flag (row 5)
-        Some(p) => plan.steps.extend(relabel_steps(env, id, &mode, p, &cwd)),
+        // stopped or parked with a row: wake it by its exact id (rows 4, 5)
+        Some(_) => match wake_steps(env, m, &mode, &cwd) {
+            Ok(steps) => plan.steps.extend(steps),
+            Err(i) => {
+                plan.refusals.push(i);
+                return;
+            }
+        },
         None if lineage_broken && !force => {
             refuse(
                 plan,
@@ -565,8 +583,11 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
             let kept = pending_relaunch(env, id).filter(has_log).or_else(|| current.filter(has_log));
             if let Some(sid) = kept {
                 let interrupted = pending_relaunch(env, id).as_deref() == Some(sid.as_str());
+                let never_a_job = m.role.lead() && crate::registry::load(env).identities.get(&id.0).and_then(|r| r.job.clone()).is_none();
                 let why = if interrupted {
                     format!("recovering an interrupted relaunch: resume {} with every flag (its row was removed; Claude Code keeps the id)", &sid[..sid.len().min(8)])
+                } else if never_a_job {
+                    format!("{MIGRATE_LEAD_WHY}: resume {} as a background job with every flag (same id and history)", &sid[..sid.len().min(8)])
                 } else {
                     format!("resume {} from its transcript with every flag (its job row is gone; Claude Code keeps the id)", &sid[..sid.len().min(8)])
                 };
@@ -603,9 +624,51 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
     }
 }
 
+/// The steps that wake a stopped or parked member by its exact id (plan-v4
+/// section 5; relaunch table rows 4 and 5): the member has a job row and no
+/// live process. With its labels and its name: `claude --bg --resume
+/// <session>`, native, no flags (the job keeps its short id). Without labels,
+/// or under a drifted name: `rm` the row, then `--bg --resume <session>` with
+/// every flag (Claude Code keeps the id and the history). Before either, the
+/// transcript must exist (any project dir): missing, it is `history.lost`
+/// (Error, no launch; fix `nimitz start <id> --fresh`). A live job is never
+/// resumed (that starts a copy): `Err(session.live)`. The restore of a fleet
+/// (P9) builds on this.
+pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<Step>, Issue> {
+    let id = &m.id;
+    let Some(p) = m.session.as_ref() else {
+        return Err(issue("session.none", Severity::Error, format!("{id} has no job row to wake"), Some(format!("nimitz start {id}")), Some(id.clone())));
+    };
+    if p.pid.is_some() {
+        return Err(issue("session.live", Severity::Error, format!("{id} is live as {}; a resume of a live job starts a copy", p.short_id.as_deref().unwrap_or(&p.session_id)), None, Some(id.clone())));
+    }
+    if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &p.session_id).is_none() {
+        return Err(issue(
+            "history.lost",
+            Severity::Error,
+            format!("{id}'s conversation {} has no transcript in any project dir; a resume would start with no history", p.session_id),
+            Some(format!("nimitz start {id} --fresh  # a cold launch; the lineage starts a new entry")),
+            Some(id.clone()),
+        ));
+    }
+    let step = |cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string()), why: why.into() };
+    let needs_relabel = session_issues(env, m).iter().any(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing"));
+    // with its labels and its name: resume = native binary, NO flags, from its
+    // folder (row 4). A resume restores the saved name too, so a drifted name
+    // goes the relaunch way instead (row 5).
+    if p.labels.get("NIMITZ_ID") == Some(&id.0) && !needs_relabel {
+        return Ok(vec![step(crate::claude::resume_bg(env, &p.session_id), "resume keeps the id, name, mode and labels (probe 2c1)")]);
+    }
+    Ok(relabel_steps(env, id, mode, p, cwd))
+}
+
 /// The `why` that marks a step continuing an old fleet's session; `apply`
 /// records such a binding with `via: migrate`.
 pub const MIGRATE_WHY: &str = "continue the old fleet's session";
+
+/// The `why` that marks a 0.3.x interactive lead's conversation becoming a
+/// background job (plan-v4 section 7); `apply` records it `via: migrate`.
+pub const MIGRATE_LEAD_WHY: &str = "migrate the 0.3.x interactive lead";
 
 /// Old names (from `<fleet>/legacy.toml`) that map to `id`.
 fn legacy_names_of(fod: &FleetOnDisk, id: &Id) -> Vec<String> {
@@ -1419,8 +1482,8 @@ fn resumed_id(step: &Step) -> Option<String> {
 pub const BIND_TIMEOUT_S: f64 = 15.0;
 
 /// Wait for the SessionStart event that binds `id` to a session, appended at or
-/// after `since`. Returns the session id.
-fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64, cwd: Option<&str>) -> Option<String> {
+/// after `since`. Returns the session id and the event's `source`.
+fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64, cwd: Option<&str>) -> Option<(String, Option<String>)> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(timeout_s);
     let mut cache = crate::evidence::FileCache::default();
     loop {
@@ -1433,7 +1496,7 @@ fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64, cwd: Option<
         for e in crate::evidence::events_cached(env, &mut cache).iter().rev() {
             if e.ts >= since && e.event == "SessionStart" && e.labels.get("NIMITZ_ID") == Some(&id.0) {
                 if let Some(sid) = e.session_id.as_ref().filter(|s| !elsewhere(s)) {
-                    return Some(sid.clone());
+                    return Some((sid.clone(), e.source.clone()));
                 }
             }
         }
@@ -1445,11 +1508,11 @@ fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64, cwd: Option<
 }
 
 /// Bind one started member and verify it: wait for its SessionStart event (at
-/// or after `since`), check a flag-free resume kept `expect`, record the id in
-/// the registry (`via` = launch | resume | relaunch), then re-read the files:
-/// live, named right, labelled right. `apply` calls this for every background
-/// start; the CLI calls it after it opened an interactive member's pane step
-/// (`is_pane_step`), with `since` taken just before it opened the pane.
+/// or after `since`), check a resume kept `expect` and found its history (a
+/// SessionStart `startup` instead of `resume` means Claude Code lost it:
+/// `history.lost`, never verified), record the id in the registry (`via` =
+/// launch | resume | relaunch | migrate), then re-read the files: live, named
+/// right, labelled right. `apply` calls this for every start.
 pub fn bind_started(
     env: &Env,
     id: &Id,
@@ -1459,7 +1522,7 @@ pub fn bind_started(
     via: &str,
     timeout_s: f64,
 ) -> Result<String, Vec<Issue>> {
-    let Some(sid) = wait_for_binding(env, id, since, timeout_s, cwd) else {
+    let Some((sid, source)) = wait_for_binding(env, id, since, timeout_s, cwd) else {
         return Err(vec![issue(
             "lineage.broken",
             Severity::Error,
@@ -1474,6 +1537,15 @@ pub fn bind_started(
             Severity::Error,
             format!("{id}'s resume was expected to keep {want} but bound {sid} (a copy; flags on the resume?)"),
             Some(format!("nimitz sweep {id}  # drop the copy, then nimitz start {id}")),
+            Some(id.clone()),
+        )]);
+    }
+    if expect.is_some() && source.as_deref() == Some("startup") {
+        return Err(vec![issue(
+            "history.lost",
+            Severity::Error,
+            format!("{id}'s resume of {sid} started a new conversation (SessionStart `startup`, not `resume`): Claude Code did not find its history"),
+            Some(format!("nimitz stop {id}  # it runs with no history; then nimitz start {id} --fresh, or find the transcript first")),
             Some(id.clone()),
         )]);
     }
@@ -1577,9 +1649,35 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             skipped.push(id.clone());
         }
     }
+    // The crash window (plan-v4 section 5): a job in state `crashed`, or
+    // `working` with no live pid, is usually restarted by the daemon within
+    // seconds. Wait for that before any resume of it (a resume of a job the
+    // daemon then restarts makes a copy, cli-31); restarted, its steps are
+    // skipped.
+    let mut restarted: Vec<Id> = vec![];
+    for id in plan.steps.iter().filter_map(|s| s.id.clone()).collect::<std::collections::BTreeSet<_>>() {
+        if skipped.contains(&id) {
+            continue;
+        }
+        let Some(sid) = plan.steps.iter().filter(|s| s.id.as_ref() == Some(&id)).find_map(|s| match classify(s) {
+            Kind::Resume { .. } | Kind::Relaunch => resumed_id(s),
+            _ => None,
+        }) else {
+            continue;
+        };
+        if let Some(what) = wait_crash_window(env, &sid) {
+            restarted.push(id.clone());
+            for step in plan.steps.iter().filter(|s| s.id.as_ref() == Some(&id)) {
+                out.ran.push((step.clone(), 0, format!("skipped: {what}")));
+            }
+        }
+    }
     let mut started: Vec<(Id, String, Option<String>)> = vec![]; // (identity, session id, folder) to verify again
     for (at, step) in plan.steps.iter().enumerate() {
         let kind = classify(step);
+        if step.id.as_ref().map(|i| restarted.contains(i)).unwrap_or(false) {
+            continue; // reported above
+        }
         if step.id.as_ref().map(|i| skipped.contains(i)).unwrap_or(false) {
             out.ran.push((step.clone(), 0, "skipped: already relaunched (or started) by a concurrent nimitz".into()));
             continue;
@@ -1671,15 +1769,54 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             Kind::Launch | Kind::Relaunch | Kind::Resume { .. } => {
                 let Some(id) = &step.id else { continue };
                 let resumed = resumed_id(step);
+                // Claude Code's output first (plan-v4 section 5): a "started a
+                // copy as X" note means the job was live after all (a race with
+                // the daemon): the copy goes, in this run, and the step failed
+                if let Some(copy) = crate::claude::copy_started(&text) {
+                    for cmd in [crate::claude::stop(env, &copy), crate::claude::rm(env, &copy)] {
+                        let (rc, t) = crate::claude::run(&cmd, None);
+                        out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of waking {id}") }, rc, t));
+                    }
+                    let gone = find_row(env, &copy).is_none();
+                    out.issues.push(issue(
+                        "step.failed",
+                        Severity::Error,
+                        format!("Claude Code started a copy as {copy} instead of {}; the copy is {}", resumed.as_deref().map(|r| format!("resuming {r}")).unwrap_or_else(|| "a new job".into()), if gone { "stopped and removed" } else { "still there" }),
+                        Some(if gone { format!("nimitz start {id}  # in a moment; the job was live or restarting") } else { format!("nimitz stop {copy}, then nimitz rm {copy}") }),
+                        Some(id.clone()),
+                    ));
+                    return out;
+                }
+                // the job it names must be the one expected: the resumed job, or
+                // the new job of a cold launch (checked again after the bind)
+                let want_job = match &kind {
+                    Kind::Resume { session_id } => find_row_by_session(env, session_id).and_then(|r| r.short_id),
+                    _ => None,
+                };
+                let said = crate::claude::job_started(&text);
+                if let (Some(said), Some(want)) = (said.as_deref(), want_job.as_deref()) {
+                    if said != want {
+                        out.issues.push(issue("lineage.broken", Severity::Error, format!("{id}'s resume answered with job {said}, not its job {want}"), Some(format!("nimitz status  # then nimitz sweep {id}")), Some(id.clone())));
+                        return out;
+                    }
+                }
                 let (expect, via) = match &kind {
                     Kind::Resume { session_id } => (Some(session_id.as_str()), "resume"),
                     Kind::Launch => (None, "launch"),
-                    _ if step.why.starts_with(MIGRATE_WHY) => (resumed.as_deref(), "migrate"),
+                    _ if step.why.starts_with(MIGRATE_WHY) || step.why.starts_with(MIGRATE_LEAD_WHY) => (resumed.as_deref(), "migrate"),
                     _ => (resumed.as_deref(), "relaunch"),
                 };
                 match bind_started(env, id, step.cwd.as_deref(), since, expect, via, BIND_TIMEOUT_S) {
                     Ok(sid) => {
                         clear_pending(env, id);
+                        let job = find_row_by_session(env, &sid).and_then(|r| r.short_id);
+                        let want = want_job.clone().or(said);
+                        if let (Some(job), Some(want)) = (job.as_deref(), want.as_deref()) {
+                            if job != want {
+                                out.issues.push(issue("lineage.broken", Severity::Error, format!("{id} bound {sid} in job {job}, not the expected {want}"), Some(format!("nimitz status  # then nimitz sweep {id}")), Some(id.clone())));
+                                return out;
+                            }
+                        }
                         started.push((id.clone(), sid, step.cwd.clone()))
                     }
                     Err(mut issues) => {
@@ -1717,6 +1854,27 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     }
     out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() == plan.steps.len();
     out
+}
+
+/// The crash window: `sid`'s job is `crashed`, or `working` with no live pid,
+/// so the daemon may restart it. Wait up to `env.crash_window_s`, polling.
+/// Some(why) when it came back live (nothing to resume); None when it did not
+/// (resume it), or when it was not in the window to begin with.
+fn wait_crash_window(env: &Env, sid: &str) -> Option<String> {
+    let row = |sid: &str| find_row_by_session(env, sid);
+    let in_window = |r: &crate::evidence::SessionRow| !r.live() && matches!(r.state.as_deref(), Some("crashed") | Some("working"));
+    let first = row(sid).filter(in_window)?;
+    let short = first.short_id.clone().unwrap_or_default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(env.crash_window_s.max(0.0));
+    loop {
+        if row(sid).map(|r| r.live()).unwrap_or(false) {
+            return Some(format!("the daemon restarted job {short} (state was {}); nothing to resume", first.state.as_deref().unwrap_or("?")));
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 fn pending_path(env: &Env, id: &Id) -> std::path::PathBuf {
