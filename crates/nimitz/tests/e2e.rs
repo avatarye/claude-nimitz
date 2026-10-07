@@ -1,6 +1,6 @@
 //! Opt-in tests against the REAL Claude Code (`NIMITZ_E2E=1`): the risky
 //! 0.4.0 cases of plan-v4 section 10, one test each, under the round-2
-//! isolation rules (contracts.md section 11.2):
+//! isolation rules (contracts.md section 11, rule 2):
 //!
 //! - every child runs scrubbed (`env_clear` + HOME, PATH, TERM, USER, SHELL,
 //!   LANG): nothing of the parent session (CLAUDE_CODE_*, NIMITZ_*, HERDR_*)
@@ -752,6 +752,10 @@ fn e2e_06_slow_kill_9_of_a_working_member_never_makes_a_duplicate() {
     let t0 = std::time::Instant::now();
     let (code, out) = w.nz(&["start", &w.ship(), "--yes"]);
     println!("start after kill ({code}, {:.1}s):\n{out}", t0.elapsed().as_secs_f64());
+    // the crash window, never a lost-history refusal (the transcript may not be
+    // on disk yet; the daemon restarts the job, else nimitz resumes it)
+    assert_eq!(code, 0, "{out}");
+    assert!(!out.contains("history.lost") && !out.contains("--fresh"), "{out}");
     // settle, then: one row, the same job; live or parked; never two
     std::thread::sleep(secs(15));
     let now = w.member(&w.ship()).unwrap();
@@ -764,7 +768,7 @@ fn e2e_06_slow_kill_9_of_a_working_member_never_makes_a_duplicate() {
     assert!(!codes.iter().any(|(c, _)| matches!(c.as_str(), "dup.live" | "name.taken" | "copy" | "copy.rows")), "{codes:?}");
     let live = w.rows().iter().filter(|(_, _, live, cwd)| *live && Path::new(cwd) == w.ship_dir()).count();
     assert!(live <= 1, "two live processes: {:?}", w.rows());
-    assert!(matches!(now["status"].as_str(), Some("Idle" | "Busy" | "Parked" | "Stopped")), "{now}");
+    assert!(matches!(now["status"].as_str(), Some("Idle" | "Busy" | "Parked")), "{now}");
     w.finish();
 }
 

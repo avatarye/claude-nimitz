@@ -1812,6 +1812,25 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             out.ran.push((step.clone(), 0, format!("skipped: {what}")));
         }
     }
+    // A job the daemon did not restart in the window: its transcript must be
+    // there now (`wake_steps` lets a crashed job through without one), else the
+    // resume would run with no history: `history.lost` with the `--fresh` fix
+    for (id, sid) in waking.iter().filter(|(i, _)| !restarted.contains(i)) {
+        if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), step_folder(plan, id), sid).is_some() {
+            continue;
+        }
+        for step in plan.steps.iter().filter(|s| s.id.as_ref() == Some(id)) {
+            out.ran.push((step.clone(), -1, "not run: its conversation has no transcript".into()));
+        }
+        out.issues.push(issue(
+            "history.lost",
+            Severity::Error,
+            format!("{id}'s conversation {sid} has no transcript in any project dir, and the daemon did not restart its job; a resume would start with no history"),
+            Some(format!("nimitz start {id} --fresh  # a cold launch; the lineage starts a new entry")),
+            Some(id.clone()),
+        ));
+        return out;
+    }
     let mut started: Vec<(Id, String, Option<String>)> = vec![]; // (identity, session id, folder) to verify again
     for (at, step) in plan.steps.iter().enumerate() {
         let kind = classify(step);

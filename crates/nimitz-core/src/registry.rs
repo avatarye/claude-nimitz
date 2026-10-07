@@ -51,22 +51,42 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<(Registry, bool)> {
     Ok((r, v1))
 }
 
-/// Drop every identity bound to a job of another `NIMITZ_HOME` (the job's
-/// saved labels, `respawnFlags`, name it). Such a session never appears
-/// (plan-v4 section 6), and its record is not this home's either: its hook
-/// ran with that home in its own env (the label is the env), so when two
-/// homes share one `NIMITZ_STATE` it bound the identity here. A read drops
-/// it in memory; the next write saves without it.
+/// Strip every binding to a job of another `NIMITZ_HOME` (the job's saved
+/// labels, `respawnFlags`, name it). Such a session never appears (plan-v4
+/// section 6), and its binding is not this home's either: its hook ran with
+/// that home in its own env (the label is the env), so when two homes share
+/// one `NIMITZ_STATE` it bound the identity here. The record keeps this
+/// home's own history: the foreign lineage entries go, `job` and `session`
+/// fall back to the newest entry left, and an identity with nothing of its
+/// own left goes. A read strips in memory; the next write saves the result.
 fn drop_other_homes(env: &Env, r: &mut Registry) {
     let jobs = env.claude_home.join("jobs");
-    let foreign = |job: &str| {
-        std::fs::read(jobs.join(job).join("state.json"))
-            .ok()
-            .and_then(|b| crate::evidence::first_json(&b))
-            .map(|d| other_home(env, &crate::evidence::job_labels(&d)))
-            .unwrap_or(false)
-    };
-    r.identities.retain(|_, rec| !rec.job.as_deref().is_some_and(foreign));
+    let mut named: Vec<String> = r.identities.values().flat_map(|rec| rec.job.iter().chain(rec.lineage.iter().filter_map(|l| l.job.as_ref())).cloned()).collect();
+    named.sort();
+    named.dedup();
+    let foreign: std::collections::BTreeSet<String> = named
+        .into_iter()
+        .filter(|job| {
+            std::fs::read(jobs.join(job).join("state.json"))
+                .ok()
+                .and_then(|b| crate::evidence::first_json(&b))
+                .map(|d| other_home(env, &crate::evidence::job_labels(&d)))
+                .unwrap_or(false)
+        })
+        .collect();
+    if foreign.is_empty() {
+        return;
+    }
+    r.identities.retain(|_, rec| {
+        rec.lineage.retain(|l| !l.job.as_ref().is_some_and(|j| foreign.contains(j)));
+        if rec.job.as_ref().is_some_and(|j| foreign.contains(j)) {
+            rec.job = rec.lineage.last().and_then(|l| l.job.clone());
+        }
+        if !rec.session.as_ref().is_some_and(|s| rec.lineage.iter().any(|l| &l.session_id == s)) {
+            rec.session = rec.lineage.last().map(|l| l.session_id.clone());
+        }
+        !rec.lineage.is_empty()
+    });
 }
 
 fn fresh(env: &Env) -> Registry {

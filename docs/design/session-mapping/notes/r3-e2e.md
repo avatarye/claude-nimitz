@@ -43,9 +43,12 @@ Command: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=4`.
    `SessionStart binding bound` and bound the identity in the shared `NIMITZ_STATE`
    registry; the reader then showed the never-started ship as `Stopped` ("its
    session's transcript is there") and a `start` would have resumed the other home's
-   conversation with every flag. Fixed on the reader side: `registry::load` drops an
-   identity whose job row's saved labels (`respawnFlags`) name another home
-   (`drop_other_homes`; sandbox test `a_job_labelled_for_another_home_never_binds_the_member`).
+   conversation with every flag. Fixed on the reader side: `registry::load` strips a
+   binding to a job whose row's saved labels (`respawnFlags`) name another home
+   (`drop_other_homes`: those lineage entries go, `job` and `session` fall back to
+   the newest entry left, an identity with nothing of its own goes; sandbox tests
+   `a_job_labelled_for_another_home_never_binds_the_member`,
+   `a_foreign_binding_is_stripped_and_this_homes_history_kept`).
    The rule only matters when two homes share one `NIMITZ_STATE`; the line itself
    is harmless (every reader skips rows labelled for another home).
 2. **kill -9 in the first turn: no transcript yet.** The job's transcript was not on
@@ -53,8 +56,9 @@ Command: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=4`.
    `history.lost` and the `--fresh` fix; the daemon then restarted the job anyway
    (a `--fresh` at that moment would have made a duplicate). Fixed: a row in the
    crash window (`crashed`, or `working` with no live pid) skips the transcript
-   check; `apply` waits for the daemon as before, and a resume that comes back
-   `startup` still reports `history.lost` (sandbox test
+   check; `apply` waits for the daemon as before and, when the daemon did not
+   restart the job, looks for the transcript again: still gone, `history.lost`
+   with the `--fresh` fix and no resume (sandbox test
    `a_crashed_job_is_resumed_not_judged_history_lost`).
 3. **A flagged resume of a live job prints no copy note** (2.1.292): `claude --bg
    --resume <sid> --model haiku` on a live job answered `backgrounded · <new id>
