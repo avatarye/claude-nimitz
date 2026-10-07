@@ -690,7 +690,9 @@ fn cli_l1_labels_are_kept_per_pid_so_a_stray_process_does_not_strip_the_member()
         birth_id: None,
         entrypoint: None,
         pinned: false,
+        spare: false,
         terminal: None,
+        appeared_at: None,
     };
     let labels = evidence::session_labels(&events, &[row(Some(7))]);
     assert_eq!(labels["s1"].get("NIMITZ_ID").map(String::as_str), Some("F/SQ/S"));

@@ -98,11 +98,11 @@ types the text into the commodore's pane.
 | Bring a fleet up | `nimitz up <F>` (every member as a background job; then `nimitz layout herdr <F>` attaches the leads) |
 | Start one member | `nimitz start <id>` (wakes it by its exact id; `--fresh` after `history.lost`) |
 | Stop one member | `nimitz stop <id>`; one copy of two: `nimitz stop <short id>` |
-| New session id, labels restored | `nimitz relaunch <id>` |
-| Remove stale rows | `nimitz sweep [<id>]` (a commodore: `nimitz sweep <F/SQ>`), or one row: `nimitz rm <short id>` |
-| A session with no labels | `nimitz adopt <session> <id>`, or `nimitz rm <session>` |
-| Show a member | `nimitz open <id>` (attaches in its tab; detach with ctrl-z) |
-| Herdr workspaces for fleets | `nimitz layout herdr [<F>]` (a tab attaching each live lead; `--ships` each live ship) |
+| Same session id and history; labels, name and mode restored | `nimitz relaunch <id>` |
+| Remove stale rows and copies of a member | `nimitz sweep [<id>]` (a commodore: `nimitz sweep <F/SQ>`), or one row: `nimitz rm <short id>`. A background copy is stopped and removed; a copy with no job (interactive, SDK) is ended in its own terminal |
+| A session with no labels (a stowaway) | `nimitz adopt <session> <id>`, or `nimitz rm <session>`; a live one with no job: end it in its terminal |
+| Show a member | `nimitz open <id>` (attaches in its tab; detach with ctrl-z; a parked job wakes) |
+| Herdr workspaces for fleets | `nimitz layout herdr [<F>]` (a tab attaching each lead; `--ships` each live ship) |
 | Move a fleet-skill fleet | `nimitz migrate fleet-skill <old dir>... --into <F>` (plan), then add `--yes` |
 
 ## Status words

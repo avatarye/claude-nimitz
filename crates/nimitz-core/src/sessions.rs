@@ -87,12 +87,13 @@ pub fn ship_lock_path(cwd: &str) -> std::path::PathBuf {
     std::path::Path::new(cwd).join(".nimitz-ship.lock")
 }
 
-/// A live process with no job that runs a member's conversation (an SDK
+/// A live process with no job that runs a member's conversation now (an SDK
 /// host, an interactive or Remote Control `--resume`, a 0.3.x interactive
 /// lead): the member is `held` (M13), never a copy and never a second live
-/// session of it. Every member is a job (0.4.0), leads too.
+/// session of it. Every member is a job (0.4.0), leads too; a process with
+/// no job on an older lineage conversation is a `copy`, not `held`.
 fn held_row(_m: &Member, r: &SessionInfo) -> bool {
-    r.pid.is_some() && r.short_id.is_none()
+    r.pid.is_some() && r.short_id.is_none() && r.copy.is_none()
 }
 
 /// The row that holds `m`'s conversation with no job, if one does.
@@ -125,6 +126,28 @@ fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
     issue("held", Severity::Warn, what, Some(fix), Some(m.id.clone()))
 }
 
+/// The one fix that ends a copy of a member (plan-v4 section 6): a
+/// background job is swept (`stop`, then `rm`); an interactive or SDK
+/// process has no job to stop, so it is ended in its own terminal.
+fn copy_fix(m: &Member, r: &SessionInfo) -> String {
+    match (&r.short_id, &r.terminal) {
+        (Some(_), _) => format!("nimitz sweep {}", m.id),
+        (None, Some(t)) => format!("end it in its terminal ({t}): /exit, or close the host"),
+        (None, None) => "end it in its terminal: /exit, or close the host".into(),
+    }
+}
+
+/// How a copy was told, for a message.
+fn copy_how(r: &SessionInfo) -> &'static str {
+    match r.copy.as_deref() {
+        Some("transcript") => "its transcript starts the member's conversation",
+        Some("resume") => "it resumes a conversation of the member's lineage",
+        Some("name") => "it carries the member's name",
+        Some("fork") => "its job row records a fork of the member's conversation",
+        _ => "a copy",
+    }
+}
+
 /// Session-level issues readable from the member and the filesystem alone:
 /// name.drift, labels.missing, labels.mismatch, dup.live, copy.rows, held,
 /// ship.elsewhere. (name.taken and lineage.broken need the whole snapshot or
@@ -134,7 +157,24 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     let id = Some(m.id.clone());
     let relaunch = Some(format!("nimitz relaunch {}", m.id));
     let rows: Vec<&SessionInfo> = m.session.iter().chain(m.extra_rows.iter()).collect();
-    let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r)).collect();
+    let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r) && r.copy.is_none()).collect();
+    // A copy of the member's conversation (plan-v4 section 6): one Warn per
+    // copy, with the fix that works for its kind.
+    for r in m.extra_rows.iter().filter(|r| r.copy.is_some()) {
+        let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+        let kind = match (&r.short_id, r.pid) {
+            (Some(_), Some(_)) => "a live background job",
+            (Some(_), None) => "a stopped job row",
+            (None, _) => "a process with no job (interactive or SDK)",
+        };
+        out.push(issue(
+            "copy",
+            Severity::Warn,
+            format!("{} has a copy {short} ({}), {kind}: {}", m.id, r.name, copy_how(r)),
+            Some(copy_fix(m, r)),
+            id.clone(),
+        ));
+    }
     out.extend(rows.iter().filter(|r| held_row(m, r)).map(|r| held_issue(m, r)));
 
     if live.len() > 1 {
@@ -209,7 +249,7 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
             }
         }
     }
-    let extra: Vec<&SessionInfo> = m.extra_rows.iter().filter(|r| !held_row(m, r)).collect();
+    let extra: Vec<&SessionInfo> = m.extra_rows.iter().filter(|r| !held_row(m, r) && r.copy.is_none()).collect();
     if !extra.is_empty() {
         let shorts: Vec<&str> = extra.iter().map(|r| r.short_id.as_deref().unwrap_or(r.session_id.as_str())).collect();
         out.push(issue(
@@ -1197,7 +1237,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
             refuse(&mut plan, "authority", why, None, Some(m.id.clone()));
             return plan;
         }
-        sweep_member(env, &mut plan, m);
+        sweep_member(env, &mut plan, m, caller);
         if plan.steps.is_empty() && plan.refusals.is_empty() {
             plan.warnings.push(issue("copy.rows", Severity::Info, format!("{target} has no stale rows"), None, Some(m.id.clone())));
         }
@@ -1289,8 +1329,39 @@ fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
     Some((Id(owner), r.info(labels.get(&r.session_id).cloned().unwrap_or_default())))
 }
 
-fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
+fn sweep_member(env: &Env, plan: &mut Plan, m: &Member, caller: &Caller) {
     for r in &m.extra_rows {
+        // a copy (plan-v4 section 6): a background job is stopped and removed;
+        // a process with no job is ended in its terminal, not by nimitz. A
+        // ship sweeping itself never stops a live copy (the user's own fork
+        // of its conversation may be at work): it removes stopped ones only
+        // and names the live one for the user or its commodore.
+        if r.copy.is_some() {
+            match &r.short_id {
+                Some(short) if r.pid.is_some() && matches!(caller, Caller::Member { role: Role::Ship, .. }) => plan.warnings.push(issue(
+                    "copy",
+                    Severity::Warn,
+                    format!("{}'s copy {short} ({}) is live; a ship does not stop it", m.id, r.name),
+                    Some(format!("nimitz sweep {}  # you, or its commodore", m.id)),
+                    Some(m.id.clone()),
+                )),
+                Some(short) => {
+                    let why = format!("copy of {}: {}", m.id, copy_how(r));
+                    if r.pid.is_some() {
+                        plan.steps.push(Step { id: Some(m.id.clone()), cmd: crate::claude::stop(env, short), cwd: None, why: format!("{why}; stop it first") });
+                    }
+                    plan.steps.push(Step { id: Some(m.id.clone()), cmd: crate::claude::rm(env, short), cwd: None, why: format!("{why}; the transcript stays") });
+                }
+                None => plan.warnings.push(issue(
+                    "copy",
+                    Severity::Warn,
+                    format!("{}'s copy {} ({}) runs in a process with no job; sweep cannot end it", m.id, r.session_id, r.name),
+                    Some(copy_fix(m, r)),
+                    Some(m.id.clone()),
+                )),
+            }
+            continue;
+        }
         if r.pid.is_some() {
             plan.warnings.push(issue(
                 "dup.live",
@@ -1363,7 +1434,7 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
     }
     for (_, m) in members(snap) {
         if id.map(|t| under(&m.id, t)).unwrap_or(true) && mine(&m.id) {
-            sweep_member(env, &mut plan, m);
+            sweep_member(env, &mut plan, m, caller);
         }
     }
     // Stopped rows of the old fleet (Info `legacy`): offered here, never removed

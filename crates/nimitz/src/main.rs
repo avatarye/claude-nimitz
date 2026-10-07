@@ -67,14 +67,14 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   up <F>                           start every member of a fleet
   start|stop|relaunch <id>         one member; start brings up missing parents first (--fresh: a cold launch, new lineage)
   rm <id|session>                  remove job rows (never transcripts)
-  sweep [<id>]                     drop stale copy rows
+  sweep [<id>]                     drop stale rows and copies of members
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member (ships: through the commodore)
   open <id>                        attach to a member in a tab (detach: ctrl-z)
   layout herdr [<F>]               workspaces and tabs for fleets in Herdr
   migrate fleet-skill <dir...> --into <F>
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
-  sandbox create|tick|env <dir>    a fake world for tests and demos
+  sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)
 
 ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship)";
 

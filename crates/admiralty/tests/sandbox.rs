@@ -49,7 +49,7 @@ fn every_broken_shape_of_the_sandbox_shows_up() {
         "dup.live MAIN/ARGOS/TWIN",
         "copy.rows MAIN/ARGOS/COPIES",
         "lineage.broken MAIN/ARGOS/BROKEN",
-        "name.taken MAIN/ARGOS/TAKEN",
+        "copy MAIN/ARGOS/TAKEN",
         "labels.mismatch MAIN/ARGOS/MISLABEL",
         "folder.missing MAIN/ARGOS/GONE",
         "folder.untrusted MAIN/ARGOS/UNTRUSTED",

@@ -55,16 +55,13 @@ pub fn deliver_cmd(id: &str) -> i32 {
     0
 }
 
-/// The commodore's live session id: the registry's current binding, else a
-/// live session holding the commodore's name.
+/// The commodore's live session id: its own row in the snapshot (the job
+/// the registry names, or the process that holds its conversation), never a
+/// copy and never a stray session that only carries its name.
 fn commodore_session(env: &Env, cid: &Id) -> Option<String> {
-    let rows = nimitz_core::evidence::rows_from_files(env, &mut Default::default()).unwrap_or_default();
-    let live = |sid: &str| rows.iter().any(|r| r.session_id == sid && r.live());
-    let reg = nimitz_core::registry::load(env);
-    if let Some(cur) = reg.identities.get(&cid.0).and_then(|r| r.session.clone()).filter(|s| live(s)) {
-        return Some(cur);
-    }
-    rows.iter().find(|r| r.live() && r.name == cid.name()).map(|r| r.session_id.clone())
+    let snap = nimitz_core::snapshot::snapshot(env, &mut nimitz_core::snapshot::Cache::default());
+    let m = snap.fleets.iter().flat_map(|f| f.squadrons.iter()).map(|sq| &sq.commodore).find(|m| &m.id == cid)?;
+    m.session.as_ref().filter(|s| s.pid.is_some() && s.copy.is_none()).map(|s| s.session_id.clone())
 }
 
 fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duration) -> (&'static str, String) {

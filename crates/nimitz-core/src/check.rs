@@ -298,11 +298,18 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
         let in_lead_folder = |s: &SessionInfo| s.pid.is_some() && lead_dirs.contains(&crate::env::canon(Path::new(&s.cwd)));
         for s in snap.stowaways.iter().filter(|s| !legacy.contains(&s.name) && stowaway_in_scope(&s.cwd) && !in_lead_folder(s)) {
             let short = s.short_id.as_deref().unwrap_or(&s.session_id);
-            // never offer rm for a live session (contracts.md section 7)
-            let fix = if s.pid.is_some() {
-                format!("nimitz stop {short}, then nimitz rm {short}  # or, if it holds work to keep: nimitz adopt {} <id>", s.session_id)
-            } else {
-                format!("nimitz rm {short}  # or, if it holds work to keep: nimitz adopt {} <id>", s.session_id)
+            // one fix per kind: a live background job is stopped, then its row
+            // removed; a process with no job (interactive, SDK) has nothing
+            // nimitz can stop, so it is ended in its terminal; never rm for a
+            // live session (contracts.md section 7)
+            let adopt = format!("# or, if it holds work to keep: nimitz adopt {} <id>", s.session_id);
+            let fix = match (s.pid, &s.short_id) {
+                (Some(_), Some(_)) => format!("nimitz stop {short}, then nimitz rm {short}  {adopt}"),
+                (Some(_), None) => match &s.terminal {
+                    Some(t) => format!("end it in its terminal ({t}): /exit, or close the host  {adopt}"),
+                    None => format!("end it in its terminal: /exit, or close the host  {adopt}"),
+                },
+                (None, _) => format!("nimitz rm {short}  {adopt}"),
             };
             out.push(Issue {
                 code: "stowaway".into(),
@@ -352,6 +359,7 @@ pub(crate) mod tests {
             birth_id: None,
             entrypoint: None,
             pinned: false,
+            copy: None,
             terminal: None,
         }
     }
@@ -662,6 +670,7 @@ pub(crate) mod tests {
             birth_id: None,
             entrypoint: None,
             pinned: false,
+            copy: None,
             terminal: None,
         });
         let issues = check(&env, &snap, None);

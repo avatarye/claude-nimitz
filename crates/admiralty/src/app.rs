@@ -673,13 +673,7 @@ impl App {
             }
             if let Target::Stowaway(sid) = self.target() {
                 let short: String = sid.chars().take(8).collect();
-                let suggestion = self
-                    .issues()
-                    .iter()
-                    .filter(|i| i.code == "stowaway")
-                    .find(|i| i.fix.as_deref().map(|f| f.contains(&short)).unwrap_or(false))
-                    .and_then(|i| i.fix.as_deref().and_then(|f| f.split_whitespace().nth(3).map(String::from)))
-                    .unwrap_or_default();
+                let suggestion = self.bundle.as_ref().and_then(|b| adopt_suggestion(&b.snap, &sid)).unwrap_or_default();
                 self.open_form(Form::adopt(&sid, &short, &suggestion));
                 return None;
             }
@@ -1174,6 +1168,29 @@ impl App {
         let warns = issues.iter().filter(|i| i.severity == Severity::Warn).count();
         (b.snap.fleets.len(), live, need, errors, warns)
     }
+}
+
+/// What the adopt form offers for a stowaway (M25): the identity its name
+/// spells when the name is a fleet address; else the ship whose folder holds
+/// it; else a `F/SQ/<ship>` placeholder for the squadron or fleet whose
+/// folders hold it.
+fn adopt_suggestion(snap: &nimitz_core::Snapshot, sid: &str) -> Option<String> {
+    let s = snap.stowaways.iter().find(|s| s.session_id == sid)?;
+    if let Some(id) = nimitz_core::sessions::id_from_name(&s.name) {
+        return Some(id.0);
+    }
+    let same = |c: &str| c.trim_end_matches('/') == s.cwd.trim_end_matches('/');
+    for f in &snap.fleets {
+        for sq in &f.squadrons {
+            if let Some(ship) = sq.ships.iter().find(|m| m.cwd.as_deref().is_some_and(same)) {
+                return Some(ship.id.0.clone());
+            }
+            if sq.commodore.cwd.as_deref().is_some_and(same) {
+                return Some(format!("{}/<ship>", sq.id.0));
+            }
+        }
+    }
+    nimitz_core::snapshot::stowaway_fleet(snap, s).map(|f| format!("{f}/<squadron>/<ship>"))
 }
 
 // ------------------------------------------------------------------ clipboard

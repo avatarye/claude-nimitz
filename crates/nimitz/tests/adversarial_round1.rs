@@ -258,7 +258,7 @@ fn bug11_a_hand_made_copy_is_tied_to_its_ship() {
     let sid = sb.sid("MAIN/ARGOS/CLEAN");
     sb.claude(&sb.dir("dirs/main/clean"), &["--bg", "--resume", &sid]); // resume of a live ship: a copy
     let c = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
-    assert!(c.out.contains("copy.rows") || c.out.contains("dup.live"), "the copy shows only as an anonymous stowaway; check is green:\n{}", c.out);
+    assert!(c.out.contains("(copy)") || c.out.contains("copy.rows") || c.out.contains("dup.live"), "the copy shows only as an anonymous stowaway; check is green:\n{}", c.out);
 }
 
 #[test]
@@ -665,10 +665,47 @@ fn bug55_relaunch_is_not_skipped_because_an_impostor_carries_the_labels() {
 
 #[test]
 fn final_e_check_of_a_fleet_lists_stowaways_in_its_folders() {
+    // 0.4.0 (plan-v4 section 6): a ship folder is shared with the user's own
+    // work, so an unlabelled session there is not shown; the squadron's own
+    // ships folder under NIMITZ_HOME is fleet scope, so one there is a stowaway
     let sb = Sb::new(false);
     sb.claude(&sb.dir("dirs/main/fresh"), &["--bg", "an unlabelled session in a ship folder"]);
+    let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
+    assert!(!c.out.contains("stowaway"), "the user's own session in FRESH's folder is shown:\n{}", c.out);
+    let stray = sb.dir("nimitz/main/ships/argos/stray");
+    std::fs::create_dir_all(&stray).unwrap();
+    sb.claude(&stray, &["--bg", "an unlabelled session under the squadron's ships folder"]);
     for id in ["MAIN", "MAIN/ARGOS"] {
         let c = sb.run(&["check", id]);
-        assert!(c.out.contains("stowaway"), "`nimitz check {id}` hides a stowaway in FRESH's folder:\n{}", c.out);
+        assert!(c.out.contains("(stowaway)"), "`nimitz check {id}` hides a stowaway under ships/argos:\n{}", c.out);
     }
+}
+
+#[test]
+fn p5_sweep_of_a_ship_removes_its_live_copy_through_the_cli() {
+    let sb = Sb::new(false);
+    let cwd = sb.dir("dirs/main/stopped");
+    let out = sb.claude(&cwd, &["--bg", "--name", "[MAIN.ARGOS]-STOPPED", "x"]);
+    let copy = out.split_whitespace().last().unwrap().to_string();
+    let c = sb.run(&["check", "MAIN/ARGOS/STOPPED"]);
+    assert!(c.out.contains("(copy)") && c.out.contains("fix: nimitz sweep MAIN/ARGOS/STOPPED"), "{}", c.out);
+    assert!(!c.out.contains("name.taken"), "{}", c.out);
+    let p = sb.run(&["sweep", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert!(p.out.contains(&format!("stop {copy}")) && p.out.contains(&format!("rm {copy}")), "{}", p.out);
+    let r = sb.run(&["sweep", "MAIN/ARGOS/STOPPED", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(sb.live_in(&cwd), 0);
+    let c = sb.run(&["check", "MAIN/ARGOS/STOPPED"]);
+    assert!(!c.out.contains("(copy)"), "{}", c.out);
+}
+
+#[test]
+fn p5_the_users_own_session_in_a_ship_folder_is_not_a_stowaway_in_status() {
+    let sb = Sb::new(false);
+    let cwd = sb.dir("dirs/main/clean");
+    sb.claude(&cwd, &["--name", "my notes"]);
+    let s = sb.run(&["status"]);
+    assert!(!s.out.contains("my notes"), "{}", s.out);
+    let st = sb.stowaways();
+    assert!(st.iter().all(|s| s["name"] != "my notes"), "{st:?}");
 }

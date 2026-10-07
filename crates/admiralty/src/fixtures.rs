@@ -41,6 +41,7 @@ fn session(id: &Id, sid: &str, pid: Option<i64>, kind: &str, status: Option<&str
         birth_id: None,
         entrypoint: None,
         pinned: false,
+        copy: None,
         terminal: None,
     }
 }
@@ -347,6 +348,7 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         birth_id: None,
         entrypoint: None,
         pinned: false,
+        copy: None,
         terminal: None,
     };
     let s2 = SessionInfo {
@@ -365,6 +367,7 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         birth_id: None,
         entrypoint: None,
         pinned: false,
+        copy: None,
         terminal: None,
     };
     // a session of the old fleet-skill fleets, recognised by its name
@@ -384,6 +387,7 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         birth_id: None,
         entrypoint: None,
         pinned: false,
+        copy: None,
         terminal: None,
     };
     let issues = vec![
