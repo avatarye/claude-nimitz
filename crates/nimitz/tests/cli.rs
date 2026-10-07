@@ -1829,32 +1829,41 @@ fn a_foreign_binding_is_stripped_and_this_homes_history_kept() {
     let sb = Sb::new(false);
     let m = sb.member("MAIN/ARGOS/STOPPED");
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
-    // another home's job: a done row whose saved labels name /elsewhere/nimitz
-    let other = "fd52a81e";
-    let p = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join(other).join("state.json");
-    let mut d: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
-    let other_sid = d["sessionId"].as_str().unwrap().to_string();
+    // another home's job: a done row (shaped like fd52a81e's) whose saved labels name /elsewhere/nimitz
+    let other = "f0f0f0f0";
+    let other_sid = "f0f0f0f0-5b0c-4d1e-9f2a-0000000000f0";
+    let jobs = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs");
+    let mut d: Value = serde_json::from_slice(&std::fs::read(jobs.join("fd52a81e").join("state.json")).unwrap()).unwrap();
+    d["sessionId"] = Value::from(other_sid);
+    d["resumeSessionId"] = Value::Null;
     let flags = d["respawnFlags"].as_array_mut().unwrap();
     let i = flags.iter().position(|x| x == "--settings").unwrap();
     let mut s: Value = serde_json::from_str(flags[i + 1].as_str().unwrap()).unwrap();
     s["env"]["NIMITZ_HOME"] = Value::from("/elsewhere/nimitz");
     flags[i + 1] = Value::from(s.to_string());
-    std::fs::write(&p, d.to_string()).unwrap();
-    // its hook bound the ship to it, on top of the ship's own history
+    std::fs::create_dir_all(jobs.join(other)).unwrap();
+    std::fs::write(jobs.join(other).join("state.json"), d.to_string()).unwrap();
+    // its hook bound the ship to it, on top of the ship's own history (the
+    // entry carries that home; an older nimitz's would not, and the row says)
     let reg_path = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json");
     let mut reg: Value = serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
     let rec = &mut reg["identities"]["MAIN/ARGOS/STOPPED"];
     rec["job"] = Value::from(other);
-    rec["session"] = Value::from(other_sid.as_str());
-    rec["lineage"].as_array_mut().unwrap().push(serde_json::json!({"session_id": other_sid, "job": other, "via": "launch", "at": 1791400000.0}));
+    rec["session"] = Value::from(other_sid);
+    rec["lineage"].as_array_mut().unwrap().push(serde_json::json!({"session_id": other_sid, "job": other, "via": "launch", "at": 1791400000.0, "home": "/elsewhere/nimitz"}));
     std::fs::write(&reg_path, reg.to_string()).unwrap();
     let m = sb.member("MAIN/ARGOS/STOPPED");
     assert_eq!((m["session"]["short_id"].as_str(), m["session"]["session_id"].as_str()), (Some(job.as_str()), Some(sid.as_str())), "{m}");
     assert!(matches!(m["status"].as_str(), Some("Stopped" | "Parked")), "{m}");
-    assert!(!m.to_string().contains(other) && !m.to_string().contains(&other_sid), "{m}");
+    assert!(!m.to_string().contains(other) && !m.to_string().contains(other_sid), "{m}");
     // a start wakes this home's conversation
     let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
     assert!(r.out.contains(&format!("--resume {sid}")), "{}", r.out);
+    // the other home's row gone: its binding stays out (the entry's stamp says whose it is)
+    std::fs::remove_dir_all(jobs.join(other)).unwrap();
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    assert_eq!((m["session"]["short_id"].as_str(), m["session"]["session_id"].as_str()), (Some(job.as_str()), Some(sid.as_str())), "{m}");
+    assert!(!m.to_string().contains(other_sid), "{m}");
 }
 
 /// A job labelled for another `NIMITZ_HOME` never appears (plan-v4 section
@@ -1892,6 +1901,15 @@ fn a_job_labelled_for_another_home_never_binds_the_member() {
         })
         .collect();
     std::fs::write(&ev, lines.join("\n") + "\n").unwrap();
+    // (and its lineage entries, stamped by that hook's write)
+    let reg_path = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json");
+    let mut reg: Value = serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    for l in reg["identities"]["MAIN/ARGOS/STOPPED"]["lineage"].as_array_mut().unwrap() {
+        if l["job"] == job.as_str() {
+            l["home"] = Value::from("/elsewhere/nimitz");
+        }
+    }
+    std::fs::write(&reg_path, reg.to_string()).unwrap();
     let m = sb.member("MAIN/ARGOS/STOPPED");
     assert_eq!(m["status"], "NotStarted", "{m}");
     assert!(m["session"].is_null() && m["extra_rows"].as_array().unwrap().is_empty(), "{m}");

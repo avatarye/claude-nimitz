@@ -568,7 +568,7 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
                     let ev = env(&base);
                     let _ = crate::registry::update(&ev, |r| {
                         if let Some(rec) = r.identities.get_mut(&id.0) {
-                            rec.lineage.push(LineageEntry { session_id: c.clone(), job: Some(c_short.clone()), via: "relaunch".into(), at: w.now });
+                            rec.lineage.push(LineageEntry { session_id: c.clone(), job: Some(c_short.clone()), via: "relaunch".into(), at: w.now, home: None });
                         }
                     });
                 }

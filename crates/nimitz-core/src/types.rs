@@ -200,6 +200,11 @@ pub struct LineageEntry {
     /// when it was bound (a v1 file says `bound_at`)
     #[serde(alias = "bound_at")]
     pub at: f64,
+    /// the `NIMITZ_HOME` of the process that bound it (as written; stamped by
+    /// the registry write). None on an entry an older nimitz wrote: its home
+    /// is judged from its job's row while that row exists
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
 }
 
 /// An identity's anchor: the job (short id) and the conversation it runs now.

@@ -82,6 +82,25 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<Loaded> {
     Ok(Loaded { r, v1, dirty: v1 || moved > 0 || rebuilt })
 }
 
+/// Is `h` (a `NIMITZ_HOME`, as written) this env's home, as written or as
+/// a real path?
+fn same_home(env: &Env, h: &str) -> bool {
+    Path::new(h) == env.home || crate::env::canon(Path::new(h)) == crate::env::canon(&env.home)
+}
+
+/// Is job `j` another home's, as the registry knows it? The lineage entries
+/// of the job say which home bound them (`home`, stamped at the write); an
+/// entry an older nimitz wrote says nothing, and then the job's row decides
+/// while it exists (`foreign_row`). So a binding the other home left keeps
+/// its home once its row is gone: it never comes back into this home's view.
+fn foreign_job(env: &Env, r: &Registry, j: &str) -> bool {
+    let stamped = r.identities.values().chain(r.retired.values()).flat_map(|rec| rec.lineage.iter()).find(|l| l.job.as_deref() == Some(j) && l.home.is_some());
+    match stamped.and_then(|l| l.home.as_deref()) {
+        Some(h) => !same_home(env, h),
+        None => foreign_row(env, j),
+    }
+}
+
 /// Does job `j` have a row (`jobs/<j>/state.json`) whose saved labels name
 /// another `NIMITZ_HOME`? A row that is not there, or not readable, is not.
 fn foreign_row(env: &Env, j: &str) -> bool {
@@ -100,8 +119,8 @@ pub fn job_row_of_this_home(env: &Env, j: &str) -> bool {
     env.claude_home.join("jobs").join(j).join("state.json").is_file() && !foreign_row(env, j)
 }
 
-/// Strip every binding to a job of another `NIMITZ_HOME` (the job's saved
-/// labels, `respawnFlags`, name it). Such a session never appears (plan-v4
+/// Strip every binding to a job of another `NIMITZ_HOME` (`foreign_job`: the
+/// entry's `home`, else the job's saved labels, `respawnFlags`). Such a session never appears (plan-v4
 /// section 6), and its binding is not this home's either: its hook ran with
 /// that home in its own env (the label is the env), so when two homes share
 /// one `NIMITZ_STATE` it bound the identity here. The record keeps this
@@ -113,20 +132,21 @@ pub fn job_row_of_this_home(env: &Env, j: &str) -> bool {
 /// save away every record of this one (acc-D F1: a registry left with one
 /// identity). On disk every home's bindings stay side by side.
 fn drop_other_homes(env: &Env, r: &mut Registry) {
-    let mut named: Vec<String> = r.identities.values().flat_map(|rec| rec.job.iter().chain(rec.lineage.iter().filter_map(|l| l.job.as_ref())).cloned()).collect();
-    named.sort();
-    named.dedup();
-    let foreign: std::collections::BTreeSet<String> = named.into_iter().filter(|job| foreign_row(env, job)).collect();
-    if foreign.is_empty() {
-        return;
-    }
+    // an entry is judged by its own stamp, else by its job's row
+    let foreign_entry = |l: &LineageEntry| match l.home.as_deref() {
+        Some(h) => !same_home(env, h),
+        None => l.job.as_deref().is_some_and(|j| foreign_row(env, j)),
+    };
     // only a record the foreign job touched changes; every other record stays
     // as it is (an empty lineage, or a session outside the lineage such as a
     // v1-migrated current, are not this rule's to judge)
     r.identities.retain(|_, rec| {
         let before = rec.lineage.len();
-        rec.lineage.retain(|l| !l.job.as_ref().is_some_and(|j| foreign.contains(j)));
-        let job_foreign = rec.job.as_ref().is_some_and(|j| foreign.contains(j));
+        let stripped: Vec<String> = rec.lineage.iter().filter(|l| foreign_entry(l)).filter_map(|l| l.job.clone()).collect();
+        rec.lineage.retain(|l| !foreign_entry(l));
+        // the record's job: the job of a stripped entry, or (no entry of its
+        // own says) a row of another home
+        let job_foreign = rec.job.as_ref().is_some_and(|j| !rec.lineage.iter().any(|l| l.job.as_ref() == Some(j)) && (stripped.contains(j) || foreign_row(env, j)));
         let touched = job_foreign || rec.lineage.len() != before;
         if !touched {
             return true;
@@ -167,6 +187,7 @@ fn rebuild(env: &Env) -> (Registry, String) {
         None => (fresh(env), vec![]),
     };
     let since = r.updated_at;
+    let copy = r.clone();
     let mut added = 0;
     let mut events = crate::evidence::events(env);
     events.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
@@ -182,6 +203,7 @@ fn rebuild(env: &Env) -> (Registry, String) {
     }
     if added > 0 {
         from.push(format!("{added} SessionStart event(s)"));
+        stamp_home(env, &copy, &mut r); // this home's lines (`identity_of`): its bindings
     }
     let what = if from.is_empty() { "nothing to rebuild from (no registry.json.bak, no labelled events)".to_string() } else { from.join(" + ") };
     let what = format!("{} identities rebuilt from {what}", r.identities.len());
@@ -333,6 +355,23 @@ fn refuse_shrink(env: &Env, had: &[String], r: &Registry) -> std::io::Result<()>
     )))
 }
 
+/// Every lineage entry `after` has that `before` had not (by session and
+/// job) was bound by this process: it carries this env's home (as written),
+/// so a reader judges it without the job's row (`foreign_job`).
+fn stamp_home(env: &Env, before: &Registry, after: &mut Registry) {
+    let home = env.home.to_string_lossy().into_owned();
+    for (map, was) in [(&mut after.identities, &before.identities), (&mut after.retired, &before.retired)] {
+        for (k, rec) in map.iter_mut() {
+            let old = was.get(k);
+            for l in rec.lineage.iter_mut().filter(|l| l.home.is_none()) {
+                if !old.is_some_and(|o| o.lineage.iter().any(|x| x.session_id == l.session_id && x.job == l.job)) {
+                    l.home = Some(home.clone());
+                }
+            }
+        }
+    }
+}
+
 /// Lock, load, apply `f`, save. The only way to change the registry. The
 /// first write over a v1 file keeps that file as `registry.json.v1`. A file
 /// that is there but cannot be read is an error: nothing is written over it.
@@ -360,6 +399,7 @@ fn update_locked<T>(env: &Env, _lock: File, f: impl FnOnce(&mut Registry) -> T) 
     let before = r.clone();
     let out = f(&mut r);
     refuse_shrink(env, &had, &r)?;
+    stamp_home(env, &before, &mut r);
     // a closure that changed nothing (the hook's held, dup.job, elsewhere and
     // same judgements) writes nothing: the file keeps its stamp. A file that
     // is not there yet is written (`init` saves the fresh registry as it is)
@@ -416,7 +456,7 @@ fn bind_into(map: &mut BTreeMap<String, IdentityRecord>, id: &Id, role: Role, na
                 last.job = rec.job.clone();
             }
         }
-        _ => rec.lineage.push(LineageEntry { session_id: session_id.to_string(), job: rec.job.clone(), via: via.to_string(), at: now }),
+        _ => rec.lineage.push(LineageEntry { session_id: session_id.to_string(), job: rec.job.clone(), via: via.to_string(), at: now, home: None }),
     }
 }
 
@@ -465,8 +505,7 @@ impl Binding {
 /// agree with the id's shape; a 0.3.x tender is no identity.
 pub fn identity_of(env: &Env, labels: &BTreeMap<String, String>) -> Option<Id> {
     if let Some(h) = labels.get("NIMITZ_HOME").filter(|h| !h.is_empty()) {
-        let same = Path::new(h) == env.home || crate::env::canon(Path::new(h)) == crate::env::canon(&env.home);
-        if !same {
+        if !same_home(env, h) {
             return None;
         }
     }
@@ -561,7 +600,7 @@ fn job_running(env: &Env, sid: &str) -> Option<String> {
 /// a row of another home has that home's folder in `cwd` (its hook wrote
 /// it): not this home's, so the config decides.
 pub fn identity_folder(env: &Env, r: &Registry, id: &Id) -> Option<PathBuf> {
-    let own = r.identities.get(&id.0).filter(|x| !x.job.as_deref().is_some_and(|j| foreign_row(env, j)));
+    let own = r.identities.get(&id.0).filter(|x| !x.job.as_deref().is_some_and(|j| foreign_job(env, r, j)));
     match own.map(|x| x.cwd.clone()).filter(|c| !c.is_empty()) {
         Some(c) => Some(PathBuf::from(c)),
         None => crate::config::load_fleet(env, id.fleet()).ok().and_then(|f| crate::config::member_dir(env, &f, id)),
@@ -1060,6 +1099,48 @@ mod tests {
         assert_eq!(load(&env).identities.len(), 40);
     }
 
+    /// A write stamps every entry it adds with this home; a reader judges a
+    /// job's home by that stamp, so a binding the other home left stays out
+    /// of this home's view (and gives a start neither its cwd nor its
+    /// session) once that home's job row is gone. An entry with no stamp (an
+    /// older nimitz's) is judged by its row while the row exists, and is
+    /// this home's once the row is gone.
+    #[test]
+    fn a_binding_carries_its_home_and_is_judged_by_it_without_the_row() {
+        let (_td, env) = test_env();
+        let id = Id::ship("MAIN", "SQ", "A");
+        let home = env.home.to_string_lossy().into_owned();
+        update(&env, |r| bind_job(r, &id, Role::Ship, &id.name(), "/w", Some("a1a1a1a1"), "s-mine", "launch", 1.0)).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        assert_eq!(raw["identities"][&id.0]["lineage"][0]["home"], home.as_str(), "stamped at the write, as written");
+        // the other home's hook bound the identity to its job, whose row is gone already
+        let other = Env { home: PathBuf::from("/elsewhere/nimitz"), ..env.clone() };
+        update(&other, |r| bind_job(r, &id, Role::Ship, &id.name(), "/elsewhere/w", Some("f0f0f0f0"), "s-theirs", "launch", 2.0)).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        assert_eq!(raw["identities"][&id.0]["lineage"][1]["home"], "/elsewhere/nimitz");
+        assert_eq!(raw["identities"][&id.0]["job"], "f0f0f0f0");
+        // this home's view: its own binding, folder and session; the other's never resurfaces
+        let mine = load(&env);
+        let rec = &mine.identities[&id.0];
+        assert_eq!((rec.job.as_deref(), rec.session.as_deref(), rec.lineage.len()), (Some("a1a1a1a1"), Some("s-mine"), 1), "{rec:?}");
+        assert_eq!(identity_folder(&env, &load_checked(&env, false).unwrap().r, &id).as_deref(), None, "a foreign-bound record gives no folder of its own (the config decides)");
+        // and the other home's view is its own
+        let theirs = load(&other);
+        assert_eq!((theirs.identities[&id.0].job.as_deref(), theirs.identities[&id.0].session.as_deref()), (Some("f0f0f0f0"), Some("s-theirs")));
+        // an unstamped entry (an older nimitz's): by its row while it exists, this home's once gone
+        let mut r = load_checked(&env, false).unwrap().r;
+        r.identities.get_mut(&id.0).unwrap().lineage.push(LineageEntry { session_id: "s-old".into(), job: Some("0ld0ld0l".into()), via: "resume".into(), at: 3.0, home: None });
+        save(&env, &r).unwrap();
+        let row = env.claude_home.join("jobs").join("0ld0ld0l").join("state.json");
+        std::fs::create_dir_all(row.parent().unwrap()).unwrap();
+        let settings = serde_json::json!({"env": {"NIMITZ_ID": id.0, "NIMITZ_ROLE": "ship", "NIMITZ_HOME": "/elsewhere/nimitz"}}).to_string();
+        std::fs::write(&row, serde_json::json!({"sessionId": "s-old", "respawnFlags": ["--settings", settings]}).to_string()).unwrap();
+        assert_eq!(load(&env).identities[&id.0].lineage.len(), 1, "the row says another home");
+        std::fs::remove_file(&row).unwrap();
+        assert_eq!(load(&env).identities[&id.0].lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["s-mine", "s-old"]);
+        assert!(std::fs::read_to_string(env.registry_path()).unwrap().contains("\"s-old\""), "a read never writes");
+    }
+
     /// A foreign job's binding is stripped from the record it touched; every
     /// other record stays byte-identical, whatever its shape (an empty
     /// lineage, a session outside the lineage as a v1-migrated current has).
@@ -1074,7 +1155,7 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("state.json"), row.to_string()).unwrap();
         }
-        let entry = |sid: &str, job: Option<&str>, via: &str, at: f64| LineageEntry { session_id: sid.into(), job: job.map(str::to_string), via: via.into(), at };
+        let entry = |sid: &str, job: Option<&str>, via: &str, at: f64| LineageEntry { session_id: sid.into(), job: job.map(str::to_string), via: via.into(), at, home: None };
         let rec = |job: Option<&str>, session: Option<&str>, lineage: Vec<LineageEntry>| IdentityRecord { role: Role::Ship, name: "[MAIN.SQ]-X".into(), cwd: "/w".into(), job: job.map(str::to_string), session: session.map(str::to_string), lineage };
         let mut r = Registry { version: REGISTRY_VERSION, machine: "m".into(), ..Default::default() };
         // touched: this home's history, then the foreign hook's binding on top
