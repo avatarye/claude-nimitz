@@ -1268,6 +1268,83 @@ fn walkdir(d: &Path) -> Vec<PathBuf> {
     v
 }
 
+/// `/clear` in a ship, then stop, then start: the wake names the job's BIRTH
+/// id (Claude Code 2.1.292 wakes a stopped job only by that id; any other id
+/// starts a new unlabelled job), the same job comes back on the post-clear
+/// conversation with its labels, and nothing is removed (acceptance F1).
+#[test]
+fn clear_then_stop_then_start_wakes_the_same_job_by_its_birth_id() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let (job, birth) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    assert!(fake(&["__inside", &job, "clear"]).status.success());
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let now = m["session"]["session_id"].as_str().unwrap().to_string();
+    assert_ne!(now, birth);
+    assert_eq!(m["session"]["short_id"], job.as_str(), "the same job after /clear");
+    let r = sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    // the plan: the native resume by the birth id, no rm of the job's own row
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("--bg --resume {birth}")) && !r.out.contains(&format!("--resume {now}")), "{}", r.out);
+    assert!(!r.out.contains(" rm ") && !r.out.contains("stale"), "the job's own row is not a copy: {}", r.out);
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("woke session {birth}")) && r.out.contains("verified by re-reading"), "{}", r.out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(live(&m), "{m}");
+    assert_eq!((m["session"]["short_id"].as_str(), m["session"]["session_id"].as_str()), (Some(job.as_str()), Some(now.as_str())), "{m}");
+    assert_eq!(m["session"]["labels"]["NIMITZ_ID"], "MAIN/ARGOS/CLEAN");
+    assert!(m["extra_rows"].as_array().unwrap().is_empty() && m["issues"].as_array().unwrap().is_empty(), "{m}");
+    let r = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+}
+
+/// The wrong wake by hand (`--bg --resume <conversation now>` of a stopped
+/// job, what nimitz did before F1): Claude Code starts a new unlabelled job
+/// named after that id. nimitz shows it as a copy of the ship, keeps the
+/// ship's own row as its session, and `sweep` removes the copy, never the
+/// own row.
+#[test]
+fn a_wake_by_a_non_birth_id_is_a_copy_and_sweep_keeps_the_own_row() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let job = m["session"]["short_id"].as_str().unwrap().to_string();
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    assert!(fake(&["__inside", &job, "clear"]).status.success());
+    let now = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string();
+    assert_eq!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 0);
+    // (from the ship's folder, as nimitz's own wake and a user at a prompt would)
+    let o = Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(m["cwd"].as_str().unwrap()).args(["--bg", "--resume", &now]).output().unwrap();
+    let out = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert!(out.contains("backgrounded ·") && !out.contains("woke session"), "{out}");
+    let copy = now[..8].to_string();
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert_eq!(m["session"]["short_id"], job.as_str(), "the own row stays the member's session: {m}");
+    let extra = m["extra_rows"].as_array().unwrap();
+    assert_eq!(extra.len(), 1, "{m}");
+    assert_eq!(extra[0]["short_id"], copy.as_str());
+    assert!(!extra[0]["copy"].is_null(), "the new job is a copy: {}", extra[0]);
+    assert!(m["issues"].as_array().unwrap().iter().any(|i| i["code"] == "copy"), "{m}");
+    assert!(!m["issues"].as_array().unwrap().iter().any(|i| i["code"] == "dup.live" || i["code"] == "labels.missing"), "{m}");
+    // a start plan never drops the own row
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert!(!r.out.contains(&format!("rm {job}")), "{}", r.out);
+    // sweep: the copy goes (stopped first), the own row stays
+    let r = sb.run(&["sweep", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("stop {copy}")) && r.out.contains(&format!("rm {copy}")) && !r.out.contains(&format!("rm {job}")), "{}", r.out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert_eq!(m["session"]["short_id"], job.as_str(), "{m}");
+    assert!(m["extra_rows"].as_array().unwrap().is_empty(), "{m}");
+    // and the right wake still works after it
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"], now.as_str());
+}
+
 /// A job killed in its first turn has no transcript on disk yet. A start right
 /// after is the daemon's crash window (apply waits for its restart), never
 /// `history.lost` with a `--fresh` fix that would make a duplicate (e2e case 6).

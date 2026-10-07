@@ -1034,3 +1034,50 @@ fn e2e_12_v1_registry_migrates_and_a_live_start_binds_into_v2() {
     assert!(!w.issue_codes().iter().any(|(c, _)| matches!(c.as_str(), "registry.corrupt" | "lineage.broken")), "{:?}", w.issue_codes());
     w.finish();
 }
+
+/// 13. `/clear`, then stop, then start: the wake names the job's birth id and
+/// the same job comes back on the post-clear conversation with its labels
+/// (acceptance F1: a wake by the conversation id made an unlabelled copy).
+#[test]
+fn e2e_13_clear_then_stop_then_start_wakes_the_same_job() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(13);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let m = w.start_ship_idle();
+    let (job, birth) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    w.attach(&w.ship_dir(), &job, &format!("[{}.SQ]-SHIP", w.fleet));
+    w.type_line("/clear");
+    let cleared = w
+        .wait(60, || w.events().into_iter().rev().find(|e| e["event"] == "SessionStart" && e["source"] == "clear" && e["labels"]["NIMITZ_ID"] == w.ship()))
+        .expect("a SessionStart clear after /clear");
+    w.detach();
+    let now = cleared["session_id"].as_str().unwrap().to_string();
+    assert_ne!(now, birth);
+    w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["session_id"] == now.as_str())).expect("status follows the new conversation");
+    w.ok(&["stop", &w.ship(), "--yes"]);
+    w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
+    // the plan names the birth id, never the conversation id; nothing is removed
+    let plan = w.ok(&["start", &w.ship(), "--plan"]);
+    println!("{plan}");
+    assert!(plan.contains(&format!("{} --bg --resume {birth}", w.native)), "{plan}");
+    assert!(!plan.contains(&format!("--resume {now}")) && !plan.contains(" rm "), "{plan}");
+    let out = w.ok(&["start", &w.ship(), "--yes"]);
+    println!("{out}");
+    assert!(out.contains(&format!("backgrounded \u{b7} {job}")) && out.contains("verified by re-reading"), "{out}");
+    assert!(!out.contains("lineage.broken") && !out.contains("started a copy"), "{out}");
+    let again = w.wait(45, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null())).expect("ship live after the wake");
+    assert_eq!((again["session"]["short_id"].as_str(), again["session"]["session_id"].as_str()), (Some(job.as_str()), Some(now.as_str())), "{again}");
+    assert_eq!(again["session"]["labels"]["NIMITZ_ID"], w.ship(), "labels kept: {again}");
+    assert_eq!(again["session"]["name"], format!("[{}.SQ]-SHIP", w.fleet));
+    assert!(again["extra_rows"].as_array().unwrap().is_empty(), "{again}");
+    assert_eq!(w.ship_rows(), vec![job.clone()], "one row, the same job");
+    let starts = w.session_starts(&now);
+    assert_eq!(starts.last().map(|e| (e["source"].as_str(), e["job"].as_str())), Some((Some("resume"), Some(job.as_str()))), "{starts:?}");
+    let me = &w.registry()["identities"][w.ship()];
+    assert_eq!((me["job"].as_str(), me["session"].as_str()), (Some(job.as_str()), Some(now.as_str())), "{me}");
+    let codes = w.issue_codes();
+    assert!(!codes.iter().any(|(c, _)| matches!(c.as_str(), "copy" | "copy.rows" | "dup.live" | "labels.missing" | "lineage.broken" | "name.drift")), "{codes:?}");
+    w.finish();
+}

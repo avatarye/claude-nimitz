@@ -143,6 +143,7 @@ fn copy_how(r: &SessionInfo) -> &'static str {
         Some("transcript") => "its transcript starts the member's conversation",
         Some("resume") => "it resumes a conversation of the member's lineage",
         Some("name") => "it carries the member's name",
+        Some("job") => "it is a second job on the member's conversation (a wake by an id that is not the job's birth id)",
         Some("fork") => "its job row records a fork of the member's conversation",
         _ => "a copy",
     }
@@ -742,7 +743,17 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
     // folder (row 4). A resume restores the saved name too, so a drifted name
     // goes the relaunch way instead (row 5).
     if p.labels.get("NIMITZ_ID") == Some(&id.0) && !needs_relabel {
-        return Ok(vec![step(crate::claude::resume_bg(env, &p.session_id), "resume keeps the id, name, mode and labels (probe 2c1)")]);
+        // by the job's BIRTH id (`state.json` `sessionId`): Claude Code 2.1.292
+        // wakes a stopped job only by that id, and it comes back on the
+        // conversation it runs now (after a `/clear`, a later one); any other
+        // id starts a new unlabelled job named after it (acceptance F1)
+        let birth = p.birth_id.as_deref().unwrap_or(&p.session_id);
+        let why = if birth == p.session_id {
+            "resume keeps the id, name, mode and labels (probe 2c1)".to_string()
+        } else {
+            format!("resume by the job's birth id {}: it wakes on {} with its name, mode and labels", &birth[..birth.len().min(8)], &p.session_id[..p.session_id.len().min(8)])
+        };
+        return Ok(vec![step(crate::claude::resume_bg(env, birth), &why)]);
     }
     Ok(relabel_steps(env, id, mode, p, cwd))
 }
@@ -1122,7 +1133,7 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
         let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
         let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
         if let Some(r) = rows.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target) {
-            let labelled_as = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).cloned();
+            let labelled_as = labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")).cloned();
             if let Some((_, m)) = all.iter().find(|(_, m)| m.expected_name == r.name) {
                 hit = Some((None, r.info(Default::default()), format!("stop the session in {} that holds {}'s name {:?}", r.cwd, m.id, r.name)));
             } else if let Some((_, m)) = all.iter().find(|(_, m)| Some(&m.id.0) == labelled_as.as_ref()) {
@@ -1265,7 +1276,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
         rows.iter()
             .find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target)
-            .filter(|r| labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(|o| binding.iter().any(|(_, m)| &m.id.0 == o)).unwrap_or(false))
+            .filter(|r| labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")).map(|o| binding.iter().any(|(_, m)| &m.id.0 == o)).unwrap_or(false))
             .map(|r| r.info(Default::default()))
     };
     // a job row a 0.3.x tender left: history only, removed by its short id
@@ -1282,7 +1293,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         .or_else(|| {
             let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
             let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
-            labels.get(&row.session_id).and_then(|l| l.get("NIMITZ_ID")).map(|o| Id(o.clone())).filter(|_| misplaced.as_ref().is_some_and(|m| m.session_id == row.session_id))
+            labels.get(&row.short_id.clone().unwrap_or_else(|| row.session_id.clone())).and_then(|l| l.get("NIMITZ_ID")).map(|o| Id(o.clone())).filter(|_| misplaced.as_ref().is_some_and(|m| m.session_id == row.session_id))
         })
         .or_else(|| retired.as_ref().map(|(id, _)| id.clone()));
     if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), row, "rm") {
@@ -1326,7 +1337,7 @@ fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
     let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
     let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
     let r = rows.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target)?;
-    let by_labels = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).filter(|o| crate::migrate::is_tender_id(o)).cloned();
+    let by_labels = labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")).filter(|o| crate::migrate::is_tender_id(o)).cloned();
     let owner = by_labels.or_else(|| {
         let reg = crate::registry::load(env);
         reg.retired
@@ -1334,7 +1345,7 @@ fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
             .find(|(_, rec)| rec.job.as_deref() == r.short_id.as_deref() && rec.job.is_some() || rec.session_ids().any(|s| r.session_ids().any(|x| x == s)))
             .map(|(id, _)| id.clone())
     })?;
-    Some((Id(owner), r.info(labels.get(&r.session_id).cloned().unwrap_or_default())))
+    Some((Id(owner), r.info(labels.get(&crate::evidence::row_key(r)).cloned().unwrap_or_default())))
 }
 
 fn sweep_member(env: &Env, plan: &mut Plan, m: &Member, caller: &Caller) {
@@ -1818,9 +1829,12 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     // there now (`wake_steps` lets a crashed job through without one), else the
     // resume would run with no history: `history.lost` with the `--fresh` fix
     for (id, sid) in waking.iter().filter(|(i, _)| !restarted.contains(i)) {
-        if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), step_folder(plan, id), sid).is_some() {
+        // the resume names the birth id; the conversation it wakes is the row's
+        let now = find_row_by_session(env, sid).map(|r| r.session_id).unwrap_or_else(|| sid.clone());
+        if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), step_folder(plan, id), &now).is_some() {
             continue;
         }
+        let sid = &now;
         for step in plan.steps.iter().filter(|s| s.id.as_ref() == Some(id)) {
             out.ran.push((step.clone(), -1, "not run: its conversation has no transcript".into()));
         }
@@ -1961,8 +1975,15 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         return out;
                     }
                 }
+                // a resume names the job's birth id; the SessionStart that binds
+                // it carries the conversation the row runs now (after a /clear,
+                // a later one), so that is what must come back
+                let now_of = match &kind {
+                    Kind::Resume { session_id } => find_row_by_session(env, session_id).map(|r| r.session_id).unwrap_or_else(|| session_id.clone()),
+                    _ => String::new(),
+                };
                 let (expect, via) = match &kind {
-                    Kind::Resume { session_id } => (Some(session_id.as_str()), "resume"),
+                    Kind::Resume { .. } => (Some(now_of.as_str()), "resume"),
                     Kind::Launch => (None, "launch"),
                     _ if step.why.starts_with(MIGRATE_WHY) || step.why.starts_with(MIGRATE_LEAD_WHY) => (resumed.as_deref(), "migrate"),
                     _ => (resumed.as_deref(), "relaunch"),
@@ -2138,7 +2159,7 @@ fn live_session_of(env: &Env, id: &Id, cwd: Option<&str>) -> Option<crate::evide
         (r.live() || r.unreadable)
             && (job.is_some() && r.short_id == job
                 || Some(&r.session_id) == current.as_ref()
-                || (labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
+                || (labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
     })
 }
 

@@ -69,14 +69,23 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         .collect();
     // (joined by job id, never by session id alone: a process with no job on a
     // stopped job's conversation is its own row, section 4)
+    // A job row matches its CLI row by job id (the CLI names a stopped job by
+    // its birth id, the file row the conversation it runs now; acceptance
+    // F1), a row with no job by session id.
+    let same_row = |c: &SessionRow, r: &SessionRow| match (&c.short_id, &r.short_id) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => c.session_id == r.session_id,
+        _ => false,
+    };
     for r in rows.iter_mut().filter(|r| r.pid.is_none()) {
-        if let Some(c) = cli_rows.iter().find(|c| c.session_id == r.session_id && c.short_id == r.short_id && c.pid.is_some()) {
+        if let Some(c) = cli_rows.iter().find(|c| same_row(c, r) && c.pid.is_some()) {
             r.pid = c.pid;
             r.status = c.status.clone().or(Some("unknown".into()));
         }
     }
     let seen: HashSet<String> = rows.iter().map(|r| r.session_id.clone()).collect();
-    rows.extend(cli_rows.into_iter().filter(|r| !seen.contains(&r.session_id)));
+    let seen_jobs: HashSet<String> = rows.iter().filter_map(|r| r.short_id.clone()).collect();
+    rows.extend(cli_rows.into_iter().filter(|r| !seen.contains(&r.session_id) && !r.short_id.as_ref().is_some_and(|j| seen_jobs.contains(j))));
     // Not rows at all (plan-v4 section 6): sessions labelled for another
     // nimitz home (the hook writes no line for them either), and, for a grace
     // time after their session file appeared, Claude Code's transient
@@ -86,7 +95,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let started: HashSet<&str> = events.iter().filter(|e| e.event == "SessionStart").filter_map(|e| e.session_id.as_deref()).collect();
     let mut transient: Vec<String> = vec![];
     rows.retain(|r| {
-        if labels.get(&r.session_id).is_some_and(|l| crate::registry::other_home(env, l)) {
+        if labels.get(&evidence::row_key(r)).is_some_and(|l| crate::registry::other_home(env, l)) {
             return false;
         }
         let young = r.appeared_at.is_some_and(|t| now - t < TRANSIENT_GRACE_S);
@@ -165,12 +174,13 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let retired_job: HashMap<&str, &str> = reg.retired.iter().filter_map(|(id, rec)| Some((rec.job.as_deref()?, id.as_str()))).collect();
     // labelled sessions in another folder than their identity's (BUG-30)
     let mut misplaced: Vec<(String, SessionRow)> = vec![];
-    // copies of a ship's conversation (plan-v4 section 6), by session id: how
-    // the copy was told (`SessionInfo::copy`)
+    // copies of a ship's conversation (plan-v4 section 6), by row key (job,
+    // else session id): how the copy was told (`SessionInfo::copy`)
     let mut copies: HashMap<String, String> = HashMap::new();
-    let unlabelled = |r: &SessionRow| !labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false);
+    let unlabelled = |r: &SessionRow| !labels.get(&evidence::row_key(r)).map(evidence::is_labelled).unwrap_or(false);
+    let job_rows: HashSet<&str> = rows.iter().filter_map(|r| r.short_id.as_deref()).collect();
     for r in &rows {
-        let by_labels = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(String::as_str);
+        let by_labels = labels.get(&evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")).map(String::as_str);
         let job = r.short_id.as_deref();
         let by_job = job.and_then(|j| job_of.get(j).copied());
         let by_current = r.session_ids().find_map(|sid| current_of.get(sid).copied());
@@ -187,7 +197,15 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             // its lineage, not the one it runs now): a `--resume` of that id
             // by hand, which is a copy of the ship (section 6, rule b)
             if by_job.is_none() && by_current.is_none() && by_folder_labels.is_none() && by_lineage.is_some() && Id(owner.to_string()).role() == Role::Ship && unlabelled(r) {
-                copies.insert(r.session_id.clone(), "resume".into());
+                copies.insert(evidence::row_key(r), "resume".into());
+            }
+            // an unlabelled JOB on the conversation the ship runs now while the
+            // ship's own job row is there: a `--bg --resume` by a non-birth id
+            // (Claude Code 2.1.292 starts a new job named after that id,
+            // acceptance F1); a copy by its job, never the member's session
+            let own_row_there = reg.identities.get(owner).and_then(|x| x.job.as_deref()).is_some_and(|j| job_rows.contains(j));
+            if by_job.is_none() && by_current.is_some() && job.is_some() && own_row_there && Id(owner.to_string()).role() == Role::Ship && unlabelled(r) {
+                copies.insert(evidence::row_key(r), "job".into());
             }
             by_identity.entry(owner.to_string()).or_default().push(r.clone());
             claimed.insert(r.session_id.clone());
@@ -265,7 +283,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             Some((id, how)) => {
                 by_identity.entry(id.0.clone()).or_default().push(r.clone());
                 claimed.insert(r.session_id.clone());
-                copies.insert(r.session_id.clone(), how.into());
+                copies.insert(evidence::row_key(r), how.into());
             }
             None if !here.is_empty() => {
                 users_own.insert(r.session_id.clone());
@@ -443,7 +461,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             || legacy_names.contains_key(&r.name)
     };
     for r in rows.iter().filter(|r| !claimed.contains(&r.session_id) && !users_own.contains(&r.session_id)) {
-        if labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false) {
+        if labels.get(&evidence::row_key(r)).map(evidence::is_labelled).unwrap_or(false) {
             continue; // labelled but unconfigured: reported above
         }
         if in_scope(r) {
@@ -545,7 +563,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     }
 
     // name.taken: a member's expected name held by a live session that is not its own.
-    let all_rows_info: Vec<SessionInfo> = rows.iter().map(|r| r.info(labels.get(&r.session_id).cloned().unwrap_or_default())).collect();
+    let all_rows_info: Vec<SessionInfo> = rows.iter().map(|r| r.info(labels.get(&evidence::row_key(r)).cloned().unwrap_or_default())).collect();
     for f in &mut snap.fleets {
         let mut fix = |m: &mut Member| {
             let own: HashSet<&str> = m.session.iter().chain(m.extra_rows.iter()).map(|s| s.session_id.as_str()).collect();
@@ -687,13 +705,13 @@ fn build_member(
     // beats the job row.
     let current = rec.and_then(|r| r.session.clone());
     let own = |r: &SessionRow| {
-        !copies.contains_key(&r.session_id)
+        !copies.contains_key(&evidence::row_key(r))
             && (rec.map(|x| x.job.is_some() && x.job == r.short_id || r.session_ids().any(|sid| x.session_ids().any(|y| y == sid))).unwrap_or(false)
-                || labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0))
+                || labels.get(&evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0))
     };
     let info = |r: &SessionRow| {
-        let mut i = r.info(labels.get(&r.session_id).cloned().unwrap_or_default());
-        i.copy = copies.get(&r.session_id).cloned();
+        let mut i = r.info(labels.get(&evidence::row_key(r)).cloned().unwrap_or_default());
+        i.copy = copies.get(&evidence::row_key(r)).cloned();
         i
     };
     let primary_at = rec

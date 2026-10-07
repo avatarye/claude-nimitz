@@ -264,19 +264,32 @@ pub fn row_labels(r: &SessionRow, by_pid: &HashMap<(i64, String), BTreeMap<Strin
     }
 }
 
-/// Labels per session id, row by row (`row_labels`); where two rows share a
-/// conversation (a job row and a process holding it), the live one's labels
-/// win. Sessions with no row keep their newest SessionStart's labels.
+/// The key a row's labels and copy verdict are kept under: its job (short
+/// id), else its session id. Two jobs can run one conversation (a wake by an
+/// id that is not the job's birth id starts a second job on it, acceptance
+/// F1), so a session id alone does not name a row.
+pub fn row_key(r: &SessionRow) -> String {
+    r.short_id.clone().unwrap_or_else(|| r.session_id.clone())
+}
+
+/// Labels per row (`row_labels`, under `row_key`), and per session id: where
+/// two rows with no job share a conversation (a process holding it), the live
+/// one's labels win under the session id. Sessions with no row keep their
+/// newest SessionStart's labels under their id.
 pub fn session_labels(events: &[Event], rows: &[SessionRow]) -> HashMap<String, BTreeMap<String, String>> {
     let by_sid = labels_by_session(events);
     let by_pid = labels_by_pid_session(events);
     let mut out = by_sid.clone();
     let mut decided: std::collections::HashSet<String> = Default::default();
     for r in rows {
+        let mine = row_labels(r, &by_pid, &by_sid);
+        if r.short_id.is_some() {
+            out.insert(row_key(r), mine.clone());
+        }
         if decided.contains(&r.session_id) && r.pid.is_none() {
             continue;
         }
-        out.insert(r.session_id.clone(), row_labels(r, &by_pid, &by_sid));
+        out.insert(r.session_id.clone(), mine);
         if r.pid.is_some() {
             decided.insert(r.session_id.clone());
         }
