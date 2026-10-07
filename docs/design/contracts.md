@@ -569,6 +569,17 @@ when it could not be read (never typed into). `herdr::parse_snapshot` is the
 pure reader; the test `fixture_snapshot_shape` runs it on the 0.9.3 capture
 and on the fake's `api snapshot`, which must carry the same field set.
 
+A pane's session is taken only when its foreground backs Herdr's claim
+(`evidence::claim_backed`, applied in the adapter to `panes()` and `shape()`):
+a foreground process names the session (`--resume <sid>`), attaches to its
+job (`claude attach <job>`), or has a session file (`sessions/<pid>.json`)
+that names it. Herdr learns a pane's session from its own SessionStart hook,
+which names the pane by the process's inherited `HERDR_PANE_ID`; a background
+job inherits the pane id of whoever launched it (or the daemon's), so the
+claim alone can put a ship in its commodore's pane. An unbacked claim leaves
+the pane with no session (`ShapePane.claimed` keeps it for the agent-view
+test, R-24); nothing is typed and no member is shown there on it.
+
 `NIMITZ_STATE/active.json` (`nimitz_core::active`, version 1): the members
 live at the last write, by id: `{job, session, status (busy|idle|needs-you|
 unknown), waiting_for, attached, place {workspace_id, workspace, tab_id, tab,

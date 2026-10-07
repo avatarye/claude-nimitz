@@ -1103,3 +1103,62 @@ mod tests {
     }
 
 }
+
+/// Does what runs in a pane back its multiplexer's claim that the pane shows
+/// session `sid`? Herdr learns a pane's session from its own SessionStart
+/// hook, which names the pane by the process's inherited `HERDR_PANE_ID`: a
+/// background job carries the pane id of whoever launched it (or the
+/// daemon's), so the claim alone can name the wrong pane (a ship's session in
+/// its commodore's pane). A claim stands when a foreground process
+/// (`procs`: argv and pid) names the session (`--resume <sid>`), attaches to
+/// its job (`claude attach <job>`), or has a session file
+/// (`sessions/<pid>.json`) that names it.
+pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], sid: &str) -> bool {
+    let job_of = |short: &str| -> bool {
+        if sid.starts_with(short) {
+            return true;
+        }
+        let row = std::fs::read(claude_home.join("jobs").join(short).join("state.json")).ok().and_then(|b| first_json(&b));
+        if row.as_ref().is_some_and(|v| ["sessionId", "resumeSessionId"].iter().any(|k| v.get(k).and_then(|x| x.as_str()) == Some(sid))) {
+            return true;
+        }
+        std::fs::read_dir(claude_home.join("sessions")).into_iter().flatten().flatten().filter_map(|e| std::fs::read(e.path()).ok().and_then(|b| first_json(&b))).any(|v| v.get("jobId").and_then(|x| x.as_str()) == Some(short) && v.get("sessionId").and_then(|x| x.as_str()) == Some(sid))
+    };
+    procs.iter().any(|(argv, pid)| {
+        argv.iter().any(|a| a == sid)
+            || argv.windows(2).any(|w| w[0] == "attach" && job_of(&w[1]))
+            || pid.is_some_and(|p| {
+                std::fs::read(claude_home.join("sessions").join(format!("{p}.json"))).ok().and_then(|b| first_json(&b)).and_then(|v| v.get("sessionId").and_then(|x| x.as_str()).map(|x| x == sid)).unwrap_or(false)
+            })
+    })
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::claim_backed;
+
+    /// A pane's session claim stands on its foreground: the session named in
+    /// the argv, an attach of its job (state.json or a session file), or the
+    /// foreground pid's session file. A claude process whose own session file
+    /// names another session does not back it (a ship's id in its
+    /// commodore's pane).
+    #[test]
+    fn a_claim_stands_only_on_what_runs_in_the_pane() {
+        let td = tempfile::tempdir().unwrap();
+        let ch = td.path();
+        std::fs::create_dir_all(ch.join("sessions")).unwrap();
+        std::fs::create_dir_all(ch.join("jobs/aaaa1111")).unwrap();
+        std::fs::write(ch.join("jobs/aaaa1111/state.json"), r#"{"sessionId":"aaaa1111-birth","resumeSessionId":"s-after-clear"}"#).unwrap();
+        std::fs::write(ch.join("sessions/700.json"), r#"{"pid":700,"sessionId":"s-commodore","jobId":null}"#).unwrap();
+        let p = |argv: &[&str], pid: Option<i64>| vec![(argv.iter().map(|x| x.to_string()).collect::<Vec<_>>(), pid)];
+        assert!(claim_backed(ch, &p(&["claude", "--resume", "s-ship"], None), "s-ship"));
+        assert!(claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-after-clear"));
+        assert!(claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "aaaa1111-birth"));
+        assert!(claim_backed(ch, &p(&["claude"], Some(700)), "s-commodore"));
+        // the misattribution: the commodore's process, Herdr says the ship's session
+        assert!(!claim_backed(ch, &p(&["claude"], Some(700)), "s-ship"));
+        assert!(!claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-ship"));
+        assert!(!claim_backed(ch, &p(&["zsh"], Some(1)), "s-ship"));
+        assert!(!claim_backed(ch, &[], "s-ship"), "an unreadable foreground backs nothing");
+    }
+}

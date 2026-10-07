@@ -1834,6 +1834,33 @@ fn a_closed_pipe_never_panics() {
     assert!(o.status.code() == Some(0) || o.status.signal() == Some(13) || o.status.code() == Some(141), "{:?}", o.status);
 }
 
+/// Herdr's own hook names a pane by the process's inherited HERDR_PANE_ID,
+/// so a background ship launched from its commodore's pane reports the
+/// commodore's pane as its own. nimitz takes a pane's session only when the
+/// pane's foreground backs it: the ship is never shown in the lead's pane.
+#[test]
+fn a_ship_is_never_shown_in_its_commodores_pane_on_herdrs_word_alone() {
+    let sb = Sb::new(true);
+    sb.pane_for("MAIN/ARGOS");
+    let commodore = sb.member("MAIN/ARGOS")["session"]["session_id"].as_str().unwrap().to_string();
+    let ship = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string();
+    // the commodore runs in the pane; Herdr's agent list says the ship's session
+    sb.herdr_world(|w| {
+        w["panes"][1]["foreground"] = serde_json::json!(["claude", "--resume", commodore]);
+        w["panes"][1]["agent_session"]["value"] = Value::from(ship.as_str());
+    });
+    let s = sb.status();
+    let fleets = s["fleets"].as_array().unwrap();
+    let all: Vec<&Value> = fleets.iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter().flat_map(|q| q["ships"].as_array().unwrap().iter())).collect();
+    let clean = all.iter().find(|m| m["id"] == "MAIN/ARGOS/CLEAN").unwrap();
+    assert!(clean["pane"].is_null(), "the ship is not in the commodore's pane: {clean}");
+    // a backed claim still stands: the pane's foreground names the ship's session
+    sb.herdr_world(|w| w["panes"][1]["foreground"] = serde_json::json!(["claude", "--resume", ship]));
+    let s = sb.status();
+    let clean = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter().flat_map(|q| q["ships"].as_array().unwrap().iter())).find(|m| m["id"] == "MAIN/ARGOS/CLEAN").cloned().unwrap();
+    assert_eq!(clean["pane"], "w1:p2", "{clean}");
+}
+
 /// A hook always exits 0, even when Claude Code has closed its pipe before
 /// the hook writes its context (no SIGPIPE death, no panic).
 #[test]

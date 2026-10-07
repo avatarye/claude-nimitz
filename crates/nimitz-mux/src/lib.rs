@@ -53,7 +53,13 @@ pub struct ShapePane {
     pub cwd: String,
     pub title: String,
     pub agent: Option<String>,
+    /// the session the pane shows, when its foreground backs the claim
+    /// (`evidence::claim_backed`)
     pub session_id: Option<String>,
+    /// the multiplexer's own claim, backed or not (Herdr's hook names a pane
+    /// by an inherited `HERDR_PANE_ID`); read only to tell the agent view
+    /// from the attach it replaced (R-24)
+    pub claimed: Option<String>,
     /// the multiplexer's state for the pane's agent (idle|working|blocked|done|unknown)
     pub state: String,
     pub foreground: Option<Vec<String>>,

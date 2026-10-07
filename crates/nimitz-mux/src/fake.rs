@@ -407,7 +407,10 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                 return err("pane:process-info", "pane_not_found", &format!("pane {target} not found"));
             };
             // the foreground process group: the shell alone when idle (herdr-shape.md, PaneProcessInfo)
-            let argv: Vec<String> = p.get("foreground").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["zsh".into()]);
+            // (a pane that shows an agent and names no foreground runs that
+            // session: `claude --resume <its id>`, which backs Herdr's claim)
+            let shown = p.pointer("/agent_session/value").and_then(Value::as_str).map(|sid| vec!["claude".to_string(), "--resume".into(), sid.into()]);
+            let argv: Vec<String> = p.get("foreground").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).or(shown).unwrap_or_else(|| vec!["zsh".into()]);
             let pid = p.get("pid").and_then(Value::as_i64).unwrap_or(4242);
             let proc_ = json!({"pid": pid, "name": argv.first().cloned().unwrap_or_default(), "argv0": argv.first().cloned().unwrap_or_default(),
                                "argv": argv, "cmdline": argv.join(" "), "cwd": s(p, "cwd")});
