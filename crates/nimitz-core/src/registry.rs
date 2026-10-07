@@ -6,7 +6,9 @@ use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-/// Current contents. A missing file is a fresh registry for this machine. A
+/// Current contents. A missing file is a fresh registry for this machine
+/// (unless `registry.json.bak` holds identities: then the file was lost, and
+/// the copy and the events rebuild it). A
 /// file that does not parse is never replaced in silence: it is kept as
 /// `registry.json.corrupt-<ts>`, the registry is rebuilt from `registry.json.bak`
 /// (the last good copy) and the SessionStart lines in events.jsonl, and `health`
@@ -20,24 +22,54 @@ pub fn load(env: &Env) -> Registry {
 /// The flag says the file on disk is still a 0.3.x (v1) registry. A file
 /// that cannot be read (EACCES, EIO: anything but "not there") reads as a
 /// fresh registry for the read-only callers; `update` refuses to write over
-/// it (`read_registry`).
+/// it (`read_registry`). What a reader gets is this home's view: the
+/// bindings of another home are stripped in memory (`drop_other_homes`).
 fn load_with(env: &Env, locked: bool) -> (Registry, bool) {
-    load_checked(env, locked).unwrap_or_else(|_| (fresh(env), false))
+    let Loaded { mut r, v1, .. } = load_checked(env, locked).unwrap_or_else(|_| Loaded { r: fresh(env), v1: false, dirty: false });
+    drop_other_homes(env, &mut r);
+    (r, v1)
 }
 
-/// `load_with`, with the read error when the file is there but unreadable:
-/// a fresh registry must never be written over it.
-fn load_checked(env: &Env, locked: bool) -> std::io::Result<(Registry, bool)> {
+/// What a load found. `v1`: the file is a 0.3.x one. `dirty`: the shape in
+/// memory differs from the file (a v1 file, tenders moved to `retired`, a
+/// lost file rebuilt from the last good copy), so a writer saves it even
+/// when it changes nothing itself.
+struct Loaded {
+    r: Registry,
+    v1: bool,
+    dirty: bool,
+}
+
+/// `load_with` before the strip, with the read error when the file is there
+/// but unreadable: a fresh registry must never be written over it. What is
+/// on disk, every home's bindings included: the shape a writer works on.
+fn load_checked(env: &Env, locked: bool) -> std::io::Result<Loaded> {
+    let mut rebuilt = false;
     let mut r = match std::fs::read_to_string(env.registry_path()) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => fresh(env),
+        // not there: fresh, unless the last good copy says the file was lost
+        // (an rm by hand): then the copy and the events rebuild it, and a
+        // locked writer saves the result
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match parse_file(&bak_path(env)).filter(|b| !b.identities.is_empty()) {
+            Some(_) => {
+                rebuilt = true;
+                rebuild(env).0
+            }
+            None => fresh(env),
+        },
         Err(e) => return Err(std::io::Error::new(e.kind(), format!("registry {}: {e}", env.registry_path().display()))),
         Ok(raw) => match serde_json::from_str(&raw) {
             Ok(r) => r,
-            Err(_) if locked => recover_locked(env),
-            Err(_) => match lock(env) {
-                Ok(_lock) => recover_locked(env),
-                Err(_) => rebuild(env).0, // read-only: rebuild in memory only
-            },
+            Err(_) => {
+                rebuilt = true; // the file does not parse: memory holds the rebuild
+                if locked {
+                    recover_locked(env)
+                } else {
+                    match lock(env) {
+                        Ok(_lock) => recover_locked(env),
+                        Err(_) => rebuild(env).0, // read-only: rebuild in memory only
+                    }
+                }
+            }
         },
     };
     let v1 = r.version < REGISTRY_VERSION;
@@ -45,10 +77,27 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<(Registry, bool)> {
     // 8) and `current` becomes `session` with the job filled from the job rows
     // (section 2). A read never writes; the next `update` saves the v2 shape
     // and keeps the old file as `registry.json.v1`.
-    crate::migrate::retire_tenders(&mut r);
+    let moved = crate::migrate::retire_tenders(&mut r);
     crate::migrate::registry_v2(env, &mut r);
-    drop_other_homes(env, &mut r);
-    Ok((r, v1))
+    Ok(Loaded { r, v1, dirty: v1 || moved > 0 || rebuilt })
+}
+
+/// Does job `j` have a row (`jobs/<j>/state.json`) whose saved labels name
+/// another `NIMITZ_HOME`? A row that is not there, or not readable, is not.
+fn foreign_row(env: &Env, j: &str) -> bool {
+    std::fs::read(env.claude_home.join("jobs").join(j).join("state.json"))
+        .ok()
+        .and_then(|b| crate::evidence::first_json(&b))
+        .map(|d| other_home(env, &crate::evidence::job_labels(&d)))
+        .unwrap_or(false)
+}
+
+/// Does job `j` have a row of this home? The binding table's "another job
+/// whose row still exists" (`dup.job`): a row of another home does not
+/// count, so a binding the other home's hook left in a shared `NIMITZ_STATE`
+/// never keeps this home's own job from binding.
+pub fn job_row_of_this_home(env: &Env, j: &str) -> bool {
+    env.claude_home.join("jobs").join(j).join("state.json").is_file() && !foreign_row(env, j)
 }
 
 /// Strip every binding to a job of another `NIMITZ_HOME` (the job's saved
@@ -58,22 +107,16 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<(Registry, bool)> {
 /// one `NIMITZ_STATE` it bound the identity here. The record keeps this
 /// home's own history: the foreign lineage entries go, `job` and `session`
 /// fall back to the newest entry left, and an identity with nothing of its
-/// own left goes. A read strips in memory; the next write saves the result.
+/// own left goes. Readers strip in memory only; a write never saves the
+/// stripped shape: which home is "other" depends on the env of the process,
+/// and the hook of the other home (its env is that home) would strip and
+/// save away every record of this one (acc-D F1: a registry left with one
+/// identity). On disk every home's bindings stay side by side.
 fn drop_other_homes(env: &Env, r: &mut Registry) {
-    let jobs = env.claude_home.join("jobs");
     let mut named: Vec<String> = r.identities.values().flat_map(|rec| rec.job.iter().chain(rec.lineage.iter().filter_map(|l| l.job.as_ref())).cloned()).collect();
     named.sort();
     named.dedup();
-    let foreign: std::collections::BTreeSet<String> = named
-        .into_iter()
-        .filter(|job| {
-            std::fs::read(jobs.join(job).join("state.json"))
-                .ok()
-                .and_then(|b| crate::evidence::first_json(&b))
-                .map(|d| other_home(env, &crate::evidence::job_labels(&d)))
-                .unwrap_or(false)
-        })
-        .collect();
+    let foreign: std::collections::BTreeSet<String> = named.into_iter().filter(|job| foreign_row(env, job)).collect();
     if foreign.is_empty() {
         return;
     }
@@ -239,15 +282,43 @@ pub fn machine_label(env: &Env) -> Option<String> {
 }
 
 /// Atomic save under an exclusive lock (the file gets a fresh `updated_at`;
-/// `r` keeps its own).
+/// `r` keeps its own). The same guard as `update`: a save that drops an
+/// identity the file has is refused.
 pub fn save(env: &Env, r: &Registry) -> std::io::Result<()> {
     let _lock = lock(env)?;
+    let on_disk = parse_file(&env.registry_path()).map(|cur| cur.identities.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    refuse_shrink(env, &on_disk, r)?;
     write_unlocked(env, &mut r.clone())
+}
+
+/// The invariant of every write: the registry never shrinks except by an
+/// explicit removal, and no writer removes an identity today. `had` names
+/// the identities the file held when it was read; one that `r` has in
+/// neither `identities` nor `retired` (a tender moved there) is lost, and
+/// the write is refused: the file and `registry.json.bak` stay as they are.
+/// This is the stop for whatever a load or a caller gets wrong (a strip, a
+/// fresh registry over a file read wrong), seen once in a real run as a
+/// registry left with one identity (acc-D F1).
+fn refuse_shrink(env: &Env, had: &[String], r: &Registry) -> std::io::Result<()> {
+    let lost: Vec<&str> = had.iter().filter(|k| !r.identities.contains_key(*k) && !r.retired.contains_key(*k)).map(String::as_str).collect();
+    if lost.is_empty() {
+        return Ok(());
+    }
+    Err(std::io::Error::other(format!(
+        "registry {}: the write would drop {} of {} identities ({}); a registry never shrinks except by an explicit removal, so nothing was written",
+        env.registry_path().display(),
+        lost.len(),
+        had.len(),
+        lost.join(", ")
+    )))
 }
 
 /// Lock, load, apply `f`, save. The only way to change the registry. The
 /// first write over a v1 file keeps that file as `registry.json.v1`. A file
 /// that is there but cannot be read is an error: nothing is written over it.
+/// `f` works on what is on disk, every home's bindings included (the view a
+/// reader gets strips the other homes', `drop_other_homes`), and a result
+/// with fewer identities than the file is refused (`refuse_shrink`).
 pub fn update<T>(env: &Env, f: impl FnOnce(&mut Registry) -> T) -> std::io::Result<T> {
     let lock = lock(env)?;
     update_locked(env, lock, f)
@@ -261,12 +332,19 @@ pub fn try_update<T>(env: &Env, budget: std::time::Duration, f: impl FnOnce(&mut
 }
 
 fn update_locked<T>(env: &Env, _lock: File, f: impl FnOnce(&mut Registry) -> T) -> std::io::Result<T> {
-    let (mut r, v1) = load_checked(env, true)?;
+    let Loaded { mut r, v1, dirty } = load_checked(env, true)?;
     if v1 && !v1_path(env).exists() {
         let _ = std::fs::copy(env.registry_path(), v1_path(env));
     }
+    let had: Vec<String> = r.identities.keys().cloned().collect();
+    let before = r.clone();
     let out = f(&mut r);
-    write_unlocked(env, &mut r)?;
+    refuse_shrink(env, &had, &r)?;
+    // a closure that changed nothing (the hook's held, dup.job, elsewhere and
+    // same judgements) writes nothing: the file keeps its stamp
+    if dirty || r != before {
+        write_unlocked(env, &mut r)?;
+    }
     Ok(out)
 }
 
@@ -438,14 +516,13 @@ pub fn apply_event(env: &Env, r: &mut Registry, e: &Event) -> Binding {
         bind_into(&mut r.identities, &id, id.role(), &id.name(), "", None, sid, &via, e.ts);
         return Binding::Bound(via);
     }
-    let jobs = env.claude_home.join("jobs");
     let job = match (e.kind.as_deref(), &e.job) {
         (Some("unknown"), None) => job_running(env, sid),
         (_, j) => j.clone(),
     };
     let cwd = e.cwd.clone().unwrap_or_default();
     let folder = identity_folder(env, r, &id);
-    apply_start(r, &id, &cwd, folder.as_deref(), job.as_deref(), sid, e.source.as_deref(), e.ts, |j| jobs.join(j).join("state.json").is_file())
+    apply_start(r, &id, &cwd, folder.as_deref(), job.as_deref(), sid, e.source.as_deref(), e.ts, |j| job_row_of_this_home(env, j))
 }
 
 /// The job whose `state.json` runs `sid` now (`resumeSessionId`, else `sessionId`).
@@ -459,9 +536,12 @@ fn job_running(env: &Env, sid: &str) -> Option<String> {
 }
 
 /// The identity's folder: what the registry recorded, else the config (one
-/// TOML read, only for an identity that never bound).
+/// TOML read, only for an identity that never bound). A record whose job is
+/// a row of another home has that home's folder in `cwd` (its hook wrote
+/// it): not this home's, so the config decides.
 pub fn identity_folder(env: &Env, r: &Registry, id: &Id) -> Option<PathBuf> {
-    match r.identities.get(&id.0).map(|x| x.cwd.clone()).filter(|c| !c.is_empty()) {
+    let own = r.identities.get(&id.0).filter(|x| !x.job.as_deref().is_some_and(|j| foreign_row(env, j)));
+    match own.map(|x| x.cwd.clone()).filter(|c| !c.is_empty()) {
         Some(c) => Some(PathBuf::from(c)),
         None => crate::config::load_fleet(env, id.fleet()).ok().and_then(|f| crate::config::member_dir(env, &f, id)),
     }
@@ -631,6 +711,76 @@ mod tests {
         let h = health(&env);
         std::fs::set_permissions(&env.state, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(h.iter().any(|i| i.code == "registry.readonly"), "{h:?}");
+    }
+
+    /// The write guard: a registry never shrinks except by an explicit
+    /// removal (none exists today). A closure that drops an identity, or a
+    /// save of a smaller registry, is refused; the file and the last good
+    /// copy stay as they were. A tender moved to `retired` is not a loss.
+    #[test]
+    fn a_write_that_drops_an_identity_is_refused_and_the_file_stays() {
+        let (_td, env) = test_env();
+        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+        update(&env, |r| bind(r, &ship, Role::Ship, &ship.name(), "/w", "s1", "launch", 1.0)).unwrap();
+        update(&env, |r| bind(r, &Id::admiral("MAIN"), Role::Admiral, "[MAIN]-ADMIRAL", "/a", "a1", "launch", 2.0)).unwrap();
+        let (file, bak) = (std::fs::read_to_string(env.registry_path()).unwrap(), std::fs::read_to_string(bak_path(&env)).unwrap());
+        for (what, res) in [
+            ("clear", update(&env, |r| r.identities.clear()).map(|_| ())),
+            ("remove one", update(&env, |r| drop(r.identities.remove("MAIN"))).map(|_| ())),
+            ("replace with a fresh one", update(&env, |r| *r = fresh(&env)).map(|_| ())),
+            ("save a smaller one", save(&env, &fresh(&env))),
+        ] {
+            let err = res.unwrap_err().to_string();
+            assert!(err.contains("would drop") && err.contains("MAIN") && err.contains("nothing was written"), "{what}: {err}");
+            assert_eq!(std::fs::read_to_string(env.registry_path()).unwrap(), file, "{what}: the file changed");
+            assert_eq!(std::fs::read_to_string(bak_path(&env)).unwrap(), bak, "{what}: the last good copy changed");
+        }
+        // a write that keeps every identity goes through, and so does a tender's move to retired
+        update(&env, |r| r.machine = "west-mac".into()).unwrap();
+        assert_eq!(load(&env).machine, "west-mac");
+        let mut v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        v["identities"]["MAIN/ARGOS/~fix"] = serde_json::json!({"role": "tender", "name": "[MAIN.ARGOS]-COMMODORE/fix", "cwd": "/sq", "session": "t1", "lineage": []});
+        std::fs::write(env.registry_path(), v.to_string()).unwrap();
+        update(&env, |_| ()).unwrap();
+        let r = load(&env);
+        assert_eq!(r.identities.len(), 2);
+        assert!(r.retired.contains_key("MAIN/ARGOS/~fix"));
+    }
+
+    /// A registry.json that is gone while its last good copy holds
+    /// identities was lost, not reset: the copy and the events rebuild it,
+    /// and the next write saves it. A copy with nothing in it is no copy.
+    #[test]
+    fn a_lost_registry_file_is_rebuilt_from_the_last_good_copy_not_replaced_by_a_fresh_one() {
+        let (_td, env) = test_env();
+        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+        update(&env, |r| bind_job(r, &ship, Role::Ship, &ship.name(), "/w", Some("j1"), "s1", "launch", 1.0)).unwrap();
+        update(&env, |r| bind(r, &Id::admiral("MAIN"), Role::Admiral, "[MAIN]-ADMIRAL", "/a", "a1", "launch", 2.0)).unwrap();
+        std::fs::remove_file(env.registry_path()).unwrap();
+        let r = load(&env);
+        assert_eq!(r.identities.len(), 2, "a read sees the copy");
+        assert!(!env.registry_path().exists(), "a read writes nothing");
+        // the hook's write: the identity it binds joins the two, nothing is lost
+        let ev = Event {
+            ts: 5.0,
+            event: "SessionStart".into(),
+            session_id: Some("s2".into()),
+            source: Some("clear".into()),
+            labels: [("NIMITZ_ID".to_string(), ship.0.clone()), ("NIMITZ_ROLE".to_string(), "ship".into())].into(),
+            job: Some("j1".into()),
+            kind: Some("bg".into()),
+            ..Default::default()
+        };
+        let b = try_update(&env, std::time::Duration::from_secs(1), |r| apply_event(&env, r, &ev)).unwrap();
+        assert_eq!(b, Binding::Bound("clear".into()));
+        let r = load(&env);
+        assert_eq!(r.identities.len(), 2);
+        assert_eq!(r.identities[&ship.0].lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["s1", "s2"]);
+        assert!(r.identities.contains_key("MAIN"));
+        // no copy, or an empty one: a missing file is a fresh registry
+        std::fs::remove_file(env.registry_path()).unwrap();
+        std::fs::write(bak_path(&env), serde_json::to_string(&fresh(&env)).unwrap()).unwrap();
+        assert!(load(&env).identities.is_empty());
     }
 
     #[test]

@@ -113,7 +113,15 @@ Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 ## 5. Registry and events (`NIMITZ_STATE`)
 
 `registry.json` (atomic write: temp + rename; `registry.lock` with `flock`; every
-save also writes `registry.json.bak`, the last good copy). A `registry.json` that
+save also writes `registry.json.bak`, the last good copy). **A registry never
+shrinks except by an explicit removal** (none exists in 0.4.0): every write
+(`registry::update`, `save`) is refused, the file and the `.bak` untouched, when
+its result lacks an identity the file holds (`retired`, where a 0.3.x tender
+moves, counts as kept); a write that changes nothing (a hook that judged `held`,
+`dup.job`, `elsewhere` or `same`) does not touch the file. A `registry.json` that
+is missing while the `.bak` holds identities was lost, not reset: the copy and
+the SessionStart lines rebuild it (a read in memory; the next write saves it).
+A `registry.json` that
 does not parse is never replaced in silence: it is kept as
 `registry.json.corrupt-<ts>` (with a `.txt` note), the registry is rebuilt from
 the `.bak` and the SessionStart lines in `events.jsonl` (the same binding rules
@@ -175,10 +183,10 @@ is `binding` `none`), `registry::apply_start` says what happened:
 | labels | session file | effect | `binding` |
 | --- | --- | --- | --- |
 | this home's identity | `jobId` = the identity's job, or none set yet | `job = jobId`, `session = session_id`, lineage appended with `via` from `source` (startup -> launch; resume; clear; compact: no new entry for the same conversation; fork -> branch in the same job, else fork). A wake (resume, relaunch) of the conversation it already runs adds no entry and never overwrites how it was born: after a stop and a start the lineage is still `[launch]` (or `[launch, clear]`) | `bound` (`same` when nothing moved) |
-| same | another `jobId` whose job row still exists | nothing rebound: two jobs claim one identity | `dup.job` |
+| same | another `jobId` whose job row still exists (a row of this home: `registry::job_row_of_this_home`; a row whose saved labels name another home never holds the identity) | nothing rebound: two jobs claim one identity | `dup.job` |
 | same | `jobId` null (interactive or SDK) | nothing bound: a process with no job holds the conversation | `held` |
 | same | a `cwd` that is not the identity's folder (the registry's `cwd`, else the config) | nothing bound: an impostor (BUG-30, BUG-55) | `elsewhere` |
-| labels of another `NIMITZ_HOME` | any | ignored by every reader. The hook itself cannot tell (its env is the session's env, and the `--settings` label wins over a project settings env, so `env.home` is the label): with one `NIMITZ_STATE` shared by two homes it writes its line and binds the identity there. `registry::load` strips such a binding (`drop_other_homes`: the lineage entries of a job whose row's saved labels name another home go, `job` and `session` fall back to the newest entry left, an identity with nothing of its own goes), so no reader uses it and this home's own history stays (r3-e2e.md finding 1) | - |
+| labels of another `NIMITZ_HOME` | any | ignored by every reader. The hook itself cannot tell (its env is the session's env, and the `--settings` label wins over a project settings env, so `env.home` is the label): with one `NIMITZ_STATE` shared by two homes it writes its line and binds the identity there. `registry::load` strips such a binding for every reader, in memory only (`drop_other_homes`: the lineage entries of a job whose row's saved labels name another home go, `job` and `session` fall back to the newest entry left, an identity with nothing of its own goes), so no reader uses it and this home's own history stays (r3-e2e.md finding 1). A writer works on the file as it is, every home's bindings side by side, and never saves the stripped shape: which home is "other" is the env of the process, and the hook of the other home (its env is that home; its `NIMITZ_STATE` this one, from a project settings env) would strip and save away every record of this home (acc-D F1: a registry left with one identity and a lone `resume`). A record a foreign hook bound has that home's folder in `cwd`: this home's hook takes the folder from the config then (`identity_folder`) | - |
 | no labels | any | the line only (the snapshot classifies it) | - |
 
 The name is never taken from the SessionStart moment: the snapshot reads it
