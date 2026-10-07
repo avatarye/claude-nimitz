@@ -363,9 +363,14 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
     let id = parse_id(ctx.args.need(0, "id")?)?;
+    let mut plan = Plan { summary: format!("open {id}"), ..Default::default() };
+    // Panes and tabs are the user's terminal: no member opens one.
+    if ctx.caller != Caller::User {
+        plan.refusals.push(refusal("authority", "`nimitz open` is yours alone (it opens a tab in your terminal)".into(), None, Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    }
     let snap = ctx.snap();
     let mux = ctx.mux();
-    let mut plan = Plan { summary: format!("open {id}"), ..Default::default() };
     let Some(m) = member(&snap, &id) else {
         plan.refusals.push(refusal("config.invalid", format!("{id} is not in any fleet config"), None, Some(id)));
         return Ok(finish_plan(ctx, &plan));
@@ -448,18 +453,22 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
     let only = ctx.args.pos.get(1).map(|s| parse_id(s)).transpose()?;
     let snap = ctx.snap();
     let mux = ctx.mux();
-    let mut plan = Plan { summary: format!("layout herdr {}", only.as_ref().map(|i| i.0.as_str()).unwrap_or("(every fleet here)")), ..Default::default() };
-    if mux.name() != "herdr" || !mux.caps().layout {
-        plan.refusals.push(refusal("mux.none", format!("`layout herdr` needs Herdr (multiplexer here: {})", mux.name()), Some(nimitz_mux::missing_mux_fix(&ctx.vars)), None));
-        return Ok(finish_plan(ctx, &plan));
-    }
-    if ctx.caller != Caller::User {
-        plan.refusals.push(refusal("authority", "`nimitz layout` is yours alone".into(), None, None));
-        return Ok(finish_plan(ctx, &plan));
-    }
-    // The layout itself is core's (pure data); this maps it onto the mux.
+    // The layout itself is core's (pure data), and so is its authority (you,
+    // any fleet; an admiral, its own): a caller who may not lay out gets that
+    // refusal first. This maps the plan onto the mux.
     let ships = ctx.args.flag("--ships") && mux.caps().open;
     let mut spec = nimitz_core::layout::plan(&ctx.env, &snap, only.as_ref().map(|i| i.fleet()), ships, &ctx.caller, ctx.force());
+    if spec.plan.refusals.iter().any(|i| i.code == "authority") {
+        return Ok(finish_plan(ctx, &spec.plan));
+    }
+    if mux.name() != "herdr" || !mux.caps().layout {
+        let plan = Plan {
+            summary: spec.plan.summary.clone(),
+            refusals: vec![refusal("mux.none", format!("`layout herdr` needs Herdr (multiplexer here: {})", mux.name()), Some(nimitz_mux::missing_mux_fix(&ctx.vars)), None)],
+            ..Default::default()
+        };
+        return Ok(finish_plan(ctx, &plan));
+    }
     if ctx.args.flag("--ships") && !mux.caps().open {
         spec.plan.warnings.push(Issue { id: None, ..warn_issue(&Id::admiral("-"), format!("{} cannot open panes; no ship tabs", mux.name())) });
     }
@@ -472,9 +481,7 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
             .map(|w| (w.label.clone(), w.tabs.iter().map(|t| (t.label.clone(), t.cmd.clone(), PathBuf::from(&t.cwd))).collect()))
             .collect(),
     };
-    plan.steps = spec.plan.steps;
-    plan.warnings.extend(spec.plan.warnings);
-    plan.refusals.extend(spec.plan.refusals);
+    let plan = spec.plan;
     match ctx.gate(&plan) {
         out::Go::Exit(code) => Ok(code),
         out::Go::Run => match mux.layout(&lp) {

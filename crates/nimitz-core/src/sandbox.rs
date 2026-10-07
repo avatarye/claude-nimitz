@@ -630,7 +630,7 @@ pub fn break_a_config(base: &Path, fleet: &str) {
 pub fn live_session(base: &Path, id: &Id, cwd: &str, bind: bool) -> String {
     let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
     let e = env(&base);
-    let settings = json!({"env": crate::claude::labels_for(&e, id), "worktree": {"bgIsolation": "none"}}).to_string();
+    let settings = crate::claude::settings_json(&e, id, true);
     let short = start(&base, cwd, &id.name(), "bypassPermissions", Some(&settings), "startup", true);
     let sid = job_state(&base, &short).and_then(|j| j.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default();
     if bind {

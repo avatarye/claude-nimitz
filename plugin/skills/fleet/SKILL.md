@@ -42,10 +42,10 @@ One-off work is a subagent in the lead's own session, or a ship.
 | the user (no labels) | everything |
 | admiral | every command inside its own fleet: `start`, `stop`, `relaunch`, `rm`, `sweep`, `adopt` for any member but itself; `up` and `layout herdr` for its fleet; `fleet set`, `squadron new/set/rm`, `ship new/set/rm` in its fleet |
 | commodore | inside its own squadron: `start`, `stop`, `relaunch`, `rm`, `sweep`, `adopt` for its ships; `squadron set` for its squadron; `ship new/set/rm` for its ships |
-| ship | nothing |
+| ship | the read-only commands: `status`, `check`, `rules`, `doctor` (no `--fix`); `signal` to a member it may signal (below); `sweep` of itself (its own stale rows) |
 
 `nimitz` reads the caller from the session's labels. It refuses what the table
-does not allow. Always the user's alone: `init`, `fleet new`, `fleet rm`,
+does not allow. Every member may run `nimitz` (its launch allows `Bash(nimitz *)`). Always the user's alone: `init`, `fleet new`, `fleet rm`,
 `machine add`, `machine rm`, `migrate`, and any session named only by its short
 id that is no member's (a stowaway outside the admiral's fleet, a stray). A
 commodore never removes its own squadron; nobody stops or relaunches itself.
@@ -59,9 +59,9 @@ that the chain does not allow.
 
 | From | May signal |
 | --- | --- |
-| admiral | its commodores (questions and orders) |
+| admiral | every member of its own fleet, commodores and ships (questions and orders) |
 | commodore | its admiral, its ships |
-| ship | its commodore; other ships as the squadron's `comms` rule allows |
+| ship | its commodore; its admiral (a reply); other ships as the squadron's `comms` rule allows |
 
 `comms` in `squadron.toml`: `open` (default), `commodore-only`, or an allow list.
 The user reaches a ship through its commodore: `nimitz signal F/SQ/SHIP <text>`
@@ -73,7 +73,7 @@ types the text into the commodore's pane.
 | --- | --- |
 | First run on a machine | `nimitz init --label <label>`, then `nimitz doctor` |
 | Check the setup | `nimitz doctor` (`--fix` sets `crossSessionInbound` and replaces role briefs an older nimitz wrote) |
-| A role's rules | `nimitz rules <id>` (what every member gets at session start) |
+| A role's rules | `nimitz rules <id>` (what every member gets at session start; a new nimitz hands a running member the changes at its next prompt) |
 | See everything | `nimitz status` |
 | Find problems | `nimitz check [<id>]` |
 | New fleet | `nimitz fleet new <F> [--machine <label>]` |
