@@ -605,14 +605,20 @@ fn issue_labels_mismatch() {
     assert!(has(&w.start(&snap, &m.id, false).refusals, "labels.mismatch"));
 }
 
+/// No row and no transcript: `history.lost` with the `--fresh` fix (one
+/// word, one flag; acceptance env E9); `--force` still cold-launches.
 #[test]
-fn issue_lineage_broken() {
+fn issue_history_lost_with_no_row_and_no_transcript() {
     let w = world();
     let snap = w.snap();
     let id = w.ship("BROKEN");
     let m = w.member(&snap, &id);
-    assert!(has(&m.issues, "lineage.broken"), "{:?}", codes(&m.issues));
-    assert!(has(&w.start(&snap, &id, false).refusals, "lineage.broken"));
+    assert!(has(&m.issues, "history.lost") && !has(&m.issues, "lineage.broken"), "{:?}", codes(&m.issues));
+    let refused = w.start(&snap, &id, false);
+    assert!(has(&refused.refusals, "history.lost"), "{:?}", codes(&refused.refusals));
+    assert!(refused.refusals.iter().all(|i| i.fix.as_deref().is_none_or(|f| f.contains("--fresh"))), "{:?}", refused.refusals);
+    let fresh = sessions::plan_start_with(&w.env, &snap, &id, &Caller::User, sessions::StartOpts { force: false, fresh: true });
+    assert!(fresh.ok() && !has(&fresh.warnings, "history.lost"), "the --fresh plan does not repeat the question: {:?} {:?}", fresh.refusals, fresh.warnings);
     let forced = w.start(&snap, &id, true);
     assert!(forced.ok(), "{:?}", forced.refusals);
     let out = sessions::apply(&w.env, &forced);
@@ -1712,9 +1718,9 @@ fn m11_a_lead_with_no_transcript_cold_launches_and_blocks_nothing() {
     assert!(plan.ok(), "{:?}", plan.refusals);
     let step = w.steps_of(&plan, &adm)[0].clone();
     assert_eq!(step.cmd, claude::launch_bg(&w.env, &adm, "", Some(&claude::lead_prompt(&adm))));
-    // a ship's registry session with no row and no transcript stays lineage.broken (5b)
+    // a ship's registry session with no row and no transcript stays history.lost (5b, E9)
     let broken = w.member(&snap, &w.ship("BROKEN"));
-    assert!(has(&broken.issues, "lineage.broken"));
+    assert!(has(&broken.issues, "history.lost"));
 }
 
 /// 1g / cli-31 / G8: a resume that races the daemon's restart. Claude Code

@@ -330,10 +330,10 @@ pub fn registry_issues(env: &Env, cache: &mut crate::evidence::FileCache, m: &Me
         return vec![];
     }
     vec![issue(
-        "lineage.broken",
+        "history.lost",
         Severity::Error,
-        format!("{}'s current session {current} has no job row and no transcript", m.id),
-        Some(format!("nimitz start {} --force  # cold launch; lineage starts over", m.id)),
+        format!("{}'s current session {current} has no job row and no transcript; a resume has nothing to continue", m.id),
+        Some(format!("nimitz start {} --fresh  # a cold launch; the lineage starts a new entry", m.id)),
         Some(m.id.clone()),
     )]
 }
@@ -617,6 +617,7 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
     }
 
     let lineage_broken = m.issues.iter().any(|i| i.code == "lineage.broken");
+    let history_lost = m.issues.iter().any(|i| i.code == "history.lost");
     match &m.session {
         // row `failed` or broken lineage: cold launch only with --force (row 8)
         Some(p) if p.state.as_deref() == Some("failed") || lineage_broken => {
@@ -640,14 +641,22 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
                 return;
             }
         },
-        None if lineage_broken && !force => {
-            refuse(
-                plan,
-                "lineage.broken",
-                format!("{id}'s recorded session has no job row and no transcript"),
-                Some(format!("nimitz start {id} --force  # cold launch; lineage starts over")),
-                Some(id.clone()),
-            );
+        None if (history_lost || lineage_broken) && !force => {
+            // the gate kept the member's own history.lost as a warning: that
+            // one line is the refusal (one issue, one line)
+            match plan.warnings.iter().position(|i| i.code == "history.lost" && i.id.as_ref() == Some(id)) {
+                Some(at) => {
+                    let w = plan.warnings.remove(at);
+                    plan.refusals.push(w);
+                }
+                None => refuse(
+                    plan,
+                    "history.lost",
+                    format!("{id}'s recorded session has no job row and no transcript; a resume has nothing to continue"),
+                    Some(format!("nimitz start {id} --fresh  # a cold launch; the lineage starts a new entry")),
+                    Some(id.clone()),
+                ),
+            }
             return;
         }
         None => {
@@ -841,7 +850,7 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
 fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: bool) {
     // (lead.intruder rides along too: an intruder in a lead's folder is told
     // and fixed, but it does not hold up the lead's own job)
-    const TABLE_HANDLED: [&str; 7] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "lead.intruder"];
+    const TABLE_HANDLED: [&str; 8] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "history.lost", "lead.intruder"];
     for i in crate::check::check(env, snap, id) {
         let forced_away = force && i.code == "cc.version";
         match i.severity {
@@ -949,6 +958,10 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
     // alone does not make the target's start a second agent anywhere (BUG-38).
     let acting: Vec<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).chain(std::iter::once(id.clone())).collect();
     plan.warnings.retain(|i| i.code != "legacy" || i.id.as_ref().map(|x| acting.contains(x)).unwrap_or(true));
+    // `--fresh` is the answer to a lost history: the plan does not repeat the question
+    if opts.fresh {
+        plan.warnings.retain(|i| !(i.code == "history.lost" && i.id.as_ref() == Some(id)));
+    }
     dedup_issues(&mut plan);
     mark_repairs(&mut plan);
     debug_assert!(no_fork(snap, &plan), "a plan would fork a session: {:?}", plan.steps);

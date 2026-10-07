@@ -192,7 +192,7 @@ fn check_reports_errors_and_scopes_to_an_id() {
     let sb = Sb::new(false);
     let all = sb.run(&["check"]);
     assert_eq!(all.code, 1, "the world has errors:\n{}", all.out);
-    for code in ["name.drift", "dup.live", "folder.missing", "lineage.broken", "config.layout"] {
+    for code in ["name.drift", "dup.live", "folder.missing", "history.lost", "config.layout"] {
         assert!(all.out.contains(code), "{code} missing:\n{}", all.out);
     }
     let one = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);

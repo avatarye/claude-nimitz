@@ -278,7 +278,7 @@ fn a_status_nobody_knows_is_unknown_and_a_stop_says_why_it_ended() {
 fn every_member_carries_its_session_issues() {
     let w = world();
     let snap = w.snap();
-    for (ship, code) in [("DRIFT", "name.drift"), ("NOLABEL", "labels.missing"), ("TWIN", "dup.live"), ("MISLABEL", "labels.mismatch"), ("COPIES", "copy.rows"), ("TAKEN", "copy"), ("BROKEN", "lineage.broken")] {
+    for (ship, code) in [("DRIFT", "name.drift"), ("NOLABEL", "labels.missing"), ("TWIN", "dup.live"), ("MISLABEL", "labels.mismatch"), ("COPIES", "copy.rows"), ("TAKEN", "copy"), ("BROKEN", "history.lost")] {
         let m = w.ship(&snap, ship);
         assert!(m.issues.iter().any(|i| i.code == code), "{ship}: {:?}", m.issues);
     }
