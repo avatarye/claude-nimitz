@@ -366,9 +366,14 @@ fn cli_05_a_spare_session_file_is_ignored_for_the_grace_time() {
     let snap = w.snap();
     assert!(!stowaway(&snap, &sid), "{:?}", snap.stowaways);
     assert!(!check::check(&w.env, &snap, None).iter().any(|i| i.code == "stowaway" && i.message.contains(&sid)));
-    // after the grace time it is classified as normal: a stowaway in the squadron folder
+    // after the grace time it is classified as normal: a stowaway in the squadron
+    // folder. A spare's age is its last touch (the view claims a pre-warmed
+    // process: `startedAt` is old long before), so the file's mtime ages it
     let old = ((evidence::now() - snapshot::TRANSIENT_GRACE_S - 60.0) * 1000.0) as i64;
     w.session_file("28f3d8a7", &sq, json!({"spare": true, "kind": "bg", "startedAt": old}));
+    assert!(!stowaway(&w.snap(), &sid), "an old startedAt alone does not age a spare");
+    let f = std::fs::File::options().write(true).open(w.env.claude_home.join("sessions/28f3d8a7.json")).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(snapshot::TRANSIENT_GRACE_S as u64 + 60)).unwrap();
     assert!(stowaway(&w.snap(), &sid));
 }
 

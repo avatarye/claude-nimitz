@@ -562,6 +562,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
         }
         let status = s(&d, "status");
         let job = s(&d, "jobId");
+        let spare = d.get("spare").and_then(|v| v.as_bool()).unwrap_or(false);
         let live = SessionRow {
             session_id: sid.clone(),
             name: s(&d, "name").unwrap_or_default(),
@@ -581,9 +582,12 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             bridge_session_id: s(&d, "bridgeSessionId"),
             birth_id: None,
             entrypoint: s(&d, "entrypoint"),
-            spare: d.get("spare").and_then(|v| v.as_bool()).unwrap_or(false),
+            spare,
             terminal: terminal_of(&d),
-            appeared_at: [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min),
+            // a spare (the agent view's draft or "new session") is a pre-warmed
+            // process the view claims later: its age is its last touch, so the
+            // grace time (`snapshot::TRANSIENT_GRACE_S`) runs from the claim
+            appeared_at: if spare { mtime_secs(&p) } else { [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min) },
         };
         match job.as_ref().and_then(|j| by_job.get(j)) {
             // a live background process: its job row gains pid, status and the

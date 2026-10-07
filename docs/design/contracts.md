@@ -271,10 +271,12 @@ hook of this home writes no line), so it cannot be recognised: it is
 classified as an unlabelled session (the user's own in a ship folder, a
 stowaway elsewhere in scope). Also not rows, for
 `snapshot::TRANSIENT_GRACE_S` (120 s) after its session file appeared (the
-earliest of the file's birth time, its mtime and `startedAt`), a `spare: true`
-session file (the agent view's "new session" or draft) and a picker (a live
-process with no job, no transcript and no SessionStart yet); after the grace
-time they are classified like any other row. `jobs/pins.json` gives `pinned` (the daemon
+earliest of the file's birth time, its mtime and `startedAt`; for a spare,
+its mtime alone: a pre-warmed process the agent view claims later), a
+`spare: true` session file (the agent view's "new session" or draft, in a
+lead's folder too: no `lead.intruder` for a draft, inside FAIL-2) and a picker
+(a live process with no job, no transcript and no SessionStart yet); after
+the grace time they are classified like any other row. `jobs/pins.json` gives `pinned` (the daemon
 never idle-retires a pinned job; `status` says so). A live session file's
 `tmux` (or a Herdr pane field) is the row's `terminal`, for the fix that says
 where to end a process. nimitz pins each lead's job after it starts and
