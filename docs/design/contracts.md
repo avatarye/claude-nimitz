@@ -609,8 +609,11 @@ No member's command and no hook path runs a Herdr command on inherited
 `HERDR_*` alone (`active::member_mux_vars`): a member's `status`, `up`,
 `layout`, `restore` and a needs-you delivery (`nimitz __notify`) take an
 explicit `NIMITZ_MUX`/`NIMITZ_HERDR_SESSION` as given, else the recorded
-identity's session name as `--session`, else no multiplexer (a record with no
-session name is no multiplexer too). Only the user's own command detects
+identity's session name as `--session` (with its socket when recorded), else
+the recorded default server's socket (`NIMITZ_HERDR_SOCKET`), else no
+multiplexer. The herdr child of such a call gets that server only: its
+inherited `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `HERDR_CLIENT_SOCKET_PATH`
+are removed, and only the recorded socket is set. Only the user's own command detects
 Herdr from its env.
 The E22 hazard (the CLI may resolve a named session's socket regardless of
 the env) is accepted: the shape nimitz reads comes from the same `herdr`

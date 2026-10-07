@@ -88,12 +88,17 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
 ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship)";
 
 fn main() {
-    // a closed pipe (`nimitz status --json | head`) ends the process quietly,
-    // as every command-line tool does (SIGPIPE, exit 141), never with a panic
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // a closed pipe (`nimitz status --json | head`) ends a command quietly, as
+    // every command-line tool does (SIGPIPE, exit 141), never with a panic.
+    // Not a hook (it always exits 0, whatever Claude Code does with its
+    // pipe) nor the internal fakes: there the write error is ignored instead
+    let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__fake-claude" | "__fake-herdr"));
+    if quiet_pipe {
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
     std::process::exit(dispatch(argv));
 }
 
@@ -201,7 +206,9 @@ fn hook(event: &str) -> i32 {
         notify::spawn_delivery(&env, &n);
     }
     if !out.is_empty() {
-        println!("{out}");
+        // a pipe Claude Code already closed is no failure of the hook
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), "{out}");
     }
     0
 }

@@ -264,6 +264,15 @@ impl Herdr {
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
         let mut cmd = Command::new(&self.bin);
         cmd.args(self.argv(args));
+        // a named server (a session name or a recorded socket) is the only
+        // one spoken to: the child herdr inherits this process's env, so
+        // whatever HERDR_* came with it (a pane's, or the daemon's for a
+        // member) goes, and only the recorded socket is set
+        if self.session.is_some() || self.socket.is_some() {
+            for k in ["HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_CLIENT_SOCKET_PATH"] {
+                cmd.env_remove(k);
+            }
+        }
         if let Some(sock) = &self.socket {
             cmd.env("HERDR_SOCKET_PATH", sock);
         }
