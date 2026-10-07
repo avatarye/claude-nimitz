@@ -385,11 +385,13 @@ impl Mux for Herdr {
     /// `herdr api snapshot` (the whole shape in one reply), then `pane
     /// process-info` for every pane: a pane whose foreground cannot be read
     /// stays `None` (a restore never types into it).
-    fn shape(&self) -> Result<Shape, MuxError> {
+    fn shape(&self, foregrounds: bool) -> Result<Shape, MuxError> {
         let v = self.run(&["api", "snapshot"])?;
         let mut shape = parse_snapshot(&v).map_err(MuxError::Failed)?;
-        for p in shape.panes.iter_mut() {
-            p.foreground = self.foreground(&p.pane).ok();
+        if foregrounds {
+            for p in shape.panes.iter_mut() {
+                p.foreground = self.foreground(&p.pane).ok();
+            }
         }
         Ok(shape)
     }

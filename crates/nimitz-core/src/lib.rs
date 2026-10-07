@@ -18,12 +18,14 @@ pub mod migrate;
 pub mod registry;
 
 // core-sessions
+pub mod active;
 pub mod claude;
 pub mod evidence;
 pub mod hook;
 pub mod layout;
 pub mod notify;
 pub mod pins;
+pub mod restore;
 pub mod rules;
 pub mod sandbox;
 pub mod sessions;

@@ -97,14 +97,14 @@ fn held_row(_m: &Member, r: &SessionInfo) -> bool {
 }
 
 /// The row that holds `m`'s conversation with no job, if one does.
-fn held_of(m: &Member) -> Option<&SessionInfo> {
+pub(crate) fn held_of(m: &Member) -> Option<&SessionInfo> {
     m.session.iter().chain(m.extra_rows.iter()).find(|r| held_row(m, r))
 }
 
 /// The `held` issue for one such row: a 0.3.x interactive lead is ended with
 /// `/exit` (then `nimitz start` runs it as a job, plan-v4 section 7); any
 /// other holder is ended in its host.
-fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
+pub(crate) fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
     let interactive_lead = m.role.lead() && r.kind == "interactive" && r.entrypoint.as_deref().unwrap_or("cli") == "cli";
     let (what, fix) = if interactive_lead {
         (
@@ -432,6 +432,8 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
         Some("adopt") => id_at(3).is_some_and(|t| may_start(caller, &t, "adopt as").is_ok()),
         Some("up") => id_at(2).is_some_and(|t| in_fleet(&t)),
         Some("layout") => *role == Role::Admiral && id_at(3).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
+        // a restore brings back whole fleets: an admiral its own (plan-v4 section 13)
+        Some("restore") => *role == Role::Admiral && id_at(2).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
         Some("ship") => id_at(3).is_some_and(|t| may_config(caller, &t).is_ok()),
         Some("squadron") => match (w.get(2).copied(), id_at(3)) {
             (Some("new"), Some(t)) => in_fleet(&t),
@@ -2013,7 +2015,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
 /// relaunch's stop + rm would end what the daemon just brought back). The
 /// rest are woken as planned. Members not in the window to begin with are
 /// never waited for.
-fn wait_crash_window(env: &Env, waking: &[(Id, String)]) -> Vec<(Id, String)> {
+pub fn wait_crash_window(env: &Env, waking: &[(Id, String)]) -> Vec<(Id, String)> {
     let row = |sid: &str| find_row_by_session(env, sid);
     let in_window = |r: &crate::evidence::SessionRow| !r.live() && matches!(r.state.as_deref(), Some("crashed") | Some("working"));
     let mut pending: Vec<(Id, String, String, String)> = waking
@@ -2139,7 +2141,7 @@ fn release_folder(env: &Env, id: Option<&Id>, cwd: Option<&str>) {
 }
 
 /// The job row running `sid` now (or born as it), if any.
-fn find_row_by_session(env: &Env, sid: &str) -> Option<crate::evidence::SessionRow> {
+pub fn find_row_by_session(env: &Env, sid: &str) -> Option<crate::evidence::SessionRow> {
     let mut cache = crate::evidence::FileCache::default();
     crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.short_id.is_some() && r.session_ids().any(|s| s == sid))
 }

@@ -680,7 +680,7 @@ fn fixture_snapshot_shape() {
 
 fn shape_through_the_adapter() {
     let w = tab_world(Some(vec!["yazi"]));
-    let shape = w.mux().shape().expect("shape");
+    let shape = w.mux().shape(true).expect("shape");
     assert_eq!(shape.workspaces.len(), 1);
     assert_eq!(shape.tabs.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), ["HOME.GITHUB.COMMODORE", "HOME.GITHUB.NIMITZ_DEV"]);
     let p1 = shape.panes.iter().find(|p| p.pane.pane_id == "w1:p1").unwrap();
@@ -693,7 +693,7 @@ fn shape_through_the_adapter() {
     assert!(w.calls().iter().any(|c| c[..2] == ["api".to_string(), "snapshot".to_string()]));
     // rename a tab
     w.mux().rename_tab("w1:t2", "HOME.GITHUB.S").expect("rename");
-    assert_eq!(w.mux().shape().unwrap().tab("w1:t2").map(|t| t.label.clone()), Some("HOME.GITHUB.S".into()));
+    assert_eq!(w.mux().shape(false).unwrap().tab("w1:t2").map(|t| t.label.clone()), Some("HOME.GITHUB.S".into()));
     assert!(w.mux().rename_tab("w9:t9", "X").is_err());
     // the exec knob: `pane run` really runs the line in the pane's folder
     let mut world = w.world();

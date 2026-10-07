@@ -464,6 +464,16 @@ fn watermark(env: &Env) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Run `f` under `registry.lock` (the one writer lock of `NIMITZ_STATE`:
+/// the registry, `active.json`); with a `budget`, give up after it (a hook).
+pub fn with_lock<T>(env: &Env, budget: Option<std::time::Duration>, f: impl FnOnce() -> T) -> std::io::Result<T> {
+    let _lock = match budget {
+        Some(b) => lock_within(env, b)?,
+        None => lock(env)?,
+    };
+    Ok(f())
+}
+
 /// `registry.lock`, held exclusively until the returned File drops.
 fn lock(env: &Env) -> std::io::Result<File> {
     let f = lock_file(env)?;

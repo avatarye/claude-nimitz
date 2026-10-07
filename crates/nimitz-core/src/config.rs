@@ -568,6 +568,10 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
     if !valid_name(fleet) {
         refuse(&mut plan, "config.invalid", format!("fleet name {fleet:?} is not [A-Z0-9_]+"), None, Some(id.clone()));
     }
+    // the Herdr workspace of the hub is never a fleet's (restore-scenarios.md R-35)
+    if fleet == crate::restore::ADMIRALTY_WORKSPACE {
+        refuse(&mut plan, "config.invalid", format!("fleet name {fleet:?} is reserved: it is the Admiralty's own workspace"), None, Some(id.clone()));
+    }
     if !valid_label(machine_label) {
         refuse(&mut plan, "config.invalid", format!("machine label {machine_label:?} is not [a-z0-9._-]+"), None, Some(id.clone()));
     }

@@ -155,9 +155,12 @@ pub trait Mux {
     }
 
     /// The whole shape: workspaces, tabs, panes, each pane's agent session
-    /// and foreground argv (`herdr api snapshot`, then `pane process-info`
-    /// per pane). A restore reads it once, then matches members against it.
-    fn shape(&self) -> Result<Shape, MuxError> {
+    /// and, with `foregrounds`, its foreground argv (`herdr api snapshot`,
+    /// then `pane process-info` per pane). A restore reads it once with the
+    /// foregrounds, then matches members against it; the active set needs
+    /// only where the sessions show.
+    fn shape(&self, foregrounds: bool) -> Result<Shape, MuxError> {
+        let _ = foregrounds;
         Err(MuxError::Unsupported("reading the shape"))
     }
 

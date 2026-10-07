@@ -166,6 +166,24 @@ pub fn gate(p: &Plan, plan_only: bool, yes: bool) -> Go {
     }
 }
 
+/// Print what ran (one short line per step) and the issues, no verdict: a
+/// restore prints these per member and gives its own verdict at the end.
+pub fn ran(o: &Outcome) {
+    for (s, rc, text) in &o.ran {
+        let text = text.trim();
+        let detail = if text.is_empty() || text.starts_with("[OK]") { String::new() } else { format!(" -> {}", first_line(text)) };
+        let who = s.id.as_ref().map(|i| format!("{i}: ")).unwrap_or_default();
+        if *rc == 0 {
+            ok(&format!("{who}{}{detail}", brief(s)));
+        } else {
+            error(&format!("{who}{} (exit {rc}){detail}", brief(s)));
+        }
+    }
+    for i in &o.issues {
+        issue(i);
+    }
+}
+
 /// Print what ran and what the re-read found. Exit code 0 only when verified.
 pub fn outcome(o: &Outcome) -> i32 {
     // The plan above already showed each full command; here one short line per step.
