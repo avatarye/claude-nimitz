@@ -29,6 +29,7 @@ starting/opening interactive members and to Admiralty's pane actions.
 | `NIMITZ_HOSTNAME` | `gethostname()` | machine matching |
 | `NIMITZ_MUX` | auto | `herdr` or `none` |
 | `NIMITZ_BIND_TIMEOUT` | `10` (s) | how long the CLI waits for a pane's session to start and bind; tests set `0` |
+| `NIMITZ_PLUGIN_HOOKS` | the `installPath` of the `nimitz@...` entry in `~/.claude/plugins/installed_plugins.json`, plus `hooks/hooks.json` | the installed plugin's hooks file `doctor` checks; tests point it at a file |
 
 ## 3. Config files (TOML, in `NIMITZ_HOME/<fleet>/`)
 
@@ -135,10 +136,35 @@ never fails the session (always exit 0), and returns in a few ms.
 Role rules: a labelled session's SessionStart (startup, resume, clear, compact,
 fork) gets its role's rules (`nimitz-core/rules/*.md`, compiled in; `nimitz
 rules <id>` prints them) as `additionalContext`, and the line records `rules`
-(the version). `check` reports `rules.old` for a live member that started on
-older rules, and `brief.old` for an admiral's or commodore's CLAUDE.md that an
-older nimitz generated; `doctor --fix` replaces those and leaves a hand-edited
-brief alone. A brief holds only who the member is and the user's notes.
+(the version, `rules::VERSION`, with one `rules::CHANGELOG` entry per version).
+Rules update live: `rules-delivered.json` (`{"<key>": {version, at,
+session_id, via}}`, under `rules-delivered.lock`, temp file + rename) records
+per job (`jobId` of `~/.claude/sessions/<ppid>.json`; else `session:<id>`)
+the version last delivered. On a per-turn event (`hook::UPDATE_EVENTS`:
+UserPromptSubmit) of a labelled session whose delivered version (the record,
+else its newest SessionStart `rules`, else 0) is older than the binary's, the
+hook outputs `additionalContext` `nimitz rules updated vN→vM` + the changelog
+after N + the full text, once per version per key; else nothing. `check`
+reports `rules.old` (Info, no fix) for a live member still on older rules, and
+`brief.old` for an admiral's or commodore's CLAUDE.md that an older nimitz
+generated; `doctor --fix` replaces those and leaves a hand-edited brief alone.
+A brief holds only who the member is and the user's notes. `doctor` reads the
+installed plugin's `hooks/hooks.json` and names every event (and PreToolUse
+matcher) the binary needs that it lacks (fix: `/reload-plugins`).
+
+The chain-of-command signal table (`hook::may_signal`; the PreToolUse deny on
+SendMessage and the authority of `nimitz signal`):
+
+| From | May signal |
+| --- | --- |
+| admiral | every member of its own fleet (commodores and ships), not itself |
+| commodore | its admiral, its ships |
+| ship | its commodore; its admiral (a reply); other ships as the squadron's `comms` rule allows |
+
+Every launch's `--settings` carries `"permissions":{"allow":["Bash(nimitz *)"]}`
+(`claude::settings_json`); authority stays by role in `sessions::may_run_in`:
+a ship gets `status`, `check`, `rules`, `doctor` (no `--fix`), `signal` within
+the table above, and `sweep` of itself.
 
 `needs/<id with / as %2F>.json`: the needs-you notice of a ship that
 blocks on the user (PreToolUse `AskUserQuestion`, `PermissionRequest`, or a
@@ -271,8 +297,9 @@ Rules that hold in every row: never resume a live session; never pass flags to
 a resume that must keep the id; `stop`/`rm` through the native binary and verify
 by re-reading; never touch a session that is not in the identity's lineage.
 
-Authority for `sweep`: the user, any scope; a commodore, its own squadron only
-(the stale copy rows of its own ships). Admiral, ship: none.
+Authority for `sweep`: the user, any scope; an admiral, its own fleet; a
+commodore, its own squadron only (the stale copy rows of its own ships); a
+ship, itself only (its own stale rows).
 Core owns a plan for every mutating command, including `fleet set`,
 `squadron set`, `machine rm`, retire (`sessions::plan_retire`: `ship|squadron|fleet rm`,
 session and config steps in one plan, one verified `apply`) and the layout

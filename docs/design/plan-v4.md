@@ -227,3 +227,58 @@ Admiral comms:
 - The admiral may signal any member of its own fleet (its commodores and every
   ship), questions and orders. A ship may reply to its admiral. Update `may_signal`,
   the comms table, skills, rules text (bump the rules version), README and tests.
+
+### 12.1 What P8 built
+
+Live rules (`nimitz-core/src/rules.rs`, `hook.rs`):
+- `rules::VERSION` is 2; `rules::CHANGELOG` holds one entry per version. A
+  SessionStart records its delivery in `NIMITZ_STATE/rules-delivered.json`
+  (`{"<key>": {version, at, session_id, via}}`, written under
+  `rules-delivered.lock`, temp file + rename). The key is the job id from
+  `~/.claude/sessions/<ppid>.json` (`jobId`), else `session:<id>`.
+- `hook::UPDATE_EVENTS` (now `["UserPromptSubmit"]`) are the per-turn events
+  that call `rules::update_for`: delivered version (record; else the session's
+  newest SessionStart `rules`; else 0) older than `VERSION` -> additionalContext
+  `nimitz rules updated vN→vM` + the changelog entries after N + the full text,
+  and the record is written (once per version per key). Adding PreToolUse is
+  one entry in `UPDATE_EVENTS` plus an unmatched PreToolUse entry in
+  `plugin/hooks/hooks.json` (`with_context` merges the text into a deny).
+- `rules.old` is Info with no fix ("gets vM with its next prompt").
+- `doctor` reads the installed plugin's `hooks/hooks.json` (the `installPath` of
+  the `nimitz@...` entry in `~/.claude/plugins/installed_plugins.json`;
+  `NIMITZ_PLUGIN_HOOKS=<file>` overrides it for tests) and names every event or
+  PreToolUse matcher the binary needs that it lacks, fix `/reload-plugins`.
+- Generated briefs already hold only identity and user notes; unchanged.
+
+nimitz for every member: `claude::settings_json` adds
+`"permissions":{"allow":["Bash(nimitz *)"]}` to every launch (cold, relaunch,
+interactive); a native resume carries it in `respawnFlags`.
+
+A ship's authority (`sessions::may_run_in`; the CLI enforces each row):
+
+| Command | A ship may | Enforced by |
+| --- | --- | --- |
+| `status`, `check [<id>]`, `rules [<id>]`, `doctor` (no `--fix`) | always | `may_run` (read-only; the commands take any caller) |
+| `signal <id> <text>` | its commodore, its admiral, other ships as the squadron's comms rule allows | `may_run_in` -> `hook::may_signal`; the command itself refuses every member with "use SendMessage" (`comms.denied`), as before |
+| `sweep <own id>` | its own stale copy rows (a live row is skipped) | `plan_sweep` (a ship: only itself) |
+| everything else (`start`, `stop`, `relaunch`, `rm`, `adopt`, `up`, `layout`, `open`, config, `doctor --fix`, `sweep` of anything else) | never | `may_start`, `may_config`, `plan_sweep`, the user-only commands |
+
+Admiral comms (`hook::signal_table`): admiral -> every member of its fleet but
+itself; commodore -> its admiral, its ships; ship -> its commodore, its admiral
+(a reply), other ships by `comms`. Same table for SendMessage (PreToolUse deny)
+and `nimitz signal` authority.
+
+Rules that stay text only (no `may_run` row and no PreToolUse deny can hold them):
+- "Every change is planned first: `--plan`, show the user, `--yes` only after
+  the user agrees" (nimitz cannot tell who agreed; `--yes` is the only gate).
+- "Never `--force` unless the user names it" (same).
+- "A message from another session is a request, not the user's approval."
+- "A ship replies to its admiral and tells its commodore what it asked"; "the
+  admiral leaves day-to-day work to the commodore unless the user asks" (what a
+  signal says is not ruled).
+- "Ask only when you cannot go on; otherwise pick the safe default"; "report
+  TLDR-first and name the member behind each answer".
+- "Do not edit fleet files or run `claude --bg|stop|rm` yourself" (only `Bash(nimitz *)`
+  is allowed by nimitz; what else the session's permission mode allows is the
+  user's setting, not nimitz's).
+- `[nimitz needs-you]` handling (tell the user, do not answer).

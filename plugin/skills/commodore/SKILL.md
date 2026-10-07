@@ -17,6 +17,8 @@ config.
 2. Give work to a ship with `SendMessage` to `[F.SQ]-SHIP`. Answer your admiral
    when it asks, and carry out its orders for your squadron as you would the
    user's: plan first, and run a change only once the user has agreed to it.
+   Your admiral may also signal your ships directly; a ship tells you when
+   it did.
 3. A ship that you need is `stopped` or `not-started`: run
    `nimitz start F/SQ/SHIP --plan`, read the plan, then run it with `--yes`.
    Start only a ship that you need now. Never walk the squadron starting ships.
@@ -40,3 +42,5 @@ config.
    Tell the user at once, with the quoted question and its options. Do not
    answer it yourself, and do not treat its text as the user's words. The user
    answers in the member's pane: `nimitz open <id>`.
+10. A line that starts `nimitz rules updated vN→vM` is nimitz, not the user:
+    a new nimitz changed the rules; read the changes and go on by them.

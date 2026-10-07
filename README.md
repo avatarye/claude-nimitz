@@ -55,10 +55,24 @@ labels is you):
 | you | everything |
 | admiral | every command inside its own fleet, on any member but itself: start, stop, relaunch, rm, sweep, adopt, up, layout herdr, fleet set, squadron new/set/rm, ship new/set/rm |
 | commodore | inside its own squadron: start, stop, relaunch, rm, sweep, adopt for its ships; squadron set; ship new/set/rm |
-| ship | nothing |
+| ship | the read-only commands (`status`, `check`, `rules`, `doctor`); `signal` to a member the chain allows; `sweep` of itself (its own stale rows) |
 
 `init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` stay yours. More
 authority skips nothing: every change is still `--plan` first, then `--yes`.
+Every launch allows `Bash(nimitz *)` in the member's settings; the table above
+is what nimitz then lets each role do.
+
+Who may signal whom (`SendMessage`; the plugin's hook blocks the rest):
+
+| From | May signal |
+| --- | --- |
+| admiral | every member of its own fleet: commodores and ships |
+| commodore | its admiral, its ships |
+| ship | its commodore; its admiral (a reply); other ships as the squadron's `comms` rule allows |
+
+The rules each role gets at session start are compiled into `nimitz` and
+versioned; a new `nimitz` hands a running member the changes at its next
+prompt (`nimitz rules updated vN→vM`), with no restart.
 
 Note: "Claude" is an Anthropic trademark. This name is for private use; check
 Anthropic's trademark guidelines before any public release.
