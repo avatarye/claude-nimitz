@@ -145,7 +145,9 @@ Command: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=4`.
     flag (`rm <job>`, then `--bg --resume <branch> --name ... --settings ...`), with the
     plan line "the job would wake on <old> (resumeSessionId follows /clear only), not on
     <branch> that it ran last (a /branch or /resume): resume that one with every flag".
-    Case 13 (`/clear`, wake by birth id, then `/branch`, wake): the branch came back
+    (one helper, `sessions::wake_target`, answers every wake path: `wake_steps`,
+    `relaunch`, restore's attach-wake; a registry conversation that is not later in the
+    lineage than the row's is `lineage.stale`, the row wins.) Case 13 (`/clear`, wake by birth id, then `/branch`, wake): the branch came back
     under its own short id with the ship's name and labels, one row, no issue (the
     relabel also undoes the `(Branch)` rename). Sandbox test
     `branch_then_stop_then_start_resumes_the_branch_with_every_flag`; the identity

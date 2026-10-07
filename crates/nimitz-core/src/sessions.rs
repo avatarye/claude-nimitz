@@ -740,33 +740,33 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
     // any resume. Its transcript may not be on disk yet (killed in its first
     // turn), so it is not judged `history.lost` here; a resume that comes
     // back `startup` reports it then (e2e case 6).
+    // The conversation to wake first (`wake_target`), then its transcript:
+    // missing, the wake would run with no history (`history.lost`)
+    let target = wake_target(env, id, p);
     let recent = p.status_since.is_some_and(|t| crate::evidence::now() - t < CRASH_RECENT_S);
-    let crash_window = matches!(p.state.as_deref(), Some("crashed") | Some("working")) || (m.status == Status::Parked && recent);
-    if !crash_window && crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &p.session_id).is_none() {
+    let crash_window = !target.relabel && (matches!(p.state.as_deref(), Some("crashed") | Some("working")) || (m.status == Status::Parked && recent));
+    if !crash_window && crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &target.session).is_none() {
         return Err(issue(
             "history.lost",
             Severity::Error,
-            format!("{id}'s conversation {} has no transcript in any project dir; a resume would start with no history", p.session_id),
+            format!("{id}'s conversation {} has no transcript in any project dir; a resume would start with no history", target.session),
             Some(format!("nimitz start {id} --fresh  # a cold launch; the lineage starts a new entry")),
             Some(id.clone()),
         ));
     }
     let step = |cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string()), why: why.into() };
     let needs_relabel = session_issues(env, m).iter().any(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing"));
-    // The conversation Claude Code wakes is the row's `resumeSessionId` (it
-    // follows /clear only). The one the member ran last may be a later
-    // /branch or /resume (the registry's `session`): a native wake would bring
-    // the older one back in silence. Then the row goes and the last one is
-    // resumed by id with every flag, and the plan says so (r3-e2e finding 11).
     let short8 = |s: &str| s[..s.len().min(8)].to_string();
-    let last = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.session.clone()).filter(|s| *s != p.session_id);
-    if let Some(last) = last.filter(|s| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), s).is_some()) {
-        let mut v = relabel_to(env, id, mode, p, cwd, &last);
+    // The registry's conversation is later than the one a native wake brings
+    // back (a /branch or /resume after it): the row goes and that one is
+    // resumed by id with every flag, and the plan says so (r3-e2e finding 11).
+    if target.relabel {
+        let mut v = relabel_to(env, id, mode, p, cwd, &target.session);
         if let Some(s) = v.last_mut() {
             s.why = format!(
                 "the job would wake on {} (resumeSessionId follows /clear only), not on {} that it ran last (a /branch or /resume): resume that one with every flag, same history, new row",
                 short8(&p.session_id),
-                short8(&last)
+                short8(&target.session)
             );
         }
         return Ok(v);
@@ -788,6 +788,38 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
         return Ok(vec![step(crate::claude::resume_bg(env, birth), &why)]);
     }
     Ok(relabel_steps(env, id, mode, p, cwd))
+}
+
+/// The conversation a wake of a stopped row must bring back, and how
+/// (plan-v4 section 5, r3-e2e finding 11). Claude Code wakes a stopped job on
+/// its `resumeSessionId` (the row's session: `/clear` moves it, `/branch` and
+/// `/resume` do not). The registry's `session` is the conversation the
+/// member ran last. When it is LATER in the lineage than the row's (a
+/// /branch or /resume after the row's conversation), that one is the target
+/// and the wake needs `rm` + every flag (`relabel`); when it is the same, a
+/// native wake; when it differs any other way (a lost hook line, a hand
+/// edit) the row wins, Claude Code's own truth, and `stale` names the
+/// registry's session for a `lineage.stale` warning.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WakeTarget {
+    pub session: String,
+    pub relabel: bool,
+    pub stale: Option<String>,
+}
+
+/// `WakeTarget` of `id`'s row `p` (every wake path uses it: `wake_steps`,
+/// `plan_relaunch`, restore's attach-wake).
+pub fn wake_target(env: &Env, id: &Id, p: &SessionInfo) -> WakeTarget {
+    let row_now = p.session_id.clone();
+    let rec = crate::registry::load(env).identities.remove(&id.0);
+    let Some(reg) = rec.as_ref().and_then(|r| r.session.clone()).filter(|s| *s != row_now) else {
+        return WakeTarget { session: row_now, relabel: false, stale: None };
+    };
+    let pos = |sid: &str| rec.as_ref().and_then(|r| r.lineage.iter().rposition(|l| l.session_id == sid));
+    match (pos(&reg), pos(&row_now)) {
+        (Some(a), Some(b)) if a > b => WakeTarget { session: reg, relabel: true, stale: None },
+        _ => WakeTarget { session: row_now, relabel: false, stale: Some(reg) },
+    }
 }
 
 /// The `why` that marks a step continuing an old fleet's session; `apply`
@@ -1266,7 +1298,8 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "session.interactive", format!("{id} is live in a process with no job; end it in its own terminal first"), Some("type /exit in its pane".into()), Some(id.clone()));
         return plan;
     }
-    plan.steps.extend(relabel_steps(env, id, &mode, p, &cwd));
+    // onto the conversation to wake (after a /branch or /resume the registry's later one, finding 11)
+    plan.steps.extend(relabel_to(env, id, &mode, p, &cwd, &wake_target(env, id, p).session));
     debug_assert!(no_fork(snap, &plan), "a relaunch would fork a session: {:?}", plan.steps);
     plan
 }
