@@ -485,7 +485,9 @@ mod tests {
             serde_json::json!({"ts": ts, "event": "SessionStart", "session_id": sid, "source": "startup",
                 "labels": {"NIMITZ_ID": id, "NIMITZ_ROLE": role}}).to_string()
         };
-        std::fs::write(env.events_path(), format!("{}\n{}\n", ev("sid-t", "MAIN/ARGOS/~fixci", "tender", 2.0), ev("sid-2", &ship.0, "ship", 3.0))).unwrap();
+        // (newer than the last good copy: only those lines are replayed over it)
+        let t0 = crate::registry::load(&env).updated_at;
+        std::fs::write(env.events_path(), format!("{}\n{}\n", ev("sid-t", "MAIN/ARGOS/~fixci", "tender", t0 + 1.0), ev("sid-2", &ship.0, "ship", t0 + 2.0))).unwrap();
         std::fs::write(env.registry_path(), "{garbage").unwrap();
         let r = crate::registry::load(&env);
         assert_eq!(r.identities.keys().collect::<Vec<_>>(), [&ship.0], "{:?}", r.identities.keys());

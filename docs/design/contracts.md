@@ -120,7 +120,9 @@ its result lacks an identity the file holds (`retired`, where a 0.3.x tender
 moves, counts as kept); a write that changes nothing (a hook that judged `held`,
 `dup.job`, `elsewhere` or `same`) does not touch the file. A `registry.json` that
 is missing while the `.bak` holds identities was lost, not reset: the copy and
-the SessionStart lines rebuild it (a read in memory; the next write saves it).
+the SessionStart lines newer than its `updated_at` rebuild it (a read in
+memory; the next write saves it; `check` says so, `registry.rebuilt`, Info,
+until then). Resetting the registry means removing both files.
 A `registry.json` that
 does not parse is never replaced in silence: it is kept as
 `registry.json.corrupt-<ts>` (with a `.txt` note), the registry is rebuilt from

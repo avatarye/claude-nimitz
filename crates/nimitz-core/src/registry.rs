@@ -158,17 +158,19 @@ pub fn v1_path(env: &Env) -> PathBuf {
     env.state.join("registry.json.v1")
 }
 
-/// What `recover` could rebuild from: the last good copy, then the events
-/// (the same binding rules as the hook, `apply_start`).
+/// What `recover` could rebuild from: the last good copy, then the
+/// SessionStart lines newer than it (the same binding rules as the hook,
+/// `apply_start`; a line the copy already holds is not replayed over it).
 fn rebuild(env: &Env) -> (Registry, String) {
     let (mut r, mut from) = match parse_file(&bak_path(env)) {
         Some(r) => (r, vec!["registry.json.bak".to_string()]),
         None => (fresh(env), vec![]),
     };
+    let since = r.updated_at;
     let mut added = 0;
     let mut events = crate::evidence::events(env);
     events.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
-    for e in events.iter().filter(|e| e.event == "SessionStart") {
+    for e in events.iter().filter(|e| e.event == "SessionStart" && e.ts > since) {
         // a 0.3.x tender's events rebuild its history in `retired`, never a member
         if let (Some(sid), Some(nid)) = (e.session_id.as_deref(), e.labels.get("NIMITZ_ID").filter(|n| crate::migrate::is_tender_id(n))) {
             let id = Id(nid.clone());
@@ -225,6 +227,24 @@ pub fn health(env: &Env) -> Vec<Issue> {
         })
         .unwrap_or_default();
     kept.sort();
+    // the file is gone but its last good copy is not: nimitz works from the
+    // copy until the next write saves it (a reset removes both files)
+    if !reg.exists() {
+        if let Some(b) = parse_file(&bak_path(env)).filter(|b| !b.identities.is_empty()) {
+            out.push(Issue {
+                code: "registry.rebuilt".into(),
+                severity: Severity::Info,
+                message: format!(
+                    "{} is missing; nimitz works from {} ({} identities) plus the SessionStart lines newer than it, and the next registry write saves the rebuilt file. To reset the registry, remove both files",
+                    reg.display(),
+                    bak_path(env).display(),
+                    b.identities.len()
+                ),
+                fix: None,
+                id: None,
+            });
+        }
+    }
     for k in &kept {
         let what = std::fs::read_to_string(note_path(k)).unwrap_or_else(|_| "rebuilt from what was left".into());
         out.push(Issue {
@@ -673,8 +693,10 @@ mod tests {
         update(&env, |r| bind(r, &Id::admiral("MAIN"), Role::Admiral, "[MAIN]-ADMIRAL", "/a", "a-1", "launch", 2.0)).unwrap();
         assert!(bak_path(&env).is_file(), "every save keeps the last good copy");
         assert!(health(&env).is_empty());
-        // a later session only the events know about
-        let ev = r#"{"ts": 5.0, "event": "SessionStart", "session_id": "sid-2", "source": "resume", "labels": {"NIMITZ_ID": "MAIN/ARGOS/ARGOS", "NIMITZ_ROLE": "ship"}}"#;
+        // a later session only the events know about (newer than the copy:
+        // an older line is one the copy already holds, never replayed over it)
+        let ts = parse_file(&bak_path(&env)).unwrap().updated_at + 1.0;
+        let ev = format!(r#"{{"ts": {ts}, "event": "SessionStart", "session_id": "sid-2", "source": "resume", "labels": {{"NIMITZ_ID": "MAIN/ARGOS/ARGOS", "NIMITZ_ROLE": "ship"}}}}"#);
         std::fs::write(env.events_path(), format!("{ev}\n")).unwrap();
         std::fs::write(env.registry_path(), "{garbage").unwrap();
         let r = load(&env);
@@ -758,9 +780,20 @@ mod tests {
         update(&env, |r| bind_job(r, &ship, Role::Ship, &ship.name(), "/w", Some("j1"), "s1", "launch", 1.0)).unwrap();
         update(&env, |r| bind(r, &Id::admiral("MAIN"), Role::Admiral, "[MAIN]-ADMIRAL", "/a", "a1", "launch", 2.0)).unwrap();
         std::fs::remove_file(env.registry_path()).unwrap();
+        // only the lines newer than the copy are replayed over it: an older
+        // line (one the copy already holds, or a stale one) changes nothing
+        let bak_at = parse_file(&bak_path(&env)).unwrap().updated_at;
+        let line = |ts: f64, sid: &str| serde_json::json!({"ts": ts, "event": "SessionStart", "session_id": sid, "source": "clear", "job": "j1", "kind": "bg",
+            "labels": {"NIMITZ_ID": ship.0, "NIMITZ_ROLE": "ship"}}).to_string();
+        std::fs::write(env.events_path(), format!("{}\n{}\n", line(bak_at - 1.0, "s-old"), line(bak_at + 1.0, "s-new"))).unwrap();
         let r = load(&env);
         assert_eq!(r.identities.len(), 2, "a read sees the copy");
+        assert_eq!(r.identities[&ship.0].lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["s1", "s-new"]);
         assert!(!env.registry_path().exists(), "a read writes nothing");
+        let h = health(&env);
+        assert!(h.len() == 1 && h[0].code == "registry.rebuilt" && h[0].severity == Severity::Info, "{h:?}");
+        assert!(h[0].message.contains("registry.json.bak") && h[0].message.contains("2 identities") && h[0].message.contains("remove both files"), "{}", h[0].message);
+        std::fs::write(env.events_path(), "").unwrap();
         // the hook's write: the identity it binds joins the two, nothing is lost
         let ev = Event {
             ts: 5.0,
@@ -778,6 +811,7 @@ mod tests {
         assert_eq!(r.identities.len(), 2);
         assert_eq!(r.identities[&ship.0].lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["s1", "s2"]);
         assert!(r.identities.contains_key("MAIN"));
+        assert!(env.registry_path().is_file() && health(&env).is_empty(), "saved: nothing to report");
         // no copy, or an empty one: a missing file is a fresh registry
         std::fs::remove_file(env.registry_path()).unwrap();
         std::fs::write(bak_path(&env), serde_json::to_string(&fresh(&env)).unwrap()).unwrap();
