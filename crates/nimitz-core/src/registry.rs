@@ -424,18 +424,44 @@ pub fn identity_folder(env: &Env, r: &Registry, id: &Id) -> Option<PathBuf> {
 /// line binds something; returns how many did.
 pub fn replay(env: &Env, events: &[Event]) -> usize {
     let reg = load(env);
-    // a line the hook judged (dup.job, held, elsewhere) bound nothing by design
+    // a line the hook judged (dup.job, held, elsewhere) bound nothing by design;
+    // a line replayed before and judged then is behind the watermark
     let judged = |e: &Event| e.binding.as_deref().is_some_and(|b| !matches!(b, "bound" | "none"));
-    let mut newer: Vec<&Event> = events.iter().filter(|e| e.event == "SessionStart" && e.ts > reg.updated_at && e.session_id.is_some() && !judged(e)).collect();
+    let floor = reg.updated_at.max(watermark(env));
+    let mut newer: Vec<&Event> = events.iter().filter(|e| e.event == "SessionStart" && e.ts > floor && e.session_id.is_some() && !judged(e)).collect();
     if newer.is_empty() {
         return 0;
     }
     newer.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
     let mut probe = reg.clone();
-    if !newer.iter().any(|e| matches!(apply_event(env, &mut probe, e), Binding::Bound(_))) {
-        return 0;
+    let bound = newer.iter().any(|e| matches!(apply_event(env, &mut probe, e), Binding::Bound(_)));
+    let n = if bound { update(env, |r| newer.iter().filter(|e| matches!(apply_event(env, r, e), Binding::Bound(_))).count()).unwrap_or(0) } else { 0 };
+    // every line up to here is judged: remember the newest one that is old
+    // enough (a hook takes its `ts` before waiting up to 2 s for the lock, so
+    // a late line never hides behind the mark)
+    let settled = crate::evidence::now() - REPLAY_SETTLE_S;
+    if let Some(mark) = newer.iter().map(|e| e.ts).filter(|t| *t <= settled).fold(None, |m: Option<f64>, t| Some(m.map_or(t, |m| m.max(t)))) {
+        if mark > watermark(env) {
+            let _ = crate::config::atomic_write(&watermark_path(env), &serde_json::json!({"watermark": mark}).to_string());
+        }
     }
-    update(env, |r| newer.iter().filter(|e| matches!(apply_event(env, r, e), Binding::Bound(_))).count()).unwrap_or(0)
+    n
+}
+
+/// How old a replayed line must be before the watermark may cover it.
+const REPLAY_SETTLE_S: f64 = 5.0;
+
+fn watermark_path(env: &Env) -> PathBuf {
+    env.state.join("replay.json")
+}
+
+/// The `ts` of the newest replayed line judged so far (`NIMITZ_STATE/replay.json`).
+fn watermark(env: &Env) -> f64 {
+    std::fs::read(watermark_path(env))
+        .ok()
+        .and_then(|b| crate::evidence::first_json(&b))
+        .and_then(|v| v.get("watermark").and_then(|w| w.as_f64()))
+        .unwrap_or(0.0)
 }
 
 /// `registry.lock`, held exclusively until the returned File drops.
@@ -524,10 +550,7 @@ mod tests {
         let h = health(&env);
         assert!(h.len() == 1 && h[0].code == "registry.corrupt" && h[0].severity == Severity::Error, "{h:?}");
         assert!(h[0].message.contains("registry.json.bak") && h[0].message.contains("1 SessionStart"), "{}", h[0].message);
-        // (serde_json parses floats best-effort: the stamp may differ by an ulp)
-        let mut again = load(&env);
-        again.updated_at = r.updated_at;
-        assert_eq!(again, r, "a second load reads the rebuilt file");
+        assert_eq!(load(&env), r, "a second load reads the rebuilt file (stamps round-trip exactly: serde_json float_roundtrip)");
     }
 
     #[test]
@@ -717,6 +740,44 @@ mod tests {
         std::fs::set_permissions(env.registry_path(), std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(std::fs::read_to_string(env.registry_path()).unwrap(), before, "never written over");
         assert_eq!(load(&env).identities.len(), 1);
+    }
+
+    #[test]
+    fn a_replayed_line_that_bound_nothing_is_not_probed_again_once_settled() {
+        let (_td, env) = test_env();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        update(&env, |r| bind_job(r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s1", "launch", 1.0)).unwrap();
+        // a registry written 20 s ago
+        let mut r = load(&env);
+        r.updated_at = crate::evidence::now() - 20.0;
+        std::fs::write(env.registry_path(), serde_json::to_string(&r).unwrap()).unwrap();
+        let line = |ts: f64, sid: &str| Event {
+            ts,
+            event: "SessionStart".into(),
+            session_id: Some(sid.into()),
+            source: Some("resume".into()),
+            pid: Some(5),
+            labels: [("NIMITZ_ID".to_string(), id.0.clone()), ("NIMITZ_ROLE".to_string(), "ship".into())].into(),
+            kind: Some("unknown".into()),
+            binding: Some("none".into()),
+            ..Default::default()
+        };
+        // a lost line whose session no job runs: judged held, nothing bound; it
+        // is 10 s old, so the mark covers it
+        let old = line(crate::evidence::now() - 10.0, "s2");
+        assert_eq!(replay(&env, &[old.clone()]), 0);
+        assert!((watermark(&env) - old.ts).abs() < 1e-6, "{}", watermark(&env));
+        // a job now runs s2: the line stays skipped (judged once, never again)
+        let p = env.claude_home.join("jobs").join("j1").join("state.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, serde_json::json!({"sessionId": "s1", "resumeSessionId": "s2"}).to_string()).unwrap();
+        assert_eq!(replay(&env, &[old.clone()]), 0);
+        assert_eq!(load(&env).identities[&id.0].session.as_deref(), Some("s1"));
+        // a fresh line (newer than the settle window) is probed every time until it binds
+        let fresh = line(crate::evidence::now(), "s2");
+        assert_eq!(replay(&env, &[old.clone(), fresh.clone()]), 1);
+        assert_eq!(load(&env).identities[&id.0].session.as_deref(), Some("s2"));
+        assert!(watermark(&env) < fresh.ts, "a line inside the settle window never marks");
     }
 
     #[test]

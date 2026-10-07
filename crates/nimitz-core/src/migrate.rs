@@ -490,9 +490,7 @@ mod tests {
         assert_eq!(r.identities.keys().collect::<Vec<_>>(), [&ship.0], "{:?}", r.identities.keys());
         assert_eq!(r.identities[&ship.0].session.as_deref(), Some("sid-2"));
         assert_eq!(r.retired["MAIN/ARGOS/~fixci"].session.as_deref(), Some("sid-t"), "the tender's event is history");
-        let mut again = crate::registry::load(&env);
-        again.updated_at = r.updated_at; // serde_json parses floats best-effort
-        assert_eq!(again, r, "the saved rebuild reads back the same");
+        assert_eq!(crate::registry::load(&env), r, "the saved rebuild reads back the same");
     }
 
     #[test]
