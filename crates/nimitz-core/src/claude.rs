@@ -58,18 +58,25 @@ impl Row {
 /// session state: a member's labels go only through `--settings`. Claude
 /// Code's daemon is started by whichever `claude` call finds none running and
 /// keeps that process's environment for every job it starts; a daemon started
-/// from a labelled lead's shell labelled every unlabelled job as that lead and
-/// gave them its pane and its messaging socket. Removed: `NIMITZ_*`, the Herdr
-/// pane context (`HERDR_*`), `CLAUDE_PID` and `CLAUDE_CODE_*` (but the account
-/// settings `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_SKIP_*`).
+/// from a labelled lead's shell labelled every unlabelled job as that lead
+/// and gave them its pane and its messaging socket. Removed (a denylist of
+/// session state; Claude Code's own: `CLAUDE_CODE_ENTRYPOINT`,
+/// `CLAUDE_CODE_MESSAGING_*` are per session, every other `CLAUDE_CODE_*` and
+/// `ANTHROPIC_*` is the user's config and passes): nimitz's identity and
+/// multiplexer names, every `HERDR_*`, `CLAUDE_PID`, `CLAUDECODE`,
+/// `CLAUDE_BG_*`, and the session-scoped `CLAUDE_CODE_*` below.
 pub fn scrub_child_env(c: &mut Command) {
+    const NAMES: &[&str] = &[
+        "NIMITZ_ID", "NIMITZ_ROLE", "NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_PARENT",
+        "NIMITZ_MUX", "NIMITZ_HERDR_SESSION", "NIMITZ_HERDR_SOCKET", "NIMITZ_HOOK_PID", "NIMITZ_HOOK_SESSION_FILE",
+        "CLAUDE_PID", "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+        "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+    ];
+    const PREFIXES: &[&str] = &["HERDR_", "CLAUDE_BG_", "CLAUDE_CODE_RESUME_"];
     for (k, _) in std::env::vars_os() {
         let k = k.to_string_lossy().into_owned();
-        let session_state = k.starts_with("NIMITZ_")
-            || k.starts_with("HERDR_")
-            || k == "CLAUDE_PID"
-            || (k.starts_with("CLAUDE_CODE_") && !k.starts_with("CLAUDE_CODE_USE_") && !k.starts_with("CLAUDE_CODE_SKIP_"));
-        if session_state {
+        if NAMES.contains(&k.as_str()) || PREFIXES.iter().any(|p| k.starts_with(p)) {
             c.env_remove(&k);
         }
     }
@@ -152,7 +159,13 @@ pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 /// launch and lives in the job's `respawnFlags`, so a restart keeps it and a
 /// relaunch (every flag again) re-adds it.
 pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
-    let mut v = serde_json::json!({ "env": labels_for(env, id), "permissions": { "allow": [NIMITZ_ALLOW] } });
+    let mut vars = labels_for(env, id);
+    // nimitz's own places: the member's hook writes where this nimitz reads,
+    // whatever env the daemon that runs the job was started with (its env is
+    // not the caller's)
+    vars.insert("NIMITZ_STATE".to_string(), env.state.to_string_lossy().into_owned());
+    vars.insert("NIMITZ_CLAUDE_HOME".to_string(), env.claude_home.to_string_lossy().into_owned());
+    let mut v = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
     if background {
         v["worktree"] = serde_json::json!({ "bgIsolation": "none" });
     }

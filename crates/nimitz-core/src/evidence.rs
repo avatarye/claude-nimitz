@@ -387,7 +387,9 @@ pub(crate) fn job_labels(d: &Value) -> BTreeMap<String, String> {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
         if let Some(env) = v.get("env").and_then(|e| e.as_object()) {
             for (k, x) in env {
-                if let (true, Some(x)) = (k.starts_with("NIMITZ_"), x.as_str()) {
+                // the identity labels only (a launch may also carry nimitz's
+                // own state paths: `claude::settings_json`)
+                if let (true, Some(x)) = (["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_HOME"].contains(&k.as_str()), x.as_str()) {
                     out.insert(k.clone(), x.to_string());
                 }
             }
@@ -1169,7 +1171,11 @@ pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i
     // only a Claude Code process (a stale session file whose pid another
     // program reuses names nothing): `claude`, or the native binary under
     // `.../claude/versions/<v>`
-    let is_claude = |argv: &Vec<String>| argv.first().is_some_and(|a0| Path::new(a0).file_name().is_some_and(|n| n.to_string_lossy().starts_with("claude")) || a0.contains("/claude/versions/"));
+    let is_claude = |argv: &Vec<String>| {
+        argv.first().is_some_and(|a0| Path::new(a0).file_name().is_some_and(|n| n.to_string_lossy().starts_with("claude")) || a0.contains("/claude/versions/"))
+            // an npm install runs `node .../@anthropic-ai/claude-code/cli.js`
+            || argv.get(1).is_some_and(|a1| a1.contains("claude-code/cli"))
+    };
     procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(_, pid)| {
         let v = std::fs::read(claude_home.join("sessions").join(format!("{}.json", (*pid)?))).ok().and_then(|b| first_json(&b))?;
         v.get("sessionId").and_then(|x| x.as_str()).map(String::from)
@@ -1210,5 +1216,6 @@ mod claim_tests {
         // a stale session file of a reused pid: the program is not claude
         assert_eq!(super::session_of_foreground(ch, &p(&["vim"], Some(700))), None);
         assert_eq!(super::session_of_foreground(ch, &p(&["/home/u/.local/share/claude/versions/2.1.292"], Some(700))).as_deref(), Some("s-commodore"));
+        assert_eq!(super::session_of_foreground(ch, &p(&["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"], Some(700))).as_deref(), Some("s-commodore"), "an npm install");
     }
 }

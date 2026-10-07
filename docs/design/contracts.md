@@ -113,11 +113,19 @@ Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 
 ## 5. Registry and events (`NIMITZ_STATE`)
 
-**Every `claude` nimitz starts begins clean** (`claude::scrub_child_env`, on
-launch, wake, relaunch, stop, rm, `agents` and the version checks): none of
-the caller's `NIMITZ_*`, `HERDR_*`, `CLAUDE_PID` or `CLAUDE_CODE_*` (the account
-settings `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_SKIP_*` pass) reaches it; a
-member's labels go only through `--settings`. A daemon that such a call
+**Every `claude` nimitz starts begins without the caller's session state**
+(`claude::scrub_child_env`, on launch, wake, relaunch, stop, rm, `agents` and
+the version checks; a denylist): nimitz's identity and multiplexer names
+(`NIMITZ_ID`, `_ROLE`, `_FLEET`, `_SQUADRON`, `_PARENT`, `_MUX`, `_HERDR_*`,
+`_HOOK_*`), every `HERDR_*`, `CLAUDE_PID`, `CLAUDECODE`, `CLAUDE_BG_*`,
+`CLAUDE_CODE_RESUME_*` and the per-session `CLAUDE_CODE_ENTRYPOINT`,
+`_EXECPATH`, `_MESSAGING_SOCKET`, `_MESSAGING_TOKEN`, `_SESSION_ID`,
+`_BRIDGE_SESSION_ID`, `_CHILD_SESSION`. Everything else passes: the user's
+`CLAUDE_CODE_*` and `ANTHROPIC_*` config (auth, proxy, provider, tuning;
+Claude Code copies a job's provider settings from the launching command),
+and nimitz's own config. A member's labels go only through `--settings`,
+which also carries nimitz's `NIMITZ_STATE` and `NIMITZ_CLAUDE_HOME`, so the
+member's hook writes where this nimitz reads whatever env the daemon has. A daemon that such a call
 happens to start keeps a clean environment, whoever ran nimitz. The `claude
 attach <job>` typed into a Herdr pane runs in that pane's shell, with the
 pane's own env.

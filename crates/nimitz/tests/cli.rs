@@ -1905,6 +1905,8 @@ fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
             ("CLAUDE_CODE_ENTRYPOINT", "cli"),
             ("CLAUDE_PID", "1"),
             ("CLAUDE_CODE_USE_BEDROCK", "1"),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "tok"),
+            ("CLAUDE_CODE_SUBAGENT_MODEL", "haiku"),
         ],
         None,
     );
@@ -1915,7 +1917,10 @@ fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
     for k in ["NIMITZ_ID", "NIMITZ_ROLE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SESSION", "HERDR_SOCKET_PATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID"] {
         assert!(!env.contains_key(k), "{k} reached the claude child: {launch}");
     }
-    assert_eq!(env.get("CLAUDE_CODE_USE_BEDROCK").and_then(Value::as_str), Some("1"), "account settings pass: {launch}");
+    // the user's own config passes (auth, provider, tuning): only session state goes
+    for (k, v) in [("CLAUDE_CODE_USE_BEDROCK", "1"), ("CLAUDE_CODE_OAUTH_TOKEN", "tok"), ("CLAUDE_CODE_SUBAGENT_MODEL", "haiku")] {
+        assert_eq!(env.get(k).and_then(Value::as_str), Some(v), "{k} must pass: {launch}");
+    }
     // every claude call of the run (agents, stop, rm, resume) is scrubbed alike
     for c in &calls {
         assert!(!c["env"].as_object().unwrap().keys().any(|k| k.starts_with("NIMITZ_ID") || k == "HERDR_PANE_ID"), "{c}");
