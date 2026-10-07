@@ -1931,19 +1931,18 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     // seconds. Wait for that before any resume of it (a resume of a job the
     // daemon then restarts makes a copy, cli-31); restarted, its steps are
     // skipped.
-    // (identity, the conversation resumed, the job's row): the row from the
-    // plan's own stop or rm step, else by the conversation; a relabel after a
-    // /branch resumes a conversation no row carries, so the job is keyed by
-    // its short id, never by the resumed id
+    // (identity, the conversation resumed, the job's row): the row that
+    // carries the conversation; when none does (a relabel after a /branch
+    // resumes a conversation no row carries), the plan's own stop or rm step
+    // names the job. Never the other way round: a plan may also rm a stale
+    // copy row of the same identity, which is not the job to wait for.
     let short_of = |id: &Id, sid: &str| {
-        plan.steps
-            .iter()
-            .filter(|s| s.id.as_ref() == Some(id))
-            .find_map(|s| match classify(s) {
+        find_row_by_session(env, sid).and_then(|r| r.short_id).or_else(|| {
+            plan.steps.iter().filter(|s| s.id.as_ref() == Some(id)).find_map(|s| match classify(s) {
                 Kind::Rm { short } | Kind::Stop { short } => Some(short),
                 _ => None,
             })
-            .or_else(|| find_row_by_session(env, sid).and_then(|r| r.short_id))
+        })
     };
     let waking: Vec<(Id, String, Option<String>)> = plan
         .steps
