@@ -284,6 +284,40 @@ fn bug39_sandbox_with_a_fake_herdr_uses_it() {
     assert!(src.mux_caps.open);
 }
 
+/// Admiralty started outside a Herdr pane (no HERDR_ENV, no NIMITZ_MUX: a
+/// terminal, a launcher) used to see no pane at all, while a member's
+/// `nimitz status` saw every one through the recorded server. Now it takes the
+/// Herdr server the user's own commands recorded in active.json, and sees the
+/// same panes as inside Herdr; with nothing recorded it stays monitor-only.
+#[test]
+fn admiralty_outside_herdr_uses_the_recorded_server_and_sees_the_panes() {
+    let dir = tempfile::tempdir().unwrap();
+    let sb = dir.path().join("sb");
+    let bin = env!("CARGO_BIN_EXE_admiralty");
+    let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    let env = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
+    let mut inside: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for l in env.lines() {
+        let (k, v) = l.trim_start_matches("export ").split_once('=').unwrap();
+        inside.insert(k.into(), v.into());
+    }
+    let seen_inside = CoreSource::detect(&inside).load().panes;
+    assert!(!seen_inside.is_empty(), "the sandbox's fake Herdr shows panes");
+    // outside Herdr: no NIMITZ_MUX, no HERDR_ENV
+    let mut outside = inside.clone();
+    outside.remove("NIMITZ_MUX");
+    outside.remove("HERDR_ENV");
+    assert_eq!(CoreSource::detect(&outside).load().mux_name, "none", "nothing recorded: monitor-only");
+    // the user's own command once recorded the server it ran in
+    let state = std::path::PathBuf::from(&outside["NIMITZ_STATE"]);
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("active.json"), r#"{"version": 1, "at": 1.0, "herdr": {"session": "sb"}, "members": {}}"#).unwrap();
+    let b = CoreSource::detect(&outside).load();
+    assert_eq!(b.mux_name, "herdr");
+    assert_eq!(b.panes.len(), seen_inside.len(), "the same panes as inside Herdr");
+}
+
 #[test]
 fn bug40_the_first_look_is_quick_and_the_full_one_follows() {
     let w = world();

@@ -667,7 +667,10 @@ the recorded default server's socket (`NIMITZ_HERDR_SOCKET`), else no
 multiplexer. The herdr child of such a call gets that server only: its
 inherited `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `HERDR_CLIENT_SOCKET_PATH`
 are removed, and only the recorded socket is set. Only the user's own command detects
-Herdr from its env.
+Herdr from its env; outside Herdr (no `HERDR_ENV`, no explicit
+`NIMITZ_MUX`/`NIMITZ_HERDR_SESSION`: a terminal, a launcher) the user's own
+`nimitz` and Admiralty take the server the user's commands recorded
+(`active::user_mux_vars`), else no multiplexer.
 The E22 hazard (the CLI may resolve a named session's socket regardless of
 the env) is accepted: the shape nimitz reads comes from the same `herdr`
 invocation in the same env as the identity it records, so the two name the
