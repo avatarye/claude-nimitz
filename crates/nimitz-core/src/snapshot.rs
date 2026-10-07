@@ -93,7 +93,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         .iter()
         .flat_map(|(id, rec)| rec.lineage.iter().map(move |l| (l.session_id.as_str(), id.as_str())))
         .collect();
-    // Every configured member's folder on this machine (tenders: the squadron's).
+    // Every configured member's folder on this machine.
     let mut dir_of: HashMap<String, String> = HashMap::new();
     let mut ship_ids: Vec<Id> = vec![];
     for fc in &fleets_cfg {
@@ -115,12 +115,18 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     }
     let legacy_names: HashMap<String, Id> = fleets_cfg.iter().flat_map(crate::config::legacy_map).collect();
     let folder_ok = |owner: &str, cwd: &str| -> bool {
-        let owner_dir = if Id(owner.to_string()).role() == Role::Tender { Id(owner.to_string()).parent().map(|p| p.0) } else { Some(owner.to_string()) };
-        match owner_dir.and_then(|o| dir_of.get(&o)) {
+        match dir_of.get(owner) {
             Some(d) => same_dir(d, cwd),
             None => true, // not deployed here, or not configured: nothing to compare
         }
     };
+    // sessions of 0.3.x tenders (retired identities, history only): claimed by
+    // their old id, so they are no stowaways, and reported as `tender.retired`
+    let retired_of: HashMap<&str, &str> = reg
+        .retired
+        .iter()
+        .flat_map(|(id, rec)| rec.current.iter().chain(rec.lineage.iter().map(|l| &l.session_id)).map(move |s| (s.as_str(), id.as_str())))
+        .collect();
     // labelled sessions in another folder than their identity's (BUG-30)
     let mut misplaced: Vec<(String, SessionRow)> = vec![];
     for r in &rows {
@@ -129,7 +135,8 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             .get(r.session_id.as_str())
             .copied()
             .or_else(|| by_labels.filter(|o| folder_ok(o, &r.cwd)))
-            .or_else(|| lineage_of.get(r.session_id.as_str()).copied());
+            .or_else(|| lineage_of.get(r.session_id.as_str()).copied())
+            .or_else(|| retired_of.get(r.session_id.as_str()).copied());
         if let Some(owner) = owner {
             by_identity.entry(owner.to_string()).or_default().push(r.clone());
             claimed.insert(r.session_id.clone());
@@ -201,22 +208,12 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
                 id: sqid.clone(),
                 commodore: build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events),
                 ships: vec![],
-                tenders: vec![],
                 comms: sq.comms.clone(),
                 issues: vec![],
             };
             for ship in &sq.ships {
                 let sid = Id::ship(&fc.config.fleet, &sq.squadron, &ship.name);
                 squadron.ships.push(build_member(env, cache, fc, &sid, &reg, &mut by_identity, &labels, &events));
-            }
-            // Tenders are not declared: they exist in the registry or as labelled sessions.
-            let prefix = format!("{}/~", sqid.0);
-            let mut tender_ids: Vec<String> = reg.identities.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
-            tender_ids.extend(by_identity.keys().filter(|k| k.starts_with(&prefix)).cloned());
-            tender_ids.sort();
-            tender_ids.dedup();
-            for t in tender_ids {
-                squadron.tenders.push(build_member(env, cache, fc, &Id(t), &reg, &mut by_identity, &labels, &events));
             }
             fleet.squadrons.push(squadron);
         }
@@ -227,7 +224,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         for (sqid, sd, err) in crate::config::unreadable_squadrons(fc) {
             let prefix = format!("{}/", sqid.0);
             let mut under: Vec<String> = reg.identities.keys().filter(|k| k.starts_with(&prefix)).cloned().collect();
-            under.extend(by_identity.keys().filter(|k| k.starts_with(&prefix)).cloned());
+            under.extend(by_identity.keys().filter(|k| k.starts_with(&prefix) && !crate::migrate::is_tender_id(k)).cloned());
             under.sort();
             under.dedup();
             let unread = |m: &mut Member, dir: Option<String>| {
@@ -239,13 +236,12 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             };
             let mut commodore = build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events);
             unread(&mut commodore, Some(sd.to_string_lossy().into_owned()));
-            let mut squadron = Squadron { id: sqid.clone(), commodore, ships: vec![], tenders: vec![], comms: Comms::default(), issues: vec![err.clone()] };
+            let mut squadron = Squadron { id: sqid.clone(), commodore, ships: vec![], comms: Comms::default(), issues: vec![err.clone()] };
             for k in under {
                 let id = Id(k);
                 let mut m = build_member(env, cache, fc, &id, &reg, &mut by_identity, &labels, &events);
-                let dir = if id.role() == Role::Tender { Some(sd.to_string_lossy().into_owned()) } else { None };
-                unread(&mut m, dir);
-                if id.role() == Role::Tender { squadron.tenders.push(m) } else { squadron.ships.push(m) }
+                unread(&mut m, None);
+                squadron.ships.push(m);
             }
             fleet.squadrons.push(squadron);
         }
@@ -277,7 +273,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
                     commodore.cwd = Some(dir.join("squadrons").join(sq.to_lowercase()).to_string_lossy().into_owned());
                 }
                 unread(&mut commodore);
-                fleet.squadrons.push(Squadron { id: sqid.clone(), commodore, ships: vec![], tenders: vec![], comms: Comms::default(), issues: vec![] });
+                fleet.squadrons.push(Squadron { id: sqid.clone(), commodore, ships: vec![], comms: Comms::default(), issues: vec![] });
             }
             if id == sqid {
                 continue;
@@ -303,19 +299,30 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             for sq in &f.squadrons {
                 s.insert(sq.commodore.id.0.clone());
                 s.extend(sq.ships.iter().map(|m| m.id.0.clone()));
-                s.extend(sq.tenders.iter().map(|m| m.id.0.clone()));
             }
         }
         s
     };
     for (owner, rs) in by_identity.iter().filter(|(o, _)| !configured.contains(*o)) {
         for r in rs {
-            snap.issues.push(Issue {
-                code: "config.invalid".into(),
-                severity: Severity::Warn,
-                message: format!("session {} is labelled {owner}, which no config declares", r.session_id),
-                fix: Some(format!("nimitz rm {}  # or add {owner} back to the config", r.short_id.as_deref().unwrap_or(&r.session_id))),
-                id: Some(Id(owner.clone())),
+            let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+            // a job row a 0.3.x tender left: the role is gone (plan-v4 section 8)
+            snap.issues.push(if crate::migrate::is_tender_id(owner) {
+                Issue {
+                    code: "tender.retired".into(),
+                    severity: Severity::Info,
+                    message: format!("job row {short} is the 0.3.x tender {owner}; the tender role was removed in 0.4.0, the row is history"),
+                    fix: Some(if r.live() { format!("nimitz stop {short}  # then nimitz rm {short}") } else { format!("nimitz rm {short}") }),
+                    id: Some(Id(owner.clone())),
+                }
+            } else {
+                Issue {
+                    code: "config.invalid".into(),
+                    severity: Severity::Warn,
+                    message: format!("session {} is labelled {owner}, which no config declares", r.session_id),
+                    fix: Some(format!("nimitz rm {short}  # or add {owner} back to the config")),
+                    id: Some(Id(owner.clone())),
+                }
             });
         }
     }
@@ -424,7 +431,6 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         for sq in &mut f.squadrons {
             fix(&mut sq.commodore);
             sq.ships.iter_mut().for_each(&mut fix);
-            sq.tenders.iter_mut().for_each(&mut fix);
         }
     }
     snap
@@ -481,7 +487,6 @@ fn all_members(f: &Fleet) -> Vec<&Member> {
     for sq in &f.squadrons {
         v.push(&sq.commodore);
         v.extend(sq.ships.iter());
-        v.extend(sq.tenders.iter());
     }
     v
 }
@@ -491,7 +496,6 @@ fn for_each_member(f: &mut Fleet, mut each: impl FnMut(&mut Member)) {
     for sq in &mut f.squadrons {
         each(&mut sq.commodore);
         sq.ships.iter_mut().for_each(&mut each);
-        sq.tenders.iter_mut().for_each(&mut each);
     }
 }
 

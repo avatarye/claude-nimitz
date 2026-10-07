@@ -1,6 +1,7 @@
 //! Registry of identities and lineage (contracts.md section 5). Owner: core-config.
 use crate::env::Env;
 use crate::types::*;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ pub fn load(env: &Env) -> Registry {
 
 /// `locked`: the caller holds `registry.lock` already (flock does not nest).
 fn load_with(env: &Env, locked: bool) -> Registry {
-    match std::fs::read_to_string(env.registry_path()) {
+    let mut r = match std::fs::read_to_string(env.registry_path()) {
         Err(_) => fresh(env),
         Ok(raw) => match serde_json::from_str(&raw) {
             Ok(r) => r,
@@ -27,11 +28,15 @@ fn load_with(env: &Env, locked: bool) -> Registry {
                 Err(_) => rebuild(env).0, // read-only: rebuild in memory only
             },
         },
-    }
+    };
+    // A 0.3.x registry: its tender identities become history (plan-v4 section
+    // 8). A read never writes; the next `update` saves the moved shape.
+    crate::migrate::retire_tenders(&mut r);
+    r
 }
 
 fn fresh(env: &Env) -> Registry {
-    Registry { version: 1, machine: env.hostname.clone(), identities: Default::default() }
+    Registry { version: 1, machine: env.hostname.clone(), ..Default::default() }
 }
 
 fn parse_file(p: &Path) -> Option<Registry> {
@@ -57,7 +62,9 @@ fn rebuild(env: &Env) -> (Registry, String) {
         if id.fleet().is_empty() {
             continue;
         }
-        let known = r.identities.get(nid).is_some_and(|rec| rec.lineage.iter().any(|l| l.session_id == sid));
+        // a 0.3.x tender's events rebuild its history in `retired`, never a member
+        let map = if crate::migrate::is_tender_id(nid) { &mut r.retired } else { &mut r.identities };
+        let known = map.get(nid).is_some_and(|rec| rec.lineage.iter().any(|l| l.session_id == sid));
         if !known {
             let via = match e.source.as_deref() {
                 Some("resume") => "resume",
@@ -66,7 +73,7 @@ fn rebuild(env: &Env) -> (Registry, String) {
             }
             .to_string();
             let (role, name) = (id.role(), id.name());
-            bind(&mut r, &id, role, &name, "", sid, &via, e.ts);
+            bind_into(map, &id, role, &name, "", sid, &via, e.ts);
             added += 1;
         }
     }
@@ -191,7 +198,12 @@ pub fn update<T>(env: &Env, f: impl FnOnce(&mut Registry) -> T) -> std::io::Resu
 /// Record a new current session for an identity (appends to lineage).
 #[allow(clippy::too_many_arguments)] // one flat row of session facts
 pub fn bind(r: &mut Registry, id: &Id, role: Role, name: &str, cwd: &str, session_id: &str, via: &str, now: f64) {
-    let rec = r.identities.entry(id.0.clone()).or_insert_with(|| IdentityRecord {
+    bind_into(&mut r.identities, id, role, name, cwd, session_id, via, now)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bind_into(map: &mut BTreeMap<String, IdentityRecord>, id: &Id, role: Role, name: &str, cwd: &str, session_id: &str, via: &str, now: f64) {
+    let rec = map.entry(id.0.clone()).or_insert_with(|| IdentityRecord {
         role,
         name: name.to_string(),
         cwd: cwd.to_string(),

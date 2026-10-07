@@ -141,7 +141,6 @@ pub fn merge_check(snap: &mut Snapshot, found: Vec<nimitz_core::Issue>) {
                 for sq in &mut f.squadrons {
                     members.push(&mut sq.commodore);
                     members.extend(sq.ships.iter_mut());
-                    members.extend(sq.tenders.iter_mut());
                 }
                 if let Some(m) = members.into_iter().find(|m| m.id == id) {
                     m.issues.push(i.clone());

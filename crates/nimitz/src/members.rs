@@ -1,5 +1,5 @@
 //! Commands on running members: status, check, up, start, stop, relaunch, rm,
-//! sweep, tender, adopt, signal, open, layout. The plans come from core.
+//! sweep, adopt, signal, open, layout. The plans come from core.
 use crate::run::{self, refusal};
 use crate::{out, Ctx};
 use nimitz_core::sessions as ses;
@@ -10,20 +10,11 @@ use std::path::PathBuf;
 /// Parse and shape-check an identity id (contracts.md section 4).
 pub fn parse_id(s: &str) -> Result<Id, String> {
     let parts: Vec<&str> = s.split('/').collect();
-    let ok_tail = |p: &str| match p.strip_prefix('~') {
-        Some(t) => !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
-        None => nimitz_core::config::valid_name(p),
-    };
-    let ok = match parts.as_slice() {
-        [f] => nimitz_core::config::valid_name(f),
-        [f, sq] => nimitz_core::config::valid_name(f) && nimitz_core::config::valid_name(sq),
-        [f, sq, t] => nimitz_core::config::valid_name(f) && nimitz_core::config::valid_name(sq) && ok_tail(t),
-        _ => false,
-    };
+    let ok = (1..=3).contains(&parts.len()) && parts.iter().all(|p| nimitz_core::config::valid_name(p));
     if ok {
         Ok(Id(s.to_string()))
     } else {
-        Err(format!("{s:?} is not an id (F, F/SQ, F/SQ/SHIP or F/SQ/~task; names are [A-Z0-9_]+)"))
+        Err(format!("{s:?} is not an id (F, F/SQ or F/SQ/SHIP; names are [A-Z0-9_]+)"))
     }
 }
 
@@ -34,7 +25,6 @@ pub fn members(snap: &Snapshot) -> Vec<&Member> {
         for sq in &f.squadrons {
             v.push(&sq.commodore);
             v.extend(sq.ships.iter());
-            v.extend(sq.tenders.iter());
         }
     }
     v
@@ -51,7 +41,6 @@ fn members_mut(snap: &mut Snapshot) -> Vec<&mut Member> {
         for sq in &mut f.squadrons {
             v.push(&mut sq.commodore);
             v.extend(sq.ships.iter_mut());
-            v.extend(sq.tenders.iter_mut());
         }
     }
     v
@@ -110,7 +99,7 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         .iter()
         .flat_map(|f| {
             std::iter::once(2 + f.admiral.id.0.len()).chain(f.squadrons.iter().flat_map(|q| {
-                std::iter::once(2 + q.commodore.id.0.len()).chain(q.ships.iter().chain(q.tenders.iter()).map(|m| 4 + m.id.0.len()))
+                std::iter::once(2 + q.commodore.id.0.len()).chain(q.ships.iter().map(|m| 4 + m.id.0.len()))
             }))
         })
         .max()
@@ -128,7 +117,7 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
             for i in &sq.issues {
                 out::issue(i);
             }
-            for m in sq.ships.iter().chain(sq.tenders.iter()) {
+            for m in &sq.ships {
                 member_line(&ctx.env, m, 2, col);
             }
         }
@@ -268,18 +257,6 @@ pub fn sweep(ctx: &Ctx) -> Result<i32, String> {
     Ok(run::session_plan(ctx, ses::plan_sweep(&ctx.env, &snap, id.as_ref(), &ctx.caller)))
 }
 
-pub fn tender(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--prompt"])?;
-    let commodore = parse_id(ctx.args.need(0, "commodore id F/SQ")?)?;
-    let task = ctx.args.need(1, "task")?;
-    let prompt = match ctx.args.value("--prompt") {
-        Some(p) => p.to_string(),
-        None => ctx.args.pos[2..].join(" "),
-    };
-    let snap = ctx.snap();
-    Ok(run::session_plan(ctx, ses::plan_tender(&ctx.env, &snap, &commodore, task, &prompt, &ctx.caller)))
-}
-
 pub fn adopt(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(2)?;
@@ -292,7 +269,7 @@ pub fn adopt(ctx: &Ctx) -> Result<i32, String> {
 // ------------------------------------------------------------------ signal, open
 
 /// `nimitz signal <id> <text>`: you type to an admiral or commodore in its
-/// pane; a ship or tender gets it relayed through its commodore (plan-v3 13).
+/// pane; a ship gets it relayed through its commodore (plan-v3 13).
 /// Sessions signal each other with SendMessage; the hook rules those.
 pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
@@ -317,7 +294,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         plan.refusals.push(refusal("config.invalid", format!("{id} is not in any fleet config"), None, Some(id)));
         return Ok(finish_plan(ctx, &plan));
     };
-    // Who gets the typing: the member itself, or its commodore for a ship/tender.
+    // Who gets the typing: the member itself, or its commodore for a ship.
     let (via, text) = if m.role.interactive() {
         (m, text)
     } else {
@@ -521,10 +498,11 @@ mod tests {
 
     #[test]
     fn ids_are_shape_checked() {
-        for ok in ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/~fix-ci"] {
+        for ok in ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"] {
             assert!(parse_id(ok).is_ok(), "{ok}");
         }
-        for bad in ["", "main", "MAIN/", "MAIN/ARGOS/CLEAN/X", "MAIN/ARGOS/~", "MAIN/as tra"] {
+        // `MAIN/ARGOS/~fix-ci` was a 0.3.x tender: no id any more
+        for bad in ["", "main", "MAIN/", "MAIN/ARGOS/CLEAN/X", "MAIN/ARGOS/~", "MAIN/ARGOS/~fix-ci", "MAIN/as tra"] {
             assert!(parse_id(bad).is_err(), "{bad}");
         }
     }

@@ -324,10 +324,135 @@ fn check_result(env: &Env, fleet_dir: &Path, config: &FleetConfig, existing: Opt
     }
 }
 
+// ------------------------------------------------------------------ 0.3.x tenders
+
+/// Was `id` a 0.3.x tender (`F/SQ/~task`)? The role was removed in 0.4.0: its
+/// identities and job rows are history only (never a member, never started).
+pub fn is_tender_id(id: &str) -> bool {
+    let p: Vec<&str> = id.split('/').collect();
+    p.len() == 3 && p[2].starts_with('~')
+}
+
+/// Move every tender identity of a v1 registry to `retired`. Returns how many
+/// moved. `registry::load` runs it on every read (in memory, nothing is
+/// written); the next registry write saves the moved shape.
+pub fn retire_tenders(r: &mut Registry) -> usize {
+    let ids: Vec<String> = r.identities.keys().filter(|k| is_tender_id(k)).cloned().collect();
+    for id in &ids {
+        let Some(rec) = r.identities.remove(id) else { continue };
+        match r.retired.get_mut(id) {
+            None => {
+                r.retired.insert(id.clone(), rec);
+            }
+            // both maps know it (a rebuild from registry.json.bak and the events
+            // can do that): one history, and the newer of the two currents
+            Some(old) => {
+                for l in rec.lineage {
+                    if !old.lineage.iter().any(|x| x.session_id == l.session_id) {
+                        old.lineage.push(l);
+                    }
+                }
+                let at = |cur: &Option<String>, lineage: &[LineageEntry]| {
+                    cur.as_ref().and_then(|c| lineage.iter().find(|l| &l.session_id == c)).map(|l| l.bound_at).unwrap_or(f64::MIN)
+                };
+                if rec.current.is_some() && (old.current.is_none() || at(&rec.current, &old.lineage) > at(&old.current, &old.lineage)) {
+                    old.current = rec.current;
+                }
+            }
+        }
+    }
+    ids.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::tests::{apply_ok, test_env};
+
+    #[test]
+    fn a_v1_registry_retires_its_tenders_on_load() {
+        let (_td, env) = test_env();
+        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+        crate::registry::update(&env, |r| crate::registry::bind(r, &ship, Role::Ship, &ship.name(), "/w", "sid-1", "launch", 1.0)).unwrap();
+        // the 0.3.x shape, word for word: a `tender` role and a `~task` id
+        let raw = std::fs::read_to_string(env.registry_path()).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        v["identities"]["MAIN/ARGOS/~fixci"] = serde_json::json!({
+            "role": "tender", "name": "[MAIN.ARGOS]-COMMODORE/fixci", "cwd": "/sq", "current": "sid-t",
+            "lineage": [{"session_id": "sid-t", "bound_at": 2.0, "via": "launch"}]});
+        std::fs::write(env.registry_path(), v.to_string()).unwrap();
+        let r = crate::registry::load(&env);
+        assert_eq!(r.identities.keys().collect::<Vec<_>>(), [&ship.0], "the tender is no member");
+        assert_eq!(r.retired["MAIN/ARGOS/~fixci"].current.as_deref(), Some("sid-t"), "its history stays");
+        assert_eq!(r.retired["MAIN/ARGOS/~fixci"].lineage.len(), 1);
+        // a read writes nothing: the file keeps its 0.3.x shape until the next update
+        assert!(std::fs::read_to_string(env.registry_path()).unwrap().contains(r#""role":"tender""#));
+        assert_eq!(crate::registry::load(&env), r, "every read moves it the same way");
+        assert!(crate::registry::health(&env).is_empty(), "no corrupt copy was made");
+        crate::registry::update(&env, |_| ()).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        assert_eq!(saved["version"], 1, "still the v1 format, plus `retired`");
+        assert!(saved["identities"].get("MAIN/ARGOS/~fixci").is_none());
+        assert!(saved["retired"]["MAIN/ARGOS/~fixci"].is_object());
+        assert_eq!(crate::registry::load(&env), r);
+        // a registry with no tenders is written without a `retired` key
+        let (_td2, env2) = test_env();
+        crate::registry::update(&env2, |r| crate::registry::bind(r, &ship, Role::Ship, &ship.name(), "/w", "sid-1", "launch", 1.0)).unwrap();
+        assert!(!std::fs::read_to_string(env2.registry_path()).unwrap().contains("retired"));
+    }
+
+    #[test]
+    fn a_tender_known_to_both_maps_merges_into_one_history() {
+        let (_td, env) = test_env();
+        let tid = "MAIN/ARGOS/~fixci";
+        let rec = |cur: &str, lineage: &[(&str, f64)]| {
+            serde_json::json!({"role": "tender", "name": "[MAIN.ARGOS]-COMMODORE/fixci", "cwd": "/sq", "current": cur,
+                "lineage": lineage.iter().map(|(s, t)| serde_json::json!({"session_id": s, "bound_at": t, "via": "launch"})).collect::<Vec<_>>()})
+        };
+        std::fs::create_dir_all(&env.state).unwrap();
+        // retired knows the old conversation; identities (as a rebuild leaves it) the newer one
+        let v = serde_json::json!({"version": 1, "machine": "test-mac",
+            "identities": {tid: rec("sid-2", &[("sid-1", 1.0), ("sid-2", 5.0)])},
+            "retired": {tid: rec("sid-1", &[("sid-1", 1.0)])}});
+        std::fs::write(env.registry_path(), v.to_string()).unwrap();
+        let r = crate::registry::load(&env);
+        assert!(r.identities.is_empty());
+        let got = &r.retired[tid];
+        assert_eq!(got.lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["sid-1", "sid-2"]);
+        assert_eq!(got.current.as_deref(), Some("sid-2"), "the newer current wins");
+        // the other way round: the retired current is the newer one and stays
+        let v = serde_json::json!({"version": 1, "machine": "test-mac",
+            "identities": {tid: rec("sid-1", &[("sid-1", 1.0)])},
+            "retired": {tid: rec("sid-2", &[("sid-2", 5.0)])}});
+        std::fs::write(env.registry_path(), v.to_string()).unwrap();
+        let got = crate::registry::load(&env).retired[tid].clone();
+        assert_eq!(got.current.as_deref(), Some("sid-2"));
+        assert_eq!(got.lineage.len(), 2);
+    }
+
+    #[test]
+    fn a_rebuild_from_events_keeps_tenders_out_of_the_members() {
+        let (_td, env) = test_env();
+        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+        crate::registry::update(&env, |r| crate::registry::bind(r, &ship, Role::Ship, &ship.name(), "/w", "sid-1", "launch", 1.0)).unwrap();
+        let ev = |sid: &str, id: &str, role: &str, ts: f64| {
+            serde_json::json!({"ts": ts, "event": "SessionStart", "session_id": sid, "source": "startup",
+                "labels": {"NIMITZ_ID": id, "NIMITZ_ROLE": role}}).to_string()
+        };
+        std::fs::write(env.events_path(), format!("{}\n{}\n", ev("sid-t", "MAIN/ARGOS/~fixci", "tender", 2.0), ev("sid-2", &ship.0, "ship", 3.0))).unwrap();
+        std::fs::write(env.registry_path(), "{garbage").unwrap();
+        let r = crate::registry::load(&env);
+        assert_eq!(r.identities.keys().collect::<Vec<_>>(), [&ship.0], "{:?}", r.identities.keys());
+        assert_eq!(r.identities[&ship.0].current.as_deref(), Some("sid-2"));
+        assert_eq!(r.retired["MAIN/ARGOS/~fixci"].current.as_deref(), Some("sid-t"), "the tender's event is history");
+        assert_eq!(crate::registry::load(&env), r, "the saved rebuild reads back the same");
+    }
+
+    #[test]
+    fn tender_ids_are_three_parts_with_a_tilde() {
+        assert!(is_tender_id("F/SQ/~fix-ci"));
+        assert!(!is_tender_id("F/SQ/SHIP") && !is_tender_id("F/SQ") && !is_tender_id("F") && !is_tender_id("F/SQ/~x/y"));
+    }
 
     fn old_fleet(dir: &Path, json: &str, fleet_md: Option<&str>) {
         std::fs::create_dir_all(dir).unwrap();

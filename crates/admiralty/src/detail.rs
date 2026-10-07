@@ -43,7 +43,6 @@ pub fn art_for(n: &Node) -> Art {
             nimitz_core::Role::Admiral => Art::Admiral,
             nimitz_core::Role::Commodore => Art::Commodore,
             nimitz_core::Role::Ship => Art::Ship,
-            nimitz_core::Role::Tender => Art::Tender,
         },
     }
 }
@@ -120,7 +119,7 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             Line::styled("Sessions in a fleet's folders that carry no NIMITZ_* labels.", st(mono::SOFT)),
             Line::styled("nimitz did not start them, so nothing binds them to an identity.", st(mono::SOFT)),
             blank(),
-            Line::styled("On a stowaway: d adopt it as a ship or tender, x rm its job row,", st(mono::SOFT)),
+            Line::styled("On a stowaway: d adopt it as a ship, x rm its job row,", st(mono::SOFT)),
             Line::styled("A attach to it. I hides this group.", st(mono::SOFT)),
         ],
         (Kind::Crew, _) => vec![
@@ -238,9 +237,6 @@ fn squadron_detail(f: &Fleet, sq: &Squadron, width: usize) -> Vec<Line<'static>>
         kv("comms", comms_text(&sq.comms)),
         kv("ships", sq.ships.iter().map(|s| s.id.parts().last().unwrap_or(&"?").to_string()).collect::<Vec<_>>().join(", ")),
     ];
-    if !sq.tenders.is_empty() {
-        v.push(kv("tenders", sq.tenders.iter().map(|s| s.id.parts().last().unwrap_or(&"?").trim_start_matches('~').to_string()).collect::<Vec<_>>().join(", ")));
-    }
     v.extend(issues_block("SQUADRON ISSUES", &sq.issues.iter().collect::<Vec<_>>(), width));
     let member_issues: usize = squadron_members(sq).iter().map(|m| m.issues.len()).sum();
     if member_issues > 0 {

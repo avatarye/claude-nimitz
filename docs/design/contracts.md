@@ -90,11 +90,16 @@ fleet names it; otherwise `--hostname H`.
 | admiral | `F` | `[F]-ADMIRAL` |
 | commodore | `F/SQ` | `[F.SQ]-COMMODORE` |
 | ship | `F/SQ/SHIP` | `[F.SQ]-SHIP` |
-| tender | `F/SQ/~task` | `[F.SQ]-COMMODORE/task` |
+
+The tender role of 0.3.x (`F/SQ/~task`, one job for a commodore) was removed
+in 0.4.0: a v1 registry's tender identities move to the registry's `retired`
+map on load (history only, never members), a job row with tender labels is
+`tender.retired` (Info, fix `nimitz rm <short>`; `nimitz stop <short>` first
+while it is live).
 
 Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
-`NIMITZ_ROLE` (`admiral|commodore|ship|tender`), `NIMITZ_ID`, `NIMITZ_PARENT`
-(tenders), `NIMITZ_HOME`. Every `nimitz` launch sets all of them, plus
+`NIMITZ_ROLE` (`admiral|commodore|ship`), `NIMITZ_ID`, `NIMITZ_HOME`. Every
+`nimitz` launch sets all of them, plus
 `"worktree":{"bgIsolation":"none"}` for background sessions.
 
 ## 5. Registry and events (`NIMITZ_STATE`)
@@ -135,7 +140,7 @@ older rules, and `brief.old` for an admiral's or commodore's CLAUDE.md that an
 older nimitz generated; `doctor --fix` replaces those and leaves a hand-edited
 brief alone. A brief holds only who the member is and the user's notes.
 
-`needs/<id with / as %2F>.json`: the needs-you notice of a ship or tender that
+`needs/<id with / as %2F>.json`: the needs-you notice of a ship that
 blocks on the user (PreToolUse `AskUserQuestion`, `PermissionRequest`, or a
 blocking `Notification`): `{ts, id, session_id, kind: question|permission|prompt,
 event, tool_use_id, detail, delivery: pending|delivered|failed, delivery_note,
@@ -156,7 +161,7 @@ Snapshot types (serde-serializable; `nimitz status --json` prints them):
 ```
 Snapshot { taken_at, machine, fleets: [Fleet], stowaways: [Member], issues: [Issue], cc_version, compat }
 Fleet { id, admiral: Member, squadrons: [Squadron], issues }
-Squadron { id, commodore: Member, ships: [Member], tenders: [Member], comms, issues }
+Squadron { id, commodore: Member, ships: [Member], comms, issues }
 Member { id, role, name, expected_name, cwd, status, reasons: [String], session: Option<SessionInfo>,
          crew: [Crew], tasks: [Task], issues: [Issue], pane: Option<PaneRef> }
 Status = NotStarted | Stopped | Idle | Busy | NeedsYou | Unknown
@@ -218,7 +223,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `config.write` | a config step failed, or the re-read does not match |
 | `machine.host` | `machine add` would give one host a second label (no `--hostname`, or the hostname is taken) |
 | `machine.live` | (warning) `machine rm` of this machine while members of the fleet are live here; lists them |
-| `member.unknown` | the id names no member of any fleet config (or a tender's commodore does not exist) |
+| `member.unknown` | the id names no member of any fleet config |
 | `prompt.missing` | a ship's cold launch needs a prompt and the config has none |
 | `machine.missing` | the fleet does not run on this machine |
 | `session.unknown` | the target names no member's session, no stowaway and no holder of a fleet name |
@@ -227,7 +232,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `session.interactive` | an interactive member is ended in its own pane, not by nimitz |
 | `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
 | `lineage.current` | `rm` of an identity's current session (it would break the lineage) |
-| `tender.invalid` | a tender's commodore, task name or prompt is wrong |
+| `tender.retired` | (info) a job row of a 0.3.x tender, history only (fix: `nimitz rm <short>`, after `nimitz stop <short>` while live) |
 | `step.failed` | a step of an applied plan failed (or a lock could not be taken); nothing after it ran |
 
 Session codes from the snapshot, besides section 7's: `job.unreadable` (a job
@@ -252,7 +257,7 @@ target. For each member, one action from this table:
 | no row, but the registry's current (or an interrupted relaunch's) session has a transcript (background member) | resume `--resume <id>` with all flags: Claude Code keeps the id and history. A relaunch writes `NIMITZ_STATE/pending/<id>.json` before its `rm` and clears it after the bind, so a start after a crash between the two says "recovering an interrupted relaunch" |
 | no row, transcript exists (interactive member) | `claude -c` in its folder with the name and labels |
 | no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): `rm` its row, then cold launch `--resume <it>` with all flags, so the old session id becomes the ship's with its history, lineage `via: migrate`; the other old rows stay as Info `legacy`, removed only by `sweep`. An interactive member whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
-| no row, no transcript | cold launch (ship: prompt from config; tender: refuse) |
+| no row, no transcript | cold launch (ship: prompt from config) |
 | row `failed` / unknown id | mark lineage broken; cold launch only with `--force` |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
 | folder missing or untrusted | refuse with the fix |
@@ -267,7 +272,7 @@ a resume that must keep the id; `stop`/`rm` through the native binary and verify
 by re-reading; never touch a session that is not in the identity's lineage.
 
 Authority for `sweep`: the user, any scope; a commodore, its own squadron only
-(its tenders and the stale copy rows of its own ships). Admiral, ship, tender: none.
+(the stale copy rows of its own ships). Admiral, ship: none.
 Core owns a plan for every mutating command, including `fleet set`,
 `squadron set`, `machine rm`, retire (`sessions::plan_retire`: `ship|squadron|fleet rm`,
 session and config steps in one plan, one verified `apply`) and the layout
@@ -300,7 +305,7 @@ member under it, and its parents; the pre-start gate checks the target and its
 parents only),
 `fleet new|set|rm`, `squadron new|set|rm`, `ship new|set|rm`, `machine add [--hostname H]|rm`,
 `up <fleet> [--plan]`, `start <id>`, `stop <id>`, `relaunch <id>`, `rm <id>`,
-`sweep [<id>]`, `tender <F/SQ> <task>`, `adopt <session> <id>`, `signal <id> <text>`,
+`sweep [<id>]`, `adopt <session> <id>`, `signal <id> <text>`,
 `open <id>`, `layout herdr [<fleet>]`, `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
 `__fake-herdr`. Every command exits non-zero on failure and prints `[OK]`, `[INFO]`,

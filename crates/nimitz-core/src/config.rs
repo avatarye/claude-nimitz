@@ -21,9 +21,9 @@ pub fn valid_label(s: &str) -> bool {
 /// Ship names that would take another role's address (`[F.SQ]-COMMODORE`).
 pub const RESERVED_SHIP_NAMES: [&str; 2] = ["COMMODORE", "ADMIRAL"];
 
-/// Is `name` reserved for a role (COMMODORE, ADMIRAL, or a tender's `COMMODORE/...`)?
+/// Is `name` reserved for a role (COMMODORE, ADMIRAL)?
 pub fn reserved_ship_name(name: &str) -> bool {
-    RESERVED_SHIP_NAMES.contains(&name) || name.starts_with("COMMODORE/")
+    RESERVED_SHIP_NAMES.contains(&name)
 }
 
 /// A config file that cannot be read or parsed: where, and what the parser said.
@@ -475,7 +475,7 @@ pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
     }
     match id.role() {
         Role::Admiral => Some(f.dir.join("admiral")),
-        Role::Commodore | Role::Tender => {
+        Role::Commodore => {
             let sq = id.squadron()?;
             f.squadrons.iter().find(|(_, s)| s.squadron == sq).map(|(sd, _)| sd.clone())
         }
@@ -516,7 +516,7 @@ pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
     };
     match id.role() {
         Role::Admiral => f.config.admiral.permission_mode.clone().unwrap_or(fallback),
-        Role::Commodore | Role::Tender => squadron_mode().unwrap_or(fallback),
+        Role::Commodore => squadron_mode().unwrap_or(fallback),
         Role::Ship => find_ship(f, id)
             .and_then(|(_, _, ship)| f.machine.as_ref().and_then(|m| ship.permission_mode.get(m).cloned()))
             .or_else(squadron_mode)
@@ -823,9 +823,6 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
         }
     };
     match id.role() {
-        Role::Tender => {
-            refuse(&mut plan, "config.invalid", format!("{id} is a tender; tenders are not in the config"), None, Some(id.clone()));
-        }
         Role::Admiral => {
             // Delete the fleet: only with no squadrons left; the config is archived.
             if !f.squadrons.is_empty() {
@@ -1136,7 +1133,7 @@ fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &s
                 let mut v = vec![&fl.admiral];
                 for sq in &fl.squadrons {
                     v.push(&sq.commodore);
-                    v.extend(sq.ships.iter().chain(sq.tenders.iter()));
+                    v.extend(sq.ships.iter());
                 }
                 v.into_iter().filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some())).map(|m| m.id.0.clone()).collect()
             })
@@ -1508,7 +1505,7 @@ pub(crate) mod tests {
             f.squadrons[0].1.ships.push(ship);
             assert!(validate(&env, &f).iter().any(|i| i.message.contains("reserved")), "{name}");
         }
-        assert!(reserved_ship_name("COMMODORE/job") && !reserved_ship_name("COMMODORES"));
+        assert!(!reserved_ship_name("COMMODORES"));
     }
 
     #[test]
@@ -1572,7 +1569,6 @@ pub(crate) mod tests {
         let f = load_fleet(&env, "MAIN").unwrap();
         assert_eq!(member_dir(&env, &f, &Id::admiral("MAIN")), Some(f.dir.join("admiral")));
         assert_eq!(member_dir(&env, &f, &Id::commodore("MAIN", "ARGOS")), Some(f.dir.join("squadrons/argos")));
-        assert_eq!(member_dir(&env, &f, &Id::tender("MAIN", "ARGOS", "job1")), Some(f.dir.join("squadrons/argos")));
         assert_eq!(member_dir(&env, &f, &Id::ship("MAIN", "ARGOS", "ARGOS")), Some(f.dir.join("ships/argos/argos")));
         assert_eq!(member_dir(&env, &f, &Id::ship("MAIN", "ARGOS", "GHOST")), None);
         assert_eq!(member_dir(&env, &f, &Id::ship("OTHER", "ARGOS", "ARGOS")), None);

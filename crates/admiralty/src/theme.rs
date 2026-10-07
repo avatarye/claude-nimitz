@@ -147,7 +147,6 @@ pub struct Icons {
     pub squadron: &'static str,  // flag
     pub commodore: &'static str, // rank badge
     pub ship: &'static str,      // ferry
-    pub tender: &'static str,    // small boat / wrench
     pub crew: &'static str,      // robot
     pub teammate: &'static str,  // people
     pub stowaway: &'static str,  // incognito
@@ -173,7 +172,6 @@ pub const NERD: Icons = Icons {
     squadron: "\u{f024}",   // nf-fa-flag
     commodore: "\u{f0a3}",  // nf-fa-certificate (rank rosette)
     ship: "\u{f21a}",       // nf-fa-ship
-    tender: "\u{f0ad}",     // nf-fa-wrench
     crew: "\u{f06a9}",      // nf-md-robot-outline
     teammate: "\u{f0c0}",   // nf-fa-users
     stowaway: "\u{f21b}",   // nf-fa-user-secret
@@ -199,7 +197,6 @@ pub const ASCII: Icons = Icons {
     squadron: ">",
     commodore: "&",
     ship: "S",
-    tender: "t",
     crew: "s",
     teammate: "T",
     stowaway: "?",
@@ -223,7 +220,7 @@ impl Icons {
     /// Every glyph of the set, for width checks.
     pub fn all(&self) -> Vec<&'static str> {
         vec![
-            self.fleet, self.admiral, self.squadron, self.commodore, self.ship, self.tender, self.crew, self.teammate, self.stowaway,
+            self.fleet, self.admiral, self.squadron, self.commodore, self.ship, self.crew, self.teammate, self.stowaway,
             self.issue, self.legacy, self.finished, self.row, self.completed, self.in_progress, self.pending, self.pane, self.s_needs,
             self.s_busy, self.s_idle, self.s_stopped, self.s_off, self.s_unknown,
         ]
@@ -245,7 +242,6 @@ impl Icons {
             Role::Admiral => self.admiral,
             Role::Commodore => self.commodore,
             Role::Ship => self.ship,
-            Role::Tender => self.tender,
         }
     }
 }
@@ -257,7 +253,6 @@ const ART_CROWN: [&str; 5] = ["  .  ^  .", " /\\ / \\ /\\", " \\  V V  /", "  \\
 const ART_FLAG: [&str; 5] = ["  |\\______", "  |  >>>  )", "  |______/", "  |", "  |"];
 const ART_ROSETTE: [&str; 5] = ["   .-\"\"-.", "  / *  * \\", "  \\  **  /", "   '-..-'", "    |  |"];
 const ART_SHIP: [&str; 5] = ["     |\\", "     | \\", "     |__\\", "  ___|_____", "  \\_______/"];
-const ART_TENDER: [&str; 5] = ["", "    /\\", "   /__\\", "  _|__|_", "  \\____/"];
 const ART_BOT: [&str; 5] = ["", "   .---.", "  ( o o )", "   | = |", "   '---'"];
 const ART_TEAM: [&str; 5] = ["", "  o    o", " /|\\  /|\\", " / \\  / \\", ""];
 const ART_MASK: [&str; 5] = ["   _____", "  / ? ? \\", "  \\__ __/", "   /   \\", "  (_____)"];
@@ -275,7 +270,6 @@ pub enum Art {
     Squadron,
     Commodore,
     Ship,
-    Tender,
     Crew,
     Teammate,
     Stowaway,
@@ -293,7 +287,6 @@ pub fn art(a: Art) -> &'static [&'static str; 5] {
         Art::Squadron => &ART_FLAG,
         Art::Commodore => &ART_ROSETTE,
         Art::Ship => &ART_SHIP,
-        Art::Tender => &ART_TENDER,
         Art::Crew => &ART_BOT,
         Art::Teammate => &ART_TEAM,
         Art::Stowaway => &ART_MASK,

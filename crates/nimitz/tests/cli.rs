@@ -58,7 +58,6 @@ impl Sb {
         let role = match id.split('/').count() {
             1 => "admiral",
             2 => "commodore",
-            _ if id.contains('~') => "tender",
             _ => "ship",
         };
         raw(&self.vars, args, &[("NIMITZ_ID", id), ("NIMITZ_ROLE", role)], None)
@@ -80,7 +79,7 @@ impl Sb {
                 if sq["commodore"]["id"] == id {
                     return sq["commodore"].clone();
                 }
-                for m in sq["ships"].as_array().unwrap().iter().chain(sq["tenders"].as_array().unwrap()) {
+                for m in sq["ships"].as_array().unwrap() {
                     if m["id"] == id {
                         return m.clone();
                     }
@@ -210,7 +209,6 @@ fn plan_prints_and_changes_nothing() {
         vec!["relaunch", "MAIN/ARGOS/NOLABEL", "--plan"],
         vec!["sweep", "--plan"],
         vec!["rm", "MAIN/ARGOS/COPIES", "--plan"],
-        vec!["tender", "MAIN/ARGOS", "job", "do it", "--plan"],
         vec!["ship", "new", "MAIN/ARGOS/NEWSHIP", "--dir", "managed", "--prompt", "hi", "--plan"],
         vec!["ship", "rm", "MAIN/ARGOS/CLEAN", "--plan"],
         vec!["fleet", "new", "ZED", "--plan"],
@@ -313,18 +311,8 @@ fn rm_removes_a_stopped_stowaway() {
 }
 
 #[test]
-fn tender_and_adopt() {
+fn adopt() {
     let sb = Sb::new(false);
-    let r = sb.run_as("MAIN/ARGOS", &["tender", "MAIN/ARGOS", "build-docs", "Build", "the", "docs.", "--yes"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    let t = sb.member("MAIN/ARGOS/~build-docs");
-    assert!(live(&t));
-    assert_eq!(t["session"]["labels"]["NIMITZ_PARENT"], "MAIN/ARGOS");
-    assert_eq!(t["session"]["name"], "[MAIN.ARGOS]-COMMODORE/build-docs");
-    assert_eq!(sb.run_as("MAIN/BOREAL", &["tender", "MAIN/ARGOS", "x", "go", "--yes"]).code, 1);
-    assert_eq!(sb.run_as("MAIN/ARGOS/CLEAN", &["tender", "MAIN/ARGOS", "x", "go", "--yes"]).code, 1);
-    assert_eq!(sb.run(&["tender", "MAIN/ARGOS", "x", "--yes"]).code, 1, "no prompt");
-
     let s = sb.status();
     let stow = s["stowaways"].as_array().unwrap().iter().find(|x| x["name"] == "quick look at the logs").unwrap()["session_id"].as_str().unwrap().to_string();
     let r = sb.run(&["adopt", &stow, "MAIN/ARGOS/FRESH", "--yes"]);
@@ -363,7 +351,6 @@ fn a_ship_starts_nothing_and_an_admiral_only_in_its_own_fleet() {
         assert_eq!(r.code, 1, "{who}: {}", r.out);
         assert!(r.out.contains("may not start"), "{}", r.out);
         assert_eq!(sb.run_as(who, &["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 1);
-        assert_eq!(sb.run_as(who, &["tender", "MAIN/ARGOS", "x", "go", "--yes"]).code, 1);
     }
     assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
     assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
@@ -416,9 +403,8 @@ fn config_changes_go_by_the_same_scopes_and_whole_fleets_stay_yours() {
     no("MAIN", &["fleet", "new", "ZED", "--plan"]);
     no("MAIN", &["fleet", "rm", "MAIN", "--plan"]);
     no("MAIN", &["machine", "add", "MAIN", "box2", "--hostname", "box2", "--plan"]);
-    // ships and tenders change no config
+    // ships change no config
     no("MAIN/ARGOS/CLEAN", &["ship", "set", "MAIN/ARGOS/CLEAN", "--mode", "auto", "--plan"]);
-    no("MAIN/ARGOS/~fix", &["squadron", "set", "MAIN/ARGOS", "--comms", "open", "--plan"]);
     // a refusal's fix is shown only when the caller may run it
     let r = sb.run_as("MAIN/ARGOS", &["start", "MAIN/ARGOS/DRIFT", "--plan"]);
     assert!(r.out.contains("fix: nimitz relaunch MAIN/ARGOS/DRIFT"), "its own ship's fix is its own:\n{}", r.out);
@@ -747,16 +733,39 @@ fn a_ship_that_asks_the_user_tells_its_commodore_with_the_question_in_full() {
 }
 
 #[test]
-fn a_tender_permission_prompt_reaches_its_commodore() {
+fn a_ship_permission_prompt_reaches_its_commodore() {
     let sb = Sb::new(true);
     sb.pane_for("MAIN/ARGOS");
-    let input = r#"{"session_id":"s-t","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"git push --force"}}"#;
-    let tender = [("NIMITZ_ID", "MAIN/ARGOS/~fix"), ("NIMITZ_ROLE", "tender"), ("NIMITZ_PARENT", "MAIN/ARGOS"), ("NIMITZ_NOTIFY_RETRY", "0")];
-    let r = raw(&sb.vars, &["hook", "PermissionRequest"], &tender, Some(input));
+    let input = r#"{"session_id":"s-clean","hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"git push --force"}}"#;
+    let ship = [("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_ROLE", "ship"), ("NIMITZ_NOTIFY_RETRY", "0")];
+    let r = raw(&sb.vars, &["hook", "PermissionRequest"], &ship, Some(input));
     assert_eq!((r.code, r.out.trim()), (0, ""), "no decision: the prompt still shows");
-    assert_eq!(sb.notice("MAIN/ARGOS/~fix").unwrap()["delivery"], "delivered");
+    assert_eq!(sb.notice("MAIN/ARGOS/CLEAN").unwrap()["delivery"], "delivered");
     let typed = sb.prompts("w1:p2").join("\n");
-    assert!(typed.contains("MAIN/ARGOS/~fix (tender") && typed.contains("permission") && typed.contains("git push --force"), "{typed}");
+    assert!(typed.contains("MAIN/ARGOS/CLEAN (ship") && typed.contains("permission") && typed.contains("git push --force"), "{typed}");
+}
+
+/// A 0.3.x tender's job row (plan-v4 section 8): `check` shows it once as
+/// `tender.retired` (Info) with `nimitz rm <short>`; status lists no tender;
+/// the id is no longer an id at all.
+#[test]
+fn a_retired_tender_row_is_checked_once_and_removed_by_rm() {
+    let sb = Sb::new(false);
+    let s = sb.status();
+    for sq in s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap()) {
+        assert!(sq.get("tenders").is_none(), "no tenders key: {sq}");
+        assert!(sq["ships"].as_array().unwrap().iter().all(|m| !m["id"].as_str().unwrap().contains('~')));
+    }
+    let r = sb.run(&["check"]);
+    let lines: Vec<&str> = r.out.lines().collect();
+    let at: Vec<usize> = lines.iter().enumerate().filter(|(_, l)| l.contains("tender.retired")).map(|(i, _)| i).collect();
+    assert_eq!(at.len(), 1, "{}", r.out);
+    assert!(lines[at[0]].starts_with("[INFO]") && lines[at[0]].contains("MAIN/ARGOS/~fixci"), "{}", lines[at[0]]);
+    let short = lines[at[0] + 1].trim().strip_prefix("fix: nimitz rm ").map(|t| t.split_whitespace().next().unwrap().to_string()).unwrap_or_else(|| panic!("the fix: {}", lines[at[0] + 1]));
+    assert_eq!(sb.run(&["start", "MAIN/ARGOS/~fixci", "--plan"]).code, 2, "not an id");
+    let r = sb.run(&["rm", &short, "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!sb.run(&["check"]).out.contains("tender.retired"));
 }
 
 #[test]

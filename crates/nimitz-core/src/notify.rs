@@ -1,4 +1,4 @@
-//! Needs-you notices: a ship or tender that blocks on the user (an
+//! Needs-you notices: a ship that blocks on the user (an
 //! AskUserQuestion, a permission prompt) has no pane anyone watches, so its
 //! commodore is told at once, with the question in full. Owner: core-sessions.
 //!
@@ -120,11 +120,11 @@ fn questions(input: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" | "))
 }
 
-/// What this hook call says the member now waits on, if anything. Only ships
-/// and tenders: an admiral or commodore sits in a pane the user watches.
+/// What this hook call says the member now waits on, if anything. Only ships:
+/// an admiral or commodore sits in a pane the user watches.
 pub fn from_hook(event: &str, input: &Value, labels: &BTreeMap<String, String>) -> Option<Notice> {
     let id = Id(labels.get("NIMITZ_ID")?.clone());
-    if !matches!(id.role(), Role::Ship | Role::Tender) || labels.get("NIMITZ_ROLE").map(String::as_str) != Some(id.role().as_str()) {
+    if id.role() != Role::Ship || labels.get("NIMITZ_ROLE").map(String::as_str) != Some(id.role().as_str()) {
         return None;
     }
     let tool = str_at(input, "tool_name");
@@ -283,14 +283,15 @@ mod tests {
     #[test]
     fn a_permission_request_carries_the_tool_and_its_input() {
         let input = json!({"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "rm -rf build"}});
-        let n = from_hook("PermissionRequest", &input, &labels("MAIN/ARGOS/~fix", "tender")).unwrap();
+        let n = from_hook("PermissionRequest", &input, &labels("MAIN/ARGOS/CLEAN", "ship")).unwrap();
         assert_eq!(n.kind, "permission");
         assert!(n.detail.contains("Bash") && n.detail.contains("rm -rf build"), "{}", n.detail);
     }
 
     #[test]
-    fn only_ships_and_tenders_with_whole_labels_notify() {
+    fn only_ships_with_whole_labels_notify() {
         assert!(from_hook("PreToolUse", &ask(), &labels("MAIN/ARGOS", "commodore")).is_none(), "a commodore has a pane");
+        assert!(from_hook("PreToolUse", &ask(), &labels("MAIN/ARGOS/~fix", "tender")).is_none(), "a 0.3.x tender is no member");
         assert!(from_hook("PreToolUse", &ask(), &labels("MAIN", "admiral")).is_none());
         assert!(from_hook("PreToolUse", &ask(), &labels("MAIN/ARGOS/CLEAN", "commodore")).is_none(), "labels that disagree");
         assert!(from_hook("PreToolUse", &ask(), &BTreeMap::new()).is_none(), "the user's own session");

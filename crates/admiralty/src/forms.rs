@@ -19,8 +19,6 @@ pub enum FormKind {
     EditShip(Id),
     EditFleet(String),
     EditSquadron(Id),
-    /// a tender for this commodore
-    Tender(Id),
     /// remove a machine label from this fleet
     MachineRm(String),
     /// adopt the stowaway with this session id
@@ -224,18 +222,6 @@ impl Form {
         ))
     }
 
-    pub fn tender(commodore: &Id) -> Form {
-        Form::build(
-            FormKind::Tender(commodore.clone()),
-            format!("New tender for {}", commodore.name()),
-            vec![
-                Field::new("squadron", "commodore", &commodore.0, FieldKind::Fixed, ""),
-                Field::new("task", "task", "", FieldKind::Text, "short name, e.g. fix-ci (becomes ~task)"),
-                Field::new("prompt", "prompt", "", FieldKind::Long, "the job; ctrl-e opens $EDITOR"),
-            ],
-        )
-    }
-
     pub fn machine_rm(fleet: &str, label: &str) -> Form {
         Form::build(
             FormKind::MachineRm(fleet.to_string()),
@@ -348,7 +334,6 @@ impl Form {
                 }
                 c
             }
-            FormKind::Tender(id) => format!("nimitz tender {} {} {}", q(&id.0), q(self.get("task").trim()), q(self.get("prompt").trim_end())),
             FormKind::MachineRm(f) => format!("nimitz machine rm {} {}", q(f), q(self.get("machine").trim())),
             FormKind::Adopt(_) => format!("nimitz adopt {} {}", q(self.get("session")), q(self.get("id"))),
         }
@@ -433,18 +418,6 @@ impl Form {
                 let brief = Some(self.get("brief").trim()).filter(|b| !b.is_empty());
                 nimitz_core::config::plan_squadron_set(env, id, brief, comms, set_mode(self.get("mode")))
             }
-            FormKind::Tender(cid) => {
-                let task = self.get("task").trim();
-                if task.is_empty() {
-                    errs.insert("task", "a tender needs a task name".into());
-                } else if task.contains(char::is_whitespace) || task.contains('/') {
-                    errs.insert("task", "one word: letters, digits, - or _".into());
-                }
-                if self.get("prompt").trim().is_empty() {
-                    errs.insert("prompt", "a tender needs a prompt (ctrl-e for $EDITOR)".into());
-                }
-                nimitz_core::sessions::plan_tender(env, snap, cid, task, self.get("prompt").trim_end(), &Caller::User)
-            }
             FormKind::MachineRm(f) => {
                 if let Some(e) = label_err(self.get("machine")) {
                     errs.insert("machine", e);
@@ -454,7 +427,7 @@ impl Form {
             FormKind::Adopt(sid) => {
                 let id = Id(self.get("id").trim().to_string());
                 if id.0.is_empty() || id.parts().len() != 3 {
-                    errs.insert("id", "F/SQ/SHIP or F/SQ/~task".into());
+                    errs.insert("id", "F/SQ/SHIP".into());
                 }
                 nimitz_core::sessions::plan_adopt(env, snap, sid, &id, &Caller::User)
             }
@@ -474,10 +447,9 @@ impl Form {
     pub fn pending(&self) -> Pending {
         let act = match self.kind {
             FormKind::Adopt(_) => Act::Adopt,
-            FormKind::Tender(_) => Act::Tender,
             _ => Act::Save,
         };
-        let config = !matches!(act, Act::Adopt | Act::Tender);
+        let config = act != Act::Adopt;
         Pending { act, command: self.command.clone(), plan: self.plan.clone(), config, panes: vec![], layout: None }
     }
 
@@ -487,7 +459,6 @@ impl Form {
             FormKind::NewFleet | FormKind::NewSquadron | FormKind::NewShip => "create",
             FormKind::EditShip(_) | FormKind::EditFleet(_) | FormKind::EditSquadron(_) => "update",
             FormKind::Adopt(_) => "adopt",
-            FormKind::Tender(_) => "start",
             FormKind::MachineRm(_) => "remove",
         }
     }

@@ -681,15 +681,11 @@ fn a_legacy_session_has_its_own_marker_and_adopt_is_prefilled() {
 }
 
 #[test]
-fn tender_layout_and_machine_entries_are_where_they_belong() {
+fn layout_and_machine_entries_are_where_they_belong() {
     let mut t = demo();
     goto(&mut t.app, "SQ:MAIN/ARGOS");
-    let menu = t.app.create_menu();
-    let it = menu.iter().find(|i| i.key == 't').unwrap();
-    assert_eq!(it.label, "new tender for [MAIN.ARGOS]-COMMODORE");
-    assert!(it.enabled.is_ok());
+    assert!(t.app.create_menu().iter().all(|i| i.key != 't'), "no tender entry");
     goto(&mut t.app, "F:MAIN");
-    assert!(t.app.create_menu().iter().find(|i| i.key == 't').unwrap().enabled.is_err());
     let menu = t.app.action_menu();
     for k in ['L', 'S', 'M', 'w'] {
         assert!(menu.iter().any(|i| i.key == k), "fleet band menu has {k}");

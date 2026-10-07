@@ -12,7 +12,7 @@ fn in_scope(member: &Id, target: Option<&Id>) -> bool {
     }
 }
 
-/// Is `member` under the target (a ship or tender of a squadron, anything of a fleet)?
+/// Is `member` under the target (a ship of a squadron, anything of a fleet)?
 fn below(member: &Id, target: Option<&Id>) -> bool {
     target.is_some_and(|t| member.0.starts_with(&format!("{}/", t.0)))
 }
@@ -160,7 +160,7 @@ pub fn folder_issue(env: &Env, id: &Id, cwd: &str) -> Option<Issue> {
 }
 
 /// `nimitz check [<id>]`: the target, every member under it (a fleet's
-/// squadrons and ships, a squadron's ships and tenders), and its parents.
+/// squadrons and ships, a squadron's ships), and its parents.
 pub fn check_tree(env: &Env, snap: &Snapshot, id: Option<&Id>) -> Vec<Issue> {
     check_scoped(env, snap, id, true)
 }
@@ -203,7 +203,6 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
         for sq in &fleet.squadrons {
             members.push(&sq.commodore);
             members.extend(sq.ships.iter());
-            members.extend(sq.tenders.iter());
         }
         for m in members {
             if !in_scope(&m.id, id) {
@@ -271,7 +270,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
                 let mut ms = vec![&fl.admiral];
                 for sq in &fl.squadrons {
                     ms.push(&sq.commodore);
-                    ms.extend(sq.ships.iter().chain(sq.tenders.iter()));
+                    ms.extend(sq.ships.iter());
                 }
                 exact.extend(ms.into_iter().filter(|m| m.id == *t || below(&m.id, Some(t))).filter_map(|m| m.cwd.as_deref()).map(|c| crate::env::canon(Path::new(c))));
             }
@@ -378,7 +377,6 @@ pub(crate) mod tests {
                     id: Id::commodore("MAIN", "ARGOS"),
                     commodore: member(Id::commodore("MAIN", "ARGOS"), sq_dir.to_str()),
                     ships: vec![member(Id::ship("MAIN", "ARGOS", "ARGOS"), ship_cwd)],
-                    tenders: vec![],
                     comms: Comms::default(),
                     issues: vec![],
                 }],

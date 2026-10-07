@@ -169,10 +169,6 @@ fn form_commands_match_the_cli() {
     f.set("mode", "acceptEdits");
     forms.push(f);
     forms.push(Form::machine_rm("MAIN", "sandbox"));
-    let mut f = Form::tender(&Id("MAIN/ARGOS".into()));
-    f.set("task", "lint");
-    f.set("prompt", "Run the linter.");
-    forms.push(f);
     for mut f in forms {
         f.validate(&env, &snap);
         assert!(f.ok(), "{}: {:?}", f.title, f.problems);

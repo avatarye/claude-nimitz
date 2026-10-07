@@ -16,7 +16,8 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 | admiral | Commands one fleet. Interactive. | `F` | `[F]-ADMIRAL` |
 | commodore | Commands one squadron. Interactive. | `F/SQ` | `[F.SQ]-COMMODORE` |
 | ship | Long-term work in one folder. Background. | `F/SQ/SHIP` | `[F.SQ]-SHIP` |
-| tender | One job for a commodore, then it stops. Background. | `F/SQ/~task` | `[F.SQ]-COMMODORE/task` |
+
+One-off work is a subagent in the lead's own session, or a ship.
 
 ## Rules
 
@@ -27,7 +28,7 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 3. Never use `--force` unless the user asks for it by name.
 4. The config is the truth. CRUD commands change only the config. Running
    sessions change only through `up`, `start`, `stop`, `relaunch`, `rm`,
-   `sweep`, `tender` and `adopt`.
+   `sweep` and `adopt`.
 5. Start top-down. `nimitz start <id>` starts the admiral, then the commodore,
    then the target. Do not start the parents yourself.
 6. A refusal is an answer. When `nimitz` prints `[ERROR]` with a `fix:`, show
@@ -39,9 +40,9 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 | Caller | May start |
 | --- | --- |
 | the user (no labels) | everything |
-| admiral | every command inside its own fleet: `start`, `stop`, `relaunch`, `rm`, `sweep`, `tender`, `adopt` for any member but itself; `up` and `layout herdr` for its fleet; `fleet set`, `squadron new/set/rm`, `ship new/set/rm` in its fleet |
-| commodore | inside its own squadron: `start`, `stop`, `relaunch`, `rm`, `sweep`, `tender`, `adopt` for its ships and tenders; `squadron set` for its squadron; `ship new/set/rm` for its ships |
-| ship, tender | nothing |
+| admiral | every command inside its own fleet: `start`, `stop`, `relaunch`, `rm`, `sweep`, `adopt` for any member but itself; `up` and `layout herdr` for its fleet; `fleet set`, `squadron new/set/rm`, `ship new/set/rm` in its fleet |
+| commodore | inside its own squadron: `start`, `stop`, `relaunch`, `rm`, `sweep`, `adopt` for its ships; `squadron set` for its squadron; `ship new/set/rm` for its ships |
+| ship | nothing |
 
 `nimitz` reads the caller from the session's labels. It refuses what the table
 does not allow. Always the user's alone: `init`, `fleet new`, `fleet rm`,
@@ -59,9 +60,8 @@ that the chain does not allow.
 | From | May signal |
 | --- | --- |
 | admiral | its commodores (questions and orders) |
-| commodore | its admiral, its ships, its tenders |
+| commodore | its admiral, its ships |
 | ship | its commodore; other ships as the squadron's `comms` rule allows |
-| tender | its commodore |
 
 `comms` in `squadron.toml`: `open` (default), `commodore-only`, or an allow list.
 The user reaches a ship through its commodore: `nimitz signal F/SQ/SHIP <text>`
@@ -88,7 +88,6 @@ types the text into the commodore's pane.
 | Stop one member | `nimitz stop <id>`; one copy of two: `nimitz stop <short id>` |
 | New session id, labels restored | `nimitz relaunch <id>` |
 | Remove stale rows | `nimitz sweep [<id>]` (a commodore: `nimitz sweep <F/SQ>`), or one row: `nimitz rm <short id>` |
-| One-off job | `nimitz tender <F/SQ> <task> "<prompt>"` |
 | A session with no labels | `nimitz adopt <session> <id>`, or `nimitz rm <session>` |
 | Show a member | `nimitz open <id>` |
 | Herdr workspaces for fleets | `nimitz layout herdr [<F>]` |

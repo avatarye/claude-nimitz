@@ -1,6 +1,6 @@
 //! `nimitz hook <Event>` logic: append an Event; for PreToolUse SendMessage, decide
 //! allow/deny from the comms rule (contracts.md sections 5, plan-v3 section 7);
-//! when a ship or tender blocks on the user (AskUserQuestion, PermissionRequest,
+//! when a ship blocks on the user (AskUserQuestion, PermissionRequest,
 //! a blocking Notification), record a needs-you notice for its commodore
 //! (`notify`). Owner: core-sessions.
 //!
@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
-const LABELS: [&str; 6] = ["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_PARENT", "NIMITZ_HOME"];
+const LABELS: [&str; 5] = ["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_HOME"];
 
 /// Handle one hook call. `stdin` is Claude Code's hook JSON; `vars` the hook's env.
 /// Returns the text to print on stdout (empty, or a decision JSON). Never panics.
@@ -45,11 +45,18 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     let mut out = String::new();
     let mut reason = str_at(&input, "reason");
     if event == "PreToolUse" && is_signal {
-        let verdict = match (to.as_deref(), labels.get("NIMITZ_ID")) {
-            (Some(target), Some(sender)) => Some(may_signal(env, &Id(sender.clone()), target)),
-            // labels without an id (partial): fail closed for fleet targets
+        // The sender is its NIMITZ_ID only when NIMITZ_ROLE agrees with the
+        // id's shape (as `sessions::caller_from_env` judges it): a 0.3.x tender
+        // (`F/SQ/~task`, role `tender`) is no sender with a role.
+        let sender = match crate::sessions::caller_from_env(&labels.iter().map(|(k, v)| (k.clone(), v.clone())).collect()) {
+            Caller::Member { id, .. } if id.0 != crate::sessions::UNVERIFIED => Some(id),
+            _ => None,
+        };
+        let verdict = match (to.as_deref(), sender) {
+            (Some(target), Some(sender)) => Some(may_signal(env, &sender, target)),
+            // labels without an id, or that disagree (partial): fail closed for fleet targets
             (Some(target), None) if !labels.is_empty() && (crate::sessions::id_from_name(target).is_some() || target.contains(':')) => {
-                Some(Err("the sender's NIMITZ_* labels are partial (no NIMITZ_ID); nimitz cannot judge this signal".to_string()))
+                Some(Err("the sender's NIMITZ_* labels are partial (no NIMITZ_ID, or NIMITZ_ROLE does not match it); nimitz cannot judge this signal".to_string()))
             }
             _ => None,
         };
@@ -63,7 +70,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             .to_string();
         }
     }
-    // A ship or tender now blocks on the user: record it for its commodore.
+    // A ship now blocks on the user: record it for its commodore.
     // Moving on (a prompt, a stop, the end) closes its notice.
     let mut notice = None;
     if let Some(n) = crate::notify::from_hook(event, &input, &labels) {
@@ -208,7 +215,7 @@ fn resolve_socket(env: &Env, to: &str) -> Option<String> {
 /// The chain-of-command signal table (plan-v3 section 7). Targets that are not
 /// fleet names (teammates of an agent team, other sessions) are not ours to
 /// rule, except an address nimitz cannot resolve (a socket, BUG-22): a ship
-/// under a closed comms rule, or a tender, may not signal what it cannot name.
+/// under a closed comms rule may not signal what it cannot name.
 pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
     if to_name.contains(':') && !to_name.starts_with('[') {
         let resolved = resolve_socket(env, to_name);
@@ -216,7 +223,6 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
             return may_signal(env, from, name);
         }
         let closed = match from.role() {
-            Role::Tender => true,
             Role::Ship => !matches!(squadron_comms(env, from), Comms::Mode(m) if m == "open"),
             _ => false,
         };
@@ -241,12 +247,8 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
         },
         Role::Commodore => match to.role() {
             Role::Admiral if to.fleet() == from.fleet() => Ok(()),
-            Role::Ship | Role::Tender if same_sq => Ok(()),
-            _ => deny(format!("a commodore signals its admiral, its ships and its tenders, not {to_name}")),
-        },
-        Role::Tender => match to.role() {
-            Role::Commodore if same_sq => Ok(()),
-            _ => deny(format!("a tender signals only its commodore, not {to_name}")),
+            Role::Ship if same_sq => Ok(()),
+            _ => deny(format!("a commodore signals its admiral and its ships, not {to_name}")),
         },
         Role::Ship => match to.role() {
             Role::Commodore if same_sq => Ok(()),
@@ -326,22 +328,27 @@ mod tests {
         let adm = Id::admiral("MAIN");
         let argos = Id::commodore("MAIN", "ARGOS");
         let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
-        let tender = Id::tender("MAIN", "ARGOS", "fix");
         let one = Id::ship("MAIN", "BOREAL", "ONE");
 
         // an admiral signals its own commodores and nothing else
         assert!(!denied(&send(&env, &adm, &argos.name())));
         assert!(denied(&send(&env, &adm, &ship.name())));
         assert!(denied(&send(&env, &adm, &Id::commodore("OTHER", "SQ").name())));
-        // a commodore: its admiral, its ships, its tenders
+        // a commodore: its admiral, its ships
         assert!(!denied(&send(&env, &argos, &adm.name())));
         assert!(!denied(&send(&env, &argos, &ship.name())));
-        assert!(!denied(&send(&env, &argos, &tender.name())));
         assert!(denied(&send(&env, &argos, &one.name())), "not a ship of another squadron");
-        // a tender: only its commodore
-        assert!(!denied(&send(&env, &tender, &argos.name())));
-        assert!(denied(&send(&env, &tender, &adm.name())));
-        assert!(denied(&send(&env, &tender, &ship.name())));
+        // a 0.3.x tender's labels (`~task` id, role `tender`) give no authority at
+        // all: denied to its commodore and to a sibling ship alike
+        let tender: HashMap<String, String> = [("NIMITZ_FLEET", "MAIN"), ("NIMITZ_SQUADRON", "ARGOS"), ("NIMITZ_ROLE", "tender"), ("NIMITZ_ID", "MAIN/ARGOS/~fix"), ("NIMITZ_HOME", "/h")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        for to in [argos.name(), ship.name(), "sock:/tmp/x".to_string()] {
+            let input = serde_json::json!({"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "SendMessage", "tool_input": {"to": to, "message": "done"}});
+            let out = handle(&env, "PreToolUse", &input.to_string(), &tender);
+            assert!(denied(&out) && out.contains("NIMITZ_ROLE does not match"), "{to}: {out}");
+        }
         // a ship: its commodore always
         assert!(!denied(&send(&env, &ship, &argos.name())));
         assert!(denied(&send(&env, &ship, &adm.name())), "a ship does not signal the admiral");

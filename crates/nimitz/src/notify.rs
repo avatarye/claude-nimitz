@@ -1,4 +1,4 @@
-//! Needs-you delivery: type a blocked ship's or tender's notice into its
+//! Needs-you delivery: type a blocked ship's notice into its
 //! commodore's pane, the way `nimitz signal` reaches an interactive member.
 //!
 //! The hook records the notice (`nimitz_core::notify`) and starts
@@ -43,7 +43,7 @@ pub fn spawn_delivery(env: &Env, n: &Notice) {
 pub fn deliver_cmd(id: &str) -> i32 {
     let vars: HashMap<String, String> = std::env::vars().collect();
     match caller_from_env(&vars) {
-        Caller::Member { id: me, role: Role::Ship | Role::Tender } if me.0 == id => {}
+        Caller::Member { id: me, role: Role::Ship } if me.0 == id => {}
         _ => return 2,
     }
     let env = Env::from_vars(&vars);

@@ -202,33 +202,6 @@ fn edit_squadron_and_fleet_forms_plan_through_core() {
 }
 
 #[test]
-fn a_tender_form_starts_a_tender_through_core() {
-    let w = world();
-    let mut app = app_on(&w, TestMux::default());
-    goto(&mut app, "SQ:MAIN/ARGOS");
-    keys(&mut app, "c");
-    keys(&mut app, "t");
-    let Some(Modal::Form(_)) = &app.modal else { panic!("{}", toast(&app)) };
-    keys(&mut app, "fix ci");
-    let Some(Modal::Form(f)) = &app.modal else { panic!() };
-    assert!(f.fields.iter().find(|x| x.key == "task").unwrap().error.is_some(), "one word");
-    ctrl(&mut app, 'u');
-    keys(&mut app, "lint");
-    press(&mut app, KeyCode::Tab);
-    keys(&mut app, "Run the linter and report.");
-    let Some(Modal::Form(f)) = &app.modal else { panic!() };
-    assert!(f.ok(), "{:?}", f.problems);
-    assert_eq!(f.command, "nimitz tender MAIN/ARGOS lint 'Run the linter and report.'");
-    ctrl(&mut app, 's');
-    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!() };
-    assert_eq!(p.act, Act::Tender);
-    let o = actions::apply(&app.ctx.env, &p);
-    assert!(o.issues.is_empty(), "{:?}", o.issues);
-    reload(&w, &mut app);
-    assert!(app.rows.iter().any(|r| r.node.id == "M:MAIN/ARGOS/~lint"), "the tender is listed");
-}
-
-#[test]
 fn machine_rm_form_plans_through_core() {
     let w = world();
     let app = app_on(&w, TestMux::default());

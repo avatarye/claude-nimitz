@@ -349,7 +349,7 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled("What the icons mean", bold(mono::FG)));
-    let legend: [(&str, Style, &str); 22] = [
+    let legend: [(&str, Style, &str); 21] = [
         (icons.issue, bold(mono::ERROR), "errors (orange) and warnings (yellow); `i` lists them with fixes"),
         (icons.legacy, bold(mono::WARN), "a session of an old fleet-skill fleet; `x` then `d` adopts it"),
         (icons.s_needs, bold(mono::NEEDS), "needs you: waiting at a prompt or a question"),
@@ -363,7 +363,6 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
         (icons.squadron, st(mono::FG), "squadron"),
         (icons.commodore, bold(mono::STRONG), "commodore"),
         (icons.ship, st(mono::FG), "ship"),
-        (icons.tender, st(mono::FG), "tender (one job for a commodore)"),
         (icons.crew, st(mono::BUSY), "crew: a sub-agent inside a session"),
         (icons.teammate, st(mono::BUSY), "teammate"),
         (icons.stowaway, bold(mono::WARN), "stowaway: a session in fleet scope with no labels"),

@@ -136,7 +136,6 @@ pub fn fleet_members(f: &Fleet) -> Vec<&Member> {
     for sq in &f.squadrons {
         v.push(&sq.commodore);
         v.extend(sq.ships.iter());
-        v.extend(sq.tenders.iter());
     }
     v
 }
@@ -144,7 +143,6 @@ pub fn fleet_members(f: &Fleet) -> Vec<&Member> {
 pub fn squadron_members(sq: &Squadron) -> Vec<&Member> {
     let mut v = vec![&sq.commodore];
     v.extend(sq.ships.iter());
-    v.extend(sq.tenders.iter());
     v
 }
 

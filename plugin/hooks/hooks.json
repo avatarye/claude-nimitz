@@ -1,5 +1,5 @@
 {
-  "description": "nimitz: bind sessions to identities, log crew and end reasons, rule SendMessage by the chain of command, tell a commodore when its ship or tender blocks on the user",
+  "description": "nimitz: bind sessions to identities, log crew and end reasons, rule SendMessage by the chain of command, tell a commodore when its ship blocks on the user",
   "hooks": {
     "SessionStart": [
       {
