@@ -189,3 +189,39 @@ forms, and their tests. Migration: v1 tender identities move to `retired` (secti
 - Commits: conventional, concise, no Claude signature, no co-author lines.
 - Match the code around you (comment density, naming, the `[OK]/[WARN]/[ERROR]`
   output, ASD-STE100 style in docs and messages).
+
+## 12. P8: live rules, nimitz for every member, admiral comms (addendum)
+
+Rules update live, with no restart:
+- The rules stay compiled into the binary (single source). The plugin hooks stay thin
+  shims that call `nimitz hook`, so a new binary changes rules and enforcement for
+  every member at once, with no plugin update.
+- `NIMITZ_STATE/rules-delivered.json`: per job (fallback: per session id) the rules
+  version last delivered and when. SessionStart records the delivery it makes.
+- UserPromptSubmit (already registered): if the delivered version is older than the
+  binary's, output additionalContext headed `nimitz rules updated vN→vM` with a
+  short changelog (kept in the binary per version) and the full text, then record
+  it. No change: output nothing.
+- Find out (real Claude Code, isolated) whether a cross-session message and a
+  `nimitz signal` prompt fire UserPromptSubmit in a background ship. If one does
+  not, also deliver on another per-turn event (PreToolUse on the first tool call
+  of a turn), rate-limited (at most once per version per job), and record which.
+- Hard rules are mechanical (authority in `may_run`, comms in the PreToolUse deny),
+  never context text only. The report lists the rules that stay text-only.
+- `rules.old` becomes Info (or goes) once a live member gets the update at its next
+  turn. `doctor` checks that the installed plugin registers every hook event the
+  binary needs and flags a plugin that needs `/reload-plugins`.
+- Member CLAUDE.md files keep only identity and user notes, never rule text.
+
+Every member can run nimitz:
+- Every launch nimitz makes (admiral, commodores, ships) passes
+  `"permissions":{"allow":["Bash(nimitz *)"]}` in its `--settings` JSON. It is per
+  launch and lives in `respawnFlags`, so restarts keep it; relaunch re-adds it.
+- Authority stays scoped by role in `may_run`. Ships get every read-only command,
+  `signal` within their comms, and the safe commands on their own identity; the
+  report proposes the exact list.
+
+Admiral comms:
+- The admiral may signal any member of its own fleet (its commodores and every
+  ship), questions and orders. A ship may reply to its admiral. Update `may_signal`,
+  the comms table, skills, rules text (bump the rules version), README and tests.
