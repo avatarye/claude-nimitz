@@ -232,3 +232,25 @@ Admiral comms:
 - The admiral may signal any member of its own fleet (its commodores and every
   ship), questions and orders. A ship may reply to its admiral. Update `may_signal`,
   the comms table, skills, rules text (bump the rules version), README and tests.
+
+## 13. P9: fleet restore from the Herdr shape (addendum)
+
+- Scenarios: `docs/design/restore-scenarios.md` (written from the user's side: state
+  before, what is left, the restored state expected). Each one becomes a fake-Herdr
+  test, plus real-Claude-Code e2e where safe; the acceptance report gives a verdict
+  per scenario.
+- `nimitz restore [<F>] [--all]` with `--plan`/`--yes`: read the Herdr shape
+  (workspaces, tabs, panes, the session each pane shows), reuse what matches by full
+  tab name (`F.ADMIRAL`, `F.SQ.COMMODORE`, `F.SQ.SHIP`) or by session, create only
+  what is missing, reattach leads (`claude attach <job>` in their tab), resume by
+  exact id under section 5. Never a duplicate, never a session outside the fleet;
+  every member it cannot restore is reported with one working fix. Idempotent.
+- Last-known active set: `NIMITZ_STATE/active.json`, written on status, layout,
+  open and hook changes: which members were live and attached, and where (workspace,
+  tab, pane). After a reboot, restore brings back that set; members that were parked
+  stay parked unless `--all`; leads always come back.
+- `layout herdr` and `up` fold into restore or are defined against it (the P9 agent
+  writes the decision here). Admiralty gets a restore action.
+- Real Herdr in tests only on a fully separate server proven unable to reach the
+  user's live server; otherwise a short by-hand checklist for the user
+  (`docs/test/restore-checklist.md`). Never send anything to the live Herdr server.
