@@ -1748,6 +1748,27 @@ fn g8_a_copy_note_fails_the_step_and_removes_the_copy_in_the_same_run() {
     assert!(after.issues.is_empty(), "{:?}", after.issues);
 }
 
+/// r3-e2e finding 12: a wake right after a stop, under load, raced the
+/// daemon's bookkeeping and answered with a copy while the job stayed
+/// stopped. The copy goes, the job is waited for, and the wake runs once
+/// more: the member comes back under its own job, verified, no copy left.
+#[test]
+fn a_wake_that_raced_the_daemon_is_retried_once_and_verified() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let job = w.member(&w.snap(), &id).session.unwrap().short_id.unwrap();
+    let plan = w.start(&w.snap(), &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    w.set_knob("copy_once", true);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let resumes = out.ran.iter().filter(|(s, _, _)| s.cmd.iter().any(|a| a == "--resume")).count();
+    assert_eq!(resumes, 2, "the wake ran twice: {:?}", out.ran.iter().map(|(s, _, _)| s.cmd.join(" ")).collect::<Vec<_>>());
+    let after = w.member(&w.snap(), &id);
+    assert_eq!(after.session.as_ref().and_then(|s| s.short_id.as_deref()), Some(job.as_str()));
+    assert!(after.session.as_ref().unwrap().pid.is_some() && after.extra_rows.is_empty(), "{after:?}");
+}
+
 /// M5 / E8: Claude Code found no history and started the id over: the
 /// SessionStart says `startup`, not `resume`. `history.lost`, never verified.
 #[test]

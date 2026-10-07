@@ -40,7 +40,9 @@
 //!   `copy_on_resume` (a flag-free resume of a stopped job races the daemon's
 //!   restart: a copy is started with the "started a copy as X" note and the
 //!   job comes back live by itself, cli-31) and `resume_loses_history` (the
-//!   wake fires SessionStart `startup`: Claude Code found no transcript, E8).
+//!   wake fires SessionStart `startup`: Claude Code found no transcript, E8);
+//!   `copy_once` (one wake answers with a copy and the job stays stopped,
+//!   r3-e2e finding 12; the knob then clears).
 //!
 //! Live sandbox sessions record pid 1 (always alive), so the real `kill(pid, 0)`
 //! liveness check works unchanged; a stopped session simply has no session file.
@@ -1281,6 +1283,23 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                     eprintln!("note: --name is ignored for a copy of a running session");
                 }
                 println!("session {} is already running in the background, so this started a copy as {short}", row.session_id);
+                return 0;
+            }
+            if !flags && knob(&base, "copy_once") {
+                // r3-e2e finding 12: the wake raced the daemon's bookkeeping of
+                // a stop a moment before: a copy with the note, the job stays
+                // stopped; the knob clears, so the next wake is a plain wake
+                let mut w = read_json(&base.join("world.json")).unwrap_or(json!({}));
+                w["copy_once"] = json!(false);
+                write_json(&base.join("world.json"), &w);
+                let name = saved_name.clone().unwrap_or_else(|| row.name.clone());
+                let short = start(&base, &cwd, &name, "", None, "fork", false);
+                record_fork(&base, &short, &row.session_id);
+                if let Some(mut j) = job_state(&base, &short) {
+                    j["respawnFlags"] = json!([]);
+                    save_job(&base, &short, &j);
+                }
+                println!("note: session {} is already running in the background, so this started a copy as {short}. `claude attach {}` opens the original.", row.session_id, row.short_id.clone().unwrap_or_default());
                 return 0;
             }
             if !flags && knob(&base, "copy_on_resume") {

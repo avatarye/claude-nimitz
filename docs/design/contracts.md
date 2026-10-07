@@ -457,7 +457,11 @@ a resume that must keep the id; `stop`/`rm` through the native binary and verify
 by re-reading; never touch a session that is not in the identity's lineage.
 After every launch, resume or relaunch `apply` reads Claude Code's output
 (`claude::copy_started`, `claude::job_started`): a "started a copy as X" note
-fails the step and stops and removes X in the same run (`step.failed`); the
+on a native wake stops and removes X, waits for the job's row to settle (up to
+15 s, then 2 s), and wakes once more when the job is still not live (a wake
+right after a stop races the daemon's bookkeeping under load, r3-e2e finding
+12); a second copy, or a copy on any other launch, fails the step and stops
+and removes X in the same run (`step.failed`); the
 job named must be the one expected (a resume: the row's job; a cold launch:
 the new job), checked again against the row that runs the bound session. The
 SessionStart that binds a resume must say `source resume`; `startup` is

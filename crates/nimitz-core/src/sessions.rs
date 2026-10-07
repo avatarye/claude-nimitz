@@ -1925,6 +1925,9 @@ fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
 /// Run a plan's steps, then re-read state and verify (never trust exit codes alone).
 pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     let mut out = Outcome::default();
+    // commands run beyond the plan's own steps (a raced wake's copy removal
+    // and its one retry): `verified` counts the plan's steps only
+    let mut extra_ran = 0usize;
     if !plan.ok() {
         out.issues = plan.refusals.clone();
         return out;
@@ -2122,8 +2125,38 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             }
         }
         let since = crate::evidence::now() - 0.001;
-        let (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
+        let (mut rc, mut text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
+        let mut copy_removed: Option<bool> = None;
         out.ran.push((step.clone(), rc, text.clone()));
+        // a native wake that raced the daemon's bookkeeping (a stop a moment
+        // before, under load: r3-e2e finding 12) answers with a copy: the copy
+        // goes, the job is waited for (its row settled, then a breath), and the
+        // wake runs once more; a second copy is the failure below
+        if rc == 0 {
+            if let (Kind::Resume { session_id }, Some(copy)) = (&kind, crate::claude::copy_started(&text)) {
+                for cmd in [crate::claude::stop(env, &copy), crate::claude::rm(env, &copy)] {
+                    let (rc2, t) = crate::claude::run(&cmd, None);
+                    out.ran.push((Step { id: step.id.clone(), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of the wake; then wake once more") }, rc2, t));
+                    extra_ran += 1;
+                }
+                copy_removed = Some(row_gone_within(env, &copy, 3.0));
+                // the daemon restarted the job itself meanwhile (cli-31): no
+                // second wake (it would be a copy); the failure below says so
+                let live = || find_row_by_session(env, session_id).is_some_and(|r| r.live());
+                if !live() {
+                    if let Some(job) = find_row_by_session(env, session_id).and_then(|r| r.short_id) {
+                        wait_settled(env, &job, WAKE_RETRY_SETTLE_S);
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs_f64(WAKE_RETRY_PAUSE_S));
+                }
+                if !live() {
+                    copy_removed = None;
+                    (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
+                    out.ran.push((step.clone(), rc, text.clone()));
+                    extra_ran += 1;
+                }
+            }
+        }
         let after_rm = at > 0 && plan.steps.get(at - 1).map(|p| matches!(classify(p), Kind::Rm { .. }) && p.id == step.id).unwrap_or(false);
         if rc != 0 {
             out.issues.push(issue(
@@ -2143,12 +2176,17 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 // copy as X" note means the job was live after all (a race with
                 // the daemon): the copy goes, in this run, and the step failed
                 if let Some(copy) = crate::claude::copy_started(&text) {
-                    for cmd in [crate::claude::stop(env, &copy), crate::claude::rm(env, &copy)] {
-                        let (rc, t) = crate::claude::run(&cmd, None);
-                        out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of waking {id}") }, rc, t));
-                    }
-                    // the daemon's rm lands a moment after `claude rm` returns
-                    let gone = row_gone_within(env, &copy, 3.0);
+                    let gone = match copy_removed {
+                        Some(gone) => gone,
+                        None => {
+                            for cmd in [crate::claude::stop(env, &copy), crate::claude::rm(env, &copy)] {
+                                let (rc, t) = crate::claude::run(&cmd, None);
+                                out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of waking {id}") }, rc, t));
+                            }
+                            // the daemon's rm lands a moment after `claude rm` returns
+                            row_gone_within(env, &copy, 3.0)
+                        }
+                    };
                     out.issues.push(issue(
                         "step.failed",
                         Severity::Error,
@@ -2245,7 +2283,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     for (id, sid, cwd) in &started {
         out.issues.extend(verify_live(env, id, sid, cwd.as_deref()));
     }
-    out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() == plan.steps.len();
+    out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() - extra_ran == plan.steps.len();
     out
 }
 
@@ -2270,6 +2308,11 @@ pub fn row_gone_within(env: &Env, short: &str, secs: f64) -> bool {
 
 /// Wait until `claude agents` lists `job` with no pid and a state other than
 /// `running`, at most `secs`; a CLI that cannot be read ends the wait.
+/// How long a wake that answered with a copy waits for the job's row to
+/// settle, and the pause after, before its one retry.
+pub const WAKE_RETRY_SETTLE_S: f64 = 15.0;
+pub const WAKE_RETRY_PAUSE_S: f64 = 2.0;
+
 pub fn wait_settled(env: &Env, job: &str, secs: f64) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
     loop {
