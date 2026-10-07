@@ -50,6 +50,12 @@ workspaces. Fleet config lives in Dropbox (`NIMITZ_HOME`), state per machine
 | `claude rm` | **gone** (pin entry stays, env-G9) | gone | gone | kept | stale | kept | attach client exits |
 | transcript deleted/moved (cleanup, Dropbox, `mv`) | kept | - | - | **gone**: a resume runs `startup` and **re-runs the launch prompt** (env-G2) | kept | kept | - |
 
+"Restored panes are plain shells" (the Herdr rows above) holds only with
+Herdr's `[session] resume_agents_on_restore` off: at its default (true) the
+server itself runs `claude --resume <session>` in every restored agent pane,
+an interactive process on the member's conversation (a case under study;
+the checklist turns the setting off for its test server).
+
 Other facts the scenarios lean on: the job id is stable across every event above
 (plan section 1); `claude attach <job>` on a parked job wakes it as itself
 (cli-07); ctrl-z detaches to the shell and the job keeps running (3.13, cli-06);

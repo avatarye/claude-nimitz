@@ -24,6 +24,12 @@ socket is never inherited. nimitz speaks to the test server only through
 `--session nimitz-e2e` on every `herdr` call (`contracts.md` section 2);
 `NIMITZ_MUX=herdr` turns the adapter on outside a Herdr pane.
 
+Herdr's default `[session] resume_agents_on_restore = true` makes the server
+itself run `claude --resume <session>` in every restored agent pane after a
+restart, so the panes would not be plain shells. The test server gets a
+private config with that setting off (step 2a); the live server's config is
+not touched.
+
 Steps 1-6 set up; 7-19 test; 20-23 clean up. Mark each step PASS or FAIL.
 
 ## Setup
@@ -31,7 +37,8 @@ Steps 1-6 set up; 7-19 test; 20-23 clean up. Mark each step PASS or FAIL.
 | # | Action | Command | Expected |
 | --- | --- | --- | --- |
 | 1 | Build this branch's binary; never `cargo install` | `cd <worktree> && cargo build -p nimitz && export N=$PWD/target/debug/nimitz` | `$N --version` prints `nimitz 0.4.0` (not the 0.3.1 on PATH); `$N help \| grep restore` prints the restore line |
-| 2 | The test Herdr session: a headless server of its own | `herdr --session nimitz-e2e server &` | `ls ~/.config/herdr/sessions/nimitz-e2e/` shows `herdr.sock`; `herdr --session nimitz-e2e status` says running; `herdr status` (your live session) is as before |
+| 2a | A private Herdr config for the test server: no agent resume on restore | `mkdir -p ~/.cache/nimitz-e2e/restore && printf 'onboarding = false\n[session]\nresume_agents_on_restore = false\n' > ~/.cache/nimitz-e2e/restore/herdr.toml && export HERDR_CONFIG_PATH=~/.cache/nimitz-e2e/restore/herdr.toml && herdr config check` | `config check` passes; `~/.config/herdr/config.toml` (the live one) is unchanged |
+| 2 | The test Herdr session: a headless server of its own, on that config | `herdr --session nimitz-e2e server &` | `ls ~/.config/herdr/sessions/nimitz-e2e/` shows `herdr.sock`; `herdr --session nimitz-e2e status` says running; `herdr status` (your live session) is as before |
 | 3 | A private data root and state dir, and the test session for every nimitz call | `export NIMITZ_HOME=~/.cache/nimitz-e2e/restore/nimitz NIMITZ_STATE=~/.cache/nimitz-e2e/restore/state NIMITZ_MUX=herdr NIMITZ_HERDR_SESSION=nimitz-e2e && mkdir -p $NIMITZ_HOME $NIMITZ_STATE` | both folders exist; `NIMITZ_HOME` is not `~/.claude-nimitz` |
 | 4 | Trust the root once (real Claude Code refuses an untrusted folder) | `cd $NIMITZ_HOME && claude` then accept the trust prompt and `/exit` | the prompt said "trust this folder"; the session ended |
 | 5 | The fleet: one squadron, no ship | `$N fleet new NIMITZ_E2E_RESTORE --machine here --yes && $N squadron new NIMITZ_E2E_RESTORE/SQ --brief "restore test" --yes` | `[OK]` twice; `$N status` lists the fleet as not-started |
@@ -64,10 +71,10 @@ in another plain terminal (detach with Herdr's own detach key), or
 
 | # | Action | Command | Expected |
 | --- | --- | --- | --- |
-| 16 | Kill the test server (R-03); start it again, it restores from its snapshot | `herdr --session nimitz-e2e server stop`, then `herdr --session nimitz-e2e server &` | the test session's workspaces and tabs come back by name, every pane a plain shell; `claude agents` still lists both jobs live; `herdr status` (your live session) is as before |
-| 17 | Restore | `$N restore NIMITZ_E2E_RESTORE --yes` | two `herdr pane run ... claude attach <job>` steps, into the restored tabs (found by label), no `tab create`, no `--bg --resume`; `[OK] NIMITZ_E2E_RESTORE: restored 2 lead(s), 0 ship(s)` |
-| 18 | Reboot-like loss (R-08): stop the test server and kill the throwaway workers without a `claude stop` hook (the daemon's view of a dead machine) | `herdr --session nimitz-e2e server stop`; `kill -9 <pid of each [NIMITZ_E2E_RESTORE...] worker>` (from `claude agents`); `herdr --session nimitz-e2e server &` | `$N status`: both leads `parked` (no SessionEnd); `active.json` still holds both (a crash keeps a member in the set) |
-| 19 | Restore | `$N restore NIMITZ_E2E_RESTORE --plan` then `--yes` | the plan: per lead one `herdr pane run <pane> claude attach <job>` (the attach wakes the parked job); a `pin` step only for a lead whose job is not in `~/.claude/jobs/pins.json` (after step 7 both are pinned, so normally none); after `--yes`: `[OK] <id>: the attach woke it; SessionStart resume of <sid> verified` for both, the same session ids as in step 8 (`$N status --json`), `[OK] ... restored 2 lead(s)`; a `startup` instead of `resume` would be `[ERROR] history.lost`, never `[OK]` |
+| 16 | Kill the test server (R-03); start it again (same `HERDR_CONFIG_PATH`), it restores from its snapshot | `herdr --session nimitz-e2e server stop`, then `herdr --session nimitz-e2e server &` | the test session's workspaces and tabs come back by name; with `resume_agents_on_restore = false` every pane is a plain shell (`herdr --session nimitz-e2e pane process-info --pane <id>` lists only the shell; `herdr --session nimitz-e2e api snapshot` has an empty `agents` list); `claude agents` still lists both jobs live; `herdr status` (your live session) is as before |
+| 17 | Restore | `$N restore NIMITZ_E2E_RESTORE --yes` | two `herdr pane run ... claude attach <job>` steps, into the restored tabs (found by label, their panes shells), no `tab create`, no `--bg --resume`; `[OK] NIMITZ_E2E_RESTORE: restored 2 lead(s), 0 ship(s)`; the snapshot's `agents` list has both panes again |
+| 18 | Reboot-like loss (R-08): stop the test server and kill the throwaway workers without a `claude stop` hook (the daemon's view of a dead machine) | `herdr --session nimitz-e2e server stop`; `kill -9 <pid of each [NIMITZ_E2E_RESTORE...] worker>` (from `claude agents`); `herdr --session nimitz-e2e server &` | the tabs are back, every pane a plain shell (the setting is off: Herdr resumes nothing itself); `$N status`: both leads `parked` (no SessionEnd); `active.json` still holds both (a crash keeps a member in the set) |
+| 19 | Restore | `$N restore NIMITZ_E2E_RESTORE --plan` then `--yes` | the plan: per lead one `herdr pane run <pane> claude attach <job>` into the shell pane (the attach wakes the parked job); a `pin` step only for a lead whose job is not in `~/.claude/jobs/pins.json` (after step 7 both are pinned, so normally none); after `--yes`: `[OK] <id>: the attach woke it; SessionStart resume of <sid> verified` for both, the same session ids as in step 8 (`$N status --json`), `[OK] ... restored 2 lead(s)`; a `startup` instead of `resume` would be `[ERROR] history.lost`, never `[OK]` |
 
 ## Cleanup
 
@@ -75,7 +82,7 @@ in another plain terminal (detach with Herdr's own detach key), or
 | --- | --- | --- | --- |
 | 20 | Retire the fleet (stops and removes both jobs, keeps transcripts) | `$N squadron rm NIMITZ_E2E_RESTORE/SQ --yes && $N fleet rm NIMITZ_E2E_RESTORE --yes` | `[OK]` twice; `claude agents` lists no `[NIMITZ_E2E_RESTORE...]` session; `$N status` lists no fleet |
 | 21 | Stop the test server | `herdr --session nimitz-e2e server stop` | `herdr --session nimitz-e2e status` says not running; `herdr status` (your live session) is as before |
-| 22 | Remove the test session's files and the throwaway data | `rm -rf ~/.config/herdr/sessions/nimitz-e2e ~/.cache/nimitz-e2e/restore && unset NIMITZ_HOME NIMITZ_STATE NIMITZ_MUX NIMITZ_HERDR_SESSION NIMITZ_E2E_MODEL N` | nothing of the test is left; the transcripts under `~/.claude/projects/-home-...-cache-nimitz-e2e-restore-*` stay (remove them yourself) |
+| 22 | Remove the test session's files, its config and the throwaway data | `rm -rf ~/.config/herdr/sessions/nimitz-e2e ~/.cache/nimitz-e2e/restore && unset HERDR_CONFIG_PATH NIMITZ_HOME NIMITZ_STATE NIMITZ_MUX NIMITZ_HERDR_SESSION NIMITZ_E2E_MODEL N` | nothing of the test is left; the transcripts under `~/.claude/projects/-home-...-cache-nimitz-e2e-restore-*` stay (remove them yourself) |
 | 23 | Your own Herdr | `herdr status` | running, the same pid as before step 2 |
 
 Verdicts go into the acceptance report (plan-v4 section 10) as one line

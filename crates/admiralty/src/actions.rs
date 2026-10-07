@@ -164,6 +164,11 @@ pub fn cli_command(env: &Env, bin: &str) -> std::process::Command {
     if let Some(h) = &env.herdr_bin {
         c.env("NIMITZ_HERDR_BIN", h);
     }
+    // the named Herdr session (a test server) goes with the mux it selects
+    match std::env::var_os("NIMITZ_HERDR_SESSION").filter(|s| !s.is_empty()) {
+        Some(s) => c.env("NIMITZ_HERDR_SESSION", s),
+        None => c.env_remove("NIMITZ_HERDR_SESSION"),
+    };
     c
 }
 
