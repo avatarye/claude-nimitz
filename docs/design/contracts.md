@@ -286,7 +286,10 @@ view's draft or "new session", `spare: true`, is one until it has a
 conversation; in a lead's folder too: no `lead.intruder` for a draft, inside
 FAIL-2); after the grace time, or once it has a conversation, it is classified
 like any other row (the agent view's draft fires a SessionStart `startup`
-the moment it is claimed, so a spare is a picker whether or not it has one).
+the moment it is claimed, so a spare is a picker whether or not it has one;
+and it may carry a `jobId`, the pre-warmed `bg-spare` job the view claimed,
+cli-L3b: a spare is a picker with or without a job, until it has a
+conversation).
 A member's row is the registry's `job`, for a lead too: a hand rm + resume
 binds the new job beside an older labelled stray, and the registry job stays
 the lead (the stray is its `lead.intruder`; neither a relaunch's `dup.live`
@@ -366,7 +369,7 @@ Each finding is an `Issue` with a stable `code`:
 | `lineage.stale` | the registry names a conversation of a stopped member that is neither the one its job would wake nor a later one of its lineage (Warn; fix `nimitz relaunch <id>`; the wake brings the job's conversation back) |
 | `lineage.broken` | a start or wake did not bind what was expected (no SessionStart within the wait, another job answered, the registry could not be written); a `failed` row. No row and no transcript is `history.lost` (above) |
 | `held` | a member's conversation (any role; the one it runs now) runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`, a 0.3.x interactive lead); nimitz can neither stop nor resume it there, and `start` of that member refuses until it ends (a resume would start a copy); a held parent is live for the chain (its ships start, the warning rides along) (Warn in `check`; fix: end that process in its host, then `nimitz start`; for a 0.3.x lead: "end the interactive lead with /exit, then run nimitz start <id> again", which brings the same conversation back as a job, lineage `via migrate`) (M13). Such a row is never a copy or a second live session of the member; a process with no job on an older lineage conversation is a `copy` |
-| `lead.intruder` | a lead's folder is exclusive: a live session there that is not the lead's own (its registry job, a held process on its conversation, a live copy) is an intruder, a `/fork` of the lead or a hand launch with its labels included (never `dup.live` or `copy.rows` for the lead; its own job is never the target, and the ships under it still start) (Error; one fix per kind: a background job `nimitz stop <short>` then `nimitz rm <short>`; an interactive or SDK process "end it in its terminal (tmux ...): /exit, or close the host", with the session file's terminal when it says). A retired tender's row stays `tender.retired` only; `check` lists such a row as the lead's intruder, not as a stowaway as well; it rides along a start as a warning (the lead's own job is apart from it) |
+| `lead.intruder` | a lead's folder is exclusive: a live session there that is not the lead's own (its registry job, a held process on its conversation, a live copy) is an intruder, a `/fork` of the lead or a hand launch with its labels included (never `dup.live` or `copy.rows` for the lead; its own job is never the target, and the ships under it still start) (Error; one issue per row: an intruder is never the lead's `name.taken` as well (cli-L8, K1); one fix per kind: a background job `nimitz stop <short>` then `nimitz rm <short>`; an interactive or SDK process "end it in its terminal (tmux ...): /exit, or close the host", with the session file's terminal when it says). A retired tender's row stays `tender.retired` only; `check` lists such a row as the lead's intruder, not as a stowaway as well; it rides along a start as a warning (the lead's own job is apart from it) |
 | `history.lost` | a resume would run with no history: the member's job row is there but its conversation has no transcript in any project dir, or its registry session has no job row and no transcript (acceptance env E9: one word, one flag); a transcript with no message line within the first 4 MB (the stub `claude stop` writes after the file was moved away, env F5; a `/branch` copy hoists many 4 KB snapshot lines above its first message and is still one) counts as none (`evidence::has_message`, the `transcript_root` scanner). No launch; fix `nimitz start <id> --fresh`: a cold launch that starts a new lineage entry and drops the old rows (the `--fresh` plan does not repeat the error). Also a resume that came back with SessionStart `startup` instead of `resume` (Claude Code found no history; the start is never verified) (M5, E8). A lead with no transcript and no row gets a cold launch, never a fleet-wide issue (M11) |
 | `pin.failed` | a lead's job could not be pinned (`pins.json.lock` held); the start stands (Warn; fix `nimitz relaunch`) |
 | `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
@@ -400,8 +403,8 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `machine.missing` | the fleet does not run on this machine |
 | `session.unknown` | the target names no member's session, no stowaway and no holder of a fleet name |
 | `session.none` | the action needs a (live, background) session and there is none |
-| `session.live` | the action needs the session stopped first (`rm`, retire) |
-| `session.interactive` | the member runs in a process with no job (a 0.3.x interactive lead, an SDK host): `stop` and `relaunch` cannot reach it; end it in its own terminal (`/exit`) |
+| `session.live` | the action needs the session stopped first (`rm`, retire). `nimitz stop <short>` of a copy plans its `rm` with the stop, as `sweep` does: a never-prompted copy has no name, no labels and no transcript once stopped, and no command would see its row again (cli-N1) |
+| `session.interactive` | the member runs in a process with no job (a 0.3.x interactive lead, an SDK host, a `claude --resume` of its conversation by hand: `held`): `stop` and `relaunch` cannot reach it, and never answer `session.none` or `dup.live` with a `nimitz stop <sid>` that cannot work (cli-18); the fix is the held one: end that process in its host, then `nimitz start` |
 | `session.live` | also `wake_steps` of a live job: a resume of a live job starts a copy |
 | `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
 | `lineage.current` | `rm` of a member's current session: its row goes with the member, never alone (fix: `nimitz relaunch <id>` replaces it, `nimitz ship|squadron|fleet rm <id>` retires the member) |
@@ -668,7 +671,9 @@ parents only),
 `open <id>`, `restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`,
 `layout herdr [<fleet>] [--ships]` (an alias of restore, shape only), `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
-`__fake-herdr`. The fake `claude` (`sandbox.rs`) models the job model of the
+`__fake-herdr`. A closed pipe (`nimitz status --json | head`) ends the process
+quietly with SIGPIPE (exit 141), never a panic. `rm <lead>` with no stale rows
+names what removes its own row (`relaunch`, or `fleet|squadron rm`). The fake `claude` (`sandbox.rs`) models the job model of the
 round-2 report: `--bg`, `--bg --resume` (wake a stopped job; a copy under an
 auto-generated name with `--name` ignored while the job's process is alive,
 whatever its state; or a new job named by the short resumed id after `rm`),

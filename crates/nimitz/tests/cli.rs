@@ -1485,7 +1485,8 @@ fn a_draft_spare_in_a_lead_folder_is_not_an_intruder() {
     // pre-warmed an hour ago (startedAt), claimed now (the file's mtime)
     let old = (nimitz_core::evidence::now() - 3600.0) * 1000.0;
     let f = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions/424242.json");
-    std::fs::write(&f, serde_json::json!({"pid": 1, "sessionId": "spare-draft-0000", "cwd": dir, "kind": "interactive", "entrypoint": "cli", "spare": true, "name": "spare-draft-0000", "status": "idle", "startedAt": old}).to_string()).unwrap();
+    // the shape cli-L3b saw: the view claims a pre-warmed `bg-spare` job (a `jobId`, its own id as the name)
+    std::fs::write(&f, serde_json::json!({"pid": 1, "sessionId": "spare-draft-0000", "jobId": "spare-dr", "cwd": dir, "kind": "bg", "entrypoint": "cli", "spare": true, "name": "spare-dr", "status": "idle", "startedAt": old}).to_string()).unwrap();
     // the real draft fires a SessionStart `startup` the moment the view claims it (byhand 2c-live)
     let ev = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("events.jsonl");
     let line = serde_json::json!({"ts": nimitz_core::evidence::now(), "event": "SessionStart", "session_id": "spare-draft-0000", "source": "startup", "reason": null, "pid": 1, "labels": {}, "rules": null, "job": null, "kind": "interactive", "entrypoint": "cli", "binding": null, "cwd": dir});
@@ -1628,6 +1629,127 @@ fn a_crashed_ship_with_a_stale_copy_row_is_waited_for() {
     assert!(r.out.contains(&format!("rm {copy}")), "the stale copy row is dropped: {}", r.out);
     let m = sb.member("MAIN/ARGOS/CLEAN");
     assert!(live(&m) && m["session"]["short_id"] == job.as_str() && m["extra_rows"].as_array().unwrap().is_empty(), "{m}");
+}
+
+/// A stopped ship whose conversation a process with no job runs (a `claude
+/// --resume <sid>` by hand in its folder): `held` only, with its one fix;
+/// `stop` and `relaunch` refuse `session.interactive`, never `dup.live` with
+/// a `nimitz stop <sid>` that cannot work (acceptance cli-18).
+#[test]
+fn a_held_member_gives_held_only_and_stop_or_relaunch_say_session_interactive() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    let (sid, dir) = (m["session"]["session_id"].as_str().unwrap().to_string(), m["cwd"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(&dir).args(args).output().unwrap();
+    assert!(fake(&["--resume", &sid]).status.success());
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    let codes: Vec<&str> = m["issues"].as_array().unwrap().iter().filter_map(|i| i["code"].as_str()).collect();
+    assert_eq!(codes, vec!["held"], "{m}");
+    assert!(m["issues"][0]["fix"].as_str().unwrap().contains("end that process"), "{m}");
+    for verb in ["stop", "relaunch"] {
+        let r = sb.run(&[verb, "MAIN/ARGOS/STOPPED", "--plan"]);
+        assert_ne!(r.code, 0, "{}", r.out);
+        assert!(r.out.contains("session.interactive") && r.out.contains("end that process") && !r.out.contains("dup.live") && !r.out.contains("session.none"), "{verb}: {}", r.out);
+    }
+    assert!(fake(&["__end", &sid]).status.success());
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("--bg --resume"), "{}", r.out);
+}
+
+/// `/clear`, then a crash: the start never plans `rm <own job>` for the
+/// member's own row (acceptance cli-31: before F1 the own row read as a stale
+/// copy once it was parked after a /clear).
+#[test]
+fn clear_then_crash_then_start_never_drops_the_own_row() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let job = m["session"]["short_id"].as_str().unwrap().to_string();
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    assert!(fake(&["__inside", &job, "clear"]).status.success());
+    let now = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string();
+    assert!(fake(&["__crash", &job]).status.success());
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert_eq!((m["status"].as_str(), m["session"]["short_id"].as_str()), (Some("Parked"), Some(job.as_str())), "{m}");
+    assert!(m["extra_rows"].as_array().unwrap().is_empty() && !m["issues"].as_array().unwrap().iter().any(|i| i["code"] == "copy.rows"), "{m}");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains(&format!("rm {job}")) && !r.out.contains("stale"), "{}", r.out);
+    let r = raw(&sb.vars, &["start", "MAIN/ARGOS/CLEAN", "--yes"], &[("NIMITZ_CRASH_WINDOW", "0")], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(live(&m) && m["session"]["short_id"] == job.as_str() && m["session"]["session_id"] == now.as_str(), "{m}");
+}
+
+/// An interactive process with a lead's name in the lead's folder (`claude
+/// --name "<lead name>"`, or an interactive fork): `lead.intruder` with the
+/// terminal fix, and never a `name.taken` on the same row (acceptance cli-L8, K1).
+#[test]
+fn an_interactive_process_with_a_leads_name_is_its_intruder_only() {
+    let sb = Sb::new(false);
+    let adm = sb.member("MAIN");
+    let dir = adm["cwd"].as_str().unwrap().to_string();
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(&dir).args(args).output().unwrap();
+    assert!(fake(&["--name", "[MAIN]-ADMIRAL"]).status.success());
+    let adm = sb.member("MAIN");
+    let codes: Vec<&str> = adm["issues"].as_array().unwrap().iter().filter_map(|i| i["code"].as_str()).collect();
+    assert!(codes.contains(&"lead.intruder") && !codes.contains(&"name.taken") && !codes.contains(&"dup.live"), "{adm}");
+    let intruder = adm["issues"].as_array().unwrap().iter().find(|i| i["code"] == "lead.intruder").unwrap();
+    assert!(intruder["fix"].as_str().unwrap().contains("end it in its terminal"), "{intruder}");
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert_eq!(r.code, 0, "a ship under the lead still starts: {}", r.out);
+}
+
+/// `nimitz stop <copy>` plans stop + rm together, as `sweep` does: a copy
+/// that was never prompted has no name, no labels and no transcript once
+/// stopped, and no command would see its row again (acceptance cli-N1).
+#[test]
+fn stop_of_a_copy_removes_its_row_too() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let (job, sid, dir) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string(), m["cwd"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(&dir).args(args).output().unwrap();
+    let o = fake(&["--bg", "--resume", &sid, "--permission-mode", "default"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    let copy = out.split("copy as ").nth(1).map(|s| s[..8].to_string()).expect(&out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(m["extra_rows"].as_array().unwrap().iter().any(|r| r["short_id"] == copy.as_str() && !r["copy"].is_null()), "{m}");
+    let r = sb.run(&["stop", &copy, "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("stop {copy}")) && r.out.contains(&format!("rm {copy}")), "{}", r.out);
+    let r = sb.run(&["stop", &copy, "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(live(&m) && m["session"]["short_id"] == job.as_str() && m["extra_rows"].as_array().unwrap().is_empty(), "{m}");
+    assert!(!PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join(&copy).exists(), "the copy's row is gone");
+}
+
+/// A closed pipe (`nimitz status --json | head`) ends nimitz quietly, never
+/// with a panic (acceptance B observation).
+#[test]
+fn a_closed_pipe_never_panics() {
+    use std::os::unix::process::ExitStatusExt;
+    let sb = Sb::new(false);
+    let mut c = Command::new(EXE);
+    c.env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(["status", "--json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().unwrap();
+    drop(child.stdout.take()); // the reader goes away at once
+    let o = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!err.contains("panicked") && !err.contains("Broken pipe"), "{err}");
+    assert!(o.status.code() == Some(0) || o.status.signal() == Some(13) || o.status.code() == Some(141), "{:?}", o.status);
+}
+
+/// `nimitz rm <lead>` with no stale rows says what removes its own row: a
+/// relaunch replaces it, the retire command removes it (acceptance B, item 7).
+#[test]
+fn rm_of_a_lead_points_at_the_retire_command() {
+    let sb = Sb::new(false);
+    let r = sb.run(&["rm", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("its own row") && r.out.contains("nimitz fleet rm MAIN retires the member") && r.out.contains("nimitz relaunch MAIN"), "{}", r.out);
+    let r = sb.run(&["rm", "MAIN/ARGOS", "--plan"]);
+    assert!(r.out.contains("nimitz squadron rm MAIN/ARGOS"), "{}", r.out);
 }
 
 /// No row and no transcript is `history.lost` with the `--fresh` fix (one

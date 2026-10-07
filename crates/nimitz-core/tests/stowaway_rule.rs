@@ -444,3 +444,27 @@ fn a_dispatched_job_that_was_a_pre_warmed_spare_is_never_hidden() {
     assert_eq!(m.status, Status::Idle, "{:?}", m.reasons);
     assert_eq!(m.session.as_ref().and_then(|s| s.short_id.as_deref()), Some(job.as_str()));
 }
+
+/// A labelled row is never a picker: a dispatched job that keeps `spare`
+/// and has no transcript yet (its first turn not written) still shows.
+#[test]
+fn a_labelled_young_spare_with_no_transcript_is_never_hidden() {
+    let w = world();
+    let (id, job, _, _) = clean(&w);
+    let p = w.base.join("claude_home/sessions").join(format!("{job}.json"));
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    v["spare"] = json!(true);
+    v["startedAt"] = json!((evidence::now() * 1000.0) as i64);
+    std::fs::write(&p, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let sid = v["sessionId"].as_str().unwrap().to_string();
+    // no transcript yet: move the session's transcript away
+    let projects = w.base.join("claude_home/projects");
+    for d in std::fs::read_dir(&projects).unwrap().flatten() {
+        let t = d.path().join(format!("{sid}.jsonl"));
+        if t.exists() {
+            std::fs::rename(&t, t.with_extension("aside")).unwrap();
+        }
+    }
+    let m = w.member(&w.snap(), &id);
+    assert_eq!(m.session.as_ref().and_then(|s| s.short_id.as_deref()), Some(job.as_str()), "{:?}", m.reasons);
+}

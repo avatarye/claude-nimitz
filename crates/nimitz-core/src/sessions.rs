@@ -1199,6 +1199,13 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
         return plan;
     };
+    // its conversation runs in a process with no job (a `claude --resume`
+    // by hand, an SDK host): nimitz cannot stop it there (cli-18)
+    if let Some(h) = held_of(m) {
+        let i = held_issue(m, h);
+        refuse(&mut plan, "session.interactive", i.message, i.fix, Some(id.clone()));
+        return plan;
+    }
     let Some(p) = m.session.as_ref().filter(|p| p.pid.is_some()) else {
         refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
         return plan;
@@ -1271,7 +1278,20 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
         refuse(&mut plan, "session.none", format!("session {} is not a live background session", row.session_id), None, owner);
         return plan;
     };
-    plan.steps.push(Step { id: owner, cmd: crate::claude::stop(env, &short), cwd: None, why });
+    // the copy's rm rides with the stop: the caller must be allowed both
+    if row.copy.is_some() {
+        if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), &row, "rm") {
+            refuse(&mut plan, "authority", why, None, owner);
+            return plan;
+        }
+    }
+    plan.steps.push(Step { id: owner.clone(), cmd: crate::claude::stop(env, &short), cwd: None, why });
+    // a copy goes with its stop (as `sweep` does): once stopped, a copy that
+    // was never prompted has no name, no labels and no transcript, so no
+    // nimitz command sees its row again (cli-N1)
+    if row.copy.is_some() {
+        plan.steps.push(Step { id: owner, cmd: crate::claude::rm(env, &short), cwd: None, why: format!("a copy's row goes with its stop ({}); the transcript stays", copy_how(&row)) });
+    }
     plan
 }
 
@@ -1312,6 +1332,14 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "session.none", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
         return plan;
     };
+    // its conversation runs in a process with no job: a relaunch would start
+    // a copy; end that process first (cli-18: never `dup.live` with a
+    // `nimitz stop <sid>` that cannot work)
+    if let Some(h) = held_of(m) {
+        let i = held_issue(m, h);
+        refuse(&mut plan, "session.interactive", i.message, i.fix, Some(id.clone()));
+        return plan;
+    }
     // (a lead's live intruder is not its second session: it stays the
     // intruder, with its own fix, and the relaunch goes on)
     if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some() && !lead_intruder_row(m, r)) {
@@ -1375,7 +1403,19 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         }
         sweep_member(env, &mut plan, m, caller);
         if plan.steps.is_empty() && plan.refusals.is_empty() {
-            plan.warnings.push(issue("copy.rows", Severity::Info, format!("{target} has no stale rows"), None, Some(m.id.clone())));
+            let retire = match m.role {
+                Role::Admiral => "fleet rm",
+                Role::Commodore => "squadron rm",
+                Role::Ship => "ship rm",
+            };
+            let own = m.session.as_ref().map(|p| format!("; its own row {} goes with the member", p.short_id.as_deref().unwrap_or(&p.session_id))).unwrap_or_default();
+            plan.warnings.push(issue(
+                "copy.rows",
+                Severity::Info,
+                format!("{target} has no stale rows{own}"),
+                m.session.as_ref().map(|_| format!("nimitz relaunch {target}  # replaces the row (same conversation); nimitz {retire} {target} retires the member")),
+                Some(m.id.clone()),
+            ));
         }
         return plan;
     }

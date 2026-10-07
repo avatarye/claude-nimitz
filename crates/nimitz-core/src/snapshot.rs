@@ -105,7 +105,11 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         // its age is its last touch, and a long-lived one is touched again and
         // again): hidden only while it has no conversation. A dispatched job
         // that was a pre-warmed spare keeps `spare` and is never hidden.
-        let mut picker = || r.live() && r.short_id.is_none() && (r.spare || !started.contains(r.session_id.as_str())) && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none();
+        // (a spare may carry a `jobId`: the view claims a pre-warmed
+        // `bg-spare` job, cli-L3b; a dispatched one grows a transcript). A
+        // labelled row is never a picker, whatever Claude Code does with `spare`.
+        let labelled = labels.get(&evidence::row_key(r)).is_some_and(evidence::is_labelled);
+        let mut picker = || r.live() && !labelled && (r.spare || (r.short_id.is_none() && !started.contains(r.session_id.as_str()))) && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none();
         if young && picker() {
             transient.push(r.session_id.clone());
             return false;
@@ -536,8 +540,11 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     // intruder, with the one fix per kind. A 0.3.x tender's row stays
     // `tender.retired` only.
     let tender_rows: HashSet<&str> = rows.iter().filter(|r| r.session_ids().any(|sid| retired_of.contains_key(sid)) || r.short_id.as_deref().is_some_and(|j| retired_job.contains_key(j))).map(|r| r.session_id.as_str()).collect();
+    // the rows named as each lead's intruder (by row key), so that the
+    // name.taken pass below gives a row one issue only
+    let mut intruder_rows: std::collections::HashMap<String, HashSet<String>> = Default::default();
     for f in &mut snap.fleets {
-        let intrude = |m: &mut Member| {
+        let mut intrude = |m: &mut Member| {
             let Some(dir) = m.cwd.as_deref().map(norm_dir) else { return };
             // the lead's own: its session, a held process on its conversation,
             // a copy (those carry their own issue); any other live row in the
@@ -545,6 +552,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             let own: HashSet<&str> = m.session.iter().chain(m.extra_rows.iter().filter(|r| r.copy.is_some() || crate::sessions::held_row(m, r))).map(|s| s.session_id.as_str()).collect();
             for r in rows.iter().filter(|r| r.live() && norm_dir(&r.cwd) == dir && !own.contains(r.session_id.as_str()) && !tender_rows.contains(r.session_id.as_str())) {
                 let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+                intruder_rows.entry(m.id.0.clone()).or_default().insert(short.to_string());
                 let fix = match &r.short_id {
                     Some(j) => format!("nimitz stop {j}  # then nimitz rm {j}"),
                     None => format!("end it in its terminal{}: /exit, or close the host", r.terminal.as_deref().map(|t| format!(" ({t})")).unwrap_or_default()),
@@ -575,7 +583,15 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     for f in &mut snap.fleets {
         let mut fix = |m: &mut Member| {
             let own: HashSet<&str> = m.session.iter().chain(m.extra_rows.iter()).map(|s| s.session_id.as_str()).collect();
-            let others: Vec<SessionInfo> = all_rows_info.iter().filter(|r| !own.contains(r.session_id.as_str())).cloned().collect();
+            // one issue per row (plan-v4 section 6): a row that is this lead's
+            // intruder (named so above) is not its name.taken as well
+            let none = HashSet::new();
+            let intruders = intruder_rows.get(&m.id.0).unwrap_or(&none);
+            let others: Vec<SessionInfo> = all_rows_info
+                .iter()
+                .filter(|r| !own.contains(r.session_id.as_str()) && !intruders.contains(r.short_id.as_deref().unwrap_or(r.session_id.as_str())))
+                .cloned()
+                .collect();
             if let Some(i) = crate::sessions::name_taken_issue(m, &others) {
                 m.issues.push(i);
             }
