@@ -87,11 +87,37 @@ pub fn ship_lock_path(cwd: &str) -> std::path::PathBuf {
     std::path::Path::new(cwd).join(".nimitz-ship.lock")
 }
 
-/// A live process with no job that runs a background member's conversation
-/// (an SDK host, an interactive or Remote Control `--resume`): the member is
-/// `held` (M13), never a copy and never a second live session of it.
+/// A live process with no job that runs a member's conversation (an SDK
+/// host, an interactive or Remote Control `--resume`, a 0.3.x interactive
+/// lead): the member is `held` (M13), never a copy and never a second live
+/// session of it. Every member is a job (0.4.0), leads too.
 fn held_row(m: &Member, r: &SessionInfo) -> bool {
-    m.role == Role::Ship && r.pid.is_some() && r.short_id.is_none()
+    r.pid.is_some() && r.short_id.is_none()
+}
+
+/// The `held` issue for one such row: a 0.3.x interactive lead is ended with
+/// `/exit` (then `nimitz start` runs it as a job, plan-v4 section 7); any
+/// other holder is ended in its host.
+fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
+    let interactive_lead = m.role.lead() && r.kind == "interactive" && r.entrypoint.as_deref().unwrap_or("cli") == "cli";
+    let (what, fix) = if interactive_lead {
+        (
+            format!("{} runs as a 0.3.x interactive lead (pid {}, no job); nimitz cannot stop or resume it there", m.id, r.pid.unwrap_or(0)),
+            format!("end the interactive lead with /exit, then run nimitz start {} again  # it comes back as a background job with the same conversation", m.id),
+        )
+    } else {
+        (
+            format!(
+                "{}'s conversation {} runs in a process with no job (pid {}, {}): nimitz cannot stop or resume it there",
+                m.id,
+                r.session_id,
+                r.pid.unwrap_or(0),
+                r.entrypoint.as_deref().unwrap_or(&r.kind)
+            ),
+            format!("end that process in its host, then nimitz start {}", m.id),
+        )
+    };
+    issue("held", Severity::Warn, what, Some(fix), Some(m.id.clone()))
 }
 
 /// Session-level issues readable from the member and the filesystem alone:
@@ -104,21 +130,7 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     let relaunch = Some(format!("nimitz relaunch {}", m.id));
     let rows: Vec<&SessionInfo> = m.session.iter().chain(m.extra_rows.iter()).collect();
     let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r)).collect();
-    for r in rows.iter().filter(|r| held_row(m, r)) {
-        out.push(issue(
-            "held",
-            Severity::Warn,
-            format!(
-                "{}'s conversation {} runs in a process with no job (pid {}, {}): nimitz cannot stop or resume it there",
-                m.id,
-                r.session_id,
-                r.pid.unwrap_or(0),
-                r.entrypoint.as_deref().unwrap_or(&r.kind)
-            ),
-            Some(format!("end that process in its host, then nimitz start {}", m.id)),
-            id.clone(),
-        ));
-    }
+    out.extend(rows.iter().filter(|r| held_row(m, r)).map(|r| held_issue(m, r)));
 
     if live.len() > 1 {
         let names: Vec<String> =
@@ -493,6 +505,13 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
     let session_errs = session_issues(env, m);
     let step = |id: &Id, cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.clone()), why: why.into() };
 
+    // A process with no job holds the conversation (a 0.3.x interactive lead,
+    // an SDK host): a resume would start a copy (cli-L2), so nothing starts
+    // until that process ends (the migration of plan-v4 section 7).
+    if let Some(h) = m.session.iter().chain(m.extra_rows.iter()).find(|r| held_row(m, r)) {
+        plan.refusals.push(Issue { severity: Severity::Error, ..held_issue(m, h) });
+        return;
+    }
     if m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
         // live with drift / missing labels / a twin: refuse with the fix
         // (rows 2, 3); live and clean: nothing (row 1)
@@ -771,7 +790,7 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
     for link in chain(id) {
         let running_clean = member(snap, &link)
             .map(|(_, m)| {
-                m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)
+                m.session.as_ref().map(|p| p.pid.is_some() && !held_row(m, p)).unwrap_or(false)
                     && session_issues(env, m).iter().all(|i| i.severity != Severity::Error)
             })
             .unwrap_or(false);
@@ -862,7 +881,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
     for id in ids {
         let clean_live = member(snap, &id)
             .map(|(_, m)| {
-                m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)
+                m.session.as_ref().map(|p| p.pid.is_some() && !held_row(m, p)).unwrap_or(false)
                     && session_issues(env, m).iter().all(|i| i.severity != Severity::Error)
             })
             .unwrap_or(false);

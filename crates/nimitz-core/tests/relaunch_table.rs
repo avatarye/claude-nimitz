@@ -1878,3 +1878,83 @@ fn m24_a_leads_job_is_pinned_after_a_start_and_unpinned_when_its_row_goes() {
     assert!(!pins(&w).contains(&beta_job), "retired: unpinned ({:?})", pins(&w));
     assert!(!nimitz_core::pins::own(&w.env).contains(&beta_job));
 }
+
+// ------------------------------------------------------------------ 0.3.x interactive leads (plan-v4 section 7)
+
+/// A 0.3.x lead still runs interactive on its conversation (no job): `start`
+/// refuses with the /exit message; once it is gone, the same conversation
+/// comes back as a background job (`--bg --resume <session> --name
+/// --settings`, lineage `via migrate`), pinned.
+#[test]
+fn a_0_3_x_interactive_lead_is_ended_with_exit_then_started_as_a_job() {
+    let w = world();
+    let adm = Id::admiral("BETA");
+    let cwd = w.member(&w.snap(), &adm).cwd.unwrap();
+    let sid = nimitz_core::registry::load(&w.env).identities[&adm.0].session.clone().unwrap();
+    // the old lead, as 0.3.x ran it: `claude -c --name --settings` in its folder
+    let mut cmd = vec![w.env.claude_bin.clone(), "-c".into(), "--name".into(), adm.name(), "--settings".into(), claude::settings_json(&w.env, &adm, false)];
+    let (rc, text) = claude::run(&cmd, Some(&cwd));
+    assert_eq!(rc, 0, "{text}");
+    cmd.clear();
+    let snap = w.snap();
+    let m = w.member(&snap, &adm);
+    let s = m.session.as_ref().expect("the interactive process is the lead's conversation");
+    assert_eq!((s.session_id.as_str(), s.kind.as_str(), s.short_id.as_deref(), s.pid.is_some()), (sid.as_str(), "interactive", None, true));
+    assert_eq!(m.status, Status::Idle);
+    let held = m.issues.iter().find(|i| i.code == "held").expect("held, not dup.live: {m:?}");
+    assert!(held.message.contains("0.3.x interactive lead"), "{}", held.message);
+    assert!(!has(&m.issues, "dup.live") && !has(&m.issues, "labels.missing"), "{:?}", m.issues);
+    let plan = w.start(&snap, &adm, false);
+    assert!(!plan.ok() && plan.steps.is_empty());
+    let r = &plan.refusals[0];
+    assert_eq!((r.code.as_str(), r.severity), ("held", Severity::Error));
+    assert!(r.fix.as_deref().unwrap().starts_with("end the interactive lead with /exit, then run nimitz start BETA again"), "{:?}", r.fix);
+    // stop and relaunch cannot touch it either
+    assert_eq!(sessions::plan_stop(&w.env, &snap, &adm, &Caller::User).refusals[0].code, "session.interactive");
+    assert_eq!(sessions::plan_relaunch(&w.env, &snap, &adm, &Caller::User).refusals[0].code, "session.interactive");
+    // /exit, then start: the same conversation as a background job, every flag
+    assert_eq!(w.fake(&["__end", &sid]).0, 0);
+    let snap = w.snap();
+    assert_eq!(w.member(&snap, &adm).status, Status::Stopped);
+    let plan = w.start(&snap, &adm, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let step = w.steps_of(&plan, &adm)[0].clone();
+    assert_eq!(step.cmd, claude::relaunch_bg(&w.env, &adm, "", &sid));
+    assert!(step.why.starts_with(sessions::MIGRATE_LEAD_WHY), "{}", step.why);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.member(&w.snap(), &adm);
+    let s = after.session.unwrap();
+    assert_eq!((s.session_id.as_str(), s.kind.as_str(), s.pinned), (sid.as_str(), "background", true));
+    let rec = nimitz_core::registry::load(&w.env).identities[&adm.0].clone();
+    assert_eq!((rec.job.as_deref(), rec.lineage.last().map(|l| l.via.as_str())), (s.short_id.as_deref(), Some("migrate")));
+    assert!(after.issues.is_empty(), "{:?}", after.issues);
+}
+
+/// 2c' / M13, widened to leads: a background lead whose conversation an SDK
+/// host grabs reads `held` (never dup.live); start waits for the host to end.
+#[test]
+fn a_leads_conversation_held_by_an_sdk_host_is_held_not_dup_live() {
+    let w = world();
+    let adm = Id::admiral("MAIN");
+    let snap = w.snap();
+    let (cwd, sid) = { let m = w.member(&snap, &adm); (m.cwd.unwrap(), m.session.unwrap().session_id) };
+    // the job is live: Claude Code refuses a second process on it (R-13)
+    let host = vec![w.env.claude_bin.clone(), "-p".into(), "--resume".into(), sid.clone(), "--name".into(), adm.name(), "--settings".into(), claude::settings_json(&w.env, &adm, false)];
+    assert_ne!(claude::run(&host, Some(&cwd)).0, 0, "refused while the job is live");
+    let out = sessions::apply(&w.env, &sessions::plan_stop(&w.env, &snap, &adm, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    assert_eq!(claude::run(&host, Some(&cwd)).0, 0);
+    let snap = w.snap();
+    let m = w.member(&snap, &adm);
+    assert!(m.session.as_ref().unwrap().short_id.is_some(), "the job row stays the member's row");
+    let held = m.issues.iter().find(|i| i.code == "held").expect("held");
+    assert!(held.message.contains("sdk-cli") && held.fix.as_deref().unwrap().contains("end that process in its host"), "{held:?}");
+    assert!(!has(&m.issues, "dup.live"), "{:?}", m.issues);
+    assert_eq!(w.start(&snap, &adm, false).refusals[0].code, "held");
+    // the host ends: a plain wake by id
+    assert_eq!(w.fake(&["__end", &sid]).0, 0);
+    let plan = w.start(&w.snap(), &adm, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert_eq!(w.steps_of(&plan, &adm)[0].cmd, claude::resume_bg(&w.env, &sid));
+}
