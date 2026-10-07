@@ -130,9 +130,14 @@ a hand copy, the agent view's draft) as that lead. A job's `NIMITZ_*` count
 only when its row saved them (`--settings` in `respawnFlags`) and they name the
 same id (`evidence::job_backs_labels`); otherwise the session is unlabelled,
 in the hook (no binding, no rules, no signal authority, no needs-you), in a
-replay, and in the snapshot (`row_labels`: a job row's saved labels decide). A
-job whose row is not written yet when its SessionStart runs binds nothing then
-(`binding none`); `status` replays the line once the row is there. A process
+replay, and in the snapshot (`row_labels`: a job row's saved labels decide).
+Once backed, the effects use the saved labels, not the env's (an inherited
+key the launch did not name stays out). The SessionStart hook waits up to
+500 ms for a new job's row; still none, the session is left unlabelled for now
+(no rules: its first prompt gets them through `rules::update_for`; no
+binding), the event line keeps the env's labels, and `status` replays it,
+binding only when the row then backs them. A spare (`spare: true`) is never
+labelled. A process
 with no job (interactive, SDK) is labelled by its env, as before.
 
 `registry.json` (atomic write: temp + rename; `registry.lock` with `flock`; every

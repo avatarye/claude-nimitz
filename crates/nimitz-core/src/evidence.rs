@@ -280,9 +280,15 @@ pub fn row_labels(r: &SessionRow, by_pid: &HashMap<(i64, String), BTreeMap<Strin
 /// `None`: nothing to judge by (no job: an interactive or SDK process, whose
 /// env is its labels; or a job whose row is not written yet).
 pub fn job_backs_labels(claude_home: &Path, job: Option<&str>, labels: &BTreeMap<String, String>) -> Option<bool> {
-    let d = std::fs::read(claude_home.join("jobs").join(job?).join("state.json")).ok().and_then(|b| first_json(&b))?;
-    let saved = job_labels(&d);
+    let saved = job_saved_labels(claude_home, job?)?;
     Some(is_labelled(&saved) && saved.get("NIMITZ_ID") == labels.get("NIMITZ_ID"))
+}
+
+/// The NIMITZ_* labels a job's launch saved (`respawnFlags --settings`);
+/// `None` when the job has no row (yet).
+pub fn job_saved_labels(claude_home: &Path, job: &str) -> Option<BTreeMap<String, String>> {
+    let d = std::fs::read(claude_home.join("jobs").join(job).join("state.json")).ok().and_then(|b| first_json(&b))?;
+    Some(job_labels(&d))
 }
 
 /// The key a row's labels and copy verdict are kept under: its job (short

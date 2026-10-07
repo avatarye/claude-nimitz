@@ -74,16 +74,31 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     // judged later (no binding now; `status` replays the line).
     let session = session_file(env, vars, pid);
     let job_of_session = str_at(&session, "jobId");
-    let mut judge_later = false;
     // (a pre-warmed spare, the agent view's draft, is never anyone's member)
     if session.get("spare").and_then(Value::as_bool) == Some(true) {
         labels.clear();
     }
+    // The env's labels go on the event line as they were (a replay judges
+    // them again against the job's row); every effect here (binding, rules,
+    // signal authority, needs-you) uses only labels the job's row backs. A
+    // job whose row is not written yet is waited for a moment, then left
+    // unlabelled for now: no rules, no binding; its first prompt gets the
+    // rules (`rules::update_for`) and `status` replays the line.
+    let line_labels = labels.clone();
     if !labels.is_empty() {
-        match crate::evidence::job_backs_labels(&env.claude_home, job_of_session.as_deref(), &labels) {
-            Some(false) => labels.clear(),
-            None if job_of_session.is_some() => judge_later = true,
-            _ => {}
+        if let Some(job) = job_of_session.as_deref() {
+            let mut saved = crate::evidence::job_saved_labels(&env.claude_home, job);
+            let deadline = std::time::Instant::now() + ROW_WAIT;
+            while saved.is_none() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                saved = crate::evidence::job_saved_labels(&env.claude_home, job);
+            }
+            labels = match saved {
+                // the launch's own labels, not the env's (an inherited key the
+                // settings did not name stays out)
+                Some(sv) if crate::evidence::is_labelled(&sv) && sv.get("NIMITZ_ID") == labels.get("NIMITZ_ID") => sv,
+                _ => BTreeMap::new(),
+            };
         }
     }
     let tool = str_at(&input, "tool_name");
@@ -151,7 +166,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             binding = Some(match str_at(&input, "session_id") {
                 // no session file (missing, or caught mid-write): bind nothing
                 // now; `status` replays the line and judges the job from the rows
-                Some(_) if session.is_null() || judge_later => "none",
+                Some(_) if session.is_null() => "none",
                 Some(sid) => bind_start(env, &id, &input, &session, &sid, now).as_str(),
                 None => "none",
             });
@@ -191,7 +206,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             "tool_name": tool,
             "to": to,
             "pid": pid,
-            "labels": labels,
+            "labels": line_labels,
             "rules": rules,
             // SessionStart: the process's job, kind and entrypoint (per pid, M21:
             // the name is read from the session file later, never from here)
@@ -239,6 +254,10 @@ fn session_file(env: &Env, vars: &HashMap<String, String>, pid: i64) -> Value {
     };
     std::fs::read(path).ok().and_then(|b| crate::evidence::first_json(&b)).unwrap_or(Value::Null)
 }
+
+/// How long the SessionStart hook waits for a new job's row (its launch's
+/// saved labels) before it leaves the session unlabelled for now.
+const ROW_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// How long the hook waits for `registry.lock`: a hook never hangs a session.
 const LOCK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
@@ -578,6 +597,7 @@ mod tests {
         let sessions = env.claude_home.join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join(format!("{ppid}.json")), r#"{"pid": 1, "sessionId": "s-a", "jobId": "9cdceb2d", "kind": "bg"}"#).unwrap();
+        job_row(&env, "9cdceb2d", "s-a");
         handle(&env, "SessionStart", r#"{"session_id": "s-a", "source": "startup"}"#, &labels_of(&env, &id));
         let d = crate::rules::delivered(&env, "9cdceb2d").expect("keyed by the job");
         assert_eq!((d.version, d.session_id.as_str()), (crate::rules::VERSION, "s-a"));
@@ -686,16 +706,50 @@ mod tests {
         assert!(!out.contains("additionalContext"), "no rules for an inherited label: {out}");
         assert!(crate::registry::load(&env).identities.get(&lead.0).map_or(true, |r| r.session.as_deref() != Some("s-user")), "never bound to the lead");
         let e = crate::evidence::events(&env).pop().unwrap();
-        assert!(e.labels.is_empty(), "the line carries no labels: {:?}", e.labels);
+        assert!(e.binding.is_none(), "nothing judged a member: {:?}", e.binding);
+        // (the line keeps the env's labels; a replay judges them against the row)
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 0, "a replay binds nothing either");
         // and its SendMessage is not the lead's
         let mut v = labels_of(&env, &lead);
         v.insert("NIMITZ_HOOK_PID".into(), "21".into());
         let input = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN.ARGOS]-ARGOS"}});
         assert!(handle(&env, "PreToolUse", &input.to_string(), &v).is_empty(), "not judged as the commodore");
-        // a job whose row is not written yet: judged later, nothing bound now
-        let out = start(&env, &lead, "s-early", "startup", 22, Some("u2"), &cwd);
-        assert!(out.contains("additionalContext"));
-        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("none"));
+        // a job whose row is not written yet (after the hook's short wait): no
+        // rules, nothing bound now; the row then shows: a bare one (an
+        // inherited label) never binds on replay, a launch's one does
+        // (both in the lead's own folder: only the labels' backing decides)
+        let lead_dir = crate::registry::identity_folder(&env, &crate::registry::load(&env), &lead).unwrap().to_string_lossy().into_owned();
+        let out = start(&env, &lead, "s-early", "startup", 22, Some("u2"), &lead_dir);
+        assert!(!out.contains("additionalContext"), "no rules on an unbacked label: {out}");
+        assert!(crate::evidence::events(&env).pop().unwrap().binding.is_none());
+        bare_job_row(&env, "u2", "s-early");
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 0, "an inherited label never binds on replay");
+        let out = start(&env, &lead, "s-late", "startup", 23, Some("u3"), &lead_dir);
+        assert!(!out.contains("additionalContext"));
+        job_row_of_home(&env, "u3", "s-late", &lead, &env.home.to_string_lossy());
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 1, "a launch's row written late binds on replay");
+        assert_eq!(crate::registry::load(&env).identities[&lead.0].job.as_deref(), Some("u3"));
+    }
+
+    /// The agent view's pre-warmed spare is never anyone's member, whatever
+    /// labels it inherited: no rules, no binding, no signal authority.
+    #[test]
+    fn a_spare_is_never_labelled_in_the_hook() {
+        let (_td, env) = world();
+        let lead = Id::commodore("MAIN", "ARGOS");
+        let cwd = "/tmp/lead-folder".to_string();
+        // a spare whose own row even saved the lead's labels: still nobody's
+        job_row_of_home(&env, "sp1", "s-spare", &lead, &env.home.to_string_lossy());
+        let file = env.claude_home.join("sessions").join("31.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, serde_json::json!({"pid": 31, "sessionId": "s-spare", "jobId": "sp1", "spare": true, "kind": "bg", "cwd": cwd}).to_string()).unwrap();
+        let mut v = labels_of(&env, &lead);
+        v.insert("NIMITZ_HOOK_PID".into(), "31".into());
+        let input = serde_json::json!({"session_id": "s-spare", "source": "startup", "hook_event_name": "SessionStart", "cwd": cwd});
+        assert!(!handle(&env, "SessionStart", &input.to_string(), &v).contains("additionalContext"));
+        assert!(crate::registry::load(&env).identities.get(&lead.0).map_or(true, |r| r.session.as_deref() != Some("s-spare")));
+        let send = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN.ARGOS]-ARGOS"}});
+        assert!(handle(&env, "PreToolUse", &send.to_string(), &v).is_empty(), "no commodore authority");
     }
 
     #[test]
