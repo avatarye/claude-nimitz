@@ -54,10 +54,32 @@ impl Row {
 }
 
 /// Run a command to completion with stdin closed: (exit code, stdout + stderr).
+/// Every `claude` process nimitz starts begins with none of the caller's
+/// session state: a member's labels go only through `--settings`. Claude
+/// Code's daemon is started by whichever `claude` call finds none running and
+/// keeps that process's environment for every job it starts; a daemon started
+/// from a labelled lead's shell labelled every unlabelled job as that lead and
+/// gave them its pane and its messaging socket. Removed: `NIMITZ_*`, the Herdr
+/// pane context (`HERDR_*`), `CLAUDE_PID` and `CLAUDE_CODE_*` (but the account
+/// settings `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_SKIP_*`).
+pub fn scrub_child_env(c: &mut Command) {
+    for (k, _) in std::env::vars_os() {
+        let k = k.to_string_lossy().into_owned();
+        let session_state = k.starts_with("NIMITZ_")
+            || k.starts_with("HERDR_")
+            || k == "CLAUDE_PID"
+            || (k.starts_with("CLAUDE_CODE_") && !k.starts_with("CLAUDE_CODE_USE_") && !k.starts_with("CLAUDE_CODE_SKIP_"));
+        if session_state {
+            c.env_remove(&k);
+        }
+    }
+}
+
 pub fn run(cmd: &[String], cwd: Option<&str>) -> (i32, String) {
     let Some(bin) = cmd.first() else { return (-1, "empty command".into()) };
     let mut c = Command::new(bin);
     c.args(&cmd[1..]).stdin(Stdio::null());
+    scrub_child_env(&mut c);
     if let Some(d) = cwd {
         c.current_dir(d);
     }
@@ -72,9 +94,10 @@ pub fn run(cmd: &[String], cwd: Option<&str>) -> (i32, String) {
 
 /// `claude agents --json --all` through the native binary.
 pub fn agents(env: &Env) -> Result<Vec<Row>, String> {
-    let out = Command::new(&env.native_claude_bin)
-        .args(["agents", "--json", "--all"])
-        .stdin(Stdio::null())
+    let mut c = Command::new(&env.native_claude_bin);
+    c.args(["agents", "--json", "--all"]).stdin(Stdio::null());
+    scrub_child_env(&mut c);
+    let out = c
         .output()
         .map_err(|e| format!("`claude agents --json --all` failed: {e}"))?;
     let v = crate::evidence::first_json(&out.stdout).ok_or_else(|| {

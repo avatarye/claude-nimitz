@@ -325,8 +325,10 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     }
     // The launch binary (cold launches): NIMITZ_CLAUDE_BIN or `claude` on PATH.
     let launch = resolved(&env.claude_bin);
-    let launch_v = std::process::Command::new(&env.claude_bin)
-        .arg("--version")
+    let mut launch_cmd = std::process::Command::new(&env.claude_bin);
+    launch_cmd.arg("--version");
+    nimitz_core::claude::scrub_child_env(&mut launch_cmd);
+    let launch_v = launch_cmd
         .output()
         .ok()
         .filter(|o| o.status.success())

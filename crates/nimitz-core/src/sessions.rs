@@ -125,7 +125,9 @@ pub(crate) fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
                 r.entrypoint.as_deref().unwrap_or(&r.kind)
             ),
             // a live member is relaunched (start would do nothing), a stopped one started
-            format!("end that process in its host, then nimitz {} {}", if job_live { "relaunch" } else { "start" }, m.id),
+            // a live member needs nothing more once that process ends (the
+            // relaunch refusal adds its own step); a stopped one is started
+            if job_live { "end that process in its host".to_string() } else { format!("end that process in its host, then nimitz start {}", m.id) },
         )
     };
     issue("held", Severity::Warn, what, Some(fix), Some(m.id.clone()))
@@ -1345,7 +1347,9 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
     // `nimitz stop <sid>` that cannot work)
     if let Some(h) = held_of(m) {
         let i = held_issue(m, h);
-        refuse(&mut plan, "session.interactive", i.message, i.fix, Some(id.clone()));
+        let live = m.session.as_ref().is_some_and(|p| p.pid.is_some() && p.short_id.is_some());
+        let fix = i.fix.map(|f| if live { format!("{f}, then nimitz relaunch {id}") } else { f });
+        refuse(&mut plan, "session.interactive", i.message, fix, Some(id.clone()));
         return plan;
     }
     // (a lead's live intruder is not its second session: it stays the

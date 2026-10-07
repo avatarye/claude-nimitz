@@ -1160,7 +1160,11 @@ pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], si
 /// Not an attach client's job: an attach may show the agent view instead
 /// (R-24), which only Herdr's claim tells.
 pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
-    procs.iter().find_map(|(_, pid)| {
+    // only a Claude Code process (a stale session file whose pid another
+    // program reuses names nothing): `claude`, or the native binary under
+    // `.../claude/versions/<v>`
+    let is_claude = |argv: &Vec<String>| argv.first().is_some_and(|a0| Path::new(a0).file_name().is_some_and(|n| n.to_string_lossy().starts_with("claude")) || a0.contains("/claude/versions/"));
+    procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(_, pid)| {
         let v = std::fs::read(claude_home.join("sessions").join(format!("{}.json", (*pid)?))).ok().and_then(|b| first_json(&b))?;
         v.get("sessionId").and_then(|x| x.as_str()).map(String::from)
     })
@@ -1197,5 +1201,8 @@ mod claim_tests {
         assert_eq!(super::session_of_foreground(ch, &p(&["claude"], Some(700))).as_deref(), Some("s-commodore"));
         assert_eq!(super::session_of_foreground(ch, &p(&["claude", "attach", "aaaa1111"], None)), None, "an attach may show the agent view");
         assert_eq!(super::session_of_foreground(ch, &p(&["zsh"], Some(1))), None);
+        // a stale session file of a reused pid: the program is not claude
+        assert_eq!(super::session_of_foreground(ch, &p(&["vim"], Some(700))), None);
+        assert_eq!(super::session_of_foreground(ch, &p(&["/home/u/.local/share/claude/versions/2.1.292"], Some(700))).as_deref(), Some("s-commodore"));
     }
 }

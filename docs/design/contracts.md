@@ -113,6 +113,15 @@ Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 
 ## 5. Registry and events (`NIMITZ_STATE`)
 
+**Every `claude` nimitz starts begins clean** (`claude::scrub_child_env`, on
+launch, wake, relaunch, stop, rm, `agents` and the version checks): none of
+the caller's `NIMITZ_*`, `HERDR_*`, `CLAUDE_PID` or `CLAUDE_CODE_*` (the account
+settings `CLAUDE_CODE_USE_*` and `CLAUDE_CODE_SKIP_*` pass) reaches it; a
+member's labels go only through `--settings`. A daemon that such a call
+happens to start keeps a clean environment, whoever ran nimitz. The `claude
+attach <job>` typed into a Herdr pane runs in that pane's shell, with the
+pane's own env.
+
 **A background job's labels are the ones its launch saved.** Claude Code's
 daemon hands its own environment to every job it starts, so a daemon started
 from a labelled lead's shell (an interactive 0.3.x lead that ran `claude --bg`)

@@ -1437,6 +1437,9 @@ fn iso_now() -> String {
 fn log_call(base: &Path, args: &[String]) {
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(base.join("calls.log")) {
         let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-        let _ = writeln!(f, "{}", json!({"at": crate::evidence::now(), "cwd": cwd, "args": args}));
+        // the session state this process inherited (a test asserts that a
+        // claude nimitz starts carries none: `claude::scrub_child_env`)
+        let inherited: std::collections::BTreeMap<String, String> = std::env::vars().filter(|(k, _)| k.starts_with("NIMITZ_ID") || k.starts_with("NIMITZ_ROLE") || k.starts_with("HERDR_") || k.starts_with("CLAUDE_CODE_") || k == "CLAUDE_PID").collect();
+        let _ = writeln!(f, "{}", json!({"at": crate::evidence::now(), "cwd": cwd, "args": args, "env": inherited}));
     }
 }

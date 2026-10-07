@@ -1749,6 +1749,10 @@ fn stop_of_a_live_lead_beside_an_interactive_older_conversation_stops_its_job() 
     let r = sb.run(&["relaunch", "MAIN", "--plan"]);
     assert_ne!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("session.interactive") && r.out.contains(&mid) && !r.out.contains("0.3.x") && r.out.contains("then nimitz relaunch MAIN"), "{}", r.out);
+    // and status says only to end that process (the live job needs nothing more)
+    let st = sb.member("MAIN");
+    let held = st["issues"].as_array().unwrap().iter().find(|i| i["code"] == "held").expect("held");
+    assert_eq!(held["fix"], "end that process in its host", "{st}");
     assert!(fake(&["__end", &mid]).status.success());
 }
 
@@ -1875,6 +1879,47 @@ fn a_ship_is_never_shown_in_its_commodores_pane_on_herdrs_word_alone() {
     let cmd = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter()).find(|q| q["commodore"]["id"] == "MAIN/ARGOS").unwrap()["commodore"].clone();
     assert_eq!(cmd["pane"], "w1:p2", "the commodore, from its own process: {cmd}");
     std::fs::remove_file(sb.base.join("claude_home/sessions/424242.json")).unwrap();
+}
+
+/// Every claude nimitz starts begins with none of the caller's session state:
+/// a commodore (labels, its Herdr pane, its messaging socket in the env) that
+/// starts a ship hands none of it to the launch, so a daemon that launch
+/// happens to start never labels unlabelled jobs as that commodore. Account
+/// settings (`CLAUDE_CODE_USE_*`) pass.
+#[test]
+fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
+    let sb = Sb::new(false);
+    let log = sb.base.join("calls.log");
+    let from = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+    let r = raw(
+        &sb.vars,
+        &["start", "MAIN/ARGOS/STOPPED", "--yes"],
+        &[
+            ("NIMITZ_ID", "MAIN/ARGOS"),
+            ("NIMITZ_ROLE", "commodore"),
+            ("HERDR_ENV", "1"),
+            ("HERDR_PANE_ID", "w4:p1"),
+            ("HERDR_SESSION", "NIMITZ"),
+            ("HERDR_SOCKET_PATH", "/live/herdr.sock"),
+            ("CLAUDE_CODE_MESSAGING_SOCKET", "/run/user/1000/cc-socks/1.sock"),
+            ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            ("CLAUDE_PID", "1"),
+            ("CLAUDE_CODE_USE_BEDROCK", "1"),
+        ],
+        None,
+    );
+    assert_eq!(r.code, 0, "{}", r.out);
+    let calls: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().skip(from).map(|l| serde_json::from_str(l).unwrap()).collect();
+    let launch = calls.iter().find(|c| c["args"].as_array().unwrap().iter().any(|a| a == "--resume" || a == "--bg")).expect("the launch reached claude");
+    let env = launch["env"].as_object().unwrap();
+    for k in ["NIMITZ_ID", "NIMITZ_ROLE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SESSION", "HERDR_SOCKET_PATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID"] {
+        assert!(!env.contains_key(k), "{k} reached the claude child: {launch}");
+    }
+    assert_eq!(env.get("CLAUDE_CODE_USE_BEDROCK").and_then(Value::as_str), Some("1"), "account settings pass: {launch}");
+    // every claude call of the run (agents, stop, rm, resume) is scrubbed alike
+    for c in &calls {
+        assert!(!c["env"].as_object().unwrap().keys().any(|k| k.starts_with("NIMITZ_ID") || k == "HERDR_PANE_ID"), "{c}");
+    }
 }
 
 /// A hook always exits 0, even when Claude Code has closed its pipe before
