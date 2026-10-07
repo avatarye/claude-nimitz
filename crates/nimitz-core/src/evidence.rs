@@ -321,7 +321,7 @@ pub fn daemon_retired(env: &Env, short: &str, since: Option<f64>) -> Option<Stri
 
 /// The NIMITZ_* labels in a job row's saved launch options: `savedSettings` (a
 /// `--settings` JSON string) or `respawnFlags` (argv: `--settings <json>`).
-fn job_labels(d: &Value) -> BTreeMap<String, String> {
+pub(crate) fn job_labels(d: &Value) -> BTreeMap<String, String> {
     let mut settings: Vec<String> = vec![];
     if let Some(x) = s(d, "savedSettings") {
         settings.push(x);

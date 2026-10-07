@@ -169,11 +169,11 @@ is `binding` `none`), `registry::apply_start` says what happened:
 
 | labels | session file | effect | `binding` |
 | --- | --- | --- | --- |
-| this home's identity | `jobId` = the identity's job, or none set yet | `job = jobId`, `session = session_id`, lineage appended with `via` from `source` (startup -> launch; resume; clear; compact: no new entry for the same conversation; fork -> branch in the same job, else fork). A wake (resume, relaunch) of the conversation it already runs never overwrites how it was born: the `clear` entry survives a stop and a start | `bound` (`same` when nothing moved) |
+| this home's identity | `jobId` = the identity's job, or none set yet | `job = jobId`, `session = session_id`, lineage appended with `via` from `source` (startup -> launch; resume; clear; compact: no new entry for the same conversation; fork -> branch in the same job, else fork). A wake (resume, relaunch) of the conversation it already runs adds no entry and never overwrites how it was born: after a stop and a start the lineage is still `[launch]` (or `[launch, clear]`) | `bound` (`same` when nothing moved) |
 | same | another `jobId` whose job row still exists | nothing rebound: two jobs claim one identity | `dup.job` |
 | same | `jobId` null (interactive or SDK) | nothing bound: a process with no job holds the conversation | `held` |
 | same | a `cwd` that is not the identity's folder (the registry's `cwd`, else the config) | nothing bound: an impostor (BUG-30, BUG-55) | `elsewhere` |
-| labels of another `NIMITZ_HOME` | any | ignored entirely: no line | - |
+| labels of another `NIMITZ_HOME` | any | ignored by every reader. The hook itself cannot tell (its env is the session's env, and the `--settings` label wins over a project settings env, so `env.home` is the label): with one `NIMITZ_STATE` shared by two homes it writes its line and binds the identity there. `registry::load` drops an identity whose job row's saved labels name another home (`drop_other_homes`), so no reader uses that record (r3-e2e.md finding 1) | - |
 | no labels | any | the line only (the snapshot classifies it) | - |
 
 The name is never taken from the SessionStart moment: the snapshot reads it
@@ -391,7 +391,7 @@ target. For each member, one action from this table:
 | live, labels right, name right | nothing |
 | live, name drift or labels missing | refuse; Issue with fix `nimitz relaunch <id>` (needs a stop) |
 | two live sessions | refuse; list both; fix `nimitz stop <short>` for the one you drop |
-| stopped or parked (job row, no pid), labels right | resume: native binary, **no flags**, from its folder (the job keeps its short id; `resumeSessionId` is the conversation it wakes on). Every role: a lead is a job too, never `-c`. Before it, the transcript must exist (any project dir), else `history.lost`. `sessions::wake_steps` builds this row and the next (a restore uses it) |
+| stopped or parked (job row, no pid), labels right | resume: native binary, **no flags**, from its folder (the job keeps its short id; `resumeSessionId` is the conversation it wakes on). Every role: a lead is a job too, never `-c`. Before it, the transcript must exist (any project dir), else `history.lost`; not judged for a job in the crash window (`crashed`, or `working` with no live pid: killed in its first turn, its transcript may not be on disk yet; `apply` waits for the daemon, and a resume that comes back `startup` reports `history.lost` then). `sessions::wake_steps` builds this row and the next (a restore uses it) |
 | stopped, labels missing (resumed with flags earlier), or a drifted name | relabel (BUG-53): `rm` its job row (native; if that fails the plan stops), then cold launch `--resume <id>` with all flags: with no row Claude Code keeps the **same id and its history** and takes the new name and labels. (With the row present the same command starts an empty copy with a new id; `apply` refuses such a step.) Same path for `relaunch`, `folder.moved`, adopt + start |
 | no row, but the registry's current (or an interrupted relaunch's) session has a transcript (background member) | resume `--resume <id>` with all flags: Claude Code keeps the id and history. A relaunch writes `NIMITZ_STATE/pending/<id>.json` before its `rm` and clears it after the bind, so a start after a crash between the two says "recovering an interrupted relaunch" |
 | no row, transcript exists (a lead that never had a job: a 0.3.x interactive lead that ended) | resume `--resume <id>` with all flags, like the row above, lineage `via: migrate` |
