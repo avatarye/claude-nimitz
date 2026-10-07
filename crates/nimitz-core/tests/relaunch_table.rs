@@ -2061,3 +2061,66 @@ fn m19_a_stopped_renamed_job_is_name_drift_and_a_start_restores_the_name() {
     assert_eq!((s2.name.as_str(), s2.session_id.as_str(), s2.short_id.as_deref()), (id.name().as_str(), s.session_id.as_str(), Some(short.as_str())));
     assert!(after.issues.is_empty(), "{:?}", after.issues);
 }
+
+// ------------------------------------------------------------------ review fixes (P2+P3 review)
+
+/// A held parent (a 0.3.x interactive admiral still running) is live for the
+/// chain: a ship's start and `up` go on with the warning riding along; only a
+/// start of the admiral itself refuses.
+#[test]
+fn a_held_parent_does_not_block_the_chain() {
+    let w = world();
+    let adm = Id::admiral("MAIN");
+    let snap = w.snap();
+    let (cwd, sid) = { let m = w.member(&snap, &adm); (m.cwd.unwrap(), m.session.unwrap().session_id) };
+    assert!(sessions::apply(&w.env, &sessions::plan_stop(&w.env, &snap, &adm, &Caller::User)).verified);
+    let host = vec![w.env.claude_bin.clone(), "-p".into(), "--resume".into(), sid.clone(), "--name".into(), adm.name(), "--settings".into(), claude::settings_json(&w.env, &adm, false)];
+    assert_eq!(claude::run(&host, Some(&cwd)).0, 0);
+    let snap = w.snap();
+    assert_eq!(w.start(&snap, &adm, false).refusals[0].code, "held", "the admiral itself");
+    let plan = w.start(&snap, &w.ship("STOPPED"), false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert!(plan.steps.iter().all(|s| s.id.as_ref() != Some(&adm)), "nothing for the admiral: {:?}", plan.steps);
+    assert!(plan.warnings.iter().any(|i| i.code == "held" && i.id.as_ref() == Some(&adm)), "{:?}", plan.warnings);
+    // (the sandbox fleet is full of broken ships, so `up` has refusals: none for the admiral)
+    let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
+    assert!(up.refusals.iter().all(|i| i.id.as_ref() != Some(&adm)), "{:?}", up.refusals);
+    assert!(up.steps.iter().any(|s| s.id == Some(w.ship("STOPPED"))) && up.steps.iter().all(|s| s.id.as_ref() != Some(&adm)), "{:?}", up.steps);
+    assert!(up.warnings.iter().any(|i| i.code == "held" && i.id.as_ref() == Some(&adm)));
+}
+
+/// Two crashed jobs in one plan wait out one window together, not one each.
+#[test]
+fn the_crash_window_is_waited_once_for_every_member_of_a_plan() {
+    let w = world();
+    let ids = [w.ship("CLEAN"), w.ship("DRIFT")];
+    for id in &ids {
+        let short = w.member(&w.snap(), id).session.unwrap().short_id.unwrap();
+        assert_eq!(w.fake(&["__crash", &short]).0, 0);
+    }
+    let snap = w.snap();
+    let mut plan = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
+    plan.steps.retain(|s| ids.contains(s.id.as_ref().unwrap()));
+    plan.refusals.clear();
+    assert_eq!(plan.steps.iter().filter(|s| s.cmd.contains(&"--resume".to_string())).count(), 2, "{:?}", plan.steps);
+    let env = Env { crash_window_s: 1.0, ..w.env.clone() };
+    let t = std::time::Instant::now();
+    let out = sessions::apply(&env, &plan);
+    let waited = t.elapsed();
+    assert!(waited >= std::time::Duration::from_millis(900) && waited < std::time::Duration::from_millis(1900), "one window for both, not two: {waited:?}");
+    assert!(out.issues.iter().all(|i| i.severity != Severity::Error), "{:?}", out.issues);
+    for id in &ids {
+        assert!(w.member(&w.snap(), id).session.unwrap().pid.is_some(), "{id} woken");
+    }
+}
+
+/// `--fresh` under a live job refuses: stop it first.
+#[test]
+fn fresh_on_a_live_member_says_stop_it_first() {
+    let w = world();
+    let id = w.ship("CLEAN");
+    let plan = sessions::plan_start_with(&w.env, &w.snap(), &id, &Caller::User, sessions::StartOpts { force: false, fresh: true });
+    assert!(!plan.ok() && plan.steps.is_empty());
+    assert_eq!(plan.refusals[0].code, "session.live");
+    assert_eq!(plan.refusals[0].fix.as_deref(), Some("nimitz stop MAIN/ARGOS/CLEAN, then nimitz start MAIN/ARGOS/CLEAN --fresh"));
+}

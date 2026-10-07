@@ -204,30 +204,67 @@ pub fn attach(env: &Env, short_id: &str) -> Vec<String> {
 
 // ------------------------------------------------------------------ reading a launch's output
 
+/// `text` with every ANSI escape sequence removed (FORCE_COLOR, a terminal
+/// that is a tty): CSI `ESC [ ... <final>`, OSC `ESC ] ... BEL|ESC \`, and
+/// two-byte `ESC x`.
+pub fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('[') => {
+                for d in it.by_ref() {
+                    if ('@'..='~').contains(&d) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(d) = it.next() {
+                    if d == '\u{7}' || (d == '\u{1b}' && it.peek() == Some(&'\\')) {
+                        if d == '\u{1b}' {
+                            it.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// A short job id as Claude Code prints it (8 hex digits), from the token
 /// after `word`: `backgrounded · 9cdceb2d`, `started a copy as 9cdceb2d`.
-fn short_after<'a>(text: &'a str, word: &str) -> Option<&'a str> {
+fn short_after(text: &str, word: &str) -> Option<String> {
     let i = text.find(word)? + word.len();
     let tok = text[i..].trim_start().split(|c: char| !c.is_ascii_hexdigit()).next()?;
-    (tok.len() >= 8).then(|| &tok[..8])
+    (tok.len() >= 8).then(|| tok[..8].to_string())
 }
 
-/// The job Claude Code says it started a COPY as ("... so this started a
-/// copy as X", "the flags you passed started a copy as X", "started a copy of
-/// that conversation as X"; 2.1.292), if the output carries such a note.
+/// The job Claude Code says it started a COPY as (a stderr note: "... so this
+/// started a copy as X", "the flags you passed started a copy as X", "started
+/// a copy of that conversation as X"; 2.1.292), if the output carries one.
+/// Escape sequences are stripped first (FORCE_COLOR).
 pub fn copy_started(text: &str) -> Option<String> {
-    if !text.contains("started a copy") {
-        return None;
-    }
+    let text = plain(text);
     let i = text.find("started a copy")?;
-    short_after(&text[i..], " as ").map(str::to_string)
+    short_after(&text[i..], " as ")
 }
 
-/// The job Claude Code says it started or woke (`backgrounded · X`;
-/// `resumed <session> as X` from the sandbox), if the output names one. A
-/// native wake prints the conversation it woke, not the job: None then.
+/// The job a launch or wake names: every `--bg` launch and every native wake
+/// prints `backgrounded · <short>[ · <name>]` on stdout (2.1.292; notes go to
+/// stderr); the sandbox's wake of a job with no row prints `resumed <session>
+/// as <short>`. None when the output names no job (an older wording: `woke
+/// session <id> ...`). Escape sequences are stripped first (FORCE_COLOR).
 pub fn job_started(text: &str) -> Option<String> {
-    short_after(text, "backgrounded ·").or_else(|| short_after(text, "backgrounded \u{b7}")).or_else(|| short_after(text, " as ")).map(str::to_string)
+    let text = plain(text);
+    short_after(&text, "backgrounded \u{b7}").or_else(|| short_after(&text, " as "))
 }
 
 #[cfg(test)]
@@ -272,5 +309,9 @@ mod tests {
         assert_eq!(job_started("resumed 9cdceb2d-0000-4000-8000-000000000001 as 9cdceb2d"), Some("9cdceb2d".into()));
         assert_eq!(job_started("woke session 942bf763-0000-4000-8000-000000000001 with its saved options"), None);
         assert_eq!(job_started(""), None);
+        // the name after the id, and colour (FORCE_COLOR) around it, change nothing
+        assert_eq!(job_started("\u{1b}[1mbackgrounded\u{1b}[0m \u{b7} \u{1b}[36m29a81431\u{1b}[0m \u{b7} [F.SQ]-S1"), Some("29a81431".into()));
+        assert_eq!(copy_started("\u{1b}[33mnote:\u{1b}[0m session x is already running in the background, so this started a copy as \u{1b}[1mdc74d940\u{1b}[0m."), Some("dc74d940".into()));
+        assert_eq!(plain("a\u{1b}]0;title\u{7}b\u{1b}[31mc\u{1b}[0m"), "abc");
     }
 }

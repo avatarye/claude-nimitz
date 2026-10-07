@@ -261,8 +261,10 @@ never idle-retires a pinned job; `status` says so). A live session file's
 where to end a process. nimitz pins each lead's job after it starts and
 removes that pin when the lead's row goes (`claude rm` leaves it behind,
 M24), under Claude Code's own lock for the file: the directory
-`jobs/pins.json.lock` (`mkdir`; one older than 10 s is stale), read, add or
-remove, temp file, rename, `rmdir`. `NIMITZ_STATE/pins.json` lists the ids
+`jobs/pins.json.lock` (`mkdir`; Claude Code's proper-lockfile stale time is
+5 s, the holder refreshing the mtime every 2.5 s; nimitz takes a lock over
+only when it is 10 s old, twice that, so it never takes a live one), read,
+add or remove, temp file, rename, `rmdir`. `NIMITZ_STATE/pins.json` lists the ids
 nimitz pinned; it never touches another id (`pins::pin`, `pins::unpin`). Ships
 are not pinned: they park and wake on demand.
 

@@ -95,6 +95,11 @@ fn held_row(_m: &Member, r: &SessionInfo) -> bool {
     r.pid.is_some() && r.short_id.is_none()
 }
 
+/// The row that holds `m`'s conversation with no job, if one does.
+fn held_of(m: &Member) -> Option<&SessionInfo> {
+    m.session.iter().chain(m.extra_rows.iter()).find(|r| held_row(m, r))
+}
+
 /// The `held` issue for one such row: a 0.3.x interactive lead is ended with
 /// `/exit` (then `nimitz start` runs it as a job, plan-v4 section 7); any
 /// other holder is ended in its host.
@@ -515,7 +520,7 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
     // A process with no job holds the conversation (a 0.3.x interactive lead,
     // an SDK host): a resume would start a copy (cli-L2), so nothing starts
     // until that process ends (the migration of plan-v4 section 7).
-    if let Some(h) = m.session.iter().chain(m.extra_rows.iter()).find(|r| held_row(m, r)) {
+    if let Some(h) = held_of(m) {
         plan.refusals.push(Issue { severity: Severity::Error, ..held_issue(m, h) });
         return;
     }
@@ -666,7 +671,13 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
         return Err(issue("session.none", Severity::Error, format!("{id} has no job row to wake"), Some(format!("nimitz start {id}")), Some(id.clone())));
     };
     if p.pid.is_some() {
-        return Err(issue("session.live", Severity::Error, format!("{id} is live as {}; a resume of a live job starts a copy", p.short_id.as_deref().unwrap_or(&p.session_id)), None, Some(id.clone())));
+        return Err(issue(
+            "session.live",
+            Severity::Error,
+            format!("{id} is live as {}; nothing to wake (a resume of a live job starts a copy)", p.short_id.as_deref().unwrap_or(&p.session_id)),
+            Some(format!("nimitz status  # it is live; nothing to wake")),
+            Some(id.clone()),
+        ));
     }
     if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &p.session_id).is_none() {
         return Err(issue(
@@ -787,6 +798,17 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
         return plan;
     }
     gate(env, &mut plan, snap, Some(id), force);
+    // `--fresh` starts over: not under a live job (that would make two)
+    if opts.fresh && member(snap, id).map(|(_, m)| m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)).unwrap_or(false) {
+        refuse(
+            &mut plan,
+            "session.live",
+            format!("{id} is live; `--fresh` starts a new conversation, so stop it first"),
+            Some(format!("nimitz stop {id}, then nimitz start {id} --fresh")),
+            Some(id.clone()),
+        );
+        return plan;
+    }
     // What is wrong with a member caller's own chain is yours to fix, not a
     // reason to refuse the caller's start of its ship.
     if let Caller::Member { id: me, .. } = caller {
@@ -805,6 +827,13 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
             .unwrap_or(false);
         if running_clean {
             continue; // row 1 for a parent: nothing, and no authority needed
+        }
+        // a parent held by a process with no job (a 0.3.x interactive admiral
+        // still running) is live for the chain: its ships start; the warning
+        // rides along, and only a start of the parent itself refuses
+        if let Some(h) = member(snap, &link).filter(|_| link != *id).and_then(|(_, m)| held_of(m).map(|h| held_issue(m, h))) {
+            plan.warnings.push(h);
+            continue;
         }
         // A member caller is running, and what is above it is yours to start: a
         // commodore reviving its ship is not blocked by an admiral that is down.
@@ -895,6 +924,12 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
             })
             .unwrap_or(false);
         if clean_live {
+            continue;
+        }
+        // a held member (a 0.3.x interactive lead still running) is live for
+        // the fleet: the rest comes up; the warning says how to migrate it
+        if let Some(h) = member(snap, &id).and_then(|(_, m)| held_of(m).map(|h| held_issue(m, h))) {
+            plan.warnings.push(h);
             continue;
         }
         gate(env, &mut plan, snap, Some(&id), false);
@@ -1682,22 +1717,22 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     // seconds. Wait for that before any resume of it (a resume of a job the
     // daemon then restarts makes a copy, cli-31); restarted, its steps are
     // skipped.
-    let mut restarted: Vec<Id> = vec![];
-    for id in plan.steps.iter().filter_map(|s| s.id.clone()).collect::<std::collections::BTreeSet<_>>() {
-        if skipped.contains(&id) {
-            continue;
-        }
-        let Some(sid) = plan.steps.iter().filter(|s| s.id.as_ref() == Some(&id)).find_map(|s| match classify(s) {
-            Kind::Resume { .. } | Kind::Relaunch => resumed_id(s),
+    let waking: Vec<(Id, String)> = plan
+        .steps
+        .iter()
+        .filter_map(|s| s.id.clone().filter(|i| !skipped.contains(i)).map(|i| (i, s)))
+        .filter_map(|(i, s)| match classify(s) {
+            Kind::Resume { .. } | Kind::Relaunch => resumed_id(s).map(|sid| (i, sid)),
             _ => None,
-        }) else {
-            continue;
-        };
-        if let Some(what) = wait_crash_window(env, &sid) {
-            restarted.push(id.clone());
-            for step in plan.steps.iter().filter(|s| s.id.as_ref() == Some(&id)) {
-                out.ran.push((step.clone(), 0, format!("skipped: {what}")));
-            }
+        })
+        .collect::<std::collections::BTreeMap<_, _>>()
+        .into_iter()
+        .collect();
+    let mut restarted: Vec<Id> = vec![];
+    for (id, what) in wait_crash_window(env, &waking) {
+        restarted.push(id.clone());
+        for step in plan.steps.iter().filter(|s| s.id.as_ref() == Some(&id)) {
+            out.ran.push((step.clone(), 0, format!("skipped: {what}")));
         }
     }
     let mut started: Vec<(Id, String, Option<String>)> = vec![]; // (identity, session id, folder) to verify again
@@ -1899,22 +1934,37 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     out
 }
 
-/// The crash window: `sid`'s job is `crashed`, or `working` with no live pid,
-/// so the daemon may restart it. Wait up to `env.crash_window_s`, polling.
-/// Some(why) when it came back live (nothing to resume); None when it did not
-/// (resume it), or when it was not in the window to begin with.
-fn wait_crash_window(env: &Env, sid: &str) -> Option<String> {
+/// The crash window: a job that is `crashed`, or `working` with no live pid,
+/// may be restarted by the daemon. Of the members about to be woken (`(id,
+/// session id)`), wait once, up to `env.crash_window_s` for all of them
+/// together, polling, and return those that came back live with why: their
+/// steps are skipped (a resume of a restarted job makes a copy, and a
+/// relaunch's stop + rm would end what the daemon just brought back). The
+/// rest are woken as planned. Members not in the window to begin with are
+/// never waited for.
+fn wait_crash_window(env: &Env, waking: &[(Id, String)]) -> Vec<(Id, String)> {
     let row = |sid: &str| find_row_by_session(env, sid);
     let in_window = |r: &crate::evidence::SessionRow| !r.live() && matches!(r.state.as_deref(), Some("crashed") | Some("working"));
-    let first = row(sid).filter(in_window)?;
-    let short = first.short_id.clone().unwrap_or_default();
+    let mut pending: Vec<(Id, String, String, String)> = waking
+        .iter()
+        .filter_map(|(id, sid)| row(sid).filter(in_window).map(|r| (id.clone(), sid.clone(), r.short_id.clone().unwrap_or_default(), r.state.clone().unwrap_or_else(|| "?".into()))))
+        .collect();
+    let mut back = vec![];
+    if pending.is_empty() {
+        return back;
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(env.crash_window_s.max(0.0));
     loop {
-        if row(sid).map(|r| r.live()).unwrap_or(false) {
-            return Some(format!("the daemon restarted job {short} (state was {}); nothing to resume", first.state.as_deref().unwrap_or("?")));
-        }
-        if std::time::Instant::now() >= deadline {
-            return None;
+        pending.retain(|(id, sid, short, state)| {
+            if row(sid).map(|r| r.live()).unwrap_or(false) {
+                back.push((id.clone(), format!("the daemon restarted job {short} (state was {state}); nothing to resume")));
+                false
+            } else {
+                true
+            }
+        });
+        if pending.is_empty() || std::time::Instant::now() >= deadline {
+            return back;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }

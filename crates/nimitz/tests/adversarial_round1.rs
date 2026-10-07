@@ -25,7 +25,7 @@ struct Run {
 
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)], stdin: Option<&str>, cwd: Option<&Path>) -> Run {
     let mut c = Command::new(EXE);
-    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_BIND_TIMEOUT", "0").envs(vars).args(args);
+    c.env_clear().env("PATH", "/usr/bin:/bin").envs(vars).args(args);
     for (k, v) in extra {
         c.env(k, v);
     }

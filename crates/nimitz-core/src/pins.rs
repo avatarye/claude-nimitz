@@ -7,16 +7,21 @@
 //! not pin itself: `NIMITZ_STATE/pins.json` lists nimitz's own.
 //!
 //! The file is Claude Code's, edited under the lock Claude Code takes for it
-//! (proper-lockfile style, as the binary's "pins.json lock compromised" path
-//! shows): the directory `pins.json.lock`, made with `mkdir`; a lock whose
-//! mtime is older than `STALE_S` is stale and removed. nimitz holds it for
-//! milliseconds: read, edit, write a temp file, rename, `rmdir`.
+//! (proper-lockfile, as the binary's "pins.json lock compromised" path shows:
+//! `stale: 5000` ms, the holder refreshing the mtime every 2.5 s): the
+//! directory `pins.json.lock`, made with `mkdir`; a lock whose mtime is older
+//! than the stale time is a dead holder's and is removed. nimitz waits for a
+//! lock to be 10 s old (`STALE_S`, twice Claude Code's 5 s): a live holder
+//! refreshes it well inside that, and taking it one refresh too late would
+//! cost nothing but a wait, while taking a live one could lose a pin. nimitz
+//! holds it for milliseconds: read, edit, write a temp file, rename, `rmdir`.
 use crate::env::Env;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// A lock directory older than this is a dead holder's (Claude Code's own
-/// rule is 10 s; its holder refreshes the mtime while it works).
+/// A lock directory older than this is a dead holder's. Claude Code's own
+/// rule is 5 s (`stale: 5000`), its holder refreshing the mtime every 2.5 s;
+/// nimitz waits twice that before it takes a lock over.
 pub const STALE_S: f64 = 10.0;
 /// How long nimitz waits for the lock before it gives up.
 const WAIT: Duration = Duration::from_secs(3);
