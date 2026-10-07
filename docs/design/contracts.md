@@ -29,6 +29,8 @@ starting/opening interactive members and to Admiralty's pane actions.
 | `NIMITZ_HOSTNAME` | `gethostname()` | machine matching |
 | `NIMITZ_MUX` | auto | `herdr` or `none` |
 | `NIMITZ_BIND_TIMEOUT` | `10` (s) | how long the CLI waits for a pane's session to start and bind; tests set `0` |
+| `NIMITZ_HOOK_PID` | `getppid()` | the hook's Claude Code process (test override: the sandbox's fake `claude` names a stable fake pid per job) |
+| `NIMITZ_HOOK_SESSION_FILE` | `<claude home>/sessions/<pid>.json` | the session file the SessionStart hook reads (test override) |
 
 ## 3. Config files (TOML, in `NIMITZ_HOME/<fleet>/`)
 
@@ -108,15 +110,28 @@ Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 save also writes `registry.json.bak`, the last good copy). A `registry.json` that
 does not parse is never replaced in silence: it is kept as
 `registry.json.corrupt-<ts>` (with a `.txt` note), the registry is rebuilt from
-the `.bak` and the SessionStart labels in `events.jsonl`, and `check` reports
-`registry.corrupt` until the kept file is removed:
+the `.bak` and the SessionStart lines in `events.jsonl` (the same binding rules
+as the hook, `registry::apply_event`), and `check` reports `registry.corrupt`
+until the kept file is removed. Version 2 (plan-v4 section 2): the anchor of an
+identity is its **job** (the Claude Code short id); `session` is the conversation
+it runs now; `lineage` every conversation it had:
 
 ```json
-{"version": 1, "machine": "west-mac", "identities": {
+{"version": 2, "machine": "west-mac", "updated_at": 1791000100.5, "identities": {
   "MAIN/ARGOS/ARGOS": {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/...",
-    "current": "9e0cad63-...", "lineage": [
-      {"session_id": "9e0cad63-...", "bound_at": 1790900000.0, "via": "launch|resume|relaunch|adopt|migrate"}]}}}
+    "job": "9cdceb2d", "session": "79519302-...", "lineage": [
+      {"session_id": "9cdceb2d-...", "job": "9cdceb2d", "via": "launch", "at": 1791000000.0},
+      {"session_id": "79519302-...", "job": "9cdceb2d", "via": "clear", "at": 1791000100.0}]}}}
 ```
+
+`via`: launch, resume, relaunch, clear, branch, fork, compact, adopt, migrate.
+`updated_at` is when the file was last written (`status` replays newer
+SessionStart lines, below). A 0.3.x file (`version` 1, `current`, `bound_at`,
+no `job`) is migrated on load (`migrate::registry_v2`): `current` becomes
+`session`, `job` is filled from the job row whose `state.json` `sessionId` or
+`resumeSessionId` is that session (each lineage entry the same way), tender
+identities move to `retired`. A read never writes; the next locked `update`
+saves the v2 shape and keeps the old file once as `registry.json.v1`.
 
 The registry's `machine` is this machine's label, set by `nimitz init --label`;
 it is per machine and outlives every fleet (`registry::machine_label`).
@@ -126,11 +141,42 @@ it is per machine and outlives every fleet (`registry::machine_label`).
 ```json
 {"ts": 1790900000.1, "event": "SessionStart", "session_id": "...", "source": "startup",
  "reason": null, "agent_id": null, "tool_name": null, "to": null, "pid": 12345,
- "labels": {"NIMITZ_ID": "MAIN/ARGOS/ARGOS", "NIMITZ_ROLE": "ship", "...": "..."}, "rules": 1}
+ "labels": {"NIMITZ_ID": "MAIN/ARGOS/ARGOS", "NIMITZ_ROLE": "ship", "...": "..."}, "rules": 1,
+ "job": "9cdceb2d", "kind": "bg", "entrypoint": "cli", "binding": "bound"}
 ```
 
 `pid` is the hook's parent (the Claude Code process). The hook never blocks,
-never fails the session (always exit 0), and returns in a few ms.
+never fails the session (always exit 0), and returns in a few ms. Labels are
+kept **per pid**: a second process on a member's conversation (a `-p
+--resume`, an SDK host) does not strip the member's own process of its labels
+(`evidence::row_labels`).
+
+**Binding (SessionStart).** The hook reads `<claude home>/sessions/<pid>.json`
+(the first JSON value; a missing or partial file reads as no job) for `jobId`,
+`kind`, `entrypoint` and `name`, and writes `job`, `kind` and `entrypoint` in
+the line. Then, for labels that name a valid identity of this home
+(`NIMITZ_HOME` absent or equal to this env's home, as written or as a real
+path; role and id agree; not a 0.3.x tender), under `registry.lock`
+(`registry::apply_start`), `binding` says what happened:
+
+| labels | session file | effect | `binding` |
+| --- | --- | --- | --- |
+| this home's identity | `jobId` = the identity's job, or none set yet | `job = jobId`, `session = session_id`, lineage appended with `via` from `source` (startup -> launch; resume; clear; compact: no new entry for the same conversation; fork -> branch in the same job, else fork) | `bound` (`same` when nothing moved) |
+| same | another `jobId` whose job row still exists | nothing rebound: two jobs claim one identity | `dup.job` |
+| same | `jobId` null (interactive or SDK) | nothing bound: a process with no job holds the conversation | `held` |
+| same | a `cwd` that is not the identity's folder (the registry's `cwd`, else the config) | nothing bound: an impostor (BUG-30, BUG-55) | `elsewhere` |
+| labels of another `NIMITZ_HOME` | any | ignored entirely: no line | - |
+| no labels | any | the line only (the snapshot classifies it) | - |
+
+The name is never taken from the SessionStart moment: the snapshot reads it
+from the session file (M21). A SessionEnd from a pid that never sent a
+SessionStart (a refused `-p --resume` fires one with no labels) is ignored by
+every reader (M21). If a hook's registry write is lost, `status` replays
+SessionStart lines newer than `updated_at` under the lock with the same rules
+(`registry::replay`; a line the hook judged `dup.job`, `held` or `elsewhere` is
+not replayed); it writes only when a line binds something. A nimitz launch
+binds the started session itself (`sessions::bind_started`, with the job that
+runs it and nimitz's own `via`), so an impostor's job never keeps the identity.
 
 Role rules: a labelled session's SessionStart (startup, resume, clear, compact,
 fork) gets its role's rules (`nimitz-core/rules/*.md`, compiled in; `nimitz
@@ -156,6 +202,16 @@ Order: (1) session file + `kill(pid,0)` (read the first JSON value only),
 (2) `claude agents --json --all` (native binary, every ~10 s, cached),
 (3) events (binding, crew, end reason), (4) mux panes (Admiralty only).
 
+Rows (plan-v4 section 4): a job row (`jobs/<id>/state.json`) and a live
+session file join by **job id** (the session file's `jobId`), never by session
+id. A member's row is the registry's `job`; the conversation it runs now is
+the live session file's `sessionId`, else `state.json` `resumeSessionId`, else
+its birth `sessionId` (`SessionInfo::birth_id` keeps the birth id when the
+conversation moved: `/clear`, `/branch`). A live process with no job
+(interactive, SDK) is its own row, even on a job's conversation. The CLI
+cross-check joins the same way. `jobs/pins.json` gives `pinned` (the daemon
+never idle-retires a pinned job; `status` says so).
+
 Snapshot types (serde-serializable; `nimitz status --json` prints them):
 
 ```
@@ -164,8 +220,9 @@ Fleet { id, admiral: Member, squadrons: [Squadron], issues }
 Squadron { id, commodore: Member, ships: [Member], comms, issues }
 Member { id, role, name, expected_name, cwd, status, reasons: [String], session: Option<SessionInfo>,
          crew: [Crew], tasks: [Task], issues: [Issue], pane: Option<PaneRef> }
-Status = NotStarted | Stopped | Idle | Busy | NeedsYou | Unknown
-SessionInfo { session_id, short_id, pid, kind, state, status, waiting_for, started_at, status_since, name }
+Status = NotStarted | Stopped | Parked | Idle | Busy | NeedsYou | Unknown
+SessionInfo { session_id, short_id, pid, kind, state, status, waiting_for, started_at, status_since, name,
+              cwd, labels, birth_id, entrypoint, pinned }
 Issue { code, severity: Info|Warn|Error, message, fix: Option<String> }   // fix = a nimitz command
 ```
 
@@ -175,7 +232,12 @@ waitingFor permission prompt"). Unknown is allowed; a guess is not. Session file
 Busy, `idle` Idle, `waiting` NeedsYou, anything else Unknown. Every job `state`
 Claude Code writes (starting, running, resuming, adopted, crashed, working,
 blocked, done, stopped, failed, or a newer word) is read as it is: a row with no
-live pid is Stopped with the state named; a live row goes by its session file.
+live pid is **Stopped** when the last event of the job's own processes is a
+SessionEnd (`claude stop`, `/stop`, an exit) or its state is `failed`, else
+**Parked** (the daemon retired it: `bg retire <id>` in the Claude home's
+`daemon.log`, named in the reason; it crashed; or the machine went down: no
+SessionEnd fires for those). Parked is not an error; `start` wakes it by id.
+A live row goes by its session file.
 Session files of `kind` `daemon` or `daemon-worker` are Claude Code's own
 processes: never a row, so never a member or a stowaway.
 
@@ -195,8 +257,8 @@ Each finding is an `Issue` with a stable `code`:
 | `labels.mismatch` | labels name another identity |
 | `dup.live` | two live sessions for one identity |
 | `copy.rows` | extra job rows of the identity: its own stale rows, and copies. An unlabelled row is a copy only when named exactly `<expected name>-<word>-<word>` (or a legacy name plus two words), or unnamed with its job row recording a fork of a lineage session. Any other row in a member's folder is a stowaway (or `legacy` by name), never copy.rows, dup.live or labels.missing |
-| `lineage.broken` | registry's current session id has no job row and no transcript |
-| `role.background` | an admiral or commodore is a background session |
+| `lineage.broken` | the registry's session (the conversation now) has no job row and no transcript |
+| `held` | a background member's conversation runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`); nimitz can neither stop nor resume it there (Warn; fix: end that process in its host, then `nimitz start`) (M13). Such a row is never a copy or a second live session of the member |
 | `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml`: newer than `max` (the highest tested) is a Warn and launches go ahead; below `min`, unknown, or a pre-release `prerelease = [...]` does not list is an Error |
@@ -252,7 +314,7 @@ target. For each member, one action from this table:
 | live, labels right, name right | nothing |
 | live, name drift or labels missing | refuse; Issue with fix `nimitz relaunch <id>` (needs a stop) |
 | two live sessions | refuse; list both; fix `nimitz stop <short>` for the one you drop |
-| stopped (job row, no pid), labels right | resume: native binary, **no flags**, from its folder |
+| stopped or parked (job row, no pid), labels right | resume: native binary, **no flags**, from its folder (the job keeps its short id; `resumeSessionId` is the conversation it wakes on) |
 | stopped, labels missing (resumed with flags earlier), or a drifted name | relabel (BUG-53): `rm` its job row (native; if that fails the plan stops), then cold launch `--resume <id>` with all flags: with no row Claude Code keeps the **same id and its history** and takes the new name and labels. (With the row present the same command starts an empty copy with a new id; `apply` refuses such a step.) Same path for `relaunch`, `folder.moved`, adopt + start |
 | no row, but the registry's current (or an interrupted relaunch's) session has a transcript (background member) | resume `--resume <id>` with all flags: Claude Code keeps the id and history. A relaunch writes `NIMITZ_STATE/pending/<id>.json` before its `rm` and clears it after the bind, so a start after a crash between the two says "recovering an interrupted relaunch" |
 | no row, transcript exists (interactive member) | `claude -c` in its folder with the name and labels |
@@ -261,7 +323,6 @@ target. For each member, one action from this table:
 | row `failed` / unknown id | mark lineage broken; cold launch only with `--force` |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
 | folder missing or untrusted | refuse with the fix |
-| admiral/commodore is a background session | refuse; fix: attach and keep it in a terminal |
 | Claude Code version newer than tested | warn ("tested up to X"); launches go ahead |
 | Claude Code version below the floor, unknown, or an unlisted pre-release | refuse launches (read-only still works); `--force` overrides |
 | session file has extra bytes | read the first JSON value; not an issue |
@@ -308,7 +369,12 @@ parents only),
 `sweep [<id>]`, `adopt <session> <id>`, `signal <id> <text>`,
 `open <id>`, `layout herdr [<fleet>]`, `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
-`__fake-herdr`. Every command exits non-zero on failure and prints `[OK]`, `[INFO]`,
+`__fake-herdr`. The fake `claude` (`sandbox.rs`) models the job model of the
+round-2 report: `--bg`, `--bg --resume` (wake, copy, or a new job named by the
+short resumed id after `rm`), `-p --resume` (an SDK host, refused on a live
+job), `stop|kill`, `rm`, `respawn`, `attach`, `agents`, and the sandbox-only
+verbs `__inside <short> clear|branch <name>|resume <id>|rename <name>|fork`,
+`__retire <short>`, `__crash <short>`, `__pin|__unpin <short>`, `__end <id>`. Every command exits non-zero on failure and prints `[OK]`, `[INFO]`,
 `[WARN]`, `[ERROR]` lines (no emoji). Mutating commands support `--plan` (print,
 do nothing).
 

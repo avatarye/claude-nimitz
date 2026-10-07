@@ -47,6 +47,16 @@ commanded by a **commodore**; a squadron has **ships** (background agents); sess
 role of 0.3.x, one job for a commodore, was removed in 0.4.0: one-off work is
 a subagent in the lead's session, or a ship.)
 
+Identity (0.4.0): a member is anchored to its Claude Code **job** (the short
+id you see in `claude agents`), which is stable across stop, kill, respawn,
+idle retire, a native resume, `/clear`, `/branch`, a crash restart and an
+upgrade. Only the **session id** (the conversation) moves; the registry keeps
+the conversation now (`session`) and every one the member had (`lineage`). The
+SessionStart hook binds job and session under the registry lock; `status`
+joins job rows with live sessions by job id, shows `parked` for a job the
+daemon retired or that crashed (not an error; `nimitz start` wakes it) and
+`pinned` for a job in `jobs/pins.json`.
+
 Who may run what (`nimitz` reads the caller from the session's labels; no
 labels is you):
 
