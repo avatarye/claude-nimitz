@@ -24,7 +24,8 @@
 //!   then the live-fleet guard: every fleet-named session that is not a
 //!   `NIMITZ_E2E*` one must still have the same id, pid and kind.
 //!
-//! Run: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=3`.
+//! Run: `NIMITZ_E2E=1 NIMITZ_E2E_LIVE_FLEETS=HOME,MAIN,ADMIRALTY cargo test -p nimitz --test e2e -- --test-threads=3`
+//! (the fleets the guard watches; unset, every fleet that is not `NIMITZ_E2E*`).
 //! The slow cases (#6 crash window, #7 lead attach) are marked.
 use serde_json::{json, Value};
 use std::cell::Cell;
@@ -235,9 +236,12 @@ impl E2e {
                 {"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": EXE, "args": ["hook", "PreToolUse"], "timeout": 5}]}
             ]),
         );
+        // NIMITZ_MUX=none and no HERDR_ENV: a daemon-respawned worker inherits
+        // the daemon's env, the user's live HERDR_* included (acceptance env
+        // F6), and a member running `nimitz status` must never reach that Herdr
         let s = json!({
             "enabledPlugins": {"nimitz@claude-nimitz": false},
-            "env": {"NIMITZ_STATE": self.base.join("state"), "NIMITZ_HOME": self.base.join("nimitz")},
+            "env": {"NIMITZ_STATE": self.base.join("state"), "NIMITZ_HOME": self.base.join("nimitz"), "NIMITZ_MUX": "none", "HERDR_ENV": "", "NIMITZ_HERDR_SESSION": ""},
             "hooks": hooks,
         });
         write(&dir.join(".claude/settings.json"), &serde_json::to_string_pretty(&s).unwrap());
@@ -264,7 +268,7 @@ impl E2e {
         let leads = [(self.fleet.clone(), self.fleet_dir().join("admiral")), (format!("{}/SQ", self.fleet), self.fleet_dir().join("squadrons/sq"))];
         for (id, dir) in &leads {
             let idv = nimitz_core::Id(id.clone());
-            let settings = nimitz_core::claude::settings_json(&self.env, &idv, true);
+            let settings = self.no_mux(nimitz_core::claude::settings_json(&self.env, &idv, true));
             let (code, out) = self.claude(dir, &["--bg", "--model", "haiku", "--name", &idv.name(), "--settings", &settings, OK_PROMPT]);
             assert_eq!(code, 0, "lead launch by hand: {out}");
         }
@@ -272,6 +276,16 @@ impl E2e {
             let m = self.wait(45, || self.member(id).filter(|m| !m["session"]["pid"].is_null())).expect("lead live");
             assert_eq!(m["session"]["labels"]["NIMITZ_ID"], id.as_str(), "{m}");
         }
+    }
+
+    /// A `--settings` JSON the harness writes, with the multiplexer off in its
+    /// env (no test member reaches the user's Herdr, whatever its process inherits).
+    fn no_mux(&self, settings: String) -> String {
+        let mut v: Value = serde_json::from_str(&settings).unwrap();
+        v["env"]["NIMITZ_MUX"] = Value::from("none");
+        v["env"]["HERDR_ENV"] = Value::from("");
+        v["env"]["NIMITZ_HERDR_SESSION"] = Value::from("");
+        v.to_string()
     }
 
     /// Start the ship and wait until it is live and its first turn is over.
@@ -402,11 +416,16 @@ impl E2e {
     }
 
     /// The live-fleet guard's view: every session named like a fleet member
-    /// (`[F]-ADMIRAL`, `[F.SQ]-X`) of a fleet that is not a `NIMITZ_E2E*` one.
+    /// (`[F]-ADMIRAL`, `[F.SQ]-X`) of the fleets `NIMITZ_E2E_LIVE_FLEETS` names
+    /// (comma-separated; the user's live fleets, e.g. `HOME,MAIN,ADMIRALTY`),
+    /// else of every fleet that is not a `NIMITZ_E2E*` one (other agents'
+    /// test fleets then count too, and their own starts trip the guard).
     fn live_fleet(&self) -> BTreeMap<String, (String, Option<i64>, String)> {
+        let only: Vec<String> = std::env::var("NIMITZ_E2E_LIVE_FLEETS").ok().map(|v| v.split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect()).unwrap_or_default();
+        let tracked = |fleet: &str| if only.is_empty() { !fleet.starts_with("NIMITZ_E2E") } else { only.iter().any(|f| f == fleet) };
         self.agents()
             .into_iter()
-            .filter(|r| nimitz_core::sessions::id_from_name(&r.name).map(|id| !id.fleet().starts_with("NIMITZ_E2E")).unwrap_or(false))
+            .filter(|r| nimitz_core::sessions::id_from_name(&r.name).map(|id| tracked(id.fleet())).unwrap_or(false))
             .map(|r| (format!("{}|{}", r.name, r.short_id.clone().unwrap_or_else(|| r.session_id.chars().take(8).collect())), (r.session_id, r.pid, r.kind)))
             .collect()
     }
@@ -951,11 +970,11 @@ fn e2e_11_another_homes_member_never_appears() {
     w.fleet_with_ship(OK_PROMPT, "default");
     let other_home = w.base.join("other-nimitz");
     std::fs::create_dir_all(&other_home).unwrap();
-    let labels = json!({"env": {
+    let labels = w.no_mux(json!({"env": {
         "NIMITZ_FLEET": w.fleet, "NIMITZ_SQUADRON": "SQ", "NIMITZ_ROLE": "ship", "NIMITZ_ID": w.ship(), "NIMITZ_HOME": other_home},
-        "worktree": {"bgIsolation": "none"}});
+        "worktree": {"bgIsolation": "none"}}).to_string());
     let name = format!("[{}.SQ]-SHIP", w.fleet);
-    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--model", "haiku", "--name", &name, "--settings", &labels.to_string(), OK_PROMPT]);
+    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--model", "haiku", "--name", &name, "--settings", &labels, OK_PROMPT]);
     println!("other home ({code}): {out}");
     let job = nimitz_core::claude::job_started(&out).expect("job");
     let row = w.wait(45, || w.agents().into_iter().find(|r| r.short_id.as_deref() == Some(job.as_str()) && r.pid.is_some())).expect("live");
