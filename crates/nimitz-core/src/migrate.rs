@@ -236,7 +236,6 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
             comms: Comms::default(),
             permission_mode: None,
             ships,
-            tenders: None,
         };
         // Already migrated? Identical means nothing to plan; different refuses.
         if let Some(prev) = existing.as_ref().and_then(|f| f.squadrons.iter().find(|(_, s)| s.squadron == sq_name)) {
@@ -340,24 +339,29 @@ pub fn is_tender_id(id: &str) -> bool {
 pub fn retire_tenders(r: &mut Registry) -> usize {
     let ids: Vec<String> = r.identities.keys().filter(|k| is_tender_id(k)).cloned().collect();
     for id in &ids {
-        if let Some(rec) = r.identities.remove(id) {
-            r.retired.entry(id.clone()).or_insert(rec);
+        let Some(rec) = r.identities.remove(id) else { continue };
+        match r.retired.get_mut(id) {
+            None => {
+                r.retired.insert(id.clone(), rec);
+            }
+            // both maps know it (a rebuild from registry.json.bak and the events
+            // can do that): one history, and the newer of the two currents
+            Some(old) => {
+                for l in rec.lineage {
+                    if !old.lineage.iter().any(|x| x.session_id == l.session_id) {
+                        old.lineage.push(l);
+                    }
+                }
+                let at = |cur: &Option<String>, lineage: &[LineageEntry]| {
+                    cur.as_ref().and_then(|c| lineage.iter().find(|l| &l.session_id == c)).map(|l| l.bound_at).unwrap_or(f64::MIN)
+                };
+                if rec.current.is_some() && (old.current.is_none() || at(&rec.current, &old.lineage) > at(&old.current, &old.lineage)) {
+                    old.current = rec.current;
+                }
+            }
         }
     }
     ids.len()
-}
-
-/// `tender.retired` (Warn) for a squadron.toml that still carries 0.3.x tender
-/// lines: they are read and ignored, and go away at the next `squadron set`.
-pub fn tender_config_issue(sd: &Path, sq: &SquadronConfig, id: &Id) -> Option<Issue> {
-    sq.tenders.as_ref()?;
-    Some(Issue {
-        code: "tender.retired".into(),
-        severity: Severity::Warn,
-        message: format!("{} has tender lines; the tender role was removed in 0.4.0, so they are ignored", sd.join("squadron.toml").display()),
-        fix: Some(format!("remove the tender lines from {}", sd.join("squadron.toml").display())),
-        id: Some(id.clone()),
-    })
 }
 
 #[cfg(test)]
@@ -398,31 +402,56 @@ mod tests {
     }
 
     #[test]
-    fn tender_ids_are_three_parts_with_a_tilde() {
-        assert!(is_tender_id("F/SQ/~fix-ci"));
-        assert!(!is_tender_id("F/SQ/SHIP") && !is_tender_id("F/SQ") && !is_tender_id("F") && !is_tender_id("F/SQ/~x/y"));
+    fn a_tender_known_to_both_maps_merges_into_one_history() {
+        let (_td, env) = test_env();
+        let tid = "MAIN/ARGOS/~fixci";
+        let rec = |cur: &str, lineage: &[(&str, f64)]| {
+            serde_json::json!({"role": "tender", "name": "[MAIN.ARGOS]-COMMODORE/fixci", "cwd": "/sq", "current": cur,
+                "lineage": lineage.iter().map(|(s, t)| serde_json::json!({"session_id": s, "bound_at": t, "via": "launch"})).collect::<Vec<_>>()})
+        };
+        std::fs::create_dir_all(&env.state).unwrap();
+        // retired knows the old conversation; identities (as a rebuild leaves it) the newer one
+        let v = serde_json::json!({"version": 1, "machine": "test-mac",
+            "identities": {tid: rec("sid-2", &[("sid-1", 1.0), ("sid-2", 5.0)])},
+            "retired": {tid: rec("sid-1", &[("sid-1", 1.0)])}});
+        std::fs::write(env.registry_path(), v.to_string()).unwrap();
+        let r = crate::registry::load(&env);
+        assert!(r.identities.is_empty());
+        let got = &r.retired[tid];
+        assert_eq!(got.lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["sid-1", "sid-2"]);
+        assert_eq!(got.current.as_deref(), Some("sid-2"), "the newer current wins");
+        // the other way round: the retired current is the newer one and stays
+        let v = serde_json::json!({"version": 1, "machine": "test-mac",
+            "identities": {tid: rec("sid-1", &[("sid-1", 1.0)])},
+            "retired": {tid: rec("sid-2", &[("sid-2", 5.0)])}});
+        std::fs::write(env.registry_path(), v.to_string()).unwrap();
+        let got = crate::registry::load(&env).retired[tid].clone();
+        assert_eq!(got.current.as_deref(), Some("sid-2"));
+        assert_eq!(got.lineage.len(), 2);
     }
 
     #[test]
-    fn squadron_toml_tender_lines_load_and_warn() {
+    fn a_rebuild_from_events_keeps_tenders_out_of_the_members() {
         let (_td, env) = test_env();
-        crate::config::tests::make_fleet(&env);
-        let f = config::load_fleet(&env, "MAIN").unwrap();
-        let (sd, _) = &f.squadrons[0];
-        let p = sd.join("squadron.toml");
-        let old = std::fs::read_to_string(&p).unwrap();
-        std::fs::write(&p, format!("{old}\n[[tenders]]\ntask = \"fixci\"\nprompt = \"Fix CI.\"\n")).unwrap();
-        let f = config::load_fleet(&env, "MAIN").expect("tender lines do not break the load");
-        let issues = config::validate(&env, &f);
-        let i = issues.iter().find(|i| i.code == "tender.retired").expect("check says so");
-        assert_eq!(i.severity, Severity::Warn);
-        assert_eq!(i.id, Some(Id::commodore("MAIN", "ARGOS")));
-        // a write of squadron.toml drops the lines
-        let plan = config::plan_squadron_set(&env, &Id::commodore("MAIN", "ARGOS"), None, Some(Comms::Mode("commodore-only".into())), None);
-        apply_ok(&env, &plan);
-        assert!(!std::fs::read_to_string(&p).unwrap().contains("tenders"));
-        let f = config::load_fleet(&env, "MAIN").unwrap();
-        assert!(config::validate(&env, &f).iter().all(|i| i.code != "tender.retired"));
+        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+        crate::registry::update(&env, |r| crate::registry::bind(r, &ship, Role::Ship, &ship.name(), "/w", "sid-1", "launch", 1.0)).unwrap();
+        let ev = |sid: &str, id: &str, role: &str, ts: f64| {
+            serde_json::json!({"ts": ts, "event": "SessionStart", "session_id": sid, "source": "startup",
+                "labels": {"NIMITZ_ID": id, "NIMITZ_ROLE": role}}).to_string()
+        };
+        std::fs::write(env.events_path(), format!("{}\n{}\n", ev("sid-t", "MAIN/ARGOS/~fixci", "tender", 2.0), ev("sid-2", &ship.0, "ship", 3.0))).unwrap();
+        std::fs::write(env.registry_path(), "{garbage").unwrap();
+        let r = crate::registry::load(&env);
+        assert_eq!(r.identities.keys().collect::<Vec<_>>(), [&ship.0], "{:?}", r.identities.keys());
+        assert_eq!(r.identities[&ship.0].current.as_deref(), Some("sid-2"));
+        assert_eq!(r.retired["MAIN/ARGOS/~fixci"].current.as_deref(), Some("sid-t"), "the tender's event is history");
+        assert_eq!(crate::registry::load(&env), r, "the saved rebuild reads back the same");
+    }
+
+    #[test]
+    fn tender_ids_are_three_parts_with_a_tilde() {
+        assert!(is_tender_id("F/SQ/~fix-ci"));
+        assert!(!is_tender_id("F/SQ/SHIP") && !is_tender_id("F/SQ") && !is_tender_id("F") && !is_tender_id("F/SQ/~x/y"));
     }
 
     fn old_fleet(dir: &Path, json: &str, fleet_md: Option<&str>) {

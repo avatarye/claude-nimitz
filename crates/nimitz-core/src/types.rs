@@ -172,9 +172,6 @@ pub struct SquadronConfig {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub ships: Vec<ShipDef>,
-    /// 0.3.x tender lines, read and ignored (`check` says so), never written back
-    #[serde(default, skip_serializing)]
-    pub tenders: Option<toml::Value>,
 }
 
 /// One fleet on disk: its config, its squadrons, and where they live.

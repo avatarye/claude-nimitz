@@ -45,11 +45,18 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     let mut out = String::new();
     let mut reason = str_at(&input, "reason");
     if event == "PreToolUse" && is_signal {
-        let verdict = match (to.as_deref(), labels.get("NIMITZ_ID")) {
-            (Some(target), Some(sender)) => Some(may_signal(env, &Id(sender.clone()), target)),
-            // labels without an id (partial): fail closed for fleet targets
+        // The sender is its NIMITZ_ID only when NIMITZ_ROLE agrees with the
+        // id's shape (as `sessions::caller_from_env` judges it): a 0.3.x tender
+        // (`F/SQ/~task`, role `tender`) is no sender with a role.
+        let sender = match crate::sessions::caller_from_env(&labels.iter().map(|(k, v)| (k.clone(), v.clone())).collect()) {
+            Caller::Member { id, .. } if id.0 != crate::sessions::UNVERIFIED => Some(id),
+            _ => None,
+        };
+        let verdict = match (to.as_deref(), sender) {
+            (Some(target), Some(sender)) => Some(may_signal(env, &sender, target)),
+            // labels without an id, or that disagree (partial): fail closed for fleet targets
             (Some(target), None) if !labels.is_empty() && (crate::sessions::id_from_name(target).is_some() || target.contains(':')) => {
-                Some(Err("the sender's NIMITZ_* labels are partial (no NIMITZ_ID); nimitz cannot judge this signal".to_string()))
+                Some(Err("the sender's NIMITZ_* labels are partial (no NIMITZ_ID, or NIMITZ_ROLE does not match it); nimitz cannot judge this signal".to_string()))
             }
             _ => None,
         };
@@ -331,6 +338,17 @@ mod tests {
         assert!(!denied(&send(&env, &argos, &adm.name())));
         assert!(!denied(&send(&env, &argos, &ship.name())));
         assert!(denied(&send(&env, &argos, &one.name())), "not a ship of another squadron");
+        // a 0.3.x tender's labels (`~task` id, role `tender`) give no authority at
+        // all: denied to its commodore and to a sibling ship alike
+        let tender: HashMap<String, String> = [("NIMITZ_FLEET", "MAIN"), ("NIMITZ_SQUADRON", "ARGOS"), ("NIMITZ_ROLE", "tender"), ("NIMITZ_ID", "MAIN/ARGOS/~fix"), ("NIMITZ_HOME", "/h")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        for to in [argos.name(), ship.name(), "sock:/tmp/x".to_string()] {
+            let input = serde_json::json!({"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "SendMessage", "tool_input": {"to": to, "message": "done"}});
+            let out = handle(&env, "PreToolUse", &input.to_string(), &tender);
+            assert!(denied(&out) && out.contains("NIMITZ_ROLE does not match"), "{to}: {out}");
+        }
         // a ship: its commodore always
         assert!(!denied(&send(&env, &ship, &argos.name())));
         assert!(denied(&send(&env, &ship, &adm.name())), "a ship does not signal the admiral");

@@ -234,7 +234,6 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
                 Some(sqid.clone()),
             ));
         }
-        out.extend(crate::migrate::tender_config_issue(sd, sq, &sqid));
         if let Comms::Mode(m) = &sq.comms {
             if m != "open" && m != "commodore-only" {
                 out.push(inv(
@@ -518,7 +517,6 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: C
         comms,
         permission_mode: None,
         ships: vec![],
-        tenders: None,
     };
     plan.steps = vec![
         step_mkdir(Some(id.clone()), &sd, "commodore's folder"),

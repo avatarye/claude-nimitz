@@ -1,6 +1,8 @@
 # How nimitz controls Claude Code sessions along the chain of command
 
-Date: 2026-10-03. Status: draft for review. Sources: the Claude Code docs
+Date: 2026-10-03. Status: superseded by `plan-v4.md` (0.4.0 has no tender
+role, and every member is a background job); kept as the record it was.
+Sources: the Claude Code docs
 (code.claude.com, read 2026-10-02) and the P0 probes on the ACME build 2.1.288
 (`docs/probes/findings-acme-2.1.288.md`). A fact marked **(unverified)** needs a
 probe before we build on it.

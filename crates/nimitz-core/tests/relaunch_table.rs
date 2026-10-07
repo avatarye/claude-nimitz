@@ -764,6 +764,39 @@ fn a_commodore_revives_its_ship_while_the_admiral_is_down() {
     assert_eq!(plan.steps.last().unwrap().id.as_ref(), Some(&ship));
 }
 
+/// A 0.3.x tender still running (resumed outside nimitz): no member, no
+/// stowaway, one `tender.retired` whose fix stops it first; `nimitz stop
+/// <short>` takes it, and then the fix is the rm.
+#[test]
+fn a_live_0_3_x_tender_is_stopped_then_removed() {
+    let w = world();
+    let tid = "MAIN/ARGOS/~fixci";
+    let row = w.rows().into_iter().find(|r| r.name == "[MAIN.ARGOS]-COMMODORE/fixci").expect("the row");
+    let (rc, out) = claude::run(&claude::resume_bg(&w.env, &row.session_id), Some(&row.cwd));
+    assert_eq!(rc, 0, "{out}");
+    let short = row.short_id.clone().unwrap();
+    assert!(w.rows().iter().any(|r| r.session_id == row.session_id && r.live()), "live now");
+    let snap = w.snap();
+    assert!(find_member(&snap, &Id(tid.into())).is_none());
+    assert!(!snap.fleets.iter().flat_map(|f| f.squadrons.iter()).flat_map(|s| s.ships.iter()).any(|m| m.session.iter().chain(m.extra_rows.iter()).any(|r| r.session_id == row.session_id)), "no member's row");
+    assert!(!snap.stowaways.iter().any(|s| s.session_id == row.session_id), "no stowaway");
+    let issues: Vec<&Issue> = snap.issues.iter().filter(|i| i.code == "tender.retired").collect();
+    assert_eq!(issues.len(), 1, "{:?}", snap.issues);
+    assert_eq!((issues[0].severity, issues[0].fix.as_deref()), (Severity::Info, Some(format!("nimitz stop {short}  # then nimitz rm {short}").as_str())));
+    // rm refuses while live; stop takes it (the commodore may, it is its squadron's)
+    assert!(has(&sessions::plan_rm(&w.env, &snap, &short, &Caller::User).refusals, "session.live"));
+    let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
+    let plan = sessions::plan_stop_session(&w.env, &snap, &short, &own);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert_eq!(plan.steps[0].id.as_ref().map(|i| i.0.as_str()), Some(tid));
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.snap();
+    let i = after.issues.iter().find(|i| i.code == "tender.retired").expect("still history");
+    assert_eq!(i.fix.as_deref(), Some(format!("nimitz rm {short}").as_str()));
+    assert!(sessions::plan_rm(&w.env, &after, &short, &Caller::User).ok());
+}
+
 /// A 0.3.x tender (plan-v4 section 8): its v1 registry entry is retired on
 /// load (history only, never a member), its job row is one `tender.retired`
 /// (Info) with `nimitz rm <short>` as the fix, and that rm takes it.

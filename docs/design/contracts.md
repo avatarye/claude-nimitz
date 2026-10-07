@@ -85,8 +85,8 @@ host only when no other label of the fleet names it; otherwise `--hostname H`.
 The tender role of 0.3.x (`F/SQ/~task`, one job for a commodore) was removed
 in 0.4.0: a v1 registry's tender identities move to the registry's `retired`
 map on load (history only, never members), a job row with tender labels is
-`tender.retired` (Info, fix `nimitz rm <short>`), and tender lines in a
-squadron.toml are read, ignored and reported (`tender.retired`, Warn).
+`tender.retired` (Info, fix `nimitz rm <short>`; `nimitz stop <short>` first
+while it is live).
 
 Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 `NIMITZ_ROLE` (`admiral|commodore|ship`), `NIMITZ_ID`, `NIMITZ_HOME`. Every
@@ -214,7 +214,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `session.interactive` | an interactive member is ended in its own pane, not by nimitz |
 | `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
 | `lineage.current` | `rm` of an identity's current session (it would break the lineage) |
-| `tender.retired` | (info) a job row of a 0.3.x tender, history only (fix: `nimitz rm <short>`); (warning) tender lines in a squadron.toml, ignored |
+| `tender.retired` | (info) a job row of a 0.3.x tender, history only (fix: `nimitz rm <short>`, after `nimitz stop <short>` while live) |
 | `step.failed` | a step of an applied plan failed (or a lock could not be taken); nothing after it ran |
 
 Session codes from the snapshot, besides section 7's: `job.unreadable` (a job
