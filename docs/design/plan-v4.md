@@ -44,7 +44,8 @@ asks AskUserQuestion, uses SendMessage and runs nimitz. Claude Code refuses
   `session`; `job` = the short id of the job row whose `sessionId` or
   `resumeSessionId` is `current`, if one exists; lineage entries keep their order
   with `job` filled where known. Tender identities (`F/SQ/~task`) move to
-  `"retired": {...}` (history only) and are never shown as members.
+  `"retired": {...}` (history only) and are never shown as members. The v2
+  migration copies an existing `retired` map (P4 adds it to v1 first).
 
 ## 3. Binding (the SessionStart hook)
 
@@ -140,7 +141,8 @@ Remove `Role::Tender`, `F/SQ/~task` ids and names, `nimitz tender`, the tender
 authority and comms rules, the tender rules text and skill text, Admiralty rows and
 forms, and their tests. Migration: v1 tender identities move to `retired` (section
 2); their job rows show once in `check` as `tender.retired` (Info) with the fix
-`nimitz rm <short>`. One-off work: a subagent in the lead's context, or a ship.
+`nimitz rm <short>`. A retired tender row in a lead folder is only
+`tender.retired` (it wins over `lead.intruder`: one issue per row). One-off work: a subagent in the lead's context, or a ship.
 
 ## 9. Other fixes
 
