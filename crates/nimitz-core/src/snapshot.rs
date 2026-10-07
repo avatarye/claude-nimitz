@@ -208,7 +208,8 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             // (Claude Code 2.1.292 starts a new job named after that id,
             // acceptance F1); a copy by its job, never the member's session
             let own_row_there = reg.identities.get(owner).and_then(|x| x.job.as_deref()).is_some_and(|j| job_rows.contains(j));
-            if by_job.is_none() && by_current.is_some() && job.is_some() && own_row_there && Id(owner.to_string()).role() == Role::Ship && unlabelled(r) {
+            // (every role: for a lead the copy is told as such, never as its session)
+            if by_job.is_none() && by_current.is_some() && job.is_some() && own_row_there && unlabelled(r) {
                 copies.insert(evidence::row_key(r), "job".into());
             }
             by_identity.entry(owner.to_string()).or_default().push(r.clone());
