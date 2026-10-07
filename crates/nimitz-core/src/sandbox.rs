@@ -1237,6 +1237,13 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 let name = copy_name(&base, saved_name.as_deref().unwrap_or(&row.name));
                 let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
                 record_fork(&base, &short, &row.session_id);
+                // the copy's row keeps only the flags passed, never a name:
+                // `respawnFlags []` for a bare resume (cli-09), `[--permission-mode X]`
+                // for cli-11
+                if let Some(mut j) = job_state(&base, &short) {
+                    j["respawnFlags"] = respawn_flags("", &mode, a.settings.as_deref());
+                    save_job(&base, &short, &j);
+                }
                 if a.name.is_some() {
                     eprintln!("note: --name is ignored for a copy of a running session");
                 }

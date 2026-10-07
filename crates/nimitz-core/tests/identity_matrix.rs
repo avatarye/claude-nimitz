@@ -499,6 +499,7 @@ fn cli_09_a_resume_of_a_live_job_is_a_copy_under_an_auto_name_and_the_member_sta
     assert_ne!(row["name"], json!(id.name()), "an auto-generated name, not --name");
     assert!(row["name"].as_str().unwrap().starts_with(&id.name()), "{}", row["name"]);
     assert_eq!(row["forkedFrom"], json!(sid));
+    assert_eq!(row["respawnFlags"], json!([]), "a copy of a running job carries no flags (cli-09)");
     // the copy is unlabelled (no --settings): a copy row of the member, never its session
     assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(copy.as_str())), "{:?}", m.extra_rows);
 }
