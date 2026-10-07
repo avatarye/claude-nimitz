@@ -396,7 +396,10 @@ commodore, its own squadron only (the stale rows and copies of its own
 ships); a ship, itself only (its own stale rows). `sweep` removes a member's
 stale rows (stopped only; a live stale row is skipped with `dup.live`) and its
 copies (a live background copy is stopped, then removed, in the same plan; a
-copy with no job is named with "end it in its terminal" and left).
+copy with no job is named with "end it in its terminal" and left). A ship
+sweeping itself never stops a live copy (the user's own fork of its
+conversation may be at work): it removes stopped copies only and names the
+live one with the fix `nimitz sweep <id>` for the user or its commodore.
 Core owns a plan for every mutating command, including `fleet set`,
 `squadron set`, `machine rm`, retire (`sessions::plan_retire`: `ship|squadron|fleet rm`,
 session and config steps in one plan, one verified `apply`) and the layout

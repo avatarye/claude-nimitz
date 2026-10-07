@@ -1120,7 +1120,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
             refuse(&mut plan, "authority", why, None, Some(m.id.clone()));
             return plan;
         }
-        sweep_member(env, &mut plan, m);
+        sweep_member(env, &mut plan, m, caller);
         if plan.steps.is_empty() && plan.refusals.is_empty() {
             plan.warnings.push(issue("copy.rows", Severity::Info, format!("{target} has no stale rows"), None, Some(m.id.clone())));
         }
@@ -1212,12 +1212,22 @@ fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
     Some((Id(owner), r.info(labels.get(&r.session_id).cloned().unwrap_or_default())))
 }
 
-fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
+fn sweep_member(env: &Env, plan: &mut Plan, m: &Member, caller: &Caller) {
     for r in &m.extra_rows {
         // a copy (plan-v4 section 6): a background job is stopped and removed;
-        // a process with no job is ended in its terminal, not by nimitz
+        // a process with no job is ended in its terminal, not by nimitz. A
+        // ship sweeping itself never stops a live copy (the user's own fork
+        // of its conversation may be at work): it removes stopped ones only
+        // and names the live one for the user or its commodore.
         if r.copy.is_some() {
             match &r.short_id {
+                Some(short) if r.pid.is_some() && matches!(caller, Caller::Member { role: Role::Ship, .. }) => plan.warnings.push(issue(
+                    "copy",
+                    Severity::Warn,
+                    format!("{}'s copy {short} ({}) is live; a ship does not stop it", m.id, r.name),
+                    Some(format!("nimitz sweep {}  # you, or its commodore", m.id)),
+                    Some(m.id.clone()),
+                )),
                 Some(short) => {
                     let why = format!("copy of {}: {}", m.id, copy_how(r));
                     if r.pid.is_some() {
@@ -1307,7 +1317,7 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
     }
     for (_, m) in members(snap) {
         if id.map(|t| under(&m.id, t)).unwrap_or(true) && mine(&m.id) {
-            sweep_member(env, &mut plan, m);
+            sweep_member(env, &mut plan, m, caller);
         }
     }
     // Stopped rows of the old fleet (Info `legacy`): offered here, never removed
