@@ -300,7 +300,7 @@ impl World {
         // every session that ran has a transcript in its folder's project dir
         let proj = claude_home(&self.base).join("projects").join(crate::evidence::project_dir_name(cwd));
         let _ = fs::create_dir_all(&proj);
-        let _ = fs::write(proj.join(format!("{sid}.jsonl")), format!("{}\n", json!({"type": "user", "cwd": cwd, "sessionId": sid})));
+        let _ = fs::write(proj.join(format!("{sid}.jsonl")), format!("{}\n", json!({"type": "user", "cwd": cwd, "sessionId": sid, "uuid": root_uuid(&sid), "parentUuid": null})));
         self.sessions.push((name, sid.clone(), short.clone()));
         (short, sid)
     }
@@ -321,7 +321,7 @@ impl World {
         let log = proj.join(format!("{sid}.jsonl"));
         let _ = fs::write(
             &log,
-            format!("{}\n{}\n", json!({"type": "custom-title", "customTitle": name, "sessionId": sid}), json!({"type": "user", "cwd": cwd, "sessionId": sid})),
+            format!("{}\n{}\n", json!({"type": "custom-title", "customTitle": name, "sessionId": sid}), json!({"type": "user", "cwd": cwd, "sessionId": sid, "uuid": root_uuid(&sid), "parentUuid": null})),
         );
         write_json(&proj.join(&sid).join("custom-title.json"), &json!({"customTitle": name}));
         if let Ok(f) = fs::File::options().write(true).open(&log) {
@@ -388,7 +388,7 @@ const SHIPS: [(&str, &str); 16] = [
     ("ELSEWHERE", "managed folder locked by another machine (ship.elsewhere)"),
     ("NOPROMPT", "no prompt in squadron.toml: cold launch refuses"),
     ("BROKEN", "registry points at a session with no row and no transcript (lineage.broken)"),
-    ("TAKEN", "its name is held by another live session (name.taken)"),
+    ("TAKEN", "an unlabelled live session in its folder holds its name: a copy (copy)"),
     ("MISLABEL", "live with the labels of another identity (labels.mismatch)"),
 ];
 
@@ -808,6 +808,12 @@ fn copy_name(base: &Path, of: &str) -> String {
     format!("{of}-{}-{}", WORDS[n % 8], WORDS[(n / 8) % 8])
 }
 
+/// The uuid of a conversation's first message, as real transcripts carry
+/// (`uuid`, `parentUuid`); a copy of the transcript shares it.
+fn root_uuid(sid: &str) -> String {
+    format!("{}-root-{}", &sid[..sid.len().min(8)], sid.len())
+}
+
 /// A copy's job row records the session it was forked from.
 fn record_fork(base: &Path, short: &str, from: &str) {
     if let Some(mut j) = job_state(base, short) {
@@ -878,9 +884,11 @@ fn start_as(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&St
                      "respawnFlags": respawn_flags(name, mode, settings.map(String::as_str))});
     save_job(base, &short, &row);
     write_session_file(base, &short, &sid, cwd, name, t);
-    // The conversation: a new id starts an empty transcript (a copy has NO
-    // history, BUG-53); a kept id appends to the one it has, wherever it is.
-    log_line(base, cwd, &sid, &json!({"type": "system", "sessionId": sid, "cwd": cwd, "source": source}));
+    // The conversation: a new id starts a transcript of its own (a copy made
+    // with flags has NO history, BUG-53; a `--fork-session` or a copy of a
+    // running job gets the original's transcript from its caller,
+    // `copy_transcript`); a kept id appends to the one it has, wherever it is.
+    log_line(base, cwd, &sid, &json!({"type": "user", "sessionId": sid, "cwd": cwd, "source": source, "uuid": root_uuid(&sid), "parentUuid": null}));
     // A copy with no --settings carries no hooks at all, so it fires none (probe 2b, 2c2).
     if labels_fire {
         fire(base, job_hook(base, &short, "SessionStart", &sid, Some(source), cwd), &labels);
@@ -966,7 +974,7 @@ fn inside(base: &Path, short: &str, verb: &str, arg: Option<&str>) -> i32 {
         // a fresh conversation; the old one is saved (`/resume` brings it back)
         "clear" => {
             let (_, new) = next_id(base);
-            log_line(base, &row.cwd, &new, &json!({"type": "system", "sessionId": new, "source": "clear"}));
+            log_line(base, &row.cwd, &new, &json!({"type": "user", "sessionId": new, "source": "clear", "uuid": root_uuid(&new), "parentUuid": null}));
             move_to(&mut j, &new, "clear", "clear", None, true);
             println!("cleared: {short} now runs {new}");
         }
@@ -1238,6 +1246,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 let name = copy_name(&base, saved_name.as_deref().unwrap_or(&row.name));
                 let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
                 record_fork(&base, &short, &row.session_id);
+                copy_transcript(&base, &cwd, &row.session_id, &find(&base, &short).map(|r| r.session_id).unwrap_or_default());
                 // the copy's row keeps only the flags passed, never a name:
                 // `respawnFlags []` for a bare resume (cli-09), `[--permission-mode X]`
                 // for cli-11
@@ -1262,6 +1271,11 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             let mode = a.mode.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
             record_fork(&base, &short, &row.session_id);
+            // `--fork-session` copies the conversation (cli-13); other flags
+            // alone start an empty copy (BUG-53)
+            if a.fork {
+                copy_transcript(&base, &cwd, &row.session_id, &find(&base, &short).map(|r| r.session_id).unwrap_or_default());
+            }
             println!("the flags you passed started a copy as {short}");
             0
         }
@@ -1295,13 +1309,20 @@ fn interactive(base: &Path, cwd: &str, a: &Args) -> i32 {
                 eprintln!("[fake claude] no conversation {target}");
                 return 1;
             }
-            (target.clone(), "resume")
+            // `--fork-session`: a copy of the conversation under a new id (cli-L8)
+            if a.fork {
+                let (_, new) = next_id(base);
+                copy_transcript(base, cwd, target, &new);
+                (new, "fork")
+            } else {
+                (target.clone(), "resume")
+            }
         }
         (None, Some(sid)) => (sid, "resume"),
         (None, None) => (next_id(base).1, "startup"),
     };
     let name = a.name.clone().unwrap_or_else(|| "untitled-session".into());
-    log_line(base, cwd, &sid, &json!({"type": "user", "cwd": cwd, "sessionId": sid}));
+    log_line(base, cwd, &sid, &json!({"type": "user", "cwd": cwd, "sessionId": sid, "uuid": root_uuid(&sid), "parentUuid": null}));
     let p = interactive_path(base, &sid);
     write_json(
         &p,

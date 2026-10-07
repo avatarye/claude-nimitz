@@ -583,15 +583,18 @@ fn issue_config_invalid_and_config_layout() {
 }
 
 #[test]
-fn issue_name_taken_and_stowaway() {
+fn issue_copy_by_name_and_stowaway() {
     let w = world();
     let snap = w.snap();
+    // an unlabelled live session in TAKEN's folder with TAKEN's exact name is
+    // a copy of TAKEN (plan-v4 section 6, rule c), not name.taken and not a
+    // stowaway; a start would make a second live session, so it refuses
     let m = w.member(&snap, &w.ship("TAKEN"));
-    assert!(has(&m.issues, "name.taken"), "{:?}", codes(&m.issues));
+    assert!(has(&m.issues, "copy") && !has(&m.issues, "name.taken"), "{:?}", codes(&m.issues));
     let plan = w.start(&snap, &m.id, false);
-    assert!(has(&plan.refusals, "name.taken"), "{:?}", codes(&plan.refusals));
-    // the same unlabelled session in fleet scope is a stowaway
-    assert!(snap.stowaways.iter().any(|s| s.name == m.expected_name));
+    assert!(!plan.ok() && !has(&plan.refusals, "name.taken"), "{:?}", codes(&plan.refusals));
+    assert!(!snap.stowaways.iter().any(|s| s.name == m.expected_name));
+    // an unlabelled session in the squadron's own folder is a stowaway
     assert!(snap.stowaways.iter().any(|s| s.name == "quick look at the logs"));
     let all = nimitz_core::check::check(&w.env, &snap, None);
     assert!(has(&all, "stowaway"));
@@ -1356,11 +1359,12 @@ fn strays_in_a_ship_folder_are_never_the_ship() {
     let m = w.member(&snap, &id);
     assert_eq!(m.session.as_ref().map(|s| s.session_id.clone()), Some(own_sid.clone()), "the ship's own session stays current");
     assert!(m.extra_rows.is_empty(), "no stray is a copy: {:?}", m.extra_rows.iter().map(|r| &r.name).collect::<Vec<_>>());
-    for code in ["labels.missing", "copy.rows", "dup.live"] {
+    for code in ["labels.missing", "copy.rows", "copy", "dup.live"] {
         assert!(!has(&m.issues, code), "{code}: {:?}", m.issues);
     }
+    // the user's own work in a ship's folder is not shown (plan-v4 section 6)
     for s in &strays {
-        assert!(snap.stowaways.iter().any(|x| x.short_id.as_deref() == Some(s.as_str())), "{s} is a stowaway");
+        assert!(!snap.stowaways.iter().any(|x| x.short_id.as_deref() == Some(s.as_str())), "{s} is the user's own, not a stowaway");
     }
     let touches = |p: &Plan| p.steps.iter().any(|s| strays.iter().any(|x| s.cmd.contains(x)));
     let start = w.start(&snap, &id, false);
@@ -1597,12 +1601,12 @@ fn bug55_an_impostor_with_the_labels_never_counts_as_the_member() {
 }
 
 #[test]
-fn name_taken_by_a_hand_copy_in_the_folder_offers_only_stop() {
+fn a_copy_by_name_in_the_folder_is_swept_and_a_holder_elsewhere_is_name_taken() {
     let w = world();
     let snap = w.snap();
-    // TAKEN's holder runs in TAKEN's own folder: stop, not adopt
-    let i = w.member(&snap, &w.ship("TAKEN")).issues.into_iter().find(|i| i.code == "name.taken").unwrap();
-    assert!(!i.fix.as_deref().unwrap().contains("adopt"), "{:?}", i.fix);
+    // TAKEN's holder runs in TAKEN's own folder: a copy, swept, never adopted
+    let i = w.member(&snap, &w.ship("TAKEN")).issues.into_iter().find(|i| i.code == "copy").unwrap();
+    assert_eq!(i.fix.as_deref(), Some("nimitz sweep MAIN/ARGOS/TAKEN"), "{:?}", i.fix);
     // a holder elsewhere may be adopted
     let rand = w.base.join("elsewhere");
     std::fs::create_dir_all(&rand).unwrap();

@@ -100,6 +100,10 @@ pub struct FileCache {
     session_dirs: HashMap<String, PathBuf>,
     titles: HashMap<PathBuf, (SystemTime, Option<String>)>,
     trust: HashMap<PathBuf, (SystemTime, Vec<PathBuf>)>,
+    /// `transcript_root` per transcript, by mtime
+    roots: HashMap<PathBuf, (SystemTime, Vec<String>)>,
+    /// lineage transcripts not found, and when (`transcript_missing_cached`)
+    missing: HashMap<String, f64>,
     events: EventTail,
 }
 
@@ -390,6 +394,15 @@ pub struct SessionRow {
     pub entrypoint: Option<String>,
     /// the job is in `jobs/pins.json`
     pub pinned: bool,
+    /// the session file says `spare: true` (a pre-warmed process the agent
+    /// view claims as its "new session" or draft)
+    pub spare: bool,
+    /// where an interactive process runs, from the session file (`tmux`
+    /// `<session>:@<window>.%<pane>`, a Herdr pane)
+    pub terminal: Option<String>,
+    /// when the session file appeared (epoch seconds): the earliest of its
+    /// birth time, its mtime and `startedAt`
+    pub appeared_at: Option<f64>,
 }
 
 impl SessionRow {
@@ -413,6 +426,8 @@ impl SessionRow {
             birth_id: self.birth_id.clone(),
             entrypoint: self.entrypoint.clone(),
             pinned: self.pinned,
+            copy: None,
+            terminal: self.terminal.clone(),
         }
     }
     /// Every session id this row answers to: the conversation now and the birth id.
@@ -441,6 +456,15 @@ fn norm_kind(k: &str) -> String {
 /// never a stowaway, so their session files are not rows.
 fn internal_kind(k: &str) -> bool {
     matches!(k, "daemon" | "daemon-worker")
+}
+
+/// The terminal an interactive process runs in, as the session file names it:
+/// `tmux` (`<session>:@<window>.%<pane>`), else any `herdr*` field.
+fn terminal_of(d: &Value) -> Option<String> {
+    if let Some(t) = s(d, "tmux") {
+        return Some(format!("tmux {t}"));
+    }
+    d.as_object()?.iter().find(|(k, v)| k.starts_with("herdr") && v.is_string()).map(|(k, v)| format!("{k} {}", v.as_str().unwrap_or_default()))
 }
 
 /// Rows from the files `claude agents --json --all` reads. None when the
@@ -495,6 +519,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             forked_from: ["forkedFrom", "forkedFromSessionId", "parentSessionId", "resumedFrom"].iter().find_map(|k| s(&d, k)),
             bridge_session_id: None,
             entrypoint: None,
+            spare: false,
+            terminal: None,
+            appeared_at: None,
         });
     }
     for p in list(&sess_dir) {
@@ -541,6 +568,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             bridge_session_id: s(&d, "bridgeSessionId"),
             birth_id: None,
             entrypoint: s(&d, "entrypoint"),
+            spare: d.get("spare").and_then(|v| v.as_bool()).unwrap_or(false),
+            terminal: terminal_of(&d),
+            appeared_at: [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min),
         };
         match job.as_ref().and_then(|j| by_job.get(j)) {
             // a live background process: its job row gains pid, status and the
@@ -556,6 +586,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
                 r.waiting_for = live.waiting_for;
                 r.bridge_session_id = live.bridge_session_id;
                 r.entrypoint = live.entrypoint;
+                r.spare = live.spare;
+                r.terminal = live.terminal;
+                r.appeared_at = live.appeared_at;
                 if !live.name.is_empty() {
                     r.name = live.name;
                 }
@@ -611,6 +644,9 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         birth_id: None,
                         entrypoint: None,
                         pinned: false,
+                        spare: false,
+                        terminal: None,
+                        appeared_at: None,
                     })
                 })
                 .collect()
@@ -674,6 +710,82 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
         }
     }
     None
+}
+
+/// How much of a transcript the root reader reads at most: the metadata
+/// lines (custom-title, agent-name, mode) come first, then one
+/// `file-history-snapshot` per turn (a copy hoists every one of them above
+/// its first uuid line), then the attachments and the first user message.
+const ROOT_BYTES: usize = 4 * 1024 * 1024;
+/// How long a lineage transcript that was not found stays "missing" before
+/// `transcript_missing` looks for it again (the lookup scans every project dir).
+const MISSING_AGAIN_S: f64 = 60.0;
+
+/// The root of a conversation: the uuids near the top of its transcript (the
+/// first line that carries a `uuid`, the chain root, and the first `user` or
+/// `assistant` message with its `parentUuid`). A copy of a conversation
+/// (`/branch`, `/fork`, `--fork-session`, `--bg -c`) copies the transcript,
+/// so it shares these; a fresh conversation (`/clear`) has its own. Only the
+/// head of the file is read (`ROOT_BYTES`; lines without a uuid cost nothing
+/// but their bytes), cached by (path, mtime). Empty when the transcript has
+/// no message yet.
+pub fn transcript_root(cache: &mut FileCache, jsonl: &Path) -> Vec<String> {
+    let Some(m) = mtime(jsonl) else { return vec![] };
+    if let Some((t, root)) = cache.roots.get(jsonl) {
+        if *t == m {
+            return root.clone();
+        }
+    }
+    let out = fs::File::open(jsonl).map(|f| root_of_reader(std::io::BufReader::new(f))).unwrap_or_default();
+    cache.roots.insert(jsonl.to_path_buf(), (m, out.clone()));
+    out
+}
+
+fn root_of_reader(r: impl std::io::BufRead) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut read = 0usize;
+    for line in r.lines().map_while(Result::ok) {
+        read += line.len() + 1;
+        if read > ROOT_BYTES {
+            break;
+        }
+        if !line.contains("\"uuid\"") {
+            continue;
+        }
+        {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Some(uuid) = s(&v, "uuid") else { continue };
+            let message = matches!(s(&v, "type").as_deref(), Some("user") | Some("assistant"));
+            // the chain root (the first line with a uuid) and the first message
+            if out.is_empty() || message {
+                out.push(uuid);
+                out.extend(s(&v, "parentUuid"));
+            }
+            if message {
+                break;
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// `transcript`, for a lineage conversation whose file may be gone: a miss is
+/// remembered for `MISSING_AGAIN_S`, so the scan of every project dir is not
+/// repeated on each refresh.
+pub fn transcript_missing_cached(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str) -> Option<PathBuf> {
+    let t = now();
+    if cache.missing.get(sid).is_some_and(|at| t - at < MISSING_AGAIN_S) {
+        return None;
+    }
+    let found = transcript(env, cache, cwd, sid);
+    if found.is_none() {
+        cache.missing.insert(sid.to_string(), t);
+    } else {
+        cache.missing.remove(sid);
+    }
+    found
 }
 
 /// Transcripts in a folder's project dir, newest first: (last write, session id).
@@ -879,6 +991,30 @@ mod tests {
         assert_eq!(e.labels.get("NIMITZ_ID").map(String::as_str), Some("F"));
         assert!(parse_event_line("{\"event\": 3}").is_none());
         assert!(parse_event_line("garbage").is_none());
+    }
+
+    #[test]
+    fn the_root_of_a_real_shaped_transcript_head_is_found_past_the_snapshots() {
+        // a copy hoists every file-history-snapshot (one per turn) above its
+        // first uuid line: 200 of them must not hide the root
+        let mut head = String::new();
+        head.push_str("{\"type\": \"custom-title\", \"customTitle\": \"[E2E.SQ]-S1\", \"sessionId\": \"s\"}\n");
+        head.push_str("{\"type\": \"agent-name\", \"agentName\": \"S1\", \"sessionId\": \"s\"}\n");
+        head.push_str("{\"type\": \"mode\", \"mode\": \"default\", \"sessionId\": \"s\"}\n");
+        for i in 0..200 {
+            head.push_str(&format!("{{\"type\": \"file-history-snapshot\", \"messageId\": \"m{i:04}\", \"snapshot\": {{\"trackedFileBackups\": {{}}, \"timestamp\": \"2026-10-07T00:00:00.000Z\"}}, \"isSnapshotUpdate\": false}}\n"));
+        }
+        head.push_str("{\"parentUuid\": null, \"isSidechain\": false, \"attachment\": {}, \"type\": \"attachment\", \"uuid\": \"f0afe4e5\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"f0afe4e5\", \"isSidechain\": false, \"attachment\": {}, \"type\": \"attachment\", \"uuid\": \"0061d5f7\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"0061d5f7\", \"isSidechain\": false, \"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"reply ok\"}, \"uuid\": \"05fb9112\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"05fb9112\", \"type\": \"assistant\", \"uuid\": \"30290373\"}\n");
+        let root = root_of_reader(std::io::Cursor::new(head.as_bytes()));
+        assert_eq!(root, ["0061d5f7", "05fb9112", "f0afe4e5"]);
+        // no message yet: no root
+        assert!(root_of_reader(std::io::Cursor::new(b"{\"type\": \"custom-title\"}\n")).is_empty());
+        // the byte bound stops a file whose head is all snapshots
+        let big = "{\"type\": \"file-history-snapshot\", \"snapshot\": \"x\"}\n".repeat(ROOT_BYTES / 40);
+        assert!(root_of_reader(std::io::Cursor::new(format!("{big}{{\"type\": \"user\", \"uuid\": \"late\"}}\n").as_bytes())).is_empty());
     }
 
     #[test]

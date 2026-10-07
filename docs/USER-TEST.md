@@ -28,7 +28,7 @@ Date: 2026-10-04. Branch: `dev`. For: you, before the first real use.
 - `nimitz status` and `admiralty`: see MAIN with its squadrons.
 - `nimitz check MAIN`. Expect only these:
   - `legacy` warnings for old leads that still run (today: ARGOS, BRIM, GENERAL);
-  - two stowaways in the ARGOS ship folder ("publish plan draft spec", `[ARGOS]-RAGTIME`);
+  - nothing for the user's own sessions in the ARGOS ship folder ("publish plan draft spec", `[ARGOS]-RAGTIME`): they are not shown;
   - a trust warning for CARPENTER/LIB (it has never run there).
 - `nimitz up MAIN --plan`: what a full start would do. 19 ships continue their
   newest old session (same history), 4 start fresh, and 10 commodores start fresh
