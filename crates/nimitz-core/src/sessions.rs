@@ -144,11 +144,18 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
         ));
     }
     if let Some(p) = &m.session {
-        if p.pid.is_some() && p.name != m.expected_name {
+        // the name the job carries (its state.json, or the live session file)
+        // against the identity's: a `/rename` or Ctrl+R drifts it, and a wake
+        // keeps the drifted name, so a stopped job drifts too (M19)
+        if p.name != m.expected_name && !held_row(m, p) {
             out.push(issue(
                 "name.drift",
                 Severity::Error,
-                format!("{} is live as {:?}, expected {:?}", m.id, p.name, m.expected_name),
+                if p.pid.is_some() {
+                    format!("{} is live as {:?}, expected {:?}", m.id, p.name, m.expected_name)
+                } else {
+                    format!("{}'s job {} is named {:?}, expected {:?}; a wake would keep that name", m.id, p.short_id.as_deref().unwrap_or(&p.session_id), p.name, m.expected_name)
+                },
                 relaunch.clone(),
                 id.clone(),
             ));

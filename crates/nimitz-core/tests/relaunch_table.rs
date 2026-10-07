@@ -2023,3 +2023,41 @@ fn i10_a_live_session_in_a_lead_folder_is_an_intruder_with_one_fix_per_kind() {
     assert!(!has(&w.member(&snap, &argos).issues, "lead.intruder"), "{:?}", w.member(&snap, &argos).issues);
     assert!(snap.issues.iter().any(|i| i.code == "tender.retired" && i.message.contains(t.short_id.as_deref().unwrap())));
 }
+
+// ------------------------------------------------------------------ name.drift from the job row (M19)
+
+/// 3e / M19: `/rename` in an attached ship drifts the job's name (state.json)
+/// and drops `--name` from its respawn flags, so a plain wake keeps the wrong
+/// name. A stopped renamed job is `name.drift` too, and a start goes the
+/// relabel way (rm the row, resume with every flag): the name comes back.
+#[test]
+fn m19_a_stopped_renamed_job_is_name_drift_and_a_start_restores_the_name() {
+    let w = world();
+    let id = w.ship("CLEAN");
+    let s = w.member(&w.snap(), &id).session.unwrap();
+    let short = s.short_id.clone().unwrap();
+    assert_eq!(w.fake(&["__inside", &short, "rename", "sb1"]).0, 0);
+    let m = w.member(&w.snap(), &id);
+    let live_drift = m.issues.iter().find(|i| i.code == "name.drift").expect("live: name.drift");
+    assert!(live_drift.message.contains("live as \"sb1\""), "{}", live_drift.message);
+    assert_eq!(w.fake(&["stop", &short]).0, 0);
+    let snap = w.snap();
+    let m = w.member(&snap, &id);
+    assert_eq!(m.status, Status::Stopped);
+    let drift = m.issues.iter().find(|i| i.code == "name.drift").expect("stopped: name.drift too");
+    assert!(drift.message.contains(&short) && drift.message.contains("\"sb1\"") && drift.message.contains("a wake would keep"), "{}", drift.message);
+    assert_eq!(drift.fix.as_deref(), Some(format!("nimitz relaunch {id}").as_str()));
+    // start repairs it: rm the row, then resume with every flag (same id, history, right name)
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let steps = w.steps_of(&plan, &id);
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert!(steps[0].cmd.contains(&"rm".to_string()) && steps[1].cmd.contains(&"--name".to_string()), "{steps:?}");
+    assert!(plan.warnings.iter().any(|i| i.code == "name.drift" && i.message.starts_with("will repair")), "{:?}", plan.warnings);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    let after = w.member(&w.snap(), &id);
+    let s2 = after.session.unwrap();
+    assert_eq!((s2.name.as_str(), s2.session_id.as_str(), s2.short_id.as_deref()), (id.name().as_str(), s.session_id.as_str(), Some(short.as_str())));
+    assert!(after.issues.is_empty(), "{:?}", after.issues);
+}
