@@ -477,9 +477,9 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
         rp.fleets.push(rep);
         return;
     }
-    // the pre-start gate: config errors of the fleet refuse it (M8); the rest
-    // rides along, and a member's own errors stop that member only
-    let gate = crate::check::check(env, snap, Some(&f.id));
+    // the pre-start gate over the whole fleet: a config error refuses it (M8);
+    // warnings ride along; a member's own errors are judged where it is woken
+    let gate = crate::check::check_tree(env, snap, Some(&f.id));
     if let Some(i) = gate.iter().find(|i| i.code == "config.invalid" && i.severity == Severity::Error) {
         if explicit {
             rp.plan.refusals.push(i.clone());
@@ -489,11 +489,24 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
         rp.fleets.push(rep);
         return;
     }
-    for i in gate.iter().filter(|i| i.severity != Severity::Error || i.id.is_none() || TABLE_HANDLED.contains(&i.code.as_str())) {
+    // the config's findings ride along (a conflicted copy, a layout problem);
+    // a member's own findings are `status`'s to show, and a restore judges
+    // them where it wakes the member
+    for i in gate.iter().filter(|i| i.id.is_none() || i.code.starts_with("config.")).filter(|i| i.severity != Severity::Error || i.id.is_none()) {
         rp.plan.warnings.push(i.clone());
     }
+    let before = rep.not_started;
+    let mut never: Vec<String> = vec![];
     for m in fleet_members(f) {
-        plan_member(ctx, m, &gate, &mut rep, rp);
+        let n = rep.not_started;
+        plan_member(ctx, m, &mut rep, rp);
+        if rep.not_started > n {
+            never.push(m.id.0.clone());
+        }
+    }
+    // members with no job and no history, once per fleet: a restore never cold-launches
+    if rep.not_started > before && !ctx.opts.shape_only {
+        rp.plan.warnings.push(issue("not.started", Severity::Info, format!("not started (no job, no history), so not restored: {}", never.join(", ")), Some(format!("nimitz up {fleet}  # starts them; or nimitz start <id>")), None));
     }
     // tabs named for members this fleet does not have (R-13)
     let ws_of_fleet = |label: &str| {
@@ -511,7 +524,7 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
 }
 
 /// One member: should it be back, and how (the job, then its tab).
-fn plan_member(ctx: &Ctx, m: &Member, gate: &[Issue], rep: &mut FleetReport, rp: &mut RestorePlan) {
+fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePlan) {
     let (env, opts) = (ctx.env, ctx.opts);
     let id = &m.id;
     let lead = m.role.lead();
@@ -521,11 +534,6 @@ fn plan_member(ctx: &Ctx, m: &Member, gate: &[Issue], rep: &mut FleetReport, rp:
         rep.failed += 1;
         rp.plan.warnings.push(Issue { severity: Severity::Error, ..i });
     };
-    // a member's own gate errors: the member stays as it is, with the fix
-    if let Some(i) = gate.iter().find(|i| i.id.as_ref() == Some(id) && i.severity == Severity::Error && !TABLE_HANDLED.contains(&i.code.as_str())) {
-        fail(rp, rep, i.clone());
-        return;
-    }
     // a process with no job runs it (a 0.3.x interactive lead, an SDK host):
     // nothing to attach to, nothing to resume until it ends (R-16)
     if let Some(h) = crate::sessions::held_of(m) {
@@ -553,14 +561,14 @@ fn plan_member(ctx: &Ctx, m: &Member, gate: &[Issue], rep: &mut FleetReport, rp:
             if let Some(v) = old_binary(env, s, ctx.snap) {
                 rp.plan.warnings.push(v.with_id(id));
             }
+            if m.status == Status::NeedsYou && !lead && !opts.shape_only {
+                rp.plan.warnings.push(issue("needs-you", Severity::Warn, format!("{id} waits on you ({}); nimitz answers nothing", s.waiting_for.as_deref().unwrap_or("a question")), Some(format!("nimitz open {id}")), Some(id.clone())));
+            }
             if !wants_tab {
                 if !lead && opts.shape_only {
                     rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} is live; no tab (`--ships` adds one)"), None, Some(id.clone())));
                 }
                 return;
-            }
-            if m.status == Status::NeedsYou && !lead {
-                rp.plan.warnings.push(issue("needs-you", Severity::Warn, format!("{id} waits on you ({}); nimitz answers nothing", s.waiting_for.as_deref().unwrap_or("a question")), Some(format!("nimitz open {id}")), Some(id.clone())));
             }
             tab_step(ctx, m, false, rep, rp);
         }
@@ -568,15 +576,6 @@ fn plan_member(ctx: &Ctx, m: &Member, gate: &[Issue], rep: &mut FleetReport, rp:
         Some(s) => {
             if s.status.as_deref() == Some("unreadable") {
                 fail(rp, rep, issue("session.unreadable", Severity::Error, format!("{id}'s session file cannot be read; its process may be live"), Some(format!("nimitz status  # read it again in a moment")), Some(id.clone())));
-                return;
-            }
-            // a live copy or an impostor holds its name: never a second one (R-26)
-            if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
-                fail(rp, rep, issue("name.taken", Severity::Error, format!("{id} is stopped but a copy {} ({}) is live; nothing is resumed beside it", r.short_id.as_deref().unwrap_or(&r.session_id), r.name), Some(format!("nimitz sweep {id}  # stops and removes the copy; then nimitz restore {}", id.fleet())), Some(id.clone())));
-                return;
-            }
-            if let Some(e) = m.issues.iter().find(|i| i.severity == Severity::Error && ["job.unreadable", "labels.mismatch", "name.taken"].contains(&i.code.as_str())) {
-                fail(rp, rep, e.clone());
                 return;
             }
             let wanted = lead || opts.all || (in_set && m.status != Status::Stopped);
@@ -594,9 +593,24 @@ fn plan_member(ctx: &Ctx, m: &Member, gate: &[Issue], rep: &mut FleetReport, rp:
                 }
                 return;
             }
+            // a live copy or an impostor holds its name: never a second one (R-26)
+            if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
+                fail(rp, rep, issue("name.taken", Severity::Error, format!("{id} is stopped but a copy {} ({}) is live; nothing is resumed beside it", r.short_id.as_deref().unwrap_or(&r.session_id), r.name), Some(format!("nimitz sweep {id}  # stops and removes the copy; then nimitz restore {}", id.fleet())), Some(id.clone())));
+                return;
+            }
+            if let Some(e) = m.issues.iter().find(|i| i.severity == Severity::Error && ["job.unreadable", "labels.mismatch", "name.taken"].contains(&i.code.as_str())) {
+                fail(rp, rep, e.clone());
+                return;
+            }
             if lead && opts.shape_only {
                 // the attach wakes a parked lead with a shell tab; no resume otherwise
                 tab_step(ctx, m, true, rep, rp);
+                return;
+            }
+            // a wake needs the folder (there, trusted, not another machine's): the
+            // member's own check, as `nimitz start` runs it
+            if let Some(i) = crate::check::check(env, ctx.snap, Some(id)).into_iter().find(|i| i.id.as_ref() == Some(id) && i.severity == Severity::Error && !TABLE_HANDLED.contains(&i.code.as_str())) {
+                fail(rp, rep, i);
                 return;
             }
             if let Some(n) = interrupted_note(active, id) {
@@ -647,6 +661,10 @@ fn plan_member(ctx: &Ctx, m: &Member, gate: &[Issue], rep: &mut FleetReport, rp:
             let wanted = lead || opts.all || in_set;
             match (current.filter(|sid| has_log(sid)), cwd.as_deref()) {
                 (Some(sid), Some(cwd)) if wanted => {
+                    if let Some(i) = crate::check::check(env, ctx.snap, Some(id)).into_iter().find(|i| i.id.as_ref() == Some(id) && i.severity == Severity::Error && !TABLE_HANDLED.contains(&i.code.as_str())) {
+                        fail(rp, rep, i);
+                        return;
+                    }
                     let fod = match crate::config::load_fleet(env, id.fleet()) {
                         Ok(f) => f,
                         Err(i) => {
@@ -664,16 +682,13 @@ fn plan_member(ctx: &Ctx, m: &Member, gate: &[Issue], rep: &mut FleetReport, rp:
                     let step = Step { id: Some(id.clone()), cmd: crate::claude::relaunch_bg(env, id, &mode, &sid), cwd: Some(cwd.to_string()), why };
                     count(rep, lead);
                     rp.steps.push(RestoreStep::Wake { id: id.clone(), steps: vec![step] });
-                    if wants_tab {
-                        let cmd = vec![env.native_claude_bin.clone(), "attach".into(), "<the new job>".into()];
-                        rp.steps.push(RestoreStep::Open { id: id.clone(), workspace: workspace_of(id), label: tab_of(id), cmd, cwd: cwd.to_string(), session: sid.clone(), wakes: false });
+                    if wants_tab && !opts.jobs_only {
+                        // the job is not there yet: the attach names it once it is
+                        let cmd = vec![env.native_claude_bin.clone(), "attach".into(), NEW_JOB.into()];
+                        tab_after_wake(ctx, m, cmd, cwd, &sid, rep, rp);
                     }
-                    pin_step(env, m, rp);
                 }
-                _ => {
-                    rep.not_started += 1;
-                    rp.plan.warnings.push(issue("not.started", Severity::Info, format!("{id} is not started (no job, no history); a restore never cold-launches"), Some(format!("nimitz up {}  # or nimitz start {id}", id.fleet())), Some(id.clone())));
-                }
+                _ => rep.not_started += 1, // reported once per fleet (`plan_fleet`)
             }
         }
     }
@@ -724,7 +739,7 @@ fn wake_then_open(ctx: &Ctx, m: &Member, cwd: &Option<String>, wants_tab: bool, 
             rp.steps.push(RestoreStep::Wake { id: id.clone(), steps });
             if wants_tab && !ctx.opts.jobs_only {
                 let cmd = s.short_id.as_ref().map(|j| crate::claude::attach(env, j)).unwrap_or_default();
-                rp.steps.push(RestoreStep::Open { id: id.clone(), workspace: workspace_of(id), label: tab_of(id), cmd, cwd: cwd.to_string(), session: s.session_id.clone(), wakes: false });
+                tab_after_wake(ctx, m, cmd, cwd, &s.session_id, rep, rp);
             }
             pin_step(env, m, rp);
         }
@@ -732,6 +747,34 @@ fn wake_then_open(ctx: &Ctx, m: &Member, cwd: &Option<String>, wants_tab: bool, 
             rep.failed += 1;
             rp.plan.warnings.push(Issue { severity: Severity::Error, ..i });
         }
+    }
+}
+
+/// The job id an attach names once a wake that makes a new job (its row was
+/// gone) has run; the executor fills it in.
+pub const NEW_JOB: &str = "<the new job>";
+
+/// The tab of a member woken by a `Wake` step just before: a plain attach
+/// (no second wake) in its shell tab, a new tab, or a report when taken.
+fn tab_after_wake(ctx: &Ctx, m: &Member, cmd: Vec<String>, cwd: &str, session: &str, rep: &mut FleetReport, rp: &mut RestorePlan) {
+    let id = &m.id;
+    let mut extra = vec![];
+    let found = ctx.find_tab(m, &cmd, &mut extra);
+    rp.plan.warnings.extend(extra);
+    match found {
+        TabMatch::Shown { .. } => {}
+        TabMatch::Shell { pane, rename, .. } => rp.steps.push(RestoreStep::Claim { id: id.clone(), pane, rename, cmd, cwd: cwd.to_string(), session: session.to_string(), wakes: false }),
+        TabMatch::Taken { pane, running, agent_view } => {
+            let (code, fix) = taken_fix(id, &pane, &running, agent_view);
+            if ctx.opts.force && !agent_view {
+                rp.plan.warnings.push(issue("tab.dup", Severity::Warn, format!("{id}'s tab is taken by `{running}` (pane {}); a second tab is opened beside it (--force)", pane.pane_id), None, Some(id.clone())));
+                rp.steps.push(RestoreStep::Open { id: id.clone(), workspace: workspace_of(id), label: tab_of(id), cmd, cwd: cwd.to_string(), session: session.to_string(), wakes: false });
+            } else {
+                rep.failed += 1;
+                rp.plan.warnings.push(issue(code, Severity::Error, format!("{id}'s tab is open but pane {} runs `{running}`, not a shell; the job wakes, nothing is typed into the pane", pane.pane_id), Some(fix), Some(id.clone())));
+            }
+        }
+        TabMatch::Missing => rp.steps.push(RestoreStep::Open { id: id.clone(), workspace: workspace_of(id), label: tab_of(id), cmd, cwd: cwd.to_string(), session: session.to_string(), wakes: false }),
     }
 }
 

@@ -2146,7 +2146,7 @@ pub fn find_row_by_session(env: &Env, sid: &str) -> Option<crate::evidence::Sess
     crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.short_id.is_some() && r.session_ids().any(|s| s == sid))
 }
 
-fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {
+pub fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {
     let mut cache = crate::evidence::FileCache::default();
     crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.short_id.as_deref() == Some(short))
 }

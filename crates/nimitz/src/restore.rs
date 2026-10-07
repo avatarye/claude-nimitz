@@ -36,12 +36,20 @@ pub fn shape_of(mux: &dyn Mux, foregrounds: bool) -> Result<(rs::Shape, nimitz_m
     Ok((core, sh))
 }
 
-/// The panes that show a session, with where they are (labels and ids).
-pub fn shown_in(sh: &nimitz_mux::Shape) -> Vec<active::Shown> {
-    sh.panes
+/// The panes that show a session, with where they are (labels and ids), and
+/// the panes that show none. A pane whose foreground is `claude attach <job>`
+/// (read with the shape) shows that job's conversation even before Herdr's
+/// agent detection says so.
+pub fn seen_in(env: &nimitz_core::env::Env, sh: &nimitz_mux::Shape) -> active::Seen {
+    let attached = |p: &nimitz_mux::ShapePane| -> Option<String> {
+        let fg = p.foreground.as_ref()?;
+        (fg.len() == 3 && fg[1] == "attach").then(|| nimitz_core::sessions::find_row(env, &fg[2]).map(|r| r.session_id))?
+    };
+    let shown = sh
+        .panes
         .iter()
         .filter_map(|p| {
-            let sid = p.session_id.clone()?;
+            let sid = p.session_id.clone().or_else(|| attached(p))?;
             let tab_id = p.pane.tab_id.clone().unwrap_or_default();
             let ws_id = p.pane.workspace_id.clone().unwrap_or_default();
             Some(active::Shown {
@@ -55,7 +63,9 @@ pub fn shown_in(sh: &nimitz_mux::Shape) -> Vec<active::Shown> {
                 },
             })
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let empty_panes = sh.panes.iter().filter(|p| !shown.iter().any(|s| s.place.pane_id == p.pane.pane_id)).map(|p| p.pane.pane_id.clone()).collect();
+    active::Seen { shown, empty_panes }
 }
 
 /// Record the active set from `snap` and the mux (`active.json`). Never
@@ -65,14 +75,15 @@ pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&n
     let shape = match shape {
         Some(s) => Some(s),
         None if mux.caps().open => {
-            read = mux.shape(false).ok();
+            // (with the foregrounds: an attach just typed is not yet an agent to Herdr)
+            read = mux.shape(true).ok();
             read.as_ref()
         }
         None => None,
     };
-    let shown = shape.map(shown_in);
+    let seen = shape.map(|s| seen_in(&ctx.env, s));
     let prev = active::load(&ctx.env);
-    let set = active::from_snapshot(snap, shown.as_deref(), active::herdr_identity(&ctx.vars), prev.as_ref());
+    let set = active::from_snapshot(snap, seen.as_ref(), active::herdr_identity(&ctx.vars), prev.as_ref());
     let _ = active::write(&ctx.env, set);
 }
 
@@ -125,6 +136,11 @@ pub fn run_shape(ctx: &Ctx, fleet: Option<&str>, opts: rs::RestoreOpts, confirme
                 out::issue(w);
             }
         }
+        for f in snap.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
+            for i in nimitz_core::check::check_tree(&ctx.env, &snap, Some(&f.id)).into_iter().filter(|i| i.code == "rc.exposed") {
+                out::issue(&i);
+            }
+        }
         let code = report(&rp, &[], &[]);
         if let Some(r) = raw.as_ref() {
             record_active(ctx, &snap, mux.as_ref(), Some(r));
@@ -145,7 +161,7 @@ pub fn run_shape(ctx: &Ctx, fleet: Option<&str>, opts: rs::RestoreOpts, confirme
     let after = ctx.snap();
     let mut late: Vec<Issue> = vec![];
     for f in after.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
-        for i in nimitz_core::check::check(&ctx.env, &after, Some(&f.id)).into_iter().filter(|i| i.code == "rc.exposed") {
+        for i in nimitz_core::check::check_tree(&ctx.env, &after, Some(&f.id)).into_iter().filter(|i| i.code == "rc.exposed") {
             out::issue(&i);
             late.push(i);
         }
@@ -154,7 +170,7 @@ pub fn run_shape(ctx: &Ctx, fleet: Option<&str>, opts: rs::RestoreOpts, confirme
     if out::json_mode() {
         out::json(&Outcome { ran: outcome.ran.clone(), verified: code == 0, issues: outcome.issues.iter().chain(late.iter()).cloned().collect() });
     }
-    let raw_after = raw.as_ref().and_then(|_| shape_of(mux.as_ref(), false).ok()).map(|(_, r)| r);
+    let raw_after = raw.as_ref().and_then(|_| shape_of(mux.as_ref(), true).ok()).map(|(_, r)| r);
     record_active(ctx, &after, mux.as_ref(), raw_after.as_ref());
     code
 }
@@ -169,7 +185,9 @@ fn finish(ctx: &Ctx, plan: &Plan) -> i32 {
 
 /// The verdict per fleet (restore-scenarios.md decision 10) and the exit code.
 fn report(rp: &rs::RestorePlan, failed: &[Id], issues: &[Issue]) -> i32 {
-    let errors = rp.plan.warnings.iter().chain(issues.iter()).filter(|i| i.severity == Severity::Error).count();
+    // only what could not be restored is an error: the planner's failures
+    // and the executor's (a config finding that rides along is not)
+    let errors = rp.fleets.iter().map(|f| f.failed).sum::<usize>() + issues.iter().filter(|i| i.severity == Severity::Error).count();
     for f in &rp.fleets {
         let failed_here = failed.iter().filter(|id| id.fleet() == f.fleet).count() + f.failed;
         let planned: usize = rp.steps.iter().filter(|s| s.id().fleet() == f.fleet).count();
@@ -272,7 +290,13 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
                 let pref = PaneRef { pane_id: pane.pane_id.clone(), tab_id: Some(pane.tab_id.clone()).filter(|x| !x.is_empty()), workspace_id: Some(pane.workspace_id.clone()).filter(|x| !x.is_empty()) };
                 let since = nimitz_core::evidence::now() - 0.001;
                 let last = display.last().cloned().expect("a claim displays its pane run");
-                match mux.run_in(&pref, cmd) {
+                let Some(cmd) = name_the_job(env, cmd, session) else {
+                    fail(&mut out, &mut failed, &id, refusal("session.none", format!("{id}'s job is not there after its wake; no attach"), Some(format!("nimitz status {id}")), Some(id.clone())));
+                    prog.done = n + 1;
+                    let _ = rs::progress_write(env, &prog);
+                    continue;
+                };
+                match mux.run_in(&pref, &cmd) {
                     Ok(()) => {
                         out.ran.push((last, 0, format!("typed into pane {}", pane.pane_id)));
                         if wakes {
@@ -286,19 +310,11 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
                 }
             }
             rs::RestoreStep::Open { workspace, label, cmd, cwd, session, wakes, .. } => {
-                // a wake that made a new job (its row was gone): the attach names it now
-                let cmd: Vec<String> = if cmd.iter().any(|a| a == "<the new job>") {
-                    match nimitz_core::sessions::find_row_by_session(env, session).and_then(|r| r.short_id) {
-                        Some(j) => nimitz_core::claude::attach(env, &j),
-                        None => {
-                            fail(&mut out, &mut failed, &id, refusal("session.none", format!("{id}'s job is not there after its wake; no tab"), Some(format!("nimitz status {id}")), Some(id.clone())));
-                            prog.done = n + 1;
-                            let _ = rs::progress_write(env, &prog);
-                            continue;
-                        }
-                    }
-                } else {
-                    cmd.clone()
+                let Some(cmd) = name_the_job(env, cmd, session) else {
+                    fail(&mut out, &mut failed, &id, refusal("session.none", format!("{id}'s job is not there after its wake; no tab"), Some(format!("nimitz status {id}")), Some(id.clone())));
+                    prog.done = n + 1;
+                    let _ = rs::progress_write(env, &prog);
+                    continue;
                 };
                 let display = step.display().remove(0);
                 let since = nimitz_core::evidence::now() - 0.001;
@@ -335,6 +351,17 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
     }
     out.verified = failed.is_empty();
     (out, failed)
+}
+
+/// A wake that made a new job (its row was gone) leaves the attach naming
+/// `NEW_JOB`: the row running the conversation now names it. None when no
+/// row runs it (the wake did not land).
+fn name_the_job(env: &nimitz_core::env::Env, cmd: &[String], session: &str) -> Option<Vec<String>> {
+    if !cmd.iter().any(|a| a == rs::NEW_JOB) {
+        return Some(cmd.to_vec());
+    }
+    let job = nimitz_core::sessions::find_row_by_session(env, session)?.short_id?;
+    Some(nimitz_core::claude::attach(env, &job))
 }
 
 /// An attach that wakes a parked job: the SessionStart that follows must be

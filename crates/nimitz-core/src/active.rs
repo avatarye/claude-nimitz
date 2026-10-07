@@ -99,6 +99,15 @@ pub struct Shown {
     pub place: Place,
 }
 
+/// What the mux shows now: the panes with a session, and the ids of the
+/// panes that show none (a recorded place whose pane is still there and
+/// shows nothing else is kept: Herdr's agent detection lags an attach).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Seen {
+    pub shown: Vec<Shown>,
+    pub empty_panes: Vec<String>,
+}
+
 fn status_word(s: Status) -> &'static str {
     match s {
         Status::Busy => "busy",
@@ -113,25 +122,42 @@ fn status_word(s: Status) -> &'static str {
 /// With no mux (`shown` None: a `status` over ssh), the places recorded
 /// before (`prev`) stay for a member still on the same job, and so does the
 /// recorded Herdr identity: a look from outside Herdr forgets no tab.
-pub fn from_snapshot(snap: &Snapshot, shown: Option<&[Shown]>, herdr: Option<HerdrIdentity>, prev: Option<&ActiveSet>) -> ActiveSet {
+pub fn from_snapshot(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrIdentity>, prev: Option<&ActiveSet>) -> ActiveSet {
     let mut members = BTreeMap::new();
     let all = snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter()))));
     for m in all {
-        let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some()) else { continue };
+        let Some(s) = m.session.as_ref() else { continue };
+        if s.pid.is_none() {
+            // a member the machine or a crash took down (parked, no retire line
+            // and no SessionEnd) was live at the loss: it stays in the set, as
+            // recorded, until a restore or a stop settles it (R-08). One the
+            // daemon retired, or that was stopped, goes.
+            let taken_down = m.status == Status::Parked && !m.reasons.iter().any(|r| r.contains("the daemon retired it"));
+            if let Some(p) = prev.and_then(|p| p.members.get(&m.id.0)).filter(|p| taken_down && s.short_id.is_some() && p.job == s.short_id) {
+                members.insert(m.id.0.clone(), p.clone());
+            }
+            continue;
+        }
         let ids: Vec<&str> = std::iter::once(s.session_id.as_str()).chain(s.birth_id.as_deref()).collect();
-        let (attached, place) = match shown {
-            Some(shown) => {
-                let place = shown.iter().find(|p| ids.contains(&p.session_id.as_str())).map(|p| p.place.clone());
+        let before = prev.and_then(|p| p.members.get(&m.id.0)).filter(|p| s.short_id.is_some() && p.job == s.short_id);
+        let (attached, place) = match seen {
+            Some(seen) => {
+                let place = seen
+                    .shown
+                    .iter()
+                    .find(|p| ids.contains(&p.session_id.as_str()))
+                    .map(|p| p.place.clone())
+                    .or_else(|| before.and_then(|p| p.place.clone()).filter(|pl| seen.empty_panes.contains(&pl.pane_id)));
                 (place.is_some(), place)
             }
-            None => match prev.and_then(|p| p.members.get(&m.id.0)).filter(|p| s.short_id.is_some() && p.job == s.short_id) {
+            None => match before {
                 Some(p) => (p.attached, p.place.clone()),
                 None => (false, None),
             },
         };
         members.insert(m.id.0.clone(), ActiveMember { job: s.short_id.clone(), session: s.session_id.clone(), status: status_word(m.status).into(), waiting_for: s.waiting_for.clone(), attached, place });
     }
-    let herdr = if shown.is_some() { herdr } else { herdr.or_else(|| prev.and_then(|p| p.herdr.clone())) };
+    let herdr = if seen.is_some() { herdr } else { herdr.or_else(|| prev.and_then(|p| p.herdr.clone())) };
     ActiveSet { version: VERSION, at: crate::evidence::now(), machine: snap.machine.clone(), herdr, members }
 }
 
