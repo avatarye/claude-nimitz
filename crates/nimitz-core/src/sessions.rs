@@ -1,5 +1,5 @@
 //! Session actions along the chain of command: start (top-down), stop, relaunch,
-//! rm, sweep, tender, adopt; the relaunch state table (contracts.md section 8). Owner: core-sessions.
+//! rm, sweep, adopt; the relaunch state table (contracts.md section 8). Owner: core-sessions.
 //!
 //! Every `plan_*` only reads and returns a `Plan`; nothing changes until
 //! `apply`. A plan step's command is real argv (`claude ...`) except the
@@ -13,7 +13,7 @@ use crate::types::*;
 use std::collections::HashMap;
 
 /// Parse a session name (address) back into an identity (contracts.md section 4):
-/// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-COMMODORE/task`, `[F.SQ]-SHIP`.
+/// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-SHIP`.
 /// None for names that are not fleet addresses (teammates, ad-hoc sessions).
 /// A trailing ` [ref]` (how `SendMessage` disambiguates two sessions with one
 /// name) is not part of the address, so it cannot hide a target from the rules.
@@ -38,20 +38,15 @@ pub fn id_from_name(name: &str) -> Option<Id> {
     match (sq, role) {
         (None, "ADMIRAL") => Some(Id::admiral(fleet)),
         (Some(sq), "COMMODORE") => Some(Id::commodore(fleet, sq)),
-        (Some(sq), r) => match r.strip_prefix("COMMODORE/") {
-            Some(task) if !task.is_empty() => Some(Id::tender(fleet, sq, task)),
-            Some(_) => None,
-            None if crate::config::valid_name(r) => Some(Id::ship(fleet, sq, r)),
-            None => None,
-        },
+        (Some(sq), r) if crate::config::valid_name(r) => Some(Id::ship(fleet, sq, r)),
         _ => None,
     }
 }
 
 /// The identity a caller gets when its labels are partial or disagree: no
-/// authority at all (BUG-06, fail closed). It is a tender id, so every
+/// authority at all (BUG-06, fail closed). Its role is ship, so every
 /// authority rule refuses it.
-pub const UNVERIFIED: &str = "?/?/~unverified-labels";
+pub const UNVERIFIED: &str = "?/?/unverified-labels";
 
 /// Who is asking, from the caller's env (labels reach the Bash tool's
 /// processes, probe P0.6). No labels at all (`NIMITZ_HOME` alone is none): the
@@ -60,13 +55,12 @@ pub const UNVERIFIED: &str = "?/?/~unverified-labels";
 /// authority, never the user.
 pub fn caller_from_env(vars: &HashMap<String, String>) -> Caller {
     let get = |k: &str| vars.get(k).filter(|v| !v.is_empty());
-    let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Tender };
+    let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Ship };
     match (get("NIMITZ_ID"), get("NIMITZ_ROLE")) {
         (None, None) => Caller::User,
         (Some(id), Some(role)) => {
             let id = Id(id.clone());
-            let shape_ok = id.parts().iter().all(|p| crate::config::valid_name(p.trim_start_matches('~')) || p.starts_with('~'))
-                && id.name() != id.0;
+            let shape_ok = id.parts().iter().all(|p| crate::config::valid_name(p)) && id.name() != id.0;
             // the role label must agree with the id's shape; otherwise distrust both
             if shape_ok && id.role().as_str() == role {
                 Caller::Member { role: id.role(), id }
@@ -280,14 +274,14 @@ pub fn name_taken_issue(m: &Member, others: &[SessionInfo]) -> Option<Issue> {
 /// May `caller` start (or stop, relaunch, rm, adopt as) `target`? The
 /// authority table (plan-v3 section 5.5, widened in 0.3.1): you, anything; an
 /// admiral, every member of its own fleet but itself; a commodore, its own
-/// ships and tenders; ships and tenders nothing.
+/// ships; ships nothing.
 pub fn may_start(caller: &Caller, target: &Id, verb: &str) -> Result<(), String> {
     match caller {
         Caller::User => Ok(()),
         Caller::Member { id, role: Role::Admiral } if target.fleet() == id.fleet() && target != id => Ok(()),
         Caller::Member { id, role: Role::Commodore } if target.parent().as_ref() == Some(id) => Ok(()),
         Caller::Member { id, .. } => Err(format!(
-            "{} may not {verb} {target}: you {verb} anything; an admiral, the members of its own fleet; a commodore, its own ships and tenders",
+            "{} may not {verb} {target}: you {verb} anything; an admiral, the members of its own fleet; a commodore, its own ships",
             caller_name(id)
         )),
     }
@@ -323,7 +317,7 @@ pub fn may_run(caller: &Caller, fix: &str) -> bool {
     let id_at = |i: usize| -> Option<Id> {
         let s = w.get(i)?;
         let id = Id(s.to_string());
-        let ok = !s.is_empty() && id.parts().iter().all(|p| crate::config::valid_name(p.trim_start_matches('~')));
+        let ok = !s.is_empty() && id.parts().iter().all(|p| crate::config::valid_name(p));
         ok.then_some(id)
     };
     let in_fleet = |t: &Id| *role == Role::Admiral && t.fleet() == me.fleet();
@@ -335,7 +329,6 @@ pub fn may_run(caller: &Caller, fix: &str) -> bool {
             None => w.len() == 2 && matches!(role, Role::Admiral | Role::Commodore),
             Some(t) => in_fleet(&t) || in_squadron(&t),
         },
-        Some("tender") => id_at(2).is_some_and(|t| t.role() == Role::Commodore && (in_fleet(&t) || &t == me)),
         Some("adopt") => id_at(3).is_some_and(|t| may_start(caller, &t, "adopt as").is_ok()),
         Some("up") => id_at(2).is_some_and(|t| in_fleet(&t)),
         Some("layout") => *role == Role::Admiral && id_at(3).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
@@ -388,7 +381,6 @@ fn members(snap: &Snapshot) -> Vec<(&Fleet, &Member)> {
         for sq in &f.squadrons {
             out.push((f, &sq.commodore));
             out.extend(sq.ships.iter().map(|m| (f, m)));
-            out.extend(sq.tenders.iter().map(|m| (f, m)));
         }
     }
     out
@@ -612,13 +604,6 @@ fn legacy_rows<'a>(snap: &'a Snapshot, fod: &FleetOnDisk, id: &Id, cwd: &str) ->
 
 fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Role, mode: &str, cwd: &str) {
     match role {
-        Role::Tender => refuse(
-            plan,
-            "lineage.broken",
-            format!("{id} is gone; a tender is one job, it is not restarted cold"),
-            Some(format!("nimitz tender {} <task>  # a new tender", id.parent().map(|p| p.0).unwrap_or_default())),
-            Some(id.clone()),
-        ),
         Role::Ship => {
             let Some(prompt) = crate::config::ship_prompt(fod, id) else {
                 refuse(plan, "prompt.missing", format!("{id} has no prompt (prompt or prompt_file) in squadron.toml"), Some(format!("nimitz ship set {id} --prompt <text>")), Some(id.clone()));
@@ -672,7 +657,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
     }
     gate(env, &mut plan, snap, Some(id), force);
     // What is wrong with a member caller's own chain is yours to fix, not a
-    // reason to refuse the caller's start of its ship or tender.
+    // reason to refuse the caller's start of its ship.
     if let Caller::Member { id: me, .. } = caller {
         let above = chain(me);
         let (theirs, keep): (Vec<Issue>, Vec<Issue>) =
@@ -753,8 +738,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
     let mut ids = vec![f.admiral.id.clone()];
     for sq in &f.squadrons {
         ids.push(sq.commodore.id.clone());
-        // ships with a folder on this machine, in depends_on order; tenders are
-        // one job, so `up` leaves them alone
+        // ships with a folder on this machine, in depends_on order
         let here: Vec<Id> = sq.ships.iter().filter(|s| s.cwd.is_some()).map(|s| s.id.clone()).collect();
         let deps = fod
             .as_ref()
@@ -932,6 +916,12 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
             }
         }
     }
+    if hit.is_none() {
+        // a job row a 0.3.x tender left (its identity is retired, section 2)
+        if let Some((owner, r)) = retired_tender_row(env, target) {
+            hit = Some((Some(owner.clone()), r, format!("stop the row of the 0.3.x tender {owner}; the role was removed in 0.4.0")));
+        }
+    }
     let Some((owner, row, why)) = hit else {
         let msg = format!("{target} names no fleet member's session, no stowaway and no holder of a fleet name");
         // a member learns nothing about sessions that are not its business
@@ -1076,7 +1066,9 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
             .filter(|r| labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(|o| binding.iter().any(|(_, m)| &m.id.0 == o)).unwrap_or(false))
             .map(|r| r.info(Default::default()))
     };
-    let Some(row) = all.iter().copied().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target).or(misplaced.as_ref()) else {
+    // a job row a 0.3.x tender left: history only, removed by its short id
+    let retired = retired_tender_row(env, target);
+    let Some(row) = all.iter().copied().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target).or(misplaced.as_ref()).or(retired.as_ref().map(|(_, r)| r)) else {
         refuse(&mut plan, if *caller == Caller::User { "session.unknown" } else { "authority" }, format!("{target} names no identity and no job row"), None, None);
         return plan;
     };
@@ -1089,7 +1081,8 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
             let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
             let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
             labels.get(&row.session_id).and_then(|l| l.get("NIMITZ_ID")).map(|o| Id(o.clone())).filter(|_| misplaced.as_ref().is_some_and(|m| m.session_id == row.session_id))
-        });
+        })
+        .or_else(|| retired.as_ref().map(|(id, _)| id.clone()));
     if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), row, "rm") {
         refuse(&mut plan, "authority", why, None, owner);
         return plan;
@@ -1123,6 +1116,25 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
     plan
 }
 
+/// The job row of a 0.3.x tender, by short id or session id: its labels name
+/// `F/SQ/~task`, or the registry's `retired` map has the session. The owner
+/// is the retired identity, so the authority table judges `stop` and `rm` as
+/// for a ship of that squadron.
+fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
+    let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+    let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
+    let r = rows.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target)?;
+    let by_labels = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).filter(|o| crate::migrate::is_tender_id(o)).cloned();
+    let owner = by_labels.or_else(|| {
+        let reg = crate::registry::load(env);
+        reg.retired
+            .iter()
+            .find(|(_, rec)| rec.current.as_deref() == Some(r.session_id.as_str()) || rec.lineage.iter().any(|l| l.session_id == r.session_id))
+            .map(|(id, _)| id.clone())
+    })?;
+    Some((Id(owner), r.info(labels.get(&r.session_id).cloned().unwrap_or_default())))
+}
+
 fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
     for r in &m.extra_rows {
         if r.pid.is_some() {
@@ -1148,8 +1160,8 @@ fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
 
 /// Drop every stale copy row: everything, a fleet, a squadron or one identity
 /// (`id` and every member under it). Authority (contracts.md section 8): you,
-/// any scope; a commodore, its own squadron only (its tenders and the stale
-/// rows of its own ships); everyone else nothing.
+/// any scope; a commodore, its own squadron only (the stale rows of its own
+/// ships); everyone else nothing.
 pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) -> Plan {
     let scope = match (id, caller) {
         (Some(i), _) => i.0.clone(),
@@ -1213,56 +1225,6 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
     plan
 }
 
-/// A tender: one background job for a commodore, in the squadron's folder.
-pub fn plan_tender(env: &Env, snap: &Snapshot, commodore: &Id, task: &str, prompt: &str, caller: &Caller) -> Plan {
-    let mut plan = Plan { summary: format!("tender {commodore}/{task}"), ..Default::default() };
-    if commodore.role() != Role::Commodore {
-        refuse(&mut plan, "tender.invalid", format!("{commodore} is not a commodore"), None, Some(commodore.clone()));
-        return plan;
-    }
-    let ok = match caller {
-        Caller::User => true,
-        Caller::Member { id, role: Role::Commodore } => id == commodore,
-        Caller::Member { id, role: Role::Admiral } => id.fleet() == commodore.fleet(),
-        _ => false,
-    };
-    if !ok {
-        refuse(&mut plan, "authority", format!("only you, {commodore} itself or its admiral may start its tenders"), None, Some(commodore.clone()));
-        return plan;
-    }
-    if task.is_empty() || !task.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        refuse(&mut plan, "tender.invalid", format!("task {task:?} must be [A-Za-z0-9_-]+"), None, Some(commodore.clone()));
-        return plan;
-    }
-    if prompt.trim().is_empty() {
-        refuse(&mut plan, "tender.invalid", "a tender needs a prompt (its one job)".into(), None, Some(commodore.clone()));
-        return plan;
-    }
-    let id = Id::tender(commodore.fleet(), commodore.squadron().unwrap_or_default(), task);
-    if let Some((_, t)) = member(snap, &id) {
-        if t.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
-            refuse(&mut plan, "dup.live", format!("{id} is already live"), None, Some(id.clone()));
-            return plan;
-        }
-    }
-    let Some((_, cm)) = member(snap, commodore) else {
-        refuse(&mut plan, "member.unknown", format!("{commodore} is not in any fleet config"), None, Some(commodore.clone()));
-        return plan;
-    };
-    let Some(cwd) = cm.cwd.clone() else {
-        refuse(&mut plan, "folder.missing", format!("{commodore} has no folder on this machine"), None, Some(commodore.clone()));
-        return plan;
-    };
-    let mode = crate::config::load_fleet(env, commodore.fleet()).map(|f| crate::config::permission_mode(&f, &id)).unwrap_or_default();
-    plan.steps.push(Step {
-        id: Some(id.clone()),
-        cmd: crate::claude::launch_bg(env, &id, &mode, Some(prompt)),
-        cwd: Some(cwd),
-        why: "one background job with a parent label; it stops when the job is done".into(),
-    });
-    plan
-}
-
 /// Adopt a stowaway: record it as `id`'s session. Labels can only be given at a
 /// start, so the adoption binds the registry now and warns that the labels
 /// arrive at the next relaunch.
@@ -1288,20 +1250,8 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
         refuse(&mut plan, "authority", format!("session {session_id} does not sit in fleet {}'s folders; adopting it is the user's", id.fleet()), None, Some(id.clone()));
         return plan;
     }
-    // A tender is not declared: adopting as `F/SQ/~task` creates the identity,
-    // under a commodore that exists (BUG-19).
     let found = member(snap, id);
-    if found.is_none() && id.role() == Role::Tender {
-        let task = id.parts().get(2).map(|t| t.trim_start_matches('~').to_string()).unwrap_or_default();
-        if task.is_empty() || !task.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            refuse(&mut plan, "tender.invalid", format!("task {task:?} must be [A-Za-z0-9_-]+"), None, Some(id.clone()));
-            return plan;
-        }
-        if id.parent().and_then(|c| member(snap, &c)).is_none() {
-            refuse(&mut plan, "member.unknown", format!("{id}'s commodore is not in any fleet config"), Some("nimitz status  # the ids that exist".into()), Some(id.clone()));
-            return plan;
-        }
-    } else if found.is_none() {
+    if found.is_none() {
         refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config; add it first"), Some(format!("nimitz ship new {id} --dir <folder|managed> --prompt <text>")), Some(id.clone()));
         return plan;
     }
@@ -1832,16 +1782,16 @@ mod tests {
 
     #[test]
     fn names_round_trip() {
-        for id in [Id::admiral("MAIN"), Id::commodore("MAIN", "ARGOS"), Id::ship("MAIN", "ARGOS", "BOLT"), Id::tender("MAIN", "ARGOS", "fix-ci")] {
+        for id in [Id::admiral("MAIN"), Id::commodore("MAIN", "ARGOS"), Id::ship("MAIN", "ARGOS", "BOLT")] {
             assert_eq!(id_from_name(&id.name()), Some(id.clone()), "{}", id.name());
         }
+        assert_eq!(id_from_name("[F.SQ]-COMMODORE/fix"), None, "the 0.3.x tender address names no one");
         assert_eq!(id_from_name("[ADMIRALTY]"), None);
         assert_eq!(id_from_name("scratch notes"), None);
         assert_eq!(id_from_name("[main.ARGOS]-SHIP"), None); // lowercase fleet
         assert_eq!(id_from_name("[F.SQ]-COMMODORE/"), None);
         // a SendMessage ref suffix does not hide the address
         assert_eq!(id_from_name("[F.SQ]-S [3fa9c1]"), Some(Id::ship("F", "SQ", "S")));
-        assert_eq!(id_from_name("[F.SQ]-COMMODORE/fix [ab12]"), Some(Id::tender("F", "SQ", "fix")));
     }
 
     #[test]
@@ -1853,8 +1803,9 @@ mod tests {
             Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore }
         );
         // partial or disagreeing labels: an unverified caller with no authority, never the user
-        let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Tender };
+        let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Ship };
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/S"), ("NIMITZ_ROLE", "commodore")])), unverified);
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/~fix"), ("NIMITZ_ROLE", "tender")])), unverified, "a 0.3.x tender has no authority");
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/S")])), unverified);
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ROLE", "ship")])), unverified);
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "not an id"), ("NIMITZ_ROLE", "admiral")])), unverified);
@@ -1871,7 +1822,6 @@ mod tests {
         let admiral = Caller::Member { id: Id::admiral("F"), role: Role::Admiral };
         assert!(may_start(&Caller::User, &ship, "start").is_ok());
         assert!(may_start(&own, &ship, "start").is_ok());
-        assert!(may_start(&own, &Id::tender("F", "SQ", "t"), "start").is_ok());
         assert!(may_start(&other, &ship, "start").is_err());
         assert!(may_start(&own, &Id::commodore("F", "SQ"), "start").is_err(), "not itself");
         assert!(may_start(&own, &Id::admiral("F"), "start").is_err(), "not its admiral");
@@ -1882,7 +1832,7 @@ mod tests {
         assert!(may_start(&admiral, &Id::ship("G", "SQ", "S"), "start").is_err(), "not another fleet");
         let msg = may_start(&admiral, &Id::ship("G", "SQ", "S"), "start").unwrap_err();
         assert!(msg.contains("an admiral, the members of its own fleet"), "{msg}");
-        // ships and tenders: nothing
+        // ships: nothing
         let a_ship = Caller::Member { id: ship.clone(), role: Role::Ship };
         assert!(may_start(&a_ship, &Id::ship("F", "SQ", "T"), "start").is_err());
     }
@@ -1909,7 +1859,7 @@ mod tests {
         let own = Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore };
         let admiral = Caller::Member { id: Id::admiral("F"), role: Role::Admiral };
         let a_ship = Caller::Member { id: Id::ship("F", "SQ", "S"), role: Role::Ship };
-        for fix in ["nimitz start F/SQ/S", "nimitz relaunch F/SQ/S", "nimitz sweep F/SQ", "nimitz tender F/SQ fix go", "nimitz ship set F/SQ/S --mode auto", "nimitz squadron set F/SQ --comms open"] {
+        for fix in ["nimitz start F/SQ/S", "nimitz relaunch F/SQ/S", "nimitz sweep F/SQ", "nimitz ship set F/SQ/S --mode auto", "nimitz squadron set F/SQ --comms open"] {
             assert!(may_run(&own, fix), "commodore: {fix}");
             assert!(may_run(&admiral, fix), "admiral: {fix}");
         }

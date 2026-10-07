@@ -155,6 +155,8 @@ struct S<'a> {
     labels: Option<&'a Id>,
     /// labels of another identity (labels.mismatch)
     labels_of: Option<&'a Id>,
+    /// labels as given (a 0.3.x tender's, which no id makes any more)
+    labels_raw: Option<std::collections::BTreeMap<String, String>>,
     /// a question left in the job row
     needs: Option<&'a str>,
     name_override: Option<String>,
@@ -188,7 +190,7 @@ impl World {
         let kind = if o.kind.is_empty() { "background" } else { o.kind };
         let started = self.now - if o.started_ago == 0.0 { 3600.0 } else { o.started_ago };
         let name = o.name_override.clone().unwrap_or_else(|| name.to_string());
-        let labels = o.labels_of.or(o.labels).map(|id| crate::claude::labels_for(&env(&self.base), id));
+        let labels = o.labels_raw.clone().or_else(|| o.labels_of.or(o.labels).map(|id| crate::claude::labels_for(&env(&self.base), id)));
         let home = claude_home(&self.base);
         if kind == "background" {
             let mut row = json!({
@@ -510,10 +512,22 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
         }
     }
 
-    // A tender: stopped with its labels (resume keeps its id).
-    let tender = Id::tender("MAIN", "ARGOS", "fixci");
-    let (_, t_sid) = w.session(&tender.name(), &argos_dir_s, bg(false, Some(&tender)));
-    w.bind(&tender, &argos_dir_s, &t_sid, "launch");
+    // A 0.3.x tender (the role is gone, plan-v4 section 8): a stopped job row
+    // with tender labels, and a v1 registry entry word for word, which the next
+    // load retires (`tender.retired` in check; `nimitz rm` takes the row).
+    let tender = Id("MAIN/ARGOS/~fixci".into());
+    let mut tl = crate::claude::labels_for(&env(&base), &tender);
+    tl.insert("NIMITZ_ROLE".into(), "tender".into());
+    tl.insert("NIMITZ_PARENT".into(), "MAIN/ARGOS".into());
+    let (_, t_sid) = w.session("[MAIN.ARGOS]-COMMODORE/fixci", &argos_dir_s, S { labels_raw: Some(tl), ..bg(false, None) });
+    let reg_path = env(&base).registry_path();
+    if let Some(mut reg) = read_json(&reg_path) {
+        reg["identities"][&tender.0] = json!({
+            "role": "tender", "name": "[MAIN.ARGOS]-COMMODORE/fixci", "cwd": argos_dir_s, "current": t_sid,
+            "lineage": [{"session_id": t_sid, "bound_at": w.now, "via": "launch"}],
+        });
+        write_json(&reg_path, &reg);
+    }
 
     // BETA's admiral: a transcript only (row 6).
     let _ = fs::create_dir_all(&beta_admiral);

@@ -33,7 +33,6 @@ pub enum MenuAction {
     EditShip(Id),
     EditFleet(String),
     EditSquadron(Id),
-    Tender(Id),
     MachineRm(String),
     /// adopt this session as this identity (from a `legacy` issue's fix)
     AdoptAs(String, String),
@@ -142,7 +141,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("A", "open: attach to a background session in a new pane"),
     ("x", "actions: stop, relaunch, sweep, rm, adopt, remove; on a fleet: layout, machines"),
     ("m", "message (ships: relayed by their commodore)"),
-    ("c / e / D", "create fleet, squadron, ship, tender / edit it / remove from config"),
+    ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
     ("f / F", "filter squadrons by state / flagged rows only"),
@@ -253,7 +252,6 @@ impl App {
             for sq in &mut f.squadrons {
                 mark(&mut sq.commodore);
                 sq.ships.iter_mut().for_each(mark);
-                sq.tenders.iter_mut().for_each(mark);
             }
         }
         self.bundle = Some(b);
@@ -573,20 +571,6 @@ impl App {
             Some((f, sq)) => v.push(MenuItem { key: 'p', label: format!("new ship in {f}/{sq}"), enabled: Ok(()), action: MenuAction::NewShip(f, sq) }),
             None => v.push(MenuItem { key: 'p', label: "new ship".into(), enabled: Err("select a squadron first".into()), action: MenuAction::NewFleet }),
         }
-        let tender = match self.target() {
-            Target::Squadron(id) => Ok(id),
-            Target::Member(id) if id.role() != Role::Admiral && id.squadron().is_some() => Ok(Id::commodore(id.fleet(), id.squadron().unwrap_or_default())),
-            _ => Err("select a squadron or its commodore".to_string()),
-        };
-        v.push(MenuItem {
-            key: 't',
-            label: match &tender {
-                Ok(id) => format!("new tender for {}", id.name()),
-                Err(_) => "new tender".into(),
-            },
-            enabled: tender.as_ref().map(|_| ()).map_err(|e| e.clone()),
-            action: tender.map(MenuAction::Tender).unwrap_or(MenuAction::NewFleet),
-        });
         let (label, edit) = match self.edit_action() {
             Ok((l, a)) => (l, Ok(a)),
             Err(e) => ("edit".to_string(), Err(e)),
@@ -666,10 +650,6 @@ impl App {
             MenuAction::EditSquadron(id) => {
                 let f = Form::edit_squadron(&self.ctx.env, &id);
                 self.open_or_say(f);
-                None
-            }
-            MenuAction::Tender(id) => {
-                self.open_form(Form::tender(&id));
                 None
             }
             MenuAction::MachineRm(f) => {

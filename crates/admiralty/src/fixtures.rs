@@ -1,5 +1,5 @@
 //! A realistic fixture world: three fleets, every status, every issue code of
-//! contracts.md section 7, crew, tenders, stowaways and panes. Tests and the
+//! contracts.md section 7, crew, stowaways and panes. Tests and the
 //! `--demo` flag render from this; nothing here touches the real machine.
 
 use std::collections::BTreeMap;
@@ -136,18 +136,17 @@ fn fleet_main() -> Fleet {
         &["session file: status idle for 2h"],
         Some(session(&boom_id, "ad44ad44", Some(4320), "background", Some("idle"), None, 10800.0, true)),
     );
-    let tender_id = Id::tender(f, "ARGOS", "ingest-logs");
-    let tender = member(
-        tender_id.clone(),
+    let ingest_id = Id::ship(f, "ARGOS", "INGEST");
+    let ingest = member(
+        ingest_id.clone(),
         Status::Busy,
         &["session file: status busy for 5m"],
-        Some(session(&tender_id, "ae55ae55", Some(4330), "background", Some("busy"), None, 600.0, true)),
+        Some(session(&ingest_id, "ae55ae55", Some(4330), "background", Some("busy"), None, 600.0, true)),
     );
     let argos = Squadron {
         id: sq,
         commodore,
-        ships: vec![bolt, boom],
-        tenders: vec![tender],
+        ships: vec![bolt, boom, ingest],
         comms: Comms::Mode("open".into()),
         issues: vec![],
     };
@@ -178,7 +177,6 @@ fn fleet_main() -> Fleet {
         id: sq,
         commodore,
         ships: vec![docs, pipeline],
-        tenders: vec![],
         comms: Comms::Mode("commodore-only".into()),
         issues: vec![],
     };
@@ -261,20 +259,19 @@ fn fleet_forge() -> Fleet {
         issue("folder.missing", Severity::Error, "/home/u/work/quench does not exist", Some("nimitz ship set FORGE/IRON/QUENCH --dir <folder>"), Some(&quench_id)),
         issue("ship.elsewhere", Severity::Error, "managed folder locked by home-server", None, Some(&quench_id)),
     ];
-    let t_id = Id::tender(f, "IRON", "hotfix");
+    let hotfix_id = Id::ship(f, "IRON", "HOTFIX");
     let mut hotfix = member(
-        t_id.clone(),
+        hotfix_id.clone(),
         Status::Stopped,
         &["job row failed"],
-        Some(session(&t_id, "ce55ce55", None, "background", None, None, 50000.0, true)),
+        Some(session(&hotfix_id, "ce55ce55", None, "background", None, None, 50000.0, true)),
     );
-    hotfix.session.as_mut().unwrap().labels.insert("NIMITZ_ID".into(), "FORGE/MOLD/~hotfix".into());
-    hotfix.issues = vec![issue("labels.mismatch", Severity::Error, "labels name FORGE/MOLD/~hotfix, registry says FORGE/IRON/~hotfix", Some("nimitz relaunch FORGE/IRON/~hotfix"), Some(&t_id))];
+    hotfix.session.as_mut().unwrap().labels.insert("NIMITZ_ID".into(), "FORGE/MOLD/HOTFIX".into());
+    hotfix.issues = vec![issue("labels.mismatch", Severity::Error, "labels name FORGE/MOLD/HOTFIX, registry says FORGE/IRON/HOTFIX", Some("nimitz relaunch FORGE/IRON/HOTFIX"), Some(&hotfix_id))];
     let iron = Squadron {
         id: sq,
         commodore,
-        ships: vec![anvil, hammer, quench],
-        tenders: vec![hotfix],
+        ships: vec![anvil, hammer, quench, hotfix],
         comms: Comms::Mode("open".into()),
         issues: vec![],
     };
@@ -297,7 +294,6 @@ fn fleet_forge() -> Fleet {
         id: sq.clone(),
         commodore,
         ships: vec![cast, flask],
-        tenders: vec![],
         comms: Comms::Allow { allow: vec!["MAIN/ARGOS/BOLT".into()] },
         issues: vec![issue("config.invalid", Severity::Error, "squadron.toml: ships[1] duplicate name CAST", Some("nimitz check FORGE/MOLD"), Some(&sq))],
     };
@@ -325,7 +321,7 @@ fn fleet_lab() -> Fleet {
         dir: "/home/u/.claude-nimitz/lab".into(),
         machine: None,
         admiral,
-        squadrons: vec![Squadron { id: sq, commodore, ships: vec![lens], tenders: vec![], comms: Comms::default(), issues: vec![] }],
+        squadrons: vec![Squadron { id: sq, commodore, ships: vec![lens], comms: Comms::default(), issues: vec![] }],
         issues: vec![],
     }
 }

@@ -22,7 +22,6 @@ const COMMON: &str = include_str!("../rules/common.md");
 const ADMIRAL: &str = include_str!("../rules/admiral.md");
 const COMMODORE: &str = include_str!("../rules/commodore.md");
 const SHIP: &str = include_str!("../rules/ship.md");
-const TENDER: &str = include_str!("../rules/tender.md");
 
 /// The rules for `id`'s role, filled in for `id`.
 pub fn text(id: &Id) -> String {
@@ -31,7 +30,6 @@ pub fn text(id: &Id) -> String {
         Role::Admiral => ADMIRAL,
         Role::Commodore => COMMODORE,
         Role::Ship => SHIP,
-        Role::Tender => TENDER,
     };
     let sq = id.squadron().unwrap_or_default();
     let where_ = match role {
@@ -70,7 +68,9 @@ pub fn brief(id: &Id) -> String {
     }
 }
 
-/// Every brief nimitz generated before this one, oldest first.
+/// Every brief nimitz generated before this one, oldest first, word for word
+/// (so the 0.3.x wording stays, tenders and all: it is how an old brief is
+/// recognised).
 fn old_briefs(id: &Id) -> Vec<String> {
     let f = id.fleet();
     match id.role() {
@@ -165,7 +165,7 @@ pub fn issues(env: &Env, snap: &Snapshot) -> Vec<Issue> {
         let mut ms = vec![&f.admiral];
         for sq in &f.squadrons {
             ms.push(&sq.commodore);
-            ms.extend(sq.ships.iter().chain(sq.tenders.iter()));
+            ms.extend(sq.ships.iter());
         }
         for m in ms {
             let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some()) else { continue };
@@ -204,9 +204,8 @@ mod tests {
         assert!(a.contains("## Admiral of HOME") && a.contains("Never another fleet"));
         let s = text(&Id::ship("HOME", "GITHUB", "DEV"));
         assert!(s.contains("[HOME.GITHUB]-DEV, the ship in squadron GITHUB") && s.contains("no one watches your pane"));
-        let td = text(&Id::tender("HOME", "GITHUB", "fix"));
-        assert!(td.contains("## Tender of HOME/GITHUB"));
-        for id in [Id::admiral("A"), Id::commodore("A", "B"), Id::ship("A", "B", "C"), Id::tender("A", "B", "t")] {
+        assert!(!t.contains("tender") && !a.contains("tender") && !s.contains("tender"), "the role is gone");
+        for id in [Id::admiral("A"), Id::commodore("A", "B"), Id::ship("A", "B", "C")] {
             assert!(text(&id).len() < 10_000, "fits SessionStart's 10,000-character context limit");
         }
     }

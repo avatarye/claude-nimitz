@@ -66,7 +66,7 @@ fn find_member(snap: &Snapshot, id: &Id) -> Option<Member> {
             if &sq.commodore.id == id {
                 return Some(sq.commodore.clone());
             }
-            for m in sq.ships.iter().chain(sq.tenders.iter()) {
+            for m in &sq.ships {
                 if &m.id == id {
                     return Some(m.clone());
                 }
@@ -99,7 +99,6 @@ fn sandbox_world_has_every_shape() {
     assert_eq!(main.squadrons.len(), 2);
     let argos = main.squadrons.iter().find(|s| s.id.0 == "MAIN/ARGOS").unwrap();
     assert_eq!(argos.ships.len(), 16);
-    assert_eq!(argos.tenders.len(), 1, "the stopped tender");
     // the admiral is live and clean, with its crew and tasks
     assert_eq!(main.admiral.status, Status::Busy);
     assert!(main.admiral.crew.iter().any(|c| c.teammate && c.label == "planner"));
@@ -327,23 +326,11 @@ fn row7_no_row_no_transcript_cold_launches_with_the_config_prompt() {
 }
 
 #[test]
-fn row7_cold_launch_refuses_a_ship_with_no_prompt_and_a_dead_tender() {
+fn row7_cold_launch_refuses_a_ship_with_no_prompt() {
     let w = world();
     let snap = w.snap();
     let plan = w.start(&snap, &w.ship("NOPROMPT"), false);
     assert!(plan.refusals.iter().any(|i| i.message.contains("no prompt")), "{:?}", plan.refusals);
-    // a tender that left nothing is not restarted cold
-    let gone = Id::tender("MAIN", "ARGOS", "vanished");
-    let mut snap2 = snap.clone();
-    let sq = &mut snap2.fleets.iter_mut().find(|f| f.id.fleet() == "MAIN").unwrap().squadrons[0];
-    let mut t = sq.tenders[0].clone();
-    t.id = gone.clone();
-    t.expected_name = gone.name();
-    t.session = None;
-    t.extra_rows.clear();
-    sq.tenders.push(t);
-    let plan = w.start(&snap2, &gone, false);
-    assert!(plan.refusals.iter().any(|i| i.message.contains("a tender is one job")), "{:?}", plan.refusals);
 }
 
 // ------------------------------------------------------------------ row 8
@@ -406,13 +393,13 @@ fn sweep_removes_stale_rows_without_starting_anything() {
 #[test]
 fn sweep_authority_you_any_scope_a_commodore_its_own_squadron() {
     let w = world();
-    // give the tender a stale copy row: a labelled fork, then stopped
-    let tender = Id::tender("MAIN", "ARGOS", "fixci");
-    let tm = w.member(&w.snap(), &tender);
+    // give STOPPED a stale copy row: a labelled fork, then stopped
+    let stopped = w.ship("STOPPED");
+    let tm = w.member(&w.snap(), &stopped);
     let tsid = tm.session.as_ref().unwrap().session_id.clone();
-    let (rc, out) = claude::run(&claude::relaunch_bg(&w.env, &tender, "default", &tsid), tm.cwd.as_deref());
+    let (rc, out) = claude::run(&claude::relaunch_bg(&w.env, &stopped, "default", &tsid), tm.cwd.as_deref());
     assert_eq!(rc, 0, "{out}");
-    let copy = w.member(&w.snap(), &tender).extra_rows.into_iter().find(|r| r.pid.is_some()).expect("the copy");
+    let copy = w.member(&w.snap(), &stopped).extra_rows.into_iter().find(|r| r.pid.is_some()).expect("the copy");
     let (rc, out) = claude::run(&claude::stop(&w.env, copy.short_id.as_deref().unwrap()), None);
     assert_eq!(rc, 0, "{out}");
 
@@ -422,8 +409,8 @@ fn sweep_authority_you_any_scope_a_commodore_its_own_squadron() {
     let plan = sessions::plan_sweep(&w.env, &snap, None, &own);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let ids: std::collections::BTreeSet<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).collect();
-    assert!(ids.contains(&w.ship("COPIES")) && ids.contains(&tender), "{ids:?}");
-    assert!(ids.iter().all(|i| i.parent().as_ref() == Some(&argos)), "only its own ships and tenders: {ids:?}");
+    assert!(ids.contains(&w.ship("COPIES")) && ids.contains(&stopped), "{ids:?}");
+    assert!(ids.iter().all(|i| i.parent().as_ref() == Some(&argos)), "only its own ships: {ids:?}");
     // its own squadron by name, or one of its ships: fine
     assert!(sessions::plan_sweep(&w.env, &snap, Some(&argos), &own).ok());
     assert!(sessions::plan_sweep(&w.env, &snap, Some(&w.ship("COPIES")), &own).ok());
@@ -433,7 +420,6 @@ fn sweep_authority_you_any_scope_a_commodore_its_own_squadron() {
         (Some(Id::admiral("MAIN")), own.clone()),
         (Some(Id::admiral("BETA")), Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral }),
         (None, Caller::Member { id: w.ship("CLEAN"), role: Role::Ship }),
-        (None, Caller::Member { id: tender.clone(), role: Role::Tender }),
     ] {
         let p = sessions::plan_sweep(&w.env, &snap, target.as_ref(), &caller);
         assert!(has(&p.refusals, "authority"), "{target:?} {caller:?}: {:?}", p.refusals);
@@ -451,7 +437,7 @@ fn sweep_authority_you_any_scope_a_commodore_its_own_squadron() {
     assert!(out.verified, "{:?}", out.issues);
     let after = w.snap();
     assert!(w.member(&after, &w.ship("COPIES")).extra_rows.is_empty());
-    assert!(w.member(&after, &tender).extra_rows.is_empty());
+    assert!(w.member(&after, &stopped).extra_rows.is_empty());
 }
 
 // ------------------------------------------------------------------ row 10
@@ -778,39 +764,41 @@ fn a_commodore_revives_its_ship_while_the_admiral_is_down() {
     assert_eq!(plan.steps.last().unwrap().id.as_ref(), Some(&ship));
 }
 
+/// A 0.3.x tender (plan-v4 section 8): its v1 registry entry is retired on
+/// load (history only, never a member), its job row is one `tender.retired`
+/// (Info) with `nimitz rm <short>` as the fix, and that rm takes it.
 #[test]
-fn tender_is_one_background_job_for_its_commodore() {
+fn a_0_3_x_tender_is_retired_history_only() {
     let w = world();
+    let tid = "MAIN/ARGOS/~fixci";
+    let reg = nimitz_core::registry::load(&w.env);
+    assert!(!reg.identities.contains_key(tid), "no member");
+    let rec = &reg.retired[tid];
+    assert_eq!(rec.lineage.len(), 1, "its history stays");
+    let sid = rec.current.clone().unwrap();
     let snap = w.snap();
-    let c = Id::commodore("MAIN", "ARGOS");
-    let plan = sessions::plan_tender(&w.env, &snap, &c, "ci-fix", "Fix the failing CI job.", &Caller::User);
+    assert!(find_member(&snap, &Id(tid.into())).is_none());
+    assert!(!snap.fleets.iter().flat_map(|f| f.squadrons.iter()).flat_map(|s| s.ships.iter()).any(|m| m.id.0.contains('~')), "never listed");
+    assert!(!snap.stowaways.iter().any(|s| s.session_id == sid), "no stowaway either");
+    let issues: Vec<&Issue> = snap.issues.iter().filter(|i| i.code == "tender.retired").collect();
+    assert_eq!(issues.len(), 1, "{:?}", snap.issues);
+    let i = issues[0];
+    let short = w.rows().into_iter().find(|r| r.session_id == sid).unwrap().short_id.unwrap();
+    assert_eq!((i.severity, i.fix.as_deref()), (Severity::Info, Some(format!("nimitz rm {short}").as_str())), "{i:?}");
+    assert_eq!(i.id.as_ref().map(|x| x.0.as_str()), Some(tid));
+    assert!(nimitz_core::check::check(&w.env, &snap, None).iter().any(|i| i.code == "tender.retired"), "check shows it once");
+    assert!(!snap.issues.iter().any(|i| i.code == "config.invalid" && i.message.contains(tid)), "not twice");
+    // the fix: the squadron's commodore may run it (its own squadron), another may not
+    let other = Caller::Member { id: Id::commodore("MAIN", "BOREAL"), role: Role::Commodore };
+    assert!(has(&sessions::plan_rm(&w.env, &snap, &short, &other).refusals, "authority"));
+    let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
+    let plan = sessions::plan_rm(&w.env, &snap, &short, &own);
     assert!(plan.ok(), "{:?}", plan.refusals);
-    let id = Id::tender("MAIN", "ARGOS", "ci-fix");
-    assert_eq!(plan.steps[0].id, Some(id.clone()));
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
-    let m = w.member(&w.snap(), &id);
-    assert_eq!(m.role, Role::Tender);
-    assert_eq!(m.session.as_ref().unwrap().name, "[MAIN.ARGOS]-COMMODORE/ci-fix");
-    assert_eq!(m.session.as_ref().unwrap().labels.get("NIMITZ_PARENT"), Some(&c.0));
-    // a ship may not start a tender; a bad task name is refused
-    let ship = Caller::Member { id: w.ship("CLEAN"), role: Role::Ship };
-    assert!(!sessions::plan_tender(&w.env, &snap, &c, "x", "p", &ship).ok());
-    assert!(!sessions::plan_tender(&w.env, &snap, &c, "bad name", "p", &Caller::User).ok());
-    assert!(!sessions::plan_tender(&w.env, &snap, &c, "ok", "  ", &Caller::User).ok());
-}
-
-#[test]
-fn a_stopped_tender_resumes_and_keeps_its_id() {
-    let w = world();
-    let snap = w.snap();
-    let id = Id::tender("MAIN", "ARGOS", "fixci");
-    let before = w.member(&snap, &id).session.unwrap();
-    let plan = w.start(&snap, &id, false);
-    assert!(plan.ok(), "{:?}", plan.refusals);
-    let out = sessions::apply(&w.env, &plan);
-    assert!(out.verified, "{:?}", out.issues);
-    assert_eq!(w.member(&w.snap(), &id).session.unwrap().session_id, before.session_id);
+    let after = w.snap();
+    assert!(!after.issues.iter().any(|i| i.code == "tender.retired"), "{:?}", after.issues);
+    assert!(nimitz_core::registry::load(&w.env).retired.contains_key(tid), "the history is not touched by an rm");
 }
 
 #[test]
@@ -921,13 +909,13 @@ fn fake_claude_reproduces_every_probed_resume_case() {
     assert_eq!(rc, 0);
     assert!(out.contains("saved options"), "{out}");
 
-    // ACME: the PATH wrapper adds its own --settings, so a resume through it is a copy
-    let tender = Id::tender("MAIN", "ARGOS", "fixci");
-    let tm = w.member(&w.snap(), &tender);
-    let tsid = tm.session.as_ref().unwrap().session_id.clone();
+    // ACME: the PATH wrapper adds its own --settings, so a resume through it is a
+    // copy (any stopped row shows it; this one is the 0.3.x tender's)
+    let tr = w.rows().into_iter().find(|r| r.name == "[MAIN.ARGOS]-COMMODORE/fixci" && !r.live()).expect("a stopped row");
+    let tsid = tr.session_id.clone();
     assert_ne!(w.env.claude_bin, w.env.native_claude_bin, "the sandbox models the wrapper");
     let cmd = vec![w.env.claude_bin.clone(), "--bg".into(), "--resume".into(), tsid.clone()];
-    let (rc, out) = claude::run(&cmd, tm.cwd.as_deref());
+    let (rc, out) = claude::run(&cmd, Some(&tr.cwd));
     assert_eq!(rc, 0);
     assert!(out.contains("started a copy"), "{out}");
     assert!(!w.rows().iter().any(|r| r.session_id == tsid && r.live()), "the original stays stopped");
@@ -1500,7 +1488,7 @@ fn no_plan_forks_a_session() {
         let mut ids = vec![f.admiral.id.clone()];
         for sq in &f.squadrons {
             ids.push(sq.commodore.id.clone());
-            ids.extend(sq.ships.iter().chain(sq.tenders.iter()).map(|m| m.id.clone()));
+            ids.extend(sq.ships.iter().map(|m| m.id.clone()));
         }
         for id in ids {
             for force in [false, true] {

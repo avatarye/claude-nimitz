@@ -46,8 +46,6 @@ pub enum Act {
     ConfigRm,
     /// a create or edit form's config change
     Save,
-    /// a tender for a commodore (a form)
-    Tender,
     /// `nimitz layout herdr F`, run by the CLI
     Layout,
     /// the same with `--ships` (a tab attaching each live ship)
@@ -70,7 +68,6 @@ impl Act {
             Act::Adopt => 'd',
             Act::ConfigRm => 'D',
             Act::Save => 'c',
-            Act::Tender => 't',
             Act::Layout => 'L',
             Act::LayoutShips => 'S',
         }
@@ -85,10 +82,9 @@ impl Act {
             Act::Relaunch => "relaunch (new session, labels and name right)",
             Act::Sweep => "sweep stale job rows",
             Act::Rm => "rm job rows (transcripts kept)",
-            Act::Adopt => "adopt as a ship or tender",
+            Act::Adopt => "adopt as a ship",
             Act::ConfigRm => "remove from the config",
             Act::Save => "save the config change",
-            Act::Tender => "new tender: one background job for this commodore",
             Act::Layout => "layout herdr: workspaces and tabs for this fleet",
             Act::LayoutShips => "layout herdr --ships: and a tab attaching each live ship",
         }
@@ -106,7 +102,6 @@ impl Act {
             Act::Adopt => "adopt",
             Act::ConfigRm => "remove",
             Act::Save => "save",
-            Act::Tender => "tender",
             Act::Layout | Act::LayoutShips => "layout",
         }
     }
@@ -178,7 +173,7 @@ pub fn find_member<'a>(snap: &'a Snapshot, id: &Id) -> Option<&'a Member> {
             if &sq.commodore.id == id {
                 return Some(&sq.commodore);
             }
-            if let Some(m) = sq.ships.iter().chain(sq.tenders.iter()).find(|m| &m.id == id) {
+            if let Some(m) = sq.ships.iter().find(|m| &m.id == id) {
                 return Some(m);
             }
         }
@@ -216,9 +211,6 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
     }
     match (act, target) {
         (Act::Save, _) => Ok(()),
-        (Act::Tender, Target::Squadron(_)) => Ok(()),
-        (Act::Tender, Target::Member(id)) if id.role() == Role::Commodore => Ok(()),
-        (Act::Tender, _) => Err("a tender belongs to a commodore (select its squadron or commodore)".into()),
         (Act::Layout | Act::LayoutShips, _) if !caps.layout => Err("the multiplexer here has no layout (Herdr has)".into()),
         (Act::Layout | Act::LayoutShips, Target::Fleet(id)) => match snap.fleets.iter().find(|f| &f.id == id) {
             Some(f) if f.machine.is_some() => Ok(()),
@@ -597,7 +589,7 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     let m = find_member(snap, id).ok_or("not in the snapshot")?;
     let (via_m, relay) = match m.role {
         Role::Admiral | Role::Commodore => (m, false),
-        Role::Ship | Role::Tender => {
+        Role::Ship => {
             let sq = id.parent().ok_or("no squadron")?;
             (find_member(snap, &sq).ok_or("its commodore is not in the snapshot")?, true)
         }

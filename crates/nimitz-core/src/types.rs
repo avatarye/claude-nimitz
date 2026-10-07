@@ -7,13 +7,27 @@ use std::path::PathBuf;
 
 // ------------------------------------------------------------------ roles and ids
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Admiral,
     Commodore,
     Ship,
-    Tender,
+}
+
+/// `admiral | commodore | ship`; a 0.3.x registry's `tender` reads as a ship
+/// (the id `F/SQ/~task` is what marks it, and `migrate::retire_tenders` moves
+/// such an identity out of the members).
+impl<'de> Deserialize<'de> for Role {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Role, D::Error> {
+        let s = String::deserialize(d)?;
+        match s.as_str() {
+            "admiral" => Ok(Role::Admiral),
+            "commodore" => Ok(Role::Commodore),
+            "ship" | "tender" => Ok(Role::Ship),
+            other => Err(serde::de::Error::unknown_variant(other, &["admiral", "commodore", "ship"])),
+        }
+    }
 }
 
 impl Role {
@@ -22,16 +36,15 @@ impl Role {
             Role::Admiral => "admiral",
             Role::Commodore => "commodore",
             Role::Ship => "ship",
-            Role::Tender => "tender",
         }
     }
-    /// Admirals and commodores are interactive sessions; ships and tenders background.
+    /// Admirals and commodores are interactive sessions; ships background.
     pub fn interactive(self) -> bool {
         matches!(self, Role::Admiral | Role::Commodore)
     }
 }
 
-/// `F`, `F/SQ`, `F/SQ/SHIP`, `F/SQ/~task` (contracts.md section 4).
+/// `F`, `F/SQ`, `F/SQ/SHIP` (contracts.md section 4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Id(pub String);
 
@@ -44,9 +57,6 @@ impl Id {
     }
     pub fn ship(fleet: &str, sq: &str, ship: &str) -> Id {
         Id(format!("{fleet}/{sq}/{ship}"))
-    }
-    pub fn tender(fleet: &str, sq: &str, task: &str) -> Id {
-        Id(format!("{fleet}/{sq}/~{task}"))
     }
     pub fn parts(&self) -> Vec<&str> {
         self.0.split('/').collect()
@@ -62,7 +72,6 @@ impl Id {
         match p.len() {
             1 => Role::Admiral,
             2 => Role::Commodore,
-            _ if p[2].starts_with('~') => Role::Tender,
             _ => Role::Ship,
         }
     }
@@ -72,7 +81,6 @@ impl Id {
         match (self.role(), p.as_slice()) {
             (Role::Admiral, [f]) => format!("[{f}]-ADMIRAL"),
             (Role::Commodore, [f, sq]) => format!("[{f}.{sq}]-COMMODORE"),
-            (Role::Tender, [f, sq, t]) => format!("[{f}.{sq}]-COMMODORE/{}", t.trim_start_matches('~')),
             (_, [f, sq, s]) => format!("[{f}.{sq}]-{s}"),
             _ => self.0.clone(),
         }
@@ -164,6 +172,9 @@ pub struct SquadronConfig {
     pub permission_mode: Option<String>,
     #[serde(default)]
     pub ships: Vec<ShipDef>,
+    /// 0.3.x tender lines, read and ignored (`check` says so), never written back
+    #[serde(default, skip_serializing)]
+    pub tenders: Option<toml::Value>,
 }
 
 /// One fleet on disk: its config, its squadrons, and where they live.
@@ -202,6 +213,10 @@ pub struct Registry {
     pub machine: String,
     #[serde(default)]
     pub identities: BTreeMap<String, IdentityRecord>,
+    /// identities of roles that no longer exist (0.3.x tenders), kept as
+    /// history by `migrate::retire_tenders`; never members, never started
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retired: BTreeMap<String, IdentityRecord>,
 }
 
 // ------------------------------------------------------------------ events
@@ -326,7 +341,6 @@ pub struct Squadron {
     pub id: Id,
     pub commodore: Member,
     pub ships: Vec<Member>,
-    pub tenders: Vec<Member>,
     pub comms: Comms,
     pub issues: Vec<Issue>,
 }

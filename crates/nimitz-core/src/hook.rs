@@ -1,6 +1,6 @@
 //! `nimitz hook <Event>` logic: append an Event; for PreToolUse SendMessage, decide
 //! allow/deny from the comms rule (contracts.md sections 5, plan-v3 section 7);
-//! when a ship or tender blocks on the user (AskUserQuestion, PermissionRequest,
+//! when a ship blocks on the user (AskUserQuestion, PermissionRequest,
 //! a blocking Notification), record a needs-you notice for its commodore
 //! (`notify`). Owner: core-sessions.
 //!
@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 
-const LABELS: [&str; 6] = ["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_PARENT", "NIMITZ_HOME"];
+const LABELS: [&str; 5] = ["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_HOME"];
 
 /// Handle one hook call. `stdin` is Claude Code's hook JSON; `vars` the hook's env.
 /// Returns the text to print on stdout (empty, or a decision JSON). Never panics.
@@ -63,7 +63,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             .to_string();
         }
     }
-    // A ship or tender now blocks on the user: record it for its commodore.
+    // A ship now blocks on the user: record it for its commodore.
     // Moving on (a prompt, a stop, the end) closes its notice.
     let mut notice = None;
     if let Some(n) = crate::notify::from_hook(event, &input, &labels) {
@@ -208,7 +208,7 @@ fn resolve_socket(env: &Env, to: &str) -> Option<String> {
 /// The chain-of-command signal table (plan-v3 section 7). Targets that are not
 /// fleet names (teammates of an agent team, other sessions) are not ours to
 /// rule, except an address nimitz cannot resolve (a socket, BUG-22): a ship
-/// under a closed comms rule, or a tender, may not signal what it cannot name.
+/// under a closed comms rule may not signal what it cannot name.
 pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
     if to_name.contains(':') && !to_name.starts_with('[') {
         let resolved = resolve_socket(env, to_name);
@@ -216,7 +216,6 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
             return may_signal(env, from, name);
         }
         let closed = match from.role() {
-            Role::Tender => true,
             Role::Ship => !matches!(squadron_comms(env, from), Comms::Mode(m) if m == "open"),
             _ => false,
         };
@@ -241,12 +240,8 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
         },
         Role::Commodore => match to.role() {
             Role::Admiral if to.fleet() == from.fleet() => Ok(()),
-            Role::Ship | Role::Tender if same_sq => Ok(()),
-            _ => deny(format!("a commodore signals its admiral, its ships and its tenders, not {to_name}")),
-        },
-        Role::Tender => match to.role() {
-            Role::Commodore if same_sq => Ok(()),
-            _ => deny(format!("a tender signals only its commodore, not {to_name}")),
+            Role::Ship if same_sq => Ok(()),
+            _ => deny(format!("a commodore signals its admiral and its ships, not {to_name}")),
         },
         Role::Ship => match to.role() {
             Role::Commodore if same_sq => Ok(()),
@@ -326,22 +321,16 @@ mod tests {
         let adm = Id::admiral("MAIN");
         let argos = Id::commodore("MAIN", "ARGOS");
         let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
-        let tender = Id::tender("MAIN", "ARGOS", "fix");
         let one = Id::ship("MAIN", "BOREAL", "ONE");
 
         // an admiral signals its own commodores and nothing else
         assert!(!denied(&send(&env, &adm, &argos.name())));
         assert!(denied(&send(&env, &adm, &ship.name())));
         assert!(denied(&send(&env, &adm, &Id::commodore("OTHER", "SQ").name())));
-        // a commodore: its admiral, its ships, its tenders
+        // a commodore: its admiral, its ships
         assert!(!denied(&send(&env, &argos, &adm.name())));
         assert!(!denied(&send(&env, &argos, &ship.name())));
-        assert!(!denied(&send(&env, &argos, &tender.name())));
         assert!(denied(&send(&env, &argos, &one.name())), "not a ship of another squadron");
-        // a tender: only its commodore
-        assert!(!denied(&send(&env, &tender, &argos.name())));
-        assert!(denied(&send(&env, &tender, &adm.name())));
-        assert!(denied(&send(&env, &tender, &ship.name())));
         // a ship: its commodore always
         assert!(!denied(&send(&env, &ship, &argos.name())));
         assert!(denied(&send(&env, &ship, &adm.name())), "a ship does not signal the admiral");

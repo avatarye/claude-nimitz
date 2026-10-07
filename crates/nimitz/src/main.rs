@@ -68,7 +68,6 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   start|stop|relaunch <id>         one member; start brings up missing parents first
   rm <id|session>                  remove job rows (never transcripts)
   sweep [<id>]                     drop stale copy rows
-  tender <F/SQ> <task> <prompt>    one background job for a commodore
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member (ships: through the commodore)
   open <id>                        show a member in a pane
@@ -77,7 +76,7 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
   sandbox create|tick|env <dir>    a fake world for tests and demos
 
-ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship), F/SQ/~task (tender)";
+ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship)";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -139,7 +138,6 @@ fn dispatch(argv: Vec<String>) -> i32 {
         "relaunch" => members::relaunch(&ctx),
         "rm" => members::rm(&ctx),
         "sweep" => members::sweep(&ctx),
-        "tender" => members::tender(&ctx),
         "adopt" => members::adopt(&ctx),
         "signal" => members::signal(&ctx),
         "open" => members::open(&ctx),

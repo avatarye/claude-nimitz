@@ -17,7 +17,7 @@ pub fn load(env: &Env) -> Registry {
 
 /// `locked`: the caller holds `registry.lock` already (flock does not nest).
 fn load_with(env: &Env, locked: bool) -> Registry {
-    match std::fs::read_to_string(env.registry_path()) {
+    let mut r = match std::fs::read_to_string(env.registry_path()) {
         Err(_) => fresh(env),
         Ok(raw) => match serde_json::from_str(&raw) {
             Ok(r) => r,
@@ -27,11 +27,15 @@ fn load_with(env: &Env, locked: bool) -> Registry {
                 Err(_) => rebuild(env).0, // read-only: rebuild in memory only
             },
         },
-    }
+    };
+    // A 0.3.x registry: its tender identities become history (plan-v4 section
+    // 8). A read never writes; the next `update` saves the moved shape.
+    crate::migrate::retire_tenders(&mut r);
+    r
 }
 
 fn fresh(env: &Env) -> Registry {
-    Registry { version: 1, machine: env.hostname.clone(), identities: Default::default() }
+    Registry { version: 1, machine: env.hostname.clone(), ..Default::default() }
 }
 
 fn parse_file(p: &Path) -> Option<Registry> {

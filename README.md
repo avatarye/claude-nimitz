@@ -6,7 +6,7 @@ a Claude subscription login and with Bedrock.
 - `nimitz`: the command that builds and runs fleets, squadrons and ships.
 - **Admiralty**: the TUI where you watch and control every fleet.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
-  tell a commodore at once when one of its ships or tenders waits on you.
+  tell a commodore at once when one of its ships waits on you.
 
 Status: in testing (Claude Code 2.1.288 - 2.1.289).
 
@@ -42,9 +42,10 @@ sandbox: `nimitz sandbox create /tmp/nz --herdr && eval "$(nimitz sandbox env /t
 | `probes/p0_probe.py` | The probe script. |
 
 Vocabulary: a **fleet** has one **admiral**; a fleet has **squadrons**, each
-commanded by a **commodore**; a squadron has **ships** (background agents);
-a commodore can send out **tenders** (helpers); sessions carry **crew**
-(sub-agents). Admiralty is the office where the admirals work.
+commanded by a **commodore**; a squadron has **ships** (background agents); sessions carry **crew**
+(sub-agents). Admiralty is the office where the admirals work. (The tender
+role of 0.3.x, one job for a commodore, was removed in 0.4.0: one-off work is
+a subagent in the lead's session, or a ship.)
 
 Who may run what (`nimitz` reads the caller from the session's labels; no
 labels is you):
@@ -52,9 +53,9 @@ labels is you):
 | Caller | May run |
 | --- | --- |
 | you | everything |
-| admiral | every command inside its own fleet, on any member but itself: start, stop, relaunch, rm, sweep, tender, adopt, up, layout herdr, fleet set, squadron new/set/rm, ship new/set/rm |
-| commodore | inside its own squadron: start, stop, relaunch, rm, sweep, tender, adopt for its ships and tenders; squadron set; ship new/set/rm |
-| ship, tender | nothing |
+| admiral | every command inside its own fleet, on any member but itself: start, stop, relaunch, rm, sweep, adopt, up, layout herdr, fleet set, squadron new/set/rm, ship new/set/rm |
+| commodore | inside its own squadron: start, stop, relaunch, rm, sweep, adopt for its ships; squadron set; ship new/set/rm |
+| ship | nothing |
 
 `init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` stay yours. More
 authority skips nothing: every change is still `--plan` first, then `--yes`.

@@ -107,7 +107,7 @@ impl Sb {
                 if sq["commodore"]["id"] == id {
                     return Some(sq["commodore"].clone());
                 }
-                for m in sq["ships"].as_array()?.iter().chain(sq["tenders"].as_array()?) {
+                for m in sq["ships"].as_array()? {
                     if m["id"] == id {
                         return Some(m.clone());
                     }
@@ -334,13 +334,6 @@ fn bug18_a_corrupt_registry_is_kept_and_reported() {
         n != "registry.json" && n.starts_with("registry") && std::fs::read(e.path()).unwrap_or_default() == b"{garbage"
     });
     assert!(kept || r.out.to_lowercase().contains("registry"), "the corrupt registry was replaced in silence; every lineage is gone:\n{}", r.out);
-}
-
-#[test]
-fn bug19_a_stowaway_can_be_adopted_as_a_tender() {
-    let sb = Sb::new(false);
-    let r = sb.run(&["adopt", "060f8274", "MAIN/ARGOS/~adopted", "--yes"]);
-    assert_eq!(r.code, 0, "plan-v3 5.3 says adopt makes a ship or a tender:\n{}", r.out);
 }
 
 #[test]

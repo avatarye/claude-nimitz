@@ -109,11 +109,6 @@ pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
     }
     m.insert("NIMITZ_ROLE".to_string(), id.role().as_str().to_string());
     m.insert("NIMITZ_ID".to_string(), id.0.clone());
-    if id.role() == Role::Tender {
-        if let Some(p) = id.parent() {
-            m.insert("NIMITZ_PARENT".to_string(), p.0);
-        }
-    }
     m.insert("NIMITZ_HOME".to_string(), env.home.to_string_lossy().into_owned());
     m
 }
@@ -135,7 +130,7 @@ fn mode_args(mode: &str) -> Vec<String> {
     }
 }
 
-/// Cold launch of a ship or tender: `claude --bg --name N --permission-mode M --settings S [prompt]`.
+/// Cold launch of a ship: `claude --bg --name N --permission-mode M --settings S [prompt]`.
 pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--name".into(), id.name()];
     c.extend(mode_args(mode));
@@ -203,9 +198,7 @@ mod tests {
         assert_eq!(c.last().unwrap(), "go");
         // resume: native binary, no flags at all
         assert_eq!(resume_bg(&env, "sid"), vec!["/n/claude", "--bg", "--resume", "sid"]);
-        // tenders carry their parent; interactive sessions have no worktree key
-        let t = Id::tender("F", "SQ", "fix");
-        assert_eq!(labels_for(&env, &t).get("NIMITZ_PARENT").map(String::as_str), Some("F/SQ"));
+        // interactive sessions have no worktree key
         let i = interactive(&env, &Id::commodore("F", "SQ"), "", true);
         assert_eq!(&i[..4], &["claude", "-c", "--name", "[F.SQ]-COMMODORE"]);
         assert!(!i[5].contains("worktree"));

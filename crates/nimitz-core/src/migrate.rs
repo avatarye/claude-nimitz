@@ -236,6 +236,7 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
             comms: Comms::default(),
             permission_mode: None,
             ships,
+            tenders: None,
         };
         // Already migrated? Identical means nothing to plan; different refuses.
         if let Some(prev) = existing.as_ref().and_then(|f| f.squadrons.iter().find(|(_, s)| s.squadron == sq_name)) {
@@ -324,10 +325,105 @@ fn check_result(env: &Env, fleet_dir: &Path, config: &FleetConfig, existing: Opt
     }
 }
 
+// ------------------------------------------------------------------ 0.3.x tenders
+
+/// Was `id` a 0.3.x tender (`F/SQ/~task`)? The role was removed in 0.4.0: its
+/// identities and job rows are history only (never a member, never started).
+pub fn is_tender_id(id: &str) -> bool {
+    let p: Vec<&str> = id.split('/').collect();
+    p.len() == 3 && p[2].starts_with('~')
+}
+
+/// Move every tender identity of a v1 registry to `retired`. Returns how many
+/// moved. `registry::load` runs it on every read (in memory, nothing is
+/// written); the next registry write saves the moved shape.
+pub fn retire_tenders(r: &mut Registry) -> usize {
+    let ids: Vec<String> = r.identities.keys().filter(|k| is_tender_id(k)).cloned().collect();
+    for id in &ids {
+        if let Some(rec) = r.identities.remove(id) {
+            r.retired.entry(id.clone()).or_insert(rec);
+        }
+    }
+    ids.len()
+}
+
+/// `tender.retired` (Warn) for a squadron.toml that still carries 0.3.x tender
+/// lines: they are read and ignored, and go away at the next `squadron set`.
+pub fn tender_config_issue(sd: &Path, sq: &SquadronConfig, id: &Id) -> Option<Issue> {
+    sq.tenders.as_ref()?;
+    Some(Issue {
+        code: "tender.retired".into(),
+        severity: Severity::Warn,
+        message: format!("{} has tender lines; the tender role was removed in 0.4.0, so they are ignored", sd.join("squadron.toml").display()),
+        fix: Some(format!("remove the tender lines from {}", sd.join("squadron.toml").display())),
+        id: Some(id.clone()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::tests::{apply_ok, test_env};
+
+    #[test]
+    fn a_v1_registry_retires_its_tenders_on_load() {
+        let (_td, env) = test_env();
+        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
+        crate::registry::update(&env, |r| crate::registry::bind(r, &ship, Role::Ship, &ship.name(), "/w", "sid-1", "launch", 1.0)).unwrap();
+        // the 0.3.x shape, word for word: a `tender` role and a `~task` id
+        let raw = std::fs::read_to_string(env.registry_path()).unwrap();
+        let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        v["identities"]["MAIN/ARGOS/~fixci"] = serde_json::json!({
+            "role": "tender", "name": "[MAIN.ARGOS]-COMMODORE/fixci", "cwd": "/sq", "current": "sid-t",
+            "lineage": [{"session_id": "sid-t", "bound_at": 2.0, "via": "launch"}]});
+        std::fs::write(env.registry_path(), v.to_string()).unwrap();
+        let r = crate::registry::load(&env);
+        assert_eq!(r.identities.keys().collect::<Vec<_>>(), [&ship.0], "the tender is no member");
+        assert_eq!(r.retired["MAIN/ARGOS/~fixci"].current.as_deref(), Some("sid-t"), "its history stays");
+        assert_eq!(r.retired["MAIN/ARGOS/~fixci"].lineage.len(), 1);
+        // a read writes nothing: the file keeps its 0.3.x shape until the next update
+        assert!(std::fs::read_to_string(env.registry_path()).unwrap().contains(r#""role":"tender""#));
+        assert_eq!(crate::registry::load(&env), r, "every read moves it the same way");
+        assert!(crate::registry::health(&env).is_empty(), "no corrupt copy was made");
+        crate::registry::update(&env, |_| ()).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        assert_eq!(saved["version"], 1, "still the v1 format, plus `retired`");
+        assert!(saved["identities"].get("MAIN/ARGOS/~fixci").is_none());
+        assert!(saved["retired"]["MAIN/ARGOS/~fixci"].is_object());
+        assert_eq!(crate::registry::load(&env), r);
+        // a registry with no tenders is written without a `retired` key
+        let (_td2, env2) = test_env();
+        crate::registry::update(&env2, |r| crate::registry::bind(r, &ship, Role::Ship, &ship.name(), "/w", "sid-1", "launch", 1.0)).unwrap();
+        assert!(!std::fs::read_to_string(env2.registry_path()).unwrap().contains("retired"));
+    }
+
+    #[test]
+    fn tender_ids_are_three_parts_with_a_tilde() {
+        assert!(is_tender_id("F/SQ/~fix-ci"));
+        assert!(!is_tender_id("F/SQ/SHIP") && !is_tender_id("F/SQ") && !is_tender_id("F") && !is_tender_id("F/SQ/~x/y"));
+    }
+
+    #[test]
+    fn squadron_toml_tender_lines_load_and_warn() {
+        let (_td, env) = test_env();
+        crate::config::tests::make_fleet(&env);
+        let f = config::load_fleet(&env, "MAIN").unwrap();
+        let (sd, _) = &f.squadrons[0];
+        let p = sd.join("squadron.toml");
+        let old = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, format!("{old}\n[[tenders]]\ntask = \"fixci\"\nprompt = \"Fix CI.\"\n")).unwrap();
+        let f = config::load_fleet(&env, "MAIN").expect("tender lines do not break the load");
+        let issues = config::validate(&env, &f);
+        let i = issues.iter().find(|i| i.code == "tender.retired").expect("check says so");
+        assert_eq!(i.severity, Severity::Warn);
+        assert_eq!(i.id, Some(Id::commodore("MAIN", "ARGOS")));
+        // a write of squadron.toml drops the lines
+        let plan = config::plan_squadron_set(&env, &Id::commodore("MAIN", "ARGOS"), None, Some(Comms::Mode("commodore-only".into())), None);
+        apply_ok(&env, &plan);
+        assert!(!std::fs::read_to_string(&p).unwrap().contains("tenders"));
+        let f = config::load_fleet(&env, "MAIN").unwrap();
+        assert!(config::validate(&env, &f).iter().all(|i| i.code != "tender.retired"));
+    }
 
     fn old_fleet(dir: &Path, json: &str, fleet_md: Option<&str>) {
         std::fs::create_dir_all(dir).unwrap();
