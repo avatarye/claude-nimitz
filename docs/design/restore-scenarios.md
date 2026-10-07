@@ -58,7 +58,7 @@ refused and the pane is a shell again; on a stopped, parked or removed job
 the conversation opens interactively with no job (`held`), and a `--bg
 --resume` meanwhile starts a copy. So after a reboot plus a Herdr restart
 every lead's pane holds its conversation: restore reports `tab.resumed`
-(fix: `/exit` there, then restore) and never wakes a held member; `nimitz
+(an Error: fix `/exit` there, then restore) and never wakes a held member; `nimitz
 doctor` warns while the setting is on. The checklist turns it off for its
 test server and shows the on case in one optional step.
 

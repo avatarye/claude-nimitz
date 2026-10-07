@@ -571,11 +571,11 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
     if let Some(h) = crate::sessions::held_of(m) {
         if let Some(p) = ctx.held_pane(h) {
             rep.held += 1;
-            rp.plan.warnings.push(issue(
+            fail(rp, rep, issue(
                 "tab.resumed",
-                Severity::Warn,
-                format!("{id}'s conversation runs interactively in pane {} (Herdr's `claude --resume` after its restart); a wake would start a copy beside it, so nothing runs for it", p.pane_id),
-                Some(format!("Herdr resumed it in pane {} (resume_agents_on_restore is on): type /exit there, then nimitz restore {}", p.pane_id, id.fleet())),
+                Severity::Error,
+                format!("{id}'s conversation is open in pane {} (Herdr's resume_agents_on_restore, or a claude --resume by hand), interactively, with no job; a wake would start a copy beside it, so nothing runs for it", p.pane_id),
+                Some(format!("type /exit in pane {}, then nimitz restore {}  # with Herdr's resume_agents_on_restore on, every restart does this again: nimitz doctor", p.pane_id, id.fleet())),
                 Some(id.clone()),
             ));
             return;
