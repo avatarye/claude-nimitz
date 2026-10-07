@@ -118,36 +118,43 @@ pub fn member_mux_vars(env: &Env, vars: &HashMap<String, String>) -> HashMap<Str
     v
 }
 
-/// The multiplexer settings the user's own command (nimitz, Admiralty) uses.
-/// Inside Herdr (`HERDR_ENV=1`), or with an explicit `NIMITZ_MUX` or
-/// `NIMITZ_HERDR_SESSION`, its env as it is. Anywhere else (a terminal outside
-/// Herdr, a launcher, a desktop shortcut) the Herdr server the user's own
-/// commands recorded here, as a member's command does
-/// (`member_mux_vars`); with none recorded, no multiplexer. Without this an
-/// Admiralty started outside a Herdr pane saw no pane at all while a
-/// member's `nimitz status` saw every one.
-pub fn user_mux_vars(env: &Env, vars: &HashMap<String, String>) -> HashMap<String, String> {
+/// Does the user's command take its Herdr server from the record? Not inside
+/// Herdr (`HERDR_ENV=1`), not with an explicit `NIMITZ_MUX` or
+/// `NIMITZ_HERDR_SESSION`: anywhere else (a terminal, a launcher).
+fn from_record(vars: &HashMap<String, String>) -> bool {
     let in_herdr = vars.get("HERDR_ENV").map(String::as_str) == Some("1");
     let explicit = vars.get("NIMITZ_MUX").is_some_and(|m| !m.is_empty() && m != "auto") || vars.get("NIMITZ_HERDR_SESSION").is_some_and(|v| !v.is_empty());
-    if in_herdr || explicit {
-        return vars.clone();
+    !in_herdr && !explicit
+}
+
+/// The multiplexer settings the user's own command (nimitz, Admiralty) uses:
+/// inside Herdr, or with an explicit choice, its env as it is; anywhere else
+/// the Herdr server the user's own commands recorded here, as a member's
+/// command does (`member_mux_vars`); with none recorded, no multiplexer.
+/// Without this an Admiralty started outside a Herdr pane saw no pane at all
+/// while a member's `nimitz status` saw every one.
+pub fn user_mux_vars(env: &Env, vars: &HashMap<String, String>) -> HashMap<String, String> {
+    if from_record(vars) {
+        member_mux_vars(env, vars)
+    } else {
+        vars.clone()
     }
-    member_mux_vars(env, vars)
 }
 
 /// The fix for a Herdr nimitz could not read when the server came from the
-/// record (`user_mux_vars` outside Herdr): which server it tried, and what
-/// works. `None` when the env named the server itself.
-pub fn recorded_server_fix(env: &Env, vars: &HashMap<String, String>, fleet: Option<&str>) -> Option<String> {
-    let in_herdr = vars.get("HERDR_ENV").map(String::as_str) == Some("1");
-    let explicit = vars.get("NIMITZ_MUX").is_some_and(|m| !m.is_empty() && m != "auto") || vars.get("NIMITZ_HERDR_SESSION").is_some_and(|v| !v.is_empty());
-    if in_herdr || explicit {
+/// record: which server it tried and how to start it. `None` when the env
+/// named the server itself, or nothing is recorded.
+pub fn recorded_server_fix(env: &Env, vars: &HashMap<String, String>) -> Option<String> {
+    if !from_record(vars) {
         return None;
     }
     let h = load(env).and_then(|a| a.herdr)?;
-    let which = h.session.map(|s| format!("session {s}")).or(h.socket.map(|s| format!("socket {s}"))).unwrap_or_else(|| "the default server".into());
-    let f = fleet.map(|f| format!(" {f}")).unwrap_or_default();
-    Some(format!("the Herdr server recorded in active.json ({which}) is not reachable from here: start it (herdr session attach ...), or run nimitz inside Herdr; or nimitz restore{f} --jobs-only"))
+    let (which, start) = match (&h.session, &h.socket) {
+        (Some(s), _) => (format!("session {s}"), format!("start it (herdr --session {s})")),
+        (None, Some(sock)) => (format!("socket {sock}"), "start Herdr".to_string()),
+        (None, None) => ("the default server".to_string(), "start Herdr".to_string()),
+    };
+    Some(format!("the Herdr server recorded in active.json ({which}) is not reachable from here: {start}, or run nimitz inside Herdr"))
 }
 
 pub fn load(env: &Env) -> Option<ActiveSet> {

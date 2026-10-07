@@ -478,7 +478,7 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
             plan.steps.push(Step { id: Some(id.clone()), cmd: tab.cmd.clone(), cwd: Some(tab.cwd.clone()), why: format!("attach in a new tab {}{wake}; detaching (ctrl-z) leaves it running", tab.label) })
         }
         Err(e) => {
-            plan.refusals.push(refusal("mux.failed", format!("cannot see what {id}'s tab runs ({e}); nothing is typed into a pane nimitz cannot see into"), None, Some(id)));
+            plan.refusals.push(refusal("mux.failed", format!("cannot see what {id}'s tab runs ({e}); nothing is typed into a pane nimitz cannot see into"), nimitz_core::active::recorded_server_fix(&ctx.env, &ctx.vars), Some(id)));
             return Ok(finish_plan(ctx, &plan));
         }
     }

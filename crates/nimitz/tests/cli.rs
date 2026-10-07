@@ -1954,7 +1954,7 @@ fn the_users_nimitz_outside_herdr_uses_the_recorded_server() {
     outside.insert("NIMITZ_HERDR_BIN".into(), dead.to_string_lossy().into_owned());
     let r = raw(&outside, &["restore", "MAIN", "--plan"], &[], None);
     assert_ne!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("nimitz restore MAIN --jobs-only"), "{}", r.out);
+    assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("herdr --session rec") && r.out.contains("nimitz restore MAIN --jobs-only"), "{}", r.out);
 }
 
 /// A hook always exits 0, even when Claude Code has closed its pipe before
