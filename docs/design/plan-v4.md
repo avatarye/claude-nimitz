@@ -244,6 +244,19 @@ Live rules (`nimitz-core/src/rules.rs`, `hook.rs`):
   one entry in `UPDATE_EVENTS` plus an unmatched PreToolUse entry in
   `plugin/hooks/hooks.json` (`with_context` merges the text into a deny).
 - `rules.old` is Info with no fix ("gets vM with its next prompt").
+- Research (real Claude Code 2.1.292, isolated; `p8-research.md`): UserPromptSubmit
+  fires for every way a background ship's turn starts, and its additionalContext
+  reaches the model each time: a cross-session message (target idle: a new turn;
+  busy streaming: queued until the turn ends; busy between tool calls: mid-turn,
+  with the running turn's prompt_id), a prompt typed via attach or a Herdr pane,
+  and a task-notification. `nimitz signal` to a ship is relayed by its commodore
+  with SendMessage, so the ship sees a cross-session message. Hence
+  UserPromptSubmit only; no PreToolUse fallback (the seam stays unwired). The
+  input has no origin field (only the `prompt` envelope). The delivery is
+  deduped by job (else session id) plus version, never by prompt_id. `/compact`
+  fires no UserPromptSubmit and earlier hook context does not survive it:
+  SessionStart (compact, clear, resume, startup) always gives the full rules and
+  records the version, which resets the record.
 - `doctor` reads the installed plugin's `hooks/hooks.json` (the `installPath` of
   the `nimitz@...` entry in `~/.claude/plugins/installed_plugins.json`;
   `NIMITZ_PLUGIN_HOOKS=<file>` overrides it for tests) and names every event or

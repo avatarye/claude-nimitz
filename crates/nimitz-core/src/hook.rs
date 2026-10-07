@@ -18,9 +18,12 @@ use std::io::Write;
 const LABELS: [&str; 5] = ["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_HOME"];
 
 /// The per-turn events that hand a running member a rules update
-/// (`rules::update_for`, once per version per job). UserPromptSubmit fires
-/// for a typed prompt; add "PreToolUse" here (and an unmatched PreToolUse
-/// entry in the plugin's hooks.json) when a turn can start without one.
+/// (`rules::update_for`, once per version per job, never per prompt_id: a
+/// mid-turn cross-session message repeats the running turn's prompt_id).
+/// UserPromptSubmit fires for every turn start of a background session (a
+/// typed prompt, a cross-session message, a task notification; plan-v4
+/// section 12.1), so nothing else is needed; a second event would go here,
+/// with its entry in the plugin's hooks.json.
 pub const UPDATE_EVENTS: &[&str] = &["UserPromptSubmit"];
 
 /// `out` (empty, or a decision JSON) with `additionalContext` added to its
@@ -424,8 +427,16 @@ mod tests {
         let d = crate::rules::delivered(&env, "session:s-up").expect("recorded by session id: no job here");
         assert_eq!((d.version, d.via.as_str(), d.session_id.as_str()), (crate::rules::VERSION, "UserPromptSubmit", "s-up"));
         assert_eq!(crate::evidence::events(&env).last().unwrap().rules, Some(crate::rules::VERSION), "the line says what went out");
-        // the next prompt: nothing (once per version)
+        // the next prompt: nothing (once per version per key, whatever the prompt_id)
         assert!(handle(&env, "UserPromptSubmit", &prompt, &labels_of(&env, &id)).is_empty());
+        let other_turn = serde_json::json!({"session_id": "s-up", "hook_event_name": "UserPromptSubmit", "prompt": "<cross-session-message from-name=\"x\">hi</cross-session-message>", "prompt_id": "p2"}).to_string();
+        assert!(handle(&env, "UserPromptSubmit", &other_turn, &labels_of(&env, &id)).is_empty());
+        // a SessionStart of any source (compact, clear, resume) re-delivers the full rules and resets the record
+        for source in ["compact", "clear", "resume"] {
+            let start = serde_json::json!({"session_id": "s-up", "source": source}).to_string();
+            assert!(handle(&env, "SessionStart", &start, &labels_of(&env, &id)).contains("additionalContext"), "{source}");
+            assert_eq!(crate::rules::delivered(&env, "session:s-up").unwrap().via, "SessionStart", "{source}");
+        }
         // a session that starts now is current, so its prompts get nothing either
         let start = serde_json::json!({"session_id": "s-new", "source": "startup"}).to_string();
         handle(&env, "SessionStart", &start, &labels_of(&env, &id));
