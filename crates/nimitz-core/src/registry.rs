@@ -524,7 +524,10 @@ mod tests {
         let h = health(&env);
         assert!(h.len() == 1 && h[0].code == "registry.corrupt" && h[0].severity == Severity::Error, "{h:?}");
         assert!(h[0].message.contains("registry.json.bak") && h[0].message.contains("1 SessionStart"), "{}", h[0].message);
-        assert_eq!(load(&env), r, "a second load reads the rebuilt file");
+        // (serde_json parses floats best-effort: the stamp may differ by an ulp)
+        let mut again = load(&env);
+        again.updated_at = r.updated_at;
+        assert_eq!(again, r, "a second load reads the rebuilt file");
     }
 
     #[test]
