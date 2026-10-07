@@ -75,6 +75,10 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     let session = session_file(env, vars, pid);
     let job_of_session = str_at(&session, "jobId");
     let mut judge_later = false;
+    // (a pre-warmed spare, the agent view's draft, is never anyone's member)
+    if session.get("spare").and_then(Value::as_bool) == Some(true) {
+        labels.clear();
+    }
     if !labels.is_empty() {
         match crate::evidence::job_backs_labels(&env.claude_home, job_of_session.as_deref(), &labels) {
             Some(false) => labels.clear(),

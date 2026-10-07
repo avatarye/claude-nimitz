@@ -258,10 +258,11 @@ pub fn row_labels(r: &SessionRow, by_pid: &HashMap<(i64, String), BTreeMap<Strin
     let saved = || is_labelled(&r.job_labels).then(|| r.job_labels.clone());
     let newest = || by_sid.get(&r.session_id).cloned();
     let own = || r.pid.and_then(|p| by_pid.get(&(p, r.session_id.clone())).cloned());
-    // a job whose row was read: its saved labels decide alone (a job launched
-    // without labels carries the daemon's inherited ones in its env, and in
-    // its hook lines: `job_backs_labels`)
-    if r.short_id.is_some() && r.state.is_some() {
+    // a job: its row's saved labels decide alone (a job launched without
+    // labels carries the daemon's inherited ones in its env, and in its hook
+    // lines: `job_backs_labels`); a job whose row is not written yet, or a
+    // pre-warmed spare's, has none to show
+    if r.short_id.is_some() {
         return saved().unwrap_or_default();
     }
     match r.pid {
