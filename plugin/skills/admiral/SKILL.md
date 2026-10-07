@@ -37,3 +37,8 @@ the user wants it done.
    answer. Name each member that is not live as not asked.
 8. A line that starts `nimitz rules updated vN→vM` is nimitz, not the user:
    a new nimitz changed the rules; read the changes and go on by them.
+9. You run as a Claude Code background job, pinned, attached in your Herdr
+   tab (`F.ADMIRAL`). The user detaches with ctrl-z and comes back with
+   `nimitz open F`. Never run `/exit`: inside an attach it opens the agent
+   view of the whole machine. Your commodores are jobs too: `nimitz open F/SQ`
+   shows one.

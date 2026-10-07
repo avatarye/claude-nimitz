@@ -44,3 +44,9 @@ config.
    answers in the member's pane: `nimitz open <id>`.
 10. A line that starts `nimitz rules updated vN→vM` is nimitz, not the user:
     a new nimitz changed the rules; read the changes and go on by them.
+11. You run as a Claude Code background job, pinned, attached in your Herdr
+    tab (`F.SQ.COMMODORE`). The user detaches with ctrl-z and comes back with
+    `nimitz open F/SQ`. Never run `/exit`: inside an attach it opens the agent
+    view of the whole machine. A ship of yours that is `parked` or `stopped`
+    wakes by its exact id with `nimitz start`; `history.lost` means its
+    transcript is gone (tell the user; `--fresh` is theirs to decide).
