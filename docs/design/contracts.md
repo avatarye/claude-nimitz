@@ -142,9 +142,10 @@ replay, and in the snapshot (`row_labels`: a job row's saved labels decide).
 Once backed, the effects use the saved labels, not the env's (an inherited
 key the launch did not name stays out). The SessionStart hook waits up to
 500 ms for a new job's row; still none, the session is left unlabelled for now
-(no rules: its first prompt gets them through `rules::update_for`; no
+(no rules: its first prompt gets them in full through `rules::update_for`; no
 binding), the event line keeps the env's labels, and `status` replays it,
-binding only when the row then backs them. A spare (`spare: true`) is never
+binding only when the row then backs them (so does the launch's own wait,
+`wait_for_binding`, and its check). Only SessionStart waits for a row. A spare (`spare: true`) is never
 labelled. A process
 with no job (interactive, SDK) is labelled by its env, as before.
 

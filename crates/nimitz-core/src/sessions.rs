@@ -1823,7 +1823,10 @@ fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64, cwd: Option<
             _ => false,
         };
         for e in crate::evidence::events_cached(env, &mut cache).iter().rev() {
-            if e.ts >= since && e.event == "SessionStart" && e.labels.get("NIMITZ_ID") == Some(&id.0) {
+            // a job's line counts only when its row backs the labels (the line
+            // keeps the env's labels; a polluted daemon's job carries them too)
+            let backed = || e.job.is_none() || crate::evidence::job_backs_labels(&env.claude_home, e.job.as_deref(), &e.labels) == Some(true);
+            if e.ts >= since && e.event == "SessionStart" && e.labels.get("NIMITZ_ID") == Some(&id.0) && backed() {
                 if let Some(sid) = e.session_id.as_ref().filter(|s| !elsewhere(s)) {
                     return Some((sid.clone(), e.source.clone()));
                 }
@@ -1922,7 +1925,9 @@ fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
             Some(id.clone()),
         ));
     }
-    if labels.get(sid).map(|l| l.get("NIMITZ_ID") != Some(&id.0)).unwrap_or(true) {
+    // a job's labels are its row's saved ones (the env's on the line may be inherited)
+    let have = if row.short_id.is_some() { Some(row.job_labels.clone()) } else { labels.get(sid).cloned() };
+    if have.map(|l| l.get("NIMITZ_ID") != Some(&id.0)).unwrap_or(true) {
         out.push(issue(
             "labels.missing",
             Severity::Error,
@@ -2518,6 +2523,30 @@ pub fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The post-launch wait binds a job's SessionStart only when the job's row
+    /// backs the labels on the line: a polluted daemon's job (no saved labels)
+    /// that starts during a launch is never taken for the member.
+    #[test]
+    fn the_launch_wait_skips_a_job_whose_row_does_not_back_its_labels() {
+        let (_td, env) = crate::config::tests::test_env();
+        let id = Id::ship("F", "SQ", "S");
+        std::fs::create_dir_all(&env.state).unwrap();
+        let row = |short: &str, sid: &str, labelled: bool| {
+            let flags = if labelled { serde_json::json!(["--settings", serde_json::json!({"env": {"NIMITZ_ID": id.0, "NIMITZ_ROLE": "ship"}}).to_string()]) } else { serde_json::json!([]) };
+            let p = env.claude_home.join("jobs").join(short).join("state.json");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, serde_json::json!({"sessionId": sid, "state": "running", "respawnFlags": flags}).to_string()).unwrap();
+        };
+        let line = |sid: &str, job: &str| serde_json::json!({"ts": 10.0, "event": "SessionStart", "session_id": sid, "source": "startup", "job": job, "kind": "bg",
+            "labels": {"NIMITZ_ID": id.0, "NIMITZ_ROLE": "ship"}}).to_string();
+        row("p1", "s-polluted", false);
+        std::fs::write(env.events_path(), line("s-polluted", "p1") + "\n").unwrap();
+        assert_eq!(wait_for_binding(&env, &id, 1.0, 0.0, None), None, "an inherited label is no binding");
+        row("m1", "s-member", true);
+        std::fs::write(env.events_path(), line("s-polluted", "p1") + "\n" + &line("s-member", "m1") + "\n").unwrap();
+        assert_eq!(wait_for_binding(&env, &id, 1.0, 0.0, None).map(|(s, _)| s).as_deref(), Some("s-member"));
+    }
 
     #[test]
     fn names_round_trip() {

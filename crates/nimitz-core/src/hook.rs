@@ -88,7 +88,8 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     if !labels.is_empty() {
         if let Some(job) = job_of_session.as_deref() {
             let mut saved = crate::evidence::job_saved_labels(&env.claude_home, job);
-            let deadline = std::time::Instant::now() + ROW_WAIT;
+            // (only a SessionStart waits: a later event of a job whose row is gone pays nothing)
+            let deadline = std::time::Instant::now() + if event == "SessionStart" { ROW_WAIT } else { std::time::Duration::ZERO };
             while saved.is_none() && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 saved = crate::evidence::job_saved_labels(&env.claude_home, job);
