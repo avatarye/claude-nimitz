@@ -402,6 +402,33 @@ fn cli_10_a_flagged_resume_copy_with_the_labels_is_dup_job_while_the_row_exists(
     assert!(plan.refusals.iter().any(|i| i.code == "dup.live"), "{:?}", plan.refusals);
 }
 
+#[test]
+fn cli_09_a_resume_of_a_live_job_is_a_copy_under_an_auto_name_and_the_member_stays_live() {
+    let w = world();
+    let (id, job, sid, cwd) = clean(&w);
+    // a `done` job whose process is alive is a live idle member, not parked, not stopped
+    let p = w.base.join("claude_home/jobs").join(&job).join("state.json");
+    let mut j: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    j["state"] = json!("done");
+    std::fs::write(&p, j.to_string()).unwrap();
+    assert_eq!(w.member(&id).status, Status::Idle);
+    // `--bg --resume <id> --name X` against it: a copy, the name ignored (2.1.292)
+    let (rc, out) = w.claude(&["--bg", "--resume", &sid, "--name", &id.name()], Some(&cwd));
+    assert_eq!(rc, 0, "{out}");
+    assert!(out.contains("started a copy") && out.contains("--name is ignored"), "{out}");
+    let copy = out.lines().find(|l| l.contains("started a copy")).unwrap().split_whitespace().last().unwrap().to_string();
+    let m = w.member(&id);
+    assert_eq!(m.status, Status::Idle, "{:?}", m.reasons);
+    assert_eq!(m.session.as_ref().unwrap().short_id.as_deref(), Some(job.as_str()), "the member keeps its job");
+    assert_eq!(w.rec(&id).job.as_deref(), Some(job.as_str()));
+    let row = w.job_file(&copy);
+    assert_ne!(row["name"], json!(id.name()), "an auto-generated name, not --name");
+    assert!(row["name"].as_str().unwrap().starts_with(&id.name()), "{}", row["name"]);
+    assert_eq!(row["forkedFrom"], json!(sid));
+    // the copy is unlabelled (no --settings): a copy row of the member, never its session
+    assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(copy.as_str())), "{:?}", m.extra_rows);
+}
+
 // ------------------------------------------------------------------ held, other home, unlabelled, M21
 
 #[test]

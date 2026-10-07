@@ -18,9 +18,11 @@
 //!   `rm` removes the row and keeps the transcript; `respawn` restarts it
 //!   (SessionStart `resume`); `attach` on a stopped job wakes it;
 //! - `--bg --resume <id>` of a stopped job with **no flags** wakes that job on
-//!   `<id>` (same short id, `resumeSessionId` moves); with flags, or while the
-//!   job is live, it makes a **copy** (new job, SessionStart `fork`) that
-//!   carries only the flags passed; with no row but a transcript it makes a
+//!   `<id>` (same short id, `resumeSessionId` moves); with flags it makes a
+//!   **copy** (new job, SessionStart `fork`) that carries only the flags
+//!   passed; while the job's process is alive (any state, a `done` job stays
+//!   alive until `claude stop`) it makes a copy under an auto-generated name
+//!   and ignores `--name` (2.1.292); with no row but a transcript it makes a
 //!   new job named by the short form of `<id>` (cli-03, check 1);
 //! - `--bg` ignores `--session-id` and says so on stderr, and refuses an
 //!   untrusted folder;
@@ -1228,11 +1230,15 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             let saved_name = saved.as_ref().and_then(|j| j.get("name").and_then(|v| v.as_str()).map(str::to_string));
 
             if row.live() {
-                // probe 2 / 2b: a copy with a new id and only the flags passed (an
-                // auto-generated name without --name); with no --settings it fires no hooks
-                let name = a.name.clone().unwrap_or_else(|| copy_name(&base, saved_name.as_deref().unwrap_or(&row.name)));
+                // the job's process is alive (whatever its state): a copy with a
+                // new id under an auto-generated name; `--name` is ignored
+                // (2.1.292); with no --settings it fires no hooks (probe 2 / 2b)
+                let name = copy_name(&base, saved_name.as_deref().unwrap_or(&row.name));
                 let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
                 record_fork(&base, &short, &row.session_id);
+                if a.name.is_some() {
+                    eprintln!("note: --name is ignored for a copy of a running session");
+                }
                 println!("session {} is already running in the background, so this started a copy as {short}", row.session_id);
                 return 0;
             }
