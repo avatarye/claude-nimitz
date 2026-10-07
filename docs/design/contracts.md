@@ -126,7 +126,7 @@ the version checks; a denylist): nimitz's identity and multiplexer names
 `CLAUDE_CODE_*` and `ANTHROPIC_*` config (auth, proxy, provider, tuning;
 Claude Code copies a job's provider settings from the launching command),
 and nimitz's own config. A member's labels go only through `--settings`,
-which also carries nimitz's `NIMITZ_STATE` and `NIMITZ_CLAUDE_HOME`, so the
+which also carries nimitz's `NIMITZ_STATE`, `NIMITZ_CLAUDE_HOME` and `NIMITZ_HOSTNAME`, so the
 member's hook writes where this nimitz reads whatever env the daemon has. A daemon that such a call
 happens to start keeps a clean environment, whoever ran nimitz. The `claude
 attach <job>` typed into a Herdr pane runs in that pane's shell, with the

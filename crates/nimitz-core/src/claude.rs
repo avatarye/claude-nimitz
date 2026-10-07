@@ -170,6 +170,8 @@ pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
     // not the caller's)
     vars.insert("NIMITZ_STATE".to_string(), env.state.to_string_lossy().into_owned());
     vars.insert("NIMITZ_CLAUDE_HOME".to_string(), env.claude_home.to_string_lossy().into_owned());
+    // (and the machine name it knows: an alias the caller set holds inside the job's hook)
+    vars.insert("NIMITZ_HOSTNAME".to_string(), env.hostname.clone());
     let mut v = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
     if background {
         v["worktree"] = serde_json::json!({ "bgIsolation": "none" });

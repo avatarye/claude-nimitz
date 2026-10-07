@@ -1825,7 +1825,12 @@ fn wait_for_binding(env: &Env, id: &Id, since: f64, timeout_s: f64, cwd: Option<
         for e in crate::evidence::events_cached(env, &mut cache).iter().rev() {
             // a job's line counts only when its row backs the labels (the line
             // keeps the env's labels; a polluted daemon's job carries them too)
-            let backed = || e.job.is_none() || crate::evidence::job_backs_labels(&env.claude_home, e.job.as_deref(), &e.labels) == Some(true);
+            // (a line written while the session file was unreadable names no
+            // job: its job comes from the rows before its labels are trusted)
+            let backed = || {
+                let job = e.job.clone().or_else(|| e.session_id.as_deref().and_then(|sid| rows.iter().find(|r| r.session_id == sid)).and_then(|r| r.short_id.clone()));
+                job.is_none() || crate::evidence::job_backs_labels(&env.claude_home, job.as_deref(), &e.labels) == Some(true)
+            };
             if e.ts >= since && e.event == "SessionStart" && e.labels.get("NIMITZ_ID") == Some(&id.0) && backed() {
                 if let Some(sid) = e.session_id.as_ref().filter(|s| !elsewhere(s)) {
                     return Some((sid.clone(), e.source.clone()));
@@ -2546,6 +2551,16 @@ mod tests {
         row("m1", "s-member", true);
         std::fs::write(env.events_path(), line("s-polluted", "p1") + "\n" + &line("s-member", "m1") + "\n").unwrap();
         assert_eq!(wait_for_binding(&env, &id, 1.0, 0.0, None).map(|(s, _)| s).as_deref(), Some("s-member"));
+        // a job-less line (the session file was unreadable at SessionStart) of a
+        // polluted job: the job comes from the rows, and its labels are not backed
+        let jobless = serde_json::json!({"ts": 11.0, "event": "SessionStart", "session_id": "s-polluted2", "source": "startup", "kind": "unknown",
+            "labels": {"NIMITZ_ID": id.0, "NIMITZ_ROLE": "ship"}}).to_string();
+        row("p2", "s-polluted2", false);
+        let sf = env.claude_home.join("sessions").join("77.json");
+        std::fs::create_dir_all(sf.parent().unwrap()).unwrap();
+        std::fs::write(&sf, serde_json::json!({"pid": std::process::id(), "sessionId": "s-polluted2", "jobId": "p2", "kind": "bg", "cwd": "/w"}).to_string()).unwrap();
+        std::fs::write(env.events_path(), jobless + "\n").unwrap();
+        assert_eq!(wait_for_binding(&env, &id, 1.0, 0.0, None), None, "a job-less line of a polluted job is no binding");
     }
 
     #[test]
