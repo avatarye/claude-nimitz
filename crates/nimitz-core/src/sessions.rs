@@ -1921,7 +1921,21 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     // seconds. Wait for that before any resume of it (a resume of a job the
     // daemon then restarts makes a copy, cli-31); restarted, its steps are
     // skipped.
-    let waking: Vec<(Id, String)> = plan
+    // (identity, the conversation resumed, the job's row): the row from the
+    // plan's own stop or rm step, else by the conversation; a relabel after a
+    // /branch resumes a conversation no row carries, so the job is keyed by
+    // its short id, never by the resumed id
+    let short_of = |id: &Id, sid: &str| {
+        plan.steps
+            .iter()
+            .filter(|s| s.id.as_ref() == Some(id))
+            .find_map(|s| match classify(s) {
+                Kind::Rm { short } | Kind::Stop { short } => Some(short),
+                _ => None,
+            })
+            .or_else(|| find_row_by_session(env, sid).and_then(|r| r.short_id))
+    };
+    let waking: Vec<(Id, String, Option<String>)> = plan
         .steps
         .iter()
         .filter_map(|s| s.id.clone().filter(|i| !skipped.contains(i)).map(|i| (i, s)))
@@ -1931,18 +1945,23 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         })
         .collect::<std::collections::BTreeMap<_, _>>()
         .into_iter()
+        .map(|(i, sid)| {
+            let short = short_of(&i, &sid);
+            (i, sid, short)
+        })
         .collect();
     // Claude Code's daemon settles a stopped job a moment after its process
     // ended: a `--bg --resume` inside that moment is "already running in the
     // background" and starts a copy (r3-e2e finding 12). Before a wake, wait
     // (briefly) until `claude agents` no longer lists the job as running.
-    for (_, sid) in &waking {
-        if let Some(job) = find_row_by_session(env, sid).filter(|r| !r.live()).and_then(|r| r.short_id) {
-            wait_settled(env, &job, SETTLE_WAIT_S);
+    for (_, _, short) in &waking {
+        if let Some(job) = short.as_deref().filter(|j| find_row(env, j).is_some_and(|r| !r.live())) {
+            wait_settled(env, job, SETTLE_WAIT_S);
         }
     }
     let mut restarted: Vec<Id> = vec![];
-    for (id, what) in wait_crash_window(env, &waking) {
+    let by_job: Vec<(Id, String)> = waking.iter().filter_map(|(i, _, short)| short.clone().map(|s| (i.clone(), s))).collect();
+    for (id, what) in wait_crash_window(env, &by_job) {
         restarted.push(id.clone());
         for step in plan.steps.iter().filter(|s| s.id.as_ref() == Some(&id)) {
             out.ran.push((step.clone(), 0, format!("skipped: {what}")));
@@ -1951,9 +1970,13 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     // A job the daemon did not restart in the window: its transcript must be
     // there now (`wake_steps` lets a crashed job through without one), else the
     // resume would run with no history: `history.lost` with the `--fresh` fix
-    for (id, sid) in waking.iter().filter(|(i, _)| !restarted.contains(i)) {
-        // the resume names the birth id; the conversation it wakes is the row's
-        let now = find_row_by_session(env, sid).map(|r| r.session_id).unwrap_or_else(|| sid.clone());
+    for (id, sid, short) in waking.iter().filter(|(i, _, _)| !restarted.contains(i)) {
+        // a native resume names the birth id and wakes the row's conversation;
+        // a relabel names the conversation itself
+        let now = match short.as_deref().and_then(|j| find_row(env, j)) {
+            Some(r) if r.session_ids().any(|s| s == sid) => r.session_id,
+            _ => sid.clone(),
+        };
         if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), step_folder(plan, id), &now).is_some() {
             continue;
         }
@@ -2240,12 +2263,14 @@ pub fn in_crash_window(env: &Env, r: &crate::evidence::SessionRow, events: &[cra
 /// rest are woken as planned. Members not in the window to begin with are
 /// never waited for.
 pub fn wait_crash_window(env: &Env, waking: &[(Id, String)]) -> Vec<(Id, String)> {
-    let row = |sid: &str| find_row_by_session(env, sid);
+    // keyed on the job's row (its short id): a crashed job that /branched is
+    // waited for too, although its resume names a conversation no row carries
+    let row = |short: &str| find_row(env, short);
     let events = crate::evidence::events(env);
     let in_window = |r: &crate::evidence::SessionRow| in_crash_window(env, r, &events);
     let mut pending: Vec<(Id, String, String, String)> = waking
         .iter()
-        .filter_map(|(id, sid)| row(sid).filter(in_window).map(|r| (id.clone(), sid.clone(), r.short_id.clone().unwrap_or_default(), r.state.clone().unwrap_or_else(|| "?".into()))))
+        .filter_map(|(id, job)| row(job).filter(in_window).map(|r| (id.clone(), job.clone(), r.short_id.clone().unwrap_or_default(), r.state.clone().unwrap_or_else(|| "?".into()))))
         .collect();
     let mut back = vec![];
     if pending.is_empty() {
