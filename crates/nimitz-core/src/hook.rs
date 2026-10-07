@@ -101,8 +101,15 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             crate::notify::clear(env, id, str_at(&input, "session_id").as_deref());
         }
     }
-    // The Claude Code process (the hook's parent); a sandbox names it.
-    let pid: i64 = vars.get("NIMITZ_HOOK_PID").and_then(|p| p.parse().ok()).unwrap_or_else(|| unsafe { libc::getppid() } as i64);
+    // The Claude Code process (the hook's parent); a sandbox names it. A hook
+    // written as one command string runs under `sh -c`: then the parent is a
+    // shell and the Claude Code process is its parent (r3-e2e.md finding 7).
+    let given: i64 = vars.get("NIMITZ_HOOK_PID").and_then(|p| p.parse().ok()).unwrap_or_else(|| unsafe { libc::getppid() } as i64);
+    let pid = if vars.get("NIMITZ_HOOK_SESSION_FILE").is_some_and(|p| !p.is_empty()) {
+        given // the sandbox names the session file; the pid is its own
+    } else {
+        claude_pid(given, |p| env.claude_home.join("sessions").join(format!("{p}.json")).is_file(), parent_of)
+    };
     // A labelled session starts (startup, resume, clear, compact, fork): bind
     // it to its identity (plan-v4 section 3), hand it its role's rules and
     // record the delivery. On a per-turn event, a session that runs on older
@@ -180,6 +187,29 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
         append_line(env, &line.to_string());
     }
     (out, notice)
+}
+
+/// The Claude Code process behind a hook: `ppid` (the hook's parent) when
+/// `sessions/<ppid>.json` exists, else the parent's parent when ITS session
+/// file exists (a hook given as one command string runs under `sh -c`, and
+/// the shell is the parent), else `ppid` as before. `has_file` says whether a
+/// pid's session file exists; `parent_of` reads a pid's parent.
+pub fn claude_pid(ppid: i64, has_file: impl Fn(i64) -> bool, parent_of: impl Fn(i64) -> Option<i64>) -> i64 {
+    if has_file(ppid) {
+        return ppid;
+    }
+    match parent_of(ppid) {
+        Some(gp) if gp > 1 && has_file(gp) => gp,
+        _ => ppid,
+    }
+}
+
+/// A process's parent pid: `/proc/<pid>/stat` field 4 (after the `(comm)`,
+/// which may hold spaces and parentheses). None off Linux or for a dead pid.
+pub fn parent_of(pid: i64) -> Option<i64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// The session file of the Claude Code process (`sessions/<pid>.json`, the
@@ -877,5 +907,47 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), n);
+    }
+
+    /// A hook given as one command string runs under `sh -c`: the parent is a
+    /// shell, the Claude Code process is its parent. The pure rule, then the
+    /// real chain: NIMITZ_HOOK_PID names this test process (no session file),
+    /// whose parent (the test runner) has one; the line carries the parent.
+    #[test]
+    fn a_hook_under_a_shell_finds_the_session_through_the_parents_parent() {
+        let files = |p: i64| p == 300;
+        let chain = |p: i64| match p {
+            100 => Some(200),
+            200 => Some(300),
+            300 => Some(1),
+            _ => None,
+        };
+        assert_eq!(claude_pid(300, files, chain), 300, "the parent itself");
+        assert_eq!(claude_pid(200, files, chain), 300, "the parent's parent");
+        assert_eq!(claude_pid(100, files, chain), 100, "one step only, else as given");
+        assert_eq!(claude_pid(999, files, chain), 999, "an unknown pid stays");
+        assert_eq!(claude_pid(200, |_| false, chain), 200, "no file anywhere: as given");
+        assert_eq!(claude_pid(5, |p| p == 1, |_| Some(1)), 5, "never pid 1");
+        // the real chain through /proc
+        let me = std::process::id() as i64;
+        let runner = parent_of(me).expect("/proc gives the parent");
+        assert!(runner > 1 && parent_of(runner).is_some());
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let folder = crate::registry::identity_folder(&env, &crate::registry::load(&env), &id).expect("the ship's folder");
+        let cwd = folder.to_string_lossy().into_owned();
+        std::fs::create_dir_all(env.claude_home.join("sessions")).unwrap();
+        std::fs::write(
+            env.claude_home.join("sessions").join(format!("{runner}.json")),
+            serde_json::json!({"pid": runner, "sessionId": "s-sh", "jobId": "9cdceb2d", "kind": "background", "entrypoint": "cli", "cwd": cwd}).to_string(),
+        )
+        .unwrap();
+        let mut v = labels_of(&env, &id);
+        v.insert("NIMITZ_HOOK_PID".into(), me.to_string());
+        let start = serde_json::json!({"session_id": "s-sh", "source": "startup", "cwd": cwd}).to_string();
+        handle(&env, "SessionStart", &start, &v);
+        let e = crate::evidence::events(&env).pop().expect("a line");
+        assert_eq!((e.pid, e.job.as_deref(), e.kind.as_deref()), (Some(runner), Some("9cdceb2d"), Some("background")), "{e:?}");
+        assert_eq!(crate::registry::load(&env).identities[&id.0].job.as_deref(), Some("9cdceb2d"));
     }
 }

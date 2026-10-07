@@ -721,7 +721,13 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
             Some(id.clone()),
         ));
     }
-    if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &p.session_id).is_none() {
+    // A job in the crash window (state `crashed`, or `working` with no live
+    // pid) is the daemon's to restart first: `apply` waits for that before
+    // any resume. Its transcript may not be on disk yet (killed in its first
+    // turn), so it is not judged `history.lost` here; a resume that comes
+    // back `startup` reports it then (e2e case 6).
+    let crash_window = matches!(p.state.as_deref(), Some("crashed") | Some("working"));
+    if !crash_window && crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &p.session_id).is_none() {
         return Err(issue(
             "history.lost",
             Severity::Error,
@@ -2043,10 +2049,15 @@ pub fn wait_crash_window(env: &Env, waking: &[(Id, String)]) -> Vec<(Id, String)
     }
 }
 
-/// Add to the text of the step that ran last (one line per step).
+/// Add to the text of the step that ran last, on its first line: the CLI
+/// shows one line per step, and Claude Code's launch output has several
+/// (`backgrounded · <id> · <name>`, then the `claude attach ...` hints).
 fn note(out: &mut Outcome, text: &str) {
     if let Some(last) = out.ran.last_mut() {
-        last.2.push_str(text);
+        match last.2.find('\n') {
+            Some(i) => last.2.insert_str(i, text),
+            None => last.2.push_str(text),
+        }
     }
 }
 

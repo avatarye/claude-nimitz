@@ -103,7 +103,7 @@ mod tests {
     fn supported_matches_compat_toml() {
         let c = supported();
         assert_eq!(c.min, "2.1.288");
-        assert_eq!(c.max, "2.1.290");
+        assert_eq!(c.max, "2.1.292");
     }
 
     #[test]

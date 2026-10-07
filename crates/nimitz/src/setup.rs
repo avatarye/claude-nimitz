@@ -54,6 +54,28 @@ fn registered_hooks(hooks: &Value) -> Vec<(String, String)> {
     out
 }
 
+/// The events whose `nimitz hook` entry is one command string (`"command":
+/// "nimitz hook X"`, no `args`). Claude Code runs such a hook under `sh -c`,
+/// so the hook's parent is a shell: the pid-chain fallback usually finds the
+/// Claude Code process, but the plugin's own form is `command` + `args`
+/// (r3-e2e.md finding 7).
+fn string_form_hooks(hooks: &Value) -> Vec<String> {
+    let mut out = vec![];
+    let Some(events) = hooks.as_object() else { return out };
+    for (event, entries) in events {
+        let stringy = entries.as_array().into_iter().flatten().any(|entry| {
+            entry["hooks"].as_array().into_iter().flatten().any(|h| {
+                let cmd = h["command"].as_str().unwrap_or("");
+                h.get("args").is_none() && cmd.contains("nimitz") && cmd.contains(" hook ")
+            })
+        });
+        if stringy {
+            out.push(event.clone());
+        }
+    }
+    out
+}
+
 /// What `needed_hooks` lacks in `registered`, named for the user.
 fn missing_hooks(registered: &[(String, String)]) -> Vec<String> {
     needed_hooks()
@@ -306,7 +328,17 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         match plugin_hooks_path(ctx) {
             Some(p) => match read_json(&p) {
                 Some(v) => {
-                    let lacks = missing_hooks(&registered_hooks(v.get("hooks").unwrap_or(&Value::Null)));
+                    let hooks = v.get("hooks").unwrap_or(&Value::Null);
+                    let lacks = missing_hooks(&registered_hooks(hooks));
+                    let stringy = string_form_hooks(hooks);
+                    if !stringy.is_empty() {
+                        // a shell between Claude Code and the hook: the pid chain
+                        // usually recovers it, but the plugin's form is command + args
+                        r.warn(
+                            &format!("hooks: the installed nimitz plugin ({}) gives {} as a command string; such a hook runs under sh -c, so its parent is a shell, not the session", p.display(), stringy.join(", ")),
+                            Some(&format!("{}, then /reload-plugins in each live session", plugin_install_fix())),
+                        );
+                    }
                     if lacks.is_empty() {
                         r.ok(&format!("hooks: the nimitz plugin is enabled and {} registers every event nimitz needs", p.display()));
                     } else {
@@ -524,5 +556,21 @@ mod tests {
         assert_eq!(reg, vec![("PreToolUse".to_string(), String::new())]);
         let lacks = missing_hooks(&reg);
         assert!(lacks.contains(&"Stop".to_string()) && !lacks.iter().any(|l| l.starts_with("PreToolUse")), "{lacks:?}");
+    }
+
+    /// A hook given as one command string is named (the repo plugin has none).
+    #[test]
+    fn a_command_string_hook_is_named() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/hooks/hooks.json");
+        let v = read_json(&p).expect("plugin/hooks/hooks.json");
+        assert!(string_form_hooks(&v["hooks"]).is_empty());
+        let mixed = serde_json::json!({
+            "SessionStart": [{"hooks": [{"type": "command", "command": "/x/nimitz hook SessionStart", "timeout": 5}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "nimitz", "args": ["hook", "Stop"]}]}],
+            "PreToolUse": [{"matcher": "SendMessage", "hooks": [{"type": "command", "command": "nimitz hook PreToolUse"}]}],
+            "Notification": [{"hooks": [{"type": "command", "command": "other-tool hook Notification"}]}]});
+        assert_eq!(string_form_hooks(&mixed), vec!["PreToolUse".to_string(), "SessionStart".to_string()]);
+        // such entries still count as registered: the fallback finds the session
+        assert!(registered_hooks(&mixed).contains(&("SessionStart".to_string(), String::new())));
     }
 }
