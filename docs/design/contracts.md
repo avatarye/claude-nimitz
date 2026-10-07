@@ -71,8 +71,17 @@ resolved, as Claude Code records them); one folder holds one member.
 A `squadron.toml` that does not parse leaves only that squadron out: the rest of
 the fleet loads, the squadron is `config.invalid` (file:line:col), its live
 members stay visible as members whose config is unreadable, and config writes to
-the fleet refuse until the file is fixed. `machine add <F> <label>` records this
-host only when no other label of the fleet names it; otherwise `--hostname H`.
+the fleet refuse until the file is fixed. A `fleet.toml` that does not parse
+leaves only that fleet out the same way (M8): the issue carries the fleet's
+admiral id, so `check <F>` and every command aimed at the fleet refuse with it
+(fix `fix <file> line N, then nimitz check <F>`), the fleet still shows in
+`status` (from its folder, the registry and the labels) with the error once, and
+the other fleets load, check and start as normal. Dropbox conflicted copies
+(`<name> (... conflicted copy ...).<ext>`) of `fleet.toml`, `squadron.toml`,
+`legacy.toml` or a member's `CLAUDE.md` are `config.conflict` (Warn, both files
+named; fix: compare the two files, keep one, delete the other) (M23).
+`machine add <F> <label>` records this host only when no other label of the
+fleet names it; otherwise `--hostname H`.
 
 ## 4. Identity, names, labels
 
@@ -156,7 +165,14 @@ Issue { code, severity: Info|Warn|Error, message, fix: Option<String> }   // fix
 ```
 
 `reasons` says why the status is what it is (e.g. "session file: status waiting,
-waitingFor permission prompt"). Unknown is allowed; a guess is not.
+waitingFor permission prompt"). Unknown is allowed; a guess is not. Session file
+`status`: `busy` and `shell` (an idle turn with background work running) are
+Busy, `idle` Idle, `waiting` NeedsYou, anything else Unknown. Every job `state`
+Claude Code writes (starting, running, resuming, adopted, crashed, working,
+blocked, done, stopped, failed, or a newer word) is read as it is: a row with no
+live pid is Stopped with the state named; a live row goes by its session file.
+Session files of `kind` `daemon` or `daemon-worker` are Claude Code's own
+processes: never a row, so never a member or a stowaway.
 
 ## 7. Integrity check (`nimitz check`, run before every start)
 
@@ -164,9 +180,10 @@ Each finding is an `Issue` with a stable `code`:
 
 | Code | Condition |
 | --- | --- |
-| `config.invalid` | TOML does not parse (file:line:col; a bad squadron.toml hides only its squadron) or breaks a schema rule (names, reserved ship names, duplicates, unknown keys) |
+| `config.invalid` | TOML does not parse (file:line:col; a bad squadron.toml hides only its squadron, a bad fleet.toml only its fleet, on the fleet's admiral id; fix `fix <file> line N`) or breaks a schema rule (names, reserved ship names, duplicates, unknown keys) |
+| `config.conflict` | a Dropbox conflicted copy next to `fleet.toml`, `squadron.toml`, `legacy.toml` or a member's `CLAUDE.md` (Warn; names both files; fix: compare the two files, keep one, delete the other) |
 | `config.layout` | an inherited instructions file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) in `NIMITZ_HOME/`, `<fleet>/`, `<fleet>/squadrons/`, `<fleet>/ships/` or `<fleet>/ships/<sq>/` (Error); two members with one folder (Error); a member folder inside a nimitz-managed folder (admiral, commodore, managed ship) (Error); a member folder inside a user project folder that has a `CLAUDE.md` (Warn). A member folder inside a user folder without one (e.g. a ship at `~`) is fine |
-| `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted. Trusted: inside `NIMITZ_HOME`; an accepted entry on the folder's repository itself (git root or below); Claude Code already ran a session in that exact folder (transcripts, job row or session file with that cwd); or, outside git, an accepted entry on the folder or a parent (keys as given and as real paths). A git repository or worktree (`.git` folder or file) covered only by a parent, with no session run there: Warn "may not be trusted" (real Claude Code refuses both). Nothing accepts it: Error. The fix names the git root when there is one; a launch that fails with "Workspace not trusted" carries the same fix (`check::untrusted_fix`) |
+| `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted. Trusted: inside `NIMITZ_HOME`; an accepted entry on the folder's repository itself (git root or below: Claude Code keys trust on the git root, M16); Claude Code already started a session in that exact folder (transcript birth, job row `createdAt` or session file `startedAt` with that cwd), and, inside a repository, started it since the repository appeared (`.git` birth; a folder that became a git root after its sessions ran is asked again); or, outside git, an accepted entry on the folder or a parent (keys as given and as real paths). A git repository or worktree (`.git` folder or file) covered only by a parent, with no session started there since: Warn "may not be trusted" (real Claude Code refuses both). Nothing accepts it: Error. The fix names the git root when there is one; a launch that fails with "Workspace not trusted" carries the same fix (`check::untrusted_fix`). `evidence::folder_trusted` (doctor, `folder.moved`) applies the same git-root cut |
 | `name.drift` | live session's name differs from the expected name |
 | `name.taken` | the expected name is held by a live session of another identity |
 | `labels.missing` | the identity's current session has no labels (e.g. resumed with flags, legacy). Only a session in its lineage (or its registry current) can be its current session; an unlabelled row outside the lineage never is |
@@ -175,6 +192,7 @@ Each finding is an `Issue` with a stable `code`:
 | `copy.rows` | extra job rows of the identity: its own stale rows, and copies. An unlabelled row is a copy only when named exactly `<expected name>-<word>-<word>` (or a legacy name plus two words), or unnamed with its job row recording a fork of a lineage session. Any other row in a member's folder is a stowaway (or `legacy` by name), never copy.rows, dup.live or labels.missing |
 | `lineage.broken` | registry's current session id has no job row and no transcript |
 | `role.background` | an admiral or commodore is a background session |
+| `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml`: newer than `max` (the highest tested) is a Warn and launches go ahead; below `min`, unknown, or a pre-release `prerelease = [...]` does not list is an Error |
 | `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |

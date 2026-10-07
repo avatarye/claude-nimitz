@@ -88,6 +88,20 @@ pub fn is_git_worktree(root: &Path) -> bool {
     root.join(".git").is_file()
 }
 
+/// When `root` became a repository (epoch seconds): the birth time of its
+/// `.git`, else the last write of `.git/config` (written by `git init`) or of
+/// the `.git` file of a worktree. None when nothing can be read.
+pub fn git_birth(root: &Path) -> Option<f64> {
+    let secs = |t: std::time::SystemTime| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs_f64());
+    let dot = root.join(".git");
+    let meta = std::fs::metadata(&dot).ok()?;
+    if let Some(t) = meta.created().ok().and_then(secs) {
+        return Some(t);
+    }
+    let fallback = if meta.is_dir() { dot.join("config") } else { dot };
+    std::fs::metadata(fallback).ok().and_then(|m| m.modified().ok()).and_then(secs)
+}
+
 /// First `name` on PATH that is a file.
 pub fn which(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;

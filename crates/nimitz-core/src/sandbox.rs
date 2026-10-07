@@ -111,14 +111,24 @@ fn trusted(base: &Path, cwd: &str) -> bool {
     // git repository (a `.git` folder or file), which needs an entry at its root
     // or below (BUG-50, seen for worktrees and plain repos).
     let real = crate::env::canon(Path::new(cwd));
-    // sessions ran here before: Claude Code accepted this folder already
+    // sessions ran here before: Claude Code accepted this folder already; inside
+    // a git repo only a run since the repo appeared counts (M16: a folder that
+    // became a git root after its sessions ran is asked again)
     let proj = claude_home(base).join("projects");
-    let ran_here = [cwd.to_string(), real.to_string_lossy().into_owned()]
+    let last_run = [cwd.to_string(), real.to_string_lossy().into_owned()]
         .iter()
-        .any(|c| fs::read_dir(proj.join(crate::evidence::project_dir_name(c))).map(|mut d| d.next().is_some()).unwrap_or(false));
+        .flat_map(|c| fs::read_dir(proj.join(crate::evidence::project_dir_name(c))).into_iter().flatten().flatten())
+        .filter_map(|e| crate::evidence::birth_secs(&e.path()))
+        .fold(None, |a: Option<f64>, t| Some(a.map_or(t, |x| x.max(t))));
+    let root = crate::env::git_root(&real);
+    let ran_here = match (last_run, root.as_ref().and_then(|r| crate::env::git_birth(r))) {
+        (Some(t), Some(birth)) => t >= birth,
+        (Some(_), None) => true,
+        (None, _) => false,
+    };
     // inside a git repo, a parent's trust is not enough, unless sessions ran
-    // here before (Claude Code accepted the repo then; core-config's ran_here)
-    let floor = crate::env::git_root(&real).filter(|_| !ran_here);
+    // here since (Claude Code accepted the repo then; check.rs ran_since_repo)
+    let floor = root.filter(|_| !ran_here);
     trust_files(base).iter().any(|f| {
         read_json(f)
             .and_then(|v| v.get("projects").and_then(|p| p.as_object()).cloned())
@@ -211,7 +221,7 @@ impl World {
                 "pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(started),
                 "kind": if kind == "background" { "bg" } else { "interactive" }, "name": name,
                 "status": if o.status.is_empty() { "idle" } else { o.status },
-                "statusUpdatedAt": ms(self.now - 60.0),
+                "statusUpdatedAt": ms(self.now - 60.0), "bridgeSessionId": null,
             });
             if o.status == "waiting" {
                 d["waitingFor"] = json!("permission prompt");
@@ -536,6 +546,19 @@ pub fn break_a_config(base: &Path, fleet: &str) {
     let _ = fs::write(dir.join("fleet.toml"), "fleet = ");
 }
 
+/// A live, labelled background session of `id` in `cwd`, bound in the registry
+/// as its current session (a member added after `create`). Its session id.
+pub fn live_session(base: &Path, id: &Id, cwd: &str) -> String {
+    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let e = env(&base);
+    let settings = json!({"env": crate::claude::labels_for(&e, id), "worktree": {"bgIsolation": "none"}}).to_string();
+    let short = start(&base, cwd, &id.name(), "bypassPermissions", Some(&settings), "startup", true);
+    let sid = job_state(&base, &short).and_then(|j| j.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default();
+    let now = crate::evidence::now();
+    let _ = crate::registry::update(&e, |r| crate::registry::bind(r, id, id.role(), &id.name(), cwd, &sid, "launch", now));
+    sid
+}
+
 fn apply_cfg(e: &crate::env::Env, plan: &Plan) -> Result<(), String> {
     if !plan.ok() {
         return Err(format!("sandbox config refused: {:?}", plan.refusals));
@@ -711,7 +734,7 @@ fn start_as(base: &Path, cwd: &str, name: &str, mode: &str, settings: Option<&St
     write_json(
         &claude_home(base).join("sessions").join(format!("{short}.json")),
         &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "bg", "name": name,
-                "jobId": short, "status": "idle", "statusUpdatedAt": ms(t)}),
+                "jobId": short, "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null}),
     );
     // The conversation: a new id starts an empty transcript (a copy has NO
     // history, BUG-53); a kept id appends to the one it has, wherever it is.
@@ -889,7 +912,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 write_json(
                     &home.join("sessions").join(format!("{short}.json")),
                     &json!({"pid": LIVE_PID, "sessionId": row.session_id, "cwd": row.cwd, "startedAt": ms(t), "kind": "bg",
-                            "name": name, "jobId": short, "status": "idle", "statusUpdatedAt": ms(t)}),
+                            "name": name, "jobId": short, "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null}),
                 );
                 let labels = labels_from_settings(saved_settings.as_ref());
                 if !labels.is_empty() {
@@ -930,7 +953,7 @@ fn interactive(base: &Path, cwd: &str, a: &Args) -> i32 {
     write_json(
         &claude_home(base).join("sessions").join(format!("i-{}.json", &sid[..8])),
         &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "interactive", "name": name,
-                "status": "idle", "statusUpdatedAt": ms(t)}),
+                "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null}),
     );
     let labels = labels_from_settings(a.settings.as_ref());
     fire(base, "SessionStart", &sid, Some(source), &labels, cwd);

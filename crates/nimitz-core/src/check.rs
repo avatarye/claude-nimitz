@@ -33,35 +33,59 @@ fn trust_projects(env: &Env) -> Option<serde_json::Map<String, serde_json::Value
 /// folder for it under `projects/`, or a job row or session file with that cwd.
 /// Then it accepted the folder, whatever the trust file says.
 pub fn ran_here(env: &Env, dir: &Path) -> bool {
+    last_ran_here(env, dir).is_some()
+}
+
+/// When Claude Code last started a session in exactly this folder (epoch
+/// seconds): the newest transcript birth under its `projects/` dir, job row
+/// (`createdAt`) or live session file (`startedAt`) with that cwd. A start is
+/// the moment Claude Code accepts a folder, so later writes do not count.
+/// None: never.
+pub fn last_ran_here(env: &Env, dir: &Path) -> Option<f64> {
     let cwd = dir.to_string_lossy();
-    if !crate::evidence::transcripts_in(env, &cwd).is_empty() {
-        return true;
-    }
+    let mut newest: Option<f64> = crate::evidence::transcript_files_in(env, &cwd)
+        .iter()
+        .map(|p| crate::evidence::birth_secs(p).unwrap_or(0.0))
+        .fold(None, |a: Option<f64>, t| Some(a.map_or(t, |x| x.max(t))));
     let want = [dir.to_path_buf(), crate::env::canon(dir)];
-    let cwd_of = |p: PathBuf| -> Option<PathBuf> {
-        let v = crate::evidence::first_json(&std::fs::read(p).ok()?)?;
-        Some(PathBuf::from(v.get("cwd")?.as_str()?.trim_end_matches('/')))
+    let mut rows = |sub: &str, file: Option<&str>, stamps: &[&str]| {
+        for e in std::fs::read_dir(env.claude_home.join(sub)).into_iter().flatten().flatten() {
+            let p = match file {
+                Some(f) => e.path().join(f),
+                None => e.path(),
+            };
+            let Some(v) = std::fs::read(p).ok().and_then(|b| crate::evidence::first_json(&b)) else { continue };
+            let Some(c) = v.get("cwd").and_then(|c| c.as_str()).map(|c| PathBuf::from(c.trim_end_matches('/'))) else { continue };
+            if !want.contains(&c) {
+                continue;
+            }
+            // a row with no readable stamp still counts as a run, at time 0
+            let at = stamps.iter().filter_map(|k| crate::evidence::stamp(&v, k)).fold(0.0, f64::max);
+            newest = Some(newest.map_or(at, |n| n.max(at)));
+        }
     };
-    let rows = |sub: &str, file: Option<&str>| -> bool {
-        std::fs::read_dir(env.claude_home.join(sub))
-            .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .map(|e| match file {
-                        Some(f) => e.path().join(f),
-                        None => e.path(),
-                    })
-                    .filter_map(cwd_of)
-                    .any(|c| want.contains(&c))
-            })
-            .unwrap_or(false)
-    };
-    rows("jobs", Some("state.json")) || rows("sessions", None)
+    rows("jobs", Some("state.json"), &["createdAt"]);
+    rows("sessions", None, &["startedAt"]);
+    newest
+}
+
+/// Did Claude Code run a session in `dir` that proves it accepts the folder as
+/// it is now? Outside git, any run. Inside a repository, a run since the
+/// repository appeared: a folder that became a git root after its sessions ran
+/// loses the parent's trust, and Claude Code asks again (M16, cli-G6).
+fn ran_since_repo(env: &Env, dir: &Path) -> bool {
+    let Some(last) = last_ran_here(env, dir) else { return false };
+    match crate::env::git_root(dir).and_then(|r| crate::env::git_birth(&r)) {
+        Some(birth) => last >= birth,
+        None => true,
+    }
 }
 
 /// How Claude Code will treat `dir` (BUG-50; evidence over prediction):
 /// - trusted: inside NIMITZ_HOME (nimitz init trusts it); a trust entry on the
 ///   folder's repository itself (git root or below); Claude Code ran a session
-///   in this exact folder; or, outside git, the folder or a parent accepted.
+///   in this exact folder (inside a repository: since the repository appeared,
+///   M16); or, outside git, the folder or a parent accepted.
 /// - a git repository or worktree covered only by a parent's trust: Warn, it
 ///   may not be trusted (real Claude Code refused both, with no session there).
 /// - nothing accepts it: Error.
@@ -83,7 +107,7 @@ fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
             .and_then(|b| b.as_bool())
             .unwrap_or(false)
     };
-    if crate::env::trust_keys(dir).iter().any(accepted) || ran_here(env, dir) {
+    if crate::env::trust_keys(dir).iter().any(accepted) || ran_since_repo(env, dir) {
         return None;
     }
     let by_parent = crate::env::trust_ancestors(dir).into_iter().find(|a| accepted(a));
@@ -292,7 +316,16 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
         out.extend(snap.issues.iter().cloned());
     }
 
-    out.dedup();
+    // one line per finding: a config error rides on the fleet, its members and
+    // the snapshot alike
+    let mut seen: Vec<Issue> = vec![];
+    out.retain(|i| {
+        let new = !seen.contains(i);
+        if new {
+            seen.push(i.clone());
+        }
+        new
+    });
     out
 }
 
@@ -455,6 +488,63 @@ pub(crate) mod tests {
         std::fs::create_dir_all(home.join("plain")).unwrap();
         set(&[&home]);
         assert!(folder_issue(&env, &id, home.join("plain").to_str().unwrap()).is_none());
+    }
+
+    /// M16 (cli-G6): a ship folder under a trusted home ran sessions as a plain
+    /// folder, then became its own git root. Claude Code keys trust on the git
+    /// root, so the old runs prove nothing: nimitz says so before a launch.
+    #[test]
+    fn a_folder_that_became_a_git_root_after_its_sessions_is_asked_again() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let home = td.path().canonicalize().unwrap().join("home");
+        let ship = home.join("ship3");
+        std::fs::create_dir_all(&ship).unwrap();
+        let trust = format!("{}.json", env.claude_home.display());
+        let set = |dirs: &[&Path]| {
+            let p: serde_json::Map<String, serde_json::Value> = dirs.iter().map(|d| (d.display().to_string(), serde_json::json!({"hasTrustDialogAccepted": true}))).collect();
+            std::fs::write(&trust, serde_json::json!({ "projects": p }).to_string()).unwrap();
+        };
+        set(&[&home]);
+        let id = Id::ship("MAIN", "ARGOS", "S3");
+        // sessions ran there (a transcript and a job row with that cwd): trusted through the home
+        let proj = env.claude_home.join("projects").join(crate::evidence::project_dir_name(ship.to_str().unwrap()));
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(proj.join("0b1d2c3e-0000-4000-8000-000000000001.jsonl"), "{}\n").unwrap();
+        let job = env.claude_home.join("jobs/0b1d2c3e/state.json");
+        std::fs::create_dir_all(job.parent().unwrap()).unwrap();
+        let created_ms = (crate::evidence::now() * 1000.0) as i64;
+        std::fs::write(&job, serde_json::json!({"sessionId": "0b1d2c3e-0000-4000-8000-000000000001", "cwd": ship, "state": "done", "createdAt": created_ms}).to_string()).unwrap();
+        assert!(folder_issue(&env, &id, ship.to_str().unwrap()).is_none(), "a plain folder under the home");
+        // `git init` there: a repository under a trusted home, with no entry of its own
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::create_dir_all(ship.join(".git")).unwrap();
+        std::fs::write(ship.join(".git/config"), "[core]\n").unwrap();
+        let i = folder_issue(&env, &id, ship.to_str().unwrap()).expect("the old runs do not cover the new repository");
+        assert_eq!((i.code.as_str(), i.severity), ("folder.untrusted", Severity::Warn));
+        assert!(i.message.contains("git repository"), "{}", i.message);
+        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt", ship.display()).as_str()));
+        // a later write to the old transcript is no proof either: only a start is
+        std::fs::write(proj.join("0b1d2c3e-0000-4000-8000-000000000001.jsonl"), "{}\n{}\n").unwrap();
+        assert!(folder_issue(&env, &id, ship.to_str().unwrap()).is_some());
+        // the git root's own entry is what Claude Code looks at (M16)
+        set(&[&home, &ship]);
+        assert!(folder_issue(&env, &id, ship.to_str().unwrap()).is_none());
+        // ... or a session started there since the repository appeared
+        set(&[&home]);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(proj.join("0b1d2c3e-0000-4000-8000-000000000002.jsonl"), "{}\n").unwrap();
+        assert!(folder_issue(&env, &id, ship.to_str().unwrap()).is_none());
+        // the cheap predicate agrees: inside a repository, a parent above the root
+        // does not count (a fresh cache per read: two writes within one clock
+        // tick share an mtime)
+        let cfg = env.claude_home.join(".claude.json");
+        let trusted = |dir: &Path| crate::evidence::folder_trusted(&env, &mut Default::default(), dir.to_str().unwrap());
+        std::fs::write(&cfg, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, home.display())).unwrap();
+        assert!(trusted(&home.join("plain")));
+        assert!(!trusted(&ship));
+        std::fs::write(&cfg, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, ship.display())).unwrap();
+        assert!(trusted(&ship.join("src")));
     }
 
     #[test]
