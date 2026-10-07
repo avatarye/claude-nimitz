@@ -287,7 +287,12 @@ impl Ctx<'_> {
         // the attach of the member's job, but Herdr says the pane shows
         // another agent (its own hook ran in this pane): the agent view
         // (`/exit` inside the attach, R-24) or a copy
-        let other = |sid: &String| !(sid == &s.session_id || s.birth_id.as_deref() == Some(sid) || (s.short_id.is_some() && self.job_of.get(sid) == s.short_id.as_ref()));
+        // A claim that names ANOTHER member's session is that member's hook
+        // naming the pane by an inherited HERDR_PANE_ID (a ship launched from
+        // here), not the agent view: the attach still runs, so the pane is
+        // the member's. The view's draft spare and a copy carry no labels and
+        // name no member.
+        let other = |sid: &String| !(sid == &s.session_id || s.birth_id.as_deref() == Some(sid) || (s.short_id.is_some() && self.job_of.get(sid) == s.short_id.as_ref())) && !self.member_of.get(sid).is_some_and(|o| o != &m.id);
         Some(p.session_id.is_none() && !p.claimed.as_ref().is_some_and(other))
     }
 

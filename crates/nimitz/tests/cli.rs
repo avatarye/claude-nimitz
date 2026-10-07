@@ -1050,6 +1050,7 @@ fn a_members_command_never_reaches_herdr_through_its_inherited_env() {
     inherited.insert("HERDR_ENV".into(), "1".into());
     inherited.insert("HERDR_SESSION".into(), "NIMITZ".into());
     inherited.insert("HERDR_SOCKET_PATH".into(), "/live/herdr.sock".into());
+    inherited.insert("HERDR_CLIENT_SOCKET_PATH".into(), "/live/herdr-client.sock".into());
     // nothing recorded: a ship's status and a commodore's up make no herdr call
     forget(Value::Null);
     let before = sb.calls().lines().count();
@@ -1075,7 +1076,7 @@ fn a_members_command_never_reaches_herdr_through_its_inherited_env() {
     assert!(!got.is_empty(), "the member's status read the recorded server");
     for (args, env) in &got {
         assert_eq!(env["HERDR_SOCKET_PATH"], "/recorded/herdr.sock", "{args} {env}");
-        assert!(env.get("HERDR_SESSION").is_none() && !args.to_string().contains("--session"), "{args} {env}");
+        assert!(env.get("HERDR_SESSION").is_none() && env.get("HERDR_CLIENT_SOCKET_PATH").is_none() && !args.to_string().contains("--session"), "{args} {env}");
     }
     // a record by session name (a test server): --session on every call, and
     // neither the inherited HERDR_SESSION nor HERDR_SOCKET_PATH reaches the child
@@ -1086,7 +1087,7 @@ fn a_members_command_never_reaches_herdr_through_its_inherited_env() {
     assert!(!got.is_empty());
     for (args, env) in &got {
         assert!(args.to_string().contains("\"--session\",\"nimitz-test\""), "{args}");
-        assert!(env.get("HERDR_SESSION").is_none() && env.get("HERDR_SOCKET_PATH").is_none(), "{args} {env}");
+        assert!(env.get("HERDR_SESSION").is_none() && env.get("HERDR_SOCKET_PATH").is_none() && env.get("HERDR_CLIENT_SOCKET_PATH").is_none(), "{args} {env}");
     }
     // the user's own command still detects from its env
     let r = raw(&inherited, &["status"], &[], None);
@@ -1747,7 +1748,7 @@ fn stop_of_a_live_lead_beside_an_interactive_older_conversation_stops_its_job() 
     // conversation of the lineage, and names that process (not a 0.3.x lead)
     let r = sb.run(&["relaunch", "MAIN", "--plan"]);
     assert_ne!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("session.interactive") && r.out.contains(&mid) && !r.out.contains("0.3.x"), "{}", r.out);
+    assert!(r.out.contains("session.interactive") && r.out.contains(&mid) && !r.out.contains("0.3.x") && r.out.contains("then nimitz relaunch MAIN"), "{}", r.out);
     assert!(fake(&["__end", &mid]).status.success());
 }
 
@@ -1859,6 +1860,21 @@ fn a_ship_is_never_shown_in_its_commodores_pane_on_herdrs_word_alone() {
     let s = sb.status();
     let clean = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter().flat_map(|q| q["ships"].as_array().unwrap().iter())).find(|m| m["id"] == "MAIN/ARGOS/CLEAN").cloned().unwrap();
     assert_eq!(clean["pane"], "w1:p2", "{clean}");
+    // the pid path, as on real Herdr: an interactive commodore (the pane's
+    // foreground pid names its session file), the ship's claim on the pane:
+    // the ship is not there, the commodore is (its own process says so)
+    sb.herdr_world(|w| {
+        w["panes"][1]["foreground"] = serde_json::json!(["claude"]);
+        w["panes"][1]["pid"] = Value::from(424242);
+        w["panes"][1]["agent_session"]["value"] = Value::from(ship.as_str());
+    });
+    std::fs::write(sb.base.join("claude_home/sessions/424242.json"), serde_json::json!({"pid": 424242, "sessionId": commodore, "kind": "interactive"}).to_string()).unwrap();
+    let s = sb.status();
+    let ships: Vec<&Value> = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter().flat_map(|q| q["ships"].as_array().unwrap().iter())).collect();
+    assert!(ships.iter().find(|m| m["id"] == "MAIN/ARGOS/CLEAN").unwrap()["pane"].is_null());
+    let cmd = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter()).find(|q| q["commodore"]["id"] == "MAIN/ARGOS").unwrap()["commodore"].clone();
+    assert_eq!(cmd["pane"], "w1:p2", "the commodore, from its own process: {cmd}");
+    std::fs::remove_file(sb.base.join("claude_home/sessions/424242.json")).unwrap();
 }
 
 /// A hook always exits 0, even when Claude Code has closed its pipe before

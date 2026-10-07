@@ -1133,6 +1133,18 @@ pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], si
     })
 }
 
+/// The session a pane's foreground runs, read from the processes themselves
+/// (no multiplexer claim): a foreground pid's session file (an interactive
+/// session in the pane). What a pane shows when Herdr's claim is not backed.
+/// Not an attach client's job: an attach may show the agent view instead
+/// (R-24), which only Herdr's claim tells.
+pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
+    procs.iter().find_map(|(_, pid)| {
+        let v = std::fs::read(claude_home.join("sessions").join(format!("{}.json", (*pid)?))).ok().and_then(|b| first_json(&b))?;
+        v.get("sessionId").and_then(|x| x.as_str()).map(String::from)
+    })
+}
+
 #[cfg(test)]
 mod claim_tests {
     use super::claim_backed;
@@ -1160,5 +1172,9 @@ mod claim_tests {
         assert!(!claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-ship"));
         assert!(!claim_backed(ch, &p(&["zsh"], Some(1)), "s-ship"));
         assert!(!claim_backed(ch, &[], "s-ship"), "an unreadable foreground backs nothing");
+        // what the pane runs, from the processes alone
+        assert_eq!(super::session_of_foreground(ch, &p(&["claude"], Some(700))).as_deref(), Some("s-commodore"));
+        assert_eq!(super::session_of_foreground(ch, &p(&["claude", "attach", "aaaa1111"], None)), None, "an attach may show the agent view");
+        assert_eq!(super::session_of_foreground(ch, &p(&["zsh"], Some(1))), None);
     }
 }

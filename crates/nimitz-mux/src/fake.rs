@@ -115,7 +115,7 @@ pub fn fake_herdr(base: &Path, args: &[String]) -> i32 {
     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(base.join("calls.jsonl")) {
         // the server-naming env the call ran with (a test asserts what a
         // member's herdr child really got, not the map nimitz built)
-        let env: serde_json::Map<String, Value> = ["HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_ENV"].iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), Value::from(v)))).collect();
+        let env: serde_json::Map<String, Value> = ["HERDR_SESSION", "HERDR_SOCKET_PATH", "HERDR_CLIENT_SOCKET_PATH", "HERDR_ENV"].iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), Value::from(v)))).collect();
         let _ = writeln!(f, "{}", json!({ "args": args, "env": env }));
     }
     let mut world: Value = fs::read(base.join("world.json"))

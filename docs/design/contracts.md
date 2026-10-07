@@ -578,7 +578,11 @@ which names the pane by the process's inherited `HERDR_PANE_ID`; a background
 job inherits the pane id of whoever launched it (or the daemon's), so the
 claim alone can put a ship in its commodore's pane. An unbacked claim leaves
 the pane with no session (`ShapePane.claimed` keeps it for the agent-view
-test, R-24); nothing is typed and no member is shown there on it.
+test, R-24; a claim that names another member's session is that member's
+hook, not the agent view); the pane then shows the session its foreground
+pid's session file names, if any. A pane whose foreground cannot be read
+(`pane process-info` fails) shows no session at all. The cost: one `pane
+process-info` per claimed pane on `status` and on every `panes()` read.
 
 `NIMITZ_STATE/active.json` (`nimitz_core::active`, version 1): the members
 live at the last write, by id: `{job, session, status (busy|idle|needs-you|

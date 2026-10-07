@@ -274,12 +274,23 @@ impl Herdr {
     /// (`evidence::claim_backed`): Herdr's own hook names the pane by the
     /// process's inherited `HERDR_PANE_ID`, which a background job brings
     /// from whoever launched it. An unreadable foreground drops the claim.
-    fn backed(&self, pane_id: &str, sid: &str, procs: Option<&[(Vec<String>, Option<i64>)]>) -> bool {
+    /// The session a pane shows: Herdr's claim when the foreground backs it,
+    /// else the session the foreground itself runs (a commodore's pane that a
+    /// ship's hook claimed still shows the commodore), else none.
+    fn shown(&self, pane_id: &str, claim: &str, procs: Option<&[(Vec<String>, Option<i64>)]>) -> Option<String> {
         let home = nimitz_core::env::Env::from_vars(&std::env::vars().collect()).claude_home;
-        match procs {
-            Some(p) => nimitz_core::evidence::claim_backed(&home, p, sid),
-            None => self.foreground_procs(pane_id).map(|p| nimitz_core::evidence::claim_backed(&home, &p, sid)).unwrap_or(false),
+        let read;
+        let procs = match procs {
+            Some(p) => p,
+            None => {
+                read = self.foreground_procs(pane_id).unwrap_or_default();
+                &read[..]
+            }
+        };
+        if nimitz_core::evidence::claim_backed(&home, procs, claim) {
+            return Some(claim.to_string());
         }
+        nimitz_core::evidence::session_of_foreground(&home, procs)
     }
 
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
@@ -457,9 +468,7 @@ impl Mux for Herdr {
             let procs = self.foreground_procs(&p.pane.pane_id).ok();
             p.claimed = p.session_id.clone();
             if let Some(sid) = p.session_id.clone() {
-                if !self.backed(&p.pane.pane_id, &sid, Some(procs.as_deref().unwrap_or(&[]))) {
-                    p.session_id = None;
-                }
+                p.session_id = self.shown(&p.pane.pane_id, &sid, Some(procs.as_deref().unwrap_or(&[])));
             }
             if foregrounds {
                 if let Some(procs) = procs {
@@ -485,9 +494,7 @@ impl Mux for Herdr {
         let mut panes = self.run(&["agent", "list"]).map(|v| parse_panes(&v)).unwrap_or_default();
         for p in panes.iter_mut() {
             if let Some(sid) = p.session_id.clone() {
-                if !self.backed(&p.pane.pane_id, &sid, None) {
-                    p.session_id = None;
-                }
+                p.session_id = self.shown(&p.pane.pane_id, &sid, None);
             }
         }
         panes

@@ -105,10 +105,11 @@ pub(crate) fn held_of(m: &Member) -> Option<&SessionInfo> {
 /// `/exit` (then `nimitz start` runs it as a job, plan-v4 section 7); any
 /// other holder is ended in its host.
 pub(crate) fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
-    // (a lead whose own job is live is no 0.3.x lead: the holder is a
-    // by-hand resume of an older conversation of its lineage)
+    // (a lead with a job, live or parked, is no 0.3.x lead: the holder is a
+    // by-hand resume of a conversation of its lineage)
+    let has_job = m.session.as_ref().is_some_and(|p| p.short_id.is_some());
     let job_live = m.session.as_ref().is_some_and(|p| p.pid.is_some() && p.short_id.is_some());
-    let interactive_lead = m.role.lead() && !job_live && r.kind == "interactive" && r.entrypoint.as_deref().unwrap_or("cli") == "cli";
+    let interactive_lead = m.role.lead() && !has_job && r.kind == "interactive" && r.entrypoint.as_deref().unwrap_or("cli") == "cli";
     let (what, fix) = if interactive_lead {
         (
             format!("{} runs as a 0.3.x interactive lead (pid {}, no job); nimitz cannot stop or resume it there", m.id, r.pid.unwrap_or(0)),
@@ -123,7 +124,8 @@ pub(crate) fn held_issue(m: &Member, r: &SessionInfo) -> Issue {
                 r.pid.unwrap_or(0),
                 r.entrypoint.as_deref().unwrap_or(&r.kind)
             ),
-            format!("end that process in its host, then nimitz start {}", m.id),
+            // a live member is relaunched (start would do nothing), a stopped one started
+            format!("end that process in its host, then nimitz {} {}", if job_live { "relaunch" } else { "start" }, m.id),
         )
     };
     issue("held", Severity::Warn, what, Some(fix), Some(m.id.clone()))
@@ -2139,12 +2141,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         // goes, the job is waited for (its row settled, then a breath), and the
         // wake runs once more; a second copy is the failure below
         if rc == 0 {
-            let own_job = match &kind {
-                Kind::Resume { session_id } => find_row_by_session(env, session_id).and_then(|r| r.short_id),
-                _ => None,
-            };
-            // (a "copy" that is the job itself is no copy: never removed)
-            if let (Kind::Resume { session_id }, Some(copy)) = (&kind, crate::claude::copy_started(&text).filter(|c| Some(c) != own_job.as_ref())) {
+            if let (Kind::Resume { session_id }, Some(copy)) = (&kind, crate::claude::copy_started(&text)) {
                 for cmd in [crate::claude::stop(env, &copy), crate::claude::rm(env, &copy)] {
                     let (rc2, t) = crate::claude::run(&cmd, None);
                     out.ran.push((Step { id: step.id.clone(), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of the wake; then wake once more") }, rc2, t));
@@ -2186,11 +2183,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 // Claude Code's output first (plan-v4 section 5): a "started a
                 // copy as X" note means the job was live after all (a race with
                 // the daemon): the copy goes, in this run, and the step failed
-                let own_job = match &kind {
-                    Kind::Resume { session_id } => find_row_by_session(env, session_id).and_then(|r| r.short_id),
-                    _ => None,
-                };
-                if let Some(copy) = crate::claude::copy_started(&text).filter(|c| Some(c) != own_job.as_ref()) {
+                if let Some(copy) = crate::claude::copy_started(&text) {
                     let gone = match copy_removed {
                         Some(gone) => gone,
                         None => {
