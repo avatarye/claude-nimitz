@@ -1030,6 +1030,49 @@ fn a_delivery_never_uses_an_inherited_herdr_env_alone() {
     assert_eq!(act["herdr"]["session"], "nimitz-test", "{act}");
 }
 
+/// A member's own command never reaches a Herdr through its inherited env
+/// (a daemon-restarted worker has the daemon's, the user's live HERDR_*):
+/// only an explicit NIMITZ_MUX / NIMITZ_HERDR_SESSION, or the server the
+/// user's own command recorded by its session name. A record with no
+/// session name is no multiplexer, never the inherited socket.
+#[test]
+fn a_members_command_never_reaches_herdr_through_its_inherited_env() {
+    let sb = Sb::new(true);
+    let active = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("active.json");
+    let forget = |herdr: Value| {
+        let mut set: Value = std::fs::read(&active).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::json!({"version": 1, "members": {}}));
+        set["herdr"] = herdr;
+        std::fs::write(&active, set.to_string()).unwrap();
+    };
+    let mut inherited = sb.vars.clone();
+    inherited.remove("NIMITZ_MUX");
+    inherited.insert("HERDR_ENV".into(), "1".into());
+    inherited.insert("HERDR_SESSION".into(), "NIMITZ".into());
+    inherited.insert("HERDR_SOCKET_PATH".into(), "/live/herdr.sock".into());
+    // nothing recorded: a ship's status and a commodore's up make no herdr call
+    forget(Value::Null);
+    let before = sb.calls().lines().count();
+    assert_eq!(raw(&inherited, &["status"], &CLEAN, None).code, 0);
+    raw(&inherited, &["up", "MAIN", "--plan"], &[("NIMITZ_ID", "MAIN/ARGOS"), ("NIMITZ_ROLE", "commodore")], None);
+    assert_eq!(sb.calls().lines().count(), before, "no herdr call from a member's inherited env: {}", sb.calls());
+    // nothing recorded: a delivery fails with the fix, and types nothing
+    raw(&inherited, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    assert_eq!(sb.calls().lines().count(), before, "{}", sb.calls());
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "failed", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("run nimitz status inside Herdr once"), "{n}");
+    // a record of the default server (no session name): its recorded socket,
+    // never the inherited one
+    forget(serde_json::json!({"socket": "/recorded/herdr.sock"}));
+    let hv: std::collections::HashMap<String, String> = inherited.clone().into_iter().collect();
+    let mux = nimitz_core::active::member_mux_vars(&nimitz_core::env::Env::from_vars(&hv), &hv);
+    assert_eq!((mux.get("NIMITZ_MUX").map(String::as_str), mux.get("NIMITZ_HERDR_SOCKET").map(String::as_str), mux.get("HERDR_SOCKET_PATH")), (Some("herdr"), Some("/recorded/herdr.sock"), None));
+    // the user's own command still detects from its env
+    let r = raw(&inherited, &["status"], &[], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.calls().lines().count() > before, "the user's status reads the shape");
+}
+
 #[test]
 fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
     let sb = Sb::new(false);

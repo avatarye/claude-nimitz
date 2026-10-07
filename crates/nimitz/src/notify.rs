@@ -73,24 +73,7 @@ fn commodore_session(env: &Env, cid: &Id) -> Option<String> {
 /// (`active::herdr_identity`: a member's command records none), named as
 /// the `--session` of every call; with nothing recorded, no multiplexer.
 fn delivery_mux(env: &Env, vars: &HashMap<String, String>) -> Box<dyn nimitz_mux::Mux> {
-    let set = |k: &str| vars.get(k).is_some_and(|v| !v.is_empty());
-    let explicit = vars.get("NIMITZ_MUX").is_some_and(|m| !m.is_empty() && m != "auto") || set("NIMITZ_HERDR_SESSION");
-    if explicit {
-        return nimitz_mux::detect(vars);
-    }
-    let mut v = vars.clone();
-    match nimitz_core::active::load(env).and_then(|a| a.herdr) {
-        Some(h) => {
-            v.insert("NIMITZ_MUX".into(), "herdr".into());
-            if let Some(s) = h.session {
-                v.insert("NIMITZ_HERDR_SESSION".into(), s);
-            }
-        }
-        None => {
-            v.insert("NIMITZ_MUX".into(), "none".into());
-        }
-    }
-    nimitz_mux::detect(&v)
+    nimitz_mux::detect(&nimitz_core::active::member_mux_vars(env, vars))
 }
 
 fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duration) -> (&'static str, String) {
@@ -98,7 +81,7 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
     let cid = Id::commodore(id.fleet(), id.squadron().unwrap_or_default());
     let mux = delivery_mux(env, vars);
     if !mux.caps().type_text {
-        return ("failed", format!("no multiplexer in the member's env can type into {cid}'s pane ({}); only an explicit NIMITZ_MUX, or the Herdr server a nimitz command of the user recorded in active.json, is used", mux.name()));
+        return ("failed", format!("no multiplexer in the member's env can type into {cid}'s pane ({}); only an explicit NIMITZ_MUX, or the Herdr server a nimitz command of the user recorded in active.json (by its session name), is used; fix: run nimitz status inside Herdr once", mux.name()));
     }
     let text = n.text();
     let deadline = Instant::now() + retry;

@@ -29,6 +29,7 @@ and jump), never to starting.
 | `NIMITZ_NATIVE_CLAUDE_BIN` | newest `~/.localtools/tools/claude-code/*/claude`, else `claude` on PATH | resume, stop, rm, agents |
 | `NIMITZ_HERDR_BIN` | `herdr` on PATH (only when `HERDR_ENV=1`) | Herdr adapter |
 | `NIMITZ_HERDR_SESSION` | unset (Herdr's own resolution: `HERDR_SESSION`, else the pane's socket) | the named Herdr session every herdr call gets as `--session`; with `NIMITZ_MUX=herdr` it drives a test server from a plain terminal (the checklist), and it is the Herdr identity `active.json` records |
+| `NIMITZ_HERDR_SOCKET` | unset | set by nimitz only (`active::member_mux_vars`): the recorded default Herdr server's socket, passed as `HERDR_SOCKET_PATH` to every herdr call of a member's command; the inherited `HERDR_SOCKET_PATH` never counts there |
 | `NIMITZ_HOSTNAME` | `gethostname()` | machine matching |
 | `NIMITZ_MUX` | auto | `herdr` or `none` |
 | `NIMITZ_CRASH_WINDOW` | `20` (s) | how long a start waits for the daemon to restart a crashed job (state `crashed`, or `working` with no live pid) before it resumes the job itself; tests set it low |
@@ -597,9 +598,13 @@ server put them in the pane. A member's command (`NIMITZ_*` labels in its
 env) records none: its env is its launch env, or the daemon's after a respawn
 (the user's live `HERDR_*`, whatever world its `NIMITZ_HOME` names; acc-D
 F6), so the identity is unknown and the set keeps the one recorded before.
-The hook path runs no Herdr command on inherited `HERDR_*` alone: a needs-you
-delivery (`nimitz __notify`) takes an explicit `NIMITZ_MUX`/`NIMITZ_HERDR_SESSION`
-as given, else the recorded identity as its `--session`, else no multiplexer.
+No member's command and no hook path runs a Herdr command on inherited
+`HERDR_*` alone (`active::member_mux_vars`): a member's `status`, `up`,
+`layout`, `restore` and a needs-you delivery (`nimitz __notify`) take an
+explicit `NIMITZ_MUX`/`NIMITZ_HERDR_SESSION` as given, else the recorded
+identity's session name as `--session`, else no multiplexer (a record with no
+session name is no multiplexer too). Only the user's own command detects
+Herdr from its env.
 The E22 hazard (the CLI may resolve a named session's socket regardless of
 the env) is accepted: the shape nimitz reads comes from the same `herdr`
 invocation in the same env as the identity it records, so the two name the

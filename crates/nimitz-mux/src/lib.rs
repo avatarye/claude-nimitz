@@ -355,7 +355,7 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
         Some("herdr") => {
             // explicit override: take the configured binary even if it does not resolve yet
             let bin = resolve_herdr_bin(vars).unwrap_or_else(|| "herdr".into());
-            return Box::new(herdr::Herdr { bin, session: herdr_session(vars) });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned() });
         }
         // `auto` (the default) and unset: detect. An unknown name: safest is no mux
         // (the CLI refuses it first with `valid_mux_setting`).
@@ -364,7 +364,7 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
     }
     if vars.get("HERDR_ENV").map(String::as_str) == Some("1") {
         if let Some(bin) = resolve_herdr_bin(vars) {
-            return Box::new(herdr::Herdr { bin, session: herdr_session(vars) });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned() });
         }
     }
     Box::new(none::NoMux)
@@ -468,8 +468,8 @@ mod tests {
     fn a_named_herdr_session_goes_on_every_call() {
         assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "nimitz-e2e")])), Some("nimitz-e2e".into()));
         assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "")])), None);
-        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: Some("nimitz-e2e".into()) }.argv(&["api", "snapshot"]), ["--session", "nimitz-e2e", "api", "snapshot"]);
-        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: None }.argv(&["api", "snapshot"]), ["api", "snapshot"]);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: Some("nimitz-e2e".into()), socket: None }.argv(&["api", "snapshot"]), ["--session", "nimitz-e2e", "api", "snapshot"]);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: None, socket: None }.argv(&["api", "snapshot"]), ["api", "snapshot"]);
     }
 
     #[test]

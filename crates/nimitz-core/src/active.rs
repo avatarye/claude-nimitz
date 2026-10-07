@@ -78,6 +78,40 @@ pub fn path(env: &Env) -> PathBuf {
 }
 
 /// The recorded set, if there is one that parses.
+/// The multiplexer settings a member's own command (or a hook's delivery)
+/// may use (plan-v4 section 13; acc-D F6). A member runs in whatever env its
+/// job inherited (a daemon-restarted worker has the daemon's, the user's live
+/// `HERDR_*` included), so that env alone never names a Herdr server: an
+/// explicit `NIMITZ_MUX` or `NIMITZ_HERDR_SESSION` is taken as given; else the
+/// server the user's own nimitz command recorded here, by its session name;
+/// else the recorded default server's socket (`NIMITZ_HERDR_SOCKET`, set as
+/// `HERDR_SOCKET_PATH` on every call); else no multiplexer.
+pub fn member_mux_vars(env: &Env, vars: &HashMap<String, String>) -> HashMap<String, String> {
+    let set = |k: &str| vars.get(k).is_some_and(|v| !v.is_empty());
+    let explicit = vars.get("NIMITZ_MUX").is_some_and(|m| !m.is_empty() && m != "auto") || set("NIMITZ_HERDR_SESSION");
+    let mut v = vars.clone();
+    if explicit {
+        return v;
+    }
+    // the inherited socket never counts; the recorded one names the server
+    v.remove("HERDR_SOCKET_PATH");
+    match load(env).and_then(|a| a.herdr) {
+        Some(HerdrIdentity { session: Some(s), .. }) => {
+            v.insert("NIMITZ_MUX".into(), "herdr".into());
+            v.insert("NIMITZ_HERDR_SESSION".into(), s);
+        }
+        // the default server (no session name): its recorded socket
+        Some(HerdrIdentity { session: None, socket: Some(sock) }) => {
+            v.insert("NIMITZ_MUX".into(), "herdr".into());
+            v.insert("NIMITZ_HERDR_SOCKET".into(), sock);
+        }
+        _ => {
+            v.insert("NIMITZ_MUX".into(), "none".into());
+        }
+    }
+    v
+}
+
 pub fn load(env: &Env) -> Option<ActiveSet> {
     let v = crate::evidence::first_json(&std::fs::read(path(env)).ok()?)?;
     serde_json::from_value(v).ok()
