@@ -104,6 +104,29 @@ Command: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=4`.
    (done)`. `evidence::daemon_retired` takes any text after the colon, so the parked
    reason reads it whole; the unit test
    `daemon_retire_reason_is_any_text_after_the_colon` pins the three shapes.
+10. **An interactive `claude --resume <sid>` on a background job's conversation**
+    (for P9: Herdr's `resume_agents_on_restore = true` runs it in every agent pane
+    after a restart). Claude Code 2.1.292, by hand under the e2e rules: scrubbed env,
+    private tmux `nz-e2e-q10`, a labelled `--bg` job (`[NIMITZ_E2EQ.SQ]-SHIP`, job
+    9ee5b0fc, one-word prompt, `--model haiku` -> Opus by org policy), guard
+    `[OK] live fleet unchanged` before and after, everything stopped, removed and
+    deleted at the end. "Wake" = `claude --bg --resume <sid> --model haiku` from a
+    shell while the interactive process is alive.
+
+    | Job | Interactive `--resume <sid>` | Session file | Job row | Terminal | Wake meanwhile |
+    | --- | --- | --- | --- | --- | --- |
+    | (a) live (`done`, pid alive) | **refused, exit 1**; no process starts, nothing re-execs | the job's own only (`kind bg`, `jobId 9ee5b0fc`) | `done`, untouched | `That session is running in the background (9ee5b0fc). Run \`claude attach 9ee5b0fc\` to open it, or \`claude stop 9ee5b0fc\` first to resume it here. Add --fork-session to branch off a copy instead.` | n/a (no interactive process; a wake of a live job is the known copy) |
+    | (b) stopped (`claude stop`) | the conversation opens **interactively, with no job**: the `held` case. The job is not woken | `kind interactive`, `jobId null`, `entrypoint cli`, `sessionId` = the job's conversation, the saved name, `status idle` | stays `done` (not `running`); `resumeSessionId` unchanged | the full conversation under the name `[NIMITZ_E2EQ.SQ]-SHIP`, a prompt, "auto mode on" | a **copy**: `note: session 9ee5b0fc is open in another Claude Code process, so this started a copy as d5d9fc3a. The original conversation is unchanged.` New job, new session id, row `name` null (the session file carries the ship's name), no labels |
+    | (b') parked (daemon retire) | not run (needs the 60-minute idle retire, or a crash restart); the row shape is the same as (b), so the same outcome is expected | | | | |
+    | (c) after `claude rm` | the same as (b): an interactive process holding the conversation, no job row at all | `kind interactive`, `jobId null`, `entrypoint cli`, same `sessionId`, the saved name | none | as (b) | the same copy note (`started a copy as 57f54dd0`), a new job under a new id; the conversation itself is not given a job while the interactive process lives |
+
+    `/exit` in the interactive process ends it cleanly (the session file goes, the
+    job row of (b) stays `done`). Round 1's "re-exec as `claude attach`" for a live
+    job is gone in 2.1.292: it refuses and names `attach`. For a restore this means
+    `resume_agents_on_restore` never wakes a job: a live lead's pane shows the refusal
+    (harmless), a stopped or parked member's pane turns the conversation into a `held`
+    interactive process, after which nimitz's own wake makes a copy until that
+    process ends (`/exit`); and a removed job's conversation is held the same way.
 
 ## Harness notes
 
