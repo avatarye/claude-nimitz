@@ -92,7 +92,7 @@ pub fn ship_lock_path(cwd: &str) -> std::path::PathBuf {
 /// lead): the member is `held` (M13), never a copy and never a second live
 /// session of it. Every member is a job (0.4.0), leads too; a process with
 /// no job on an older lineage conversation is a `copy`, not `held`.
-fn held_row(_m: &Member, r: &SessionInfo) -> bool {
+pub(crate) fn held_row(_m: &Member, r: &SessionInfo) -> bool {
     r.pid.is_some() && r.short_id.is_none() && r.copy.is_none()
 }
 
@@ -158,7 +158,11 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     let id = Some(m.id.clone());
     let relaunch = Some(format!("nimitz relaunch {}", m.id));
     let rows: Vec<&SessionInfo> = m.session.iter().chain(m.extra_rows.iter()).collect();
-    let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r) && r.copy.is_none()).collect();
+    // a lead's folder is exclusive: a live extra row there (a /fork, a hand
+    // launch with its labels) is its `lead.intruder` (the snapshot names it,
+    // one fix), never a second live session or a copy row of the lead
+    let intruder = |r: &SessionInfo| m.role.lead() && r.pid.is_some() && m.cwd.as_deref().is_some_and(|d| same_folder(&r.cwd, d)) && m.session.as_ref().map(|p| p.session_id != r.session_id).unwrap_or(true);
+    let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r) && r.copy.is_none() && !intruder(r)).collect();
     // A copy of the member's conversation (plan-v4 section 6): one Warn per
     // copy, with the fix that works for its kind.
     for r in m.extra_rows.iter().filter(|r| r.copy.is_some()) {
@@ -250,7 +254,7 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
             }
         }
     }
-    let extra: Vec<&SessionInfo> = m.extra_rows.iter().filter(|r| !held_row(m, r) && r.copy.is_none()).collect();
+    let extra: Vec<&SessionInfo> = m.extra_rows.iter().filter(|r| !held_row(m, r) && r.copy.is_none() && !intruder(r)).collect();
     if !extra.is_empty() {
         let shorts: Vec<&str> = extra.iter().map(|r| r.short_id.as_deref().unwrap_or(r.session_id.as_str())).collect();
         out.push(issue(

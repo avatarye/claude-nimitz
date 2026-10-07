@@ -1383,6 +1383,176 @@ fn empty_plans_say_why() {
     }
 }
 
+/// `/branch` (or `/resume`) inside a ship, then stop, then start: Claude Code
+/// wakes a stopped job on its `resumeSessionId`, which follows `/clear` only,
+/// so a native wake would bring the pre-branch conversation back in silence.
+/// nimitz removes the row and resumes the conversation the member ran last
+/// with every flag, and the plan says which (acceptance inside FAIL-1,
+/// r3-e2e finding 11).
+#[test]
+fn branch_then_stop_then_start_resumes_the_branch_with_every_flag() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let (job, birth) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    assert!(fake(&["__inside", &job, "branch", "[MAIN.ARGOS]-CLEAN"]).status.success());
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let branch = m["session"]["session_id"].as_str().unwrap().to_string();
+    assert_ne!(branch, birth, "{m}");
+    assert_eq!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 0);
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("rm {job}")) && r.out.contains(&format!("--resume {branch} --name")), "{}", r.out);
+    assert!(r.out.contains("resumeSessionId follows /clear only") && r.out.contains(&branch[..8]), "the plan says which conversation: {}", r.out);
+    assert!(!r.out.contains(&format!("--bg --resume {birth}\n")), "no native wake onto the older conversation: {}", r.out);
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("verified by re-reading"), "{}", r.out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(live(&m), "{m}");
+    assert_eq!(m["session"]["session_id"], branch.as_str(), "the branch is what runs: {m}");
+    assert_eq!(m["session"]["labels"]["NIMITZ_ID"], "MAIN/ARGOS/CLEAN");
+    assert!(m["extra_rows"].as_array().unwrap().is_empty() && m["issues"].as_array().unwrap().is_empty(), "{m}");
+}
+
+/// The agent view's draft spare in a LEAD folder (`spare: true`, no job, no
+/// labels, a pre-warmed process the view claimed just now) is ignored for
+/// the grace time, as in a ship folder: no `lead.intruder`, no stowaway
+/// (acceptance inside FAIL-2).
+#[test]
+fn a_draft_spare_in_a_lead_folder_is_not_an_intruder() {
+    let sb = Sb::new(false);
+    let adm = sb.member("MAIN");
+    let dir = adm["cwd"].as_str().unwrap().to_string();
+    // pre-warmed an hour ago (startedAt), claimed now (the file's mtime)
+    let old = (nimitz_core::evidence::now() - 3600.0) * 1000.0;
+    let f = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions/424242.json");
+    std::fs::write(&f, serde_json::json!({"pid": 1, "sessionId": "spare-draft-0000", "cwd": dir, "kind": "interactive", "entrypoint": "cli", "spare": true, "name": "spare-draft-0000", "status": "idle", "startedAt": old}).to_string()).unwrap();
+    let s = sb.status();
+    let text = s.to_string();
+    assert!(!text.contains("spare-draft-0000"), "the draft spare shows: {text}");
+    let adm = sb.member("MAIN");
+    assert!(!adm["issues"].as_array().unwrap().iter().any(|i| i["code"] == "lead.intruder"), "{adm}");
+    let r = sb.run(&["check", "MAIN"]);
+    assert!(!r.out.contains("lead.intruder") && !r.out.contains("spare-draft-0000"), "{}", r.out);
+}
+
+/// `/fork` in an attached lead: the fork is a second live job in the lead's
+/// exclusive folder that is not its registry job: `lead.intruder` with the
+/// one fix (stop, then rm the fork), never `dup.live` or a copy row of the
+/// lead, and the ships under it still start (acceptance inside FAIL-3).
+#[test]
+fn a_fork_of_a_lead_is_its_intruder_and_ships_still_start() {
+    let sb = Sb::new(false);
+    let adm = sb.member("MAIN");
+    let job = adm["session"]["short_id"].as_str().unwrap().to_string();
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    let o = fake(&["__inside", &job, "fork"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    let fork = out.trim().rsplit(' ').next().unwrap().to_string();
+    assert!(o.status.success() && fork.len() == 8, "{out}");
+    let adm = sb.member("MAIN");
+    assert_eq!(adm["session"]["short_id"], job.as_str(), "the lead keeps its job: {adm}");
+    let codes: Vec<&str> = adm["issues"].as_array().unwrap().iter().filter_map(|i| i["code"].as_str()).collect();
+    assert!(codes.contains(&"lead.intruder"), "{adm}");
+    assert!(!codes.contains(&"dup.live") && !codes.contains(&"copy.rows"), "{adm}");
+    let intruder = adm["issues"].as_array().unwrap().iter().find(|i| i["code"] == "lead.intruder").unwrap();
+    assert!(intruder["message"].as_str().unwrap().contains(&fork), "{intruder}");
+    assert_eq!(intruder["fix"], format!("nimitz stop {fork}  # then nimitz rm {fork}"));
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert_eq!(r.code, 0, "a ship under the lead still starts: {}", r.out);
+    assert!(r.out.contains("--bg --resume"), "{}", r.out);
+    // the fix works: stop + rm the fork, the lead is clean
+    assert_eq!(sb.run(&["stop", &fork, "--yes"]).code, 0);
+    assert_eq!(sb.run(&["rm", &fork, "--yes"]).code, 0);
+    assert!(sb.member("MAIN")["issues"].as_array().unwrap().iter().all(|i| i["code"] != "lead.intruder"));
+}
+
+/// No row and no transcript is `history.lost` with the `--fresh` fix (one
+/// word, one flag, as with a row and no transcript); the `--fresh` plan does
+/// not repeat the error (acceptance env E9).
+#[test]
+fn no_row_and_no_transcript_is_history_lost_with_the_fresh_fix() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    assert!(fake(&["rm", &job]).status.success());
+    for p in walkdir(&sb.base.join("claude_home/projects")).into_iter().filter(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)) {
+        std::fs::remove_file(p).unwrap();
+    }
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    let codes: Vec<&str> = m["issues"].as_array().unwrap().iter().filter_map(|i| i["code"].as_str()).collect();
+    assert!(codes.contains(&"history.lost") && !codes.contains(&"lineage.broken"), "{m}");
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert_eq!(r.out.matches("(history.lost)").count(), 1, "{}", r.out);
+    assert!(r.out.contains("nimitz start MAIN/ARGOS/STOPPED --fresh") && !r.out.contains("lineage.broken") && !r.out.contains("--force"), "{}", r.out);
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--fresh", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("cold launch") && !r.out.contains("history.lost") && !r.out.contains("[ERROR]"), "{}", r.out);
+}
+
+/// A killed job whose state stayed `blocked` (or `done`) is in the crash
+/// window too while its process went away just now: a start waits for the
+/// daemon's restart before any resume (acceptance env F3).
+#[test]
+fn a_job_killed_in_state_blocked_is_in_the_crash_window() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    assert!(fake(&["__crash", &job, "blocked"]).status.success());
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert_eq!((m["status"].as_str(), m["session"]["state"].as_str()), (Some("Parked"), Some("blocked")), "{m}");
+    let t0 = std::time::Instant::now();
+    let r = raw(&sb.vars, &["start", "MAIN/ARGOS/CLEAN", "--yes"], &[("NIMITZ_CRASH_WINDOW", "2")], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(t0.elapsed().as_secs_f64() >= 2.0, "no crash window wait for a blocked row: {:.1}s", t0.elapsed().as_secs_f64());
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(live(&m) && m["session"]["session_id"] == sid.as_str() && m["session"]["short_id"] == job.as_str(), "{m}");
+    // a job stopped on purpose (a SessionEnd) just now is not in the window
+    assert_eq!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 0);
+    let t0 = std::time::Instant::now();
+    let r = raw(&sb.vars, &["start", "MAIN/ARGOS/CLEAN", "--yes"], &[("NIMITZ_CRASH_WINDOW", "5")], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(t0.elapsed().as_secs_f64() < 4.0, "a stopped job waited the crash window: {:.1}s", t0.elapsed().as_secs_f64());
+}
+
+/// A stub transcript (what `claude stop` writes after the real file was moved
+/// away: no message line) is no transcript: `history.lost` before any launch
+/// (acceptance env F5).
+#[test]
+fn a_stub_transcript_is_history_lost_before_the_launch() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    let sid = m["session"]["session_id"].as_str().unwrap().to_string();
+    let log = walkdir(&sb.base.join("claude_home/projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
+    std::fs::write(&log, format!("{{\"type\":\"summary\",\"summary\":\"stub\",\"leafUuid\":\"x\"}}\n{{\"type\":\"system\",\"sessionId\":\"{sid}\",\"content\":\"stopped\"}}\n")).unwrap();
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("history.lost") && r.out.contains("--fresh") && !r.out.contains("--bg --resume"), "{}", r.out);
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--yes"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(!live(&sb.member("MAIN/ARGOS/STOPPED")), "launched anyway");
+}
+
+/// `nimitz rm <short>` of a member's own current row names the commands that
+/// do remove it: a relaunch replaces it, a retire removes it (acceptance env F7).
+#[test]
+fn rm_of_a_members_own_row_names_relaunch_and_retire() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    let job = m["session"]["short_id"].as_str().unwrap().to_string();
+    let r = sb.run(&["rm", &job, "--plan"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("lineage.current") && r.out.contains("MAIN/ARGOS/STOPPED's current session"), "{}", r.out);
+    assert!(r.out.contains("nimitz relaunch MAIN/ARGOS/STOPPED") && r.out.contains("nimitz ship rm MAIN/ARGOS/STOPPED retires the member"), "{}", r.out);
+    let adm = sb.member("MAIN");
+    let r = sb.run(&["rm", adm["session"]["short_id"].as_str().unwrap(), "--plan"]);
+    assert!(r.out.contains("session.live") || r.out.contains("nimitz fleet rm MAIN"), "{}", r.out);
+}
+
 /// A job killed in its first turn has no transcript on disk yet. A start right
 /// after is the daemon's crash window (apply waits for its restart), never
 /// `history.lost` with a `--fresh` fix that would make a duplicate (e2e case 6).

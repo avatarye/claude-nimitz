@@ -534,7 +534,10 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     for f in &mut snap.fleets {
         let intrude = |m: &mut Member| {
             let Some(dir) = m.cwd.as_deref().map(norm_dir) else { return };
-            let own: HashSet<&str> = m.session.iter().chain(m.extra_rows.iter()).map(|s| s.session_id.as_str()).collect();
+            // the lead's own: its session, a held process on its conversation,
+            // a copy (those carry their own issue); any other live row in the
+            // folder, a /fork of the lead included, is an intruder
+            let own: HashSet<&str> = m.session.iter().chain(m.extra_rows.iter().filter(|r| r.copy.is_some() || crate::sessions::held_row(m, r))).map(|s| s.session_id.as_str()).collect();
             for r in rows.iter().filter(|r| r.live() && norm_dir(&r.cwd) == dir && !own.contains(r.session_id.as_str()) && !tender_rows.contains(r.session_id.as_str())) {
                 let short = r.short_id.as_deref().unwrap_or(&r.session_id);
                 let fix = match &r.short_id {
