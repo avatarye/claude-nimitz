@@ -349,3 +349,52 @@ Rules that stay text only (no `may_run` row and no PreToolUse deny can hold them
 - Real Herdr in tests only on a fully separate server proven unable to reach the
   user's live server; otherwise a short by-hand checklist for the user
   (`docs/test/restore-checklist.md`). Never send anything to the live Herdr server.
+
+### 13.1 Decision: one engine (P9)
+
+`nimitz_core::restore::plan` is the one engine: shape (the mux's
+workspaces, tabs, panes, each pane's session and foreground) + jobs (the
+snapshot) + the active set -> steps of four kinds (a wake by exact id through
+`sessions::apply`, a claim of a shell pane with `pane run claude attach
+<job>`, a new tab, a pin) plus reports. Three entry points:
+
+- `nimitz restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`
+  (`--plan`/`--yes`): leads always; ships from the active set (`--all`:
+  every ship with a job row, parked or stopped, plus their recorded tabs);
+  never a cold launch (a member with no job and no history is "not
+  started", fix `nimitz up F`). The user, or an admiral for its own fleet.
+- `nimitz up <F>` = `sessions::plan_up` (every member with a row wakes, the
+  rest cold-launch: restore `--all` plus the first launches) and then the
+  restore engine shape-only for the leads' tabs, with the yes already given.
+  `up` is the only one of the three that spends a first prompt.
+- `nimitz layout herdr [<F>] [--ships]` = the engine shape-only (tabs for the
+  leads, attach where a job is live or a parked lead has a shell tab to wake
+  it from, no resume; `--ships` a tab for every live ship). Kept as an alias
+  for one release; its output says so. The `TabKind::Start` path is gone: a
+  tab only ever runs `claude attach`.
+
+### 13.2 What P9 built
+
+- `nimitz_mux::Mux::shape(foregrounds)` (`herdr api snapshot`, then `pane
+  process-info` per pane) and `rename_tab`; the fake Herdr answers `api
+  snapshot` field for field as the 0.9.3 capture; a sandbox's fake `pane run`
+  really runs the line (`exec`), so an attach wakes a parked fake job.
+- `NIMITZ_STATE/active.json` (`nimitz_core::active`): written by `status`,
+  `open`, `layout`, `restore` and the hook's SessionStart/SessionEnd, under
+  `registry.lock`, temp file + rename, skipped when nothing changed. A
+  member the machine or a crash took down (parked, no retire line) stays in
+  the set; one the daemon retired, or that was stopped, goes. A look from
+  outside Herdr keeps the recorded places. The recorded Herdr identity is
+  the pane env (`HERDR_SESSION`, `HERDR_SOCKET_PATH`): nimitz runs no other
+  Herdr command than the shape readers and those it already used.
+- `NIMITZ_STATE/restore.json`: a run's progress; an interrupted run is
+  reported by the next ("N of M steps done") and converges; removed on a
+  clean finish.
+- Matching (restore-scenarios.md decision 5), the `tab.taken` /
+  `tab.agentview` / `tab.dup` / `tab.renamed` / `tab.moved` / `tab.orphan`
+  reports, `turn.interrupted` / `prompt.lost` / `needs-you` / `cc.old` /
+  `rc.exposed`, `mux.none` (`--jobs-only`) and `mux.other` (`--here`).
+- Admiralty: `x R` on a fleet band runs `nimitz restore F --plan --json`,
+  shows the plan, then `nimitz restore F --yes`.
+- Tests: `crates/nimitz/tests/restore.rs`, one per scenario id;
+  `docs/test/restore-checklist.md` for the real Herdr.

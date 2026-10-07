@@ -481,6 +481,8 @@ pub trait Mux {
     fn tab(&self, place: &Place) -> Option<PaneRef>;                        // the tab by its full label: its shell pane, never a split running a program
     fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError>; // argv in the pane's foreground; empty = an idle shell (herdr pane process-info)
     fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError>; // herdr pane run, only into a shell pane
+    fn shape(&self, foregrounds: bool) -> Result<Shape, MuxError>; // the whole shape: herdr api snapshot (+ pane process-info per pane)
+    fn rename_tab(&self, tab_id: &str, label: &str) -> Result<(), MuxError>; // herdr tab rename
 }
 pub fn detect() -> Box<dyn Mux>;                       // HERDR_ENV=1 -> Herdr, else None
 pub fn tab_state(mux, cmd, place, session_id) -> Result<TabState, MuxError>;   // Shown | Shell | Taken { pane, running } | Missing
@@ -506,6 +508,72 @@ starts in a pane: `up` and `start` need no mux; attaching and typing do, and
 without one `nimitz` refuses those with a clear message. Admiralty runs
 anywhere; without a mux it is monitor-only for open, jump and type.
 
+## 9.1 Restore, the active set and the Herdr shape (P9)
+
+`Shape` (`nimitz-mux`): `workspaces[] {id, label, active_tab_id}`, `tabs[]
+{id, workspace_id, label}`, `panes[] {pane (ids), cwd, title, agent,
+session_id, state, foreground}`. The Herdr adapter reads it from `herdr api
+snapshot` (`result.snapshot.{workspaces,tabs,panes,agents}`: `panes[]` carry
+no agent field, `agents[]` the panes that show one with `agent_session.value`
+the Claude session id; joined by `pane_id`) and, with `foregrounds`, one
+`pane process-info` per pane: `Some(argv)`, empty for an idle shell, `None`
+when it could not be read (never typed into). `herdr::parse_snapshot` is the
+pure reader; the test `fixture_snapshot_shape` runs it on the 0.9.3 capture
+and on the fake's `api snapshot`, which must carry the same field set.
+
+`NIMITZ_STATE/active.json` (`nimitz_core::active`, version 1): the members
+live at the last write, by id: `{job, session, status (busy|idle|needs-you|
+unknown), waiting_for, attached, place {workspace_id, workspace, tab_id, tab,
+pane_id}}`, plus `machine`, `at`, and `herdr {session, socket}` from the pane
+env (`HERDR_SESSION`, `HERDR_SOCKET_PATH`). Written by `status`, `open`,
+`layout`, `restore` (the set from the snapshot and the shape: a pane shows a
+member when its session is any id of the member's job, or its foreground is
+`claude attach <job>`) and by the hook (SessionStart: the member is live,
+keeping its place when the job is the same; SessionEnd other than `clear`:
+gone), under `registry.lock` (`registry::with_lock`), temp file + rename,
+no write when only the clock moved. A member parked without a daemon retire
+line (the machine went down, a crash) stays as recorded; a recorded place
+whose pane still exists and shows nothing else is kept (Herdr's detection
+lags an attach); without a mux the recorded places and Herdr identity stay.
+
+`NIMITZ_STATE/restore.json` (`restore::Progress`): `{run, started, fleets,
+total, done, steps}` of the run in progress; the next run reports it
+(`restore.interrupted`, Info) and converges; removed on a clean finish.
+
+`nimitz restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`
+(`restore::plan`, mux-free; the CLI runs the steps): authority as `layout`
+(you; an admiral its own fleet; `may_run_in` row `restore`). Per fleet of
+this machine (an explicit fleet of another machine is `machine.missing`,
+fix `machine add` then `up`; one of many is a warning), `check_tree` first
+(a `config.invalid` refuses the fleet; config findings ride along). Per
+member, in chain order:
+
+| State | Restore |
+| --- | --- |
+| live, a pane shows its job (any session of the job, or the exact `claude attach <job>` with no other agent in the pane) | nothing (`tab.renamed` / `tab.moved` Info when the label or workspace differ) |
+| live, its full-label tab (loosely, `F.ADMIRAL` / `F.SQ.COMMODORE` / `F.SQ.SHIP`) has a shell pane, in its workspace first, else anywhere | `pane run claude attach <job>` there; a legacy short label (`COMMODORE`) or a default label (`1`) whose shell sits in the member's folder is renamed first; other tabs with the name: `tab.dup` Info |
+| live, its tab has no shell pane | `tab.taken` Error (fix: ctrl-z / quit X in pane P, then restore); the exact attach with another agent in the pane is `tab.agentview` (fix: close that pane); `--force` opens a second tab (`tab.dup` Warn), never for the agent view |
+| live, no tab | a new tab in its workspace (the workspace made when missing, its root tab claimed); a ship only when its recorded place says it was attached (`layout --ships`: every live ship) |
+| parked or stopped, a lead; a ship in the active set and not stopped; any ship with a row under `--all` | its shell tab's attach wakes it (one step; the SessionStart `resume` is verified, a `startup` is `history.lost`, a copy `lineage.broken`; the crash window first); else `sessions::wake_steps` (resume by exact id, or rm + relaunch for a drifted name or missing labels), then the tab as above. A lost transcript is `history.lost` (no tab). `turn.interrupted` / `prompt.lost` Info from the recorded status |
+| parked ship out of the set | counted parked, left (`--all` wakes it) |
+| stopped ship out of the set (a SessionEnd) | `stopped` Info with `nimitz start <id>`; `--all` wakes it |
+| a live copy, `name.taken`, `labels.mismatch`, `job.unreadable`, a member `check` error (`folder.*`, `ship.elsewhere`) | Error with that fix; nothing runs for it |
+| held (a process with no job) | `lead.interactive` (fix `/exit` then restore) / `held`; nothing runs |
+| no row, the registry's conversation has a transcript | `--bg --resume <sid>` with every flag (lineage `via migrate` for a lead that never had a job), then its tab (the attach names the new job) and the pin |
+| no row, no transcript | `not.started` Info, once per fleet (`nimitz up F`); never a cold launch |
+
+A lead's job that is not pinned gets a `pin` step. Tabs of a fleet's
+workspaces named `F.*` for no member are `tab.orphan` Info. The `ADMIRALTY`
+workspace is never a target and `ADMIRALTY` is refused as a fleet name.
+Outside Herdr: `mux.none` (fix: inside Herdr, or `--jobs-only`: wakes, no
+tabs). A set recorded in another Herdr session: `mux.other` (fix: run it
+there, or `--here`). Verdict per fleet: `[OK] F: restored N lead(s), M
+ship(s); K parked` / `[OK] F: nothing to restore (...)` / `[ERROR] F: N
+member(s) not restored`; exit 1 only when a member could not be restored.
+After the run `rc.exposed` of the fleet's members is repeated, and the
+active set is recorded. `up` = `plan_up` then the shape-only engine;
+`layout herdr` = the shape-only engine (plan-v4 section 13.1).
+
 ## 10. CLI surface (`nimitz`)
 
 `init`, `doctor [--fix]`, `status [--json]`, `check [<id>]` (the target, every
@@ -514,7 +582,8 @@ parents only),
 `fleet new|set|rm`, `squadron new|set|rm`, `ship new|set|rm`, `machine add [--hostname H]|rm`,
 `up <fleet> [--plan]`, `start <id> [--force] [--fresh]`, `stop <id>`, `relaunch <id>`, `rm <id>`,
 `sweep [<id>]`, `adopt <session> <id>`, `signal <id> <text>`,
-`open <id>`, `layout herdr [<fleet>]`, `migrate fleet-skill <dir...> --into <F>`,
+`open <id>`, `restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`,
+`layout herdr [<fleet>] [--ships]` (an alias of restore, shape only), `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
 `__fake-herdr`. The fake `claude` (`sandbox.rs`) models the job model of the
 round-2 report: `--bg`, `--bg --resume` (wake a stopped job; a copy under an

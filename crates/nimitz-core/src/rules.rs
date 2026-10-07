@@ -34,7 +34,8 @@ pub const CHANGELOG: &[(u32, &str)] = &[
          the admiral may signal every member of its fleet, and a ship may reply to its admiral; \
          every member may run `nimitz` (ships: the read-only commands, `signal` within comms, `sweep` of itself); \
          every member, leads too, is a Claude Code background job (the user attaches to a lead's tab with `nimitz open`; detach is ctrl-z, \
-         and `/exit` inside an attach opens the agent view)",
+         and `/exit` inside an attach opens the agent view); \
+         `nimitz restore <F>` brings a fleet back from the Herdr shape after a loss (an admiral may restore its own fleet)",
     ),
 ];
 

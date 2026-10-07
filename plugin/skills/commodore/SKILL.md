@@ -27,7 +27,7 @@ config.
    squadron, and `ship new|set|rm` for your ships.
    Plan first (`--plan`), show the plan to the user, then `--yes` once the user
    agrees. `nimitz` refuses anything else: never your admiral, yourself, another
-   squadron, `up`, `layout`, a new or removed squadron or fleet, or machines.
+   squadron, `up`, `restore`, `layout`, a new or removed squadron or fleet, or machines.
 5. A one-off job is a subagent of your own (the Agent tool, in your session),
    or a ship when it needs its own folder and a long life.
 6. When `nimitz` refuses with a `fix:` that is not yours to run (for example

@@ -52,7 +52,7 @@ member (`nimitz stop <id>` stops one).
 | Caller | May start |
 | --- | --- |
 | the user (no labels) | everything |
-| admiral | every command inside its own fleet: `start`, `stop`, `relaunch`, `rm`, `sweep`, `adopt` for any member but itself; `up` and `layout herdr` for its fleet; `fleet set`, `squadron new/set/rm`, `ship new/set/rm` in its fleet |
+| admiral | every command inside its own fleet: `start`, `stop`, `relaunch`, `rm`, `sweep`, `adopt` for any member but itself; `up`, `restore` and `layout herdr` for its fleet; `fleet set`, `squadron new/set/rm`, `ship new/set/rm` in its fleet |
 | commodore | inside its own squadron: `start`, `stop`, `relaunch`, `rm`, `sweep`, `adopt` for its ships; `squadron set` for its squadron; `ship new/set/rm` for its ships |
 | ship | the read-only commands: `status`, `check`, `rules`, `doctor` (no `--fix`); `signal` to a member it may signal (below); `sweep` of itself (its own stale rows) |
 
@@ -95,14 +95,15 @@ types the text into the commodore's pane.
 | Retire a ship | `nimitz ship rm <F/SQ/SHIP>` (stops it, removes job rows, keeps transcripts) |
 | Delete a squadron or fleet | `nimitz squadron rm <F/SQ>`, `nimitz fleet rm <F>` (only when empty and not live) |
 | Add or remove a machine | `nimitz machine add <F> <label> [--dir F/SQ/SHIP=<folder>]`, `nimitz machine rm <F> <label>` |
-| Bring a fleet up | `nimitz up <F>` (every member as a background job; then `nimitz layout herdr <F>` attaches the leads) |
+| Bring a fleet up | `nimitz up <F>` (every member as a background job, the leads attached in their Herdr tabs: a restore of everything plus the first launches) |
+| Bring a fleet back after a loss (Herdr crashed, a tab or workspace closed, the daemon stopped, a reboot) | `nimitz restore <F>` (leads always; ships that were live at the last look; `--all` every ship with a job row; `--jobs-only` over ssh, no tabs). Never a cold launch, never a second tab, never a copy; every member it cannot restore gets one fix |
 | Start one member | `nimitz start <id>` (wakes it by its exact id; `--fresh` after `history.lost`) |
 | Stop one member | `nimitz stop <id>`; one copy of two: `nimitz stop <short id>` |
 | Same session id and history; labels, name and mode restored | `nimitz relaunch <id>` |
 | Remove stale rows and copies of a member | `nimitz sweep [<id>]` (a commodore: `nimitz sweep <F/SQ>`), or one row: `nimitz rm <short id>`. A background copy is stopped and removed; a copy with no job (interactive, SDK) is ended in its own terminal |
 | A session with no labels (a stowaway) | `nimitz adopt <session> <id>`, or `nimitz rm <session>`; a live one with no job: end it in its terminal |
 | Show a member | `nimitz open <id>` (attaches in its tab; detach with ctrl-z; a parked job wakes) |
-| Herdr workspaces for fleets | `nimitz layout herdr [<F>]` (a tab attaching each lead; `--ships` each live ship) |
+| Herdr workspaces for fleets | `nimitz layout herdr [<F>]` (an alias of restore, the shape only: a tab attaching each lead; `--ships` each live ship) |
 | Move a fleet-skill fleet | `nimitz migrate fleet-skill <old dir>... --into <F>` (plan), then add `--yes` |
 
 ## Status words
