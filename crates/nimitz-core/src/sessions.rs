@@ -1396,7 +1396,19 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         }
         sweep_member(env, &mut plan, m, caller);
         if plan.steps.is_empty() && plan.refusals.is_empty() {
-            plan.warnings.push(issue("copy.rows", Severity::Info, format!("{target} has no stale rows"), None, Some(m.id.clone())));
+            let retire = match m.role {
+                Role::Admiral => "fleet rm",
+                Role::Commodore => "squadron rm",
+                Role::Ship => "ship rm",
+            };
+            let own = m.session.as_ref().map(|p| format!("; its own row {} goes with the member", p.short_id.as_deref().unwrap_or(&p.session_id))).unwrap_or_default();
+            plan.warnings.push(issue(
+                "copy.rows",
+                Severity::Info,
+                format!("{target} has no stale rows{own}"),
+                m.session.as_ref().map(|_| format!("nimitz relaunch {target}  # replaces the row (same conversation); nimitz {retire} {target} retires the member")),
+                Some(m.id.clone()),
+            ));
         }
         return plan;
     }
