@@ -349,6 +349,16 @@ pub struct SessionInfo {
     /// the job is in `jobs/pins.json`: the daemon never idle-retires it
     #[serde(default)]
     pub pinned: bool,
+    /// a copy of the member's conversation (plan-v4 section 6), and how it
+    /// was told: `transcript` (shares the conversation's root), `resume` (a
+    /// resume of a lineage session id), `name` (the member's exact name or
+    /// Claude Code's copy name), `fork` (its job row says so)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<String>,
+    /// the terminal an interactive process runs in (`tmux <pane>`), when the
+    /// session file names one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

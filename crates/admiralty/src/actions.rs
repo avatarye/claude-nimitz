@@ -79,7 +79,7 @@ impl Act {
             Act::Up => "up: start everything this fleet runs here",
             Act::Open => "open: attach in a new pane",
             Act::Stop => "stop",
-            Act::Relaunch => "relaunch (new session, labels and name right)",
+            Act::Relaunch => "relaunch (same session id and history; labels, name and mode restored)",
             Act::Sweep => "sweep stale job rows",
             Act::Rm => "rm job rows (transcripts kept)",
             Act::Adopt => "adopt as a ship",

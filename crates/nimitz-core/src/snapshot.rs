@@ -20,6 +20,10 @@ const CLI_EVERY_S: f64 = 10.0;
 const VERSION_EVERY_S: f64 = 60.0;
 /// A sub-agent that wrote within this window of a live session counts as running.
 const ACTIVE_WINDOW_S: f64 = 90.0;
+/// How long a transient process (a `spare: true` session file, a picker with
+/// no transcript and no SessionStart) is ignored after its session file
+/// appeared; after that it is classified like any other row (plan-v4 section 6).
+pub const TRANSIENT_GRACE_S: f64 = 120.0;
 
 /// Caches between refreshes (mtime-keyed JSON, titles, session dirs, the CLI
 /// cross-check and the version probe).
@@ -73,6 +77,27 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     }
     let seen: HashSet<String> = rows.iter().map(|r| r.session_id.clone()).collect();
     rows.extend(cli_rows.into_iter().filter(|r| !seen.contains(&r.session_id)));
+    // Not rows at all (plan-v4 section 6): sessions labelled for another
+    // nimitz home (the hook writes no line for them either), and, for a grace
+    // time after their session file appeared, Claude Code's transient
+    // processes: a `spare: true` file (the agent view's "new session" or
+    // draft) and a picker (no transcript, no SessionStart yet).
+    let labels = evidence::session_labels(&events, &rows);
+    let started: HashSet<&str> = events.iter().filter(|e| e.event == "SessionStart").filter_map(|e| e.session_id.as_deref()).collect();
+    let mut transient: Vec<String> = vec![];
+    rows.retain(|r| {
+        if labels.get(&r.session_id).is_some_and(|l| crate::registry::other_home(env, l)) {
+            return false;
+        }
+        let young = r.appeared_at.is_some_and(|t| now - t < TRANSIENT_GRACE_S);
+        let picker = r.live() && r.short_id.is_none() && !started.contains(r.session_id.as_str()) && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none();
+        if young && (r.spare || picker) {
+            transient.push(r.session_id.clone());
+            return false;
+        }
+        true
+    });
+    rows.retain(|r| !transient.contains(&r.session_id));
     let labels = evidence::session_labels(&events, &rows);
 
     let cc_version = match &cache.version {
@@ -138,17 +163,30 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let retired_job: HashMap<&str, &str> = reg.retired.iter().filter_map(|(id, rec)| Some((rec.job.as_deref()?, id.as_str()))).collect();
     // labelled sessions in another folder than their identity's (BUG-30)
     let mut misplaced: Vec<(String, SessionRow)> = vec![];
+    // copies of a ship's conversation (plan-v4 section 6), by session id: how
+    // the copy was told (`SessionInfo::copy`)
+    let mut copies: HashMap<String, String> = HashMap::new();
+    let unlabelled = |r: &SessionRow| !labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false);
     for r in &rows {
         let by_labels = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(String::as_str);
         let job = r.short_id.as_deref();
-        let owner = job
-            .and_then(|j| job_of.get(j).copied())
-            .or_else(|| r.session_ids().find_map(|sid| current_of.get(sid).copied()))
-            .or_else(|| by_labels.filter(|o| folder_ok(o, &r.cwd)))
-            .or_else(|| r.session_ids().find_map(|sid| lineage_of.get(sid).copied()))
+        let by_job = job.and_then(|j| job_of.get(j).copied());
+        let by_current = r.session_ids().find_map(|sid| current_of.get(sid).copied());
+        let by_folder_labels = by_labels.filter(|o| folder_ok(o, &r.cwd));
+        let by_lineage = r.session_ids().find_map(|sid| lineage_of.get(sid).copied());
+        let owner = by_job
+            .or(by_current)
+            .or(by_folder_labels)
+            .or(by_lineage)
             .or_else(|| r.session_ids().find_map(|sid| retired_of.get(sid).copied()))
             .or_else(|| job.and_then(|j| retired_job.get(j).copied()));
         if let Some(owner) = owner {
+            // an unlabelled process on an older conversation of a ship (one in
+            // its lineage, not the one it runs now): a `--resume` of that id
+            // by hand, which is a copy of the ship (section 6, rule b)
+            if by_job.is_none() && by_current.is_none() && by_folder_labels.is_none() && by_lineage.is_some() && Id(owner.to_string()).role() == Role::Ship && unlabelled(r) {
+                copies.insert(r.session_id.clone(), "resume".into());
+            }
             by_identity.entry(owner.to_string()).or_default().push(r.clone());
             claimed.insert(r.session_id.clone());
             // another identity's session carrying these labels: an impostor of
@@ -161,35 +199,76 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             claimed.insert(r.session_id.clone());
         }
     }
-    // Copies of a member (BUG-11), strictly: an unlabelled, unclaimed row is a
-    // copy only when its name is exactly how Claude Code names a copy of the
-    // member (`<expected name>-<word>-<word>`, or an old fleet name plus two
-    // words), or when it has no name and its job row records it as a fork of a
-    // session in the member's lineage. Any other row in a member's folder is
-    // someone else's agent: a stowaway (or `legacy` by name), never copy.rows,
-    // dup.live or labels.missing of the member.
+    // The stowaway rule in ship folders (plan-v4 section 6). A ship folder may
+    // be shared by several ships and by the user's own work: an unlabelled,
+    // unclaimed row there is the user's own and is not shown, unless it is a
+    // copy of a ship in that folder: (a) its transcript shares the root of a
+    // lineage conversation of the ship (a `/branch`, `/fork`, `--fork-session`
+    // or `--bg -c` copies the transcript), (b) it resumes a lineage id (found
+    // above), (c) it carries the ship's exact name (or an old fleet name).
+    // Claude Code's own copy name (`<name>-<word>-<word>`, BUG-11) and a job
+    // row that records a fork of a lineage session count for any ship. A
+    // copy is the ship's extra row with `copy` set; `sweep` removes it.
     let two_words = |rest: &str| {
         let w: Vec<&str> = rest.split('-').collect();
         w.len() == 2 && w.iter().all(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_lowercase()))
     };
+    let names_of = |id: &Id| {
+        let mut names = vec![id.name()];
+        names.extend(legacy_names.iter().filter(|(_, v)| *v == id).map(|(k, _)| k.clone()));
+        names
+    };
+    // the roots of a ship's lineage conversations, read once per ship
+    let mut ship_roots: HashMap<String, Vec<String>> = HashMap::new();
+    let mut root_of = |id: &Id, cwd: &str, cache: &mut Cache| -> Vec<String> {
+        if let Some(v) = ship_roots.get(&id.0) {
+            return v.clone();
+        }
+        let mut roots: Vec<String> = vec![];
+        if let Some(rec) = reg.identities.get(&id.0) {
+            for sid in rec.session_ids() {
+                if let Some(p) = evidence::transcript(env, &mut cache.files, Some(cwd), sid) {
+                    roots.extend(evidence::transcript_root(&mut cache.files, &p));
+                }
+            }
+        }
+        roots.sort();
+        roots.dedup();
+        ship_roots.insert(id.0.clone(), roots.clone());
+        roots
+    };
+    // the user's own sessions in ship folders: not shown, not stowaways
+    let mut users_own: HashSet<String> = HashSet::new();
     let unclaimed: Vec<&SessionRow> = rows.iter().filter(|r| !claimed.contains(&r.session_id)).collect();
     for r in unclaimed {
-        if labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false) || legacy_names.contains_key(&r.name) {
+        if !unlabelled(r) || legacy_names.contains_key(&r.name) {
             continue;
         }
-        let by_name = |id: &Id| {
-            let mut names = vec![id.name()];
-            names.extend(legacy_names.iter().filter(|(_, v)| *v == id).map(|(k, _)| k.clone()));
-            names.iter().any(|n| r.name.strip_prefix(&format!("{n}-")).map(two_words).unwrap_or(false))
-        };
-        let by_fork = |id: &Id| {
-            r.name.is_empty()
-                && r.forked_from.as_ref().map(|f| lineage_of.get(f.as_str()) == Some(&id.0.as_str())).unwrap_or(false)
-        };
-        let copy_of = ship_ids.iter().find(|id| by_name(id) || by_fork(id));
-        if let Some(id) = copy_of {
-            by_identity.entry(id.0.clone()).or_default().push(r.clone());
-            claimed.insert(r.session_id.clone());
+        let here: Vec<&Id> = ship_ids.iter().filter(|id| dir_of.get(&id.0).is_some_and(|d| same_dir(d, &r.cwd))).collect();
+        let by_exact_name = |id: &Id| names_of(id).contains(&r.name);
+        let by_copy_name = |id: &Id| names_of(id).iter().any(|n| r.name.strip_prefix(&format!("{n}-")).map(two_words).unwrap_or(false));
+        let by_fork = |id: &Id| r.name.is_empty() && r.forked_from.as_ref().map(|f| lineage_of.get(f.as_str()) == Some(&id.0.as_str())).unwrap_or(false);
+        let mut copy_of: Option<(&Id, &str)> = None;
+        if !here.is_empty() {
+            let own = evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).map(|p| evidence::transcript_root(&mut cache.files, &p)).unwrap_or_default();
+            if !own.is_empty() {
+                copy_of = here.iter().find(|id| root_of(id, &r.cwd, cache).iter().any(|u| own.contains(u))).map(|id| (*id, "transcript"));
+            }
+        }
+        let copy_of = copy_of
+            .or_else(|| here.iter().find(|id| by_exact_name(id)).map(|id| (*id, "name")))
+            .or_else(|| ship_ids.iter().find(|id| by_copy_name(id)).map(|id| (id, "name")))
+            .or_else(|| ship_ids.iter().find(|id| by_fork(id)).map(|id| (id, "fork")));
+        match copy_of {
+            Some((id, how)) => {
+                by_identity.entry(id.0.clone()).or_default().push(r.clone());
+                claimed.insert(r.session_id.clone());
+                copies.insert(r.session_id.clone(), how.into());
+            }
+            None if !here.is_empty() => {
+                users_own.insert(r.session_id.clone());
+            }
+            None => {}
         }
     }
 
@@ -209,7 +288,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             id: fid.clone(),
             dir: fc.dir.to_string_lossy().into_owned(),
             machine: fc.machine.clone(),
-            admiral: build_member(env, cache, fc, &fid, &reg, &mut by_identity, &labels, &events),
+            admiral: build_member(env, cache, fc, &fid, &reg, &mut by_identity, &labels, &events, &copies),
             squadrons: vec![],
             issues: vec![],
         };
@@ -217,14 +296,14 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             let sqid = Id::commodore(&fc.config.fleet, &sq.squadron);
             let mut squadron = Squadron {
                 id: sqid.clone(),
-                commodore: build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events),
+                commodore: build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events, &copies),
                 ships: vec![],
                 comms: sq.comms.clone(),
                 issues: vec![],
             };
             for ship in &sq.ships {
                 let sid = Id::ship(&fc.config.fleet, &sq.squadron, &ship.name);
-                squadron.ships.push(build_member(env, cache, fc, &sid, &reg, &mut by_identity, &labels, &events));
+                squadron.ships.push(build_member(env, cache, fc, &sid, &reg, &mut by_identity, &labels, &events, &copies));
             }
             fleet.squadrons.push(squadron);
         }
@@ -245,12 +324,12 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
                 m.reasons.insert(0, format!("config unreadable: {}", err.message));
                 m.issues.insert(0, err.clone());
             };
-            let mut commodore = build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events);
+            let mut commodore = build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events, &copies);
             unread(&mut commodore, Some(sd.to_string_lossy().into_owned()));
             let mut squadron = Squadron { id: sqid.clone(), commodore, ships: vec![], comms: Comms::default(), issues: vec![err.clone()] };
             for k in under {
                 let id = Id(k);
-                let mut m = build_member(env, cache, fc, &id, &reg, &mut by_identity, &labels, &events);
+                let mut m = build_member(env, cache, fc, &id, &reg, &mut by_identity, &labels, &events, &copies);
                 unread(&mut m, None);
                 squadron.ships.push(m);
             }
@@ -271,7 +350,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         under.dedup();
         // the fleet carries the error once; its members say so in their reasons
         let unread = |m: &mut Member| m.reasons.insert(0, format!("config unreadable: {}", err.message));
-        let mut admiral = build_member(env, cache, &fc, &fid, &reg, &mut by_identity, &labels, &events);
+        let mut admiral = build_member(env, cache, &fc, &fid, &reg, &mut by_identity, &labels, &events, &copies);
         unread(&mut admiral);
         let mut fleet = Fleet { id: fid.clone(), dir: dir.to_string_lossy().into_owned(), machine: None, admiral, squadrons: vec![], issues: vec![err.clone()] };
         for k in under {
@@ -279,7 +358,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             let Some(sq) = id.squadron() else { continue };
             let sqid = Id::commodore(fid.fleet(), sq);
             if !fleet.squadrons.iter().any(|s| s.id == sqid) {
-                let mut commodore = build_member(env, cache, &fc, &sqid, &reg, &mut by_identity, &labels, &events);
+                let mut commodore = build_member(env, cache, &fc, &sqid, &reg, &mut by_identity, &labels, &events, &copies);
                 if commodore.cwd.is_none() {
                     commodore.cwd = Some(dir.join("squadrons").join(sq.to_lowercase()).to_string_lossy().into_owned());
                 }
@@ -289,7 +368,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             if id == sqid {
                 continue;
             }
-            let mut m = build_member(env, cache, &fc, &id, &reg, &mut by_identity, &labels, &events);
+            let mut m = build_member(env, cache, &fc, &id, &reg, &mut by_identity, &labels, &events, &copies);
             unread(&mut m);
             if let Some(squadron) = fleet.squadrons.iter_mut().find(|s| s.id == sqid) {
                 squadron.ships.push(m);
@@ -361,7 +440,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             || folder_of.iter().any(|(d, _)| *d == cn)
             || legacy_names.contains_key(&r.name)
     };
-    for r in rows.iter().filter(|r| !claimed.contains(&r.session_id)) {
+    for r in rows.iter().filter(|r| !claimed.contains(&r.session_id) && !users_own.contains(&r.session_id)) {
         if labels.get(&r.session_id).map(evidence::is_labelled).unwrap_or(false) {
             continue; // labelled but unconfigured: reported above
         }
@@ -551,6 +630,7 @@ fn build_member(
     by_identity: &mut HashMap<String, Vec<SessionRow>>,
     labels: &HashMap<String, BTreeMap<String, String>>,
     events: &[Event],
+    copies: &HashMap<String, String>,
 ) -> Member {
     let rec = reg.identities.get(&id.0);
     let cwd = crate::config::member_dir(env, fc, id)
@@ -562,13 +642,20 @@ fn build_member(
     // Primary: the registry's job when its row exists (plan-v4 section 4);
     // else the row running the registry's session; else the newest live row;
     // else the newest row; but only among rows that are the identity's own (in
-    // its lineage, or carrying its labels). A copy found by its name or fork
-    // link is never the current session. A process holding the conversation
-    // with no job (`held`) never beats the job row.
+    // its lineage, or carrying its labels). A copy (by its transcript, its
+    // name, a fork link or a resume of a lineage id) is never the current
+    // session. A process holding the conversation with no job (`held`) never
+    // beats the job row.
     let current = rec.and_then(|r| r.session.clone());
     let own = |r: &SessionRow| {
-        rec.map(|x| x.job.is_some() && x.job == r.short_id || r.session_ids().any(|sid| x.session_ids().any(|y| y == sid))).unwrap_or(false)
-            || labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0)
+        !copies.contains_key(&r.session_id)
+            && (rec.map(|x| x.job.is_some() && x.job == r.short_id || r.session_ids().any(|sid| x.session_ids().any(|y| y == sid))).unwrap_or(false)
+                || labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0))
+    };
+    let info = |r: &SessionRow| {
+        let mut i = r.info(labels.get(&r.session_id).cloned().unwrap_or_default());
+        i.copy = copies.get(&r.session_id).cloned();
+        i
     };
     let primary_at = rec
         .and_then(|x| x.job.as_deref())
@@ -587,8 +674,8 @@ fn build_member(
                 .map(|(i, _)| i)
         });
     let primary = primary_at.map(|i| rows.remove(i));
-    let extra_rows: Vec<SessionInfo> = rows.iter().map(|r| r.info(labels.get(&r.session_id).cloned().unwrap_or_default())).collect();
-    let session = primary.as_ref().map(|r| r.info(labels.get(&r.session_id).cloned().unwrap_or_default()));
+    let extra_rows: Vec<SessionInfo> = rows.iter().map(info).collect();
+    let session = primary.as_ref().map(info);
 
     // Status and the reasons for it, newest evidence first.
     let status = match &primary {

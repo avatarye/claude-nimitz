@@ -100,6 +100,8 @@ pub struct FileCache {
     session_dirs: HashMap<String, PathBuf>,
     titles: HashMap<PathBuf, (SystemTime, Option<String>)>,
     trust: HashMap<PathBuf, (SystemTime, Vec<PathBuf>)>,
+    /// `transcript_root` per transcript, by mtime
+    roots: HashMap<PathBuf, (SystemTime, Vec<String>)>,
     events: EventTail,
 }
 
@@ -390,6 +392,15 @@ pub struct SessionRow {
     pub entrypoint: Option<String>,
     /// the job is in `jobs/pins.json`
     pub pinned: bool,
+    /// the session file says `spare: true` (a pre-warmed process the agent
+    /// view claims as its "new session" or draft)
+    pub spare: bool,
+    /// where an interactive process runs, from the session file (`tmux`
+    /// `<session>:@<window>.%<pane>`, a Herdr pane)
+    pub terminal: Option<String>,
+    /// when the session file appeared (epoch seconds): the earliest of its
+    /// birth time, its mtime and `startedAt`
+    pub appeared_at: Option<f64>,
 }
 
 impl SessionRow {
@@ -413,6 +424,8 @@ impl SessionRow {
             birth_id: self.birth_id.clone(),
             entrypoint: self.entrypoint.clone(),
             pinned: self.pinned,
+            copy: None,
+            terminal: self.terminal.clone(),
         }
     }
     /// Every session id this row answers to: the conversation now and the birth id.
@@ -441,6 +454,15 @@ fn norm_kind(k: &str) -> String {
 /// never a stowaway, so their session files are not rows.
 fn internal_kind(k: &str) -> bool {
     matches!(k, "daemon" | "daemon-worker")
+}
+
+/// The terminal an interactive process runs in, as the session file names it:
+/// `tmux` (`<session>:@<window>.%<pane>`), else any `herdr*` field.
+fn terminal_of(d: &Value) -> Option<String> {
+    if let Some(t) = s(d, "tmux") {
+        return Some(format!("tmux {t}"));
+    }
+    d.as_object()?.iter().find(|(k, v)| k.starts_with("herdr") && v.is_string()).map(|(k, v)| format!("{k} {}", v.as_str().unwrap_or_default()))
 }
 
 /// Rows from the files `claude agents --json --all` reads. None when the
@@ -495,6 +517,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             forked_from: ["forkedFrom", "forkedFromSessionId", "parentSessionId", "resumedFrom"].iter().find_map(|k| s(&d, k)),
             bridge_session_id: None,
             entrypoint: None,
+            spare: false,
+            terminal: None,
+            appeared_at: None,
         });
     }
     for p in list(&sess_dir) {
@@ -541,6 +566,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             bridge_session_id: s(&d, "bridgeSessionId"),
             birth_id: None,
             entrypoint: s(&d, "entrypoint"),
+            spare: d.get("spare").and_then(|v| v.as_bool()).unwrap_or(false),
+            terminal: terminal_of(&d),
+            appeared_at: [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min),
         };
         match job.as_ref().and_then(|j| by_job.get(j)) {
             // a live background process: its job row gains pid, status and the
@@ -556,6 +584,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
                 r.waiting_for = live.waiting_for;
                 r.bridge_session_id = live.bridge_session_id;
                 r.entrypoint = live.entrypoint;
+                r.spare = live.spare;
+                r.terminal = live.terminal;
+                r.appeared_at = live.appeared_at;
                 if !live.name.is_empty() {
                     r.name = live.name;
                 }
@@ -611,6 +642,9 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         birth_id: None,
                         entrypoint: None,
                         pinned: false,
+                        spare: false,
+                        terminal: None,
+                        appeared_at: None,
                     })
                 })
                 .collect()
@@ -674,6 +708,51 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
         }
     }
     None
+}
+
+/// How many lines of a transcript the root reader looks at: the metadata
+/// lines (custom-title, agent-name, mode, snapshots) come first, then the
+/// attachments and the first user message.
+const ROOT_LINES: usize = 64;
+
+/// The root of a conversation: the uuids near the top of its transcript (the
+/// first line that carries a `uuid`, the chain root, and the first `user` or
+/// `assistant` message with its `parentUuid`). A copy of a conversation
+/// (`/branch`, `/fork`, `--fork-session`, `--bg -c`) copies the transcript,
+/// so it shares these; a fresh conversation (`/clear`) has its own. Only the
+/// first lines are read, cached by (path, mtime). Empty when the transcript
+/// has no message yet.
+pub fn transcript_root(cache: &mut FileCache, jsonl: &Path) -> Vec<String> {
+    let Some(m) = mtime(jsonl) else { return vec![] };
+    if let Some((t, root)) = cache.roots.get(jsonl) {
+        if *t == m {
+            return root.clone();
+        }
+    }
+    let mut out: Vec<String> = vec![];
+    if let Ok(f) = fs::File::open(jsonl) {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(f).lines().take(ROOT_LINES).map_while(Result::ok) {
+            if !line.contains("\"uuid\"") {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Some(uuid) = s(&v, "uuid") else { continue };
+            let message = matches!(s(&v, "type").as_deref(), Some("user") | Some("assistant"));
+            // the chain root (the first line with a uuid) and the first message
+            if out.is_empty() || message {
+                out.push(uuid);
+                out.extend(s(&v, "parentUuid"));
+            }
+            if message {
+                break;
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    cache.roots.insert(jsonl.to_path_buf(), (m, out.clone()));
+    out
 }
 
 /// Transcripts in a folder's project dir, newest first: (last write, session id).
