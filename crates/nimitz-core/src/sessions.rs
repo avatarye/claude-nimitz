@@ -87,16 +87,38 @@ pub fn ship_lock_path(cwd: &str) -> std::path::PathBuf {
     std::path::Path::new(cwd).join(".nimitz-ship.lock")
 }
 
+/// A live process with no job that runs a background member's conversation
+/// (an SDK host, an interactive or Remote Control `--resume`): the member is
+/// `held` (M13), never a copy and never a second live session of it.
+fn held_row(m: &Member, r: &SessionInfo) -> bool {
+    m.role == Role::Ship && r.pid.is_some() && r.short_id.is_none()
+}
+
 /// Session-level issues readable from the member and the filesystem alone:
-/// name.drift, labels.missing, labels.mismatch, dup.live, copy.rows,
-/// role.background, ship.elsewhere. (name.taken and lineage.broken need the
-/// whole snapshot or the registry; `snapshot` adds those to `Member::issues`.)
+/// name.drift, labels.missing, labels.mismatch, dup.live, copy.rows, held,
+/// ship.elsewhere. (name.taken and lineage.broken need the whole snapshot or
+/// the registry; `snapshot` adds those to `Member::issues`.)
 pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     let mut out = vec![];
     let id = Some(m.id.clone());
     let relaunch = Some(format!("nimitz relaunch {}", m.id));
     let rows: Vec<&SessionInfo> = m.session.iter().chain(m.extra_rows.iter()).collect();
-    let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some()).collect();
+    let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r)).collect();
+    for r in rows.iter().filter(|r| held_row(m, r)) {
+        out.push(issue(
+            "held",
+            Severity::Warn,
+            format!(
+                "{}'s conversation {} runs in a process with no job (pid {}, {}): nimitz cannot stop or resume it there",
+                m.id,
+                r.session_id,
+                r.pid.unwrap_or(0),
+                r.entrypoint.as_deref().unwrap_or(&r.kind)
+            ),
+            Some(format!("end that process in its host, then nimitz start {}", m.id)),
+            id.clone(),
+        ));
+    }
 
     if live.len() > 1 {
         let names: Vec<String> =
@@ -136,15 +158,6 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
             )),
             _ => {}
         }
-        if m.role.interactive() && p.kind == "background" {
-            out.push(issue(
-                "role.background",
-                Severity::Error,
-                format!("{} is a background session; a {} must stay interactive", m.id, m.role.as_str()),
-                Some(format!("nimitz open {}  # attach it, and keep it in a terminal", m.id)),
-                id.clone(),
-            ));
-        }
     }
     // The session's saved folder is not the member's folder any more (moved, or
     // `ship set --dir`): Claude Code resumes in the saved folder, so a resume
@@ -172,12 +185,13 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
             }
         }
     }
-    if !m.extra_rows.is_empty() {
-        let shorts: Vec<&str> = m.extra_rows.iter().map(|r| r.short_id.as_deref().unwrap_or(r.session_id.as_str())).collect();
+    let extra: Vec<&SessionInfo> = m.extra_rows.iter().filter(|r| !held_row(m, r)).collect();
+    if !extra.is_empty() {
+        let shorts: Vec<&str> = extra.iter().map(|r| r.short_id.as_deref().unwrap_or(r.session_id.as_str())).collect();
         out.push(issue(
             "copy.rows",
             Severity::Warn,
-            format!("{} has {} extra job rows (copies or stale rows): {}", m.id, m.extra_rows.len(), shorts.join(", ")),
+            format!("{} has {} extra job rows (copies or stale rows): {}", m.id, extra.len(), shorts.join(", ")),
             Some(format!("nimitz sweep {}", m.id)),
             id.clone(),
         ));
@@ -236,8 +250,8 @@ pub fn lock_holder(cwd: &str) -> Option<String> {
 /// job row and no transcript). Called by `snapshot` for every member.
 pub fn registry_issues(env: &Env, cache: &mut crate::evidence::FileCache, m: &Member, reg: &Registry) -> Vec<Issue> {
     let Some(rec) = reg.identities.get(&m.id.0) else { return vec![] };
-    let Some(current) = rec.current.as_deref() else { return vec![] };
-    let known = m.session.iter().chain(m.extra_rows.iter()).any(|r| r.session_id == current);
+    let Some(current) = rec.session.as_deref() else { return vec![] };
+    let known = m.session.iter().chain(m.extra_rows.iter()).any(|r| r.session_id == current || r.birth_id.as_deref() == Some(current));
     if known || crate::evidence::transcript(env, cache, m.cwd.as_deref(), current).is_some() {
         return vec![];
     }
@@ -457,8 +471,8 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
     let step = |id: &Id, cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.clone()), why: why.into() };
 
     if m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false) {
-        // live with drift / missing labels / a twin / in the background: refuse
-        // with the fix (rows 2, 3, 11); live and clean: nothing (row 1)
+        // live with drift / missing labels / a twin: refuse with the fix
+        // (rows 2, 3); live and clean: nothing (row 1)
         if let Some(e) = session_errs.iter().find(|i| i.severity == Severity::Error) {
             plan.refusals.push(e.clone());
         }
@@ -532,7 +546,7 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, force: boo
             // transcript (BUG-12): `--resume <id>` with every flag continues it
             // (or an interrupted relaunch's session: a migration's old row was
             // already removed, and the registry does not know it yet)
-            let current = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.current.clone());
+            let current = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.session.clone());
             let has_log = |sid: &String| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(&cwd), sid).is_some();
             let kept = pending_relaunch(env, id).filter(has_log).or_else(|| current.filter(has_log));
             // no row: an interactive member continues its transcript with `-c` (row 6)
@@ -631,8 +645,7 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
 /// and lineage.broken yield to --force); warnings ride along. The relaunch
 /// table handles the session-level codes itself, with their row's action.
 fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: bool) {
-    const TABLE_HANDLED: [&str; 7] =
-        ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "role.background"];
+    const TABLE_HANDLED: [&str; 6] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken"];
     for i in crate::check::check(env, snap, id) {
         let forced_away = force && i.code == "cc.version";
         match i.severity {
@@ -1137,7 +1150,7 @@ fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
         let reg = crate::registry::load(env);
         reg.retired
             .iter()
-            .find(|(_, rec)| rec.current.as_deref() == Some(r.session_id.as_str()) || rec.lineage.iter().any(|l| l.session_id == r.session_id))
+            .find(|(_, rec)| rec.job.as_deref() == r.short_id.as_deref() && rec.job.is_some() || rec.session_ids().any(|s| r.session_ids().any(|x| x == s)))
             .map(|(id, _)| id.clone())
     })?;
     Some((Id(owner), r.info(labels.get(&r.session_id).cloned().unwrap_or_default())))
@@ -1452,7 +1465,11 @@ pub fn bind_started(
     }
     let (role, name) = (id.role(), id.name());
     let cwd_s = cwd.unwrap_or_default().to_string();
-    if let Err(e) = crate::registry::update(env, |r| crate::registry::bind(r, id, role, &name, &cwd_s, &sid, via, crate::evidence::now())) {
+    // the job that runs it: the hook bound it already unless another job of
+    // the identity still has its row (an impostor, a stale copy); nimitz knows
+    // better here, it started this one
+    let job = find_row_by_session(env, &sid).and_then(|r| r.short_id);
+    if let Err(e) = crate::registry::update(env, |r| crate::registry::bind_job(r, id, role, &name, &cwd_s, job.as_deref(), &sid, via, crate::evidence::now())) {
         return Err(vec![issue("lineage.broken", Severity::Error, format!("registry write failed: {e}"), None, Some(id.clone()))]);
     }
     claim_folder(env, id, cwd, &sid);
@@ -1592,7 +1609,8 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             let (id, sid, via) = (Id(step.cmd[1].clone()), step.cmd[2].clone(), step.cmd[3].clone());
             let (role, name) = (id.role(), id.name());
             let cwd = step.cwd.clone().unwrap_or_default();
-            match crate::registry::update(env, |r| crate::registry::bind(r, &id, role, &name, &cwd, &sid, &via, crate::evidence::now())) {
+            let job = find_row_by_session(env, &sid).and_then(|r| r.short_id);
+            match crate::registry::update(env, |r| crate::registry::bind_job(r, &id, role, &name, &cwd, job.as_deref(), &sid, &via, crate::evidence::now())) {
                 Ok(()) => out.ran.push((step.clone(), 0, format!("bound {sid} to {id} (via {via})"))),
                 Err(e) => {
                     out.ran.push((step.clone(), -1, e.to_string()));
@@ -1736,18 +1754,20 @@ fn live_row(env: &Env, pick: impl Fn(&crate::evidence::SessionRow) -> bool) -> O
     rows.into_iter().find(|r| (r.live() || r.unreadable) && pick(r))
 }
 
-/// A live session of `id` right now: its registry current, or a row with its labels.
-/// A live session of `id` right now: its registry current, or a row with its
-/// labels **in its own folder** (`cwd`). A session carrying the labels in
+/// A live session of `id` right now: its registry job or session, or a row
+/// with its labels **in its own folder** (`cwd`). A session carrying the labels in
 /// another folder is an impostor (BUG-30) and never counts (BUG-55).
 fn live_session_of(env: &Env, id: &Id, cwd: Option<&str>) -> Option<crate::evidence::SessionRow> {
-    let current = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.current.clone());
+    let rec = crate::registry::load(env).identities.remove(&id.0);
+    let (job, current) = (rec.as_ref().and_then(|r| r.job.clone()), rec.and_then(|r| r.session));
     let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
     let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
     let here = |r: &crate::evidence::SessionRow| cwd.map(|c| same_folder(&r.cwd, c)).unwrap_or(true);
     rows.into_iter().find(|r| {
         (r.live() || r.unreadable)
-            && (Some(&r.session_id) == current.as_ref() || (labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
+            && (job.is_some() && r.short_id == job
+                || Some(&r.session_id) == current.as_ref()
+                || (labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
     })
 }
 
@@ -1777,6 +1797,12 @@ fn release_folder(env: &Env, id: Option<&Id>, cwd: Option<&str>) {
     if lock_holder(cwd).map(|m| env.matches_hostname(&m)).unwrap_or(false) {
         let _ = std::fs::remove_file(ship_lock_path(cwd));
     }
+}
+
+/// The job row running `sid` now (or born as it), if any.
+fn find_row_by_session(env: &Env, sid: &str) -> Option<crate::evidence::SessionRow> {
+    let mut cache = crate::evidence::FileCache::default();
+    crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.short_id.is_some() && r.session_ids().any(|s| s == sid))
 }
 
 fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {

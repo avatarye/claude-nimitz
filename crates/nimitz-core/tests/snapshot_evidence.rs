@@ -62,10 +62,12 @@ fn status_says_why_it_is_what_it_is() {
     let twin = w.ship(&snap, "TWIN");
     assert!(twin.session.is_some() && !twin.extra_rows.is_empty());
 
-    // stopped: the job row with no live pid
+    // a job row with no live pid and no SessionEnd: parked, not an error (plan-v4 section 4)
     let stopped = w.ship(&snap, "STOPPED");
-    assert_eq!(stopped.status, Status::Stopped);
+    assert_eq!(stopped.status, Status::Parked);
     assert!(stopped.reasons[0].contains("no live pid"), "{:?}", stopped.reasons);
+    assert!(stopped.reasons[1].contains("parked"), "{:?}", stopped.reasons);
+    assert!(stopped.issues.is_empty(), "{:?}", stopped.issues);
 
     // never started
     let fresh = w.ship(&snap, "FRESH");
@@ -230,7 +232,7 @@ fn extra_rows_hold_the_copies_and_the_current_row_stays_the_primary() {
     let snap = w.snap();
     let m = w.ship(&snap, "COPIES");
     let reg = nimitz_core::registry::load(&w.env);
-    let current = reg.identities[&m.id.0].current.clone().unwrap();
+    let current = reg.identities[&m.id.0].session.clone().unwrap();
     assert_eq!(m.session.as_ref().unwrap().session_id, current, "the registry decides which row is the primary");
     assert_eq!(m.extra_rows.len(), 2);
     assert!(m.extra_rows.iter().all(|r| r.session_id != current));
@@ -282,7 +284,7 @@ fn every_member_carries_its_session_issues() {
     }
     assert!(w.ship(&snap, "CLEAN").issues.is_empty());
     let boreal = &snap.fleets.iter().find(|f| f.id.fleet() == "MAIN").unwrap().squadrons.iter().find(|s| s.id.squadron() == Some("BOREAL")).unwrap().commodore;
-    assert!(boreal.issues.iter().any(|i| i.code == "role.background"), "{:?}", boreal.issues);
+    assert!(boreal.issues.is_empty(), "a background lead is a job like every member: {:?}", boreal.issues);
 }
 
 #[test]
@@ -336,13 +338,15 @@ fn status_shell_is_busy_and_every_job_state_reads() {
     for state in STATES {
         w.patch(&w.job_file(&short), |v| v["state"] = json!(state));
         let m = w.ship(&w.snap(), "STOPPED");
-        assert_eq!(m.status, Status::Stopped, "no pid, state {state}: {:?}", m.reasons);
+        // nobody stopped it (no SessionEnd): parked, except `failed` (row 8)
+        let want = if state == "failed" { Status::Stopped } else { Status::Parked };
+        assert_eq!(m.status, want, "no pid, state {state}: {:?}", m.reasons);
         assert!(m.reasons[0].contains(&format!("state {state}")), "{:?}", m.reasons);
     }
     // a state from a newer Claude Code degrades the same way: a word, never an error
     w.patch(&w.job_file(&short), |v| v["state"] = json!("hibernating"));
     let m = w.ship(&w.snap(), "STOPPED");
-    assert_eq!(m.status, Status::Stopped);
+    assert_eq!(m.status, Status::Parked);
     assert!(!m.issues.iter().any(|i| i.code.starts_with("job.")), "{:?}", m.issues);
 }
 

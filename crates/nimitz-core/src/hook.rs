@@ -81,18 +81,38 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             crate::notify::clear(env, id, str_at(&input, "session_id").as_deref());
         }
     }
-    // A labelled session starts (startup, resume, clear, compact): hand it its role's rules.
+    // The Claude Code process (the hook's parent); a sandbox names it.
+    let pid: i64 = vars.get("NIMITZ_HOOK_PID").and_then(|p| p.parse().ok()).unwrap_or_else(|| unsafe { libc::getppid() } as i64);
+    // A labelled session starts (startup, resume, clear, compact, fork): bind
+    // it to its identity (plan-v4 section 3) and hand it its role's rules.
     let mut rules = None;
+    let mut session = Value::Null;
+    let mut binding = None;
+    // one clock for the line's `ts` and the lineage `at`: a line the hook
+    // bound is older than the registry it wrote, so `status` never replays it
+    let now = crate::evidence::now();
     if event == "SessionStart" {
-        if let Some(id) = labels.get("NIMITZ_ID").map(|i| Id(i.clone())).filter(|i| labels.get("NIMITZ_ROLE").map(String::as_str) == Some(i.role().as_str())) {
+        // another nimitz home's member: not ours, not even a line
+        if crate::registry::other_home(env, &labels) {
+            return (out, notice);
+        }
+        session = session_file(env, vars, pid);
+        if let Some(id) = crate::registry::identity_of(env, &labels) {
             rules = Some(crate::rules::VERSION);
             out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
+            binding = Some(match str_at(&input, "session_id") {
+                // no session file (missing, or caught mid-write): bind nothing
+                // now; `status` replays the line and judges the job from the rows
+                Some(_) if session.is_null() => "none",
+                Some(sid) => bind_start(env, &id, &input, &session, &sid, now).as_str(),
+                None => "none",
+            });
         }
     }
     let tool_event = matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure");
     if !tool_event || is_signal || tool.as_deref() == Some("AskUserQuestion") {
         let line = json!({
-            "ts": crate::evidence::now(),
+            "ts": now,
             "event": event,
             "session_id": str_at(&input, "session_id"),
             "source": str_at(&input, "source"),
@@ -101,13 +121,50 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             "agent_type": str_at(&input, "agent_type"),
             "tool_name": tool,
             "to": to,
-            "pid": unsafe { libc::getppid() } as i64,
+            "pid": pid,
             "labels": labels,
             "rules": rules,
+            // SessionStart: the process's job, kind and entrypoint (per pid, M21:
+            // the name is read from the session file later, never from here)
+            "job": str_at(&session, "jobId"),
+            "kind": if event == "SessionStart" && session.is_null() { Some("unknown".to_string()) } else { str_at(&session, "kind") },
+            "entrypoint": str_at(&session, "entrypoint"),
+            "binding": binding,
+            "cwd": if event == "SessionStart" { str_at(&input, "cwd").or_else(|| str_at(&session, "cwd")) } else { None },
         });
         append_line(env, &line.to_string());
     }
     (out, notice)
+}
+
+/// The session file of the Claude Code process (`sessions/<pid>.json`, the
+/// first JSON value; a sandbox names the file). Null when missing or partial:
+/// the hook tolerates it and binds nothing (`jobId` unknown reads as held).
+fn session_file(env: &Env, vars: &HashMap<String, String>, pid: i64) -> Value {
+    let path = match vars.get("NIMITZ_HOOK_SESSION_FILE").filter(|p| !p.is_empty()) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => env.claude_home.join("sessions").join(format!("{pid}.json")),
+    };
+    std::fs::read(path).ok().and_then(|b| crate::evidence::first_json(&b)).unwrap_or(Value::Null)
+}
+
+/// How long the hook waits for `registry.lock`: a hook never hangs a session.
+const LOCK_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Apply the binding table under the registry lock (one locked read-modify-
+/// write, at most `LOCK_BUDGET` for the lock). A registry that cannot be
+/// read, locked or written binds nothing (`none`); `status` replays the line
+/// later (`registry::replay`).
+fn bind_start(env: &Env, id: &Id, input: &Value, session: &Value, sid: &str, now: f64) -> crate::registry::Binding {
+    let job = str_at(session, "jobId");
+    let source = str_at(input, "source");
+    let cwd = str_at(input, "cwd").or_else(|| str_at(session, "cwd")).unwrap_or_default();
+    let jobs = env.claude_home.join("jobs");
+    crate::registry::try_update(env, LOCK_BUDGET, |r| {
+        let folder = crate::registry::identity_folder(env, r, id);
+        crate::registry::apply_start(r, id, &cwd, folder.as_deref(), job.as_deref(), sid, source.as_deref(), now, |j| jobs.join(j).join("state.json").is_file())
+    })
+    .unwrap_or(crate::registry::Binding::None)
 }
 
 fn str_at(v: &Value, k: &str) -> Option<String> {
@@ -395,6 +452,156 @@ mod tests {
         // and an unlabelled sender is never judged
         let input = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN]-ADMIRAL"}});
         assert!(handle(&env, "PreToolUse", &input.to_string(), &vars(&[])).is_empty());
+    }
+
+    /// A SessionStart as Claude Code fires it for the process `pid`, whose
+    /// session file says `job` (None: interactive or SDK).
+    fn start(env: &Env, id: &Id, sid: &str, source: &str, pid: i64, job: Option<&str>, cwd: &str) -> String {
+        let file = env.claude_home.join("sessions").join(format!("{pid}.json"));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mut d = serde_json::json!({"pid": pid, "sessionId": sid, "cwd": cwd, "kind": if job.is_some() { "bg" } else { "interactive" },
+                                       "name": id.name(), "status": "idle", "entrypoint": if job.is_some() { "cli" } else { "sdk-cli" }});
+        d["jobId"] = job.map(|j| serde_json::json!(j)).unwrap_or(Value::Null);
+        std::fs::write(&file, d.to_string()).unwrap();
+        let mut vars = labels_of(env, id);
+        vars.insert("NIMITZ_HOOK_PID".into(), pid.to_string());
+        let input = serde_json::json!({"session_id": sid, "source": source, "hook_event_name": "SessionStart", "cwd": cwd});
+        handle(env, "SessionStart", &input.to_string(), &vars)
+    }
+
+    fn job_row(env: &Env, short: &str, sid: &str) {
+        let p = env.claude_home.join("jobs").join(short).join("state.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::json!({"sessionId": sid, "resumeSessionId": sid, "state": "running"}).to_string()).unwrap();
+    }
+
+    #[test]
+    fn a_session_start_binds_job_and_session_under_the_lock_per_the_table() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let cwd = crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, &id)).unwrap().to_string_lossy().into_owned();
+        job_row(&env, "j1", "s1");
+        // startup in a job: bound, via launch
+        assert!(start(&env, &id, "s1", "startup", 11, Some("j1"), &cwd).contains("additionalContext"), "the rules still go out");
+        let rec = crate::registry::load(&env).identities[&id.0].clone();
+        assert_eq!((rec.job.as_deref(), rec.session.as_deref()), (Some("j1"), Some("s1")));
+        assert_eq!(rec.cwd, cwd);
+        assert_eq!(rec.lineage.iter().map(|l| (l.session_id.as_str(), l.job.as_deref(), l.via.as_str())).collect::<Vec<_>>(), [("s1", Some("j1"), "launch")]);
+        let e = crate::evidence::events(&env).pop().unwrap();
+        assert_eq!((e.pid, e.job.as_deref(), e.kind.as_deref(), e.entrypoint.as_deref(), e.binding.as_deref()), (Some(11), Some("j1"), Some("bg"), Some("cli"), Some("bound")));
+        // /clear in the same job: rebound, via clear; a compact of the same id: nothing new
+        start(&env, &id, "s2", "clear", 11, Some("j1"), &cwd);
+        start(&env, &id, "s2", "compact", 11, Some("j1"), &cwd);
+        let rec = crate::registry::load(&env).identities[&id.0].clone();
+        assert_eq!(rec.session.as_deref(), Some("s2"));
+        assert_eq!(rec.lineage.iter().map(|l| l.via.as_str()).collect::<Vec<_>>(), ["launch", "clear"]);
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("same"));
+        // a /branch (source fork) in the same job: via branch
+        start(&env, &id, "s3", "fork", 11, Some("j1"), &cwd);
+        assert_eq!(crate::registry::load(&env).identities[&id.0].lineage.last().unwrap().via, "branch");
+        // another job while j1's row exists: dup.job, nothing rebound
+        job_row(&env, "j2", "s9");
+        start(&env, &id, "s9", "fork", 12, Some("j2"), &cwd);
+        let rec = crate::registry::load(&env).identities[&id.0].clone();
+        assert_eq!((rec.job.as_deref(), rec.session.as_deref()), (Some("j1"), Some("s3")));
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("dup.job"));
+        // no job (an SDK host on its conversation): held, nothing bound
+        start(&env, &id, "s3", "resume", 13, None, &cwd);
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("held"));
+        assert_eq!(crate::registry::load(&env).identities[&id.0].lineage.len(), 3);
+        // j1's row gone (claude rm), a new job resumes the conversation: rebound
+        std::fs::remove_dir_all(env.claude_home.join("jobs").join("j1")).unwrap();
+        start(&env, &id, "s3", "resume", 14, Some("j3"), &cwd);
+        let rec = crate::registry::load(&env).identities[&id.0].clone();
+        assert_eq!(rec.job.as_deref(), Some("j3"));
+        assert_eq!(rec.lineage.last().map(|l| (l.session_id.as_str(), l.job.as_deref(), l.via.as_str())), Some(("s3", Some("j3"), "resume")));
+        // the same labels in another folder: an impostor, not bound (BUG-30, BUG-55)
+        start(&env, &id, "s7", "startup", 15, Some("j7"), "/somewhere/else");
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("elsewhere"));
+        assert_eq!(crate::registry::load(&env).identities[&id.0].job.as_deref(), Some("j3"));
+    }
+
+    #[test]
+    fn labels_of_another_nimitz_home_leave_no_line_and_bind_nothing() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let mut vars = labels_of(&env, &id);
+        vars.insert("NIMITZ_HOME".into(), "/another/nimitz".into());
+        let input = serde_json::json!({"session_id": "s1", "source": "startup", "hook_event_name": "SessionStart"});
+        assert!(handle(&env, "SessionStart", &input.to_string(), &vars).is_empty(), "no rules either");
+        assert!(crate::evidence::events(&env).is_empty());
+        assert!(crate::registry::load(&env).identities.is_empty());
+        // the real path of this home is this home
+        let real = std::fs::canonicalize(&env.home).unwrap().to_string_lossy().into_owned();
+        vars.insert("NIMITZ_HOME".into(), real);
+        handle(&env, "SessionStart", &input.to_string(), &vars);
+        assert_eq!(crate::evidence::events(&env).len(), 1);
+    }
+
+    #[test]
+    fn a_missing_or_partial_session_file_binds_nothing_now_and_status_judges_it_from_the_rows() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let cwd = crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, &id)).unwrap().to_string_lossy().into_owned();
+        let mut vars = labels_of(&env, &id);
+        vars.insert("NIMITZ_HOOK_PID".into(), "4242".into());
+        let input = serde_json::json!({"session_id": "s1", "source": "startup", "hook_event_name": "SessionStart", "cwd": cwd});
+        // no file at all: the rules still go out, the line is replayable
+        assert!(handle(&env, "SessionStart", &input.to_string(), &vars).contains("additionalContext"));
+        let e = crate::evidence::events(&env).pop().unwrap();
+        assert_eq!((e.kind.as_deref(), e.binding.as_deref(), e.cwd.as_deref()), (Some("unknown"), Some("none"), Some(cwd.as_str())));
+        assert!(crate::registry::load(&env).identities.get(&id.0).is_none());
+        // a file caught mid-write: the same
+        let file = env.claude_home.join("sessions").join("4242.json");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "{\"pid\": 4242, \"jobId\": \"j").unwrap();
+        handle(&env, "SessionStart", &input.to_string(), &vars);
+        let e = crate::evidence::events(&env).pop().unwrap();
+        assert_eq!((e.job, e.kind.as_deref(), e.binding.as_deref()), (None, Some("unknown"), Some("none")));
+        // replay judges the job from the rows: the job whose state.json runs s1
+        job_row(&env, "j5", "s1");
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 1);
+        let rec = crate::registry::load(&env).identities[&id.0].clone();
+        assert_eq!((rec.job.as_deref(), rec.session.as_deref()), (Some("j5"), Some("s1")));
+        // a line of a conversation no job runs is held: nothing bound
+        let input = serde_json::json!({"session_id": "s8", "source": "resume", "hook_event_name": "SessionStart", "cwd": cwd});
+        handle(&env, "SessionStart", &input.to_string(), &vars);
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 0);
+        assert_eq!(crate::registry::load(&env).identities[&id.0].session.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn a_bound_line_is_older_than_the_registry_so_status_never_replays_it() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let cwd = crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, &id)).unwrap().to_string_lossy().into_owned();
+        job_row(&env, "j1", "s1");
+        start(&env, &id, "s1", "startup", 11, Some("j1"), &cwd);
+        let reg = crate::registry::load(&env);
+        let e = crate::evidence::events(&env).pop().unwrap();
+        assert!(e.ts <= reg.updated_at, "{} <= {}", e.ts, reg.updated_at);
+        assert_eq!(reg.identities[&id.0].lineage[0].at, e.ts, "one clock for the line and the lineage");
+        assert_eq!(crate::registry::replay(&env, &crate::evidence::events(&env)), 0);
+    }
+
+    #[test]
+    fn the_hook_gives_up_on_a_held_registry_lock_and_says_none() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let cwd = crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, &id)).unwrap().to_string_lossy().into_owned();
+        job_row(&env, "j1", "s1");
+        // another nimitz holds the lock for longer than the hook's budget
+        std::fs::create_dir_all(&env.state).unwrap();
+        let held = std::fs::File::create(env.registry_lock_path()).unwrap();
+        use std::os::unix::io::AsRawFd;
+        assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let budget = std::time::Duration::from_millis(100);
+        let err = crate::registry::try_update(&env, budget, |_| ()).unwrap_err();
+        assert!(err.to_string().contains("registry lock"), "{err}");
+        drop(held);
+        assert!(crate::registry::try_update(&env, budget, |_| ()).is_ok());
+        start(&env, &id, "s1", "startup", 11, Some("j1"), &cwd);
+        assert_eq!(crate::evidence::events(&env).pop().unwrap().binding.as_deref(), Some("bound"));
     }
 
     #[test]

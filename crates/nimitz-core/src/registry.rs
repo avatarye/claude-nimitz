@@ -9,17 +9,28 @@ use std::path::{Path, PathBuf};
 /// Current contents. A missing file is a fresh registry for this machine. A
 /// file that does not parse is never replaced in silence: it is kept as
 /// `registry.json.corrupt-<ts>`, the registry is rebuilt from `registry.json.bak`
-/// (the last good copy) and the SessionStart labels in events.jsonl, and `health`
+/// (the last good copy) and the SessionStart lines in events.jsonl, and `health`
 /// reports `registry.corrupt` until the kept file is removed. Never panics; a
 /// read-only state folder leaves the bad file where it is (also reported).
 pub fn load(env: &Env) -> Registry {
-    load_with(env, false)
+    load_with(env, false).0
 }
 
 /// `locked`: the caller holds `registry.lock` already (flock does not nest).
-fn load_with(env: &Env, locked: bool) -> Registry {
+/// The flag says the file on disk is still a 0.3.x (v1) registry. A file
+/// that cannot be read (EACCES, EIO: anything but "not there") reads as a
+/// fresh registry for the read-only callers; `update` refuses to write over
+/// it (`read_registry`).
+fn load_with(env: &Env, locked: bool) -> (Registry, bool) {
+    load_checked(env, locked).unwrap_or_else(|_| (fresh(env), false))
+}
+
+/// `load_with`, with the read error when the file is there but unreadable:
+/// a fresh registry must never be written over it.
+fn load_checked(env: &Env, locked: bool) -> std::io::Result<(Registry, bool)> {
     let mut r = match std::fs::read_to_string(env.registry_path()) {
-        Err(_) => fresh(env),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => fresh(env),
+        Err(e) => return Err(std::io::Error::new(e.kind(), format!("registry {}: {e}", env.registry_path().display()))),
         Ok(raw) => match serde_json::from_str(&raw) {
             Ok(r) => r,
             Err(_) if locked => recover_locked(env),
@@ -29,14 +40,18 @@ fn load_with(env: &Env, locked: bool) -> Registry {
             },
         },
     };
+    let v1 = r.version < REGISTRY_VERSION;
     // A 0.3.x registry: its tender identities become history (plan-v4 section
-    // 8). A read never writes; the next `update` saves the moved shape.
+    // 8) and `current` becomes `session` with the job filled from the job rows
+    // (section 2). A read never writes; the next `update` saves the v2 shape
+    // and keeps the old file as `registry.json.v1`.
     crate::migrate::retire_tenders(&mut r);
-    r
+    crate::migrate::registry_v2(env, &mut r);
+    Ok((r, v1))
 }
 
 fn fresh(env: &Env) -> Registry {
-    Registry { version: 1, machine: env.hostname.clone(), ..Default::default() }
+    Registry { version: REGISTRY_VERSION, machine: env.hostname.clone(), ..Default::default() }
 }
 
 fn parse_file(p: &Path) -> Option<Registry> {
@@ -47,7 +62,13 @@ fn bak_path(env: &Env) -> PathBuf {
     env.state.join("registry.json.bak")
 }
 
-/// What `recover` could rebuild from: the last good copy, then the events.
+/// Where the last v1 file is kept once the v2 shape is written.
+pub fn v1_path(env: &Env) -> PathBuf {
+    env.state.join("registry.json.v1")
+}
+
+/// What `recover` could rebuild from: the last good copy, then the events
+/// (the same binding rules as the hook, `apply_start`).
 fn rebuild(env: &Env) -> (Registry, String) {
     let (mut r, mut from) = match parse_file(&bak_path(env)) {
         Some(r) => (r, vec!["registry.json.bak".to_string()]),
@@ -57,23 +78,12 @@ fn rebuild(env: &Env) -> (Registry, String) {
     let mut events = crate::evidence::events(env);
     events.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
     for e in events.iter().filter(|e| e.event == "SessionStart") {
-        let (Some(sid), Some(nid)) = (e.session_id.as_deref(), e.labels.get("NIMITZ_ID")) else { continue };
-        let id = Id(nid.clone());
-        if id.fleet().is_empty() {
-            continue;
-        }
         // a 0.3.x tender's events rebuild its history in `retired`, never a member
-        let map = if crate::migrate::is_tender_id(nid) { &mut r.retired } else { &mut r.identities };
-        let known = map.get(nid).is_some_and(|rec| rec.lineage.iter().any(|l| l.session_id == sid));
-        if !known {
-            let via = match e.source.as_deref() {
-                Some("resume") => "resume",
-                Some("startup") | None => "launch",
-                Some(other) => other,
-            }
-            .to_string();
-            let (role, name) = (id.role(), id.name());
-            bind_into(map, &id, role, &name, "", sid, &via, e.ts);
+        if let (Some(sid), Some(nid)) = (e.session_id.as_deref(), e.labels.get("NIMITZ_ID").filter(|n| crate::migrate::is_tender_id(n))) {
+            let id = Id(nid.clone());
+            bind_into(&mut r.retired, &id, id.role(), &id.name(), "", e.job.as_deref(), sid, &via_of(e.source.as_deref(), true), e.ts);
+            added += 1;
+        } else if matches!(apply_event(env, &mut r, e), Binding::Bound(_)) {
             added += 1;
         }
     }
@@ -91,14 +101,14 @@ fn recover_locked(env: &Env) -> Registry {
     if let Some(r) = parse_file(&env.registry_path()) {
         return r;
     }
-    let (r, what) = rebuild(env);
+    let (mut r, what) = rebuild(env);
     let ts = crate::evidence::now() as u64;
     let kept = env.state.join(format!("registry.json.corrupt-{ts}"));
     if std::fs::rename(env.registry_path(), &kept).is_err() {
         return r;
     }
     let _ = std::fs::write(note_path(&kept), &what);
-    let _ = write_unlocked(env, &r);
+    let _ = write_unlocked(env, &mut r);
     r
 }
 
@@ -180,48 +190,257 @@ pub fn machine_label(env: &Env) -> Option<String> {
     Some(load(env).machine).filter(|m| !m.is_empty())
 }
 
-/// Atomic save under an exclusive lock.
+/// Atomic save under an exclusive lock (the file gets a fresh `updated_at`;
+/// `r` keeps its own).
 pub fn save(env: &Env, r: &Registry) -> std::io::Result<()> {
     let _lock = lock(env)?;
-    write_unlocked(env, r)
+    write_unlocked(env, &mut r.clone())
 }
 
-/// Lock, load, apply `f`, save. The only way to change the registry.
+/// Lock, load, apply `f`, save. The only way to change the registry. The
+/// first write over a v1 file keeps that file as `registry.json.v1`. A file
+/// that is there but cannot be read is an error: nothing is written over it.
 pub fn update<T>(env: &Env, f: impl FnOnce(&mut Registry) -> T) -> std::io::Result<T> {
-    let _lock = lock(env)?;
-    let mut r = load_with(env, true);
+    let lock = lock(env)?;
+    update_locked(env, lock, f)
+}
+
+/// `update` that waits at most `budget` for the lock (the hook path: a hook
+/// must not hang a session; a lost write is replayed by `status`).
+pub fn try_update<T>(env: &Env, budget: std::time::Duration, f: impl FnOnce(&mut Registry) -> T) -> std::io::Result<T> {
+    let lock = lock_within(env, budget)?;
+    update_locked(env, lock, f)
+}
+
+fn update_locked<T>(env: &Env, _lock: File, f: impl FnOnce(&mut Registry) -> T) -> std::io::Result<T> {
+    let (mut r, v1) = load_checked(env, true)?;
+    if v1 && !v1_path(env).exists() {
+        let _ = std::fs::copy(env.registry_path(), v1_path(env));
+    }
     let out = f(&mut r);
-    write_unlocked(env, &r)?;
+    write_unlocked(env, &mut r)?;
     Ok(out)
 }
 
-/// Record a new current session for an identity (appends to lineage).
+/// Record a new current session for an identity (appends to lineage, keeps the
+/// job the hook bound). A second bind of the session the identity runs now
+/// (the hook bound it first) only refines the `via`.
 #[allow(clippy::too_many_arguments)] // one flat row of session facts
 pub fn bind(r: &mut Registry, id: &Id, role: Role, name: &str, cwd: &str, session_id: &str, via: &str, now: f64) {
-    bind_into(&mut r.identities, id, role, name, cwd, session_id, via, now)
+    bind_into(&mut r.identities, id, role, name, cwd, None, session_id, via, now)
+}
+
+/// `bind` with the job (short id) the session runs in: what the sandbox and a
+/// start that knows the job record.
+#[allow(clippy::too_many_arguments)]
+pub fn bind_job(r: &mut Registry, id: &Id, role: Role, name: &str, cwd: &str, job: Option<&str>, session_id: &str, via: &str, now: f64) {
+    bind_into(&mut r.identities, id, role, name, cwd, job, session_id, via, now)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn bind_into(map: &mut BTreeMap<String, IdentityRecord>, id: &Id, role: Role, name: &str, cwd: &str, session_id: &str, via: &str, now: f64) {
+fn bind_into(map: &mut BTreeMap<String, IdentityRecord>, id: &Id, role: Role, name: &str, cwd: &str, job: Option<&str>, session_id: &str, via: &str, now: f64) {
     let rec = map.entry(id.0.clone()).or_insert_with(|| IdentityRecord {
         role,
         name: name.to_string(),
         cwd: cwd.to_string(),
-        current: None,
+        job: None,
+        session: None,
         lineage: vec![],
     });
     rec.role = role;
     rec.name = name.to_string();
-    rec.cwd = cwd.to_string();
-    rec.current = Some(session_id.to_string());
-    rec.lineage.push(LineageEntry { session_id: session_id.to_string(), bound_at: now, via: via.to_string() });
+    if !cwd.is_empty() {
+        rec.cwd = cwd.to_string();
+    }
+    if let Some(j) = job {
+        rec.job = Some(j.to_string());
+    }
+    rec.session = Some(session_id.to_string());
+    match rec.lineage.last_mut() {
+        // the conversation it runs already: the same entry, unless another job
+        // took it over (a resume after `claude rm`). How the conversation was
+        // born (launch, clear, branch, ...) is never overwritten by a wake
+        // (resume, relaunch): the clear entry survives a stop and a start.
+        Some(last) if last.session_id == session_id && (last.job.is_none() || last.job == rec.job) => {
+            if !(is_wake(via) && !is_wake(&last.via)) {
+                last.via = via.to_string();
+            }
+            if last.job.is_none() {
+                last.job = rec.job.clone();
+            }
+        }
+        _ => rec.lineage.push(LineageEntry { session_id: session_id.to_string(), job: rec.job.clone(), via: via.to_string(), at: now }),
+    }
+}
+
+/// A `via` that wakes a conversation it already had, as against one that
+/// started it (launch, clear, branch, fork, adopt, migrate, compact).
+fn is_wake(via: &str) -> bool {
+    matches!(via, "resume" | "relaunch")
+}
+
+// ------------------------------------------------------------------ the hook's binding table
+
+/// What a SessionStart did to the registry (plan-v4 section 3).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Binding {
+    /// job and session bound (or rebound); the lineage `via`
+    Bound(String),
+    /// the identity already runs as another job that still has its row: not
+    /// rebound (two jobs claim one identity)
+    Dup(String),
+    /// no job (an interactive or SDK process runs the conversation): not bound
+    Held,
+    /// the labels in another folder than the identity's: an impostor, not
+    /// bound (BUG-30, BUG-55; the snapshot reports `labels.mismatch`)
+    Elsewhere,
+    /// the conversation the identity runs already (a compact, a replayed line)
+    Same,
+    /// not this home's identity, or no valid labels: nothing to do
+    None,
+}
+
+impl Binding {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Binding::Bound(_) => "bound",
+            Binding::Dup(_) => "dup.job",
+            Binding::Held => "held",
+            Binding::Elsewhere => "elsewhere",
+            Binding::Same => "same",
+            Binding::None => "none",
+        }
+    }
+}
+
+/// Do these labels name a valid identity of THIS home? `NIMITZ_HOME` must be
+/// this env's home (as written or as a real path) when present; the role must
+/// agree with the id's shape; a 0.3.x tender is no identity.
+pub fn identity_of(env: &Env, labels: &BTreeMap<String, String>) -> Option<Id> {
+    if let Some(h) = labels.get("NIMITZ_HOME").filter(|h| !h.is_empty()) {
+        let same = Path::new(h) == env.home || crate::env::canon(Path::new(h)) == crate::env::canon(&env.home);
+        if !same {
+            return None;
+        }
+    }
+    let id = Id(labels.get("NIMITZ_ID")?.clone());
+    let shape_ok = !id.fleet().is_empty() && id.parts().iter().all(|p| crate::config::valid_name(p));
+    (shape_ok && !crate::migrate::is_tender_id(&id.0) && labels.get("NIMITZ_ROLE").map(String::as_str) == Some(id.role().as_str())).then_some(id)
+}
+
+/// Labels of another nimitz home: ignored entirely (no event line, section 3).
+pub fn other_home(env: &Env, labels: &BTreeMap<String, String>) -> bool {
+    crate::evidence::is_labelled(labels) && identity_of(env, labels).is_none() && labels.get("NIMITZ_HOME").is_some_and(|h| {
+        !h.is_empty() && Path::new(h) != env.home && crate::env::canon(Path::new(h)) != crate::env::canon(&env.home)
+    })
+}
+
+/// The lineage `via` for a SessionStart `source`.
+fn via_of(source: Option<&str>, same_job: bool) -> String {
+    match source {
+        Some("startup") | None => "launch",
+        Some("fork") if same_job => "branch",
+        Some(other) => other,
+    }
+    .to_string()
+}
+
+/// The binding table (plan-v4 section 3), on an identity of this home:
+/// - `job` is the identity's job, or none is set yet: bind job and session,
+///   append the lineage with `via` from `source` (no new entry for the
+///   conversation it runs already: a compact);
+/// - another job whose row still exists: `Dup`, nothing rebound;
+/// - no job (interactive or SDK): `Held`, nothing bound;
+/// - a `cwd` that is not the identity's `folder` (when known): `Elsewhere`.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_start(r: &mut Registry, id: &Id, cwd: &str, folder: Option<&Path>, job: Option<&str>, session_id: &str, source: Option<&str>, now: f64, job_row_exists: impl Fn(&str) -> bool) -> Binding {
+    if let Some(f) = folder.filter(|_| !cwd.is_empty()) {
+        if crate::env::canon(Path::new(cwd)) != crate::env::canon(f) {
+            return Binding::Elsewhere;
+        }
+    }
+    let Some(job) = job.filter(|j| !j.is_empty()) else { return Binding::Held };
+    let rec = r.identities.get(&id.0);
+    let same_job = rec.and_then(|x| x.job.as_deref()) == Some(job);
+    if let Some(other) = rec.and_then(|x| x.job.as_deref()).filter(|o| *o != job && job_row_exists(o)) {
+        return Binding::Dup(other.to_string());
+    }
+    if same_job && rec.and_then(|x| x.session.as_deref()) == Some(session_id) {
+        return Binding::Same;
+    }
+    let via = via_of(source, same_job || rec.and_then(|x| x.job.as_deref()).is_none());
+    bind_into(&mut r.identities, id, id.role(), &id.name(), cwd, Some(job), session_id, &via, now);
+    Binding::Bound(via)
+}
+
+/// `apply_start` for one SessionStart event line of this home (the hook wrote
+/// the job and the cwd in it; a line with no session id or no valid labels
+/// binds nothing). A line an older nimitz wrote (no `kind`, no `job`) binds
+/// the session only. A line whose session file the hook could not read (`kind`
+/// `unknown`) is judged here from the job rows: the job whose `state.json`
+/// runs that session, if one does.
+pub fn apply_event(env: &Env, r: &mut Registry, e: &Event) -> Binding {
+    let (Some(sid), Some(id)) = (e.session_id.as_deref(), identity_of(env, &e.labels)) else { return Binding::None };
+    if e.kind.is_none() && e.job.is_none() {
+        let rec = r.identities.get(&id.0);
+        if rec.and_then(|x| x.session.as_deref()) == Some(sid) {
+            return Binding::Same;
+        }
+        let via = via_of(e.source.as_deref(), true);
+        bind_into(&mut r.identities, &id, id.role(), &id.name(), "", None, sid, &via, e.ts);
+        return Binding::Bound(via);
+    }
+    let jobs = env.claude_home.join("jobs");
+    let job = match (e.kind.as_deref(), &e.job) {
+        (Some("unknown"), None) => job_running(env, sid),
+        (_, j) => j.clone(),
+    };
+    let cwd = e.cwd.clone().unwrap_or_default();
+    let folder = identity_folder(env, r, &id);
+    apply_start(r, &id, &cwd, folder.as_deref(), job.as_deref(), sid, e.source.as_deref(), e.ts, |j| jobs.join(j).join("state.json").is_file())
+}
+
+/// The job whose `state.json` runs `sid` now (`resumeSessionId`, else `sessionId`).
+fn job_running(env: &Env, sid: &str) -> Option<String> {
+    let rd = std::fs::read_dir(env.claude_home.join("jobs")).ok()?;
+    rd.filter_map(|e| e.ok()).find_map(|e| {
+        let d = crate::evidence::first_json(&std::fs::read(e.path().join("state.json")).ok()?)?;
+        let now = d.get("resumeSessionId").and_then(|v| v.as_str()).or_else(|| d.get("sessionId").and_then(|v| v.as_str()))?;
+        (now == sid).then(|| e.file_name().to_string_lossy().into_owned())
+    })
+}
+
+/// The identity's folder: what the registry recorded, else the config (one
+/// TOML read, only for an identity that never bound).
+pub fn identity_folder(env: &Env, r: &Registry, id: &Id) -> Option<PathBuf> {
+    match r.identities.get(&id.0).map(|x| x.cwd.clone()).filter(|c| !c.is_empty()) {
+        Some(c) => Some(PathBuf::from(c)),
+        None => crate::config::load_fleet(env, id.fleet()).ok().and_then(|f| crate::config::member_dir(env, &f, id)),
+    }
+}
+
+/// Replay SessionStart lines newer than the registry (a hook whose registry
+/// write was lost), under the lock, with the hook's rules. Writes only when a
+/// line binds something; returns how many did.
+pub fn replay(env: &Env, events: &[Event]) -> usize {
+    let reg = load(env);
+    // a line the hook judged (dup.job, held, elsewhere) bound nothing by design
+    let judged = |e: &Event| e.binding.as_deref().is_some_and(|b| !matches!(b, "bound" | "none"));
+    let mut newer: Vec<&Event> = events.iter().filter(|e| e.event == "SessionStart" && e.ts > reg.updated_at && e.session_id.is_some() && !judged(e)).collect();
+    if newer.is_empty() {
+        return 0;
+    }
+    newer.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
+    let mut probe = reg.clone();
+    if !newer.iter().any(|e| matches!(apply_event(env, &mut probe, e), Binding::Bound(_))) {
+        return 0;
+    }
+    update(env, |r| newer.iter().filter(|e| matches!(apply_event(env, r, e), Binding::Bound(_))).count()).unwrap_or(0)
 }
 
 /// `registry.lock`, held exclusively until the returned File drops.
 fn lock(env: &Env) -> std::io::Result<File> {
-    let ctx = |e: std::io::Error| std::io::Error::new(e.kind(), format!("registry lock {}: {e}", env.registry_lock_path().display()));
-    std::fs::create_dir_all(&env.state).map_err(ctx)?;
-    let f = File::create(env.registry_lock_path()).map_err(ctx)?;
+    let f = lock_file(env)?;
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
     if rc != 0 {
         return Err(std::io::Error::last_os_error());
@@ -229,9 +448,33 @@ fn lock(env: &Env) -> std::io::Result<File> {
     Ok(f) // dropping the fd releases the flock
 }
 
+/// `lock`, but give up after `budget` (polling with `LOCK_NB`): a hook never
+/// waits on a stuck lock holder.
+fn lock_within(env: &Env, budget: std::time::Duration) -> std::io::Result<File> {
+    let f = lock_file(env)?;
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(f);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::WouldBlock || std::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(e.kind(), format!("registry lock {}: {e}", env.registry_lock_path().display())));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn lock_file(env: &Env) -> std::io::Result<File> {
+    let ctx = |e: std::io::Error| std::io::Error::new(e.kind(), format!("registry lock {}: {e}", env.registry_lock_path().display()));
+    std::fs::create_dir_all(&env.state).map_err(ctx)?;
+    File::create(env.registry_lock_path()).map_err(ctx)
+}
+
 /// Temp file next to registry.json, then rename (same device, atomic).
 /// Every save also writes `registry.json.bak` (the last good copy, for `recover`).
-fn write_unlocked(env: &Env, r: &Registry) -> std::io::Result<()> {
+fn write_unlocked(env: &Env, r: &mut Registry) -> std::io::Result<()> {
+    r.updated_at = crate::evidence::now();
     let contents = serde_json::to_string_pretty(r).map_err(std::io::Error::other)?;
     let path = env.registry_path();
     crate::config::atomic_write(&path, &contents)
@@ -249,7 +492,7 @@ mod tests {
     fn load_missing_or_corrupt_is_fresh() {
         let (_td, env) = test_env();
         let r = load(&env);
-        assert_eq!(r.version, 1);
+        assert_eq!(r.version, REGISTRY_VERSION);
         assert_eq!(r.machine, "test-mac");
         assert!(r.identities.is_empty());
         std::fs::create_dir_all(&env.state).unwrap();
@@ -272,7 +515,7 @@ mod tests {
         let r = load(&env);
         let rec = &r.identities[&id.0];
         assert_eq!(rec.lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["sid-1", "sid-2"]);
-        assert_eq!(rec.current.as_deref(), Some("sid-2"));
+        assert_eq!(rec.session.as_deref(), Some("sid-2"));
         assert!(r.identities.contains_key("MAIN"));
         // the bad file is kept, the registry is good again, and check says so
         let kept: Vec<_> = std::fs::read_dir(&env.state).unwrap().flatten().filter(|e| std::fs::read(e.path()).unwrap_or_default() == b"{garbage").collect();
@@ -323,9 +566,11 @@ mod tests {
         bind(&mut r, &Id::ship("MAIN", "ARGOS", "ARGOS"), Role::Ship, "[MAIN.ARGOS]-ARGOS", "/w", "sid-1", "launch", 1.0);
         save(&env, &r).unwrap();
         let got = load(&env);
+        assert!(got.updated_at > 0.0, "every save stamps the registry");
+        r.updated_at = got.updated_at;
         assert_eq!(got, r);
         let rec = &got.identities["MAIN/ARGOS/ARGOS"];
-        assert_eq!(rec.current.as_deref(), Some("sid-1"));
+        assert_eq!(rec.session.as_deref(), Some("sid-1"));
         assert_eq!(rec.lineage.len(), 1);
         assert_eq!(rec.lineage[0].via, "launch");
     }
@@ -341,7 +586,7 @@ mod tests {
         .unwrap();
         let r = load(&env);
         let rec = &r.identities[&id.0];
-        assert_eq!(rec.current.as_deref(), Some("sid-2"));
+        assert_eq!(rec.session.as_deref(), Some("sid-2"));
         assert_eq!(rec.lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["sid-1", "sid-2"]);
     }
 
@@ -370,6 +615,120 @@ mod tests {
             .filter(|n| n.contains(".tmp-"))
             .collect();
         assert!(stray.is_empty(), "{stray:?}");
+    }
+
+    #[test]
+    fn replay_binds_only_newer_lines_and_writes_only_when_one_binds() {
+        let (_td, env) = test_env();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        update(&env, |r| bind_job(r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s1", "launch", 1.0)).unwrap();
+        let stamp = load(&env).updated_at;
+        let line = |ts: f64, sid: &str, job: &str, binding: Option<&str>| Event {
+            ts,
+            event: "SessionStart".into(),
+            session_id: Some(sid.into()),
+            source: Some("clear".into()),
+            pid: Some(5),
+            labels: [("NIMITZ_ID".to_string(), id.0.clone()), ("NIMITZ_ROLE".to_string(), "ship".into())].into(),
+            job: Some(job.into()),
+            kind: Some("bg".into()),
+            binding: binding.map(str::to_string),
+            ..Default::default()
+        };
+        // older than the registry, or judged by the hook: nothing
+        assert_eq!(replay(&env, &[line(stamp - 1.0, "s2", "j1", None), line(stamp + 1.0, "s3", "j9", Some("dup.job"))]), 0);
+        assert_eq!(load(&env).updated_at, stamp, "no write");
+        // newer and lost: bound under the lock, once
+        assert_eq!(replay(&env, &[line(stamp + 1.0, "s2", "j1", Some("none"))]), 1);
+        let rec = load(&env).identities[&id.0].clone();
+        assert_eq!(rec.session.as_deref(), Some("s2"));
+        assert_eq!(rec.lineage.last().map(|l| l.via.as_str()), Some("clear"));
+        let stamp2 = load(&env).updated_at;
+        assert_eq!(replay(&env, &[line(stamp2 + 1.0, "s2", "j1", Some("bound"))]), 0, "already bound: nothing");
+        assert_eq!(load(&env).updated_at, stamp2);
+    }
+
+    #[test]
+    fn a_wake_never_overwrites_how_the_conversation_was_born() {
+        let (_td, env) = test_env();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let mut r = load(&env);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s1", "launch", 1.0);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s2", "clear", 2.0);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s2", "resume", 3.0);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s2", "relaunch", 4.0);
+        let vias: Vec<&str> = r.identities[&id.0].lineage.iter().map(|l| l.via.as_str()).collect();
+        assert_eq!(vias, ["launch", "clear"]);
+        // a birth via refines a wake (nimitz adopts or migrates what the hook saw resumed)
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s3", "resume", 5.0);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s3", "migrate", 6.0);
+        assert_eq!(r.identities[&id.0].lineage.last().unwrap().via, "migrate");
+    }
+
+    #[test]
+    fn replay_applies_lines_in_time_order_and_the_folder_rule() {
+        let (_td, env) = test_env();
+        crate::config::tests::make_fleet(&env);
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let folder = crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, &id)).unwrap().to_string_lossy().into_owned();
+        update(&env, |r| bind_job(r, &id, Role::Ship, &id.name(), &folder, Some("j1"), "s1", "launch", 1.0)).unwrap();
+        let stamp = load(&env).updated_at;
+        let line = |ts: f64, sid: &str, source: &str, cwd: &str| Event {
+            ts,
+            event: "SessionStart".into(),
+            session_id: Some(sid.into()),
+            source: Some(source.into()),
+            pid: Some(5),
+            labels: [("NIMITZ_ID".to_string(), id.0.clone()), ("NIMITZ_ROLE".to_string(), "ship".into())].into(),
+            job: Some("j1".into()),
+            kind: Some("bg".into()),
+            binding: Some("none".into()),
+            cwd: Some(cwd.into()),
+            ..Default::default()
+        };
+        // out of order in the file: a clear (t+2) before a resume of it (t+1)? no: the
+        // later line by ts wins, whatever the file order
+        let events = vec![line(stamp + 2.0, "s3", "clear", &folder), line(stamp + 1.0, "s2", "clear", &folder)];
+        assert_eq!(replay(&env, &events), 2);
+        let rec = load(&env).identities[&id.0].clone();
+        assert_eq!(rec.session.as_deref(), Some("s3"));
+        assert_eq!(rec.lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["s1", "s2", "s3"]);
+        // a line from another folder: elsewhere, not bound
+        let stamp = load(&env).updated_at;
+        assert_eq!(replay(&env, &[line(stamp + 1.0, "s9", "startup", "/somewhere/else")]), 0);
+        assert_eq!(load(&env).identities[&id.0].session.as_deref(), Some("s3"));
+    }
+
+    #[test]
+    fn a_registry_that_cannot_be_read_is_an_error_for_update_and_fresh_for_a_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_td, env) = test_env();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        update(&env, |r| bind(r, &id, Role::Ship, &id.name(), "/w", "s1", "launch", 1.0)).unwrap();
+        let before = std::fs::read_to_string(env.registry_path()).unwrap();
+        std::fs::set_permissions(env.registry_path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(load(&env).identities.is_empty(), "a read-only caller sees nothing, and nothing is written");
+        let err = update(&env, |r| r.identities.clear()).unwrap_err();
+        assert!(err.to_string().contains("registry"), "{err}");
+        assert!(replay(&env, &[]) == 0);
+        std::fs::set_permissions(env.registry_path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(std::fs::read_to_string(env.registry_path()).unwrap(), before, "never written over");
+        assert_eq!(load(&env).identities.len(), 1);
+    }
+
+    #[test]
+    fn identity_of_wants_this_home_and_a_role_that_fits() {
+        let (_td, env) = test_env();
+        let home = env.home.to_string_lossy().into_owned();
+        let l = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+        assert_eq!(identity_of(&env, &l(&[("NIMITZ_ID", "F/SQ/S"), ("NIMITZ_ROLE", "ship"), ("NIMITZ_HOME", &home)])), Some(Id::ship("F", "SQ", "S")));
+        assert_eq!(identity_of(&env, &l(&[("NIMITZ_ID", "F/SQ"), ("NIMITZ_ROLE", "commodore")])), Some(Id::commodore("F", "SQ")), "no home label: this home");
+        assert_eq!(identity_of(&env, &l(&[("NIMITZ_ID", "F/SQ/S"), ("NIMITZ_ROLE", "commodore")])), None, "the role must fit");
+        assert_eq!(identity_of(&env, &l(&[("NIMITZ_ID", "F/SQ/~t"), ("NIMITZ_ROLE", "tender")])), None, "a 0.3.x tender");
+        let other = l(&[("NIMITZ_ID", "F/SQ/S"), ("NIMITZ_ROLE", "ship"), ("NIMITZ_HOME", "/elsewhere")]);
+        assert_eq!(identity_of(&env, &other), None);
+        assert!(other_home(&env, &other));
+        assert!(!other_home(&env, &l(&[("NIMITZ_HOME", "/elsewhere")])), "a home alone is no label");
     }
 
     #[test]

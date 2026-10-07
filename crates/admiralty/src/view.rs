@@ -507,7 +507,7 @@ pub fn status_counts(members: &[&Member], issues: &[&Issue], icons: &Icons) -> V
     if others > 0 {
         out.push(Count { icon: icons.issue, n: others, style: bold(mono::WARN), key: false });
     }
-    for status in [Status::NeedsYou, Status::Busy, Status::Idle, Status::Stopped, Status::NotStarted, Status::Unknown] {
+    for status in [Status::NeedsYou, Status::Busy, Status::Idle, Status::Stopped, Status::Parked, Status::NotStarted, Status::Unknown] {
         let n = members.iter().filter(|m| m.status == status).count();
         if n > 0 {
             out.push(Count { icon: icons.status(status), n, style: status_style(status).add_modifier(Modifier::BOLD), key: status == Status::NeedsYou });

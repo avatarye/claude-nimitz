@@ -212,7 +212,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
                 out.push(i);
             }
             // Session rules (name.*, labels.*, dup.live, copy.rows, lineage.broken,
-            // role.background, ship.elsewhere) arrive here too: snapshot puts
+            // held, ship.elsewhere) arrive here too: snapshot puts
             // sessions::session_issues into Member::issues.
             out.extend(m.issues.iter().filter(|i| scoped(i)).cloned());
         }
@@ -341,6 +341,9 @@ pub(crate) mod tests {
             name: name.into(),
             cwd: "/x".into(),
             labels: Default::default(),
+            birth_id: None,
+            entrypoint: None,
+            pinned: false,
         }
     }
 
@@ -647,6 +650,9 @@ pub(crate) mod tests {
             name: "mystery".into(),
             cwd: "/x".into(),
             labels: Default::default(),
+            birth_id: None,
+            entrypoint: None,
+            pinned: false,
         });
         let issues = check(&env, &snap, None);
         let v = issues.iter().find(|i| i.code == "cc.version").expect("cc.version");

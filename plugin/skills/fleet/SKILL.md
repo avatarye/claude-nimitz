@@ -95,5 +95,8 @@ types the text into the commodore's pane.
 
 ## Status words
 
-`not-started`, `stopped`, `idle`, `busy`, `needs-you`, `unknown`. `reasons`
-says why. `unknown` means the evidence does not decide; do not guess.
+`not-started`, `stopped`, `parked`, `idle`, `busy`, `needs-you`, `unknown`.
+`reasons` says why. `parked` is a job with no process that nobody stopped
+(the daemon retired it, it crashed, or the machine went down): not an error,
+`nimitz start` wakes it. `unknown` means the evidence does not decide; do not
+guess.

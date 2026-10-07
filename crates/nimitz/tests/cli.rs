@@ -177,7 +177,7 @@ fn status_columns_line_up_with_long_ids() {
         .lines()
         .take_while(|l| !l.starts_with("stowaways"))
         .filter(|l| l.starts_with("  ") && !l.trim_start().starts_with('['))
-        .filter_map(|l| ["not-started", "stopped", "idle", "busy", "needs-you", "unknown"].iter().filter_map(|w| l.find(&format!(" {w} "))).min())
+        .filter_map(|l| ["not-started", "stopped", "parked", "idle", "busy", "needs-you", "unknown"].iter().filter_map(|w| l.find(&format!(" {w} "))).min())
         .collect();
     assert!(cols.len() > 5 && cols.iter().all(|c| *c == cols[0]), "status column moves: {cols:?}\n{out}");
 }
@@ -187,7 +187,7 @@ fn check_reports_errors_and_scopes_to_an_id() {
     let sb = Sb::new(false);
     let all = sb.run(&["check"]);
     assert_eq!(all.code, 1, "the world has errors:\n{}", all.out);
-    for code in ["name.drift", "dup.live", "folder.missing", "lineage.broken", "role.background", "config.layout"] {
+    for code in ["name.drift", "dup.live", "folder.missing", "lineage.broken", "config.layout"] {
         assert!(all.out.contains(code), "{code} missing:\n{}", all.out);
     }
     let one = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
