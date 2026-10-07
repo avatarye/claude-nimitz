@@ -1958,3 +1958,68 @@ fn a_leads_conversation_held_by_an_sdk_host_is_held_not_dup_live() {
     assert!(plan.ok(), "{:?}", plan.refusals);
     assert_eq!(w.steps_of(&plan, &adm)[0].cmd, claude::resume_bg(&w.env, &sid));
 }
+
+// ------------------------------------------------------------------ lead folders are exclusive (plan-v4 section 6)
+
+/// I10: a live session in a lead's folder that is not the lead's job is
+/// `lead.intruder` (Error) with the one fix that works: a background job is
+/// stopped then removed; an interactive or SDK process is ended in its
+/// terminal (named from the session file when it says). A retired tender's
+/// row is `tender.retired` only. The intruder never holds up the lead's own
+/// start.
+#[test]
+fn i10_a_live_session_in_a_lead_folder_is_an_intruder_with_one_fix_per_kind() {
+    let w = world();
+    let argos = Id::commodore("MAIN", "ARGOS");
+    assert!(!has(&w.member(&w.snap(), &argos).issues, "lead.intruder"), "clean to begin with");
+    // an unlabelled background job started by hand in ARGOS's folder
+    let cwd = w.member(&w.snap(), &argos).cwd.unwrap();
+    let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "quick look".into(), "x".into()], Some(&cwd));
+    assert_eq!(rc, 0, "{out}");
+    let snap = w.snap();
+    let m = w.member(&snap, &argos);
+    let i = m.issues.iter().find(|i| i.code == "lead.intruder").expect("lead.intruder: {m:?}");
+    assert_eq!(i.severity, Severity::Error);
+    let stray = snap.stowaways.iter().find(|s| s.name == "quick look").expect("still listed among the stowaways");
+    let short = stray.short_id.clone().unwrap();
+    assert!(i.message.contains(&short) && i.message.contains("a background job"), "{}", i.message);
+    assert_eq!(i.fix.as_deref(), Some(format!("nimitz stop {short}  # then nimitz rm {short}").as_str()));
+    // one issue per row: check lists it as the lead's intruder, not as a stowaway too
+    let all = nimitz_core::check::check_tree(&w.env, &snap, Some(&argos));
+    assert!(has(&all, "lead.intruder") && !all.iter().any(|i| i.code == "stowaway" && i.message.contains(&stray.session_id)), "{:?}", codes(&all));
+    // the lead's own job is apart from it: its start (nothing to do) and its ships' starts go on
+    let plan = w.start(&snap, &w.ship("STOPPED"), false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert!(plan.warnings.iter().any(|i| i.code == "lead.intruder"));
+    // the fix works: stop, then rm
+    let out = sessions::apply(&w.env, &sessions::plan_stop_session(&w.env, &snap, &short, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    let out = sessions::apply(&w.env, &sessions::plan_rm(&w.env, &w.snap(), &short, &Caller::User));
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(!has(&w.member(&w.snap(), &argos).issues, "lead.intruder"));
+    // an interactive process in the admiral's folder: end it in its terminal
+    let adm = Id::admiral("MAIN");
+    let cwd = w.member(&w.snap(), &adm).cwd.unwrap();
+    let (rc, _) = claude::run(&[w.env.claude_bin.clone(), "--name".into(), "a look around".into()], Some(&cwd));
+    assert_eq!(rc, 0);
+    let m = w.member(&w.snap(), &adm);
+    let i = m.issues.iter().find(|i| i.code == "lead.intruder").expect("lead.intruder: {m:?}");
+    assert!(i.message.contains("a look around") && i.message.contains("cli"), "{}", i.message);
+    assert_eq!(i.fix.as_deref(), Some("end it in its terminal"));
+    assert!(!has(&m.issues, "dup.live") && !has(&m.issues, "held"), "{:?}", m.issues);
+    // with the terminal named in its session file, the fix names it
+    let sess = std::fs::read_dir(w.env.claude_home.join("sessions")).unwrap().flatten().map(|e| e.path()).find(|p| std::fs::read_to_string(p).unwrap_or_default().contains("a look around")).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&sess).unwrap()).unwrap();
+    v["tmux"] = serde_json::json!("main:@1.%3");
+    std::fs::write(&sess, v.to_string()).unwrap();
+    let m = w.member(&w.snap(), &adm);
+    let i = m.issues.iter().find(|i| i.code == "lead.intruder").unwrap();
+    assert_eq!(i.fix.as_deref(), Some("end it in its terminal (tmux main:@1.%3)"));
+    // a 0.3.x tender's row in a lead folder stays tender.retired only
+    let t = w.rows().into_iter().find(|r| r.name == "[MAIN.ARGOS]-COMMODORE/fixci").unwrap();
+    let (rc, _) = w.fake(&["respawn", t.short_id.as_deref().unwrap()]);
+    assert_eq!(rc, 0);
+    let snap = w.snap();
+    assert!(!has(&w.member(&snap, &argos).issues, "lead.intruder"), "{:?}", w.member(&snap, &argos).issues);
+    assert!(snap.issues.iter().any(|i| i.code == "tender.retired" && i.message.contains(t.short_id.as_deref().unwrap())));
+}

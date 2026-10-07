@@ -91,7 +91,7 @@ pub fn ship_lock_path(cwd: &str) -> std::path::PathBuf {
 /// host, an interactive or Remote Control `--resume`, a 0.3.x interactive
 /// lead): the member is `held` (M13), never a copy and never a second live
 /// session of it. Every member is a job (0.4.0), leads too.
-fn held_row(m: &Member, r: &SessionInfo) -> bool {
+fn held_row(_m: &Member, r: &SessionInfo) -> bool {
     r.pid.is_some() && r.short_id.is_none()
 }
 
@@ -739,7 +739,9 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
 /// and lineage.broken yield to --force); warnings ride along. The relaunch
 /// table handles the session-level codes itself, with their row's action.
 fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: bool) {
-    const TABLE_HANDLED: [&str; 6] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken"];
+    // (lead.intruder rides along too: an intruder in a lead's folder is told
+    // and fixed, but it does not hold up the lead's own job)
+    const TABLE_HANDLED: [&str; 7] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "lead.intruder"];
     for i in crate::check::check(env, snap, id) {
         let forced_away = force && i.code == "cc.version";
         match i.severity {

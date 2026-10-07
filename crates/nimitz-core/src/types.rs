@@ -351,6 +351,10 @@ pub struct SessionInfo {
     /// the job is in `jobs/pins.json`: the daemon never idle-retires it
     #[serde(default)]
     pub pinned: bool,
+    /// where a live process runs, from its session file (`tmux`
+    /// `session:@window.%pane`, a Herdr pane), when it says
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

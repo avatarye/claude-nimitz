@@ -288,7 +288,15 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
         // A stowaway named in a legacy map is an old fleet's session: its member
         // carries the `legacy` issue instead.
         let legacy: std::collections::BTreeSet<String> = fleets.iter().flat_map(|f| crate::config::legacy_map(f).into_keys()).collect();
-        for s in snap.stowaways.iter().filter(|s| !legacy.contains(&s.name) && stowaway_in_scope(&s.cwd)) {
+        // a live one in a lead's folder is that lead's `lead.intruder` (one issue per row)
+        let lead_dirs: Vec<PathBuf> = snap
+            .fleets
+            .iter()
+            .flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|sq| &sq.commodore)))
+            .filter_map(|m| m.cwd.as_deref().map(|c| crate::env::canon(Path::new(c))))
+            .collect();
+        let in_lead_folder = |s: &SessionInfo| s.pid.is_some() && lead_dirs.contains(&crate::env::canon(Path::new(&s.cwd)));
+        for s in snap.stowaways.iter().filter(|s| !legacy.contains(&s.name) && stowaway_in_scope(&s.cwd) && !in_lead_folder(s)) {
             let short = s.short_id.as_deref().unwrap_or(&s.session_id);
             // never offer rm for a live session (contracts.md section 7)
             let fix = if s.pid.is_some() {
@@ -344,6 +352,7 @@ pub(crate) mod tests {
             birth_id: None,
             entrypoint: None,
             pinned: false,
+            terminal: None,
         }
     }
 
@@ -653,6 +662,7 @@ pub(crate) mod tests {
             birth_id: None,
             entrypoint: None,
             pinned: false,
+            terminal: None,
         });
         let issues = check(&env, &snap, None);
         let v = issues.iter().find(|i| i.code == "cc.version").expect("cc.version");

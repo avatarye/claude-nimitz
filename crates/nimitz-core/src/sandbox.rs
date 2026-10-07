@@ -616,8 +616,10 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let beta_sid = w.transcript(&beta_admiral, &Id::admiral("BETA").name(), 86400.0);
     w.bind(&Id::admiral("BETA"), &beta_admiral, &beta_sid, "launch");
 
-    // A stowaway: an unlabelled session in the fleet's own folder.
-    w.session("quick look at the logs", &argos_dir_s, bg(true, None));
+    // A stowaway: an unlabelled session in the fleet's own folder (a lead's
+    // folder is exclusive: a session there is its `lead.intruder` instead).
+    let fleet_dir_s = fod.dir.to_string_lossy().into_owned();
+    w.session("quick look at the logs", &fleet_dir_s, bg(true, None));
 
     trust(&base, &w.trusted.clone());
     let mut world = read_json(&base.join("world.json")).unwrap_or(json!({}));

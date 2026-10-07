@@ -390,6 +390,9 @@ pub struct SessionRow {
     pub entrypoint: Option<String>,
     /// the job is in `jobs/pins.json`
     pub pinned: bool,
+    /// the terminal a live process runs in (session file `tmux`, or a Herdr
+    /// pane field), for the fix that says where to end it
+    pub terminal: Option<String>,
 }
 
 impl SessionRow {
@@ -413,6 +416,7 @@ impl SessionRow {
             birth_id: self.birth_id.clone(),
             entrypoint: self.entrypoint.clone(),
             pinned: self.pinned,
+            terminal: self.terminal.clone(),
         }
     }
     /// Every session id this row answers to: the conversation now and the birth id.
@@ -495,6 +499,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             forked_from: ["forkedFrom", "forkedFromSessionId", "parentSessionId", "resumedFrom"].iter().find_map(|k| s(&d, k)),
             bridge_session_id: None,
             entrypoint: None,
+            terminal: None,
         });
     }
     for p in list(&sess_dir) {
@@ -541,6 +546,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             bridge_session_id: s(&d, "bridgeSessionId"),
             birth_id: None,
             entrypoint: s(&d, "entrypoint"),
+            terminal: terminal_of(&d),
         };
         match job.as_ref().and_then(|j| by_job.get(j)) {
             // a live background process: its job row gains pid, status and the
@@ -556,6 +562,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
                 r.waiting_for = live.waiting_for;
                 r.bridge_session_id = live.bridge_session_id;
                 r.entrypoint = live.entrypoint;
+                r.terminal = live.terminal;
                 if !live.name.is_empty() {
                     r.name = live.name;
                 }
@@ -564,6 +571,16 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
         }
     }
     Some(rows)
+}
+
+/// The terminal a session file names: `tmux` (`session:@window.%pane`, as
+/// Claude Code writes it under tmux), else a Herdr pane field when one is
+/// there (`herdrPane`, `herdr`, `pane`).
+fn terminal_of(d: &Value) -> Option<String> {
+    if let Some(t) = s(d, "tmux") {
+        return Some(format!("tmux {t}"));
+    }
+    ["herdrPane", "herdr", "pane"].iter().find_map(|k| s(d, k).map(|v| format!("pane {v}")))
 }
 
 /// Job folders whose `state.json` exists but does not parse: their session is
@@ -611,6 +628,7 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         birth_id: None,
                         entrypoint: None,
                         pinned: false,
+                        terminal: None,
                     })
                 })
                 .collect()

@@ -46,6 +46,7 @@ impl Row {
             birth_id: None,
             entrypoint: None,
             pinned: false,
+            terminal: None,
         }
     }
 }
