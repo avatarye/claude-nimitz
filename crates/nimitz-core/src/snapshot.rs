@@ -727,16 +727,36 @@ fn build_member(
         .or_else(|| current.as_ref().and_then(|cur| rows.iter().position(|r| r.short_id.is_some() && r.session_ids().any(|sid| sid == cur))))
         .or_else(|| current.as_ref().and_then(|cur| rows.iter().position(|r| &r.session_id == cur)))
         .or_else(|| {
+            // with no registry job: live before stopped, a job before a
+            // process; among those, the newest for a ship, the EARLIEST for a
+            // lead (a /fork of the lead is always later than the lead, and the
+            // real job is never its own intruder)
+            let age = |r: &SessionRow| if id.role().lead() { -r.started_at.unwrap_or(0.0) } else { r.started_at.unwrap_or(0.0) };
             rows.iter()
                 .enumerate()
                 .filter(|(_, r)| own(r))
-                .max_by(|(_, a), (_, b)| {
-                    (a.live(), a.short_id.is_some(), a.started_at.unwrap_or(0.0))
-                        .partial_cmp(&(b.live(), b.short_id.is_some(), b.started_at.unwrap_or(0.0)))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+                .max_by(|(_, a), (_, b)| (a.live(), a.short_id.is_some(), age(a)).partial_cmp(&(b.live(), b.short_id.is_some(), age(b))).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(i, _)| i)
         });
+    // A lead's registry job may be a /fork that bound itself while the lead
+    // had no job (the hook binds an identity with none set yet; review item
+    // 7): with two own live job rows, the earlier one is the lead, since a
+    // fork is always later. The real job is never its own intruder.
+    let mut primary_at = primary_at;
+    if id.role().lead() {
+        if let Some(i) = primary_at.filter(|&i| rows[i].live() && rows[i].short_id.is_some()) {
+            let at = |r: &SessionRow| r.started_at.unwrap_or(f64::MAX);
+            let earlier = rows
+                .iter()
+                .enumerate()
+                .filter(|(j, r)| *j != i && own(r) && r.live() && r.short_id.is_some() && at(r) < at(&rows[i]))
+                .min_by(|(_, a), (_, b)| at(a).partial_cmp(&at(b)).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(j, _)| j);
+            if earlier.is_some() {
+                primary_at = earlier;
+            }
+        }
+    }
     let primary = primary_at.map(|i| rows.remove(i));
     let extra_rows: Vec<SessionInfo> = rows.iter().map(info).collect();
     let session = primary.as_ref().map(info);
