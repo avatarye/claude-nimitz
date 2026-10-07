@@ -264,19 +264,32 @@ pub fn row_labels(r: &SessionRow, by_pid: &HashMap<(i64, String), BTreeMap<Strin
     }
 }
 
-/// Labels per session id, row by row (`row_labels`); where two rows share a
-/// conversation (a job row and a process holding it), the live one's labels
-/// win. Sessions with no row keep their newest SessionStart's labels.
+/// The key a row's labels and copy verdict are kept under: its job (short
+/// id), else its session id. Two jobs can run one conversation (a wake by an
+/// id that is not the job's birth id starts a second job on it, acceptance
+/// F1), so a session id alone does not name a row.
+pub fn row_key(r: &SessionRow) -> String {
+    r.short_id.clone().unwrap_or_else(|| r.session_id.clone())
+}
+
+/// Labels per row (`row_labels`, under `row_key`), and per session id: where
+/// two rows with no job share a conversation (a process holding it), the live
+/// one's labels win under the session id. Sessions with no row keep their
+/// newest SessionStart's labels under their id.
 pub fn session_labels(events: &[Event], rows: &[SessionRow]) -> HashMap<String, BTreeMap<String, String>> {
     let by_sid = labels_by_session(events);
     let by_pid = labels_by_pid_session(events);
     let mut out = by_sid.clone();
     let mut decided: std::collections::HashSet<String> = Default::default();
     for r in rows {
+        let mine = row_labels(r, &by_pid, &by_sid);
+        if r.short_id.is_some() {
+            out.insert(row_key(r), mine.clone());
+        }
         if decided.contains(&r.session_id) && r.pid.is_none() {
             continue;
         }
-        out.insert(r.session_id.clone(), row_labels(r, &by_pid, &by_sid));
+        out.insert(r.session_id.clone(), mine);
         if r.pid.is_some() {
             decided.insert(r.session_id.clone());
         }
@@ -549,6 +562,7 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
         }
         let status = s(&d, "status");
         let job = s(&d, "jobId");
+        let spare = d.get("spare").and_then(|v| v.as_bool()).unwrap_or(false);
         let live = SessionRow {
             session_id: sid.clone(),
             name: s(&d, "name").unwrap_or_default(),
@@ -568,9 +582,12 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             bridge_session_id: s(&d, "bridgeSessionId"),
             birth_id: None,
             entrypoint: s(&d, "entrypoint"),
-            spare: d.get("spare").and_then(|v| v.as_bool()).unwrap_or(false),
+            spare,
             terminal: terminal_of(&d),
-            appeared_at: [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min),
+            // a spare (the agent view's draft or "new session") is a pre-warmed
+            // process the view claims later: its age is its last touch, so the
+            // grace time (`snapshot::TRANSIENT_GRACE_S`) runs from the claim
+            appeared_at: if spare { mtime_secs(&p) } else { [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min) },
         };
         match job.as_ref().and_then(|j| by_job.get(j)) {
             // a live background process: its job row gains pid, status and the
@@ -693,23 +710,37 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
     let projects = env.claude_home.join("projects");
     for c in cwd.map(project_dirs).unwrap_or_default() {
         let p = projects.join(c).join(format!("{sid}.jsonl"));
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     if let Some(d) = find_session_dir(env, cache, sid) {
         let p = d.with_extension("jsonl");
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     for e in fs::read_dir(&projects).ok()?.filter_map(|e| e.ok()) {
         let p = e.path().join(format!("{sid}.jsonl"));
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     None
+}
+
+/// A transcript that holds at least one message (a line with a `uuid`,
+/// within `ROOT_BYTES`: a `/branch` copy hoists every file-history snapshot
+/// line, up to 4 KB each and many of them, above the first message). A stub
+/// `claude stop` writes after the real file was moved away has none: a
+/// resume of it would start the conversation over (acceptance env F5), so it
+/// is no transcript.
+pub fn has_message(p: &Path) -> bool {
+    let Ok(f) = fs::File::open(p) else { return false };
+    if !f.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        return false;
+    }
+    !root_of_reader(std::io::BufReader::new(f)).is_empty()
 }
 
 /// How much of a transcript the root reader reads at most: the metadata
@@ -1052,4 +1083,23 @@ mod tests {
         assert_eq!(daemon_retired(&env, "0abc1234", Some(between)).as_deref(), Some("abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)"));
         assert_eq!(daemon_retired(&env, "deadbeef", None), None);
     }
+    /// A `/branch` copy hoists every file-history snapshot line (up to 4 KB
+    /// each, many of them) above the first message: still a transcript. A
+    /// stub (`claude stop` after the file was moved away) is none.
+    #[test]
+    fn a_branch_copy_with_many_hoisted_snapshots_still_has_a_message() {
+        let td = tempfile::tempdir().unwrap();
+        let p = td.path().join("branch.jsonl");
+        let snap = format!("{{\"type\": \"file-history-snapshot\", \"snapshot\": \"{}\"}}\n", "x".repeat(4000));
+        let mut text = snap.repeat(200);
+        text.push_str("{\"type\": \"user\", \"uuid\": \"u1\", \"parentUuid\": null, \"sessionId\": \"s\"}\n");
+        fs::write(&p, &text).unwrap();
+        assert!(text.len() > 64 * 1024);
+        assert!(has_message(&p), "200 hoisted 4 KB lines before the first message");
+        let stub = td.path().join("stub.jsonl");
+        fs::write(&stub, "{\"type\": \"summary\", \"summary\": \"x\", \"leafUuid\": \"y\"}\n{\"type\": \"system\", \"content\": \"stopped\"}\n").unwrap();
+        assert!(!has_message(&stub));
+        assert!(!has_message(&td.path().join("missing.jsonl")));
+    }
+
 }

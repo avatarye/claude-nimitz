@@ -605,14 +605,20 @@ fn issue_labels_mismatch() {
     assert!(has(&w.start(&snap, &m.id, false).refusals, "labels.mismatch"));
 }
 
+/// No row and no transcript: `history.lost` with the `--fresh` fix (one
+/// word, one flag; acceptance env E9); `--force` still cold-launches.
 #[test]
-fn issue_lineage_broken() {
+fn issue_history_lost_with_no_row_and_no_transcript() {
     let w = world();
     let snap = w.snap();
     let id = w.ship("BROKEN");
     let m = w.member(&snap, &id);
-    assert!(has(&m.issues, "lineage.broken"), "{:?}", codes(&m.issues));
-    assert!(has(&w.start(&snap, &id, false).refusals, "lineage.broken"));
+    assert!(has(&m.issues, "history.lost") && !has(&m.issues, "lineage.broken"), "{:?}", codes(&m.issues));
+    let refused = w.start(&snap, &id, false);
+    assert!(has(&refused.refusals, "history.lost"), "{:?}", codes(&refused.refusals));
+    assert!(refused.refusals.iter().all(|i| i.fix.as_deref().is_none_or(|f| f.contains("--fresh"))), "{:?}", refused.refusals);
+    let fresh = sessions::plan_start_with(&w.env, &snap, &id, &Caller::User, sessions::StartOpts { force: false, fresh: true });
+    assert!(fresh.ok() && !has(&fresh.warnings, "history.lost"), "the --fresh plan does not repeat the question: {:?} {:?}", fresh.refusals, fresh.warnings);
     let forced = w.start(&snap, &id, true);
     assert!(forced.ok(), "{:?}", forced.refusals);
     let out = sessions::apply(&w.env, &forced);
@@ -675,7 +681,7 @@ fn every_start_step_is_a_background_launch_leads_too() {
     let fresh = w.start(&snap, &w.ship("FRESH"), false);
     assert!(fresh.steps[0].cmd.contains(&"--bg".to_string()));
     // a lead with no history at all: a cold launch with the lead prompt
-    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default());
+    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default(), None);
     assert!(nimitz_core::config::apply_config_plan(&w.env, &plan).verified);
     let id = Id::commodore("MAIN", "NEWSQ");
     let plan = w.start(&w.snap(), &id, false);
@@ -1192,7 +1198,7 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
 #[test]
 fn a_commodore_whose_old_lead_ran_elsewhere_says_why_it_starts_fresh() {
     let w = world();
-    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default());
+    let plan = nimitz_core::config::plan_squadron_new(&w.env, "MAIN", "NEWSQ", "brief", Comms::default(), None);
     assert!(nimitz_core::config::apply_config_plan(&w.env, &plan).verified);
     std::fs::write(w.env.fleet_dir("MAIN").join("legacy.toml"), "[names]\n\"[NEWSQ]-LEAD\" = \"MAIN/NEWSQ\"\n").unwrap();
     let id = Id::commodore("MAIN", "NEWSQ");
@@ -1712,9 +1718,9 @@ fn m11_a_lead_with_no_transcript_cold_launches_and_blocks_nothing() {
     assert!(plan.ok(), "{:?}", plan.refusals);
     let step = w.steps_of(&plan, &adm)[0].clone();
     assert_eq!(step.cmd, claude::launch_bg(&w.env, &adm, "", Some(&claude::lead_prompt(&adm))));
-    // a ship's registry session with no row and no transcript stays lineage.broken (5b)
+    // a ship's registry session with no row and no transcript stays history.lost (5b, E9)
     let broken = w.member(&snap, &w.ship("BROKEN"));
-    assert!(has(&broken.issues, "lineage.broken"));
+    assert!(has(&broken.issues, "history.lost"));
 }
 
 /// 1g / cli-31 / G8: a resume that races the daemon's restart. Claude Code
@@ -2148,4 +2154,27 @@ fn an_attach_never_wakes_a_job_the_start_would_relabel() {
     let parked = w.member(&w.snap(), &w.ship("STOPPED"));
     let t = nimitz_core::layout::attach_tab(&w.env, &parked).expect("a clean stopped job attaches");
     assert!(t.wakes);
+}
+
+/// The two pollers `apply` uses around a wake: `row_gone_within` (the daemon's
+/// rm lands a moment after `claude rm` returns) and `wait_settled` (the
+/// daemon lists a stopped job as running for a moment).
+#[test]
+fn the_wake_pollers_return_at_once_when_there_is_nothing_to_wait_for() {
+    let w = world();
+    let snap = w.snap();
+    let live = w.member(&snap, &w.ship("CLEAN")).session.unwrap().short_id.unwrap();
+    let stopped = w.member(&snap, &w.ship("STOPPED")).session.unwrap().short_id.unwrap();
+    let t = std::time::Instant::now();
+    assert!(sessions::row_gone_within(&w.env, "00000000", 2.0), "no such row: gone at once");
+    assert!(t.elapsed().as_secs_f64() < 1.0);
+    let t = std::time::Instant::now();
+    assert!(!sessions::row_gone_within(&w.env, &stopped, 0.4), "a row that stays");
+    assert!(t.elapsed().as_secs_f64() >= 0.4);
+    let t = std::time::Instant::now();
+    sessions::wait_settled(&w.env, &stopped, 2.0);
+    assert!(t.elapsed().as_secs_f64() < 1.5, "a stopped job is settled");
+    let t = std::time::Instant::now();
+    sessions::wait_settled(&w.env, &live, 0.5);
+    assert!(t.elapsed().as_secs_f64() >= 0.5, "a running job is waited for, up to the limit");
 }

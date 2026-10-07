@@ -239,7 +239,7 @@ impl Form {
             format!("Adopt stowaway {short}"),
             vec![
                 Field::new("session", "session", short, FieldKind::Fixed, ""),
-                Field::new("id", "as identity", suggestion, FieldKind::Text, "F/SQ/SHIP (a ship in the config) or F/SQ/~task"),
+                Field::new("id", "as identity", suggestion, FieldKind::Text, "F/SQ/SHIP (a ship in the config)"),
             ],
         )
     }
@@ -379,7 +379,7 @@ impl Form {
                     errs.insert("comms", e);
                     Comms::default()
                 });
-                nimitz_core::config::plan_squadron_new(env, self.get("fleet"), self.get("squadron").trim(), self.get("brief").trim(), comms)
+                nimitz_core::config::plan_squadron_new(env, self.get("fleet"), self.get("squadron").trim(), self.get("brief").trim(), comms, None)
             }
             FormKind::NewShip | FormKind::EditShip(_) => {
                 if let Some(e) = name_err(self.get("ship"), "ship") {

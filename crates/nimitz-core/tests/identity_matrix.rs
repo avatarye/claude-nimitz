@@ -183,10 +183,16 @@ fn inside_3_4d_then_e1_a_branch_then_a_retire_is_parked() {
     assert_eq!(m.status, Status::Parked, "{:?}", m.reasons);
     assert!(m.reasons.iter().any(|r| r.contains("daemon retired it")), "{:?}", m.reasons);
     assert!(m.issues.is_empty(), "{:?}", m.issues);
-    // a start wakes the job; the registry's conversation is the branch
+    // a start continues the branch: the registry's conversation is the branch,
+    // and a native wake would bring the pre-branch conversation back
+    // (`resumeSessionId` follows /clear only), so the row goes and the branch
+    // is resumed with every flag under its own short id (acceptance inside FAIL-1)
     assert_eq!(w.rec(&id).session.as_deref(), Some(new.as_str()));
-    w.start(&id);
-    assert_eq!(w.member(&id).session.unwrap().short_id.as_deref(), Some(job.as_str()));
+    let out = w.start(&id);
+    assert!(out.ran.iter().any(|(s, _, _)| s.cmd.contains(&"--settings".to_string()) && s.cmd.contains(&new)), "{:?}", out.ran);
+    let s = w.member(&id).session.unwrap();
+    assert_eq!((s.short_id.as_deref(), s.session_id.as_str()), (Some(&new[..8]), new.as_str()));
+    let job = new[..8].to_string();
     // a branch, then a stop: stopped (the SessionEnd came from the job's own pid)
     w.claude_ok(&["__inside", &job, "branch", "b2"], None);
     w.claude_ok(&["stop", &job], None);

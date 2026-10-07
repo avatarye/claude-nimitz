@@ -128,6 +128,39 @@ Command: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=4`.
     interactive process, after which nimitz's own wake makes a copy until that
     process ends (`/exit`); and a removed job's conversation is held the same way.
 
+11. **`/branch` (and `/resume`) inside a job: `resumeSessionId` follows `/clear` only.**
+    Real Claude Code, e2e cases 13 and 14 (guard `[OK]` before and after). `/branch` in an
+    attached ship fires SessionStart `source: fork` with a new session id under the same
+    job (the hook binds it `via branch`), and renames the job's saved name to
+    `<first prompt> (Branch)`; `state.json` keeps `sessionId` = `resumeSessionId` = the
+    pre-branch conversation. After a stop, a wake by the birth id (`claude --bg --resume
+    <birth>`, once the daemon settled, finding 12) answers `note: woke session <birth>
+    with its saved options` and brings the **pre-branch** conversation back (SessionStart
+    `resume` on the birth id, same job): the branch is left behind, and nimitz's hook
+    then records the woken one as the member's `session` (the branch stays in the
+    lineage). This is a GAP in Claude Code's own wake for a branched job. nimitz never
+    takes that path in silence: `wake_steps` compares the registry's `session` (the
+    conversation the member ran last) with the row's `resumeSessionId`, and when they
+    differ it removes the row and resumes the registry's conversation by id with every
+    flag (`rm <job>`, then `--bg --resume <branch> --name ... --settings ...`), with the
+    plan line "the job would wake on <old> (resumeSessionId follows /clear only), not on
+    <branch> that it ran last (a /branch or /resume): resume that one with every flag".
+    (one helper, `sessions::wake_target`, answers every wake path: `wake_steps`,
+    `relaunch`, restore's attach-wake; a registry conversation that is not later in the
+    lineage than the row's is `lineage.stale`, the row wins.) Case 13 (`/clear`, wake by birth id, then `/branch`, wake): the branch came back
+    under its own short id with the ship's name and labels, one row, no issue (the
+    relabel also undoes the `(Branch)` rename). Sandbox test
+    `branch_then_stop_then_start_resumes_the_branch_with_every_flag`; the identity
+    matrix test `inside_3_4d_then_e1_a_branch_then_a_retire_is_parked` now expects it.
+12. **A wake right after a stop makes a copy.** The first run of case 14 woke the job by
+    its birth id about 1 s after `nimitz stop`'s SessionEnd (the session file was gone,
+    `status` showed no pid): Claude Code answered `note: session <job> is already running
+    in the background, so this started a copy as <new>` (SessionStart `fork`, no labels;
+    the daemon's own bookkeeping had not settled). Once `claude agents` listed the job
+    with no pid and a state other than `running` (a few seconds), the same wake woke
+    the job. `apply` now waits up to 5 s for that before any wake (`wait_settled`); the
+    copy note and its cleanup stay as the backstop.
+
 ## Harness notes
 
 - Session `kind` in `status --json` is `background` (the session file's word), not

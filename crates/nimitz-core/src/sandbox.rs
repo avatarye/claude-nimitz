@@ -439,8 +439,8 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let fleet_toml = e.fleet_dir("MAIN").join("fleet.toml");
     let raw = fs::read_to_string(&fleet_toml).map_err(|e| e.to_string())?;
     fs::write(&fleet_toml, raw.replace(&format!("hostname = \"{}\"", e.hostname), &format!("hostname = \"{HOST}\""))).map_err(|e| e.to_string())?;
-    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "ARGOS", "Everything the relaunch table needs.", Comms::default()))?;
-    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "BOREAL", "A squadron whose commodore runs as a background job.", Comms::Mode("commodore-only".into())))?;
+    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "ARGOS", "Everything the relaunch table needs.", Comms::default(), None))?;
+    apply_cfg(&e, &crate::config::plan_squadron_new(&e, "MAIN", "BOREAL", "A squadron whose commodore runs as a background job.", Comms::Mode("commodore-only".into()), None))?;
 
     let mut dirs: HashMap<&str, String> = HashMap::new();
     for (ship, _) in SHIPS {
@@ -1071,7 +1071,10 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             let out: Vec<Value> = rows(&base)
                 .iter()
                 .map(|r| {
-                    let mut v = json!({"cwd": r.cwd, "kind": r.kind, "sessionId": r.session_id, "name": r.name,
+                    // as the real CLI (2.1.292): a stopped job is listed by its
+                    // birth id, a live one by the conversation it runs now
+                    let listed = if r.pid.is_none() { r.birth_id.clone().unwrap_or_else(|| r.session_id.clone()) } else { r.session_id.clone() };
+                    let mut v = json!({"cwd": r.cwd, "kind": r.kind, "sessionId": listed, "name": r.name,
                                        "startedAt": r.started_at.map(ms)});
                     if let Some(id) = &r.short_id {
                         v["id"] = json!(id);
@@ -1167,8 +1170,10 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 }
                 println!("retired {short}");
             } else {
-                // a dead worker: state crashed, no hook (cli-30)
-                end_job(&base, &row, "crashed", "", true);
+                // a dead worker: state crashed (or the state given: `blocked`,
+                // `done` for a kill -9 that left the state untouched), no hook (cli-30)
+                let state = args.get(2).map(String::as_str).unwrap_or("crashed");
+                end_job(&base, &row, state, "", true);
                 println!("crashed {short}");
             }
             return 0;
@@ -1294,8 +1299,26 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 return 0;
             }
             if !flags {
-                // probe 2c1: the same job, woken on <id> with its saved options
-                wake(&base, &row, target, "resume");
+                // 2.1.292 (acceptance F1): a stopped job wakes only by its BIRTH
+                // id (`state.json` `sessionId`), and comes back on the
+                // conversation it runs now (`resumeSessionId`). Any other id of
+                // its conversation starts a NEW job named after that id: no
+                // labels, no respawnFlags, the saved name; SessionStart `resume`
+                // with no labels.
+                let birth = row.birth_id.clone().unwrap_or_else(|| row.session_id.clone());
+                if *target != birth {
+                    let name = saved_name.clone().unwrap_or_else(|| row.name.clone());
+                    let short = start_as(&base, &cwd, &name, "", None, "resume", true, Some(target));
+                    if let Some(mut j) = job_state(&base, &short) {
+                        j["respawnFlags"] = json!([]);
+                        save_job(&base, &short, &j);
+                    }
+                    println!("backgrounded · {short} (idle — send a prompt to start)");
+                    return 0;
+                }
+                // probe 2c1: the same job, woken with its saved options
+                let now = row.session_id.clone();
+                wake(&base, &row, &now, "resume");
                 println!("woke session {target} with its saved options (--name, --permission-mode, --settings)");
                 return 0;
             }

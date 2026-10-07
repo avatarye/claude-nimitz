@@ -252,7 +252,7 @@ removes the file; `check` reports `notify.failed` for one that failed.
 ## 6. Evidence and state (core)
 
 Order: (1) session file + `kill(pid,0)` (read the first JSON value only),
-(2) `claude agents --json --all` (native binary, every ~10 s, cached),
+(2) `claude agents --json --all` (native binary, every ~10 s, cached; a job row matches its CLI row by job id, since the CLI lists a stopped job by its birth id while the file row carries the conversation now),
 (3) events (binding, crew, end reason), (4) mux panes (Admiralty only).
 
 Rows (plan-v4 section 4): a job row (`jobs/<id>/state.json`) and a live
@@ -271,10 +271,26 @@ hook of this home writes no line), so it cannot be recognised: it is
 classified as an unlabelled session (the user's own in a ship folder, a
 stowaway elsewhere in scope). Also not rows, for
 `snapshot::TRANSIENT_GRACE_S` (120 s) after its session file appeared (the
-earliest of the file's birth time, its mtime and `startedAt`), a `spare: true`
-session file (the agent view's "new session" or draft) and a picker (a live
-process with no job, no transcript and no SessionStart yet); after the grace
-time they are classified like any other row. `jobs/pins.json` gives `pinned` (the daemon
+earliest of the file's birth time, its mtime and `startedAt`; for a spare,
+its mtime alone: a pre-warmed process the agent view claims later), a picker:
+a live process with no job, no transcript and no SessionStart yet (the agent
+view's draft or "new session", `spare: true`, is one until it has a
+conversation; in a lead's folder too: no `lead.intruder` for a draft, inside
+FAIL-2); after the grace time, or once it has a conversation, it is classified
+like any other row (the agent view's draft fires a SessionStart `startup`
+the moment it is claimed, so a spare is a picker whether or not it has one).
+A member's row is the registry's `job`, for a lead too: a hand rm + resume
+binds the new job beside an older labelled stray, and the registry job stays
+the lead (the stray is its `lead.intruder`; neither a relaunch's `dup.live`
+check nor `apply`'s "live already" guard counts a lead's intruder, and the
+labels-in-folder rule of that guard holds only while the registry names no
+job). Only two cases hand a lead to another own live job: the registry has no
+job, or the registry job bound itself as a fork (the first lineage entry of
+that job says `via branch`: a `/fork` copy's hook binds when the lead had no
+job). A `/branch` or `/rename` of the real job (Claude Code names a branch
+`<prompt> (Branch)`) changes nothing. Then the earliest-started own live job
+carrying the expected name, else the earliest with a `started_at`; never on a
+missing or equal `started_at`. `jobs/pins.json` gives `pinned` (the daemon
 never idle-retires a pinned job; `status` says so). A live session file's
 `tmux` (or a Herdr pane field) is the row's `terminal`, for the fix that says
 where to end a process. nimitz pins each lead's job after it starts and
@@ -338,11 +354,12 @@ Each finding is an `Issue` with a stable `code`:
 | `labels.mismatch` | labels name another identity |
 | `dup.live` | two live sessions for one identity |
 | `copy.rows` | extra job rows of the identity that are its own stale rows (labelled, or in its lineage) and not copies (below) |
-| `copy` | a copy of a ship's conversation (plan-v4 section 6; Warn, one per copy, `SessionInfo::copy` says how): an unlabelled session in the ship's folder whose transcript shares the root of a lineage conversation (`evidence::transcript_root`: the first uuid and the first message; a `/branch`, `/fork`, `--fork-session` or `--bg -c` copies the transcript), or that resumes a lineage session id that is not the conversation now (a process with no job on the conversation now is `held`, not a copy), or that carries the ship's exact name (or an old fleet name); anywhere, a row named `<expected name>-<word>-<word>` (Claude Code's copy name) or unnamed with a job row recording a fork of a lineage session. A copy is never the current session, never `dup.live`, `held` or `name.taken`. Fix per kind: a background job, `nimitz sweep <id>` (stop, then rm); a process with no job (interactive, SDK), "end it in its terminal" with the `tmux` pane from the session file when there is one |
-| `lineage.broken` | the registry's session (the conversation now) has no job row and no transcript |
+| `copy` | a copy of a ship's conversation (plan-v4 section 6; Warn, one per copy, `SessionInfo::copy` says how): an unlabelled session in the ship's folder whose transcript shares the root of a lineage conversation (`evidence::transcript_root`: the first uuid and the first message; a `/branch`, `/fork`, `--fork-session` or `--bg -c` copies the transcript), or that resumes a lineage session id that is not the conversation now (a process with no job on the conversation now is `held`, not a copy), or that carries the ship's exact name (or an old fleet name), or that is a second **job** on the conversation the member runs now while the member's own job row is there (a wake by an id that is not the job's birth id; for a lead too, told as a copy, never as its session); anywhere, a row named `<expected name>-<word>-<word>` (Claude Code's copy name) or unnamed with a job row recording a fork of a lineage session. A copy is never the current session, never `dup.live`, `held` or `name.taken`. Fix per kind: a background job, `nimitz sweep <id>` (stop, then rm); a process with no job (interactive, SDK), "end it in its terminal" with the `tmux` pane from the session file when there is one |
+| `lineage.stale` | the registry names a conversation of a stopped member that is neither the one its job would wake nor a later one of its lineage (Warn; fix `nimitz relaunch <id>`; the wake brings the job's conversation back) |
+| `lineage.broken` | a start or wake did not bind what was expected (no SessionStart within the wait, another job answered, the registry could not be written); a `failed` row. No row and no transcript is `history.lost` (above) |
 | `held` | a member's conversation (any role; the one it runs now) runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`, a 0.3.x interactive lead); nimitz can neither stop nor resume it there, and `start` of that member refuses until it ends (a resume would start a copy); a held parent is live for the chain (its ships start, the warning rides along) (Warn in `check`; fix: end that process in its host, then `nimitz start`; for a 0.3.x lead: "end the interactive lead with /exit, then run nimitz start <id> again", which brings the same conversation back as a job, lineage `via migrate`) (M13). Such a row is never a copy or a second live session of the member; a process with no job on an older lineage conversation is a `copy` |
-| `lead.intruder` | a lead's folder is exclusive: a live session there that is not the lead's own (its job, a held process on its conversation, a live copy) is an intruder (Error; one fix per kind: a background job `nimitz stop <short>` then `nimitz rm <short>`; an interactive or SDK process "end it in its terminal (tmux ...): /exit, or close the host", with the session file's terminal when it says). A retired tender's row stays `tender.retired` only; `check` lists such a row as the lead's intruder, not as a stowaway as well; it rides along a start as a warning (the lead's own job is apart from it) |
-| `history.lost` | a resume would run with no history: the member's job row is there but its conversation has no transcript in any project dir (no launch; fix `nimitz start <id> --fresh`: a cold launch that starts a new lineage entry and drops the old rows); or a resume came back with SessionStart `startup` instead of `resume` (Claude Code found no history; the start is never verified) (M5, E8). A lead with no transcript and no row gets a cold launch, never a fleet-wide `lineage.broken` (M11) |
+| `lead.intruder` | a lead's folder is exclusive: a live session there that is not the lead's own (its registry job, a held process on its conversation, a live copy) is an intruder, a `/fork` of the lead or a hand launch with its labels included (never `dup.live` or `copy.rows` for the lead; its own job is never the target, and the ships under it still start) (Error; one fix per kind: a background job `nimitz stop <short>` then `nimitz rm <short>`; an interactive or SDK process "end it in its terminal (tmux ...): /exit, or close the host", with the session file's terminal when it says). A retired tender's row stays `tender.retired` only; `check` lists such a row as the lead's intruder, not as a stowaway as well; it rides along a start as a warning (the lead's own job is apart from it) |
+| `history.lost` | a resume would run with no history: the member's job row is there but its conversation has no transcript in any project dir, or its registry session has no job row and no transcript (acceptance env E9: one word, one flag); a transcript with no message line within the first 4 MB (the stub `claude stop` writes after the file was moved away, env F5; a `/branch` copy hoists many 4 KB snapshot lines above its first message and is still one) counts as none (`evidence::has_message`, the `transcript_root` scanner). No launch; fix `nimitz start <id> --fresh`: a cold launch that starts a new lineage entry and drops the old rows (the `--fresh` plan does not repeat the error). Also a resume that came back with SessionStart `startup` instead of `resume` (Claude Code found no history; the start is never verified) (M5, E8). A lead with no transcript and no row gets a cold launch, never a fleet-wide issue (M11) |
 | `pin.failed` | a lead's job could not be pinned (`pins.json.lock` held); the start stands (Warn; fix `nimitz relaunch`) |
 | `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
@@ -379,7 +396,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `session.interactive` | the member runs in a process with no job (a 0.3.x interactive lead, an SDK host): `stop` and `relaunch` cannot reach it; end it in its own terminal (`/exit`) |
 | `session.live` | also `wake_steps` of a live job: a resume of a live job starts a copy |
 | `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
-| `lineage.current` | `rm` of an identity's current session (it would break the lineage) |
+| `lineage.current` | `rm` of a member's current session: its row goes with the member, never alone (fix: `nimitz relaunch <id>` replaces it, `nimitz ship|squadron|fleet rm <id>` retires the member) |
 | `tender.retired` | (info) a job row of a 0.3.x tender, history only (fix: `nimitz rm <short>`, after `nimitz stop <short>` while live) |
 | `step.failed` | a step of an applied plan failed (or a lock could not be taken); nothing after it ran |
 
@@ -400,7 +417,7 @@ target. For each member, one action from this table:
 | live, labels right, name right | nothing |
 | live, name drift or labels missing | refuse; Issue with fix `nimitz relaunch <id>` (needs a stop) |
 | two live sessions | refuse; list both; fix `nimitz stop <short>` for the one you drop |
-| stopped or parked (job row, no pid), labels right | resume: native binary, **no flags**, from its folder (the job keeps its short id; `resumeSessionId` is the conversation it wakes on). Every role: a lead is a job too, never `-c`. Before it, the transcript must exist (any project dir), else `history.lost`; not judged for a job in the crash window (`crashed`, or `working` with no live pid: killed in its first turn, its transcript may not be on disk yet; `apply` waits for the daemon, and a resume that comes back `startup` reports `history.lost` then). `sessions::wake_steps` builds this row and the next (a restore uses it) |
+| stopped or parked (job row, no pid), labels right | resume: native binary, **no flags**, from its folder, **by the job's birth id** (`state.json` `sessionId`; Claude Code 2.1.292 wakes a stopped job only by that id, and any other id of its conversation starts a new unlabelled job named after it, acceptance F1). The job keeps its short id and wakes on `resumeSessionId`, the conversation it runs now (after a `/clear`, a later one); `apply` expects that one back. `resumeSessionId` follows `/clear` only: every wake path (`wake_steps`, `relaunch`, restore's attach-wake) asks one helper, `sessions::wake_target`, which conversation must come back. The registry's `session` LATER in the lineage than the row's (a `/branch` or `/resume` after it): the row goes and that session is resumed with every flag (`rm`, then `--bg --resume <it> --name --settings`; the plan says why; restore wakes first, then opens the tab), never the older conversation in silence (r3-e2e finding 11). The same: a native wake. Any other difference (a lost hook line, a hand edit): the row wins, Claude Code's own truth, with the Warn `lineage.stale` (fix `nimitz relaunch`). The transcript checked for `history.lost` is the target's. Every role: a lead is a job too, never `-c`. Before it, the transcript must exist (any project dir), else `history.lost`; not judged for a job in the crash window (`crashed`, or `working` with no live pid: killed in its first turn, its transcript may not be on disk yet; `apply` waits for the daemon, and a resume that comes back `startup` reports `history.lost` then). `sessions::wake_steps` builds this row and the next (a restore uses it) |
 | stopped, labels missing (resumed with flags earlier), or a drifted name | relabel (BUG-53): `rm` its job row (native; if that fails the plan stops), then cold launch `--resume <id>` with all flags: with no row Claude Code keeps the **same id and its history** and takes the new name and labels. (With the row present the same command starts an empty copy with a new id; `apply` refuses such a step.) Same path for `relaunch`, `folder.moved`, adopt + start |
 | no row, but the registry's current (or an interrupted relaunch's) session has a transcript (background member) | resume `--resume <id>` with all flags: Claude Code keeps the id and history. A relaunch writes `NIMITZ_STATE/pending/<id>.json` before its `rm` and clears it after the bind, so a start after a crash between the two says "recovering an interrupted relaunch" |
 | no row, transcript exists (a lead that never had a job: a 0.3.x interactive lead that ended) | resume `--resume <id>` with all flags, like the row above, lineage `via: migrate` |
@@ -408,7 +425,7 @@ target. For each member, one action from this table:
 | no row, no transcript | cold launch (ship: prompt from config; lead: `claude::lead_prompt`), `--bg` for every role; also a lead whose registry session has no transcript (never `lineage.broken` for a lead) |
 | row `failed` / unknown id | mark lineage broken; cold launch only with `--force` (ships) |
 | `--fresh` | a cold launch whatever the rows (the `history.lost` fix): a new lineage entry `via launch`; the member's stopped rows are removed after it |
-| a job in the crash window (`state crashed`, or `working` with no live pid) | `apply` waits up to `NIMITZ_CRASH_WINDOW` s for the daemon's restart before any resume or relaunch of it; restarted, its steps are skipped ("the daemon restarted it") |
+| a job in the crash window (`sessions::in_crash_window`: no live pid, and `state crashed` or `working`, or a parked row (no SessionEnd) changed within `CRASH_RECENT_S` = 30 s: a kill -9 of a `blocked` or `done` job, which the 2.1.292 daemon restarts within about 10 s, env F3) | `apply` waits up to `NIMITZ_CRASH_WINDOW` s for the daemon's restart before any resume or relaunch of it; restarted, its steps are skipped ("the daemon restarted it"); not restarted and the transcript still missing, `history.lost` |
 | a live process with no job on the conversation (`held`) | refuse: end it first (a resume would start a copy, cli-L2) |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
 | folder missing or untrusted | refuse with the fix |

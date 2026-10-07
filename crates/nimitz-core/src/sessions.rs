@@ -92,7 +92,7 @@ pub fn ship_lock_path(cwd: &str) -> std::path::PathBuf {
 /// lead): the member is `held` (M13), never a copy and never a second live
 /// session of it. Every member is a job (0.4.0), leads too; a process with
 /// no job on an older lineage conversation is a `copy`, not `held`.
-fn held_row(_m: &Member, r: &SessionInfo) -> bool {
+pub(crate) fn held_row(_m: &Member, r: &SessionInfo) -> bool {
     r.pid.is_some() && r.short_id.is_none() && r.copy.is_none()
 }
 
@@ -137,12 +137,21 @@ fn copy_fix(m: &Member, r: &SessionInfo) -> String {
     }
 }
 
+/// A live extra row of a LEAD in its own (exclusive) folder that is not its
+/// session: its `lead.intruder` (the snapshot names it, one fix: stop, then
+/// rm), never a second live session of the lead, a copy row, or a reason to
+/// refuse the lead's relaunch (acceptance inside FAIL-3, re-review 1).
+pub(crate) fn lead_intruder_row(m: &Member, r: &SessionInfo) -> bool {
+    m.role.lead() && r.pid.is_some() && m.cwd.as_deref().is_some_and(|d| same_folder(&r.cwd, d)) && m.session.as_ref().map(|p| p.session_id != r.session_id).unwrap_or(true)
+}
+
 /// How a copy was told, for a message.
 fn copy_how(r: &SessionInfo) -> &'static str {
     match r.copy.as_deref() {
         Some("transcript") => "its transcript starts the member's conversation",
         Some("resume") => "it resumes a conversation of the member's lineage",
         Some("name") => "it carries the member's name",
+        Some("job") => "it is a second job on the member's conversation (a wake by an id that is not the job's birth id)",
         Some("fork") => "its job row records a fork of the member's conversation",
         _ => "a copy",
     }
@@ -157,7 +166,11 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     let id = Some(m.id.clone());
     let relaunch = Some(format!("nimitz relaunch {}", m.id));
     let rows: Vec<&SessionInfo> = m.session.iter().chain(m.extra_rows.iter()).collect();
-    let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r) && r.copy.is_none()).collect();
+    // a lead's folder is exclusive: a live extra row there (a /fork, a hand
+    // launch with its labels) is its `lead.intruder` (the snapshot names it,
+    // one fix), never a second live session or a copy row of the lead
+    let intruder = |r: &SessionInfo| lead_intruder_row(m, r);
+    let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r) && r.copy.is_none() && !intruder(r)).collect();
     // A copy of the member's conversation (plan-v4 section 6): one Warn per
     // copy, with the fix that works for its kind.
     for r in m.extra_rows.iter().filter(|r| r.copy.is_some()) {
@@ -249,7 +262,7 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
             }
         }
     }
-    let extra: Vec<&SessionInfo> = m.extra_rows.iter().filter(|r| !held_row(m, r) && r.copy.is_none()).collect();
+    let extra: Vec<&SessionInfo> = m.extra_rows.iter().filter(|r| !held_row(m, r) && r.copy.is_none() && !intruder(r)).collect();
     if !extra.is_empty() {
         let shorts: Vec<&str> = extra.iter().map(|r| r.short_id.as_deref().unwrap_or(r.session_id.as_str())).collect();
         out.push(issue(
@@ -315,22 +328,38 @@ pub fn lock_holder(cwd: &str) -> Option<String> {
 /// with no transcript gets a cold launch instead (plan-v4 section 5): an
 /// error on an admiral would refuse every start in its fleet.
 pub fn registry_issues(env: &Env, cache: &mut crate::evidence::FileCache, m: &Member, reg: &Registry) -> Vec<Issue> {
-    if m.role.lead() {
-        return vec![];
+    let mut out = vec![];
+    // the registry names another conversation than the one the row would
+    // wake, and not a later one of the lineage (a lost hook line, a hand
+    // edit): the row wins, and a relaunch brings the two together
+    if let Some(p) = m.session.as_ref().filter(|p| p.pid.is_none() && p.short_id.is_some()) {
+        if let Some(stale) = wake_target_in(reg.identities.get(&m.id.0), p).stale {
+            out.push(issue(
+                "lineage.stale",
+                Severity::Warn,
+                format!("{}'s registry names {} but its job would wake on {}; the job's conversation wins", m.id, &stale[..stale.len().min(8)], &p.session_id[..p.session_id.len().min(8)]),
+                Some(format!("nimitz relaunch {}", m.id)),
+                Some(m.id.clone()),
+            ));
+        }
     }
-    let Some(rec) = reg.identities.get(&m.id.0) else { return vec![] };
-    let Some(current) = rec.session.as_deref() else { return vec![] };
+    if m.role.lead() {
+        return out;
+    }
+    let Some(rec) = reg.identities.get(&m.id.0) else { return out };
+    let Some(current) = rec.session.as_deref() else { return out };
     let known = m.session.iter().chain(m.extra_rows.iter()).any(|r| r.session_id == current || r.birth_id.as_deref() == Some(current));
     if known || crate::evidence::transcript(env, cache, m.cwd.as_deref(), current).is_some() {
-        return vec![];
+        return out;
     }
-    vec![issue(
-        "lineage.broken",
+    out.push(issue(
+        "history.lost",
         Severity::Error,
-        format!("{}'s current session {current} has no job row and no transcript", m.id),
-        Some(format!("nimitz start {} --force  # cold launch; lineage starts over", m.id)),
+        format!("{}'s current session {current} has no job row and no transcript; a resume has nothing to continue", m.id),
+        Some(format!("nimitz start {} --fresh  # a cold launch; the lineage starts a new entry", m.id)),
         Some(m.id.clone()),
-    )]
+    ));
+    out
 }
 
 /// name.taken: the expected name is held by a live session that is not this
@@ -612,6 +641,7 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
     }
 
     let lineage_broken = m.issues.iter().any(|i| i.code == "lineage.broken");
+    let history_lost = m.issues.iter().any(|i| i.code == "history.lost");
     match &m.session {
         // row `failed` or broken lineage: cold launch only with --force (row 8)
         Some(p) if p.state.as_deref() == Some("failed") || lineage_broken => {
@@ -635,14 +665,22 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
                 return;
             }
         },
-        None if lineage_broken && !force => {
-            refuse(
-                plan,
-                "lineage.broken",
-                format!("{id}'s recorded session has no job row and no transcript"),
-                Some(format!("nimitz start {id} --force  # cold launch; lineage starts over")),
-                Some(id.clone()),
-            );
+        None if (history_lost || lineage_broken) && !force => {
+            // the gate kept the member's own history.lost as a warning: that
+            // one line is the refusal (one issue, one line)
+            match plan.warnings.iter().position(|i| i.code == "history.lost" && i.id.as_ref() == Some(id)) {
+                Some(at) => {
+                    let w = plan.warnings.remove(at);
+                    plan.refusals.push(w);
+                }
+                None => refuse(
+                    plan,
+                    "history.lost",
+                    format!("{id}'s recorded session has no job row and no transcript; a resume has nothing to continue"),
+                    Some(format!("nimitz start {id} --fresh  # a cold launch; the lineage starts a new entry")),
+                    Some(id.clone()),
+                ),
+            }
             return;
         }
         None => {
@@ -726,25 +764,91 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
     // any resume. Its transcript may not be on disk yet (killed in its first
     // turn), so it is not judged `history.lost` here; a resume that comes
     // back `startup` reports it then (e2e case 6).
-    let crash_window = matches!(p.state.as_deref(), Some("crashed") | Some("working"));
-    if !crash_window && crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &p.session_id).is_none() {
+    // The conversation to wake first (`wake_target`), then its transcript:
+    // missing, the wake would run with no history (`history.lost`)
+    let target = wake_target(env, id, p);
+    let recent = p.status_since.is_some_and(|t| crate::evidence::now() - t < CRASH_RECENT_S);
+    let crash_window = !target.relabel && (matches!(p.state.as_deref(), Some("crashed") | Some("working")) || (m.status == Status::Parked && recent));
+    if !crash_window && crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), &target.session).is_none() {
         return Err(issue(
             "history.lost",
             Severity::Error,
-            format!("{id}'s conversation {} has no transcript in any project dir; a resume would start with no history", p.session_id),
+            format!("{id}'s conversation {} has no transcript in any project dir; a resume would start with no history", target.session),
             Some(format!("nimitz start {id} --fresh  # a cold launch; the lineage starts a new entry")),
             Some(id.clone()),
         ));
     }
     let step = |cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string()), why: why.into() };
     let needs_relabel = session_issues(env, m).iter().any(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing"));
+    let short8 = |s: &str| s[..s.len().min(8)].to_string();
+    // The registry's conversation is later than the one a native wake brings
+    // back (a /branch or /resume after it): the row goes and that one is
+    // resumed by id with every flag, and the plan says so (r3-e2e finding 11).
+    if target.relabel {
+        let mut v = relabel_to(env, id, mode, p, cwd, &target.session);
+        if let Some(s) = v.last_mut() {
+            s.why = format!(
+                "the job would wake on {} (resumeSessionId follows /clear only), not on {} that it ran last (a /branch or /resume): resume that one with every flag, same history, new row",
+                short8(&p.session_id),
+                short8(&target.session)
+            );
+        }
+        return Ok(v);
+    }
     // with its labels and its name: resume = native binary, NO flags, from its
     // folder (row 4). A resume restores the saved name too, so a drifted name
     // goes the relaunch way instead (row 5).
     if p.labels.get("NIMITZ_ID") == Some(&id.0) && !needs_relabel {
-        return Ok(vec![step(crate::claude::resume_bg(env, &p.session_id), "resume keeps the id, name, mode and labels (probe 2c1)")]);
+        // by the job's BIRTH id (`state.json` `sessionId`): Claude Code 2.1.292
+        // wakes a stopped job only by that id, and it comes back on the
+        // conversation it runs now (after a `/clear`, a later one); any other
+        // id starts a new unlabelled job named after it (acceptance F1)
+        let birth = p.birth_id.as_deref().unwrap_or(&p.session_id);
+        let why = if birth == p.session_id {
+            "resume keeps the id, name, mode and labels (probe 2c1)".to_string()
+        } else {
+            format!("resume by the job's birth id {}: it wakes on {} with its name, mode and labels", &birth[..birth.len().min(8)], &p.session_id[..p.session_id.len().min(8)])
+        };
+        return Ok(vec![step(crate::claude::resume_bg(env, birth), &why)]);
     }
     Ok(relabel_steps(env, id, mode, p, cwd))
+}
+
+/// The conversation a wake of a stopped row must bring back, and how
+/// (plan-v4 section 5, r3-e2e finding 11). Claude Code wakes a stopped job on
+/// its `resumeSessionId` (the row's session: `/clear` moves it, `/branch` and
+/// `/resume` do not). The registry's `session` is the conversation the
+/// member ran last. When it is LATER in the lineage than the row's (a
+/// /branch or /resume after the row's conversation), that one is the target
+/// and the wake needs `rm` + every flag (`relabel`); when it is the same, a
+/// native wake; when it differs any other way (a lost hook line, a hand
+/// edit) the row wins, Claude Code's own truth, and `stale` names the
+/// registry's session for a `lineage.stale` warning.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WakeTarget {
+    pub session: String,
+    pub relabel: bool,
+    pub stale: Option<String>,
+}
+
+/// `WakeTarget` of `id`'s row `p` (every wake path uses it: `wake_steps`,
+/// `plan_relaunch`, restore's attach-wake).
+pub fn wake_target(env: &Env, id: &Id, p: &SessionInfo) -> WakeTarget {
+    let rec = crate::registry::load(env).identities.remove(&id.0);
+    wake_target_in(rec.as_ref(), p)
+}
+
+/// `wake_target` on a registry record already loaded (the snapshot's).
+pub fn wake_target_in(rec: Option<&IdentityRecord>, p: &SessionInfo) -> WakeTarget {
+    let row_now = p.session_id.clone();
+    let Some(reg) = rec.and_then(|r| r.session.clone()).filter(|s| *s != row_now) else {
+        return WakeTarget { session: row_now, relabel: false, stale: None };
+    };
+    let pos = |sid: &str| rec.and_then(|r| r.lineage.iter().rposition(|l| l.session_id == sid));
+    match (pos(&reg), pos(&row_now)) {
+        (Some(a), Some(b)) if a > b => WakeTarget { session: reg, relabel: true, stale: None },
+        _ => WakeTarget { session: row_now, relabel: false, stale: Some(reg) },
+    }
 }
 
 /// The `why` that marks a step continuing an old fleet's session; `apply`
@@ -807,7 +911,7 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
 fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: bool) {
     // (lead.intruder rides along too: an intruder in a lead's folder is told
     // and fixed, but it does not hold up the lead's own job)
-    const TABLE_HANDLED: [&str; 7] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "lead.intruder"];
+    const TABLE_HANDLED: [&str; 8] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "history.lost", "lead.intruder"];
     for i in crate::check::check(env, snap, id) {
         let forced_away = force && i.code == "cc.version";
         match i.severity {
@@ -874,6 +978,10 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
             })
             .unwrap_or(false);
         if running_clean {
+            if link == *id {
+                // the target itself: the empty plan says why (M25)
+                plan.warnings.push(issue("session.live", Severity::Info, format!("nothing to do: {id} is live"), None, Some(id.clone())));
+            }
             continue; // row 1 for a parent: nothing, and no authority needed
         }
         // a parent held by a process with no job (a 0.3.x interactive admiral
@@ -911,6 +1019,10 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
     // alone does not make the target's start a second agent anywhere (BUG-38).
     let acting: Vec<Id> = plan.steps.iter().filter_map(|s| s.id.clone()).chain(std::iter::once(id.clone())).collect();
     plan.warnings.retain(|i| i.code != "legacy" || i.id.as_ref().map(|x| acting.contains(x)).unwrap_or(true));
+    // `--fresh` is the answer to a lost history: the plan does not repeat the question
+    if opts.fresh {
+        plan.warnings.retain(|i| !(i.code == "history.lost" && i.id.as_ref() == Some(id)));
+    }
     dedup_issues(&mut plan);
     mark_repairs(&mut plan);
     debug_assert!(no_fork(snap, &plan), "a plan would fork a session: {:?}", plan.steps);
@@ -964,6 +1076,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
             .unwrap_or_default();
         ids.extend(in_dependency_order(here, &deps));
     }
+    let mut live_already = 0usize;
     for id in ids {
         let clean_live = member(snap, &id)
             .map(|(_, m)| {
@@ -972,6 +1085,7 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
             })
             .unwrap_or(false);
         if clean_live {
+            live_already += 1;
             continue;
         }
         // a held member (a 0.3.x interactive lead still running) is live for
@@ -984,6 +1098,10 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
         if !already_refused(&plan, &id) {
             start_member(env, &mut plan, snap, &id, StartOpts::default());
         }
+    }
+    if plan.steps.is_empty() && plan.refusals.is_empty() && live_already > 0 {
+        // the empty plan says why (M25)
+        plan.warnings.push(issue("session.live", Severity::Info, format!("nothing to do: every member of {fleet} on this machine ({live_already}) is live"), None, Some(Id::admiral(fleet))));
     }
     dedup_issues(&mut plan);
     mark_repairs(&mut plan);
@@ -1066,7 +1184,8 @@ fn dedup_issues(plan: &mut Plan) {
     let key = |i: &Issue| (i.code.clone(), i.id.clone(), i.message.clone());
     let mut seen = std::collections::HashSet::new();
     plan.refusals.retain(|i| seen.insert(key(i)));
-    let mut seen = std::collections::HashSet::new();
+    // an issue the gate kept as a warning and a member's own refusal name
+    // once (acceptance F6: name.drift twice on a start of an adopted ship)
     plan.warnings.retain(|i| seen.insert(key(i)));
 }
 
@@ -1122,7 +1241,7 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
         let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
         let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
         if let Some(r) = rows.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target) {
-            let labelled_as = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).cloned();
+            let labelled_as = labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")).cloned();
             if let Some((_, m)) = all.iter().find(|(_, m)| m.expected_name == r.name) {
                 hit = Some((None, r.info(Default::default()), format!("stop the session in {} that holds {}'s name {:?}", r.cwd, m.id, r.name)));
             } else if let Some((_, m)) = all.iter().find(|(_, m)| Some(&m.id.0) == labelled_as.as_ref()) {
@@ -1193,7 +1312,9 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "session.none", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
         return plan;
     };
-    if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
+    // (a lead's live intruder is not its second session: it stays the
+    // intruder, with its own fix, and the relaunch goes on)
+    if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some() && !lead_intruder_row(m, r)) {
         let short = r.short_id.as_deref().unwrap_or(&r.session_id);
         refuse(
             &mut plan,
@@ -1208,7 +1329,8 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "session.interactive", format!("{id} is live in a process with no job; end it in its own terminal first"), Some("type /exit in its pane".into()), Some(id.clone()));
         return plan;
     }
-    plan.steps.extend(relabel_steps(env, id, &mode, p, &cwd));
+    // onto the conversation to wake (after a /branch or /resume the registry's later one, finding 11)
+    plan.steps.extend(relabel_to(env, id, &mode, p, &cwd, &wake_target(env, id, p).session));
     debug_assert!(no_fork(snap, &plan), "a relaunch would fork a session: {:?}", plan.steps);
     plan
 }
@@ -1220,6 +1342,12 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
 /// if live, `rm` its row (native), then `--resume <id>` with every flag. If the
 /// rm fails, `apply` stops there and nothing is resumed.
 fn relabel_steps(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str) -> Vec<Step> {
+    relabel_to(env, id, mode, p, cwd, &p.session_id)
+}
+
+/// `relabel_steps` onto `sid`: the conversation to resume with every flag
+/// once the row is gone (its own, or a later one of the member's lineage).
+fn relabel_to(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str, sid: &str) -> Vec<Step> {
     let step = |cmd: Vec<String>, why: String| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string()), why };
     let mut v = vec![];
     if let Some(short) = &p.short_id {
@@ -1229,8 +1357,8 @@ fn relabel_steps(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str) -> 
         v.push(step(crate::claude::rm(env, short), format!("remove row {short} first: a resume with flags while it exists makes an empty copy")));
     }
     v.push(step(
-        crate::claude::relaunch_bg(env, id, mode, &p.session_id),
-        format!("resume {} with every flag: same id and history, new name and labels", &p.session_id[..p.session_id.len().min(8)]),
+        crate::claude::relaunch_bg(env, id, mode, sid),
+        format!("resume {} with every flag: same id and history, new name and labels", &sid[..sid.len().min(8)]),
     ));
     v
 }
@@ -1265,7 +1393,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
         rows.iter()
             .find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target)
-            .filter(|r| labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).map(|o| binding.iter().any(|(_, m)| &m.id.0 == o)).unwrap_or(false))
+            .filter(|r| labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")).map(|o| binding.iter().any(|(_, m)| &m.id.0 == o)).unwrap_or(false))
             .map(|r| r.info(Default::default()))
     };
     // a job row a 0.3.x tender left: history only, removed by its short id
@@ -1282,7 +1410,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         .or_else(|| {
             let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
             let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
-            labels.get(&row.session_id).and_then(|l| l.get("NIMITZ_ID")).map(|o| Id(o.clone())).filter(|_| misplaced.as_ref().is_some_and(|m| m.session_id == row.session_id))
+            labels.get(&row.short_id.clone().unwrap_or_else(|| row.session_id.clone())).and_then(|l| l.get("NIMITZ_ID")).map(|o| Id(o.clone())).filter(|_| misplaced.as_ref().is_some_and(|m| m.session_id == row.session_id))
         })
         .or_else(|| retired.as_ref().map(|(id, _)| id.clone()));
     if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), row, "rm") {
@@ -1299,14 +1427,21 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         );
         return plan;
     }
-    let current = binding.iter().any(|(_, m)| m.session.as_ref().map(|p| p.session_id == row.session_id).unwrap_or(false));
-    if current {
+    let current = binding.iter().find(|(_, m)| m.session.as_ref().map(|p| p.session_id == row.session_id).unwrap_or(false)).map(|(_, m)| m.id.clone());
+    if let Some(member) = current {
+        // a member's own row goes with the member: a relaunch replaces it, a
+        // retire removes it (acceptance env F7)
+        let retire = match member.role() {
+            Role::Admiral => "fleet rm",
+            Role::Commodore => "squadron rm",
+            Role::Ship => "ship rm",
+        };
         refuse(
             &mut plan,
             "lineage.current",
-            format!("session {} is an identity's current session; removing it breaks the lineage", row.session_id),
-            Some("nimitz relaunch <id>  # if you mean to replace it".into()),
-            None,
+            format!("session {} is {member}'s current session; its row goes with the member, never alone", row.session_id),
+            Some(format!("nimitz relaunch {member}  # replaces the row (same conversation); nimitz {retire} {member} retires the member")),
+            Some(member.clone()),
         );
         return plan;
     }
@@ -1326,7 +1461,7 @@ fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
     let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
     let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
     let r = rows.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target)?;
-    let by_labels = labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")).filter(|o| crate::migrate::is_tender_id(o)).cloned();
+    let by_labels = labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")).filter(|o| crate::migrate::is_tender_id(o)).cloned();
     let owner = by_labels.or_else(|| {
         let reg = crate::registry::load(env);
         reg.retired
@@ -1334,7 +1469,7 @@ fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
             .find(|(_, rec)| rec.job.as_deref() == r.short_id.as_deref() && rec.job.is_some() || rec.session_ids().any(|s| r.session_ids().any(|x| x == s)))
             .map(|(id, _)| id.clone())
     })?;
-    Some((Id(owner), r.info(labels.get(&r.session_id).cloned().unwrap_or_default())))
+    Some((Id(owner), r.info(labels.get(&crate::evidence::row_key(r)).cloned().unwrap_or_default())))
 }
 
 fn sweep_member(env: &Env, plan: &mut Plan, m: &Member, caller: &Caller) {
@@ -1796,7 +1931,20 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     // seconds. Wait for that before any resume of it (a resume of a job the
     // daemon then restarts makes a copy, cli-31); restarted, its steps are
     // skipped.
-    let waking: Vec<(Id, String)> = plan
+    // (identity, the conversation resumed, the job's row): the row that
+    // carries the conversation; when none does (a relabel after a /branch
+    // resumes a conversation no row carries), the plan's own stop or rm step
+    // names the job. Never the other way round: a plan may also rm a stale
+    // copy row of the same identity, which is not the job to wait for.
+    let short_of = |id: &Id, sid: &str| {
+        find_row_by_session(env, sid).and_then(|r| r.short_id).or_else(|| {
+            plan.steps.iter().filter(|s| s.id.as_ref() == Some(id)).find_map(|s| match classify(s) {
+                Kind::Rm { short } | Kind::Stop { short } => Some(short),
+                _ => None,
+            })
+        })
+    };
+    let waking: Vec<(Id, String, Option<String>)> = plan
         .steps
         .iter()
         .filter_map(|s| s.id.clone().filter(|i| !skipped.contains(i)).map(|i| (i, s)))
@@ -1806,9 +1954,23 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         })
         .collect::<std::collections::BTreeMap<_, _>>()
         .into_iter()
+        .map(|(i, sid)| {
+            let short = short_of(&i, &sid);
+            (i, sid, short)
+        })
         .collect();
+    // Claude Code's daemon settles a stopped job a moment after its process
+    // ended: a `--bg --resume` inside that moment is "already running in the
+    // background" and starts a copy (r3-e2e finding 12). Before a wake, wait
+    // (briefly) until `claude agents` no longer lists the job as running.
+    for (_, _, short) in &waking {
+        if let Some(job) = short.as_deref().filter(|j| find_row(env, j).is_some_and(|r| !r.live())) {
+            wait_settled(env, job, SETTLE_WAIT_S);
+        }
+    }
     let mut restarted: Vec<Id> = vec![];
-    for (id, what) in wait_crash_window(env, &waking) {
+    let by_job: Vec<(Id, String)> = waking.iter().filter_map(|(i, _, short)| short.clone().map(|s| (i.clone(), s))).collect();
+    for (id, what) in wait_crash_window(env, &by_job) {
         restarted.push(id.clone());
         for step in plan.steps.iter().filter(|s| s.id.as_ref() == Some(&id)) {
             out.ran.push((step.clone(), 0, format!("skipped: {what}")));
@@ -1817,10 +1979,17 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     // A job the daemon did not restart in the window: its transcript must be
     // there now (`wake_steps` lets a crashed job through without one), else the
     // resume would run with no history: `history.lost` with the `--fresh` fix
-    for (id, sid) in waking.iter().filter(|(i, _)| !restarted.contains(i)) {
-        if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), step_folder(plan, id), sid).is_some() {
+    for (id, sid, short) in waking.iter().filter(|(i, _, _)| !restarted.contains(i)) {
+        // a native resume names the birth id and wakes the row's conversation;
+        // a relabel names the conversation itself
+        let now = match short.as_deref().and_then(|j| find_row(env, j)) {
+            Some(r) if r.session_ids().any(|s| s == sid) => r.session_id,
+            _ => sid.clone(),
+        };
+        if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), step_folder(plan, id), &now).is_some() {
             continue;
         }
+        let sid = &now;
         for step in plan.steps.iter().filter(|s| s.id.as_ref() == Some(id)) {
             out.ran.push((step.clone(), -1, "not run: its conversation has no transcript".into()));
         }
@@ -1938,7 +2107,8 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         let (rc, t) = crate::claude::run(&cmd, None);
                         out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of waking {id}") }, rc, t));
                     }
-                    let gone = find_row(env, &copy).is_none();
+                    // the daemon's rm lands a moment after `claude rm` returns
+                    let gone = row_gone_within(env, &copy, 3.0);
                     out.issues.push(issue(
                         "step.failed",
                         Severity::Error,
@@ -1961,8 +2131,15 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         return out;
                     }
                 }
+                // a resume names the job's birth id; the SessionStart that binds
+                // it carries the conversation the row runs now (after a /clear,
+                // a later one), so that is what must come back
+                let now_of = match &kind {
+                    Kind::Resume { session_id } => find_row_by_session(env, session_id).map(|r| r.session_id).unwrap_or_else(|| session_id.clone()),
+                    _ => String::new(),
+                };
                 let (expect, via) = match &kind {
-                    Kind::Resume { session_id } => (Some(session_id.as_str()), "resume"),
+                    Kind::Resume { .. } => (Some(now_of.as_str()), "resume"),
                     Kind::Launch => (None, "launch"),
                     _ if step.why.starts_with(MIGRATE_WHY) || step.why.starts_with(MIGRATE_LEAD_WHY) => (resumed.as_deref(), "migrate"),
                     _ => (resumed.as_deref(), "relaunch"),
@@ -2032,6 +2209,60 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     out
 }
 
+/// How long `apply` waits for the daemon to settle a stopped job before a
+/// wake (r3-e2e finding 12: about a second after the SessionEnd).
+const SETTLE_WAIT_S: f64 = 5.0;
+
+/// Is the job row `short` gone, now or within `secs` (polled)? The daemon's
+/// rm lands a moment after `claude rm` returns (acceptance env F2).
+pub fn row_gone_within(env: &Env, short: &str, secs: f64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
+    loop {
+        if find_row(env, short).is_none() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Wait until `claude agents` lists `job` with no pid and a state other than
+/// `running`, at most `secs`; a CLI that cannot be read ends the wait.
+pub fn wait_settled(env: &Env, job: &str, secs: f64) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs);
+    loop {
+        let settled = match crate::claude::agents(env) {
+            Ok(rows) => rows.iter().find(|r| r.id.as_deref() == Some(job)).map(|r| r.pid.is_none() && r.state.as_deref() != Some("running")).unwrap_or(true),
+            Err(_) => true,
+        };
+        if settled || std::time::Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
+
+/// A job whose process went away this recently with no SessionEnd (a kill
+/// -9 of a `blocked` or `done` job, state untouched) is in the crash window
+/// too: the 2.1.292 daemon restarts it within about 10 s (acceptance env F3).
+pub const CRASH_RECENT_S: f64 = 30.0;
+
+/// The crash window (plan-v4 section 5): no live pid, and the state is
+/// `crashed` or `working`, or the row is parked (no SessionEnd) and changed
+/// within `CRASH_RECENT_S`.
+pub fn in_crash_window(env: &Env, r: &crate::evidence::SessionRow, events: &[crate::types::Event]) -> bool {
+    if r.live() {
+        return false;
+    }
+    if matches!(r.state.as_deref(), Some("crashed") | Some("working")) {
+        return true;
+    }
+    let recent = r.status_since.is_some_and(|t| crate::evidence::now() - t < CRASH_RECENT_S);
+    recent && crate::snapshot::parked_or_stopped(env, r, events).0 == Status::Parked
+}
+
 /// The crash window: a job that is `crashed`, or `working` with no live pid,
 /// may be restarted by the daemon. Of the members about to be woken (`(id,
 /// session id)`), wait once, up to `env.crash_window_s` for all of them
@@ -2041,11 +2272,14 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
 /// rest are woken as planned. Members not in the window to begin with are
 /// never waited for.
 pub fn wait_crash_window(env: &Env, waking: &[(Id, String)]) -> Vec<(Id, String)> {
-    let row = |sid: &str| find_row_by_session(env, sid);
-    let in_window = |r: &crate::evidence::SessionRow| !r.live() && matches!(r.state.as_deref(), Some("crashed") | Some("working"));
+    // keyed on the job's row (its short id): a crashed job that /branched is
+    // waited for too, although its resume names a conversation no row carries
+    let row = |short: &str| find_row(env, short);
+    let events = crate::evidence::events(env);
+    let in_window = |r: &crate::evidence::SessionRow| in_crash_window(env, r, &events);
     let mut pending: Vec<(Id, String, String, String)> = waking
         .iter()
-        .filter_map(|(id, sid)| row(sid).filter(in_window).map(|r| (id.clone(), sid.clone(), r.short_id.clone().unwrap_or_default(), r.state.clone().unwrap_or_else(|| "?".into()))))
+        .filter_map(|(id, job)| row(job).filter(in_window).map(|r| (id.clone(), job.clone(), r.short_id.clone().unwrap_or_default(), r.state.clone().unwrap_or_else(|| "?".into()))))
         .collect();
     let mut back = vec![];
     if pending.is_empty() {
@@ -2125,9 +2359,14 @@ fn live_row(env: &Env, pick: impl Fn(&crate::evidence::SessionRow) -> bool) -> O
     rows.into_iter().find(|r| (r.live() || r.unreadable) && pick(r))
 }
 
-/// A live session of `id` right now: its registry job or session, or a row
-/// with its labels **in its own folder** (`cwd`). A session carrying the labels in
-/// another folder is an impostor (BUG-30) and never counts (BUG-55).
+/// A live session of `id` right now: its registry job or session, or, while
+/// the registry names no job yet (a first launch racing a concurrent start),
+/// a row with its labels **in its own folder** (`cwd`). Once the registry
+/// names a job, another labelled job in the folder is a lead's intruder or a
+/// ship's copy, never the member: counting it skipped a lead's relaunch after
+/// its stop + rm and left the stray as the lead (re-review 1). A session
+/// carrying the labels in another folder is an impostor (BUG-30) and never
+/// counts (BUG-55).
 fn live_session_of(env: &Env, id: &Id, cwd: Option<&str>) -> Option<crate::evidence::SessionRow> {
     let rec = crate::registry::load(env).identities.remove(&id.0);
     let (job, current) = (rec.as_ref().and_then(|r| r.job.clone()), rec.and_then(|r| r.session));
@@ -2138,7 +2377,7 @@ fn live_session_of(env: &Env, id: &Id, cwd: Option<&str>) -> Option<crate::evide
         (r.live() || r.unreadable)
             && (job.is_some() && r.short_id == job
                 || Some(&r.session_id) == current.as_ref()
-                || (labels.get(&r.session_id).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
+                || (job.is_none() && labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
     })
 }
 
