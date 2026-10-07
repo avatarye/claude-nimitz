@@ -120,7 +120,9 @@ the version checks; a denylist): nimitz's identity and multiplexer names
 `_HOOK_*`), every `HERDR_*`, `CLAUDE_PID`, `CLAUDECODE`, `CLAUDE_BG_*`,
 `CLAUDE_CODE_RESUME_*` and the per-session `CLAUDE_CODE_ENTRYPOINT`,
 `_EXECPATH`, `_MESSAGING_SOCKET`, `_MESSAGING_TOKEN`, `_SESSION_ID`,
-`_BRIDGE_SESSION_ID`, `_CHILD_SESSION`. Everything else passes: the user's
+`_BRIDGE_SESSION_ID`, `_CHILD_SESSION`, `_SESSION_ATTENDED`, `_SDK_HAS_OAUTH_REFRESH`,
+`_SDK_READS_SESSION_STATE`, `_HOST_WORKTREE*`, `CLAUDE_BRIDGE_*`, `CLAUDE_JOB_DIR` and
+`CLAUDE_EFFORT` (the launching session's own). Everything else passes: the user's
 `CLAUDE_CODE_*` and `ANTHROPIC_*` config (auth, proxy, provider, tuning;
 Claude Code copies a job's provider settings from the launching command),
 and nimitz's own config. A member's labels go only through `--settings`,

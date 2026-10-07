@@ -72,8 +72,13 @@ pub fn scrub_child_env(c: &mut Command) {
         "CLAUDE_PID", "CLAUDECODE",
         "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
         "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+        // per session too (Claude Code strips them for its own children): the
+        // launching job's attended mode, tmp dir and effort level, an SDK host's flags
+        "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_JOB_DIR", "CLAUDE_EFFORT",
+        "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH", "CLAUDE_CODE_SDK_READS_SESSION_STATE",
+        "CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE",
     ];
-    const PREFIXES: &[&str] = &["HERDR_", "CLAUDE_BG_", "CLAUDE_CODE_RESUME_"];
+    const PREFIXES: &[&str] = &["HERDR_", "CLAUDE_BG_", "CLAUDE_CODE_RESUME_", "CLAUDE_BRIDGE_"];
     for (k, _) in std::env::vars_os() {
         let k = k.to_string_lossy().into_owned();
         if NAMES.contains(&k.as_str()) || PREFIXES.iter().any(|p| k.starts_with(p)) {

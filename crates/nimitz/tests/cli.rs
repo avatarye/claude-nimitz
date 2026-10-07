@@ -1904,6 +1904,8 @@ fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
             ("CLAUDE_CODE_MESSAGING_SOCKET", "/run/user/1000/cc-socks/1.sock"),
             ("CLAUDE_CODE_ENTRYPOINT", "cli"),
             ("CLAUDE_PID", "1"),
+            ("CLAUDE_CODE_SESSION_ATTENDED", "1"),
+            ("CLAUDE_JOB_DIR", "/home/u/.claude/jobs/x"),
             ("CLAUDE_CODE_USE_BEDROCK", "1"),
             ("CLAUDE_CODE_OAUTH_TOKEN", "tok"),
             ("CLAUDE_CODE_SUBAGENT_MODEL", "haiku"),
@@ -1914,7 +1916,7 @@ fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
     let calls: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().skip(from).map(|l| serde_json::from_str(l).unwrap()).collect();
     let launch = calls.iter().find(|c| c["args"].as_array().unwrap().iter().any(|a| a == "--resume" || a == "--bg")).expect("the launch reached claude");
     let env = launch["env"].as_object().unwrap();
-    for k in ["NIMITZ_ID", "NIMITZ_ROLE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SESSION", "HERDR_SOCKET_PATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID"] {
+    for k in ["NIMITZ_ID", "NIMITZ_ROLE", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_SESSION", "HERDR_SOCKET_PATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ATTENDED"] {
         assert!(!env.contains_key(k), "{k} reached the claude child: {launch}");
     }
     // the user's own config passes (auth, provider, tuning): only session state goes
