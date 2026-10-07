@@ -258,10 +258,30 @@ pub fn row_labels(r: &SessionRow, by_pid: &HashMap<(i64, String), BTreeMap<Strin
     let saved = || is_labelled(&r.job_labels).then(|| r.job_labels.clone());
     let newest = || by_sid.get(&r.session_id).cloned();
     let own = || r.pid.and_then(|p| by_pid.get(&(p, r.session_id.clone())).cloned());
+    // a job whose row was read: its saved labels decide alone (a job launched
+    // without labels carries the daemon's inherited ones in its env, and in
+    // its hook lines: `job_backs_labels`)
+    if r.short_id.is_some() && r.state.is_some() {
+        return saved().unwrap_or_default();
+    }
     match r.pid {
         Some(_) => own().or_else(saved).or_else(newest).unwrap_or_default(),
         None => saved().or_else(newest).unwrap_or_default(),
     }
+}
+
+/// Do a background job's NIMITZ_* labels come from its own launch? Claude
+/// Code's daemon hands its own environment to every job it starts, so a
+/// daemon started from a labelled lead's shell gives that lead's labels to
+/// every job launched without labels of its own (the user's `claude --bg`, a
+/// hand copy, the agent view's draft). A job's labels count only when its row
+/// saved them (`--settings` in `respawnFlags`) and they name the same id.
+/// `None`: nothing to judge by (no job: an interactive or SDK process, whose
+/// env is its labels; or a job whose row is not written yet).
+pub fn job_backs_labels(claude_home: &Path, job: Option<&str>, labels: &BTreeMap<String, String>) -> Option<bool> {
+    let d = std::fs::read(claude_home.join("jobs").join(job?).join("state.json")).ok().and_then(|b| first_json(&b))?;
+    let saved = job_labels(&d);
+    Some(is_labelled(&saved) && saved.get("NIMITZ_ID") == labels.get("NIMITZ_ID"))
 }
 
 /// The key a row's labels and copy verdict are kept under: its job (short

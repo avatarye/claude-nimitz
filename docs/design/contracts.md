@@ -113,6 +113,19 @@ Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 
 ## 5. Registry and events (`NIMITZ_STATE`)
 
+**A background job's labels are the ones its launch saved.** Claude Code's
+daemon hands its own environment to every job it starts, so a daemon started
+from a labelled lead's shell (an interactive 0.3.x lead that ran `claude --bg`)
+labels every job launched without labels of its own (the user's `claude --bg`,
+a hand copy, the agent view's draft) as that lead. A job's `NIMITZ_*` count
+only when its row saved them (`--settings` in `respawnFlags`) and they name the
+same id (`evidence::job_backs_labels`); otherwise the session is unlabelled,
+in the hook (no binding, no rules, no signal authority, no needs-you), in a
+replay, and in the snapshot (`row_labels`: a job row's saved labels decide). A
+job whose row is not written yet when its SessionStart runs binds nothing then
+(`binding none`); `status` replays the line once the row is there. A process
+with no job (interactive, SDK) is labelled by its env, as before.
+
 `registry.json` (atomic write: temp + rename; `registry.lock` with `flock`; every
 save also writes `registry.json.bak`, the last good copy). **A registry never
 shrinks except by an explicit removal** (none exists in 0.4.0): every write
