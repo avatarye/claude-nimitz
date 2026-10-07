@@ -1153,8 +1153,9 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 let _ = fs::remove_file(session_path(&base, &short));
                 if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(home.join("daemon.log")) {
                     let stamp = iso_now();
-                    let _ = writeln!(f, "[{stamp}] [bg] retire {short}: settled, idle 61m");
-                    let _ = writeln!(f, "[{stamp}] [bg] settled {short} (done)");
+                    // the real line, verbatim: `[<stamp>] [bg] bg retire <id>: settled, idle 61m`
+                    let _ = writeln!(f, "[{stamp}] [bg] bg retire {short}: settled, idle 61m");
+                    let _ = writeln!(f, "[{stamp}] [bg] bg settled {short} (done)");
                 }
                 println!("retired {short}");
             } else {

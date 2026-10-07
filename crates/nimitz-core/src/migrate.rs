@@ -437,6 +437,7 @@ mod tests {
         assert!(saved["identities"].get("MAIN/ARGOS/~fixci").is_none());
         assert!(saved["retired"]["MAIN/ARGOS/~fixci"].is_object());
         assert!(crate::registry::v1_path(&env).is_file(), "the v1 file is kept once");
+        // the update above stamped the file anew; everything else reads back as before
         let mut again = crate::registry::load(&env);
         again.updated_at = r.updated_at;
         assert_eq!(again, r);
