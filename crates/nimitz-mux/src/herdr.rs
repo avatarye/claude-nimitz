@@ -15,6 +15,9 @@ pub struct Herdr {
     pub bin: String,
     /// `--session <name>` on every call (`NIMITZ_HERDR_SESSION`), else Herdr's own resolution
     pub session: Option<String>,
+    /// `HERDR_SOCKET_PATH` for every call (`NIMITZ_HERDR_SOCKET`): the
+    /// default server a user's own command recorded with no session name
+    pub socket: Option<String>,
 }
 
 /// Loose label matching, the herdr-fleet skill's rules in their order:
@@ -259,9 +262,12 @@ impl Herdr {
     }
 
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
-        let out = Command::new(&self.bin)
-            .args(self.argv(args))
-            .output()
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(self.argv(args));
+        if let Some(sock) = &self.socket {
+            cmd.env("HERDR_SOCKET_PATH", sock);
+        }
+        let out = cmd.output()
             .map_err(|e| MuxError::Failed(format!("{}: {e}", self.bin)))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if out.status.success() {

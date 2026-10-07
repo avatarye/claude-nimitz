@@ -37,8 +37,14 @@ impl Ctx {
     pub fn force(&self) -> bool {
         self.args.flag("--force")
     }
+    /// The user's own command detects the multiplexer from its env; a
+    /// member's goes by `active::member_mux_vars` (its env may be the
+    /// daemon's, with the user's live `HERDR_*`).
     pub fn mux(&self) -> Box<dyn nimitz_mux::Mux> {
-        nimitz_mux::detect(&self.vars)
+        match self.caller {
+            nimitz_core::Caller::User => nimitz_mux::detect(&self.vars),
+            _ => nimitz_mux::detect(&nimitz_core::active::member_mux_vars(&self.env, &self.vars)),
+        }
     }
     pub fn snap(&self) -> Snapshot {
         nimitz_core::snapshot::snapshot(&self.env, &mut nimitz_core::snapshot::Cache::default())

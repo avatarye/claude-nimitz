@@ -1030,6 +1030,49 @@ fn a_delivery_never_uses_an_inherited_herdr_env_alone() {
     assert_eq!(act["herdr"]["session"], "nimitz-test", "{act}");
 }
 
+/// A member's own command never reaches a Herdr through its inherited env
+/// (a daemon-restarted worker has the daemon's, the user's live HERDR_*):
+/// only an explicit NIMITZ_MUX / NIMITZ_HERDR_SESSION, or the server the
+/// user's own command recorded by its session name. A record with no
+/// session name is no multiplexer, never the inherited socket.
+#[test]
+fn a_members_command_never_reaches_herdr_through_its_inherited_env() {
+    let sb = Sb::new(true);
+    let active = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("active.json");
+    let forget = |herdr: Value| {
+        let mut set: Value = std::fs::read(&active).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::json!({"version": 1, "members": {}}));
+        set["herdr"] = herdr;
+        std::fs::write(&active, set.to_string()).unwrap();
+    };
+    let mut inherited = sb.vars.clone();
+    inherited.remove("NIMITZ_MUX");
+    inherited.insert("HERDR_ENV".into(), "1".into());
+    inherited.insert("HERDR_SESSION".into(), "NIMITZ".into());
+    inherited.insert("HERDR_SOCKET_PATH".into(), "/live/herdr.sock".into());
+    // nothing recorded: a ship's status and a commodore's up make no herdr call
+    forget(Value::Null);
+    let before = sb.calls().lines().count();
+    assert_eq!(raw(&inherited, &["status"], &CLEAN, None).code, 0);
+    raw(&inherited, &["up", "MAIN", "--plan"], &[("NIMITZ_ID", "MAIN/ARGOS"), ("NIMITZ_ROLE", "commodore")], None);
+    assert_eq!(sb.calls().lines().count(), before, "no herdr call from a member's inherited env: {}", sb.calls());
+    // nothing recorded: a delivery fails with the fix, and types nothing
+    raw(&inherited, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    assert_eq!(sb.calls().lines().count(), before, "{}", sb.calls());
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "failed", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("run nimitz status inside Herdr once"), "{n}");
+    // a record of the default server (no session name): its recorded socket,
+    // never the inherited one
+    forget(serde_json::json!({"socket": "/recorded/herdr.sock"}));
+    let hv: std::collections::HashMap<String, String> = inherited.clone().into_iter().collect();
+    let mux = nimitz_core::active::member_mux_vars(&nimitz_core::env::Env::from_vars(&hv), &hv);
+    assert_eq!((mux.get("NIMITZ_MUX").map(String::as_str), mux.get("NIMITZ_HERDR_SOCKET").map(String::as_str), mux.get("HERDR_SOCKET_PATH")), (Some("herdr"), Some("/recorded/herdr.sock"), None));
+    // the user's own command still detects from its env
+    let r = raw(&inherited, &["status"], &[], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.calls().lines().count() > before, "the user's status reads the shape");
+}
+
 #[test]
 fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
     let sb = Sb::new(false);
@@ -1145,6 +1188,7 @@ fn init_and_doctor_in_an_empty_world() {
     assert!(b.join("nimitz").is_dir());
     let reg: Value = serde_json::from_str(&std::fs::read_to_string(b.join("state/registry.json")).unwrap()).unwrap();
     assert_eq!(reg["machine"], "box");
+    assert_eq!(reg["version"], nimitz_core::REGISTRY_VERSION, "init writes the format this nimitz writes, not a v1 file");
     assert_eq!(raw(&vars, &["init", "--label", "other", "--yes"], &[], None).code, 1, "a label is not changed silently");
 
     // trust it, enable the plugin; doctor still wants crossSessionInbound, and --fix sets it
@@ -1950,32 +1994,41 @@ fn a_foreign_binding_is_stripped_and_this_homes_history_kept() {
     let sb = Sb::new(false);
     let m = sb.member("MAIN/ARGOS/STOPPED");
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
-    // another home's job: a done row whose saved labels name /elsewhere/nimitz
-    let other = "fd52a81e";
-    let p = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join(other).join("state.json");
-    let mut d: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
-    let other_sid = d["sessionId"].as_str().unwrap().to_string();
+    // another home's job: a done row (shaped like fd52a81e's) whose saved labels name /elsewhere/nimitz
+    let other = "f0f0f0f0";
+    let other_sid = "f0f0f0f0-5b0c-4d1e-9f2a-0000000000f0";
+    let jobs = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs");
+    let mut d: Value = serde_json::from_slice(&std::fs::read(jobs.join("fd52a81e").join("state.json")).unwrap()).unwrap();
+    d["sessionId"] = Value::from(other_sid);
+    d["resumeSessionId"] = Value::Null;
     let flags = d["respawnFlags"].as_array_mut().unwrap();
     let i = flags.iter().position(|x| x == "--settings").unwrap();
     let mut s: Value = serde_json::from_str(flags[i + 1].as_str().unwrap()).unwrap();
     s["env"]["NIMITZ_HOME"] = Value::from("/elsewhere/nimitz");
     flags[i + 1] = Value::from(s.to_string());
-    std::fs::write(&p, d.to_string()).unwrap();
-    // its hook bound the ship to it, on top of the ship's own history
+    std::fs::create_dir_all(jobs.join(other)).unwrap();
+    std::fs::write(jobs.join(other).join("state.json"), d.to_string()).unwrap();
+    // its hook bound the ship to it, on top of the ship's own history (the
+    // entry carries that home; an older nimitz's would not, and the row says)
     let reg_path = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json");
     let mut reg: Value = serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
     let rec = &mut reg["identities"]["MAIN/ARGOS/STOPPED"];
     rec["job"] = Value::from(other);
-    rec["session"] = Value::from(other_sid.as_str());
-    rec["lineage"].as_array_mut().unwrap().push(serde_json::json!({"session_id": other_sid, "job": other, "via": "launch", "at": 1791400000.0}));
+    rec["session"] = Value::from(other_sid);
+    rec["lineage"].as_array_mut().unwrap().push(serde_json::json!({"session_id": other_sid, "job": other, "via": "launch", "at": 1791400000.0, "home": "/elsewhere/nimitz"}));
     std::fs::write(&reg_path, reg.to_string()).unwrap();
     let m = sb.member("MAIN/ARGOS/STOPPED");
     assert_eq!((m["session"]["short_id"].as_str(), m["session"]["session_id"].as_str()), (Some(job.as_str()), Some(sid.as_str())), "{m}");
     assert!(matches!(m["status"].as_str(), Some("Stopped" | "Parked")), "{m}");
-    assert!(!m.to_string().contains(other) && !m.to_string().contains(&other_sid), "{m}");
+    assert!(!m.to_string().contains(other) && !m.to_string().contains(other_sid), "{m}");
     // a start wakes this home's conversation
     let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
     assert!(r.out.contains(&format!("--resume {sid}")), "{}", r.out);
+    // the other home's row gone: its binding stays out (the entry's stamp says whose it is)
+    std::fs::remove_dir_all(jobs.join(other)).unwrap();
+    let m = sb.member("MAIN/ARGOS/STOPPED");
+    assert_eq!((m["session"]["short_id"].as_str(), m["session"]["session_id"].as_str()), (Some(job.as_str()), Some(sid.as_str())), "{m}");
+    assert!(!m.to_string().contains(other_sid), "{m}");
 }
 
 /// A job labelled for another `NIMITZ_HOME` never appears (plan-v4 section
@@ -2013,6 +2066,15 @@ fn a_job_labelled_for_another_home_never_binds_the_member() {
         })
         .collect();
     std::fs::write(&ev, lines.join("\n") + "\n").unwrap();
+    // (and its lineage entries, stamped by that hook's write)
+    let reg_path = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json");
+    let mut reg: Value = serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    for l in reg["identities"]["MAIN/ARGOS/STOPPED"]["lineage"].as_array_mut().unwrap() {
+        if l["job"] == job.as_str() {
+            l["home"] = Value::from("/elsewhere/nimitz");
+        }
+    }
+    std::fs::write(&reg_path, reg.to_string()).unwrap();
     let m = sb.member("MAIN/ARGOS/STOPPED");
     assert_eq!(m["status"], "NotStarted", "{m}");
     assert!(m["session"].is_null() && m["extra_rows"].as_array().unwrap().is_empty(), "{m}");

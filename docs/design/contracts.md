@@ -29,6 +29,7 @@ and jump), never to starting.
 | `NIMITZ_NATIVE_CLAUDE_BIN` | newest `~/.localtools/tools/claude-code/*/claude`, else `claude` on PATH | resume, stop, rm, agents |
 | `NIMITZ_HERDR_BIN` | `herdr` on PATH (only when `HERDR_ENV=1`) | Herdr adapter |
 | `NIMITZ_HERDR_SESSION` | unset (Herdr's own resolution: `HERDR_SESSION`, else the pane's socket) | the named Herdr session every herdr call gets as `--session`; with `NIMITZ_MUX=herdr` it drives a test server from a plain terminal (the checklist), and it is the Herdr identity `active.json` records |
+| `NIMITZ_HERDR_SOCKET` | unset | set by nimitz only (`active::member_mux_vars`): the recorded default Herdr server's socket, passed as `HERDR_SOCKET_PATH` to every herdr call of a member's command; the inherited `HERDR_SOCKET_PATH` never counts there |
 | `NIMITZ_HOSTNAME` | `gethostname()` | machine matching |
 | `NIMITZ_MUX` | auto | `herdr` or `none` |
 | `NIMITZ_CRASH_WINDOW` | `20` (s) | how long a start waits for the daemon to restart a crashed job (state `crashed`, or `working` with no live pid) before it resumes the job itself; tests set it low |
@@ -120,7 +121,9 @@ its result lacks an identity the file holds (`retired`, where a 0.3.x tender
 moves, counts as kept); a write that changes nothing (a hook that judged `held`,
 `dup.job`, `elsewhere` or `same`) does not touch the file. A `registry.json` that
 is missing while the `.bak` holds identities was lost, not reset: the copy and
-the SessionStart lines rebuild it (a read in memory; the next write saves it).
+the SessionStart lines newer than its `updated_at` rebuild it (a read in
+memory; the next write saves it; `check` says so, `registry.rebuilt`, Info,
+until then). Resetting the registry means removing both files.
 A `registry.json` that
 does not parse is never replaced in silence: it is kept as
 `registry.json.corrupt-<ts>` (with a `.txt` note), the registry is rebuilt from
@@ -134,9 +137,13 @@ it runs now; `lineage` every conversation it had:
 {"version": 2, "machine": "west-mac", "updated_at": 1791000100.5, "identities": {
   "MAIN/ARGOS/ARGOS": {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/...",
     "job": "9cdceb2d", "session": "79519302-...", "lineage": [
-      {"session_id": "9cdceb2d-...", "job": "9cdceb2d", "via": "launch", "at": 1791000000.0},
-      {"session_id": "79519302-...", "job": "9cdceb2d", "via": "clear", "at": 1791000100.0}]}}}
+      {"session_id": "9cdceb2d-...", "job": "9cdceb2d", "via": "launch", "at": 1791000000.0, "home": "/Users/me/.claude-nimitz"},
+      {"session_id": "79519302-...", "job": "9cdceb2d", "via": "clear", "at": 1791000100.0, "home": "/Users/me/.claude-nimitz"}]}}}
 ```
+
+`home` is the `NIMITZ_HOME` (as written) of the process that bound the entry,
+stamped by the registry write (`registry::stamp_home`: every entry a write adds
+that the file did not have); an entry an older nimitz wrote has none.
 
 `via`: launch, resume, relaunch, clear, branch, fork, compact, adopt, migrate.
 `updated_at` is when the file was last written (`status` replays newer
@@ -186,7 +193,7 @@ is `binding` `none`), `registry::apply_start` says what happened:
 | same | another `jobId` whose job row still exists (a row of this home: `registry::job_row_of_this_home`; a row whose saved labels name another home never holds the identity) | nothing rebound: two jobs claim one identity | `dup.job` |
 | same | `jobId` null (interactive or SDK) | nothing bound: a process with no job holds the conversation | `held` |
 | same | a `cwd` that is not the identity's folder (the registry's `cwd`, else the config) | nothing bound: an impostor (BUG-30, BUG-55) | `elsewhere` |
-| labels of another `NIMITZ_HOME` | any | ignored by every reader. The hook itself cannot tell (its env is the session's env, and the `--settings` label wins over a project settings env, so `env.home` is the label): with one `NIMITZ_STATE` shared by two homes it writes its line and binds the identity there. `registry::load` strips such a binding for every reader, in memory only (`drop_other_homes`: the lineage entries of a job whose row's saved labels name another home go, `job` and `session` fall back to the newest entry left, an identity with nothing of its own goes), so no reader uses it and this home's own history stays (r3-e2e.md finding 1). A writer works on the file as it is, every home's bindings side by side, and never saves the stripped shape: which home is "other" is the env of the process, and the hook of the other home (its env is that home; its `NIMITZ_STATE` this one, from a project settings env) would strip and save away every record of this home (acc-D F1: a registry left with one identity and a lone `resume`). A record a foreign hook bound has that home's folder in `cwd`: this home's hook takes the folder from the config then (`identity_folder`) | - |
+| labels of another `NIMITZ_HOME` | any | ignored by every reader. The hook itself cannot tell (its env is the session's env, and the `--settings` label wins over a project settings env, so `env.home` is the label): with one `NIMITZ_STATE` shared by two homes it writes its line and binds the identity there. `registry::load` strips such a binding for every reader, in memory only (`drop_other_homes`: the lineage entries of a job of another home go (`foreign_job`: an entry's `home` says whose it is; an entry with none, an older nimitz's, is judged by its job's row, `respawnFlags`, while the row exists), so a foreign binding never comes back into this home's view once its row is gone; `job` and `session` fall back to the newest entry left, an identity with nothing of its own goes), so no reader uses it and this home's own history stays (r3-e2e.md finding 1). A writer works on the file as it is, every home's bindings side by side, and never saves the stripped shape: which home is "other" is the env of the process, and the hook of the other home (its env is that home; its `NIMITZ_STATE` this one, from a project settings env) would strip and save away every record of this home (acc-D F1: a registry left with one identity and a lone `resume`). A record a foreign hook bound has that home's folder in `cwd`: this home's hook takes the folder from the config then (`identity_folder`) | - |
 | no labels | any | the line only (the snapshot classifies it) | - |
 
 The name is never taken from the SessionStart moment: the snapshot reads it
@@ -594,9 +601,13 @@ server put them in the pane. A member's command (`NIMITZ_*` labels in its
 env) records none: its env is its launch env, or the daemon's after a respawn
 (the user's live `HERDR_*`, whatever world its `NIMITZ_HOME` names; acc-D
 F6), so the identity is unknown and the set keeps the one recorded before.
-The hook path runs no Herdr command on inherited `HERDR_*` alone: a needs-you
-delivery (`nimitz __notify`) takes an explicit `NIMITZ_MUX`/`NIMITZ_HERDR_SESSION`
-as given, else the recorded identity as its `--session`, else no multiplexer.
+No member's command and no hook path runs a Herdr command on inherited
+`HERDR_*` alone (`active::member_mux_vars`): a member's `status`, `up`,
+`layout`, `restore` and a needs-you delivery (`nimitz __notify`) take an
+explicit `NIMITZ_MUX`/`NIMITZ_HERDR_SESSION` as given, else the recorded
+identity's session name as `--session`, else no multiplexer (a record with no
+session name is no multiplexer too). Only the user's own command detects
+Herdr from its env.
 The E22 hazard (the CLI may resolve a named session's socket regardless of
 the env) is accepted: the shape nimitz reads comes from the same `herdr`
 invocation in the same env as the identity it records, so the two name the

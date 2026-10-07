@@ -168,7 +168,7 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
                 let r = match s.cmd[0].as_str() {
                     "mkdir" => std::fs::create_dir_all(&s.cmd[1]).map_err(|e| e.to_string()),
                     _ => nimitz_core::registry::update(&ctx.env, |r| {
-                        r.version = 1;
+                        r.version = nimitz_core::REGISTRY_VERSION;
                         r.machine = label.clone();
                     })
                     .map_err(|e| e.to_string()),
