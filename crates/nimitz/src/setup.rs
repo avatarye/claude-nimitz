@@ -5,7 +5,7 @@ use nimitz_core::{Plan, Step};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-/// The events the plugin registers (plugin/hooks/hooks.json).
+/// The events the binary needs the plugin to register (plugin/hooks/hooks.json).
 pub const HOOK_EVENTS: [&str; 9] = [
     "SessionStart",
     "SessionEnd",
@@ -18,9 +18,96 @@ pub const HOOK_EVENTS: [&str; 9] = [
     "PermissionRequest",
 ];
 
+/// The PreToolUse matchers the binary needs: the signal rule and the
+/// needs-you notice. A per-turn rules update on PreToolUse
+/// (`hook::UPDATE_EVENTS`) needs an entry with no matcher as well.
+const PRE_TOOL_MATCHERS: [&str; 2] = ["SendMessage", "AskUserQuestion"];
+
+/// Every (event, matcher) the plugin must register; `None` is "any entry".
+fn needed_hooks() -> Vec<(&'static str, Option<&'static str>)> {
+    let mut v: Vec<(&str, Option<&str>)> = HOOK_EVENTS.iter().map(|e| (*e, None)).collect();
+    v.extend(PRE_TOOL_MATCHERS.iter().map(|m| ("PreToolUse", Some(*m))));
+    if nimitz_core::hook::UPDATE_EVENTS.contains(&"PreToolUse") {
+        v.push(("PreToolUse", Some("")));
+    }
+    v
+}
+
+/// The (event, matcher) pairs a hooks.json (the plugin's, or a settings
+/// file's `hooks`) registers with a `nimitz hook <Event>` command. A missing
+/// matcher reads as "" (every tool).
+fn registered_hooks(hooks: &Value) -> Vec<(String, String)> {
+    let mut out = vec![];
+    let Some(events) = hooks.as_object() else { return out };
+    for (event, entries) in events {
+        for entry in entries.as_array().into_iter().flatten() {
+            let calls_nimitz = entry["hooks"].as_array().into_iter().flatten().any(|h| {
+                let cmd = h["command"].as_str().unwrap_or("");
+                let args: Vec<&str> = h["args"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+                cmd.contains("nimitz") && (args.contains(&"hook") || cmd.contains(" hook "))
+            });
+            if calls_nimitz {
+                out.push((event.clone(), entry["matcher"].as_str().unwrap_or("").to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The events whose `nimitz hook` entry is one command string (`"command":
+/// "nimitz hook X"`, no `args`). Claude Code runs such a hook under `sh -c`,
+/// so the hook's parent is a shell: the pid-chain fallback usually finds the
+/// Claude Code process, but the plugin's own form is `command` + `args`
+/// (r3-e2e.md finding 7).
+fn string_form_hooks(hooks: &Value) -> Vec<String> {
+    let mut out = vec![];
+    let Some(events) = hooks.as_object() else { return out };
+    for (event, entries) in events {
+        let stringy = entries.as_array().into_iter().flatten().any(|entry| {
+            entry["hooks"].as_array().into_iter().flatten().any(|h| {
+                let cmd = h["command"].as_str().unwrap_or("");
+                h.get("args").is_none() && cmd.contains("nimitz") && cmd.contains(" hook ")
+            })
+        });
+        if stringy {
+            out.push(event.clone());
+        }
+    }
+    out
+}
+
+/// What `needed_hooks` lacks in `registered`, named for the user.
+fn missing_hooks(registered: &[(String, String)]) -> Vec<String> {
+    needed_hooks()
+        .into_iter()
+        .filter(|(e, m)| !registered.iter().any(|(re, rm)| re == e && m.map(|m| m == rm || rm.is_empty() || rm == "*").unwrap_or(true)))
+        .map(|(e, m)| match m {
+            Some("") => format!("{e} (every tool)"),
+            Some(m) => format!("{e} (matcher {m})"),
+            None => e.to_string(),
+        })
+        .collect()
+}
+
+/// The installed nimitz plugin's hooks.json: `NIMITZ_PLUGIN_HOOKS` (tests),
+/// else the `installPath` of the `nimitz@...` entry in Claude Code's
+/// `plugins/installed_plugins.json`.
+fn plugin_hooks_path(ctx: &Ctx) -> Option<PathBuf> {
+    if let Some(p) = ctx.vars.get("NIMITZ_PLUGIN_HOOKS").filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    let installed = read_json(&ctx.env.claude_home.join("plugins/installed_plugins.json"))?;
+    let plugins = installed.get("plugins")?.as_object()?;
+    let (_, entries) = plugins.iter().find(|(k, _)| k.starts_with("nimitz@"))?;
+    let path = entries.as_array()?.iter().find_map(|e| e["installPath"].as_str())?;
+    Some(PathBuf::from(path).join("hooks/hooks.json"))
+}
+
 /// Fields nimitz reads in Claude Code's files (the pinned formats).
 const SESSION_FIELDS: [&str; 4] = ["pid", "sessionId", "status", "kind"];
-const JOB_FIELDS: [&str; 4] = ["sessionId", "state", "name", "cwd"];
+/// (`name` is not pinned: Claude Code writes none for a copy of a running
+/// job, and nimitz reads a missing one as "", acceptance F5)
+const JOB_FIELDS: [&str; 3] = ["sessionId", "state", "cwd"];
 
 fn settings_path(ctx: &Ctx) -> PathBuf {
     ctx.env.claude_home.join("settings.json")
@@ -81,7 +168,7 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
                 let r = match s.cmd[0].as_str() {
                     "mkdir" => std::fs::create_dir_all(&s.cmd[1]).map_err(|e| e.to_string()),
                     _ => nimitz_core::registry::update(&ctx.env, |r| {
-                        r.version = 1;
+                        r.version = nimitz_core::REGISTRY_VERSION;
                         r.machine = label.clone();
                     })
                     .map_err(|e| e.to_string()),
@@ -141,7 +228,7 @@ pub fn rules(ctx: &Ctx) -> Result<i32, String> {
     let id = match (ctx.args.pos.first(), &ctx.caller) {
         (Some(x), _) => crate::members::parse_id(x)?,
         (None, nimitz_core::Caller::Member { id, .. }) => id.clone(),
-        (None, nimitz_core::Caller::User) => return Err("missing id (F, F/SQ, F/SQ/SHIP or F/SQ/~task)".into()),
+        (None, nimitz_core::Caller::User) => return Err("missing id (F, F/SQ or F/SQ/SHIP)".into()),
     };
     print!("{}", nimitz_core::rules::text(&id));
     Ok(0)
@@ -150,7 +237,52 @@ pub fn rules(ctx: &Ctx) -> Result<i32, String> {
 pub fn doctor(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--fix"])?;
     ctx.args.at_most(0)?;
+    // The report is every member's; the fixes (the user's settings.json, the
+    // briefs) are yours alone.
+    if ctx.args.flag("--fix") && ctx.caller != nimitz_core::Caller::User {
+        let plan = Plan {
+            summary: "doctor fixes".into(),
+            refusals: vec![refusal("authority", "`nimitz doctor --fix` is yours alone; a member runs `nimitz doctor` (the report) only".into(), None, None)],
+            ..Default::default()
+        };
+        return Ok(match ctx.gate(&plan) {
+            out::Go::Exit(c) => c.max(1),
+            out::Go::Run => 1,
+        });
+    }
     Ok(doctor_report(ctx, ctx.args.flag("--fix")))
+}
+
+/// Herdr's config: `HERDR_CONFIG_PATH`, else `~/.config/herdr/config.toml`
+/// (read-only). Checked when the file is there or nimitz runs with Herdr.
+pub fn herdr_config_path(ctx: &Ctx) -> PathBuf {
+    match ctx.vars.get("HERDR_CONFIG_PATH").filter(|p| !p.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from(ctx.vars.get("HOME").cloned().unwrap_or_default()).join(".config/herdr/config.toml"),
+    }
+}
+
+/// Is `[session] resume_agents_on_restore = false` set in the Herdr config
+/// `text`? `None` when the file does not parse.
+pub fn herdr_resume_off(text: &str) -> Option<bool> {
+    let v: toml::Value = toml::from_str(text).ok()?;
+    Some(v.get("session").and_then(|s| s.get("resume_agents_on_restore")).and_then(toml::Value::as_bool) == Some(false))
+}
+
+fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
+    let path = herdr_config_path(ctx);
+    let with_herdr = ctx.vars.get("HERDR_ENV").map(String::as_str) == Some("1") || ctx.vars.get("NIMITZ_MUX").map(String::as_str) == Some("herdr");
+    if !path.is_file() && !with_herdr {
+        return;
+    }
+    let fix = format!("set resume_agents_on_restore = false under [session] in {}  # nimitz never edits it", path.display());
+    let effect = "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz restore` then cannot wake it until you /exit there (tab.resumed)";
+    match std::fs::read_to_string(&path).ok().map(|t| herdr_resume_off(&t)) {
+        Some(Some(true)) => r.ok(&format!("Herdr {}: resume_agents_on_restore is off", path.display())),
+        Some(Some(false)) => r.warn(&format!("Herdr {}: resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
+        Some(None) => r.warn(&format!("Herdr {} does not parse; resume_agents_on_restore may be on: {effect}", path.display()), Some(&fix)),
+        None => r.warn(&format!("no Herdr config at {}, so resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
+    }
 }
 
 fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
@@ -191,10 +323,12 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             _ => r.err(&format!("Claude Code {v} is older than the supported floor {}", range.min), Some("update Claude Code")),
         },
     }
-    // The launch binary (cold launches, interactive members): NIMITZ_CLAUDE_BIN or `claude` on PATH.
+    // The launch binary (cold launches): NIMITZ_CLAUDE_BIN or `claude` on PATH.
     let launch = resolved(&env.claude_bin);
-    let launch_v = std::process::Command::new(&env.claude_bin)
-        .arg("--version")
+    let mut launch_cmd = std::process::Command::new(&env.claude_bin);
+    launch_cmd.arg("--version");
+    nimitz_core::claude::scrub_child_env(&mut launch_cmd);
+    let launch_v = launch_cmd
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -215,6 +349,12 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         }
     }
 
+    // Herdr's agent resume on restart (finding 10): with it on, a restart
+    // runs `claude --resume` in every agent pane, which holds a stopped or
+    // parked member's conversation interactively; a restore then cannot wake
+    // it until that process ends (`tab.resumed`). nimitz never edits that file.
+    herdr_resume_check(ctx, &mut r);
+
     // Hooks: the plugin, or nimitz hook commands in the user settings.
     let settings = read_json(&settings_path(ctx)).unwrap_or(json!({}));
     let plugin_on = settings
@@ -222,10 +362,38 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         .and_then(Value::as_object)
         .map(|m| m.iter().any(|(k, v)| k.starts_with("nimitz@") && v.as_bool() == Some(true)))
         .unwrap_or(false);
-    let hooks = settings.get("hooks").map(Value::to_string).unwrap_or_default();
-    let missing: Vec<&str> = HOOK_EVENTS.iter().copied().filter(|e| !(hooks.contains(&format!("\"{e}\"")) && hooks.contains("nimitz"))).collect();
+    let in_settings = settings.get("hooks").map(registered_hooks).unwrap_or_default();
+    let missing = missing_hooks(&in_settings);
     if plugin_on {
-        r.ok("hooks: the nimitz plugin is enabled");
+        // The installed copy of the plugin must register every event the
+        // binary needs; a plugin updated on disk is read again by /reload-plugins.
+        match plugin_hooks_path(ctx) {
+            Some(p) => match read_json(&p) {
+                Some(v) => {
+                    let hooks = v.get("hooks").unwrap_or(&Value::Null);
+                    let lacks = missing_hooks(&registered_hooks(hooks));
+                    let stringy = string_form_hooks(hooks);
+                    if !stringy.is_empty() {
+                        // a shell between Claude Code and the hook: the pid chain
+                        // usually recovers it, but the plugin's form is command + args
+                        r.warn(
+                            &format!("hooks: the installed nimitz plugin ({}) gives {} as a command string; such a hook runs under sh -c, so its parent is a shell, not the session", p.display(), stringy.join(", ")),
+                            Some(&format!("{}, then /reload-plugins in each live session", plugin_install_fix())),
+                        );
+                    }
+                    if lacks.is_empty() {
+                        r.ok(&format!("hooks: the nimitz plugin is enabled and {} registers every event nimitz needs", p.display()));
+                    } else {
+                        r.err(
+                            &format!("hooks: the installed nimitz plugin ({}) does not register {}", p.display(), lacks.join(", ")),
+                            Some("/reload-plugins in each live session (a new session reads the plugin again), then nimitz doctor"),
+                        );
+                    }
+                }
+                None => r.err(&format!("hooks: the nimitz plugin is enabled but {} is missing or not JSON", p.display()), Some(&plugin_install_fix())),
+            },
+            None => r.warn("hooks: the nimitz plugin is enabled; its installed copy is not listed in plugins/installed_plugins.json, so its hooks were not checked", Some(&plugin_install_fix())),
+        }
     } else if missing.is_empty() {
         r.ok("hooks: nimitz hook commands are in the user settings");
     } else {
@@ -406,5 +574,45 @@ mod tests {
         let fix = plugin_install_fix();
         assert!(fix.starts_with("claude plugin marketplace add ") && fix.ends_with("claude plugin install nimitz@claude-nimitz"), "{fix}");
         assert!(!fix.contains('<'), "no placeholder: {fix}");
+    }
+
+    /// The plugin in this repo registers every event the binary needs; a
+    /// copy that lacks one (an older install) is named, matcher and all.
+    #[test]
+    fn the_repo_plugin_registers_every_needed_hook() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/hooks/hooks.json");
+        let v = read_json(&p).expect("plugin/hooks/hooks.json");
+        let reg = registered_hooks(&v["hooks"]);
+        assert!(missing_hooks(&reg).is_empty(), "{:?}", missing_hooks(&reg));
+        assert!(reg.contains(&("PreToolUse".to_string(), "SendMessage".to_string())), "{reg:?}");
+        // drop UserPromptSubmit and the AskUserQuestion matcher: both named
+        let mut old = v["hooks"].clone();
+        old.as_object_mut().unwrap().remove("UserPromptSubmit");
+        old["PreToolUse"].as_array_mut().unwrap().retain(|e| e["matcher"] != "AskUserQuestion");
+        let lacks = missing_hooks(&registered_hooks(&old));
+        assert_eq!(lacks, vec!["UserPromptSubmit".to_string(), "PreToolUse (matcher AskUserQuestion)".to_string()]);
+        // an entry with no matcher covers every tool; a command that is not nimitz counts for nothing
+        let any = serde_json::json!({"PreToolUse": [{"hooks": [{"type": "command", "command": "nimitz", "args": ["hook", "PreToolUse"]}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "other-tool", "args": ["hook", "Stop"]}]}]});
+        let reg = registered_hooks(&any);
+        assert_eq!(reg, vec![("PreToolUse".to_string(), String::new())]);
+        let lacks = missing_hooks(&reg);
+        assert!(lacks.contains(&"Stop".to_string()) && !lacks.iter().any(|l| l.starts_with("PreToolUse")), "{lacks:?}");
+    }
+
+    /// A hook given as one command string is named (the repo plugin has none).
+    #[test]
+    fn a_command_string_hook_is_named() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/hooks/hooks.json");
+        let v = read_json(&p).expect("plugin/hooks/hooks.json");
+        assert!(string_form_hooks(&v["hooks"]).is_empty());
+        let mixed = serde_json::json!({
+            "SessionStart": [{"hooks": [{"type": "command", "command": "/x/nimitz hook SessionStart", "timeout": 5}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "nimitz", "args": ["hook", "Stop"]}]}],
+            "PreToolUse": [{"matcher": "SendMessage", "hooks": [{"type": "command", "command": "nimitz hook PreToolUse"}]}],
+            "Notification": [{"hooks": [{"type": "command", "command": "other-tool hook Notification"}]}]});
+        assert_eq!(string_form_hooks(&mixed), vec!["PreToolUse".to_string(), "SessionStart".to_string()]);
+        // such entries still count as registered: the fallback finds the session
+        assert!(registered_hooks(&mixed).contains(&("SessionStart".to_string(), String::new())));
     }
 }

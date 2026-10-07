@@ -48,8 +48,8 @@ fn every_broken_shape_of_the_sandbox_shows_up() {
         "labels.missing MAIN/ARGOS/NOLABEL",
         "dup.live MAIN/ARGOS/TWIN",
         "copy.rows MAIN/ARGOS/COPIES",
-        "lineage.broken MAIN/ARGOS/BROKEN",
-        "name.taken MAIN/ARGOS/TAKEN",
+        "history.lost MAIN/ARGOS/BROKEN",
+        "copy MAIN/ARGOS/TAKEN",
         "labels.mismatch MAIN/ARGOS/MISLABEL",
         "folder.missing MAIN/ARGOS/GONE",
         "folder.untrusted MAIN/ARGOS/UNTRUSTED",
@@ -199,33 +199,6 @@ fn edit_squadron_and_fleet_forms_plan_through_core() {
     assert!(f.ok(), "{:?}", f.problems);
     assert_eq!(f.command, "nimitz fleet set MAIN --admiral-mode auto");
     assert!(f.plan.steps.iter().any(|s| s.cmd[1].ends_with("fleet.toml")));
-}
-
-#[test]
-fn a_tender_form_starts_a_tender_through_core() {
-    let w = world();
-    let mut app = app_on(&w, TestMux::default());
-    goto(&mut app, "SQ:MAIN/ARGOS");
-    keys(&mut app, "c");
-    keys(&mut app, "t");
-    let Some(Modal::Form(_)) = &app.modal else { panic!("{}", toast(&app)) };
-    keys(&mut app, "fix ci");
-    let Some(Modal::Form(f)) = &app.modal else { panic!() };
-    assert!(f.fields.iter().find(|x| x.key == "task").unwrap().error.is_some(), "one word");
-    ctrl(&mut app, 'u');
-    keys(&mut app, "lint");
-    press(&mut app, KeyCode::Tab);
-    keys(&mut app, "Run the linter and report.");
-    let Some(Modal::Form(f)) = &app.modal else { panic!() };
-    assert!(f.ok(), "{:?}", f.problems);
-    assert_eq!(f.command, "nimitz tender MAIN/ARGOS lint 'Run the linter and report.'");
-    ctrl(&mut app, 's');
-    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!() };
-    assert_eq!(p.act, Act::Tender);
-    let o = actions::apply(&app.ctx.env, &p);
-    assert!(o.issues.is_empty(), "{:?}", o.issues);
-    reload(&w, &mut app);
-    assert!(app.rows.iter().any(|r| r.node.id == "M:MAIN/ARGOS/~lint"), "the tender is listed");
 }
 
 #[test]
@@ -391,4 +364,83 @@ fn the_issues_view_lists_a_broken_squadron_once() {
     keys.sort();
     keys.dedup();
     assert_eq!(keys.len(), n, "every issue once");
+}
+
+#[test]
+fn a_broken_fleet_toml_is_a_red_band_with_the_error_in_full_and_the_other_fleets_stay() {
+    let w = world();
+    let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]);
+    std::fs::create_dir_all(base.join("bad/admiral")).unwrap();
+    std::fs::write(base.join("bad/fleet.toml"), "fleet = \"BAD\"\n\n[m").unwrap();
+    let mut app = app_on(&w, TestMux::default());
+    let snap = app.bundle.as_ref().unwrap().snap.clone();
+    assert!(snap.fleets.iter().any(|f| f.id.0 == "MAIN"), "the other fleets stay");
+    assert!(admiralty::view::tabs(&snap).contains(&"BAD".to_string()));
+    tab(&mut app, "BAD");
+    let buf = draw(&mut app, 200, 60);
+    let ls = lines(&buf);
+    let y = ls.iter().position(|l| l.contains("[BAD]")).expect("the broken fleet is on screen");
+    assert_eq!(buf[(1, y as u16)].fg, admiralty::theme::mono::ERROR, "its frame takes the error hue");
+    let all = ls.join("\n");
+    assert!(all.contains("config does not load"), "{all}");
+    assert!(all.contains("fleet.toml") && all.contains(":3:3") && all.contains("unclosed table"), "the file, line and the parse error's own words:\n{all}");
+    assert!(all.contains("fix: fix") && all.contains("line 3"), "{all}");
+    let parse: Vec<_> = all_issues(&snap).into_iter().filter(|i| i.message.contains("does not parse")).collect();
+    assert_eq!(parse.len(), 1, "{parse:?}");
+}
+
+/// `x R` on a fleet band: the plan of `nimitz restore F --plan --json` in
+/// the confirm dialog, then `nimitz restore F --yes` through `apply`; a
+/// second time there is nothing to restore. Needs the `nimitz` binary
+/// beside this one (a workspace build); skipped when it is not there.
+#[test]
+fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
+    let nimitz = actions::nimitz_bin();
+    if !std::path::Path::new(&nimitz).is_file() {
+        eprintln!("[WARN] no nimitz binary at {nimitz}; the restore action test is skipped (build the workspace first)");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let sb = dir.path().join("sb");
+    let bin = env!("CARGO_BIN_EXE_admiralty");
+    let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    let env_text = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
+    let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for l in env_text.lines() {
+        let (k, v) = l.trim_start_matches("export ").split_once('=').unwrap();
+        vars.insert(k.into(), v.trim_matches('\'').into());
+    }
+    let env = nimitz_core::env::Env::from_vars(&vars);
+    let ctx = Ctx { env, mux: nimitz_mux::detect(&vars), live: true, exit_after_jump: false };
+    let mut app = App::new(ctx, None, true);
+    app.apply(CoreSource::detect(&vars).load());
+    goto(&mut app, "F:MAIN");
+    keys(&mut app, "x");
+    keys(&mut app, "R");
+    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!("{}", toast(&app)) };
+    assert_eq!((p.act, p.command.as_str()), (Act::Restore, "nimitz restore MAIN"));
+    assert!(p.plan.ok(), "{:?}", p.plan.refusals);
+    assert_eq!(p.plan.steps.iter().filter(|s| s.cmd.first().map(String::as_str) == Some("herdr") && s.cmd.get(2).map(String::as_str) == Some("create")).count(), 3, "a tab per live lead: {:?}", p.plan.steps);
+    app.begin(&p).unwrap();
+    let o = actions::apply(&app.ctx.env, &p);
+    app.finish(&p, &o);
+    assert!(o.verified, "{:?}", o.issues);
+    assert_eq!(o.ran.len(), 3, "{:?}", o.ran);
+    assert!(toast(&app).starts_with("restore: restore MAIN (3 steps"), "{}", toast(&app));
+    // again: nothing to restore
+    app.apply(CoreSource::detect(&vars).load());
+    goto(&mut app, "F:MAIN");
+    keys(&mut app, "x");
+    keys(&mut app, "R");
+    let Some(Modal::Confirm(p)) = app.modal.take() else { panic!("{}", toast(&app)) };
+    assert!(p.plan.steps.is_empty(), "{:?}", p.plan.steps);
+    let o = actions::apply(&app.ctx.env, &p);
+    app.finish(&p, &o);
+    assert!(o.verified && o.ran.is_empty());
+    assert_eq!(toast(&app), "restore: MAIN: nothing to restore");
+    // the detail panel lists it on a fleet band, and no fleet selected means no restore
+    assert!(app.available(Act::Restore).is_ok());
+    goto(&mut app, "M:MAIN/ARGOS/CLEAN");
+    assert!(app.available(Act::Restore).is_err());
 }

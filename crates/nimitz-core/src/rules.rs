@@ -2,10 +2,13 @@
 //!
 //! The rules (`rules/*.md`, compiled in) are what a member must know about
 //! its role: the authority table, the chain, plan-first. The SessionStart hook
-//! hands them to every labelled session (startup, resume, clear, compact), so a
-//! new nimitz build updates every member at its next start without touching a
-//! file. `VERSION` is logged with each SessionStart; `check` names a live
-//! session that started on older rules.
+//! hands them to every labelled session (startup, resume, clear, compact), and
+//! a session that runs on older rules gets the update at its next turn
+//! (`update_for`, from the UserPromptSubmit hook), so a new nimitz build
+//! updates every member live, with no restart and no plugin update.
+//! `NIMITZ_STATE/rules-delivered.json` records, per job (else per session),
+//! the version last delivered; `check` names a live member still on older
+//! rules (Info: the update comes with its next prompt).
 //!
 //! The brief (`CLAUDE.md` in an admiral's or commodore's folder) holds only
 //! who the member is, and the user's own notes. Every brief nimitz ever
@@ -13,16 +16,149 @@
 //! one and leave a hand-edited one alone.
 use crate::env::Env;
 use crate::types::*;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// Bump when the rules text changes in a way members must pick up.
-pub const VERSION: u32 = 1;
+/// Bump when the rules text changes in a way members must pick up, and add
+/// the version's entry to `CHANGELOG`.
+pub const VERSION: u32 = 2;
+
+/// What changed in each rules version, oldest first (one entry per version;
+/// a member on v{N} gets the entries after N with the new text).
+pub const CHANGELOG: &[(u32, &str)] = &[
+    (1, "first versioned rules: the chain of command, plan-first, the authority table, needs-you notices"),
+    (
+        2,
+        "the tender role is gone (one-off work: a subagent in the lead's session, or a ship); \
+         the admiral may signal every member of its fleet, and a ship may reply to its admiral; \
+         every member may run `nimitz` (ships: the read-only commands, `signal` within comms, `sweep` of itself); \
+         every member, leads too, is a Claude Code background job (the user attaches to a lead's tab with `nimitz open`; detach is ctrl-z, \
+         and `/exit` inside an attach opens the agent view); \
+         `nimitz restore <F>` brings a fleet back from the Herdr shape after a loss (an admiral may restore its own fleet)",
+    ),
+];
+
+/// The changelog entries after `from`, as markdown lines.
+pub fn changelog_since(from: u32) -> String {
+    CHANGELOG.iter().filter(|(v, _)| *v > from).map(|(v, what)| format!("- v{v}: {what}\n")).collect()
+}
+
+/// The text a running member gets when its rules are older than `VERSION`:
+/// the header the member recognises, the changelog, the full new rules.
+pub fn update_text(id: &Id, from: u32) -> String {
+    format!("nimitz rules updated v{from}\u{2192}v{VERSION}\n\nWhat changed:\n{}\nThe full rules now:\n\n{}", changelog_since(from), text(id))
+}
+
+// ------------------------------------------------------------------ delivery record
+
+/// One entry of `rules-delivered.json`: the version a job (or session) last got.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Delivery {
+    pub version: u32,
+    pub at: f64,
+    pub session_id: String,
+    /// the hook event that delivered it (SessionStart, UserPromptSubmit, ...)
+    pub via: String,
+}
+
+/// `NIMITZ_STATE/rules-delivered.json`.
+pub fn delivered_path(env: &Env) -> PathBuf {
+    env.state.join("rules-delivered.json")
+}
+
+/// The key a delivery is recorded under: the job id when the hook's parent
+/// (`ppid`, the Claude Code process) runs as a job (`sessions/<pid>.json`
+/// `jobId`), else `session:<id>`. The job id outlives stops, resumes, `/clear`
+/// and `/compact`, so one record follows the identity through all of them.
+pub fn delivery_key(env: &Env, ppid: i64, session_id: &str) -> String {
+    let p = env.claude_home.join("sessions").join(format!("{ppid}.json"));
+    let job = std::fs::read(p).ok().and_then(|b| crate::evidence::first_json(&b)).and_then(|v| v.get("jobId").and_then(|j| j.as_str()).map(str::to_string));
+    match job.filter(|j| !j.is_empty()) {
+        Some(j) => j,
+        None => format!("session:{session_id}"),
+    }
+}
+
+fn read_deliveries(env: &Env) -> BTreeMap<String, Delivery> {
+    std::fs::read(delivered_path(env)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+/// The delivery recorded under `key`, if any.
+pub fn delivered(env: &Env, key: &str) -> Option<Delivery> {
+    read_deliveries(env).remove(key)
+}
+
+/// The rules version `key` runs on: its record (or the session's own, when
+/// the hook could not read a job id), else the `rules` of the session's
+/// newest SessionStart line (a session an older nimitz started, with no
+/// record), else 0.
+pub fn delivered_version(env: &Env, key: &str, session_id: &str) -> u32 {
+    let all = read_deliveries(env);
+    if let Some(d) = all.get(key).or_else(|| all.get(&format!("session:{session_id}"))) {
+        return d.version;
+    }
+    crate::evidence::events(env)
+        .iter()
+        .rev()
+        .find(|e| e.event == "SessionStart" && e.session_id.as_deref() == Some(session_id))
+        .and_then(|e| e.rules)
+        .unwrap_or(0)
+}
+
+/// How long a hook tries for `rules-delivered.lock` before it gives up (the
+/// hook must stay fast, and an update it cannot record is not handed out).
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Record that `key` now has `VERSION`: read-modify-write under
+/// `rules-delivered.lock` (tried for `LOCK_WAIT`), written as a temp file and
+/// renamed. False when the record could not be written.
+pub fn record_delivery(env: &Env, key: &str, session_id: &str, via: &str) -> bool {
+    let path = delivered_path(env);
+    let Some(dir) = path.parent() else { return false };
+    let _ = std::fs::create_dir_all(dir);
+    let Ok(lock) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")) else { return false };
+    let locked = {
+        use std::os::unix::io::AsRawFd;
+        let until = std::time::Instant::now() + LOCK_WAIT;
+        loop {
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                break true;
+            }
+            if std::time::Instant::now() >= until {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    if !locked {
+        return false;
+    }
+    let mut all = read_deliveries(env);
+    all.insert(key.to_string(), Delivery { version: VERSION, at: crate::evidence::now(), session_id: session_id.to_string(), via: via.to_string() });
+    let tmp = path.with_extension("json.tmp");
+    serde_json::to_vec_pretty(&all).ok().and_then(|b| std::fs::write(&tmp, b).ok()).is_some() && std::fs::rename(&tmp, &path).is_ok()
+}
+
+/// The update `id`'s session (recorded under `key`) must get now: None when
+/// it already runs on `VERSION`. Records the delivery; the caller hands the
+/// text to the session as context. One text per version per key, whichever
+/// per-turn hook event comes first. No record, no update: a record that
+/// cannot be written (the state folder is read-only, the lock is held) would
+/// hand the same text out at every prompt; `check` shows `rules.old` (and
+/// `registry.readonly`) instead.
+pub fn update_for(env: &Env, id: &Id, key: &str, session_id: &str, via: &str) -> Option<String> {
+    let had = delivered_version(env, key, session_id);
+    if had >= VERSION || !record_delivery(env, key, session_id, via) {
+        return None;
+    }
+    Some(update_text(id, had))
+}
 
 const COMMON: &str = include_str!("../rules/common.md");
 const ADMIRAL: &str = include_str!("../rules/admiral.md");
 const COMMODORE: &str = include_str!("../rules/commodore.md");
 const SHIP: &str = include_str!("../rules/ship.md");
-const TENDER: &str = include_str!("../rules/tender.md");
 
 /// The rules for `id`'s role, filled in for `id`.
 pub fn text(id: &Id) -> String {
@@ -31,7 +167,6 @@ pub fn text(id: &Id) -> String {
         Role::Admiral => ADMIRAL,
         Role::Commodore => COMMODORE,
         Role::Ship => SHIP,
-        Role::Tender => TENDER,
     };
     let sq = id.squadron().unwrap_or_default();
     let where_ = match role {
@@ -70,7 +205,9 @@ pub fn brief(id: &Id) -> String {
     }
 }
 
-/// Every brief nimitz generated before this one, oldest first.
+/// Every brief nimitz generated before this one, oldest first, word for word
+/// (so the 0.3.x wording stays, tenders and all: it is how an old brief is
+/// recognised).
 fn old_briefs(id: &Id) -> Vec<String> {
     let f = id.fleet();
     match id.role() {
@@ -145,8 +282,8 @@ pub fn briefs(env: &Env) -> Vec<(Id, PathBuf, BriefState)> {
 }
 
 /// `brief.old` for each generated brief an older nimitz wrote (doctor --fix
-/// replaces it); `rules.old` for each live member whose session started on
-/// older rules (its next start or /compact picks them up).
+/// replaces it); `rules.old` (Info) for each live member still on older
+/// rules: the hook hands it the update with its next prompt.
 pub fn issues(env: &Env, snap: &Snapshot) -> Vec<Issue> {
     let mut out = vec![];
     for (id, p, state) in briefs(env) {
@@ -160,26 +297,23 @@ pub fn issues(env: &Env, snap: &Snapshot) -> Vec<Issue> {
             });
         }
     }
-    let events = crate::evidence::events(env);
     for f in &snap.fleets {
         let mut ms = vec![&f.admiral];
         for sq in &f.squadrons {
             ms.push(&sq.commodore);
-            ms.extend(sq.ships.iter().chain(sq.tenders.iter()));
+            ms.extend(sq.ships.iter());
         }
         for m in ms {
             let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some()) else { continue };
-            // the newest SessionStart of this session (startup, resume, clear, compact)
-            let Some(start) = events.iter().rev().find(|e| e.event == "SessionStart" && e.session_id.as_deref() == Some(s.session_id.as_str())) else {
-                continue;
-            };
-            let had = start.rules.unwrap_or(0);
+            // the record is keyed as the hook keys it: the job, else the session
+            let key = s.short_id.clone().unwrap_or_else(|| format!("session:{}", s.session_id));
+            let had = delivered_version(env, &key, &s.session_id);
             if had < VERSION {
                 out.push(Issue {
                     code: "rules.old".into(),
                     severity: Severity::Info,
-                    message: format!("{} started on nimitz rules v{had}; the rules are now v{VERSION}", m.id),
-                    fix: Some(format!("/compact (or /clear) in its session, or nimitz relaunch {}", m.id)),
+                    message: format!("runs on nimitz rules v{had}; it gets v{VERSION} with its next prompt (nothing to do)"),
+                    fix: None,
                     id: Some(m.id.clone()),
                 });
             }
@@ -204,11 +338,95 @@ mod tests {
         assert!(a.contains("## Admiral of HOME") && a.contains("Never another fleet"));
         let s = text(&Id::ship("HOME", "GITHUB", "DEV"));
         assert!(s.contains("[HOME.GITHUB]-DEV, the ship in squadron GITHUB") && s.contains("no one watches your pane"));
-        let td = text(&Id::tender("HOME", "GITHUB", "fix"));
-        assert!(td.contains("## Tender of HOME/GITHUB"));
-        for id in [Id::admiral("A"), Id::commodore("A", "B"), Id::ship("A", "B", "C"), Id::tender("A", "B", "t")] {
+        assert!(!t.contains("tender") && !a.contains("tender") && !s.contains("tender"), "the role is gone");
+        for id in [Id::admiral("A"), Id::commodore("A", "B"), Id::ship("A", "B", "C")] {
             assert!(text(&id).len() < 10_000, "fits SessionStart's 10,000-character context limit");
+            assert!(update_text(&id, 0).len() < 10_000, "the whole changelog plus the text fits too");
         }
+        // 0.4.0 wording: comms and nimitz for every member
+        assert!(a.contains("signal a ship of your fleet directly"), "{a}");
+        assert!(s.contains("[HOME]-ADMIRAL` only to reply") && s.contains("`sweep HOME/GITHUB/DEV`"), "{s}");
+        assert!(t.contains("Every member may run `nimitz`"), "{t}");
+    }
+
+    #[test]
+    fn the_changelog_has_every_version_and_the_update_names_the_jump() {
+        let versions: Vec<u32> = CHANGELOG.iter().map(|(v, _)| *v).collect();
+        assert_eq!(versions, (1..=VERSION).collect::<Vec<u32>>(), "one entry per version, oldest first, up to VERSION");
+        assert!(changelog_since(VERSION).is_empty());
+        let since1 = changelog_since(1);
+        assert!(since1.starts_with("- v2: ") && !since1.contains("- v1:"), "{since1}");
+        let id = Id::ship("F", "SQ", "S");
+        let u = update_text(&id, 1);
+        assert!(u.starts_with(&format!("nimitz rules updated v1\u{2192}v{VERSION}\n")), "{u}");
+        assert!(u.contains(&since1) && u.ends_with(&text(&id)), "the changelog, then the full text");
+    }
+
+    #[test]
+    fn a_delivery_is_recorded_once_per_version_and_read_back() {
+        let (_td, env) = test_env();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        assert_eq!(delivered(&env, "job1"), None);
+        assert_eq!(delivered_version(&env, "job1", "s1"), 0, "no record, no SessionStart line: v0");
+        // the first ask delivers and records; the second gets nothing
+        let u = update_for(&env, &id, "job1", "s1", "UserPromptSubmit").expect("an update");
+        assert!(u.starts_with("nimitz rules updated v0"));
+        let d = delivered(&env, "job1").unwrap();
+        assert_eq!((d.version, d.via.as_str(), d.session_id.as_str()), (VERSION, "UserPromptSubmit", "s1"));
+        assert!(d.at > 0.0);
+        assert_eq!(update_for(&env, &id, "job1", "s1", "UserPromptSubmit"), None);
+        // a second key does not touch the first; the file is one JSON object
+        record_delivery(&env, "session:s2", "s2", "SessionStart");
+        let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(delivered_path(&env)).unwrap()).unwrap();
+        assert_eq!(raw["job1"]["version"], VERSION);
+        assert_eq!(raw["session:s2"]["via"], "SessionStart");
+        // a job key falls back to the session's own record when only that exists
+        assert_eq!(delivered_version(&env, "job9", "s2"), VERSION);
+        // an unreadable record file is no record (the update goes out again, never a panic)
+        std::fs::write(delivered_path(&env), "{not json").unwrap();
+        assert!(update_for(&env, &id, "job1", "s1", "UserPromptSubmit").is_some());
+        // no record, no update: a state folder that cannot be written hands nothing out
+        // (else the same text would go out at every prompt); check's rules.old shows it
+        let bad = Env { state: std::path::PathBuf::from("/dev/null/nope"), ..env.clone() };
+        assert!(!record_delivery(&bad, "job1", "s1", "UserPromptSubmit"));
+        assert_eq!(update_for(&bad, &id, "job2", "s2", "UserPromptSubmit"), None);
+        // a lock another hook holds: tried for a moment, then skipped, never a hang
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(delivered_path(&env).with_extension("lock")).unwrap();
+        use std::os::unix::io::AsRawFd;
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+        let t = std::time::Instant::now();
+        assert_eq!(update_for(&env, &id, "job3", "s3", "UserPromptSubmit"), None);
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) };
+        assert!(update_for(&env, &id, "job3", "s3", "UserPromptSubmit").is_some(), "free again: delivered and recorded");
+    }
+
+    #[test]
+    fn a_live_member_on_older_rules_is_rules_old_until_delivered() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let mut snap = crate::check::tests::snap_for(&env, None);
+        let s = crate::check::tests::live_session(&id.name());
+        snap.fleets[0].squadrons[0].ships[0].session = Some(s.clone());
+        let old = |env: &Env| -> Vec<Issue> { issues(env, &snap).into_iter().filter(|i| i.code == "rules.old").collect() };
+        // started by an older nimitz: no record, a SessionStart line with v1
+        let line = serde_json::json!({"ts": 1.0, "event": "SessionStart", "session_id": s.session_id, "source": "startup", "pid": 1,
+            "labels": crate::claude::labels_for(&env, &id), "rules": 1});
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.events_path(), format!("{line}\n")).unwrap();
+        let o = old(&env);
+        assert_eq!(o.len(), 1, "{o:?}");
+        assert_eq!(o[0].severity, Severity::Info);
+        assert!(o[0].message.contains("v1") && o[0].message.contains("next prompt") && o[0].fix.is_none(), "{:?}", o[0]);
+        // the hook delivered at its next prompt, keyed by its job: gone
+        record_delivery(&env, s.short_id.as_deref().unwrap(), &s.session_id, "UserPromptSubmit");
+        assert!(old(&env).is_empty());
+        // keyed by the session id (the hook read no job id): gone too
+        let _ = std::fs::remove_file(delivered_path(&env));
+        assert_eq!(old(&env).len(), 1);
+        record_delivery(&env, &format!("session:{}", s.session_id), &s.session_id, "SessionStart");
+        assert!(old(&env).is_empty());
     }
 
     #[test]

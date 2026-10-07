@@ -47,7 +47,10 @@ pub fn parse_version(raw: &str) -> Option<String> {
 
 /// Installed version (native binary `--version`), e.g. "2.1.288".
 pub fn installed(env: &Env) -> Option<String> {
-    let out = std::process::Command::new(&env.native_claude_bin).arg("--version").output().ok()?;
+    let mut c = std::process::Command::new(&env.native_claude_bin);
+    c.arg("--version");
+    crate::claude::scrub_child_env(&mut c);
+    let out = c.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -103,7 +106,7 @@ mod tests {
     fn supported_matches_compat_toml() {
         let c = supported();
         assert_eq!(c.min, "2.1.288");
-        assert_eq!(c.max, "2.1.290");
+        assert_eq!(c.max, "2.1.292");
     }
 
     #[test]

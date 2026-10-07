@@ -7,13 +7,27 @@ use std::path::PathBuf;
 
 // ------------------------------------------------------------------ roles and ids
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Admiral,
     Commodore,
     Ship,
-    Tender,
+}
+
+/// `admiral | commodore | ship`; a 0.3.x registry's `tender` reads as a ship
+/// (the id `F/SQ/~task` is what marks it, and `migrate::retire_tenders` moves
+/// such an identity out of the members).
+impl<'de> Deserialize<'de> for Role {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Role, D::Error> {
+        let s = String::deserialize(d)?;
+        match s.as_str() {
+            "admiral" => Ok(Role::Admiral),
+            "commodore" => Ok(Role::Commodore),
+            "ship" | "tender" => Ok(Role::Ship),
+            other => Err(serde::de::Error::unknown_variant(other, &["admiral", "commodore", "ship"])),
+        }
+    }
 }
 
 impl Role {
@@ -22,16 +36,17 @@ impl Role {
             Role::Admiral => "admiral",
             Role::Commodore => "commodore",
             Role::Ship => "ship",
-            Role::Tender => "tender",
         }
     }
-    /// Admirals and commodores are interactive sessions; ships and tenders background.
-    pub fn interactive(self) -> bool {
+    /// Admirals and commodores lead; every member, leads too, runs as a
+    /// Claude Code background job (plan-v4 section 7). A lead's job is pinned
+    /// and attached to in its Herdr tab; a ship's parks and wakes on demand.
+    pub fn lead(self) -> bool {
         matches!(self, Role::Admiral | Role::Commodore)
     }
 }
 
-/// `F`, `F/SQ`, `F/SQ/SHIP`, `F/SQ/~task` (contracts.md section 4).
+/// `F`, `F/SQ`, `F/SQ/SHIP` (contracts.md section 4).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Id(pub String);
 
@@ -44,9 +59,6 @@ impl Id {
     }
     pub fn ship(fleet: &str, sq: &str, ship: &str) -> Id {
         Id(format!("{fleet}/{sq}/{ship}"))
-    }
-    pub fn tender(fleet: &str, sq: &str, task: &str) -> Id {
-        Id(format!("{fleet}/{sq}/~{task}"))
     }
     pub fn parts(&self) -> Vec<&str> {
         self.0.split('/').collect()
@@ -62,7 +74,6 @@ impl Id {
         match p.len() {
             1 => Role::Admiral,
             2 => Role::Commodore,
-            _ if p[2].starts_with('~') => Role::Tender,
             _ => Role::Ship,
         }
     }
@@ -72,7 +83,6 @@ impl Id {
         match (self.role(), p.as_slice()) {
             (Role::Admiral, [f]) => format!("[{f}]-ADMIRAL"),
             (Role::Commodore, [f, sq]) => format!("[{f}.{sq}]-COMMODORE"),
-            (Role::Tender, [f, sq, t]) => format!("[{f}.{sq}]-COMMODORE/{}", t.trim_start_matches('~')),
             (_, [f, sq, s]) => format!("[{f}.{sq}]-{s}"),
             _ => self.0.clone(),
         }
@@ -178,30 +188,67 @@ pub struct FleetOnDisk {
 
 // ------------------------------------------------------------------ registry
 
+/// One conversation an identity had (registry v2, plan-v4 section 2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LineageEntry {
     pub session_id: String,
-    pub bound_at: f64,
-    /// launch | resume | relaunch | adopt | migrate
+    /// the job (short id) that ran it, when known
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    /// launch | resume | relaunch | clear | branch | fork | compact | adopt | migrate | hook
     pub via: String,
+    /// when it was bound (a v1 file says `bound_at`)
+    #[serde(alias = "bound_at")]
+    pub at: f64,
+    /// the `NIMITZ_HOME` of the process that bound it (as written; stamped by
+    /// the registry write). None on an entry an older nimitz wrote: its home
+    /// is judged from its job's row while that row exists
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
 }
 
+/// An identity's anchor: the job (short id) and the conversation it runs now.
+/// A v1 file says `current` for `session` and has no `job`;
+/// `registry::load` migrates it (`migrate::registry_v2`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct IdentityRecord {
     pub role: Role,
     pub name: String,
     pub cwd: String,
-    pub current: Option<String>,
+    /// the Claude Code job (short id); None before the first bind
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
+    /// the conversation now (session id)
+    #[serde(default, alias = "current")]
+    pub session: Option<String>,
     #[serde(default)]
     pub lineage: Vec<LineageEntry>,
 }
+
+/// The registry format this nimitz writes.
+pub const REGISTRY_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Registry {
     pub version: u32,
     pub machine: String,
+    /// when it was last written (epoch seconds): `status` replays SessionStart
+    /// lines newer than this (plan-v4 section 3)
+    #[serde(default)]
+    pub updated_at: f64,
     #[serde(default)]
     pub identities: BTreeMap<String, IdentityRecord>,
+    /// identities of roles that no longer exist (0.3.x tenders), kept as
+    /// history by `migrate::retire_tenders`; never members, never started
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub retired: BTreeMap<String, IdentityRecord>,
+}
+
+impl IdentityRecord {
+    /// Every session id the identity ever ran: the one now, then the lineage.
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        self.session.iter().map(String::as_str).chain(self.lineage.iter().map(|l| l.session_id.as_str()))
+    }
 }
 
 // ------------------------------------------------------------------ events
@@ -230,6 +277,21 @@ pub struct Event {
     /// SessionStart only: the rules version the hook handed the session
     #[serde(default)]
     pub rules: Option<u32>,
+    /// SessionStart only, from `sessions/<pid>.json`: the job (short id) the
+    /// process runs; null for an interactive or SDK process
+    #[serde(default)]
+    pub job: Option<String>,
+    /// SessionStart only: the session file's `kind` and `entrypoint`
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub entrypoint: Option<String>,
+    /// SessionStart only: what the hook did with the registry (`Binding`)
+    #[serde(default)]
+    pub binding: Option<String>,
+    /// SessionStart only: the session's folder (the hook input's `cwd`)
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 // ------------------------------------------------------------------ snapshot
@@ -238,6 +300,9 @@ pub struct Event {
 pub enum Status {
     NotStarted,
     Stopped,
+    /// a job with no live process that nobody stopped (the daemon retired it,
+    /// it crashed, or the machine went down): not an error; a start wakes it
+    Parked,
     Idle,
     Busy,
     NeedsYou,
@@ -281,6 +346,26 @@ pub struct SessionInfo {
     pub cwd: String,
     /// labels found for this session (events or saved options); empty if none
     pub labels: BTreeMap<String, String>,
+    /// the job's birth session id (`state.json` `sessionId`) when the
+    /// conversation moved on (`/clear`, `/branch`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth_id: Option<String>,
+    /// the session file's `entrypoint` (cli, sdk-cli, claude-vscode, ...)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<String>,
+    /// the job is in `jobs/pins.json`: the daemon never idle-retires it
+    #[serde(default)]
+    pub pinned: bool,
+    /// a copy of the member's conversation (plan-v4 section 6), and how it
+    /// was told: `transcript` (shares the conversation's root), `resume` (a
+    /// resume of a lineage session id), `name` (the member's exact name or
+    /// Claude Code's copy name), `fork` (its job row says so)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<String>,
+    /// the terminal an interactive process runs in (`tmux <pane>`), when the
+    /// session file names one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -326,7 +411,6 @@ pub struct Squadron {
     pub id: Id,
     pub commodore: Member,
     pub ships: Vec<Member>,
-    pub tenders: Vec<Member>,
     pub comms: Comms,
     pub issues: Vec<Issue>,
 }

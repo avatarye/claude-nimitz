@@ -21,23 +21,59 @@ pub fn valid_label(s: &str) -> bool {
 /// Ship names that would take another role's address (`[F.SQ]-COMMODORE`).
 pub const RESERVED_SHIP_NAMES: [&str; 2] = ["COMMODORE", "ADMIRAL"];
 
-/// Is `name` reserved for a role (COMMODORE, ADMIRAL, or a tender's `COMMODORE/...`)?
+/// Is `name` reserved for a role (COMMODORE, ADMIRAL)?
 pub fn reserved_ship_name(name: &str) -> bool {
-    RESERVED_SHIP_NAMES.contains(&name) || name.starts_with("COMMODORE/")
+    RESERVED_SHIP_NAMES.contains(&name)
 }
 
-/// Parse a TOML file; the error is one line: `path:line:col: message`.
-fn read_toml<T: serde::de::DeserializeOwned>(p: &Path) -> Result<T, String> {
-    let raw = std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?;
+/// A config file that cannot be read or parsed: where, and what the parser said.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TomlError {
+    pub path: PathBuf,
+    /// 1-based, when the parser gives a position
+    pub line: Option<usize>,
+    pub col: Option<usize>,
+    pub message: String,
+}
+
+impl std::fmt::Display for TomlError {
+    /// One line: `path:line:col: message`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path.display())?;
+        if let (Some(l), Some(c)) = (self.line, self.col) {
+            write!(f, ":{l}:{c}")?;
+        }
+        write!(f, ": {}", self.message)
+    }
+}
+
+impl TomlError {
+    /// The fix: `fix <path> line N` (the file alone when there is no position).
+    pub fn fix(&self) -> String {
+        match self.line {
+            Some(l) => format!("fix {} line {l}", self.path.display()),
+            None => format!("fix {}", self.path.display()),
+        }
+    }
+}
+
+/// Parse a TOML file.
+fn read_toml<T: serde::de::DeserializeOwned>(p: &Path) -> Result<T, TomlError> {
+    let raw = std::fs::read_to_string(p).map_err(|e| TomlError { path: p.to_path_buf(), line: None, col: None, message: e.to_string() })?;
     toml::from_str(&raw).map_err(|e: toml::de::Error| {
         let at = e.span().map(|sp| {
             let before = &raw[..sp.start.min(raw.len())];
             let line = before.matches('\n').count() + 1;
             let col = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
-            format!(":{line}:{col}")
+            (line, col)
         });
-        format!("{}{}: {}", p.display(), at.unwrap_or_default(), e.message().trim())
+        TomlError { path: p.to_path_buf(), line: at.map(|a| a.0), col: at.map(|a| a.1), message: e.message().trim().to_string() }
     })
+}
+
+/// The fleet name a fleet folder stands for (the folder is the lowercased name).
+fn fleet_of_dir(dir: &Path) -> String {
+    dir.file_name().map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_default()
 }
 
 /// This machine's label in the fleet's `machines` table, if listed.
@@ -50,21 +86,13 @@ fn machine_label(env: &Env, c: &FleetConfig) -> Option<String> {
 
 /// Every fleet under NIMITZ_HOME, with config errors as issues (never panics).
 /// A squadron whose squadron.toml does not parse is left out of its fleet (and
-/// reported); the rest of the fleet still loads.
+/// reported); the rest of the fleet still loads. A fleet whose fleet.toml does
+/// not parse is left out (and reported on its own admiral, so only that fleet
+/// is blocked); the other fleets still load (M8).
 pub fn load_all(env: &Env) -> (Vec<FleetOnDisk>, Vec<Issue>) {
     let mut fleets = vec![];
     let mut issues = vec![];
-    let entries = match std::fs::read_dir(&env.home) {
-        Ok(e) => e,
-        Err(_) => return (fleets, issues), // no NIMITZ_HOME yet: nothing to load
-    };
-    let mut dirs: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_dir() && p.join("fleet.toml").is_file())
-        .collect();
-    dirs.sort();
-    for dir in dirs {
+    for dir in fleet_dirs(env) {
         match load_fleet_dir(env, &dir) {
             Ok((f, broken)) => {
                 issues.extend(broken);
@@ -74,6 +102,40 @@ pub fn load_all(env: &Env) -> (Vec<FleetOnDisk>, Vec<Issue>) {
         }
     }
     (fleets, issues)
+}
+
+/// Fleet folders under NIMITZ_HOME (those with a fleet.toml), sorted.
+fn fleet_dirs(env: &Env) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&env.home)
+        .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir() && p.join("fleet.toml").is_file()).collect())
+        .unwrap_or_default(); // no NIMITZ_HOME yet: nothing to load
+    dirs.sort();
+    dirs
+}
+
+/// Fleets left out of `load_all` because their fleet.toml does not parse: the
+/// fleet id (from the folder name), its folder, and the `config.invalid` issue.
+pub fn unreadable_fleets(env: &Env) -> Vec<(Id, PathBuf, Issue)> {
+    fleet_dirs(env)
+        .into_iter()
+        .filter_map(|dir| {
+            let i = read_toml::<FleetConfig>(&dir.join("fleet.toml")).err().map(|e| fleet_issue(&dir, &e))?;
+            Some((i.id.clone()?, dir, i))
+        })
+        .collect()
+}
+
+/// The `config.invalid` issue of a fleet.toml that does not parse. It carries
+/// the fleet's own admiral id, so it blocks that fleet only.
+fn fleet_issue(dir: &Path, e: &TomlError) -> Issue {
+    let fleet = fleet_of_dir(dir);
+    issue(
+        "config.invalid",
+        Severity::Error,
+        format!("fleet.toml does not parse: {e} (fleet {fleet} is unreadable; the other fleets still load)"),
+        Some(format!("{}, then nimitz check {fleet}", e.fix())),
+        Some(Id::admiral(&fleet)),
+    )
 }
 
 /// Squadron folders with a squadron.toml, sorted.
@@ -87,16 +149,7 @@ fn squadron_dirs(fleet_dir: &Path) -> Vec<PathBuf> {
 
 /// The fleet plus one `config.invalid` issue per squadron.toml that does not parse.
 fn load_fleet_dir(env: &Env, dir: &Path) -> Result<(FleetOnDisk, Vec<Issue>), Issue> {
-    let config: FleetConfig = read_toml(&dir.join("fleet.toml")).map_err(|e| {
-        issue(
-            "config.invalid",
-            Severity::Error,
-            format!("fleet.toml does not parse: {e}"),
-            Some(format!("fix {} by hand, then nimitz check", dir.join("fleet.toml").display())),
-            // no identity: the fleet's members are unknown, so this blocks every start
-            None,
-        )
-    })?;
+    let config: FleetConfig = read_toml(&dir.join("fleet.toml")).map_err(|e| fleet_issue(dir, &e))?;
     let mut squadrons = vec![];
     let mut broken = vec![];
     for sd in squadron_dirs(dir) {
@@ -109,13 +162,13 @@ fn load_fleet_dir(env: &Env, dir: &Path) -> Result<(FleetOnDisk, Vec<Issue>), Is
     Ok((FleetOnDisk { dir: dir.to_path_buf(), config, squadrons, machine }, broken))
 }
 
-fn unreadable_issue(fleet: &str, sd: &Path, err: &str) -> Issue {
+fn unreadable_issue(fleet: &str, sd: &Path, e: &TomlError) -> Issue {
     let sq = sd.file_name().map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_default();
     issue(
         "config.invalid",
         Severity::Error,
-        format!("squadron.toml does not parse: {err} (squadron {fleet}/{sq} and its ships are unreadable; the rest of the fleet still loads)"),
-        Some(format!("fix {} by hand, then nimitz check {fleet}/{sq}", sd.join("squadron.toml").display())),
+        format!("squadron.toml does not parse: {e} (squadron {fleet}/{sq} and its ships are unreadable; the rest of the fleet still loads)"),
+        Some(format!("{}, then nimitz check {fleet}/{sq}", e.fix())),
         Some(Id::commodore(fleet, &sq)),
     )
 }
@@ -138,7 +191,13 @@ pub fn unreadable_squadrons(f: &FleetOnDisk) -> Vec<(Id, PathBuf, Issue)> {
 /// The fleet as far as it loads: a squadron whose squadron.toml does not parse
 /// is left out (see `unreadable_squadrons`). Err only when fleet.toml itself is bad.
 pub fn load_fleet(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
-    let dir = env.fleet_dir(fleet);
+    let mut dir = env.fleet_dir(fleet);
+    if !dir.join("fleet.toml").is_file() {
+        // a mis-cased folder (`Bad/` for BAD): load it, and let the layout rule say so
+        if let Some(d) = fleet_dirs(env).into_iter().find(|d| fleet_of_dir(d) == fleet.to_uppercase()) {
+            dir = d;
+        }
+    }
     if !dir.join("fleet.toml").is_file() {
         return Err(issue(
             "config.missing",
@@ -322,7 +381,53 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
             }
         }
     }
+
+    // Dropbox conflicted copies next to a config file or a member's CLAUDE.md:
+    // the sync kept both, and only the original is read (M23).
+    let mut conflict_dirs: Vec<(Id, PathBuf)> = vec![(fid.clone(), f.dir.clone())];
+    conflict_dirs.extend(folders.iter().map(|(id, d, _)| (id.clone(), d.clone())));
+    for (id, d) in &conflict_dirs {
+        out.extend(conflicted_copies(d).into_iter().map(|(copy, original)| {
+            issue(
+                "config.conflict",
+                Severity::Warn,
+                format!("{} is a sync conflict copy of {}; only the original is read", copy.display(), original.display()),
+                Some("compare the two files, keep one, delete the other".into()),
+                Some(id.clone()),
+            )
+        }));
+    }
     out
+}
+
+/// The file a Dropbox conflicted copy stands for: `fleet (X's conflicted copy
+/// 2026-10-07).toml` -> `fleet.toml`. None for any other name.
+pub fn conflict_original(name: &str) -> Option<String> {
+    let open = name.find(" (")?;
+    let close = name.rfind(')')?;
+    if !name[open..close].contains("conflicted copy") {
+        return None;
+    }
+    Some(format!("{}{}", &name[..open], &name[close + 1..]))
+}
+
+/// Conflicted copies in `dir` of the files nimitz reads there: (copy, original).
+fn conflicted_copies(dir: &Path) -> Vec<(PathBuf, PathBuf)> {
+    const READ: [&str; 5] = ["fleet.toml", "squadron.toml", "legacy.toml", "CLAUDE.md", "CLAUDE.local.md"];
+    let mut v: Vec<(PathBuf, PathBuf)> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_file())
+                .filter_map(|p| {
+                    let original = conflict_original(&p.file_name()?.to_string_lossy())?;
+                    READ.contains(&original.as_str()).then(|| (p.clone(), dir.join(original)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
 }
 
 /// How bad is a member folder inside `outer` (contracts.md section 7)? An
@@ -370,7 +475,7 @@ pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
     }
     match id.role() {
         Role::Admiral => Some(f.dir.join("admiral")),
-        Role::Commodore | Role::Tender => {
+        Role::Commodore => {
             let sq = id.squadron()?;
             f.squadrons.iter().find(|(_, s)| s.squadron == sq).map(|(sd, _)| sd.clone())
         }
@@ -411,7 +516,7 @@ pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
     };
     match id.role() {
         Role::Admiral => f.config.admiral.permission_mode.clone().unwrap_or(fallback),
-        Role::Commodore | Role::Tender => squadron_mode().unwrap_or(fallback),
+        Role::Commodore => squadron_mode().unwrap_or(fallback),
         Role::Ship => find_ship(f, id)
             .and_then(|(_, _, ship)| f.machine.as_ref().and_then(|m| ship.permission_mode.get(m).cloned()))
             .or_else(squadron_mode)
@@ -463,6 +568,10 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
     if !valid_name(fleet) {
         refuse(&mut plan, "config.invalid", format!("fleet name {fleet:?} is not [A-Z0-9_]+"), None, Some(id.clone()));
     }
+    // the Herdr workspace of the hub is never a fleet's (restore-scenarios.md R-35)
+    if fleet == crate::restore::ADMIRALTY_WORKSPACE {
+        refuse(&mut plan, "config.invalid", format!("fleet name {fleet:?} is reserved: it is the Admiralty's own workspace"), None, Some(id.clone()));
+    }
     if !valid_label(machine_label) {
         refuse(&mut plan, "config.invalid", format!("machine label {machine_label:?} is not [a-z0-9._-]+"), None, Some(id.clone()));
     }
@@ -492,13 +601,21 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
     plan
 }
 
-pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: Comms) -> Plan {
+pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: Comms, mode: Option<&str>) -> Plan {
     let mut plan = Plan { summary: format!("create squadron {fleet}/{sq}"), ..Default::default() };
     let id = Id::commodore(fleet, sq);
     if !valid_name(sq) {
         refuse(&mut plan, "config.invalid", format!("squadron name {sq:?} is not [A-Z0-9_]+"), None, Some(id.clone()));
         return plan;
     }
+    // the squadron's default permission mode for its ships (`--mode`)
+    let permission_mode = match mode {
+        None => None,
+        Some(m) => match mode_change(&mut plan, Some(m), &id) {
+            Some(v) => v,
+            None => return plan,
+        },
+    };
     let f = match load_fleet_for_write(env, fleet) {
         Ok(f) => f,
         Err(i) => {
@@ -515,7 +632,7 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: C
         squadron: sq.into(),
         brief: Some("SQUADRON.md".into()),
         comms,
-        permission_mode: None,
+        permission_mode,
         ships: vec![],
     };
     plan.steps = vec![
@@ -718,9 +835,6 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
         }
     };
     match id.role() {
-        Role::Tender => {
-            refuse(&mut plan, "config.invalid", format!("{id} is a tender; tenders are not in the config"), None, Some(id.clone()));
-        }
         Role::Admiral => {
             // Delete the fleet: only with no squadrons left; the config is archived.
             if !f.squadrons.is_empty() {
@@ -1031,7 +1145,7 @@ fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &s
                 let mut v = vec![&fl.admiral];
                 for sq in &fl.squadrons {
                     v.push(&sq.commodore);
-                    v.extend(sq.ships.iter().chain(sq.tenders.iter()));
+                    v.extend(sq.ships.iter());
                 }
                 v.into_iter().filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some())).map(|m| m.id.0.clone()).collect()
             })
@@ -1163,7 +1277,7 @@ pub(crate) mod tests {
     /// MAIN fleet with squadron ARGOS and ship ARGOS (managed folder here).
     pub fn make_fleet(env: &Env) {
         apply_ok(env, &plan_fleet_new(env, "MAIN", "test-mac"));
-        apply_ok(env, &plan_squadron_new(env, "MAIN", "ARGOS", "Build the asset generator.", Comms::default()));
+        apply_ok(env, &plan_squadron_new(env, "MAIN", "ARGOS", "Build the asset generator.", Comms::default(), None));
         let ship = ShipDef {
             name: "ARGOS".into(),
             prompt: Some("You are ARGOS.".into()),
@@ -1203,10 +1317,89 @@ pub(crate) mod tests {
         assert!(fleets.is_empty());
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].code, "config.invalid");
+        // The error names the file, the line and the parse error, and belongs to
+        // the broken fleet alone (M8): its admiral, so other fleets are not blocked.
+        let file = dir.join("fleet.toml").display().to_string();
+        assert!(issues[0].message.contains(&format!("{file}:1:")), "{}", issues[0].message);
+        assert_eq!(issues[0].fix.as_deref(), Some(format!("fix {file} line 1, then nimitz check BAD").as_str()));
+        assert_eq!(issues[0].id, Some(Id::admiral("BAD")));
+        let broken = unreadable_fleets(&env);
+        assert_eq!(broken.len(), 1);
+        assert_eq!(broken[0].0, Id::admiral("BAD"));
+        assert_eq!(broken[0].2, issues[0]);
+        // A healthy fleet next to it loads as before.
+        make_fleet(&env);
+        let (fleets, issues) = load_all(&env);
+        assert_eq!(fleets.len(), 1);
+        assert_eq!(issues.len(), 1);
+        assert!(load_fleet(&env, "MAIN").is_ok());
+        assert_eq!(load_fleet(&env, "BAD").unwrap_err().id, Some(Id::admiral("BAD")));
         // And an empty NIMITZ_HOME is fine too.
         let (_td2, env2) = test_env();
         let (f2, i2) = load_all(&env2);
         assert!(f2.is_empty() && i2.is_empty());
+    }
+
+    #[test]
+    fn a_mis_cased_fleet_folder_loads_under_its_name() {
+        let (_td, env) = test_env();
+        let dir = env.home.join("Bad");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fleet.toml"), "fleet = ").unwrap();
+        // the parse error, not config.missing, for check/start of BAD
+        let e = load_fleet(&env, "BAD").unwrap_err();
+        assert_eq!(e.code, "config.invalid");
+        assert_eq!(e.id, Some(Id::admiral("BAD")));
+        assert_eq!(unreadable_fleets(&env)[0].0, Id::admiral("BAD"));
+        // fixed, it loads too, and the layout rule names the folder
+        std::fs::write(dir.join("fleet.toml"), "fleet = \"BAD\"\n").unwrap();
+        let f = load_fleet(&env, "BAD").unwrap();
+        assert!(validate(&env, &f).iter().any(|i| i.message.contains("folder must be the lowercased fleet name")));
+        assert_eq!(load_fleet(&env, "NONE").unwrap_err().code, "config.missing");
+    }
+
+    #[test]
+    fn a_broken_squadron_toml_names_its_line() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let f = load_fleet(&env, "MAIN").unwrap();
+        let t = f.squadrons[0].0.join("squadron.toml");
+        let raw = std::fs::read_to_string(&t).unwrap();
+        std::fs::write(&t, format!("{raw}\nname = \"oops\n")).unwrap();
+        let (_, issues) = load_all(&env);
+        let i = issues.iter().find(|i| i.code == "config.invalid").expect("config.invalid");
+        let line = raw.lines().count() + 2;
+        assert_eq!(i.fix.as_deref(), Some(format!("fix {} line {line}, then nimitz check MAIN/ARGOS", t.display()).as_str()));
+    }
+
+    #[test]
+    fn conflicted_copies_are_named_with_their_originals() {
+        assert_eq!(conflict_original("fleet (conflicted copy 2026-10-07).toml").as_deref(), Some("fleet.toml"));
+        assert_eq!(conflict_original("CLAUDE (Yongqing's conflicted copy 2026-10-07).md").as_deref(), Some("CLAUDE.md"));
+        assert_eq!(conflict_original("CLAUDE (Jo (home)'s conflicted copy 2026-10-07).md").as_deref(), Some("CLAUDE.md"));
+        assert_eq!(conflict_original("fleet (old copy).toml"), None);
+        assert_eq!(conflict_original("fleet.toml"), None);
+
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let f = load_fleet(&env, "MAIN").unwrap();
+        assert!(validate(&env, &f).is_empty());
+        let sq_dir = f.squadrons[0].0.clone();
+        std::fs::write(f.dir.join("fleet (conflicted copy 2026-10-07).toml"), "fleet = \"MAIN\"\n").unwrap();
+        std::fs::write(sq_dir.join("squadron (conflicted copy 2026-10-07).toml"), "squadron = \"ARGOS\"\n").unwrap();
+        std::fs::write(sq_dir.join("CLAUDE (box2's conflicted copy 2026-10-07).md"), "x").unwrap();
+        // a conflicted copy of a file nimitz does not read is not its business
+        std::fs::write(sq_dir.join("notes (conflicted copy 2026-10-07).md"), "x").unwrap();
+        let issues = validate(&env, &f);
+        let conflicts: Vec<&Issue> = issues.iter().filter(|i| i.code == "config.conflict").collect();
+        assert_eq!(conflicts.len(), 3, "{issues:?}");
+        assert!(conflicts.iter().all(|i| i.severity == Severity::Warn && i.fix.as_deref() == Some("compare the two files, keep one, delete the other")));
+        let fleet_copy = conflicts.iter().find(|i| i.message.contains("fleet (conflicted copy")).expect("the fleet.toml copy");
+        assert!(fleet_copy.message.contains(&f.dir.join("fleet.toml").display().to_string()), "{}", fleet_copy.message);
+        assert_eq!(fleet_copy.id, Some(Id::admiral("MAIN")));
+        let md_copy = conflicts.iter().find(|i| i.message.contains("CLAUDE (box2's")).expect("the CLAUDE.md copy");
+        assert_eq!(md_copy.id, Some(Id::commodore("MAIN", "ARGOS")));
+        assert!(!issues.iter().any(|i| i.message.contains("notes (")), "{issues:?}");
     }
 
     #[test]
@@ -1235,7 +1428,7 @@ pub(crate) mod tests {
     fn a_broken_squadron_does_not_hide_the_fleet() {
         let (_td, env) = test_env();
         make_fleet(&env);
-        apply_ok(&env, &plan_squadron_new(&env, "MAIN", "BOREAL", "", Comms::default()));
+        apply_ok(&env, &plan_squadron_new(&env, "MAIN", "BOREAL", "", Comms::default(), None));
         let bad = env.fleet_dir("MAIN").join("squadrons/argos/squadron.toml");
         std::fs::write(&bad, std::fs::read_to_string(&bad).unwrap() + "\nname = \"oops\n").unwrap();
         let (fleets, issues) = load_all(&env);
@@ -1250,7 +1443,7 @@ pub(crate) mod tests {
         assert_eq!(un.len(), 1);
         assert_eq!(un[0].0, Id::commodore("MAIN", "ARGOS"));
         // writes refuse while a squadron file is broken (a rewrite could lose it)
-        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default()).ok());
+        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default(), None).ok());
         assert!(!plan_machine_add_on(&env, "MAIN", "other", Some("other-host"), vec![]).ok());
         assert!(load_fleet(&env, "MAIN").is_ok());
     }
@@ -1324,7 +1517,7 @@ pub(crate) mod tests {
             f.squadrons[0].1.ships.push(ship);
             assert!(validate(&env, &f).iter().any(|i| i.message.contains("reserved")), "{name}");
         }
-        assert!(reserved_ship_name("COMMODORE/job") && !reserved_ship_name("COMMODORES"));
+        assert!(!reserved_ship_name("COMMODORES"));
     }
 
     #[test]
@@ -1388,7 +1581,6 @@ pub(crate) mod tests {
         let f = load_fleet(&env, "MAIN").unwrap();
         assert_eq!(member_dir(&env, &f, &Id::admiral("MAIN")), Some(f.dir.join("admiral")));
         assert_eq!(member_dir(&env, &f, &Id::commodore("MAIN", "ARGOS")), Some(f.dir.join("squadrons/argos")));
-        assert_eq!(member_dir(&env, &f, &Id::tender("MAIN", "ARGOS", "job1")), Some(f.dir.join("squadrons/argos")));
         assert_eq!(member_dir(&env, &f, &Id::ship("MAIN", "ARGOS", "ARGOS")), Some(f.dir.join("ships/argos/argos")));
         assert_eq!(member_dir(&env, &f, &Id::ship("MAIN", "ARGOS", "GHOST")), None);
         assert_eq!(member_dir(&env, &f, &Id::ship("OTHER", "ARGOS", "ARGOS")), None);
@@ -1441,8 +1633,8 @@ pub(crate) mod tests {
         make_fleet(&env);
         assert!(!plan_fleet_new(&env, "MAIN", "test-mac").ok()); // exists
         assert!(!plan_fleet_new(&env, "bad name", "test-mac").ok());
-        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default()).ok()); // exists
-        assert!(!plan_squadron_new(&env, "NOPE", "X", "", Comms::default()).ok()); // no fleet
+        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default(), None).ok()); // exists
+        assert!(!plan_squadron_new(&env, "NOPE", "X", "", Comms::default(), None).ok()); // no fleet
         let dup = ShipDef { name: "ARGOS".into(), prompt: Some("p".into()), ..Default::default() };
         assert!(!plan_ship_new(&env, "MAIN", "ARGOS", dup).ok());
         let nested = ShipDef {

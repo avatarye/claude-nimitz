@@ -1,5 +1,6 @@
-//! Needs-you delivery: type a blocked ship's or tender's notice into its
-//! commodore's pane, the way `nimitz signal` reaches an interactive member.
+//! Needs-you delivery: type a blocked ship's notice into its
+//! commodore's pane (the tab attached to the commodore's job), the way
+//! `nimitz signal` reaches a lead.
 //!
 //! The hook records the notice (`nimitz_core::notify`) and starts
 //! `nimitz __notify <id>` detached, in its own session, so the member never
@@ -43,7 +44,7 @@ pub fn spawn_delivery(env: &Env, n: &Notice) {
 pub fn deliver_cmd(id: &str) -> i32 {
     let vars: HashMap<String, String> = std::env::vars().collect();
     match caller_from_env(&vars) {
-        Caller::Member { id: me, role: Role::Ship | Role::Tender } if me.0 == id => {}
+        Caller::Member { id: me, role: Role::Ship } if me.0 == id => {}
         _ => return 2,
     }
     let env = Env::from_vars(&vars);
@@ -54,24 +55,33 @@ pub fn deliver_cmd(id: &str) -> i32 {
     0
 }
 
-/// The commodore's live session id: the registry's current binding, else a
-/// live interactive session holding the commodore's name.
+/// The commodore's live session id: its own row in the snapshot (the job
+/// the registry names, or the process that holds its conversation), never a
+/// copy and never a stray session that only carries its name.
 fn commodore_session(env: &Env, cid: &Id) -> Option<String> {
-    let rows = nimitz_core::evidence::rows_from_files(env, &mut Default::default()).unwrap_or_default();
-    let live = |sid: &str| rows.iter().any(|r| r.session_id == sid && r.live());
-    let reg = nimitz_core::registry::load(env);
-    if let Some(cur) = reg.identities.get(&cid.0).and_then(|r| r.current.clone()).filter(|s| live(s)) {
-        return Some(cur);
-    }
-    rows.iter().find(|r| r.live() && r.kind == "interactive" && r.name == cid.name()).map(|r| r.session_id.clone())
+    let snap = nimitz_core::snapshot::snapshot(env, &mut nimitz_core::snapshot::Cache::default());
+    let m = snap.fleets.iter().flat_map(|f| f.squadrons.iter()).map(|sq| &sq.commodore).find(|m| &m.id == cid)?;
+    m.session.as_ref().filter(|s| s.pid.is_some() && s.copy.is_none()).map(|s| s.session_id.clone())
+}
+
+/// The multiplexer a delivery types into. An explicit setting (`NIMITZ_MUX`
+/// other than auto, `NIMITZ_HERDR_SESSION`) is the member's env as given.
+/// Else the delivery never goes by inherited `HERDR_*` alone: a
+/// daemon-respawned member inherits the daemon's env, the user's live
+/// Herdr, in whatever world its `NIMITZ_HOME` names (acc-D F6). The server
+/// is the one the user's own nimitz commands recorded in `active.json`
+/// (`active::herdr_identity`: a member's command records none), named as
+/// the `--session` of every call; with nothing recorded, no multiplexer.
+fn delivery_mux(env: &Env, vars: &HashMap<String, String>) -> Box<dyn nimitz_mux::Mux> {
+    nimitz_mux::detect(&nimitz_core::active::member_mux_vars(env, vars))
 }
 
 fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duration) -> (&'static str, String) {
     let id = Id(n.id.clone());
     let cid = Id::commodore(id.fleet(), id.squadron().unwrap_or_default());
-    let mux = nimitz_mux::detect(vars);
+    let mux = delivery_mux(env, vars);
     if !mux.caps().type_text {
-        return ("failed", format!("no multiplexer in the member's env can type into {cid}'s pane ({})", mux.name()));
+        return ("failed", format!("no multiplexer in the member's env can type into {cid}'s pane ({}); only an explicit NIMITZ_MUX, or the Herdr server a nimitz command of the user recorded in active.json (by its session name), is used; fix: run nimitz status inside Herdr once", mux.name()));
     }
     let text = n.text();
     let deadline = Instant::now() + retry;

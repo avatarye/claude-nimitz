@@ -4,12 +4,14 @@ members = ["crates/nimitz-core", "crates/nimitz-mux", "crates/nimitz", "crates/a
 
 [workspace.package]
 edition = "2021"
-version = "0.3.1"
+version = "0.4.0"
 publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: f64 stamps (registry `updated_at`, event `ts`, notice `ts`)
+# must read back bit for bit from disk
+serde_json = { version = "1", features = ["float_roundtrip"] }
 toml = "0.9"
 libc = "0.2"
 ratatui = "0.30"

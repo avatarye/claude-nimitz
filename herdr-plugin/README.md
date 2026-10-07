@@ -11,6 +11,19 @@ Needs Herdr 0.9 and `admiralty` on `PATH` or in `~/.cargo/bin`
 The plugin id is `admiralty` (until nimitz 0.3.0 it was `admiralty-watch`; see
 Install for the switch).
 
+## Leads in their tabs
+
+Every fleet member is a Claude Code background job (nimitz 0.4.0). A lead's
+tab (`F.ADMIRAL`, `F.SQ.COMMODORE`; `nimitz restore <F>` or `nimitz open
+<id>` makes it) runs `claude attach <job>`. Detach with **ctrl-z**: the job
+keeps running and the tab drops back to its shell. Do not type `/exit` inside
+an attach: that opens Claude Code's agent view of the whole machine, not the
+member's end (`nimitz stop <id>` ends a member). `enter` in the watch jumps
+to a lead's tab; `A` attaches a job that has no tab yet; `x R` on a fleet
+band restores the fleet after a Herdr restart, a closed tab or a reboot
+(`nimitz restore <F>`: tabs found by their full label or by the session
+they show, attach typed only into a plain shell, jobs resumed by exact id).
+
 ## How it works
 
 One action, `admiralty.toggle`, runs `bin/toggle.sh`:

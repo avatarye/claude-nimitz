@@ -33,7 +33,6 @@ pub enum MenuAction {
     EditShip(Id),
     EditFleet(String),
     EditSquadron(Id),
-    Tender(Id),
     MachineRm(String),
     /// adopt this session as this identity (from a `legacy` issue's fix)
     AdoptAs(String, String),
@@ -142,7 +141,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("A", "open: attach to a background session in a new pane"),
     ("x", "actions: stop, relaunch, sweep, rm, adopt, remove; on a fleet: layout, machines"),
     ("m", "message (ships: relayed by their commodore)"),
-    ("c / e / D", "create fleet, squadron, ship, tender / edit it / remove from config"),
+    ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
     ("f / F", "filter squadrons by state / flagged rows only"),
@@ -253,7 +252,6 @@ impl App {
             for sq in &mut f.squadrons {
                 mark(&mut sq.commodore);
                 sq.ships.iter_mut().for_each(mark);
-                sq.tenders.iter_mut().for_each(mark);
             }
         }
         self.bundle = Some(b);
@@ -554,7 +552,7 @@ impl App {
             }
         }
         if let Target::Fleet(id) = self.target() {
-            for a in [Act::Layout, Act::LayoutShips] {
+            for a in [Act::Restore, Act::Layout, Act::LayoutShips] {
                 v.push(MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(a), action: MenuAction::Act(a) });
             }
             v.push(MenuItem { key: 'M', label: "remove a machine from this fleet".into(), enabled: Ok(()), action: MenuAction::MachineRm(id.0) });
@@ -573,20 +571,6 @@ impl App {
             Some((f, sq)) => v.push(MenuItem { key: 'p', label: format!("new ship in {f}/{sq}"), enabled: Ok(()), action: MenuAction::NewShip(f, sq) }),
             None => v.push(MenuItem { key: 'p', label: "new ship".into(), enabled: Err("select a squadron first".into()), action: MenuAction::NewFleet }),
         }
-        let tender = match self.target() {
-            Target::Squadron(id) => Ok(id),
-            Target::Member(id) if id.role() != Role::Admiral && id.squadron().is_some() => Ok(Id::commodore(id.fleet(), id.squadron().unwrap_or_default())),
-            _ => Err("select a squadron or its commodore".to_string()),
-        };
-        v.push(MenuItem {
-            key: 't',
-            label: match &tender {
-                Ok(id) => format!("new tender for {}", id.name()),
-                Err(_) => "new tender".into(),
-            },
-            enabled: tender.as_ref().map(|_| ()).map_err(|e| e.clone()),
-            action: tender.map(MenuAction::Tender).unwrap_or(MenuAction::NewFleet),
-        });
         let (label, edit) = match self.edit_action() {
             Ok((l, a)) => (l, Ok(a)),
             Err(e) => ("edit".to_string(), Err(e)),
@@ -668,10 +652,6 @@ impl App {
                 self.open_or_say(f);
                 None
             }
-            MenuAction::Tender(id) => {
-                self.open_form(Form::tender(&id));
-                None
-            }
             MenuAction::MachineRm(f) => {
                 let m = self.machine_of(&f);
                 self.open_form(Form::machine_rm(&f, &m));
@@ -693,18 +673,19 @@ impl App {
             }
             if let Target::Stowaway(sid) = self.target() {
                 let short: String = sid.chars().take(8).collect();
-                let suggestion = self
-                    .issues()
-                    .iter()
-                    .filter(|i| i.code == "stowaway")
-                    .find(|i| i.fix.as_deref().map(|f| f.contains(&short)).unwrap_or(false))
-                    .and_then(|i| i.fix.as_deref().and_then(|f| f.split_whitespace().nth(3).map(String::from)))
-                    .unwrap_or_default();
+                let suggestion = self.bundle.as_ref().and_then(|b| adopt_suggestion(&b.snap, &sid)).unwrap_or_default();
                 self.open_form(Form::adopt(&sid, &short, &suggestion));
                 return None;
             }
         }
         let Some(b) = &self.bundle else { return None };
+        if let (Act::Restore, Target::Fleet(f)) = (act, self.target()) {
+            match actions::prepare_restore(&self.ctx, b.mux_caps, &b.snap, &f) {
+                Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                Err(why) => self.notify(format!("restore: not available. {why}"), st(mono::WARN)),
+            }
+            return None;
+        }
         if let (Act::Layout | Act::LayoutShips, Target::Fleet(f)) = (act, self.target()) {
             match actions::prepare_layout(&self.ctx, b.mux_caps, &b.snap, &b.panes, &f, act == Act::LayoutShips) {
                 Ok(p) => self.modal = Some(Modal::Confirm(p)),
@@ -712,20 +693,44 @@ impl App {
             }
             return None;
         }
-        // `A` on a session that is shown already: jump there, open nothing new
+        // `A` on a session that is shown already: jump there, open nothing new;
+        // its tab with a plain shell: attach there; a tab that runs something
+        // else: never typed into (R2)
         if act == Act::Open && self.available(Act::Open).is_ok() {
-            if let Some(pane) = actions::existing_open(&self.ctx, &b.snap, &self.target()) {
-                match self.ctx.mux.focus(&pane) {
-                    Ok(()) => {
-                        actions::log(&self.ctx.env, "focus", &pane.pane_id);
-                        self.notify(format!("Open already: focused pane {}", pane.pane_id), st(mono::BUSY));
-                        if self.ctx.exit_after_jump {
-                            return Some(Effect::Quit);
+            match actions::existing_open(&self.ctx, &b.snap, &self.target()) {
+                Ok(nimitz_mux::TabState::Shown(pane)) => {
+                    match self.ctx.mux.focus(&pane) {
+                        Ok(()) => {
+                            actions::log(&self.ctx.env, "focus", &pane.pane_id);
+                            self.notify(format!("Open already: focused pane {}", pane.pane_id), st(mono::BUSY));
+                            if self.ctx.exit_after_jump {
+                                return Some(Effect::Quit);
+                            }
                         }
+                        Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
                     }
-                    Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
+                    return None;
                 }
-                return None;
+                Ok(nimitz_mux::TabState::Shell(pane)) => {
+                    match actions::claim_open(&self.ctx, &b.snap, &self.target(), &pane) {
+                        Ok(()) => {
+                            actions::log(&self.ctx.env, "attach", &pane.pane_id);
+                            self.notify(format!("Attached in its tab's pane {}", pane.pane_id), st(mono::BUSY));
+                        }
+                        Err(e) => self.notify(format!("Could not attach in pane {}: {e}", pane.pane_id), st(mono::ERROR)),
+                    }
+                    return None;
+                }
+                Ok(nimitz_mux::TabState::Taken { pane, running }) => {
+                    self.notify(format!("tab.taken: its tab's pane {} runs `{running}`; ctrl-z or quit it there, then A again", pane.pane_id), st(mono::ERROR));
+                    return None;
+                }
+                Ok(nimitz_mux::TabState::Missing) => {}
+                Err(i) => {
+                    let fix = i.fix.as_deref().map(|f| format!("  fix: {f}")).unwrap_or_default();
+                    self.notify(format!("{}: {}{fix}", i.code, i.message), st(mono::ERROR));
+                    return None;
+                }
             }
         }
         match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {
@@ -1171,6 +1176,29 @@ impl App {
         let warns = issues.iter().filter(|i| i.severity == Severity::Warn).count();
         (b.snap.fleets.len(), live, need, errors, warns)
     }
+}
+
+/// What the adopt form offers for a stowaway (M25): the identity its name
+/// spells when the name is a fleet address; else the ship whose folder holds
+/// it; else a `F/SQ/<ship>` placeholder for the squadron or fleet whose
+/// folders hold it.
+fn adopt_suggestion(snap: &nimitz_core::Snapshot, sid: &str) -> Option<String> {
+    let s = snap.stowaways.iter().find(|s| s.session_id == sid)?;
+    if let Some(id) = nimitz_core::sessions::id_from_name(&s.name) {
+        return Some(id.0);
+    }
+    let same = |c: &str| c.trim_end_matches('/') == s.cwd.trim_end_matches('/');
+    for f in &snap.fleets {
+        for sq in &f.squadrons {
+            if let Some(ship) = sq.ships.iter().find(|m| m.cwd.as_deref().is_some_and(same)) {
+                return Some(ship.id.0.clone());
+            }
+            if sq.commodore.cwd.as_deref().is_some_and(same) {
+                return Some(format!("{}/<ship>", sq.id.0));
+            }
+        }
+    }
+    nimitz_core::snapshot::stowaway_fleet(snap, s).map(|f| format!("{f}/<squadron>/<ship>"))
 }
 
 // ------------------------------------------------------------------ clipboard

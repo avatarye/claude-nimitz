@@ -349,7 +349,7 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled("What the icons mean", bold(mono::FG)));
-    let legend: [(&str, Style, &str); 22] = [
+    let legend: [(&str, Style, &str); 21] = [
         (icons.issue, bold(mono::ERROR), "errors (orange) and warnings (yellow); `i` lists them with fixes"),
         (icons.legacy, bold(mono::WARN), "a session of an old fleet-skill fleet; `x` then `d` adopts it"),
         (icons.s_needs, bold(mono::NEEDS), "needs you: waiting at a prompt or a question"),
@@ -363,7 +363,6 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
         (icons.squadron, st(mono::FG), "squadron"),
         (icons.commodore, bold(mono::STRONG), "commodore"),
         (icons.ship, st(mono::FG), "ship"),
-        (icons.tender, st(mono::FG), "tender (one job for a commodore)"),
         (icons.crew, st(mono::BUSY), "crew: a sub-agent inside a session"),
         (icons.teammate, st(mono::BUSY), "teammate"),
         (icons.stowaway, bold(mono::WARN), "stowaway: a session in fleet scope with no labels"),
@@ -422,7 +421,7 @@ pub fn plan_lines(p: &Plan, pane_steps: &[Step], width: usize) -> Vec<Line<'stat
     }
     if !p.warnings.is_empty() {
         for i in &p.warnings {
-            v.extend(wrap(vec![Span::styled(format!("  warn {:<12}", i.code), bold(mono::WARN)), Span::styled(i.message.clone(), st(mono::SOFT))], width, 19));
+            v.extend(wrap(vec![Span::styled(format!("  warn {:<12} ", i.code), bold(mono::WARN)), Span::styled(i.message.clone(), st(mono::SOFT))], width, 19));
         }
         v.push(Line::raw(""));
     }
@@ -568,7 +567,8 @@ fn draw_menu(f: &mut Frame, area: Rect, title: &str, items: &[MenuItem], sel: us
         let mut spans = vec![Span::styled(format!("  {}   ", it.key), ks), Span::styled(pad(&it.label, 46), ls)];
         if let Err(why) = &it.enabled {
             let why = if why == crate::actions::MONITOR_ONLY { "monitor-only: no multiplexer".to_string() } else { why.clone() };
-            spans.push(Span::styled(why, st(mono::COMMENT)));
+            // a label longer than its column still gets a separator (acceptance F4)
+            spans.push(Span::styled(format!("  {why}"), st(mono::COMMENT)));
         }
         lines.push(selectable(Line::from(spans), i == sel));
     }
@@ -669,4 +669,47 @@ pub fn plain(l: &Line) -> String {
 /// For tests: a style is bold.
 pub fn is_bold(s: Style) -> bool {
     s.add_modifier.contains(Modifier::BOLD)
+}
+
+#[cfg(test)]
+mod separator_tests {
+    use super::*;
+    use crate::app::{MenuAction, MenuItem};
+    use nimitz_core::{Issue, Plan, Severity};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn text(buf: &ratatui::buffer::Buffer) -> String {
+        let a = buf.area;
+        (0..a.height).map(|y| (0..a.width).map(|x| buf[(x, y)].symbol().to_string()).collect::<String>()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// A menu label longer than its column still gets a separator before the
+    /// reason it is disabled (acceptance F4: "stale job rowsno stale job rows").
+    #[test]
+    fn a_long_menu_label_is_separated_from_its_reason() {
+        let items = vec![
+            MenuItem { key: 'w', label: "sweep: stop and remove copies, remove stale job rows".into(), enabled: Err("no stale job rows".into()), action: MenuAction::NewFleet },
+            MenuItem { key: 'l', label: "layout herdr --ships: and a tab attaching each live ship".into(), enabled: Err(crate::actions::MONITOR_ONLY.into()), action: MenuAction::NewFleet },
+        ];
+        let mut t = Terminal::new(TestBackend::new(140, 12)).unwrap();
+        t.draw(|f| draw_menu(f, f.area(), "x", &items, 0)).unwrap();
+        let shown = text(t.backend().buffer());
+        assert!(shown.contains("stale job rows  no stale job rows"), "{shown}");
+        assert!(shown.contains("each live ship  monitor-only: no multiplexer"), "{shown}");
+    }
+
+    /// A warning code longer than its column still gets a space before the
+    /// message (acceptance F4: "labels.missinga199ee34-...").
+    #[test]
+    fn a_long_warning_code_is_separated_from_its_message() {
+        let plan = Plan {
+            summary: "adopt".into(),
+            warnings: vec![Issue { code: "labels.missing".into(), severity: Severity::Warn, message: "a199ee34-0000 has no labels".into(), fix: None, id: None }],
+            ..Default::default()
+        };
+        let lines = plan_lines(&plan, &[], 120);
+        let shown: String = lines.iter().map(|l| l.spans.iter().map(|s| s.content.to_string()).collect::<String>()).collect::<Vec<_>>().join("\n");
+        assert!(shown.contains("labels.missing a199ee34-0000"), "{shown}");
+    }
 }

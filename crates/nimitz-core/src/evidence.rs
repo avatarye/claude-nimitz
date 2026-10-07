@@ -30,11 +30,22 @@ pub fn mtime_secs(p: &Path) -> Option<f64> {
     mtime(p).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64())
 }
 
+/// When a file was made (epoch seconds): its birth time. None when the file
+/// system keeps none ("cannot tell"; a later write is no answer).
+pub fn birth_secs(p: &Path) -> Option<f64> {
+    fs::metadata(p).ok()?.created().ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs_f64())
+}
+
 pub(crate) fn s(v: &Value, k: &str) -> Option<String> {
     match v.get(k) {
         Some(Value::String(x)) if !x.is_empty() => Some(x.clone()),
         _ => None,
     }
+}
+
+/// `ts` for readers outside this module.
+pub fn stamp(v: &Value, k: &str) -> Option<f64> {
+    ts(v, k)
 }
 
 /// Epoch milliseconds (number) or an ISO-8601 string, to epoch seconds. An
@@ -89,6 +100,10 @@ pub struct FileCache {
     session_dirs: HashMap<String, PathBuf>,
     titles: HashMap<PathBuf, (SystemTime, Option<String>)>,
     trust: HashMap<PathBuf, (SystemTime, Vec<PathBuf>)>,
+    /// `transcript_root` per transcript, by mtime
+    roots: HashMap<PathBuf, (SystemTime, Vec<String>)>,
+    /// lineage transcripts not found, and when (`transcript_missing_cached`)
+    missing: HashMap<String, f64>,
     events: EventTail,
 }
 
@@ -142,6 +157,11 @@ pub(crate) fn parse_event_line(line: &str) -> Option<Event> {
         pid: v.get("pid").and_then(|p| p.as_i64()),
         labels,
         rules: v.get("rules").and_then(|r| r.as_u64()).map(|r| r as u32),
+        job: s(&v, "job"),
+        kind: s(&v, "kind"),
+        entrypoint: s(&v, "entrypoint"),
+        binding: s(&v, "binding"),
+        cwd: s(&v, "cwd"),
     })
 }
 
@@ -215,21 +235,133 @@ pub fn labels_by_session(events: &[Event]) -> HashMap<String, BTreeMap<String, S
     out
 }
 
-/// `labels_by_session`, plus the labels a job row saved (its `--settings`) for
-/// sessions with no event at all: a SessionStart can be lost (BUG-23).
+/// Labels per process: the newest SessionStart of each (pid, session id).
+/// Labels are kept per pid (plan-v4 section 3): a second process on a
+/// member's conversation (a `-p --resume`, an SDK host) does not strip the
+/// member's own process of its labels.
+pub fn labels_by_pid_session(events: &[Event]) -> HashMap<(i64, String), BTreeMap<String, String>> {
+    let mut out = HashMap::new();
+    for e in events.iter().filter(|e| e.event == "SessionStart") {
+        let (Some(pid), Some(sid)) = (e.pid, &e.session_id) else { continue };
+        let labels = if is_labelled(&e.labels) { e.labels.clone() } else { BTreeMap::new() };
+        out.insert((pid, sid.clone()), labels);
+    }
+    out
+}
+
+/// The labels of one row. Live: the SessionStart of its own process (pid and
+/// session id), else what its job row saved (`respawnFlags --settings`), else
+/// the newest SessionStart of the session. Stopped: the job row's saved labels
+/// decide (a resume restores them; a stray process on the conversation does
+/// not change them), else the newest SessionStart of the session.
+pub fn row_labels(r: &SessionRow, by_pid: &HashMap<(i64, String), BTreeMap<String, String>>, by_sid: &HashMap<String, BTreeMap<String, String>>) -> BTreeMap<String, String> {
+    let saved = || is_labelled(&r.job_labels).then(|| r.job_labels.clone());
+    let newest = || by_sid.get(&r.session_id).cloned();
+    let own = || r.pid.and_then(|p| by_pid.get(&(p, r.session_id.clone())).cloned());
+    // a job: its row's saved labels decide alone (a job launched without
+    // labels carries the daemon's inherited ones in its env, and in its hook
+    // lines: `job_backs_labels`); a job whose row is not written yet, or a
+    // pre-warmed spare's, has none to show
+    if r.short_id.is_some() {
+        return saved().unwrap_or_default();
+    }
+    match r.pid {
+        Some(_) => own().or_else(saved).or_else(newest).unwrap_or_default(),
+        None => saved().or_else(newest).unwrap_or_default(),
+    }
+}
+
+/// Do a background job's NIMITZ_* labels come from its own launch? Claude
+/// Code's daemon hands its own environment to every job it starts, so a
+/// daemon started from a labelled lead's shell gives that lead's labels to
+/// every job launched without labels of its own (the user's `claude --bg`, a
+/// hand copy, the agent view's draft). A job's labels count only when its row
+/// saved them (`--settings` in `respawnFlags`) and they name the same id.
+/// `None`: nothing to judge by (no job: an interactive or SDK process, whose
+/// env is its labels; or a job whose row is not written yet).
+pub fn job_backs_labels(claude_home: &Path, job: Option<&str>, labels: &BTreeMap<String, String>) -> Option<bool> {
+    let saved = job_saved_labels(claude_home, job?)?;
+    Some(is_labelled(&saved) && saved.get("NIMITZ_ID") == labels.get("NIMITZ_ID"))
+}
+
+/// The NIMITZ_* labels a job's launch saved (`respawnFlags --settings`);
+/// `None` when the job has no row (yet).
+pub fn job_saved_labels(claude_home: &Path, job: &str) -> Option<BTreeMap<String, String>> {
+    let d = std::fs::read(claude_home.join("jobs").join(job).join("state.json")).ok().and_then(|b| first_json(&b))?;
+    Some(job_labels(&d))
+}
+
+/// The key a row's labels and copy verdict are kept under: its job (short
+/// id), else its session id. Two jobs can run one conversation (a wake by an
+/// id that is not the job's birth id starts a second job on it, acceptance
+/// F1), so a session id alone does not name a row.
+pub fn row_key(r: &SessionRow) -> String {
+    r.short_id.clone().unwrap_or_else(|| r.session_id.clone())
+}
+
+/// Labels per row (`row_labels`, under `row_key`), and per session id: where
+/// two rows with no job share a conversation (a process holding it), the live
+/// one's labels win under the session id. Sessions with no row keep their
+/// newest SessionStart's labels under their id.
 pub fn session_labels(events: &[Event], rows: &[SessionRow]) -> HashMap<String, BTreeMap<String, String>> {
-    let mut out = labels_by_session(events);
+    let by_sid = labels_by_session(events);
+    let by_pid = labels_by_pid_session(events);
+    let mut out = by_sid.clone();
+    let mut decided: std::collections::HashSet<String> = Default::default();
     for r in rows {
-        if !out.contains_key(&r.session_id) && is_labelled(&r.job_labels) {
-            out.insert(r.session_id.clone(), r.job_labels.clone());
+        let mine = row_labels(r, &by_pid, &by_sid);
+        if r.short_id.is_some() {
+            out.insert(row_key(r), mine.clone());
+        }
+        if decided.contains(&r.session_id) && r.pid.is_none() {
+            continue;
+        }
+        out.insert(r.session_id.clone(), mine);
+        if r.pid.is_some() {
+            decided.insert(r.session_id.clone());
         }
     }
     out
 }
 
+/// `jobs/pins.json`: the jobs the daemon never idle-retires (a list of short ids).
+pub fn pins(env: &Env) -> Vec<String> {
+    fs::read(env.claude_home.join("jobs").join("pins.json"))
+        .ok()
+        .and_then(|b| first_json(&b))
+        .and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()))
+        .unwrap_or_default()
+}
+
+/// The daemon's last `bg retire <short>: <why>` line in `daemon.log` (under the
+/// Claude home; `[<iso stamp>] [bg] bg retire <short>: settled, idle 61m`): the
+/// job was parked by the daemon, no SessionEnd fired. A line older than
+/// `since` (the job's last SessionStart) is an earlier retire, not this one;
+/// a line with no stamp counts.
+pub fn daemon_retired(env: &Env, short: &str, since: Option<f64>) -> Option<String> {
+    let raw = fs::read(env.claude_home.join("daemon.log")).ok()?;
+    let key = format!("retire {short}");
+    String::from_utf8_lossy(&raw)
+        .lines()
+        .filter_map(|l| {
+            let i = l.find(&key)?;
+            if !l[..i].trim_end().ends_with("bg") && !l[..i].trim_end().ends_with("[bg]") {
+                return None;
+            }
+            let stamp = l.strip_prefix('[').and_then(|r| r.split_once(']')).and_then(|(t, _)| parse_iso(t));
+            if let (Some(t), Some(s)) = (stamp, since) {
+                if t < s {
+                    return None;
+                }
+            }
+            Some(l[i + key.len()..].trim_start_matches(':').trim().to_string())
+        })
+        .last()
+}
+
 /// The NIMITZ_* labels in a job row's saved launch options: `savedSettings` (a
 /// `--settings` JSON string) or `respawnFlags` (argv: `--settings <json>`).
-fn job_labels(d: &Value) -> BTreeMap<String, String> {
+pub(crate) fn job_labels(d: &Value) -> BTreeMap<String, String> {
     let mut settings: Vec<String> = vec![];
     if let Some(x) = s(d, "savedSettings") {
         settings.push(x);
@@ -255,7 +387,9 @@ fn job_labels(d: &Value) -> BTreeMap<String, String> {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
         if let Some(env) = v.get("env").and_then(|e| e.as_object()) {
             for (k, x) in env {
-                if let (true, Some(x)) = (k.starts_with("NIMITZ_"), x.as_str()) {
+                // the identity labels only (a launch may also carry nimitz's
+                // own state paths: `claude::settings_json`)
+                if let (true, Some(x)) = (["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_HOME"].contains(&k.as_str()), x.as_str()) {
                     out.insert(k.clone(), x.to_string());
                 }
             }
@@ -293,6 +427,24 @@ pub struct SessionRow {
     pub unreadable: bool,
     /// the session this one was forked from, when the job row records it
     pub forked_from: Option<String>,
+    /// Remote Control is connected: the session file's `bridgeSessionId` (M9)
+    pub bridge_session_id: Option<String>,
+    /// the job's birth session id (`state.json` `sessionId`) when the
+    /// conversation moved on (`resumeSessionId`, or the live session file)
+    pub birth_id: Option<String>,
+    /// the session file's `entrypoint` (cli, sdk-cli, claude-vscode, ...)
+    pub entrypoint: Option<String>,
+    /// the job is in `jobs/pins.json`
+    pub pinned: bool,
+    /// the session file says `spare: true` (a pre-warmed process the agent
+    /// view claims as its "new session" or draft)
+    pub spare: bool,
+    /// where an interactive process runs, from the session file (`tmux`
+    /// `<session>:@<window>.%<pane>`, a Herdr pane)
+    pub terminal: Option<String>,
+    /// when the session file appeared (epoch seconds): the earliest of its
+    /// birth time, its mtime and `startedAt`
+    pub appeared_at: Option<f64>,
 }
 
 impl SessionRow {
@@ -313,7 +465,16 @@ impl SessionRow {
             name: self.name.clone(),
             cwd: self.cwd.clone(),
             labels,
+            birth_id: self.birth_id.clone(),
+            entrypoint: self.entrypoint.clone(),
+            pinned: self.pinned,
+            copy: None,
+            terminal: self.terminal.clone(),
         }
+    }
+    /// Every session id this row answers to: the conversation now and the birth id.
+    pub fn session_ids(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.session_id.as_str()).chain(self.birth_id.as_deref())
     }
 }
 
@@ -333,8 +494,30 @@ fn norm_kind(k: &str) -> String {
     }
 }
 
+/// Claude Code's own processes (`kind` daemon, daemon-worker): never a member,
+/// never a stowaway, so their session files are not rows.
+fn internal_kind(k: &str) -> bool {
+    matches!(k, "daemon" | "daemon-worker")
+}
+
+/// The terminal an interactive process runs in, as the session file names it:
+/// `tmux` (`<session>:@<window>.%<pane>`), else any `herdr*` field.
+fn terminal_of(d: &Value) -> Option<String> {
+    if let Some(t) = s(d, "tmux") {
+        return Some(format!("tmux {t}"));
+    }
+    d.as_object()?.iter().find(|(k, v)| k.starts_with("herdr") && v.is_string()).map(|(k, v)| format!("{k} {}", v.as_str().unwrap_or_default()))
+}
+
 /// Rows from the files `claude agents --json --all` reads. None when the
 /// layout is not there (a different Claude Code version, or no Claude Code).
+///
+/// A job row (`jobs/<id>/state.json`) and a live session file join by **job
+/// id** (the session file's `jobId`), never by session id (plan-v4 section 4):
+/// the conversation a job runs now is the live session file's `sessionId`,
+/// else `state.json` `resumeSessionId`, else its birth `sessionId`. A live
+/// process with no job (interactive, SDK) is its own row, even on a job's
+/// conversation.
 pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRow>> {
     let sess_dir = env.claude_home.join("sessions");
     let jobs_dir = env.claude_home.join("jobs");
@@ -346,18 +529,25 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
         v.sort();
         v
     };
+    let pins = pins(env);
     let mut rows: Vec<SessionRow> = vec![];
-    let mut by_sid: HashMap<String, usize> = HashMap::new();
+    let mut by_job: HashMap<String, usize> = HashMap::new();
     for jd in list(&jobs_dir) {
         let jid = jd.file_name().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+        if jid == "pins.json" {
+            continue;
+        }
         let Some(d) = cache.json(&jd.join("state.json")) else { continue };
-        let Some(sid) = s(&d, "sessionId") else { continue };
-        by_sid.insert(sid.clone(), rows.len());
+        let Some(born) = s(&d, "sessionId") else { continue };
+        let now = s(&d, "resumeSessionId").unwrap_or_else(|| born.clone());
+        by_job.insert(jid.clone(), rows.len());
         rows.push(SessionRow {
-            session_id: sid,
+            birth_id: (now != born).then_some(born),
+            session_id: now,
             name: s(&d, "name").unwrap_or_default(),
             cwd: s(&d, "cwd").unwrap_or_default(),
             kind: "background".into(),
+            pinned: pins.iter().any(|p| *p == jid),
             short_id: Some(jid),
             pid: None,
             state: s(&d, "state"),
@@ -369,6 +559,11 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             job_labels: job_labels(&d),
             unreadable: false,
             forked_from: ["forkedFrom", "forkedFromSessionId", "parentSessionId", "resumedFrom"].iter().find_map(|k| s(&d, k)),
+            bridge_session_id: None,
+            entrypoint: None,
+            spare: false,
+            terminal: None,
+            appeared_at: None,
         });
     }
     for p in list(&sess_dir) {
@@ -380,8 +575,8 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             // file named after a job id marks that row; one named after a pid
             // (real Claude Code) is left to the `claude agents` cross-check.
             let stem = p.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
-            if let Some(r) = rows.iter_mut().find(|r| r.short_id.as_deref() == Some(stem.as_str())) {
-                r.unreadable = true;
+            if let Some(&i) = by_job.get(&stem) {
+                rows[i].unreadable = true;
             }
             continue;
         };
@@ -391,13 +586,19 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
         }
         let Some(sid) = s(&d, "sessionId") else { continue };
         let kind = norm_kind(&s(&d, "kind").unwrap_or_default());
+        if internal_kind(&kind) {
+            continue;
+        }
         let status = s(&d, "status");
+        let job = s(&d, "jobId");
+        let spare = d.get("spare").and_then(|v| v.as_bool()).unwrap_or(false);
         let live = SessionRow {
             session_id: sid.clone(),
             name: s(&d, "name").unwrap_or_default(),
             cwd: s(&d, "cwd").unwrap_or_default(),
             kind: kind.clone(),
-            short_id: s(&d, "jobId"),
+            pinned: job.as_ref().map(|j| pins.contains(j)).unwrap_or(false),
+            short_id: job.clone(),
             pid: Some(pid),
             state: None,
             status: status.clone(),
@@ -407,27 +608,38 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             job_labels: BTreeMap::new(),
             unreadable: false,
             forked_from: None,
+            bridge_session_id: s(&d, "bridgeSessionId"),
+            birth_id: None,
+            entrypoint: s(&d, "entrypoint"),
+            spare,
+            terminal: terminal_of(&d),
+            // a spare (the agent view's draft or "new session") is a pre-warmed
+            // process the view claims later: its age is its last touch, so the
+            // grace time (`snapshot::TRANSIENT_GRACE_S`) runs from the claim
+            appeared_at: if spare { mtime_secs(&p) } else { [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min) },
         };
-        match by_sid.get(&sid) {
-            // a live background process: its job row gains pid and status
-            Some(&i) if kind == "background" => {
+        match job.as_ref().and_then(|j| by_job.get(j)) {
+            // a live background process: its job row gains pid, status and the
+            // conversation it runs now
+            Some(&i) => {
                 let r = &mut rows[i];
+                let born = r.birth_id.take().or_else(|| Some(r.session_id.clone())).filter(|b| *b != sid);
+                r.birth_id = born;
+                r.session_id = live.session_id;
                 r.pid = live.pid;
                 r.status = live.status;
                 r.status_since = live.status_since;
                 r.waiting_for = live.waiting_for;
+                r.bridge_session_id = live.bridge_session_id;
+                r.entrypoint = live.entrypoint;
+                r.spare = live.spare;
+                r.terminal = live.terminal;
+                r.appeared_at = live.appeared_at;
                 if !live.name.is_empty() {
                     r.name = live.name;
                 }
             }
-            // an interactive process on a session that also has a row: the live one wins
-            Some(&i) => {
-                rows[i] = SessionRow { job_labels: std::mem::take(&mut rows[i].job_labels), forked_from: rows[i].forked_from.take(), ..live }
-            }
-            None => {
-                by_sid.insert(sid, rows.len());
-                rows.push(live)
-            }
+            None => rows.push(live),
         }
     }
     Some(rows)
@@ -455,11 +667,15 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
         .map(|a| {
             a.iter()
                 .filter_map(|r| {
+                    let kind = norm_kind(&s(r, "kind").unwrap_or_default());
+                    if internal_kind(&kind) {
+                        return None;
+                    }
                     Some(SessionRow {
                         session_id: s(r, "sessionId")?,
                         name: s(r, "name").unwrap_or_default(),
                         cwd: s(r, "cwd").unwrap_or_default(),
-                        kind: norm_kind(&s(r, "kind").unwrap_or_default()),
+                        kind,
                         short_id: s(r, "id"),
                         pid: r.get("pid").and_then(|p| p.as_i64()),
                         state: s(r, "state"),
@@ -470,6 +686,13 @@ pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
                         job_labels: BTreeMap::new(),
                         unreadable: false,
                         forked_from: None,
+                        bridge_session_id: s(r, "bridgeSessionId"),
+                        birth_id: None,
+                        entrypoint: None,
+                        pinned: false,
+                        spare: false,
+                        terminal: None,
+                        appeared_at: None,
                     })
                 })
                 .collect()
@@ -516,44 +739,137 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
     let projects = env.claude_home.join("projects");
     for c in cwd.map(project_dirs).unwrap_or_default() {
         let p = projects.join(c).join(format!("{sid}.jsonl"));
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     if let Some(d) = find_session_dir(env, cache, sid) {
         let p = d.with_extension("jsonl");
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     for e in fs::read_dir(&projects).ok()?.filter_map(|e| e.ok()) {
         let p = e.path().join(format!("{sid}.jsonl"));
-        if p.is_file() {
+        if has_message(&p) {
             return Some(p);
         }
     }
     None
 }
 
+/// A transcript that holds at least one message (a line with a `uuid`,
+/// within `ROOT_BYTES`: a `/branch` copy hoists every file-history snapshot
+/// line, up to 4 KB each and many of them, above the first message). A stub
+/// `claude stop` writes after the real file was moved away has none: a
+/// resume of it would start the conversation over (acceptance env F5), so it
+/// is no transcript.
+pub fn has_message(p: &Path) -> bool {
+    let Ok(f) = fs::File::open(p) else { return false };
+    if !f.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        return false;
+    }
+    !root_of_reader(std::io::BufReader::new(f)).is_empty()
+}
+
+/// How much of a transcript the root reader reads at most: the metadata
+/// lines (custom-title, agent-name, mode) come first, then one
+/// `file-history-snapshot` per turn (a copy hoists every one of them above
+/// its first uuid line), then the attachments and the first user message.
+const ROOT_BYTES: usize = 4 * 1024 * 1024;
+/// How long a lineage transcript that was not found stays "missing" before
+/// `transcript_missing` looks for it again (the lookup scans every project dir).
+const MISSING_AGAIN_S: f64 = 60.0;
+
+/// The root of a conversation: the uuids near the top of its transcript (the
+/// first line that carries a `uuid`, the chain root, and the first `user` or
+/// `assistant` message with its `parentUuid`). A copy of a conversation
+/// (`/branch`, `/fork`, `--fork-session`, `--bg -c`) copies the transcript,
+/// so it shares these; a fresh conversation (`/clear`) has its own. Only the
+/// head of the file is read (`ROOT_BYTES`; lines without a uuid cost nothing
+/// but their bytes), cached by (path, mtime). Empty when the transcript has
+/// no message yet.
+pub fn transcript_root(cache: &mut FileCache, jsonl: &Path) -> Vec<String> {
+    let Some(m) = mtime(jsonl) else { return vec![] };
+    if let Some((t, root)) = cache.roots.get(jsonl) {
+        if *t == m {
+            return root.clone();
+        }
+    }
+    let out = fs::File::open(jsonl).map(|f| root_of_reader(std::io::BufReader::new(f))).unwrap_or_default();
+    cache.roots.insert(jsonl.to_path_buf(), (m, out.clone()));
+    out
+}
+
+fn root_of_reader(r: impl std::io::BufRead) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    let mut read = 0usize;
+    for line in r.lines().map_while(Result::ok) {
+        read += line.len() + 1;
+        if read > ROOT_BYTES {
+            break;
+        }
+        if !line.contains("\"uuid\"") {
+            continue;
+        }
+        {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let Some(uuid) = s(&v, "uuid") else { continue };
+            let message = matches!(s(&v, "type").as_deref(), Some("user") | Some("assistant"));
+            // the chain root (the first line with a uuid) and the first message
+            if out.is_empty() || message {
+                out.push(uuid);
+                out.extend(s(&v, "parentUuid"));
+            }
+            if message {
+                break;
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// `transcript`, for a lineage conversation whose file may be gone: a miss is
+/// remembered for `MISSING_AGAIN_S`, so the scan of every project dir is not
+/// repeated on each refresh.
+pub fn transcript_missing_cached(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str) -> Option<PathBuf> {
+    let t = now();
+    if cache.missing.get(sid).is_some_and(|at| t - at < MISSING_AGAIN_S) {
+        return None;
+    }
+    let found = transcript(env, cache, cwd, sid);
+    if found.is_none() {
+        cache.missing.insert(sid.to_string(), t);
+    } else {
+        cache.missing.remove(sid);
+    }
+    found
+}
+
 /// Transcripts in a folder's project dir, newest first: (last write, session id).
 pub fn transcripts_in(env: &Env, cwd: &str) -> Vec<(f64, String)> {
-    let mut out: Vec<(f64, String)> = vec![];
+    let mut out: Vec<(f64, String)> = transcript_files_in(env, cwd)
+        .into_iter()
+        .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
+        .collect();
+    out.dedup_by(|a, b| a.1 == b.1);
+    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// The transcript files (`<sid>.jsonl`) in a folder's project dir(s).
+pub fn transcript_files_in(env: &Env, cwd: &str) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = vec![];
     for name in project_dirs(cwd) {
         let proj = env.claude_home.join("projects").join(name);
         out.extend(
             fs::read_dir(&proj)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .map(|e| e.path())
-                        .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
-                        .filter_map(|p| Some((mtime_secs(&p)?, p.file_stem()?.to_string_lossy().into_owned())))
-                        .collect::<Vec<_>>()
-                })
+                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false)).collect::<Vec<_>>())
                 .unwrap_or_default(),
         );
     }
-    out.dedup_by(|a, b| a.1 == b.1);
-    out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
@@ -670,8 +986,10 @@ pub fn read_tasks(env: &Env, cache: &mut FileCache, team: &str) -> Vec<Task> {
 
 /// Whether Claude Code trusts `dir` (it or a parent has `hasTrustDialogAccepted`),
 /// from `<claude_home>/.claude.json` (the `CLAUDE_CONFIG_DIR` layout) and, when
-/// the Claude home is `~/.claude`, from `~/.claude.json`. The trusted roots are
-/// cached by mtime (the real file is megabytes).
+/// the Claude home is `~/.claude`, from `~/.claude.json`. Inside a git
+/// repository Claude Code keys the trust on the repository (its root or
+/// below), so a parent above the root does not count (M16). The trusted roots
+/// are cached by mtime (the real file is megabytes).
 pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
     let mut files = vec![env.claude_home.join(".claude.json")];
     if env.claude_home.file_name().map(|n| n == ".claude").unwrap_or(false) {
@@ -679,10 +997,9 @@ pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
             files.push(parent.join(".claude.json"));
         }
     }
-    // Claude Code records real paths (/private/tmp for /tmp): try both forms
-    let want = Path::new(dir.trim_end_matches('/'));
-    let real = crate::env::canon(want);
-    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| want.starts_with(root) || real.starts_with(root)))
+    // Claude Code records real paths (/private/tmp for /tmp): the keys come in both forms
+    let keys = crate::env::trust_keys(Path::new(dir.trim_end_matches('/')));
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| keys.contains(root)))
 }
 
 fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {
@@ -737,11 +1054,168 @@ mod tests {
     }
 
     #[test]
+    fn the_root_of_a_real_shaped_transcript_head_is_found_past_the_snapshots() {
+        // a copy hoists every file-history-snapshot (one per turn) above its
+        // first uuid line: 200 of them must not hide the root
+        let mut head = String::new();
+        head.push_str("{\"type\": \"custom-title\", \"customTitle\": \"[E2E.SQ]-S1\", \"sessionId\": \"s\"}\n");
+        head.push_str("{\"type\": \"agent-name\", \"agentName\": \"S1\", \"sessionId\": \"s\"}\n");
+        head.push_str("{\"type\": \"mode\", \"mode\": \"default\", \"sessionId\": \"s\"}\n");
+        for i in 0..200 {
+            head.push_str(&format!("{{\"type\": \"file-history-snapshot\", \"messageId\": \"m{i:04}\", \"snapshot\": {{\"trackedFileBackups\": {{}}, \"timestamp\": \"2026-10-07T00:00:00.000Z\"}}, \"isSnapshotUpdate\": false}}\n"));
+        }
+        head.push_str("{\"parentUuid\": null, \"isSidechain\": false, \"attachment\": {}, \"type\": \"attachment\", \"uuid\": \"f0afe4e5\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"f0afe4e5\", \"isSidechain\": false, \"attachment\": {}, \"type\": \"attachment\", \"uuid\": \"0061d5f7\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"0061d5f7\", \"isSidechain\": false, \"type\": \"user\", \"message\": {\"role\": \"user\", \"content\": \"reply ok\"}, \"uuid\": \"05fb9112\", \"timestamp\": \"t\"}\n");
+        head.push_str("{\"parentUuid\": \"05fb9112\", \"type\": \"assistant\", \"uuid\": \"30290373\"}\n");
+        let root = root_of_reader(std::io::Cursor::new(head.as_bytes()));
+        assert_eq!(root, ["0061d5f7", "05fb9112", "f0afe4e5"]);
+        // no message yet: no root
+        assert!(root_of_reader(std::io::Cursor::new(b"{\"type\": \"custom-title\"}\n")).is_empty());
+        // the byte bound stops a file whose head is all snapshots
+        let big = "{\"type\": \"file-history-snapshot\", \"snapshot\": \"x\"}\n".repeat(ROOT_BYTES / 40);
+        assert!(root_of_reader(std::io::Cursor::new(format!("{big}{{\"type\": \"user\", \"uuid\": \"late\"}}\n").as_bytes())).is_empty());
+    }
+
+    #[test]
     fn cli_rows_parse() {
         let v: Value = serde_json::from_str(r#"[{"sessionId": "s1", "id": "j1", "kind": "bg", "pid": 4, "name": "n", "cwd": "/c"}, {"id": "no-session"}]"#).unwrap();
         let rows = parse_cli_rows(&v);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, "background");
         assert!(rows[0].live());
+    }
+
+    /// The daemon's retire reasons seen so far, verbatim (2.1.292): `settled,
+    /// idle 61m`, `idle-prompt, idle 61m`, and `abandoned-stale, idle 48h,
+    /// worker 2.1.289 (daemon 2.1.292)`. The parser takes any text after the
+    /// colon; the newest line of the job counts, and none older than `since`.
+    #[test]
+    fn daemon_retire_reason_is_any_text_after_the_colon() {
+        let (_td, env) = crate::config::tests::test_env();
+        std::fs::create_dir_all(&env.claude_home).unwrap();
+        std::fs::write(
+            env.claude_home.join("daemon.log"),
+            "[2026-09-19T22:10:17.241Z] [bg] bg retire 0abc1234: idle-prompt, idle 61m\n\
+             [2026-09-19T22:10:17.505Z] [bg] bg settled 0abc1234 (done)\n\
+             [2026-10-07T01:47:03.070Z] [bg] bg retire 9cdceb2d: settled, idle 61m\n\
+             [2026-10-07T05:14:03.119Z] [bg] bg retire 0abc1234: abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)\n\
+             [2026-10-07T05:14:03.594Z] [bg] bg settled 0abc1234 (done)\n",
+        )
+        .unwrap();
+        assert_eq!(daemon_retired(&env, "0abc1234", None).as_deref(), Some("abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)"));
+        assert_eq!(daemon_retired(&env, "9cdceb2d", None).as_deref(), Some("settled, idle 61m"));
+        // a job started after its last retire: that line is an earlier retire, not this one
+        let after = parse_iso("2026-10-07T05:20:00.000Z").unwrap();
+        assert_eq!(daemon_retired(&env, "0abc1234", Some(after)), None);
+        let between = parse_iso("2026-10-01T00:00:00.000Z").unwrap();
+        assert_eq!(daemon_retired(&env, "0abc1234", Some(between)).as_deref(), Some("abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)"));
+        assert_eq!(daemon_retired(&env, "deadbeef", None), None);
+    }
+    /// A `/branch` copy hoists every file-history snapshot line (up to 4 KB
+    /// each, many of them) above the first message: still a transcript. A
+    /// stub (`claude stop` after the file was moved away) is none.
+    #[test]
+    fn a_branch_copy_with_many_hoisted_snapshots_still_has_a_message() {
+        let td = tempfile::tempdir().unwrap();
+        let p = td.path().join("branch.jsonl");
+        let snap = format!("{{\"type\": \"file-history-snapshot\", \"snapshot\": \"{}\"}}\n", "x".repeat(4000));
+        let mut text = snap.repeat(200);
+        text.push_str("{\"type\": \"user\", \"uuid\": \"u1\", \"parentUuid\": null, \"sessionId\": \"s\"}\n");
+        fs::write(&p, &text).unwrap();
+        assert!(text.len() > 64 * 1024);
+        assert!(has_message(&p), "200 hoisted 4 KB lines before the first message");
+        let stub = td.path().join("stub.jsonl");
+        fs::write(&stub, "{\"type\": \"summary\", \"summary\": \"x\", \"leafUuid\": \"y\"}\n{\"type\": \"system\", \"content\": \"stopped\"}\n").unwrap();
+        assert!(!has_message(&stub));
+        assert!(!has_message(&td.path().join("missing.jsonl")));
+    }
+
+}
+
+/// Does what runs in a pane back its multiplexer's claim that the pane shows
+/// session `sid`? Herdr learns a pane's session from its own SessionStart
+/// hook, which names the pane by the process's inherited `HERDR_PANE_ID`: a
+/// background job carries the pane id of whoever launched it (or the
+/// daemon's), so the claim alone can name the wrong pane (a ship's session in
+/// its commodore's pane). A claim stands when a foreground process
+/// (`procs`: argv and pid) names the session (`--resume <sid>`), attaches to
+/// its job (`claude attach <job>`), or has a session file
+/// (`sessions/<pid>.json`) that names it.
+pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], sid: &str) -> bool {
+    let job_of = |short: &str| -> bool {
+        if sid.starts_with(short) {
+            return true;
+        }
+        let row = std::fs::read(claude_home.join("jobs").join(short).join("state.json")).ok().and_then(|b| first_json(&b));
+        if row.as_ref().is_some_and(|v| ["sessionId", "resumeSessionId"].iter().any(|k| v.get(k).and_then(|x| x.as_str()) == Some(sid))) {
+            return true;
+        }
+        std::fs::read_dir(claude_home.join("sessions")).into_iter().flatten().flatten().filter_map(|e| std::fs::read(e.path()).ok().and_then(|b| first_json(&b))).any(|v| v.get("jobId").and_then(|x| x.as_str()) == Some(short) && v.get("sessionId").and_then(|x| x.as_str()) == Some(sid))
+    };
+    procs.iter().any(|(argv, pid)| {
+        argv.iter().any(|a| a == sid)
+            || argv.windows(2).any(|w| w[0] == "attach" && job_of(&w[1]))
+            || pid.is_some_and(|p| {
+                std::fs::read(claude_home.join("sessions").join(format!("{p}.json"))).ok().and_then(|b| first_json(&b)).and_then(|v| v.get("sessionId").and_then(|x| x.as_str()).map(|x| x == sid)).unwrap_or(false)
+            })
+    })
+}
+
+/// The session a pane's foreground runs, read from the processes themselves
+/// (no multiplexer claim): a foreground pid's session file (an interactive
+/// session in the pane). What a pane shows when Herdr's claim is not backed.
+/// Not an attach client's job: an attach may show the agent view instead
+/// (R-24), which only Herdr's claim tells.
+pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
+    // only a Claude Code process (a stale session file whose pid another
+    // program reuses names nothing): `claude`, or the native binary under
+    // `.../claude/versions/<v>`
+    let is_claude = |argv: &Vec<String>| {
+        argv.first().is_some_and(|a0| Path::new(a0).file_name().is_some_and(|n| n.to_string_lossy().starts_with("claude")) || a0.contains("/claude/versions/"))
+            // an npm install runs `node .../@anthropic-ai/claude-code/cli.js`
+            || argv.get(1).is_some_and(|a1| a1.contains("claude-code/cli"))
+    };
+    procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(_, pid)| {
+        let v = std::fs::read(claude_home.join("sessions").join(format!("{}.json", (*pid)?))).ok().and_then(|b| first_json(&b))?;
+        v.get("sessionId").and_then(|x| x.as_str()).map(String::from)
+    })
+}
+
+#[cfg(test)]
+mod claim_tests {
+    use super::claim_backed;
+
+    /// A pane's session claim stands on its foreground: the session named in
+    /// the argv, an attach of its job (state.json or a session file), or the
+    /// foreground pid's session file. A claude process whose own session file
+    /// names another session does not back it (a ship's id in its
+    /// commodore's pane).
+    #[test]
+    fn a_claim_stands_only_on_what_runs_in_the_pane() {
+        let td = tempfile::tempdir().unwrap();
+        let ch = td.path();
+        std::fs::create_dir_all(ch.join("sessions")).unwrap();
+        std::fs::create_dir_all(ch.join("jobs/aaaa1111")).unwrap();
+        std::fs::write(ch.join("jobs/aaaa1111/state.json"), r#"{"sessionId":"aaaa1111-birth","resumeSessionId":"s-after-clear"}"#).unwrap();
+        std::fs::write(ch.join("sessions/700.json"), r#"{"pid":700,"sessionId":"s-commodore","jobId":null}"#).unwrap();
+        let p = |argv: &[&str], pid: Option<i64>| vec![(argv.iter().map(|x| x.to_string()).collect::<Vec<_>>(), pid)];
+        assert!(claim_backed(ch, &p(&["claude", "--resume", "s-ship"], None), "s-ship"));
+        assert!(claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-after-clear"));
+        assert!(claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "aaaa1111-birth"));
+        assert!(claim_backed(ch, &p(&["claude"], Some(700)), "s-commodore"));
+        // the misattribution: the commodore's process, Herdr says the ship's session
+        assert!(!claim_backed(ch, &p(&["claude"], Some(700)), "s-ship"));
+        assert!(!claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-ship"));
+        assert!(!claim_backed(ch, &p(&["zsh"], Some(1)), "s-ship"));
+        assert!(!claim_backed(ch, &[], "s-ship"), "an unreadable foreground backs nothing");
+        // what the pane runs, from the processes alone
+        assert_eq!(super::session_of_foreground(ch, &p(&["claude"], Some(700))).as_deref(), Some("s-commodore"));
+        assert_eq!(super::session_of_foreground(ch, &p(&["claude", "attach", "aaaa1111"], None)), None, "an attach may show the agent view");
+        assert_eq!(super::session_of_foreground(ch, &p(&["zsh"], Some(1))), None);
+        // a stale session file of a reused pid: the program is not claude
+        assert_eq!(super::session_of_foreground(ch, &p(&["vim"], Some(700))), None);
+        assert_eq!(super::session_of_foreground(ch, &p(&["/home/u/.local/share/claude/versions/2.1.292"], Some(700))).as_deref(), Some("s-commodore"));
+        assert_eq!(super::session_of_foreground(ch, &p(&["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"], Some(700))).as_deref(), Some("s-commodore"), "an npm install");
     }
 }

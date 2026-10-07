@@ -62,7 +62,7 @@ fn title_band_is_tinted_by_state_with_counts_on_the_right() {
     assert_eq!(buf[(x, y)].fg, mono::ERROR, "the state word carries the hue");
     // right side: `icon n`, slashes between, right-aligned as a group
     let band = &ls[y as usize];
-    assert!(band.contains("^10 / ^3 / *2 / -1 / x2 / o3 / ?1"), "{band}");
+    assert!(band.contains("^9 / ^4 / *2 / -1 / x2 / o3 / ?1"), "{band}");
     tab(&mut t.app, "MAIN");
     let ls = lines(&draw(&mut t.app, 200, 60));
     let main = ls.iter().find(|l| l.contains("[MAIN]") && l.contains("needs you")).unwrap();
@@ -91,7 +91,7 @@ fn band_counts_are_a_right_aligned_group_and_narrow_bands_keep_the_key_ones() {
     let main = ls.iter().find(|l| l.contains("[MAIN]")).unwrap();
     assert!(main.contains("!2") && !main.contains("*3"), "narrow: {main}");
     let forge = forge_ls.iter().find(|l| l.contains("[FORGE]")).unwrap();
-    assert!(forge.contains("^10") && !forge.contains("^3"), "narrow: errors only: {forge}");
+    assert!(forge.contains("^9") && !forge.contains("^4"), "narrow: errors only: {forge}");
 }
 
 #[test]
@@ -367,7 +367,7 @@ fn issues_view_lists_every_issue_code_with_its_fix() {
         "dup.live",
         "copy.rows",
         "lineage.broken",
-        "role.background",
+        "held",
         "ship.elsewhere",
         "cc.version",
         "stowaway",
@@ -396,7 +396,7 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
         ("[FORGE.IRON]-COMMODORE ", "labels.missing"),
         ("[FORGE.IRON]-HAMMER", "copy.rows"),
         ("[FORGE.IRON]-HAMMER", "lineage.broken"),
-        ("[FORGE]-ADMIRAL", "role.background"),
+        ("[FORGE]-ADMIRAL", "held"),
     ] {
         let l = ls.iter().find(|l| l.contains(row)).unwrap_or_else(|| panic!("{row}"));
         assert!(l.contains(code), "{row} shows {code}: {l}");
@@ -414,7 +414,7 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
     assert!(s.contains("fix  nimitz stop cc33dupe"));
     assert!(s.contains("expected [FORGE.IRON]-ANVIL"));
     // top bar counts errors
-    assert!(s.contains("10 errors"), "top bar");
+    assert!(s.contains("9 errors"), "top bar");
 }
 
 #[test]
@@ -542,9 +542,12 @@ fn open_attaches_a_background_session_in_a_new_pane() {
     assert_eq!(calls.iter().filter(|c| c.starts_with("open ")).count(), 1, "{calls:?}");
     assert_eq!(calls.last().map(String::as_str), Some("focus new"), "{calls:?}");
     assert!(toast(&t.app).contains("Open already"), "{}", toast(&t.app));
-    // an interactive lead is not attached; it lives in its terminal
+    // a lead is a job too (0.4.0): `A` attaches to it in its own tab
     goto(&mut t.app, "M:MAIN/ARGOS");
-    assert!(t.app.available(Act::Open).unwrap_err().contains("interactive"));
+    assert!(t.app.available(Act::Open).is_ok());
+    // a process with no job (an old interactive lead) is not attached; it lives in its terminal
+    goto(&mut t.app, "SW:ab99ab99-0000-4000-8000-000000000000");
+    assert!(t.app.available(Act::Open).unwrap_err().contains("no job"));
 }
 
 // ------------------------------------------------------------------ monitor-only
@@ -559,11 +562,12 @@ fn no_multiplexer_means_monitor_only_with_the_reason_shown() {
     keys(&mut t.app, "a");
     assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "{}", toast(&t.app));
     press(&mut t.app, KeyCode::Esc);
-    // a commodore does: refused, with the reason
+    // a commodore is a job too (0.4.0): no pane to open, so no multiplexer needed
     goto(&mut t.app, "M:FORGE/MOLD");
     keys(&mut t.app, "a");
-    assert!(t.app.modal.is_none());
-    assert!(toast(&t.app).contains("monitor-only"), "{}", toast(&t.app));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "{}", toast(&t.app));
+    press(&mut t.app, KeyCode::Esc);
+    // open, message and jump need one
     goto(&mut t.app, "M:MAIN/KITS/DOCS");
     keys(&mut t.app, "A");
     assert!(toast(&t.app).contains("monitor-only"));
@@ -681,15 +685,11 @@ fn a_legacy_session_has_its_own_marker_and_adopt_is_prefilled() {
 }
 
 #[test]
-fn tender_layout_and_machine_entries_are_where_they_belong() {
+fn layout_and_machine_entries_are_where_they_belong() {
     let mut t = demo();
     goto(&mut t.app, "SQ:MAIN/ARGOS");
-    let menu = t.app.create_menu();
-    let it = menu.iter().find(|i| i.key == 't').unwrap();
-    assert_eq!(it.label, "new tender for [MAIN.ARGOS]-COMMODORE");
-    assert!(it.enabled.is_ok());
+    assert!(t.app.create_menu().iter().all(|i| i.key != 't'), "no tender entry");
     goto(&mut t.app, "F:MAIN");
-    assert!(t.app.create_menu().iter().find(|i| i.key == 't').unwrap().enabled.is_err());
     let menu = t.app.action_menu();
     for k in ['L', 'S', 'M', 'w'] {
         assert!(menu.iter().any(|i| i.key == k), "fleet band menu has {k}");
@@ -814,7 +814,7 @@ fn the_header_shortens_counts_instead_of_cutting_words() {
     }
     let mut t = demo();
     let top80 = status_bar(&mut t.app, 80);
-    assert!(top80.contains("6 warn") || top80.contains("6w"), "80 columns keep the warning count: {top80}");
+    assert!(top80.contains("7 warn") || top80.contains("7w"), "80 columns keep the warning count: {top80}");
 }
 
 #[test]

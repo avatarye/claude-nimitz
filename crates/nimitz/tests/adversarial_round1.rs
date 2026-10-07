@@ -25,7 +25,7 @@ struct Run {
 
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)], stdin: Option<&str>, cwd: Option<&Path>) -> Run {
     let mut c = Command::new(EXE);
-    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_BIND_TIMEOUT", "0").envs(vars).args(args);
+    c.env_clear().env("PATH", "/usr/bin:/bin").envs(vars).args(args);
     for (k, v) in extra {
         c.env(k, v);
     }
@@ -107,7 +107,7 @@ impl Sb {
                 if sq["commodore"]["id"] == id {
                     return Some(sq["commodore"].clone());
                 }
-                for m in sq["ships"].as_array()?.iter().chain(sq["tenders"].as_array()?) {
+                for m in sq["ships"].as_array()? {
                     if m["id"] == id {
                         return Some(m.clone());
                     }
@@ -258,7 +258,7 @@ fn bug11_a_hand_made_copy_is_tied_to_its_ship() {
     let sid = sb.sid("MAIN/ARGOS/CLEAN");
     sb.claude(&sb.dir("dirs/main/clean"), &["--bg", "--resume", &sid]); // resume of a live ship: a copy
     let c = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
-    assert!(c.out.contains("copy.rows") || c.out.contains("dup.live"), "the copy shows only as an anonymous stowaway; check is green:\n{}", c.out);
+    assert!(c.out.contains("(copy)") || c.out.contains("copy.rows") || c.out.contains("dup.live"), "the copy shows only as an anonymous stowaway; check is green:\n{}", c.out);
 }
 
 #[test]
@@ -334,13 +334,6 @@ fn bug18_a_corrupt_registry_is_kept_and_reported() {
         n != "registry.json" && n.starts_with("registry") && std::fs::read(e.path()).unwrap_or_default() == b"{garbage"
     });
     assert!(kept || r.out.to_lowercase().contains("registry"), "the corrupt registry was replaced in silence; every lineage is gone:\n{}", r.out);
-}
-
-#[test]
-fn bug19_a_stowaway_can_be_adopted_as_a_tender() {
-    let sb = Sb::new(false);
-    let r = sb.run(&["adopt", "060f8274", "MAIN/ARGOS/~adopted", "--yes"]);
-    assert_eq!(r.code, 0, "plan-v3 5.3 says adopt makes a ship or a tender:\n{}", r.out);
 }
 
 #[test]
@@ -420,12 +413,15 @@ fn bug27_the_missing_squadron_fix_runs() {
 fn bug29_a_session_that_lost_its_labels_is_flagged() {
     // Real Claude Code: after its row is removed, `--resume <id> --name X` continues the SAME
     // id with no labels (SessionStart source resume, labels {}).
+    // (0.4.0: a job's labels are the ones its launch saved, so the shape is a
+    // new job whose launch saved none)
     let sb = Sb::new(false);
     let sid = sb.sid("MAIN/ARGOS/CLEAN");
-    let line = serde_json::json!({"ts": 4.0e9, "event": "SessionStart", "session_id": sid, "source": "resume", "reason": null,
-        "agent_id": null, "tool_name": null, "to": null, "pid": 1, "labels": {}});
-    let ev = sb.dir("state/events.jsonl");
-    sb.edit(&ev, |s| format!("{s}{line}\n"));
+    let job = sb.member("MAIN/ARGOS/CLEAN").unwrap()["session"]["short_id"].as_str().unwrap().to_string();
+    let dir = sb.dir("dirs/main/clean");
+    sb.claude(&dir, &["stop", &job]);
+    sb.claude(&dir, &["rm", &job]);
+    sb.claude(&dir, &["--bg", "--resume", &sid, "--name", "[MAIN.ARGOS]-CLEAN"]);
     let c = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
     assert!(c.out.contains("labels.missing"), "the newest SessionStart carried no labels; nimitz still trusts an older one:\n{}", c.out);
 }
@@ -507,14 +503,18 @@ fn bug43_signal_text_is_not_typed_with_control_characters() {
 }
 
 #[test]
-fn bug47_a_second_start_does_not_open_a_second_admiral_pane() {
+fn bug47_a_second_start_does_not_start_a_second_admiral() {
     let sb = Sb::new(true);
+    // the admiral's process is gone (a parked job); the first start wakes it
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
-    sb.run(&["start", "MAIN", "--yes"]);
-    sb.run(&["start", "MAIN", "--yes"]); // the first pane has not bound yet
-    let calls = std::fs::read_to_string(sb.dir("herdr/calls.jsonl")).unwrap_or_default();
-    let runs = calls.lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("[MAIN]-ADMIRAL")).count();
-    assert_eq!(runs, 1, "two panes now run `claude -c` for the admiral:\n{calls}");
+    let r = sb.run(&["start", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = sb.run(&["start", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("nothing to do"), "the second start finds it live:\n{}", r.out);
+    let calls = std::fs::read_to_string(sb.dir("calls.log")).unwrap_or_default();
+    let wakes = calls.lines().filter(|l| l.contains("--resume") || l.contains("\"--bg\",\"--name\",\"[MAIN]-ADMIRAL\"")).count();
+    assert_eq!(wakes, 1, "one wake, as itself, never a second job:\n{calls}");
 }
 
 #[test]
@@ -668,10 +668,47 @@ fn bug55_relaunch_is_not_skipped_because_an_impostor_carries_the_labels() {
 
 #[test]
 fn final_e_check_of_a_fleet_lists_stowaways_in_its_folders() {
+    // 0.4.0 (plan-v4 section 6): a ship folder is shared with the user's own
+    // work, so an unlabelled session there is not shown; the squadron's own
+    // ships folder under NIMITZ_HOME is fleet scope, so one there is a stowaway
     let sb = Sb::new(false);
     sb.claude(&sb.dir("dirs/main/fresh"), &["--bg", "an unlabelled session in a ship folder"]);
+    let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
+    assert!(!c.out.contains("stowaway"), "the user's own session in FRESH's folder is shown:\n{}", c.out);
+    let stray = sb.dir("nimitz/main/ships/argos/stray");
+    std::fs::create_dir_all(&stray).unwrap();
+    sb.claude(&stray, &["--bg", "an unlabelled session under the squadron's ships folder"]);
     for id in ["MAIN", "MAIN/ARGOS"] {
         let c = sb.run(&["check", id]);
-        assert!(c.out.contains("stowaway"), "`nimitz check {id}` hides a stowaway in FRESH's folder:\n{}", c.out);
+        assert!(c.out.contains("(stowaway)"), "`nimitz check {id}` hides a stowaway under ships/argos:\n{}", c.out);
     }
+}
+
+#[test]
+fn p5_sweep_of_a_ship_removes_its_live_copy_through_the_cli() {
+    let sb = Sb::new(false);
+    let cwd = sb.dir("dirs/main/stopped");
+    let out = sb.claude(&cwd, &["--bg", "--name", "[MAIN.ARGOS]-STOPPED", "x"]);
+    let copy = out.split_whitespace().last().unwrap().to_string();
+    let c = sb.run(&["check", "MAIN/ARGOS/STOPPED"]);
+    assert!(c.out.contains("(copy)") && c.out.contains("fix: nimitz sweep MAIN/ARGOS/STOPPED"), "{}", c.out);
+    assert!(!c.out.contains("name.taken"), "{}", c.out);
+    let p = sb.run(&["sweep", "MAIN/ARGOS/STOPPED", "--plan"]);
+    assert!(p.out.contains(&format!("stop {copy}")) && p.out.contains(&format!("rm {copy}")), "{}", p.out);
+    let r = sb.run(&["sweep", "MAIN/ARGOS/STOPPED", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(sb.live_in(&cwd), 0);
+    let c = sb.run(&["check", "MAIN/ARGOS/STOPPED"]);
+    assert!(!c.out.contains("(copy)"), "{}", c.out);
+}
+
+#[test]
+fn p5_the_users_own_session_in_a_ship_folder_is_not_a_stowaway_in_status() {
+    let sb = Sb::new(false);
+    let cwd = sb.dir("dirs/main/clean");
+    sb.claude(&cwd, &["--name", "my notes"]);
+    let s = sb.run(&["status"]);
+    assert!(!s.out.contains("my notes"), "{}", s.out);
+    let st = sb.stowaways();
+    assert!(st.iter().all(|s| s["name"] != "my notes"), "{st:?}");
 }

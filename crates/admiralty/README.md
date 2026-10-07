@@ -43,9 +43,9 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 - One double-line frame per fleet, its state word on the title band, with
   `icon n / icon n` status and issue counts on the right (info issues are not
   counted). The admiral is the first row inside.
-- A rounded frame per squadron inside its fleet, with its comms rule; ships and
-  tenders are rows; crew, tasks and extra job rows sit under their member with
-  tree guides.
+- A rounded frame per squadron inside its fleet, with its comms rule; ships
+  are rows; crew, tasks and extra job rows sit under their member with tree
+  guides.
 - A STOWAWAYS frame for unlabelled sessions in fleet scope, on the tab of
   the fleet that holds them (a member's folder, else the fleet's own folder,
   else the fleet its `legacy` issue names; `unassigned` otherwise). A session of
@@ -70,7 +70,7 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 `tab/shift-tab 1-9` fleet tabs, `j/k h/l gg/G ctrl-d/u space`, `/` filter
 (every fleet), `n/N`, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
-row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, tender, stowaway) in a
+row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
 new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (stop, relaunch, sweep, rm, adopt, remove from config;
 on a fleet band also `layout herdr [--ships]` and removing a machine; sweep is
 scoped to the row: member, squadron or fleet),
@@ -96,7 +96,7 @@ private Herdr server (pane dots, `m` into an admiral's pane, `A`, enter).
 
 With no multiplexer Admiralty is monitor-only: what needs a pane is closed and
 says why (starting an admiral or commodore, `up`, open, attach, jump, typing a
-message); ships and tenders start, relaunch and stop as usual, and so do sweep,
+message); ships start, relaunch and stop as usual, and so do sweep,
 rm, adopt and config changes.
 
 A squadron (or fleet) whose config does not load stays on screen as a red frame
@@ -112,6 +112,6 @@ follows right after, and keys typed meanwhile are kept.
 
 `docs/screens/`: `admiralty-wide`, `admiralty-issue-detail`,
 `admiralty-issues-view`, `admiralty-confirm`, `admiralty-actions-menu`,
-`admiralty-form`, `admiralty-tender-form`, `admiralty-fleet-menu`,
+`admiralty-form`, `admiralty-fleet-menu`,
 `admiralty-legacy`, `admiralty-broken-config`, `admiralty-sandbox-monitor-only`,
 `admiralty-narrow`, `admiralty-80x24`, `admiralty-help`.

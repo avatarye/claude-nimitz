@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "nimitz"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "libc",
  "nimitz-core",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "nimitz-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "libc",
  "serde",
@@ -705,8 +705,9 @@ dependencies = [
 
 [[package]]
 name = "nimitz-mux"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
+ "nimitz-core",
  "serde",
  "serde_json",
 ]

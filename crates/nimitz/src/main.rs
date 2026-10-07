@@ -1,13 +1,14 @@
 //! `nimitz`: the fleet command line and the hook binary (contracts.md section 10).
 //!
 //! Every rule lives in nimitz-core; this crate parses arguments, prints plans,
-//! asks before it changes anything, and opens interactive members in a
-//! multiplexer pane (core never depends on the mux).
+//! asks before it changes anything, and attaches to members in multiplexer
+//! tabs (core never depends on the mux).
 mod args;
 mod crud;
 mod members;
 mod notify;
 mod out;
+mod restore;
 mod run;
 mod sandbox_cmd;
 mod setup;
@@ -36,8 +37,14 @@ impl Ctx {
     pub fn force(&self) -> bool {
         self.args.flag("--force")
     }
+    /// The user's own command detects the multiplexer from its env; a
+    /// member's goes by `active::member_mux_vars` (its env may be the
+    /// daemon's, with the user's live `HERDR_*`).
     pub fn mux(&self) -> Box<dyn nimitz_mux::Mux> {
-        nimitz_mux::detect(&self.vars)
+        match self.caller {
+            nimitz_core::Caller::User => nimitz_mux::detect(&self.vars),
+            _ => nimitz_mux::detect(&nimitz_core::active::member_mux_vars(&self.env, &self.vars)),
+        }
     }
     pub fn snap(&self) -> Snapshot {
         nimitz_core::snapshot::snapshot(&self.env, &mut nimitz_core::snapshot::Cache::default())
@@ -45,7 +52,7 @@ impl Ctx {
     /// The gate, with this command's `--plan` / `--yes`.
     pub fn gate(&self, p: &nimitz_core::Plan) -> out::Go {
         let mut shown = p.clone();
-        run::fixes_for(&self.caller, &mut shown);
+        run::fixes_for(&self.env, &self.caller, &mut shown);
         out::gate(&shown, self.plan_only(), self.yes())
     }
 }
@@ -64,23 +71,34 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine
-  up <F>                           start every member of a fleet (needs a multiplexer)
-  start|stop|relaunch <id>         one member; start brings up missing parents first
+  up <F>                           start every member of a fleet
+  start|stop|relaunch <id>         one member; start brings up missing parents first (--fresh: a cold launch, new lineage)
   rm <id|session>                  remove job rows (never transcripts)
-  sweep [<id>]                     drop stale copy rows
-  tender <F/SQ> <task> <prompt>    one background job for a commodore
+  sweep [<id>]                     drop stale rows and copies of members
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member (ships: through the commodore)
-  open <id>                        show a member in a pane
-  layout herdr [<F>]               workspaces and tabs for fleets in Herdr
+  open <id>                        attach to a member in a tab (detach: ctrl-z)
+  restore [<F>] [--all]            bring a fleet back from the Herdr shape: leads always, ships from the
+                                   last active set (--all: every ship with a job row); --jobs-only (no tabs)
+  layout herdr [<F>] [--ships]     the shape only (an alias of restore for one release)
   migrate fleet-skill <dir...> --into <F>
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
-  sandbox create|tick|env <dir>    a fake world for tests and demos
+  sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)
 
-ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship), F/SQ/~task (tender)";
+ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship)";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // a closed pipe (`nimitz status --json | head`) ends a command quietly, as
+    // every command-line tool does (SIGPIPE, exit 141), never with a panic.
+    // Not a hook (it always exits 0, whatever Claude Code does with its
+    // pipe) nor the internal fakes: there the write error is ignored instead
+    let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__fake-claude" | "__fake-herdr"));
+    if quiet_pipe {
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
     std::process::exit(dispatch(argv));
 }
 
@@ -122,36 +140,52 @@ fn dispatch(argv: Vec<String>) -> i32 {
         return usage_error(&e);
     }
     let ctx = Ctx { env: Env::from_vars(&vars), caller: nimitz_core::sessions::caller_from_env(&vars), vars, args };
-    let r = match cmd.as_str() {
-        "init" => setup::init(&ctx),
-        "doctor" => setup::doctor(&ctx),
-        "rules" => setup::rules(&ctx),
-        "status" => members::status(&ctx),
-        "check" => members::check(&ctx),
-        "fleet" => crud::fleet(&ctx),
-        "squadron" => crud::squadron(&ctx),
-        "ship" => crud::ship(&ctx),
-        "machine" => crud::machine(&ctx),
-        "migrate" => crud::migrate(&ctx),
-        "up" => members::up(&ctx),
-        "start" => members::start(&ctx),
-        "stop" => members::stop(&ctx),
-        "relaunch" => members::relaunch(&ctx),
-        "rm" => members::rm(&ctx),
-        "sweep" => members::sweep(&ctx),
-        "tender" => members::tender(&ctx),
-        "adopt" => members::adopt(&ctx),
-        "signal" => members::signal(&ctx),
-        "open" => members::open(&ctx),
-        "layout" => members::layout(&ctx),
-        "sandbox" => sandbox_cmd::sandbox(&ctx),
-        other => Err(format!("unknown command {other:?}")),
+    let r = match COMMANDS.iter().find(|(name, _)| *name == cmd) {
+        Some((_, run)) => run(&ctx),
+        None => Err(format!("unknown command {cmd:?}")),
     };
     match r {
         Ok(code) => code,
         Err(e) => usage_error(&e),
     }
 }
+
+/// Every command that takes a `Ctx` (parsed args, the caller from the
+/// labels), in usage order. The hidden `__commands` prints the names, so the
+/// authority test runs every one of them as every role: a command added here
+/// fails that test until its row is in plan-v4 section 12.1.
+const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
+    ("init", setup::init),
+    ("doctor", setup::doctor),
+    ("rules", setup::rules),
+    ("status", members::status),
+    ("check", members::check),
+    ("fleet", crud::fleet),
+    ("squadron", crud::squadron),
+    ("ship", crud::ship),
+    ("machine", crud::machine),
+    ("migrate", crud::migrate),
+    ("up", members::up),
+    ("start", members::start),
+    ("stop", members::stop),
+    ("relaunch", members::relaunch),
+    ("rm", members::rm),
+    ("sweep", members::sweep),
+    ("adopt", members::adopt),
+    ("signal", members::signal),
+    ("open", members::open),
+    ("restore", restore::restore),
+    ("layout", members::layout),
+    ("sandbox", sandbox_cmd::sandbox),
+    ("__commands", |_| {
+        for (name, _) in COMMANDS {
+            if !name.starts_with("__") {
+                println!("{name}");
+            }
+        }
+        Ok(0)
+    }),
+];
 
 fn usage_error(e: &str) -> i32 {
     out::error(e);
@@ -172,7 +206,9 @@ fn hook(event: &str) -> i32 {
         notify::spawn_delivery(&env, &n);
     }
     if !out.is_empty() {
-        println!("{out}");
+        // a pipe Claude Code already closed is no failure of the hook
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), "{out}");
     }
     0
 }

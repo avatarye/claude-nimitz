@@ -1,5 +1,5 @@
 //! A realistic fixture world: three fleets, every status, every issue code of
-//! contracts.md section 7, crew, tenders, stowaways and panes. Tests and the
+//! contracts.md section 7, crew, stowaways and panes. Tests and the
 //! `--demo` flag render from this; nothing here touches the real machine.
 
 use std::collections::BTreeMap;
@@ -38,6 +38,11 @@ fn session(id: &Id, sid: &str, pid: Option<i64>, kind: &str, status: Option<&str
         name: id.name(),
         cwd: cwd_of(id),
         labels: if with_labels { labels(id) } else { BTreeMap::new() },
+        birth_id: None,
+        entrypoint: None,
+        pinned: false,
+        copy: None,
+        terminal: None,
     }
 }
 
@@ -100,7 +105,7 @@ fn fleet_main() -> Fleet {
         Id::admiral(f),
         Status::Idle,
         &["session file: status idle for 4m", "pid 4100 alive"],
-        Some(session(&Id::admiral(f), "aa11aa11", Some(4100), "interactive", Some("idle"), None, 7200.0, true)),
+        Some(session(&Id::admiral(f), "aa11aa11", Some(4100), "background", Some("idle"), None, 7200.0, true)),
     );
     admiral.crew = vec![crew("tm-scribe", None, "minutes-scribe", "general-purpose", true, true, 40.0)];
 
@@ -110,7 +115,7 @@ fn fleet_main() -> Fleet {
         sq.clone(),
         Status::Busy,
         &["session file: status busy for 1m"],
-        Some(session(&sq, "ab22ab22", Some(4200), "interactive", Some("busy"), None, 5400.0, true)),
+        Some(session(&sq, "ab22ab22", Some(4200), "background", Some("busy"), None, 5400.0, true)),
     );
     commodore.tasks = vec![
         Task { id: "1".into(), subject: "data importer".into(), status: "in_progress".into(), owner: Some("BOLT".into()) },
@@ -136,18 +141,17 @@ fn fleet_main() -> Fleet {
         &["session file: status idle for 2h"],
         Some(session(&boom_id, "ad44ad44", Some(4320), "background", Some("idle"), None, 10800.0, true)),
     );
-    let tender_id = Id::tender(f, "ARGOS", "ingest-logs");
-    let tender = member(
-        tender_id.clone(),
+    let ingest_id = Id::ship(f, "ARGOS", "INGEST");
+    let ingest = member(
+        ingest_id.clone(),
         Status::Busy,
         &["session file: status busy for 5m"],
-        Some(session(&tender_id, "ae55ae55", Some(4330), "background", Some("busy"), None, 600.0, true)),
+        Some(session(&ingest_id, "ae55ae55", Some(4330), "background", Some("busy"), None, 600.0, true)),
     );
     let argos = Squadron {
         id: sq,
         commodore,
-        ships: vec![bolt, boom],
-        tenders: vec![tender],
+        ships: vec![bolt, boom, ingest],
         comms: Comms::Mode("open".into()),
         issues: vec![],
     };
@@ -158,7 +162,7 @@ fn fleet_main() -> Fleet {
         sq.clone(),
         Status::NeedsYou,
         &["session file: status waiting, waitingFor permission prompt"],
-        Some(session(&sq, "af66af66", Some(4400), "interactive", Some("waiting"), Some("permission prompt"), 3000.0, true)),
+        Some(session(&sq, "af66af66", Some(4400), "background", Some("waiting"), Some("permission prompt"), 3000.0, true)),
     );
     let docs_id = Id::ship(f, "KITS", "DOCS");
     let docs = member(
@@ -178,7 +182,6 @@ fn fleet_main() -> Fleet {
         id: sq,
         commodore,
         ships: vec![docs, pipeline],
-        tenders: vec![],
         comms: Comms::Mode("commodore-only".into()),
         issues: vec![],
     };
@@ -200,15 +203,15 @@ fn fleet_forge() -> Fleet {
     let mut admiral = member(
         adm_id.clone(),
         Status::Busy,
-        &["session file: status busy", "job row says background"],
+        &["session file: status busy", "job row ca11ca11"],
         Some(session(&adm_id, "ca11ca11", Some(5100), "background", Some("busy"), None, 1800.0, true)),
     );
-    // core's wording (sessions::session_issues)
+    // core's wording (sessions::session_issues): a process with no job runs its conversation
     admiral.issues = vec![issue(
-        "role.background",
-        Severity::Error,
-        "FORGE (an admiral) is a background session",
-        Some("claude attach ca11ca11  # and keep it in a terminal"),
+        "held",
+        Severity::Warn,
+        "FORGE's conversation ca11ca11-... runs in a process with no job (pid 5188, sdk-cli): nimitz cannot stop or resume it there",
+        Some("end that process in its host, then nimitz start FORGE"),
         Some(&adm_id),
     )];
 
@@ -218,7 +221,7 @@ fn fleet_forge() -> Fleet {
         sq.clone(),
         Status::Stopped,
         &["job row, no pid", "resumed with flags earlier: labels gone"],
-        Some(session(&sq, "cb22cb22", None, "interactive", None, None, 90000.0, false)),
+        Some(session(&sq, "cb22cb22", None, "background", None, None, 90000.0, false)),
     );
     commodore.issues = vec![issue(
         "labels.missing",
@@ -261,20 +264,19 @@ fn fleet_forge() -> Fleet {
         issue("folder.missing", Severity::Error, "/home/u/work/quench does not exist", Some("nimitz ship set FORGE/IRON/QUENCH --dir <folder>"), Some(&quench_id)),
         issue("ship.elsewhere", Severity::Error, "managed folder locked by home-server", None, Some(&quench_id)),
     ];
-    let t_id = Id::tender(f, "IRON", "hotfix");
+    let hotfix_id = Id::ship(f, "IRON", "HOTFIX");
     let mut hotfix = member(
-        t_id.clone(),
+        hotfix_id.clone(),
         Status::Stopped,
         &["job row failed"],
-        Some(session(&t_id, "ce55ce55", None, "background", None, None, 50000.0, true)),
+        Some(session(&hotfix_id, "ce55ce55", None, "background", None, None, 50000.0, true)),
     );
-    hotfix.session.as_mut().unwrap().labels.insert("NIMITZ_ID".into(), "FORGE/MOLD/~hotfix".into());
-    hotfix.issues = vec![issue("labels.mismatch", Severity::Error, "labels name FORGE/MOLD/~hotfix, registry says FORGE/IRON/~hotfix", Some("nimitz relaunch FORGE/IRON/~hotfix"), Some(&t_id))];
+    hotfix.session.as_mut().unwrap().labels.insert("NIMITZ_ID".into(), "FORGE/MOLD/HOTFIX".into());
+    hotfix.issues = vec![issue("labels.mismatch", Severity::Error, "labels name FORGE/MOLD/HOTFIX, registry says FORGE/IRON/HOTFIX", Some("nimitz relaunch FORGE/IRON/HOTFIX"), Some(&hotfix_id))];
     let iron = Squadron {
         id: sq,
         commodore,
-        ships: vec![anvil, hammer, quench],
-        tenders: vec![hotfix],
+        ships: vec![anvil, hammer, quench, hotfix],
         comms: Comms::Mode("open".into()),
         issues: vec![],
     };
@@ -297,7 +299,6 @@ fn fleet_forge() -> Fleet {
         id: sq.clone(),
         commodore,
         ships: vec![cast, flask],
-        tenders: vec![],
         comms: Comms::Allow { allow: vec!["MAIN/ARGOS/BOLT".into()] },
         issues: vec![issue("config.invalid", Severity::Error, "squadron.toml: ships[1] duplicate name CAST", Some("nimitz check FORGE/MOLD"), Some(&sq))],
     };
@@ -325,7 +326,7 @@ fn fleet_lab() -> Fleet {
         dir: "/home/u/.claude-nimitz/lab".into(),
         machine: None,
         admiral,
-        squadrons: vec![Squadron { id: sq, commodore, ships: vec![lens], tenders: vec![], comms: Comms::default(), issues: vec![] }],
+        squadrons: vec![Squadron { id: sq, commodore, ships: vec![lens], comms: Comms::default(), issues: vec![] }],
         issues: vec![],
     }
 }
@@ -344,6 +345,11 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         name: "scratch-run".into(),
         cwd: "/home/u/.claude-nimitz/forge/squadrons/IRON".into(),
         labels: BTreeMap::new(),
+        birth_id: None,
+        entrypoint: None,
+        pinned: false,
+        copy: None,
+        terminal: None,
     };
     let s2 = SessionInfo {
         session_id: "ef22ef22-0000-4000-8000-000000000000".into(),
@@ -358,11 +364,16 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         name: "one-off probe".into(),
         cwd: "/home/u/.claude-nimitz/main/admiral".into(),
         labels: BTreeMap::new(),
+        birth_id: None,
+        entrypoint: None,
+        pinned: false,
+        copy: None,
+        terminal: None,
     };
     // a session of the old fleet-skill fleets, recognised by its name
     let s3 = SessionInfo {
         session_id: "ab99ab99-0000-4000-8000-000000000000".into(),
-        short_id: Some("ab99ab99".into()),
+        short_id: None,
         pid: Some(6300),
         kind: "interactive".into(),
         state: None,
@@ -373,6 +384,11 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
         name: "[KITS]-LEAD".into(),
         cwd: "/home/u/.claude-nimitz/main/squadrons/KITS".into(),
         labels: BTreeMap::new(),
+        birth_id: None,
+        entrypoint: None,
+        pinned: false,
+        copy: None,
+        terminal: None,
     };
     let issues = vec![
         issue("legacy", Severity::Warn, "`[KITS]-LEAD` is a session of the old fleet-skill fleet KITS", Some("nimitz adopt ab99ab99 MAIN/KITS"), None),

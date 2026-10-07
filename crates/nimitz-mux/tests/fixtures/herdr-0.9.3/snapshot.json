@@ -1,0 +1,1157 @@
+{
+ "id": "cli:api:snapshot",
+ "result": {
+  "snapshot": {
+   "agents": [
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "41a2ca48-43a3-20f4-7621-be9e583f881b"
+     },
+     "agent_status": "idle",
+     "completion_seq": 17,
+     "cwd": "/home/user/nimitz/353517",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/353517",
+     "pane_id": "w3:p1",
+     "revision": 3,
+     "state_change_seq": 17,
+     "tab_id": "w3:t1",
+     "terminal_id": "term_8242a1e97cb215",
+     "terminal_title": "✳ [ALPHA]-ADMIRAL",
+     "terminal_title_stripped": "[ALPHA]-ADMIRAL",
+     "workspace_id": "w3"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "951aa571-136a-1bbe-e150-bf731ca70d01"
+     },
+     "agent_status": "idle",
+     "completion_seq": 231,
+     "cwd": "/home/user/nimitz/4accc7",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/4accc7",
+     "pane_id": "w4:p1",
+     "revision": 3,
+     "state_change_seq": 231,
+     "tab_id": "w4:t1",
+     "terminal_id": "term_d6916e6e048b1e",
+     "terminal_title": "✳ [ALPHA.GH]-COMMODORE",
+     "terminal_title_stripped": "[ALPHA.GH]-COMMODORE",
+     "workspace_id": "w4"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "82d0b946-a8bf-2c55-643b-603e83f0b5af"
+     },
+     "agent_status": "idle",
+     "completion_seq": 110,
+     "cwd": "/home/user/nimitz/c175c8",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/c175c8",
+     "pane_id": "w5:p3",
+     "revision": 3,
+     "state_change_seq": 110,
+     "tab_id": "w5:t2",
+     "terminal_id": "term_ba39546866be70",
+     "terminal_title": "✳ [BRAVO]-ADMIRAL",
+     "terminal_title_stripped": "[BRAVO]-ADMIRAL",
+     "workspace_id": "w5"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "d1f3b605-d929-b62b-791d-cfcc9e1e59f7"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/a6044c",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/a6044c",
+     "pane_id": "w6:p1",
+     "revision": 3,
+     "state_change_seq": 103,
+     "tab_id": "w6:t1",
+     "terminal_id": "term_8e7b0d39924b00",
+     "terminal_title": "✳ [BRAVO.SQA]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQA]-COMMODORE",
+     "workspace_id": "w6"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "806af0dc-bed7-c84d-b35d-209b3dde273d"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/27e072",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/27e072",
+     "pane_id": "w7:p1",
+     "revision": 3,
+     "state_change_seq": 104,
+     "tab_id": "w7:t1",
+     "terminal_id": "term_b39058aaa24be3",
+     "terminal_title": "✳ [BRAVO.SQB]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQB]-COMMODORE",
+     "workspace_id": "w7"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "78cfdb54-2e99-37ab-4009-6426834c66dc"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/d7c16a",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/d7c16a",
+     "pane_id": "w8:p1",
+     "revision": 3,
+     "state_change_seq": 105,
+     "tab_id": "w8:t1",
+     "terminal_id": "term_27cababf089a06",
+     "terminal_title": "✳ [BRAVO.SQC]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQC]-COMMODORE",
+     "workspace_id": "w8"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "71b27606-f66b-295d-987e-24c69f5b67bb"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/10df84",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/10df84",
+     "pane_id": "w9:p1",
+     "revision": 3,
+     "state_change_seq": 106,
+     "tab_id": "w9:t1",
+     "terminal_id": "term_dafa683daece78",
+     "terminal_title": "✳ [BRAVO.SQD]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQD]-COMMODORE",
+     "workspace_id": "w9"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "ea15e82f-719f-8991-32cc-48296bef875d"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/196cd7",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/196cd7",
+     "pane_id": "wA:p1",
+     "revision": 3,
+     "state_change_seq": 107,
+     "tab_id": "wA:t1",
+     "terminal_id": "term_066e495bd6e05f",
+     "terminal_title": "✳ [BRAVO.SQE]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQE]-COMMODORE",
+     "workspace_id": "wA"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "2b01b383-4cc5-b412-6b8c-eee4ada8d151"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/a8fe9b",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/a8fe9b",
+     "pane_id": "wB:p1",
+     "revision": 3,
+     "state_change_seq": 116,
+     "tab_id": "wB:t1",
+     "terminal_id": "term_2beb6c40bb2c31",
+     "terminal_title": "✳ [BRAVO.SQF]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQF]-COMMODORE",
+     "workspace_id": "wB"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "fce62c36-3d65-b99e-61a2-882f8e9adf1e"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/2f0776",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/2f0776",
+     "pane_id": "wC:p1",
+     "revision": 3,
+     "state_change_seq": 109,
+     "tab_id": "wC:t1",
+     "terminal_id": "term_13608b15589662",
+     "terminal_title": "✳ [BRAVO.SQG]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQG]-COMMODORE",
+     "workspace_id": "wC"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "d18ccd4d-f475-d9d6-4b48-08924ef1984f"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/33aaaf",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/33aaaf",
+     "pane_id": "wD:p1",
+     "revision": 3,
+     "state_change_seq": 112,
+     "tab_id": "wD:t1",
+     "terminal_id": "term_da2e90935222bf",
+     "terminal_title": "✳ [BRAVO.SQH]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQH]-COMMODORE",
+     "workspace_id": "wD"
+    }
+   ],
+   "focused_pane_id": "w4:pT",
+   "focused_tab_id": "w4:t1",
+   "focused_workspace_id": "w4",
+   "layouts": [
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w1:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w1:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w1:t1",
+     "workspace_id": "w1",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w3:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w3:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w3:t1",
+     "workspace_id": "w3",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w4:pT",
+     "panes": [
+      {
+       "focused": false,
+       "pane_id": "w4:p1",
+       "rect": {
+        "height": 113,
+        "width": 117,
+        "x": 0,
+        "y": 0
+       }
+      },
+      {
+       "focused": false,
+       "pane_id": "w4:pF",
+       "rect": {
+        "height": 57,
+        "width": 117,
+        "x": 117,
+        "y": 0
+       }
+      },
+      {
+       "focused": true,
+       "pane_id": "w4:pT",
+       "rect": {
+        "height": 56,
+        "width": 117,
+        "x": 117,
+        "y": 57
+       }
+      }
+     ],
+     "splits": [
+      {
+       "direction": "right",
+       "id": "split_0_root",
+       "ratio": 0.5,
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      },
+      {
+       "direction": "down",
+       "id": "split_1_1",
+       "ratio": 0.5,
+       "rect": {
+        "height": 113,
+        "width": 117,
+        "x": 117,
+        "y": 0
+       }
+      }
+     ],
+     "tab_id": "w4:t1",
+     "workspace_id": "w4",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w5:p3",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w5:p3",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w5:t2",
+     "workspace_id": "w5",
+     "zoomed": true
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w6:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w6:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w6:t1",
+     "workspace_id": "w6",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w7:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w7:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w7:t1",
+     "workspace_id": "w7",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w8:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w8:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w8:t1",
+     "workspace_id": "w8",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "w9:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "w9:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "w9:t1",
+     "workspace_id": "w9",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "wA:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "wA:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "wA:t1",
+     "workspace_id": "wA",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "wB:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "wB:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "wB:t1",
+     "workspace_id": "wB",
+     "zoomed": true
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "wC:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "wC:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "wC:t1",
+     "workspace_id": "wC",
+     "zoomed": false
+    },
+    {
+     "area": {
+      "height": 113,
+      "width": 234,
+      "x": 0,
+      "y": 0
+     },
+     "focused_pane_id": "wD:p1",
+     "panes": [
+      {
+       "focused": true,
+       "pane_id": "wD:p1",
+       "rect": {
+        "height": 113,
+        "width": 234,
+        "x": 0,
+        "y": 0
+       }
+      }
+     ],
+     "splits": [],
+     "tab_id": "wD:t1",
+     "workspace_id": "wD",
+     "zoomed": false
+    }
+   ],
+   "panes": [
+    {
+     "agent_status": "unknown",
+     "cwd": "/home/user/nimitz/23ed18",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/23ed18",
+     "pane_id": "w1:p1",
+     "revision": 49,
+     "scroll": {
+      "max_offset_from_bottom": 112,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "w1:t1",
+     "terminal_id": "term_5e4aa05840b82d",
+     "terminal_title": "user@host:~/path",
+     "terminal_title_stripped": "user@host:~/path",
+     "workspace_id": "w1"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "41a2ca48-43a3-20f4-7621-be9e583f881b"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/353517",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/353517",
+     "pane_id": "w3:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "w3:t1",
+     "terminal_id": "term_8242a1e97cb215",
+     "terminal_title": "✳ [ALPHA]-ADMIRAL",
+     "terminal_title_stripped": "[ALPHA]-ADMIRAL",
+     "workspace_id": "w3"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "951aa571-136a-1bbe-e150-bf731ca70d01"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/4accc7",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/4accc7",
+     "pane_id": "w4:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 111
+     },
+     "tab_id": "w4:t1",
+     "terminal_id": "term_d6916e6e048b1e",
+     "terminal_title": "✳ [ALPHA.GH]-COMMODORE",
+     "terminal_title_stripped": "[ALPHA.GH]-COMMODORE",
+     "workspace_id": "w4"
+    },
+    {
+     "agent_status": "unknown",
+     "cwd": "/home/user/nimitz/4accc7",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/4accc7",
+     "pane_id": "w4:pF",
+     "revision": 14,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 55
+     },
+     "tab_id": "w4:t1",
+     "terminal_id": "term_2820b478374844",
+     "terminal_title": "admiralty",
+     "terminal_title_stripped": "admiralty",
+     "workspace_id": "w4"
+    },
+    {
+     "agent_status": "unknown",
+     "cwd": "/home/user/nimitz/4accc7",
+     "focused": true,
+     "foreground_cwd": "/home/user/nimitz/4accc7",
+     "pane_id": "w4:pT",
+     "revision": 6,
+     "scroll": {
+      "max_offset_from_bottom": 14,
+      "offset_from_bottom": 0,
+      "viewport_rows": 54
+     },
+     "tab_id": "w4:t1",
+     "terminal_id": "term_956c5c11150e83",
+     "terminal_title": "herdr api snapshot > ~/path",
+     "terminal_title_stripped": "herdr api snapshot > ~/path",
+     "workspace_id": "w4"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "82d0b946-a8bf-2c55-643b-603e83f0b5af"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/c175c8",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/c175c8",
+     "pane_id": "w5:p3",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "w5:t2",
+     "terminal_id": "term_ba39546866be70",
+     "terminal_title": "✳ [BRAVO]-ADMIRAL",
+     "terminal_title_stripped": "[BRAVO]-ADMIRAL",
+     "workspace_id": "w5"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "d1f3b605-d929-b62b-791d-cfcc9e1e59f7"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/a6044c",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/a6044c",
+     "pane_id": "w6:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "w6:t1",
+     "terminal_id": "term_8e7b0d39924b00",
+     "terminal_title": "✳ [BRAVO.SQA]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQA]-COMMODORE",
+     "workspace_id": "w6"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "806af0dc-bed7-c84d-b35d-209b3dde273d"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/27e072",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/27e072",
+     "pane_id": "w7:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "w7:t1",
+     "terminal_id": "term_b39058aaa24be3",
+     "terminal_title": "✳ [BRAVO.SQB]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQB]-COMMODORE",
+     "workspace_id": "w7"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "78cfdb54-2e99-37ab-4009-6426834c66dc"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/d7c16a",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/d7c16a",
+     "pane_id": "w8:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "w8:t1",
+     "terminal_id": "term_27cababf089a06",
+     "terminal_title": "✳ [BRAVO.SQC]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQC]-COMMODORE",
+     "workspace_id": "w8"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "71b27606-f66b-295d-987e-24c69f5b67bb"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/10df84",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/10df84",
+     "pane_id": "w9:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "w9:t1",
+     "terminal_id": "term_dafa683daece78",
+     "terminal_title": "✳ [BRAVO.SQD]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQD]-COMMODORE",
+     "workspace_id": "w9"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "ea15e82f-719f-8991-32cc-48296bef875d"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/196cd7",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/196cd7",
+     "pane_id": "wA:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "wA:t1",
+     "terminal_id": "term_066e495bd6e05f",
+     "terminal_title": "✳ [BRAVO.SQE]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQE]-COMMODORE",
+     "workspace_id": "wA"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "2b01b383-4cc5-b412-6b8c-eee4ada8d151"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/a8fe9b",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/a8fe9b",
+     "pane_id": "wB:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "wB:t1",
+     "terminal_id": "term_2beb6c40bb2c31",
+     "terminal_title": "✳ [BRAVO.SQF]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQF]-COMMODORE",
+     "workspace_id": "wB"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "fce62c36-3d65-b99e-61a2-882f8e9adf1e"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/2f0776",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/2f0776",
+     "pane_id": "wC:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "wC:t1",
+     "terminal_id": "term_13608b15589662",
+     "terminal_title": "✳ [BRAVO.SQG]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQG]-COMMODORE",
+     "workspace_id": "wC"
+    },
+    {
+     "agent": "claude",
+     "agent_session": {
+      "agent": "claude",
+      "kind": "id",
+      "source": "herdr:claude",
+      "value": "d18ccd4d-f475-d9d6-4b48-08924ef1984f"
+     },
+     "agent_status": "idle",
+     "cwd": "/home/user/nimitz/33aaaf",
+     "focused": false,
+     "foreground_cwd": "/home/user/nimitz/33aaaf",
+     "pane_id": "wD:p1",
+     "revision": 3,
+     "scroll": {
+      "max_offset_from_bottom": 0,
+      "offset_from_bottom": 0,
+      "viewport_rows": 113
+     },
+     "tab_id": "wD:t1",
+     "terminal_id": "term_da2e90935222bf",
+     "terminal_title": "✳ [BRAVO.SQH]-COMMODORE",
+     "terminal_title_stripped": "[BRAVO.SQH]-COMMODORE",
+     "workspace_id": "wD"
+    }
+   ],
+   "protocol": 22,
+   "tabs": [
+    {
+     "agent_status": "unknown",
+     "focused": false,
+     "label": "1",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w1:t1",
+     "workspace_id": "w1"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "ADMIRAL",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w3:t1",
+     "workspace_id": "w3"
+    },
+    {
+     "agent_status": "idle",
+     "focused": true,
+     "label": "COMMODORE",
+     "number": 1,
+     "pane_count": 3,
+     "tab_id": "w4:t1",
+     "workspace_id": "w4"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.ADMIRAL",
+     "number": 2,
+     "pane_count": 1,
+     "tab_id": "w5:t2",
+     "workspace_id": "w5"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQA.COMMODORE",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w6:t1",
+     "workspace_id": "w6"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQB.COMMODORE",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w7:t1",
+     "workspace_id": "w7"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQC.COMMODORE",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w8:t1",
+     "workspace_id": "w8"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQD.COMMODORE",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "w9:t1",
+     "workspace_id": "w9"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQE.COMMODORE",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "wA:t1",
+     "workspace_id": "wA"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQF.COMMODORE",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "wB:t1",
+     "workspace_id": "wB"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQG.COMMODORE",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "wC:t1",
+     "workspace_id": "wC"
+    },
+    {
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQH.COMMODORE",
+     "number": 1,
+     "pane_count": 1,
+     "tab_id": "wD:t1",
+     "workspace_id": "wD"
+    }
+   ],
+   "version": "0.9.3",
+   "workspaces": [
+    {
+     "active_tab_id": "w1:t1",
+     "agent_status": "unknown",
+     "focused": false,
+     "label": "shell",
+     "number": 1,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "w1"
+    },
+    {
+     "active_tab_id": "w3:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "ALPHA",
+     "number": 2,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "w3"
+    },
+    {
+     "active_tab_id": "w4:t1",
+     "agent_status": "idle",
+     "focused": true,
+     "label": "ALPHA.GH",
+     "number": 3,
+     "pane_count": 3,
+     "tab_count": 1,
+     "workspace_id": "w4"
+    },
+    {
+     "active_tab_id": "w5:t2",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO",
+     "number": 4,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "w5"
+    },
+    {
+     "active_tab_id": "w6:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQA",
+     "number": 5,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "w6"
+    },
+    {
+     "active_tab_id": "w7:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQB",
+     "number": 6,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "w7"
+    },
+    {
+     "active_tab_id": "w8:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQC",
+     "number": 7,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "w8"
+    },
+    {
+     "active_tab_id": "w9:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQD",
+     "number": 8,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "w9"
+    },
+    {
+     "active_tab_id": "wA:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQE",
+     "number": 9,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "wA"
+    },
+    {
+     "active_tab_id": "wB:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQF",
+     "number": 10,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "wB"
+    },
+    {
+     "active_tab_id": "wC:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQG",
+     "number": 11,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "wC"
+    },
+    {
+     "active_tab_id": "wD:t1",
+     "agent_status": "idle",
+     "focused": false,
+     "label": "BRAVO.SQH",
+     "number": 12,
+     "pane_count": 1,
+     "tab_count": 1,
+     "workspace_id": "wD"
+    }
+   ]
+  },
+  "type": "session_snapshot"
+ }
+}

@@ -12,6 +12,9 @@ pub struct Env {
     pub herdr_bin: Option<String>,
     pub hostname: String,
     pub mux: Option<String>,
+    /// how long a start waits for the daemon to restart a crashed job before
+    /// it resumes the job itself (`NIMITZ_CRASH_WINDOW`, seconds; default 20)
+    pub crash_window_s: f64,
 }
 
 /// `$HOME` from the given vars first (tests), then the process env.
@@ -88,6 +91,13 @@ pub fn is_git_worktree(root: &Path) -> bool {
     root.join(".git").is_file()
 }
 
+/// When `root` became a repository (epoch seconds): the birth time of its
+/// `.git` (folder or worktree file). None when the file system keeps no birth
+/// time: "cannot tell", never a guess from a later write.
+pub fn git_birth(root: &Path) -> Option<f64> {
+    std::fs::metadata(root.join(".git")).ok()?.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs_f64())
+}
+
 /// First `name` on PATH that is a file.
 pub fn which(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
@@ -153,6 +163,7 @@ impl Env {
             herdr_bin,
             hostname: get("NIMITZ_HOSTNAME").map(|h| h.to_lowercase()).unwrap_or_else(local_hostname),
             mux: get("NIMITZ_MUX"),
+            crash_window_s: get("NIMITZ_CRASH_WINDOW").and_then(|v| v.parse().ok()).unwrap_or(20.0),
         }
     }
 

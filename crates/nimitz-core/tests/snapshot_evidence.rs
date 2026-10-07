@@ -62,10 +62,12 @@ fn status_says_why_it_is_what_it_is() {
     let twin = w.ship(&snap, "TWIN");
     assert!(twin.session.is_some() && !twin.extra_rows.is_empty());
 
-    // stopped: the job row with no live pid
+    // a job row with no live pid and no SessionEnd: parked, not an error (plan-v4 section 4)
     let stopped = w.ship(&snap, "STOPPED");
-    assert_eq!(stopped.status, Status::Stopped);
+    assert_eq!(stopped.status, Status::Parked);
     assert!(stopped.reasons[0].contains("no live pid"), "{:?}", stopped.reasons);
+    assert!(stopped.reasons[1].contains("parked"), "{:?}", stopped.reasons);
+    assert!(stopped.issues.is_empty(), "{:?}", stopped.issues);
 
     // never started
     let fresh = w.ship(&snap, "FRESH");
@@ -230,7 +232,7 @@ fn extra_rows_hold_the_copies_and_the_current_row_stays_the_primary() {
     let snap = w.snap();
     let m = w.ship(&snap, "COPIES");
     let reg = nimitz_core::registry::load(&w.env);
-    let current = reg.identities[&m.id.0].current.clone().unwrap();
+    let current = reg.identities[&m.id.0].session.clone().unwrap();
     assert_eq!(m.session.as_ref().unwrap().session_id, current, "the registry decides which row is the primary");
     assert_eq!(m.extra_rows.len(), 2);
     assert!(m.extra_rows.iter().all(|r| r.session_id != current));
@@ -276,13 +278,13 @@ fn a_status_nobody_knows_is_unknown_and_a_stop_says_why_it_ended() {
 fn every_member_carries_its_session_issues() {
     let w = world();
     let snap = w.snap();
-    for (ship, code) in [("DRIFT", "name.drift"), ("NOLABEL", "labels.missing"), ("TWIN", "dup.live"), ("MISLABEL", "labels.mismatch"), ("COPIES", "copy.rows"), ("TAKEN", "name.taken"), ("BROKEN", "lineage.broken")] {
+    for (ship, code) in [("DRIFT", "name.drift"), ("NOLABEL", "labels.missing"), ("TWIN", "dup.live"), ("MISLABEL", "labels.mismatch"), ("COPIES", "copy.rows"), ("TAKEN", "copy"), ("BROKEN", "history.lost")] {
         let m = w.ship(&snap, ship);
         assert!(m.issues.iter().any(|i| i.code == code), "{ship}: {:?}", m.issues);
     }
     assert!(w.ship(&snap, "CLEAN").issues.is_empty());
     let boreal = &snap.fleets.iter().find(|f| f.id.fleet() == "MAIN").unwrap().squadrons.iter().find(|s| s.id.squadron() == Some("BOREAL")).unwrap().commodore;
-    assert!(boreal.issues.iter().any(|i| i.code == "role.background"), "{:?}", boreal.issues);
+    assert!(boreal.issues.is_empty(), "a background lead is a job like every member: {:?}", boreal.issues);
 }
 
 #[test]
@@ -307,4 +309,100 @@ fn the_machine_label_survives_removing_every_fleet() {
     let snap = w.snap();
     assert!(snap.fleets.is_empty());
     assert_eq!(snap.machine.as_deref(), Some("west-mac"));
+}
+
+// ------------------------------------------------------------------ 0.4.0 status words (plan-v4 section 4)
+
+#[test]
+fn status_shell_is_busy_and_every_job_state_reads() {
+    let w = world();
+    let clean = w.ship(&w.snap(), "CLEAN");
+    let short = clean.session.as_ref().unwrap().short_id.clone().unwrap();
+    // `shell`: an idle turn with background work still running
+    w.patch(&w.session_file(&short), |v| v["status"] = json!("shell"));
+    let m = w.ship(&w.snap(), "CLEAN");
+    assert_eq!(m.status, Status::Busy);
+    assert!(m.reasons[0].contains("shell"), "{:?}", m.reasons);
+    // every job state Claude Code writes is read as it is: a live row keeps its
+    // session-file word, a row with no live pid is stopped with the state named
+    const STATES: [&str; 10] = ["starting", "running", "resuming", "adopted", "crashed", "working", "blocked", "done", "stopped", "failed"];
+    w.patch(&w.session_file(&short), |v| v["status"] = json!("idle"));
+    for state in STATES {
+        w.patch(&w.job_file(&short), |v| v["state"] = json!(state));
+        let m = w.ship(&w.snap(), "CLEAN");
+        assert_eq!(m.status, Status::Idle, "live with state {state}: {:?}", m.reasons);
+        assert!(!m.issues.iter().any(|i| i.code.starts_with("job.")), "state {state}: {:?}", m.issues);
+    }
+    let stopped = w.ship(&w.snap(), "STOPPED");
+    let short = stopped.session.as_ref().unwrap().short_id.clone().unwrap();
+    for state in STATES {
+        w.patch(&w.job_file(&short), |v| v["state"] = json!(state));
+        let m = w.ship(&w.snap(), "STOPPED");
+        // nobody stopped it (no SessionEnd): parked, except `failed` (row 8)
+        let want = if state == "failed" { Status::Stopped } else { Status::Parked };
+        assert_eq!(m.status, want, "no pid, state {state}: {:?}", m.reasons);
+        assert!(m.reasons[0].contains(&format!("state {state}")), "{:?}", m.reasons);
+    }
+    // a state from a newer Claude Code degrades the same way: a word, never an error
+    w.patch(&w.job_file(&short), |v| v["state"] = json!("hibernating"));
+    let m = w.ship(&w.snap(), "STOPPED");
+    assert_eq!(m.status, Status::Parked);
+    assert!(!m.issues.iter().any(|i| i.code.starts_with("job.")), "{:?}", m.issues);
+}
+
+#[test]
+fn daemon_session_files_are_neither_members_nor_stowaways() {
+    let w = world();
+    let clean = w.ship(&w.snap(), "CLEAN");
+    let short = clean.session.as_ref().unwrap().short_id.clone().unwrap();
+    let cwd = clean.cwd.clone().unwrap();
+    // Claude Code's own processes keep session files too: in a member's folder,
+    // even with the member's own session id, they are not rows
+    for (kind, name) in [("daemon", "d1"), ("daemon-worker", "d2")] {
+        std::fs::write(
+            w.base.join("claude_home/sessions").join(format!("{name}.json")),
+            json!({"pid": sandbox::LIVE_PID, "sessionId": format!("{name}-0000-4000-8000-000000000000"), "cwd": cwd, "kind": kind,
+                   "name": "", "status": "idle", "startedAt": (evidence::now() * 1000.0) as i64}).to_string(),
+        )
+        .unwrap();
+    }
+    let snap = w.snap();
+    let m = w.ship(&snap, "CLEAN");
+    assert_eq!(m.status, Status::Idle);
+    assert!(m.extra_rows.is_empty(), "{:?}", m.extra_rows);
+    assert!(!m.issues.iter().any(|i| i.code == "dup.live"), "{:?}", m.issues);
+    assert!(!snap.stowaways.iter().any(|s| s.session_id.starts_with("d1") || s.session_id.starts_with("d2")), "{:?}", snap.stowaways);
+    let rows = evidence::rows_from_files(&w.env, &mut evidence::FileCache::default()).unwrap();
+    assert!(rows.iter().all(|r| r.kind == "background" || r.kind == "interactive"), "{:?}", rows.iter().map(|r| &r.kind).collect::<Vec<_>>());
+    assert!(rows.iter().any(|r| r.short_id.as_deref() == Some(short.as_str())));
+    // the CLI cross-check drops them too
+    let v: Value = json!([{"sessionId": "x", "kind": "daemon-worker", "pid": 1}, {"sessionId": "y", "kind": "bg", "pid": 1}]);
+    let rows = evidence::parse_cli_rows(&v);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].session_id, "y");
+}
+
+#[test]
+fn a_live_session_with_remote_control_is_rc_exposed() {
+    let w = world();
+    let clean = w.ship(&w.snap(), "CLEAN");
+    let short = clean.session.as_ref().unwrap().short_id.clone().unwrap();
+    assert!(!clean.issues.iter().any(|i| i.code == "rc.exposed"), "bridgeSessionId null: nothing");
+    w.patch(&w.session_file(&short), |v| v["bridgeSessionId"] = json!("session_01EXAMPLE0000000000000000"));
+    let m = w.ship(&w.snap(), "CLEAN");
+    let i = m.issues.iter().find(|i| i.code == "rc.exposed").expect("rc.exposed");
+    assert_eq!(i.severity, Severity::Warn);
+    assert!(i.message.contains(&short) && i.message.contains("session_01EXAMPLE0000000000000000"), "{}", i.message);
+    let fix = i.fix.as_deref().unwrap();
+    assert!(fix.contains("/remote-control") && fix.contains("claude.ai/code"), "{fix}");
+    assert_eq!(i.id, Some(m.id.clone()));
+    // a warning: the check lists it, a start of the (live, clean) ship is not refused by it
+    let snap = w.snap();
+    assert!(nimitz_core::check::check(&w.env, &snap, Some(&m.id)).iter().any(|i| i.code == "rc.exposed"));
+    let plan = nimitz_core::sessions::plan_start(&w.env, &snap, &m.id, &Caller::User, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert!(plan.warnings.iter().any(|i| i.code == "rc.exposed"));
+    // the session disconnected (or stopped): the warning goes
+    w.patch(&w.session_file(&short), |v| v["bridgeSessionId"] = json!(null));
+    assert!(!w.ship(&w.snap(), "CLEAN").issues.iter().any(|i| i.code == "rc.exposed"));
 }

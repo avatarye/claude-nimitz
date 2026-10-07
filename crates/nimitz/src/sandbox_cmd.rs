@@ -10,6 +10,11 @@ pub fn sandbox(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "create|tick|env")?;
     let dir = PathBuf::from(ctx.args.need(1, "sandbox folder")?);
     ctx.args.at_most(2)?;
+    // A sandbox writes a whole world under any folder: yours alone.
+    if ctx.caller != nimitz_core::Caller::User {
+        out::error("`nimitz sandbox` is yours alone (authority)");
+        return Ok(1);
+    }
     match verb {
         "create" => {
             ctx.args.allow(&["--herdr"])?;
@@ -62,7 +67,11 @@ fn create(dir: &Path, herdr: bool) -> Result<i32, String> {
     if herdr {
         let hb = base.join("herdr");
         std::fs::create_dir_all(&hb).map_err(|e| e.to_string())?;
-        nimitz_mux::fake::write_world(&hb, None).map_err(|e| e.to_string())?;
+        // the fake's `pane run` really runs the line (`exec`): a `claude attach
+        // <job>` of the sandbox's fake claude wakes a parked job, as Herdr would
+        let mut world = nimitz_mux::fake::default_world();
+        world["exec"] = serde_json::json!(true);
+        nimitz_mux::fake::write_world(&hb, Some(&world)).map_err(|e| e.to_string())?;
         let script = base.join("bin").join("herdr");
         std::fs::write(&script, format!("#!/bin/sh\nexec '{}' __fake-herdr '{}' \"$@\"\n", exe.display(), hb.display())).map_err(|e| e.to_string())?;
         use std::os::unix::fs::PermissionsExt;
