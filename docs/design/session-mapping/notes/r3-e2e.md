@@ -59,7 +59,11 @@ Command: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=4`.
    check; `apply` waits for the daemon as before and, when the daemon did not
    restart the job, looks for the transcript again: still gone, `history.lost`
    with the `--fresh` fix and no resume (sandbox test
-   `a_crashed_job_is_resumed_not_judged_history_lost`).
+   `a_crashed_job_is_resumed_not_judged_history_lost`). Case 6 re-run after
+   0963f12 (guard `[OK]` before and after): killed while Busy, state `crashed`,
+   `start` exit 0 after 10.6 s with `skipped: the daemon restarted job 83a52843
+   (state was crashed); nothing to resume`, no `history.lost` in its output, Idle
+   under the same job and session afterwards.
 3. **A flagged resume of a live job prints no copy note** (2.1.292): `claude --bg
    --resume <sid> --model haiku` on a live job answered `backgrounded · <new id>
    (idle — send a prompt to start)` with no "started a copy as" line. The copy took
