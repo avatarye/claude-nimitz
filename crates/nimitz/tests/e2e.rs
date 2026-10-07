@@ -608,7 +608,7 @@ fn e2e_01_launch_binds_job_and_session_and_delivers_rules() {
     assert_eq!((d[&job]["version"].as_u64(), d[&job]["via"].as_str()), (Some(nimitz_core::rules::VERSION as u64), Some("SessionStart")), "{d}");
     // the transcript records the SessionStart context as an attachment line;
     // it can land a moment after the turn ends
-    let t = w.transcript(&w.ship_dir(), &sid).expect("transcript");
+    let t = w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript");
     let seen = w.wait(30, || std::fs::read_to_string(&t).ok().filter(|text| text.contains("nimitz fleet rules")));
     assert!(seen.is_some(), "the rules text is not in the transcript {}", t.display());
     assert!(w.issue_codes().iter().all(|(c, _)| c == "cc.version"), "issues: {:?}", w.issue_codes());
@@ -1182,8 +1182,17 @@ fn e2e_14_raw_birth_id_wake_after_branch_returns_the_pre_branch_conversation() {
     std::thread::sleep(secs(3));
     // the raw fact: a wake by the birth id, by hand
     let before = w.events().len();
-    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &birth]);
+    let (mut code, mut out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &birth]);
     println!("raw wake ({code}): {out}");
+    // under load the raw wake can still race the daemon (finding 12): the
+    // copy goes, and the wake runs once more (what nimitz's apply does)
+    if let Some(copy) = nimitz_core::claude::copy_started(&out) {
+        let _ = w.claude(&w.base, &["stop", &copy]);
+        let _ = w.claude(&w.base, &["rm", &copy]);
+        std::thread::sleep(secs(5));
+        (code, out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &birth]);
+        println!("raw wake, once more ({code}): {out}");
+    }
     let woke = w
         .wait(45, || w.events().into_iter().skip(before).find(|e| e["event"] == "SessionStart" && e["labels"]["NIMITZ_ID"] == w.ship()))
         .expect("a SessionStart after the raw wake");
