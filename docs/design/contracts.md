@@ -31,6 +31,7 @@ starting/opening interactive members and to Admiralty's pane actions.
 | `NIMITZ_BIND_TIMEOUT` | `10` (s) | how long the CLI waits for a pane's session to start and bind; tests set `0` |
 | `NIMITZ_HOOK_PID` | `getppid()` | the hook's Claude Code process (test override: the sandbox's fake `claude` names a stable fake pid per job) |
 | `NIMITZ_HOOK_SESSION_FILE` | `<claude home>/sessions/<pid>.json` | the session file the SessionStart hook reads (test override) |
+| `NIMITZ_PLUGIN_HOOKS` | the `installPath` of the `nimitz@...` entry in `~/.claude/plugins/installed_plugins.json`, plus `hooks/hooks.json` | the installed plugin's hooks file `doctor` checks; tests point it at a file |
 
 ## 3. Config files (TOML, in `NIMITZ_HOME/<fleet>/`)
 
@@ -180,7 +181,11 @@ older than `updated_at`. If a hook's registry write is lost (`binding` `none`),
 `status` replays SessionStart lines newer than `updated_at` in time order under
 the lock with the same rules, the folder rule included (`registry::replay`; a
 line the hook judged `dup.job`, `held` or `elsewhere` is not replayed); it
-writes only when a line binds something. A registry file that is there but
+writes only when a line binds something. A replayed line that bound nothing
+(judged held) is not probed again: `NIMITZ_STATE/replay.json` keeps the `ts`
+of the newest line judged, at least 5 s old (a late hook line, which takes its
+`ts` before waiting for the lock, is never hidden behind it), and lines at or
+before it are skipped. A registry file that is there but
 cannot be read (EACCES, EIO) is never written over: `update` fails, a read
 sees a fresh registry. A nimitz launch
 binds the started session itself (`sessions::bind_started`, with the job that
@@ -189,10 +194,39 @@ runs it and nimitz's own `via`), so an impostor's job never keeps the identity.
 Role rules: a labelled session's SessionStart (startup, resume, clear, compact,
 fork) gets its role's rules (`nimitz-core/rules/*.md`, compiled in; `nimitz
 rules <id>` prints them) as `additionalContext`, and the line records `rules`
-(the version). `check` reports `rules.old` for a live member that started on
-older rules, and `brief.old` for an admiral's or commodore's CLAUDE.md that an
-older nimitz generated; `doctor --fix` replaces those and leaves a hand-edited
-brief alone. A brief holds only who the member is and the user's notes.
+(the version, `rules::VERSION`, with one `rules::CHANGELOG` entry per version).
+Rules update live: `rules-delivered.json` (`{"<key>": {version, at,
+session_id, via}}`, under `rules-delivered.lock`, temp file + rename) records
+per job (`jobId` of `~/.claude/sessions/<ppid>.json`; else `session:<id>`)
+the version last delivered. On a per-turn event (`hook::UPDATE_EVENTS`:
+UserPromptSubmit) of a labelled session whose delivered version (the record,
+else its newest SessionStart `rules`, else 0) is older than the binary's, the
+hook outputs `additionalContext` `nimitz rules updated vN→vM` + the changelog
+after N + the full text, once per version per key; else nothing. No record,
+no update: the hook tries `rules-delivered.lock` for 1 s, and when the record
+cannot be written (lock held, state folder read-only) it hands nothing out
+rather than the same text at every prompt; `check` shows `rules.old` (and
+`registry.readonly`) until the record is written. `check`
+reports `rules.old` (Info, no fix) for a live member still on older rules, and
+`brief.old` for an admiral's or commodore's CLAUDE.md that an older nimitz
+generated; `doctor --fix` replaces those and leaves a hand-edited brief alone.
+A brief holds only who the member is and the user's notes. `doctor` reads the
+installed plugin's `hooks/hooks.json` and names every event (and PreToolUse
+matcher) the binary needs that it lacks (fix: `/reload-plugins`).
+
+The chain-of-command signal table (`hook::may_signal`; the PreToolUse deny on
+SendMessage and the authority of `nimitz signal`):
+
+| From | May signal |
+| --- | --- |
+| admiral | every member of its own fleet (commodores and ships), not itself |
+| commodore | its admiral, its ships |
+| ship | its commodore; its admiral (a reply); other ships as the squadron's `comms` rule allows |
+
+Every launch's `--settings` carries `"permissions":{"allow":["Bash(nimitz *)"]}`
+(`claude::settings_json`); authority stays by role in `sessions::may_run_in`:
+a ship gets `status`, `check`, `rules`, `doctor` (no `--fix`), `signal` within
+the table above, and `sweep` of itself.
 
 `needs/<id with / as %2F>.json`: the needs-you notice of a ship that
 blocks on the user (PreToolUse `AskUserQuestion`, `PermissionRequest`, or a
@@ -251,8 +285,9 @@ live pid is **Stopped** when the last event of the job's own processes (the
 SessionStart lines that name the job, and the SessionEnd lines from those
 pids; the session id alone decides only for a line an older nimitz wrote) is a
 SessionEnd (`claude stop`, `/stop`, an exit) or its state is `failed`, else
-**Parked** (the daemon retired it: a `[<stamp>] [bg] retire <id>: ...` line in
-the Claude home's `daemon.log` newer than the job's last start, named in the
+**Parked** (the daemon retired it: a `[2026-10-07T01:47:03.070Z] [bg] bg retire
+<id>: settled, idle 61m` line in the Claude home's `daemon.log` newer than the
+job's last start, named in the
 reason; it crashed; or the machine went down: no SessionEnd fires for those).
 Parked is not an error; `start` wakes it by id.
 A live row goes by its session file.
@@ -353,10 +388,10 @@ by re-reading; never touch a session that is not in the identity's lineage.
 
 Authority for `sweep`: the user, any scope; an admiral, its own fleet; a
 commodore, its own squadron only (the stale rows and copies of its own
-ships); ship: none. `sweep` removes a member's stale rows (stopped only; a
-live stale row is skipped with `dup.live`) and its copies (a live background
-copy is stopped, then removed, in the same plan; a copy with no job is named
-with "end it in its terminal" and left).
+ships); a ship, itself only (its own stale rows). `sweep` removes a member's
+stale rows (stopped only; a live stale row is skipped with `dup.live`) and its
+copies (a live background copy is stopped, then removed, in the same plan; a
+copy with no job is named with "end it in its terminal" and left).
 Core owns a plan for every mutating command, including `fleet set`,
 `squadron set`, `machine rm`, retire (`sessions::plan_retire`: `ship|squadron|fleet rm`,
 session and config steps in one plan, one verified `apply`) and the layout

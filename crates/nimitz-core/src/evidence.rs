@@ -291,8 +291,8 @@ pub fn pins(env: &Env) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The daemon's last `retire <short>: <why>` line in `daemon.log` (under the
-/// Claude home; `[<iso stamp>] [bg] retire <short>: settled, idle 61m`): the
+/// The daemon's last `bg retire <short>: <why>` line in `daemon.log` (under the
+/// Claude home; `[<iso stamp>] [bg] bg retire <short>: settled, idle 61m`): the
 /// job was parked by the daemon, no SessionEnd fired. A line older than
 /// `since` (the job's last SessionStart) is an earlier retire, not this one;
 /// a line with no stamp counts.

@@ -630,7 +630,7 @@ pub fn break_a_config(base: &Path, fleet: &str) {
 pub fn live_session(base: &Path, id: &Id, cwd: &str, bind: bool) -> String {
     let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
     let e = env(&base);
-    let settings = json!({"env": crate::claude::labels_for(&e, id), "worktree": {"bgIsolation": "none"}}).to_string();
+    let settings = crate::claude::settings_json(&e, id, true);
     let short = start(&base, cwd, &id.name(), "bypassPermissions", Some(&settings), "startup", true);
     let sid = job_state(&base, &short).and_then(|j| j.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default();
     if bind {
@@ -1143,8 +1143,9 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 let _ = fs::remove_file(session_path(&base, &short));
                 if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(home.join("daemon.log")) {
                     let stamp = iso_now();
-                    let _ = writeln!(f, "[{stamp}] [bg] retire {short}: settled, idle 61m");
-                    let _ = writeln!(f, "[{stamp}] [bg] settled {short} (done)");
+                    // the real line, verbatim: `[<stamp>] [bg] bg retire <id>: settled, idle 61m`
+                    let _ = writeln!(f, "[{stamp}] [bg] bg retire {short}: settled, idle 61m");
+                    let _ = writeln!(f, "[{stamp}] [bg] bg settled {short} (done)");
                 }
                 println!("retired {short}");
             } else {

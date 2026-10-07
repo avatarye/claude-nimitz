@@ -17,6 +17,26 @@ use std::io::Write;
 
 const LABELS: [&str; 5] = ["NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_ROLE", "NIMITZ_ID", "NIMITZ_HOME"];
 
+/// The per-turn events that hand a running member a rules update
+/// (`rules::update_for`, once per version per job, never per prompt_id: a
+/// mid-turn cross-session message repeats the running turn's prompt_id).
+/// UserPromptSubmit fires for every turn start of a background session (a
+/// typed prompt, a cross-session message, a task notification; plan-v4
+/// section 12.1), so nothing else is needed; a second event would go here,
+/// with its entry in the plugin's hooks.json.
+pub const UPDATE_EVENTS: &[&str] = &["UserPromptSubmit"];
+
+/// `out` (empty, or a decision JSON) with `additionalContext` added to its
+/// `hookSpecificOutput`, so a rules update rides along with a deny.
+fn with_context(out: &str, event: &str, text: &str) -> String {
+    let mut v: Value = serde_json::from_str(out).unwrap_or(Value::Null);
+    if !v.is_object() {
+        v = json!({"hookSpecificOutput": {"hookEventName": event}});
+    }
+    v["hookSpecificOutput"]["additionalContext"] = Value::from(text);
+    v.to_string()
+}
+
 /// Handle one hook call. `stdin` is Claude Code's hook JSON; `vars` the hook's env.
 /// Returns the text to print on stdout (empty, or a decision JSON). Never panics.
 pub fn handle(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, String>) -> String {
@@ -84,7 +104,9 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     // The Claude Code process (the hook's parent); a sandbox names it.
     let pid: i64 = vars.get("NIMITZ_HOOK_PID").and_then(|p| p.parse().ok()).unwrap_or_else(|| unsafe { libc::getppid() } as i64);
     // A labelled session starts (startup, resume, clear, compact, fork): bind
-    // it to its identity (plan-v4 section 3) and hand it its role's rules.
+    // it to its identity (plan-v4 section 3), hand it its role's rules and
+    // record the delivery. On a per-turn event, a session that runs on older
+    // rules gets the update (once per version per job).
     let mut rules = None;
     let mut session = Value::Null;
     let mut binding = None;
@@ -98,7 +120,9 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
         }
         session = session_file(env, vars, pid);
         if let Some(id) = crate::registry::identity_of(env, &labels) {
+            let sid = str_at(&input, "session_id").unwrap_or_default();
             rules = Some(crate::rules::VERSION);
+            crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
             out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
             binding = Some(match str_at(&input, "session_id") {
                 // no session file (missing, or caught mid-write): bind nothing
@@ -107,6 +131,16 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
                 Some(sid) => bind_start(env, &id, &input, &session, &sid, now).as_str(),
                 None => "none",
             });
+        }
+    } else if UPDATE_EVENTS.contains(&event) && labels.get("NIMITZ_HOME").map_or(true, |h| h.is_empty() || std::path::Path::new(h) == env.home || crate::env::canon(std::path::Path::new(h)) == crate::env::canon(&env.home)) {
+        // (another nimitz home's member gets no update from this home)
+        let member = labels.get("NIMITZ_ID").map(|i| Id(i.clone())).filter(|i| labels.get("NIMITZ_ROLE").map(String::as_str) == Some(i.role().as_str()));
+        if let Some(id) = member {
+            let sid = str_at(&input, "session_id").unwrap_or_default();
+            if let Some(text) = crate::rules::update_for(env, &id, &crate::rules::delivery_key(env, pid, &sid), &sid, event) {
+                rules = Some(crate::rules::VERSION);
+                out = with_context(&out, event, &text);
+            }
         }
     }
     let tool_event = matches!(event, "PreToolUse" | "PostToolUse" | "PostToolUseFailure");
@@ -269,10 +303,13 @@ fn resolve_socket(env: &Env, to: &str) -> Option<String> {
     None
 }
 
-/// The chain-of-command signal table (plan-v3 section 7). Targets that are not
-/// fleet names (teammates of an agent team, other sessions) are not ours to
-/// rule, except an address nimitz cannot resolve (a socket, BUG-22): a ship
-/// under a closed comms rule may not signal what it cannot name.
+/// The chain-of-command signal table (plan-v4 section 12): an admiral, every
+/// member of its own fleet; a commodore, its admiral and its ships; a ship,
+/// its commodore, its admiral (a reply) and other ships as the squadron's
+/// comms rule allows. Targets that are not fleet names (teammates of an agent
+/// team, other sessions) are not ours to rule, except an address nimitz
+/// cannot resolve (a socket, BUG-22): a ship under a closed comms rule may
+/// not signal what it cannot name.
 pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
     if to_name.contains(':') && !to_name.starts_with('[') {
         let resolved = resolve_socket(env, to_name);
@@ -295,12 +332,19 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
         };
     }
     let Some(to) = crate::sessions::id_from_name(to_name) else { return Ok(()) };
+    signal_table(from, &to, &|| squadron_comms(env, from))
+}
+
+/// The table itself, for two fleet ids; `comms` gives the sender's squadron
+/// rule when a ship signals a ship (read only then).
+pub fn signal_table(from: &Id, to: &Id, comms: &dyn Fn() -> Comms) -> Result<(), String> {
+    let to_name = to.name();
     let deny = |why: String| Err(format!("{why} (nimitz chain of command; sender {})", from.name()));
     let same_sq = to.fleet() == from.fleet() && to.squadron() == from.squadron();
     match from.role() {
         Role::Admiral => match to.role() {
-            Role::Commodore if to.fleet() == from.fleet() => Ok(()),
-            _ => deny(format!("an admiral signals only its own commodores; ask the commodore of {to_name}")),
+            _ if to.fleet() == from.fleet() && to != from => Ok(()),
+            _ => deny(format!("an admiral signals the members of its own fleet, not {to_name}")),
         },
         Role::Commodore => match to.role() {
             Role::Admiral if to.fleet() == from.fleet() => Ok(()),
@@ -309,7 +353,9 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
         },
         Role::Ship => match to.role() {
             Role::Commodore if same_sq => Ok(()),
-            Role::Ship => match squadron_comms(env, from) {
+            // a reply: the admiral may signal a ship, and the ship answers it
+            Role::Admiral if to.fleet() == from.fleet() => Ok(()),
+            Role::Ship => match comms() {
                 Comms::Mode(m) if m == "open" && same_sq => Ok(()),
                 Comms::Mode(m) if m == "open" => deny(format!("comms is open within the squadron only; {to_name} is in another squadron")),
                 Comms::Mode(m) if m == "commodore-only" => {
@@ -319,7 +365,7 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
                 Comms::Allow { .. } => deny(format!("{to_name} is not in the squadron's comms allow list")),
                 Comms::Mode(m) => deny(format!("unknown comms rule {m:?}; only the commodore may be signalled")),
             },
-            _ => deny(format!("a ship signals its commodore and, by the comms rule, other ships; not {to_name}")),
+            _ => deny(format!("a ship signals its commodore, its admiral (a reply) and, by the comms rule, other ships; not {to_name}")),
         },
     }
 }
@@ -387,10 +433,13 @@ mod tests {
         let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
         let one = Id::ship("MAIN", "BOREAL", "ONE");
 
-        // an admiral signals its own commodores and nothing else
+        // an admiral signals every member of its own fleet (commodores and ships), and nothing else
         assert!(!denied(&send(&env, &adm, &argos.name())));
-        assert!(denied(&send(&env, &adm, &ship.name())));
+        assert!(!denied(&send(&env, &adm, &ship.name())), "0.4.0: the admiral reaches its ships");
+        assert!(!denied(&send(&env, &adm, &one.name())));
         assert!(denied(&send(&env, &adm, &Id::commodore("OTHER", "SQ").name())));
+        assert!(denied(&send(&env, &adm, &Id::ship("OTHER", "SQ", "S").name())));
+        assert!(denied(&send(&env, &adm, &adm.name())), "not itself");
         // a commodore: its admiral, its ships
         assert!(!denied(&send(&env, &argos, &adm.name())));
         assert!(!denied(&send(&env, &argos, &ship.name())));
@@ -406,12 +455,94 @@ mod tests {
             let out = handle(&env, "PreToolUse", &input.to_string(), &tender);
             assert!(denied(&out) && out.contains("NIMITZ_ROLE does not match"), "{to}: {out}");
         }
-        // a ship: its commodore always
+        // a ship: its commodore always, and its admiral (a reply)
         assert!(!denied(&send(&env, &ship, &argos.name())));
-        assert!(denied(&send(&env, &ship, &adm.name())), "a ship does not signal the admiral");
+        assert!(!denied(&send(&env, &ship, &adm.name())), "0.4.0: a ship replies to its admiral");
+        assert!(denied(&send(&env, &ship, &Id::admiral("OTHER").name())), "not another fleet's admiral");
+        assert!(denied(&send(&env, &ship, &Id::commodore("MAIN", "BOREAL").name())), "not another squadron's commodore");
         // a `[ref]` suffix (two sessions with one name) does not get around the table
-        assert!(denied(&send(&env, &ship, &format!("{} [3fa9c1]", adm.name()))));
+        assert!(denied(&send(&env, &ship, &format!("{} [3fa9c1]", Id::commodore("MAIN", "BOREAL").name()))));
         assert!(!denied(&send(&env, &ship, &format!("{} [3fa9c1]", argos.name()))));
+    }
+
+    /// A SessionStart delivers the rules and records it; a prompt in a session
+    /// that runs on older rules gets the update once; a current one gets nothing.
+    #[test]
+    fn a_running_member_gets_a_rules_update_at_its_next_prompt() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let prompt = serde_json::json!({"session_id": "s-up", "hook_event_name": "UserPromptSubmit", "prompt": "go on"}).to_string();
+        // an older nimitz started it: a SessionStart line with rules v1, no record
+        let line = serde_json::json!({"ts": 1.0, "event": "SessionStart", "session_id": "s-up", "source": "startup", "pid": 1,
+            "labels": crate::claude::labels_for(&env, &id), "rules": 1});
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.events_path(), format!("{line}\n")).unwrap();
+        let out = handle(&env, "UserPromptSubmit", &prompt, &labels_of(&env, &id));
+        let v: Value = serde_json::from_str(&out).expect("a hook JSON");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        assert!(ctx.starts_with(&format!("nimitz rules updated v1\u{2192}v{}", crate::rules::VERSION)), "{ctx}");
+        assert!(ctx.contains("- v2: the tender role is gone") && ctx.contains(&crate::rules::text(&id)), "changelog and the full text: {ctx}");
+        assert!(!ctx.contains("- v1:"), "only the entries after v1");
+        let d = crate::rules::delivered(&env, "session:s-up").expect("recorded by session id: no job here");
+        assert_eq!((d.version, d.via.as_str(), d.session_id.as_str()), (crate::rules::VERSION, "UserPromptSubmit", "s-up"));
+        assert_eq!(crate::evidence::events(&env).last().unwrap().rules, Some(crate::rules::VERSION), "the line says what went out");
+        // the next prompt: nothing (once per version per key, whatever the prompt_id)
+        assert!(handle(&env, "UserPromptSubmit", &prompt, &labels_of(&env, &id)).is_empty());
+        let other_turn = serde_json::json!({"session_id": "s-up", "hook_event_name": "UserPromptSubmit", "prompt": "<cross-session-message from-name=\"x\">hi</cross-session-message>", "prompt_id": "p2"}).to_string();
+        assert!(handle(&env, "UserPromptSubmit", &other_turn, &labels_of(&env, &id)).is_empty());
+        // a SessionStart of any source (compact, clear, resume) re-delivers the full rules and resets the record
+        for source in ["compact", "clear", "resume"] {
+            let start = serde_json::json!({"session_id": "s-up", "source": source}).to_string();
+            assert!(handle(&env, "SessionStart", &start, &labels_of(&env, &id)).contains("additionalContext"), "{source}");
+            assert_eq!(crate::rules::delivered(&env, "session:s-up").unwrap().via, "SessionStart", "{source}");
+        }
+        // a session that starts now is current, so its prompts get nothing either
+        let start = serde_json::json!({"session_id": "s-new", "source": "startup"}).to_string();
+        handle(&env, "SessionStart", &start, &labels_of(&env, &id));
+        assert_eq!(crate::rules::delivered(&env, "session:s-new").unwrap().via, "SessionStart");
+        let prompt2 = prompt.replace("s-up", "s-new");
+        assert!(handle(&env, "UserPromptSubmit", &prompt2, &labels_of(&env, &id)).is_empty());
+        // no SessionStart line and no record: v0, the whole changelog
+        let prompt3 = prompt.replace("s-up", "s-none");
+        let out = handle(&env, "UserPromptSubmit", &prompt3, &labels_of(&env, &id));
+        assert!(out.contains("updated v0\\u2192") || out.contains("updated v0→"), "{out}");
+        // an unlabelled session never gets one
+        assert!(handle(&env, "UserPromptSubmit", &prompt.replace("s-up", "s-user"), &vars(&[])).is_empty());
+    }
+
+    /// The record is keyed by the job id when the hook's parent runs as a job
+    /// (`sessions/<pid>.json` `jobId`), so it follows a resume or /clear.
+    #[test]
+    fn a_delivery_is_keyed_by_the_job_when_there_is_one() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let ppid = unsafe { libc::getppid() } as i64;
+        let sessions = env.claude_home.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join(format!("{ppid}.json")), r#"{"pid": 1, "sessionId": "s-a", "jobId": "9cdceb2d", "kind": "bg"}"#).unwrap();
+        handle(&env, "SessionStart", r#"{"session_id": "s-a", "source": "startup"}"#, &labels_of(&env, &id));
+        let d = crate::rules::delivered(&env, "9cdceb2d").expect("keyed by the job");
+        assert_eq!((d.version, d.session_id.as_str()), (crate::rules::VERSION, "s-a"));
+        assert!(crate::rules::delivered(&env, "session:s-a").is_none());
+        // /clear moved the job to a new session id: the record still says current
+        let prompt = serde_json::json!({"session_id": "s-b", "hook_event_name": "UserPromptSubmit"}).to_string();
+        assert!(handle(&env, "UserPromptSubmit", &prompt, &labels_of(&env, &id)).is_empty());
+        assert_eq!(crate::rules::delivery_key(&env, ppid, "s-b"), "9cdceb2d");
+        assert_eq!(crate::rules::delivery_key(&env, 1, "s-b"), "session:s-b", "no session file: by session id");
+    }
+
+    /// A rules update rides along with a PreToolUse deny when PreToolUse is an
+    /// update event (it is not yet; `with_context` is what makes it one line).
+    #[test]
+    fn a_decision_and_a_rules_update_share_one_output() {
+        let deny = serde_json::json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "no"}}).to_string();
+        let v: Value = serde_json::from_str(&with_context(&deny, "PreToolUse", "rules")).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(v["hookSpecificOutput"]["additionalContext"], "rules");
+        let v: Value = serde_json::from_str(&with_context("", "UserPromptSubmit", "rules")).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+        assert_eq!(v["hookSpecificOutput"]["additionalContext"], "rules");
     }
 
     #[test]
@@ -626,7 +757,7 @@ mod tests {
         let read = serde_json::json!({"session_id": "s9", "tool_name": "Read"});
         handle(&env, "PreToolUse", &read.to_string(), &labels_of(&env, &id));
         // a denied signal is logged with its reason
-        let _ = send(&env, &id, &Id::admiral("MAIN").name());
+        let _ = send(&env, &id, &Id::admiral("OTHER").name());
 
         let events = crate::evidence::events(&env);
         assert_eq!(events.len(), 2, "{events:?}");
