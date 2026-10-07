@@ -341,8 +341,9 @@ fn update_locked<T>(env: &Env, _lock: File, f: impl FnOnce(&mut Registry) -> T) 
     let out = f(&mut r);
     refuse_shrink(env, &had, &r)?;
     // a closure that changed nothing (the hook's held, dup.job, elsewhere and
-    // same judgements) writes nothing: the file keeps its stamp
-    if dirty || r != before {
+    // same judgements) writes nothing: the file keeps its stamp. A file that
+    // is not there yet is written (`init` saves the fresh registry as it is)
+    if dirty || r != before || !env.registry_path().exists() {
         write_unlocked(env, &mut r)?;
     }
     Ok(out)

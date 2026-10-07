@@ -1145,6 +1145,7 @@ fn init_and_doctor_in_an_empty_world() {
     assert!(b.join("nimitz").is_dir());
     let reg: Value = serde_json::from_str(&std::fs::read_to_string(b.join("state/registry.json")).unwrap()).unwrap();
     assert_eq!(reg["machine"], "box");
+    assert_eq!(reg["version"], nimitz_core::REGISTRY_VERSION, "init writes the format this nimitz writes, not a v1 file");
     assert_eq!(raw(&vars, &["init", "--label", "other", "--yes"], &[], None).code, 1, "a label is not changed silently");
 
     // trust it, enable the plugin; doctor still wants crossSessionInbound, and --fix sets it
