@@ -16,9 +16,16 @@
 //!                   "foreground": ["claude"]}],   // argv in the pane's foreground; absent = an idle shell
 //!   "next_ws": 2,
 //!   "fail": "workspace create",  // optional: any call starting with this errors
-//!   "exec": true                 // optional: `pane run` really runs the line (sh -c, in the pane's cwd)
+//!   "exec": true,                // optional: `pane run` really runs the line (sh -c, in the pane's cwd)
+//!   "resume_agents_on_restore": true  // optional: `__restart` runs `claude --resume <sid>` in each agent pane, as Herdr does
 //! }
 //! ```
+//! `__restart` (test only) is a server restart from the snapshot: every pane
+//! drops to a plain shell (the pane processes died with the server); with
+//! `resume_agents_on_restore` the fake then runs `<claude> --resume <sid>` in
+//! each pane that showed an agent (`exec` must be on), as Herdr's
+//! `[session] resume_agents_on_restore = true` does, and the pane shows that
+//! process when it stayed up (a refused resume leaves a shell).
 //! `api snapshot` replies with the whole shape in the exact field set of
 //! herdr 0.9.3 (`tests/fixtures/herdr-0.9.3/snapshot.json`).
 //! Output shapes copy the real CLI (herdr 0.9): one JSON object on stdout,
@@ -259,6 +266,35 @@ fn snapshot(world: &Value) -> Value {
 
 fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
     match a {
+        ["__restart"] => {
+            let exec = world.get("exec").and_then(Value::as_bool).unwrap_or(false);
+            let resume = world.get("resume_agents_on_restore").and_then(Value::as_bool).unwrap_or(false);
+            for p in world["panes"].as_array_mut().expect("panes") {
+                let sid = p.pointer("/agent_session/value").and_then(Value::as_str).map(String::from);
+                // the claude that ran there (an attach), else `claude` on PATH
+                let bin = p["foreground"].as_array().and_then(|a| a.first()).and_then(Value::as_str).filter(|b| b.ends_with("claude")).map(String::from).unwrap_or_else(|| "claude".into());
+                let o = p.as_object_mut().expect("pane");
+                for k in ["agent_session", "agent_status", "agent", "pid"] {
+                    o.remove(k);
+                }
+                o.insert("foreground".into(), json!(["zsh"]));
+                let (Some(sid), true) = (sid, resume && exec) else { continue };
+                let cwd = s(p, "cwd");
+                let mut c = std::process::Command::new("sh");
+                c.arg("-c").arg(format!("{bin} --resume {sid}")).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                if !cwd.is_empty() && Path::new(&cwd).is_dir() {
+                    c.current_dir(&cwd);
+                }
+                if c.status().map(|st| st.success()).unwrap_or(false) {
+                    p["foreground"] = json!([bin, "--resume", sid]);
+                    p["agent_session"] = json!({"kind": "id", "source": "herdr:claude", "value": sid});
+                    p["agent_status"] = json!("idle");
+                    p["agent"] = json!("claude");
+                    p["pid"] = json!(1);
+                }
+            }
+            ok("__restart", json!({"type": "ok"}))
+        }
         ["api", "snapshot"] => {
             let snap = snapshot(world);
             ok("api:snapshot", json!({"snapshot": snap}))
@@ -369,7 +405,8 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             };
             // the foreground process group: the shell alone when idle (herdr-shape.md, PaneProcessInfo)
             let argv: Vec<String> = p.get("foreground").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["zsh".into()]);
-            let proc_ = json!({"pid": 4242, "name": argv.first().cloned().unwrap_or_default(), "argv0": argv.first().cloned().unwrap_or_default(),
+            let pid = p.get("pid").and_then(Value::as_i64).unwrap_or(4242);
+            let proc_ = json!({"pid": pid, "name": argv.first().cloned().unwrap_or_default(), "argv0": argv.first().cloned().unwrap_or_default(),
                                "argv": argv, "cmdline": argv.join(" "), "cwd": s(p, "cwd")});
             // as herdr 0.9.3 replies (tests/fixtures/herdr-0.9.3/process-info.json): nested under process_info
             ok("pane:process_info", json!({"type": "pane_process_info", "process_info": {"pane_id": target, "shell_pid": 4241, "tty": "/dev/pts/9",

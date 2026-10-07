@@ -146,6 +146,7 @@ pub fn parse_snapshot(v: &Value) -> Result<Shape, String> {
                         session_id: agent.and_then(|a| a.session_id.clone()),
                         state: agent.map(|a| a.state.clone()).unwrap_or_else(|| s(p, "agent_status")),
                         foreground: None,
+                        foreground_pid: None,
                     }
                 })
                 .collect()
@@ -154,7 +155,7 @@ pub fn parse_snapshot(v: &Value) -> Result<Shape, String> {
     // an agent whose pane the panes list lacks (never seen; kept for safety)
     for a in agents {
         if !panes.iter().any(|p| p.pane.pane_id == a.pane.pane_id) {
-            panes.push(ShapePane { pane: a.pane, cwd: a.cwd, title: a.title, agent: Some("claude".into()), session_id: a.session_id, state: a.state, foreground: None });
+            panes.push(ShapePane { pane: a.pane, cwd: a.cwd, title: a.title, agent: Some("claude".into()), session_id: a.session_id, state: a.state, foreground: None, foreground_pid: None });
         }
     }
     panes.sort_by(|a, b| a.pane.pane_id.cmp(&b.pane.pane_id));
@@ -193,6 +194,16 @@ pub fn parse_process_info(v: &Value) -> Result<Vec<Vec<String>>, String> {
 /// a shell; empty when only the shell is there (an idle shell).
 pub fn foreground_of(procs: &[Vec<String>]) -> Vec<String> {
     procs.iter().find(|argv| !crate::is_shell(argv)).cloned().unwrap_or_default()
+}
+
+/// The pids of the foreground processes, in the order of `parse_process_info`
+/// (`None` where the reply names none).
+pub fn process_pids(v: &Value) -> Vec<Option<i64>> {
+    v.pointer("/result/process_info/foreground_processes")
+        .or_else(|| v.pointer("/result/foreground_processes"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().map(|p| p.get("pid").and_then(Value::as_i64)).collect())
+        .unwrap_or_default()
 }
 
 /// `workspace create` (`workspace_created`, ResponseResult: `result.workspace`
@@ -402,7 +413,13 @@ impl Mux for Herdr {
         let mut shape = parse_snapshot(&v).map_err(MuxError::Failed)?;
         if foregrounds {
             for p in shape.panes.iter_mut() {
-                p.foreground = self.foreground(&p.pane).ok();
+                // one process-info per pane: what runs (the first non-shell) and its pid
+                let Ok(v) = self.run(&["pane", "process-info", "--pane", &p.pane.pane_id]) else { continue };
+                let Ok(procs) = parse_process_info(&v) else { continue };
+                let pids = process_pids(&v);
+                let at = procs.iter().position(|argv| !crate::is_shell(argv));
+                p.foreground = Some(at.map(|i| procs[i].clone()).unwrap_or_default());
+                p.foreground_pid = at.and_then(|i| pids.get(i).copied().flatten());
             }
         }
         Ok(shape)

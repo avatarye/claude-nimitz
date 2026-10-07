@@ -30,6 +30,7 @@ pub fn shape_of(mux: &dyn Mux, foregrounds: bool) -> Result<(rs::Shape, nimitz_m
                 cwd: p.cwd.clone(),
                 session_id: p.session_id.clone(),
                 foreground: p.foreground.clone(),
+                foreground_pid: p.foreground_pid,
             })
             .collect(),
     };
@@ -197,12 +198,13 @@ fn report(rp: &rs::RestorePlan, failed: &[Id], issues: &[Issue]) -> i32 {
         let parked = if f.parked > 0 { format!("; {} parked", f.parked) } else { String::new() };
         let stopped = if f.stopped > 0 { format!("; {} stopped on purpose", f.stopped) } else { String::new() };
         let not_started = if f.not_started > 0 { format!("; {} not started", f.not_started) } else { String::new() };
+        let held = if f.held > 0 { format!("; {} held in a pane (Herdr resumed it; see the fix above)", f.held) } else { String::new() };
         if failed_here > 0 {
-            out::error(&format!("{}: {failed_here} member(s) not restored (see the fixes above){parked}{stopped}", f.fleet));
+            out::error(&format!("{}: {failed_here} member(s) not restored (see the fixes above){parked}{stopped}{held}", f.fleet));
         } else if planned == 0 {
-            out::ok(&format!("{}: nothing to restore{}", f.fleet, trim_lead(&format!("{parked}{stopped}{not_started}"))));
+            out::ok(&format!("{}: nothing to restore{}", f.fleet, trim_lead(&format!("{parked}{stopped}{not_started}{held}"))));
         } else {
-            out::ok(&format!("{}: restored {} lead(s), {} ship(s){parked}{stopped}{not_started}", f.fleet, f.leads, f.ships));
+            out::ok(&format!("{}: restored {} lead(s), {} ship(s){parked}{stopped}{not_started}{held}", f.fleet, f.leads, f.ships));
         }
     }
     if errors > 0 || !failed.is_empty() {

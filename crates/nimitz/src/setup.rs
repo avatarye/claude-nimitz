@@ -251,6 +251,38 @@ pub fn doctor(ctx: &Ctx) -> Result<i32, String> {
     Ok(doctor_report(ctx, ctx.args.flag("--fix")))
 }
 
+/// Herdr's config: `HERDR_CONFIG_PATH`, else `~/.config/herdr/config.toml`
+/// (read-only). Checked when the file is there or nimitz runs with Herdr.
+pub fn herdr_config_path(ctx: &Ctx) -> PathBuf {
+    match ctx.vars.get("HERDR_CONFIG_PATH").filter(|p| !p.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => PathBuf::from(ctx.vars.get("HOME").cloned().unwrap_or_default()).join(".config/herdr/config.toml"),
+    }
+}
+
+/// Is `[session] resume_agents_on_restore = false` set in the Herdr config
+/// `text`? `None` when the file does not parse.
+pub fn herdr_resume_off(text: &str) -> Option<bool> {
+    let v: toml::Value = toml::from_str(text).ok()?;
+    Some(v.get("session").and_then(|s| s.get("resume_agents_on_restore")).and_then(toml::Value::as_bool) == Some(false))
+}
+
+fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
+    let path = herdr_config_path(ctx);
+    let with_herdr = ctx.vars.get("HERDR_ENV").map(String::as_str) == Some("1") || ctx.vars.get("NIMITZ_MUX").map(String::as_str) == Some("herdr");
+    if !path.is_file() && !with_herdr {
+        return;
+    }
+    let fix = format!("set resume_agents_on_restore = false under [session] in {}  # nimitz never edits it", path.display());
+    let effect = "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz restore` then cannot wake it until you /exit there (tab.resumed)";
+    match std::fs::read_to_string(&path).ok().map(|t| herdr_resume_off(&t)) {
+        Some(Some(true)) => r.ok(&format!("Herdr {}: resume_agents_on_restore is off", path.display())),
+        Some(Some(false)) => r.warn(&format!("Herdr {}: resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
+        Some(None) => r.warn(&format!("Herdr {} does not parse; resume_agents_on_restore may be on: {effect}", path.display()), Some(&fix)),
+        None => r.warn(&format!("no Herdr config at {}, so resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
+    }
+}
+
 fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     let mut r = Report { errors: 0, fixes: Plan { summary: "doctor fixes".into(), ..Default::default() } };
     let env = &ctx.env;
@@ -312,6 +344,12 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             }
         }
     }
+
+    // Herdr's agent resume on restart (finding 10): with it on, a restart
+    // runs `claude --resume` in every agent pane, which holds a stopped or
+    // parked member's conversation interactively; a restore then cannot wake
+    // it until that process ends (`tab.resumed`). nimitz never edits that file.
+    herdr_resume_check(ctx, &mut r);
 
     // Hooks: the plugin, or nimitz hook commands in the user settings.
     let settings = read_json(&settings_path(ctx)).unwrap_or(json!({}));

@@ -32,6 +32,8 @@ pub struct ShapePane {
     pub cwd: String,
     pub session_id: Option<String>,
     pub foreground: Option<Vec<String>>,
+    /// the pid of what runs in the foreground, when the mux read it
+    pub foreground_pid: Option<i64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -181,6 +183,8 @@ pub struct FleetReport {
     pub not_started: usize,
     /// members that could not be restored (an Error each)
     pub failed: usize,
+    /// members whose conversation a Herdr pane holds interactively (`tab.resumed`)
+    pub held: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -279,6 +283,17 @@ impl Ctx<'_> {
         // the attach of the member's job, but the pane shows another agent:
         // the agent view (`/exit` inside the attach, R-24) or a copy
         Some(p.session_id.is_none())
+    }
+
+    /// The pane that holds `h`'s conversation interactively: it shows that
+    /// session, or runs `claude --resume <session>`, or runs `h`'s pid.
+    fn held_pane(&self, h: &SessionInfo) -> Option<&ShapePane> {
+        // the session first (Herdr's detection, or the `--resume <sid>` argv);
+        // the pid only when no pane names the session
+        let by_session = self.shape.panes.iter().find(|p| {
+            p.session_id.as_deref() == Some(h.session_id.as_str()) || p.foreground.as_deref().is_some_and(|fg| fg.windows(2).any(|w| w[0] == "--resume" && w[1] == h.session_id))
+        });
+        by_session.or_else(|| self.shape.panes.iter().find(|p| h.pid.is_some() && p.foreground_pid.is_some() && p.foreground_pid == h.pid && p.session_id.is_none()))
     }
 
     /// The pane of a tab to attach in: its first shell pane; else what its
@@ -550,9 +565,21 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
         rep.failed += 1;
         rp.plan.warnings.push(Issue { severity: Severity::Error, ..i });
     };
-    // a process with no job runs it (a 0.3.x interactive lead, an SDK host):
-    // nothing to attach to, nothing to resume until it ends (R-16)
+    // a process with no job runs it (a 0.3.x interactive lead, an SDK host, a
+    // `claude --resume` Herdr ran after its restart): nothing to attach to,
+    // and never a wake, which would start a copy beside it (R-16, finding 10)
     if let Some(h) = crate::sessions::held_of(m) {
+        if let Some(p) = ctx.held_pane(h) {
+            rep.held += 1;
+            rp.plan.warnings.push(issue(
+                "tab.resumed",
+                Severity::Warn,
+                format!("{id}'s conversation runs interactively in pane {} (Herdr's `claude --resume` after its restart); a wake would start a copy beside it, so nothing runs for it", p.pane_id),
+                Some(format!("Herdr resumed it in pane {} (resume_agents_on_restore is on): type /exit there, then nimitz restore {}", p.pane_id, id.fleet())),
+                Some(id.clone()),
+            ));
+            return;
+        }
         let mut i = crate::sessions::held_issue(m, h);
         if lead && !opts.shape_only {
             i.code = "lead.interactive".into();

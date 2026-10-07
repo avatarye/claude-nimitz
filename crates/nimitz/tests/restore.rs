@@ -201,12 +201,39 @@ impl Sb {
             p["foreground"] = json!(["zsh"]);
         });
     }
-    /// A Herdr restart: names and folders come back, every pane a shell.
+    /// Run the sandbox's fake `herdr` (its hidden verbs: `__restart`).
+    fn herdr(&self, args: &[&str]) -> String {
+        let o = Command::new(self.base.join("bin/herdr")).args(args).env_clear().env("PATH", "/usr/bin:/bin").envs(&self.vars).output().expect("fake herdr");
+        format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    }
+    /// A Herdr restart from its snapshot: names and folders come back, every
+    /// pane a shell; with the world's `resume_agents_on_restore` the fake
+    /// then runs `claude --resume <sid>` in each agent pane, as Herdr does.
     fn herdr_restart(&self) {
-        let ids: Vec<String> = self.world()["panes"].as_array().unwrap().iter().map(|p| p["pane_id"].as_str().unwrap().to_string()).collect();
-        for id in ids {
-            self.shell(&id);
+        self.herdr(&["__restart"]);
+    }
+    /// Herdr's `[session] resume_agents_on_restore` for the fake server.
+    fn resume_on_restore(&self, on: bool) {
+        self.herdr_world(|w| w["resume_agents_on_restore"] = json!(on));
+    }
+    /// The panes where Herdr's resume holds a conversation: `/exit` typed in
+    /// each (the fake's `__end`), the pane a shell again.
+    fn exit_resumed(&self) -> usize {
+        let held: Vec<(String, String, String)> = self.world()["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| {
+                let fg = p["foreground"].as_array()?;
+                let i = fg.iter().position(|a| a == "--resume")?;
+                Some((p["pane_id"].as_str()?.to_string(), fg[i + 1].as_str()?.to_string(), p["cwd"].as_str().unwrap_or("/").to_string()))
+            })
+            .collect();
+        for (pane, sid, cwd) in &held {
+            self.claude(Path::new(cwd), &["__end", sid]);
+            self.shell(pane);
         }
+        held.len()
     }
     fn tabs(&self, label: &str) -> Vec<Value> {
         self.world()["tabs"].as_array().unwrap().iter().filter(|t| t["label"] == label).cloned().collect()
@@ -600,6 +627,99 @@ fn r08_r19_reboot_resumes_leads_and_the_active_set_leaves_parked_ships() {
     let lead_resumes = lines_with(&r, "--bg --resume").into_iter().filter(|l| l.starts_with("[OK] MAIN:") || l.starts_with("[OK] MAIN/ARGOS:") || l.starts_with("[OK] MAIN/BOREAL:")).count();
     assert_eq!(lead_resumes, 0, "{r}");
     assert!(sb.active().unwrap()["members"]["MAIN/ARGOS/CLEAN"]["attached"] == true);
+}
+
+#[test]
+fn r08_with_resume_agents_on_restore_herdr_holds_every_lead_and_nothing_is_woken() {
+    // the user's real Herdr config: after a reboot and a Herdr restart, Herdr
+    // runs `claude --resume <sid>` in each lead's pane; a stopped or parked
+    // job's conversation then runs interactively, with no job (finding 10)
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    let sids: Vec<(String, String)> = ["MAIN", "MAIN/ARGOS", "MAIN/BOREAL"].iter().map(|id| (id.to_string(), sb.sid(id))).collect();
+    sb.resume_on_restore(true);
+    sb.reboot();
+    for (id, sid) in &sids {
+        let m = sb.member(id);
+        let held = m["extra_rows"].as_array().unwrap().iter().any(|r| r["session_id"] == sid.as_str() && r["short_id"].is_null() && !r["pid"].is_null());
+        assert!(held, "{id}: its conversation is held by an interactive process: {m}");
+    }
+    let before = sb.n_runs();
+    let r = sb.ok(&["restore", "MAIN", "--plan"]);
+    assert_eq!(lines_with(&r, "(tab.resumed)").len(), 3, "{r}");
+    for (id, _) in &sids {
+        let pane = sb.world()["panes"].as_array().unwrap().iter().find(|p| p["agent_session"]["value"] == sb.sid(id).as_str()).map(|p| p["pane_id"].as_str().unwrap().to_string()).expect("the pane that holds it");
+        assert!(r.contains(&format!("Herdr resumed it in pane {pane} (resume_agents_on_restore is on): type /exit there, then nimitz restore MAIN")), "{id} in its own pane:\n{r}");
+    }
+    for (id, sid) in &sids {
+        assert!(!r.contains(&format!("--bg --resume {sid}")), "{id}: a wake would make a copy beside the held conversation:\n{r}");
+    }
+    assert!(!r.contains("herdr pane run"), "never typed into:\n{r}");
+    // (the ships of the active set are not held: they wake as in R-08)
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert_eq!(sb.n_runs(), before, "nothing typed into any pane");
+    assert!(r.contains("[OK] MAIN: restored 0 lead(s)") && r.contains("3 held in a pane"), "{r}");
+    for (id, _) in &sids {
+        assert!(!sb.live(id), "{id} stays parked");
+    }
+    // the user types /exit in each pane: the leads come back by their shell tabs' attach, the same conversations
+    assert_eq!(sb.exit_resumed(), 3);
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert_eq!(lines_with(&r, "the attach woke it").len(), 3, "{r}");
+    for (id, sid) in &sids {
+        assert!(sb.live(id), "{id}:\n{r}");
+        assert_eq!(&sb.sid(id), sid);
+    }
+    assert!(!r.contains("[ERROR]"), "{r}");
+}
+
+#[test]
+fn r02_with_resume_agents_on_restore_a_retired_lead_is_held_not_woken() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    let sid = sb.sid("MAIN/ARGOS");
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    sb.resume_on_restore(true);
+    sb.herdr_restart();
+    // the live leads: Herdr's resume is refused ("running in the background"), their panes are shells
+    for id in ["MAIN", "MAIN/BOREAL"] {
+        assert!(sb.member(id)["extra_rows"].as_array().unwrap().is_empty(), "{id}: a live job's resume is refused");
+    }
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(tab.resumed)") && r.out.contains(&format!("Herdr resumed it in pane {pane}")), "{}", r.out);
+    assert!(!r.out.contains(&format!("--bg --resume {sid}")) && !sb.runs().iter().any(|(p, l)| p == &pane && l.contains("attach") && sb.runs().iter().filter(|(q, _)| q == p).count() > 1), "{}", r.out);
+    assert!(!sb.live("MAIN/ARGOS"));
+    // the other two leads got their attach again (shells after the refused resume)
+    assert_eq!(r.out.lines().filter(|l| l.starts_with("[OK] MAIN") && l.contains("herdr pane run")).count(), 2, "{}", r.out);
+    assert_eq!(sb.exit_resumed(), 1);
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert!(sb.live("MAIN/ARGOS") && sb.sid("MAIN/ARGOS") == sid, "{r}");
+}
+
+#[test]
+fn r_doctor_warns_when_herdr_resumes_agents_on_restore() {
+    let sb = Sb::new(true);
+    let cfg = sb.base.join("herdr-config.toml");
+    let path = cfg.to_string_lossy().into_owned();
+    let doctor = |sb: &Sb| raw(&sb.vars, &["doctor"], &[("HERDR_CONFIG_PATH", path.as_str())]).out;
+    // no file: the default is on
+    let out = doctor(&sb);
+    assert!(out.contains("[WARN] no Herdr config at") && out.contains(&format!("set resume_agents_on_restore = false under [session] in {path}")), "{out}");
+    std::fs::write(&cfg, "onboarding = false\n[session]\nresume_agents_on_restore = true\n").unwrap();
+    let out = doctor(&sb);
+    assert!(out.contains("resume_agents_on_restore is on (the default)") && out.contains("tab.resumed"), "{out}");
+    std::fs::write(&cfg, "onboarding = false\n").unwrap();
+    assert!(doctor(&sb).contains("resume_agents_on_restore is on (the default)"));
+    std::fs::write(&cfg, "[session]\nresume_agents_on_restore = false\n").unwrap();
+    let out = doctor(&sb);
+    assert!(out.contains("resume_agents_on_restore is off") && !out.contains("[WARN] Herdr"), "{out}");
+    std::fs::write(&cfg, "[session\n").unwrap();
+    assert!(doctor(&sb).contains("does not parse"));
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "[session\n", "nimitz never edits the Herdr config");
 }
 
 #[test]

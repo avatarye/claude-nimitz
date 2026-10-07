@@ -57,6 +57,8 @@ pub struct ShapePane {
     /// the multiplexer's state for the pane's agent (idle|working|blocked|done|unknown)
     pub state: String,
     pub foreground: Option<Vec<String>>,
+    /// the pid of what runs in the foreground (`pane process-info`), when read
+    pub foreground_pid: Option<i64>,
 }
 
 /// The whole shape at once (`herdr api snapshot` + `pane process-info` per
