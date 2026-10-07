@@ -320,22 +320,38 @@ pub fn lock_holder(cwd: &str) -> Option<String> {
 /// with no transcript gets a cold launch instead (plan-v4 section 5): an
 /// error on an admiral would refuse every start in its fleet.
 pub fn registry_issues(env: &Env, cache: &mut crate::evidence::FileCache, m: &Member, reg: &Registry) -> Vec<Issue> {
-    if m.role.lead() {
-        return vec![];
+    let mut out = vec![];
+    // the registry names another conversation than the one the row would
+    // wake, and not a later one of the lineage (a lost hook line, a hand
+    // edit): the row wins, and a relaunch brings the two together
+    if let Some(p) = m.session.as_ref().filter(|p| p.pid.is_none() && p.short_id.is_some()) {
+        if let Some(stale) = wake_target(env, &m.id, p).stale {
+            out.push(issue(
+                "lineage.stale",
+                Severity::Warn,
+                format!("{}'s registry names {} but its job would wake on {}; the job's conversation wins", m.id, &stale[..stale.len().min(8)], &p.session_id[..p.session_id.len().min(8)]),
+                Some(format!("nimitz relaunch {}", m.id)),
+                Some(m.id.clone()),
+            ));
+        }
     }
-    let Some(rec) = reg.identities.get(&m.id.0) else { return vec![] };
-    let Some(current) = rec.session.as_deref() else { return vec![] };
+    if m.role.lead() {
+        return out;
+    }
+    let Some(rec) = reg.identities.get(&m.id.0) else { return out };
+    let Some(current) = rec.session.as_deref() else { return out };
     let known = m.session.iter().chain(m.extra_rows.iter()).any(|r| r.session_id == current || r.birth_id.as_deref() == Some(current));
     if known || crate::evidence::transcript(env, cache, m.cwd.as_deref(), current).is_some() {
-        return vec![];
+        return out;
     }
-    vec![issue(
+    out.push(issue(
         "history.lost",
         Severity::Error,
         format!("{}'s current session {current} has no job row and no transcript; a resume has nothing to continue", m.id),
         Some(format!("nimitz start {} --fresh  # a cold launch; the lineage starts a new entry", m.id)),
         Some(m.id.clone()),
-    )]
+    ));
+    out
 }
 
 /// name.taken: the expected name is held by a live session that is not this

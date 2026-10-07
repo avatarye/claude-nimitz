@@ -1553,6 +1553,84 @@ fn rm_of_a_members_own_row_names_relaunch_and_retire() {
     assert!(r.out.contains("session.live") || r.out.contains("nimitz fleet rm MAIN"), "{}", r.out);
 }
 
+/// `/branch`, stop, then `relaunch` (the fix of name.drift and labels.missing):
+/// the relabel goes onto the branch too, never the pre-branch conversation
+/// (review of the acceptance fixes, item 2).
+#[test]
+fn branch_then_stop_then_relaunch_resumes_the_branch() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let (job, birth) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    assert!(fake(&["__inside", &job, "branch", "[MAIN.ARGOS]-CLEAN"]).status.success());
+    let branch = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string();
+    assert_eq!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 0);
+    let r = sb.run(&["relaunch", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("rm {job}")) && r.out.contains(&format!("--resume {branch} --name")) && !r.out.contains(&format!("--resume {birth}")), "{}", r.out);
+    let r = sb.run(&["relaunch", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(live(&m) && m["session"]["session_id"] == branch.as_str(), "{m}");
+}
+
+/// The registry names a conversation that is not later in the lineage than the
+/// one the job would wake (a lost hook line, a hand edit): the job's own
+/// conversation wins, with a `lineage.stale` warning and the relaunch fix
+/// (review item 5).
+#[test]
+fn a_stale_registry_session_wakes_the_row_and_warns() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let (job, birth) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    assert!(fake(&["__inside", &job, "clear"]).status.success());
+    let now = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string();
+    assert_eq!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 0);
+    // the registry points back at the birth conversation (earlier in the lineage than the row's)
+    let reg_path = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json");
+    let mut reg: Value = serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    reg["identities"]["MAIN/ARGOS/CLEAN"]["session"] = Value::from(birth.as_str());
+    std::fs::write(&reg_path, reg.to_string()).unwrap();
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let stale = m["issues"].as_array().unwrap().iter().find(|i| i["code"] == "lineage.stale").expect("lineage.stale");
+    assert_eq!(stale["severity"], "Warn");
+    assert_eq!(stale["fix"], "nimitz relaunch MAIN/ARGOS/CLEAN");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("--bg --resume {birth}")) && !r.out.contains("--name") && r.out.contains("lineage.stale"), "a native wake, warned: {}", r.out);
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert_eq!(m["session"]["session_id"], now.as_str(), "the job's conversation: {m}");
+}
+
+/// A lead with no registry job and a live /fork beside its own live job: the
+/// earlier job is the lead's, the fork its intruder; never the other way
+/// round (review item 7).
+#[test]
+fn a_leads_fork_with_no_registry_job_is_still_the_intruder() {
+    let sb = Sb::new(false);
+    let adm = sb.member("MAIN");
+    let job = adm["session"]["short_id"].as_str().unwrap().to_string();
+    let reg_path = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json");
+    let mut reg: Value = serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
+    reg["identities"]["MAIN"].as_object_mut().unwrap().remove("job");
+    for l in reg["identities"]["MAIN"]["lineage"].as_array_mut().unwrap() {
+        l.as_object_mut().unwrap().remove("job");
+    }
+    std::fs::write(&reg_path, reg.to_string()).unwrap();
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1100)); // the fork starts later than the lead
+    let o = fake(&["__inside", &job, "fork"]);
+    let fork = String::from_utf8_lossy(&o.stdout).trim().rsplit(' ').next().unwrap().to_string();
+    let adm = sb.member("MAIN");
+    assert_eq!(adm["session"]["short_id"], job.as_str(), "the earlier job is the lead's: {adm}");
+    let intruder = adm["issues"].as_array().unwrap().iter().find(|i| i["code"] == "lead.intruder").expect("lead.intruder");
+    assert!(intruder["message"].as_str().unwrap().contains(&fork) && !intruder["message"].as_str().unwrap().contains(&job), "{intruder}");
+    assert!(!adm["issues"].as_array().unwrap().iter().any(|i| i["code"] == "dup.live"), "{adm}");
+}
+
 /// A job killed in its first turn has no transcript on disk yet. A start right
 /// after is the daemon's crash window (apply waits for its restart), never
 /// `history.lost` with a `--fresh` fix that would make a duplicate (e2e case 6).
