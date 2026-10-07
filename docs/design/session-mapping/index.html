@@ -1,0 +1,262 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Session mapping</title><style>
+:root{--bg:#1e1f1a;--panel:#272822;--fg:#ecebe3;--muted:#aaa58f;--line:#4e4d42;--accent:#66d9ef;--needs:#ff5c93;--err:#fd971f;--warn:#d8c766;--ok:#a6e22e}
+@media (prefers-color-scheme: light){:root{--bg:#fbfaf6;--panel:#ffffff;--fg:#26261f;--muted:#6b6856;--line:#d6d3c4;--accent:#0b7285;--needs:#c2185b;--err:#b45309;--warn:#8a7400;--ok:#4d7c0f}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1240px;margin:0 auto;padding:24px 16px 80px}
+nav{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 16px;font-size:14px;overflow-x:auto;white-space:nowrap}
+nav a{margin-right:16px;color:var(--accent);text-decoration:none}
+h1{font-size:28px;margin:4px 0}h2{font-size:22px;margin:44px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}h3{font-size:17px;margin:24px 0 8px}
+code{background:color-mix(in srgb,var(--line) 45%,transparent);padding:0 4px;border-radius:4px;font-size:13px}
+.sub{color:var(--muted)}.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:12px 0}
+table{border-collapse:collapse;width:100%;margin:8px 0 16px;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{color:var(--muted);font-weight:600}
+.tw{overflow-x:auto}
+.b{display:inline-block;font-size:12px;font-weight:700;padding:1px 7px;border-radius:9px;color:#111}
+.b.ok{background:var(--ok)}.b.gap{background:var(--warn)}.b.brk{background:var(--needs);color:#fff}.b.nr{background:var(--line);color:var(--fg)}
+.dg{display:grid;grid-template-columns:1fr 1fr;gap:16px}@media(max-width:900px){.dg{grid-template-columns:1fr}}
+svg{width:100%;height:auto;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+svg .bx{fill:color-mix(in srgb,var(--panel) 85%,var(--accent));stroke:var(--line)}svg .bx.sup{stroke:var(--accent)}svg .bx.id{stroke:var(--warn)}
+svg .h{fill:var(--fg);font:600 13px system-ui,sans-serif}svg .h2{fill:var(--fg);font:600 13px system-ui,sans-serif}svg .t{fill:var(--muted);font:12px ui-monospace,monospace}
+svg .ln{stroke:var(--accent);stroke-width:1.6}svg .ln.dash{stroke-dasharray:5 4}svg .ah{fill:var(--accent)}
+ul.tight li{margin:3px 0}
+</style></head><body>
+<nav><a href="#sum">Summary</a><a href="#now">How it works now</a><a href="#case0">Case 0</a><a href="#matrix">Test matrix</a><a href="#gaps">Gaps</a><a href="#design">Design</a><a href="#limits">Limits</a><a href="#method">Method</a></nav>
+<main>
+<h1>Session mapping</h1>
+<p class="sub">claude-nimitz 0.3.1 on Claude Code 2.1.292 (it updated from 2.1.290 during the night) &middot; 2026-10-07 &middot; investigation only: nothing is implemented. Written in ASD-STE100 style, with the words of <code>docs/design/cc-control-model.md</code> &sect;1.</p>
+
+<div class="card" id="sum"><h2 style="margin-top:0;border:0">Summary</h2>
+<ul class="tight">
+<li>We ran 38 cases on real Claude Code in a throwaway fleet. Result: 18 OK, 11 gaps, 8 breaks, 1 limit.</li>
+<li>Ship lifecycle commands are safe: <code>stop</code>, <code>kill</code>, <code>rm</code>, <code>respawn</code>, <code>attach</code> and a native resume keep the same session id and the labels. The job row keeps the launch flags (<code>respawnFlags</code>).</li>
+<li>The mapping breaks when the session id changes under a member (<code>/clear</code>, <code>/resume</code>, <code>&larr;</code>), when two processes share one id (<code>claude -c</code> next to a live lead), and when nimitz recovers a lead with <code>-c</code>. In these cases nimitz shows a live member as stopped, suggests a fix that stops the real member, or continues the wrong conversation.</li>
+<li>Case 0: background members stop on their own after about one idle hour. The daemon retires them (<code>bg retire &lt;id&gt;: idle-prompt, idle 61m</code>). No SessionEnd hook fires. This stopped NIMITZ_DEV twice.</li>
+<li>Root causes in nimitz: the registry moves only on a nimitz action; rows are keyed by session id, not job id; labels are kept per session id, not per process; leads resume with <code>-c</code>; leads started outside a nimitz pane never bind.</li>
+<li>The design gives ten invariants (I1 to I10). The two most important: every session that starts with an identity's labels joins its lineage (the hook binds, by SessionStart <code>source</code>); and recovery continues the lineage current by id, never with <code>-c</code>.</li>
+<li>Some gaps cannot be closed because Claude Code does not allow it: no hook can refuse a session, idle retirement has no setting, and a reboot does not respawn. The design detects these and repairs them.</li>
+</ul></div>
+
+<h2 id="now">How it works now</h2>
+<p>Claude Code and nimitz see a session in different ways. Claude Code keys everything by a session id. nimitz keys everything by an identity. The registry connects the two.</p>
+<div class="dg"><div><svg viewBox="0 0 560 470" role="img" aria-label="Claude Code session model">
+<defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+<rect x="20" y="20" width="520" height="70" rx="8" class="bx sup"/>
+<text x="36" y="46" class="h">Daemon (supervisor)</text>
+<text x="36" y="68" class="t">spawns, attaches, retires idle (~60 min), restarts crashes (~15 s),</text>
+<text x="36" y="84" class="t">restarts on a new binary and adopts the live workers</text>
+<rect x="20" y="130" width="250" height="110" rx="8" class="bx"/>
+<text x="36" y="156" class="h">Job row  ~/.claude/jobs/&lt;id&gt;/</text>
+<text x="36" y="178" class="t">state: working / done / crashed …</text>
+<text x="36" y="196" class="t">sessionId = launch id</text>
+<text x="36" y="214" class="t">resumeSessionId = live id</text>
+<text x="36" y="232" class="t">respawnFlags = --name, --settings</text>
+<rect x="290" y="130" width="250" height="110" rx="8" class="bx"/>
+<text x="306" y="156" class="h">Process + session file</text>
+<text x="306" y="178" class="t">~/.claude/sessions/&lt;pid&gt;.json</text>
+<text x="306" y="196" class="t">sessionId, jobId, kind, name</text>
+<text x="306" y="214" class="t">status: busy / idle / waiting</text>
+<text x="306" y="232" class="t">exists only while the pid lives</text>
+<rect x="20" y="280" width="520" height="62" rx="8" class="bx"/>
+<text x="36" y="306" class="h">Transcript  ~/.claude/projects/&lt;cwd&gt;/&lt;sessionId&gt;.jsonl</text>
+<text x="36" y="328" class="t">the conversation; stays after the session stops</text>
+<line x1="145" y1="90" x2="145" y2="128" class="ln" marker-end="url(#a1)"/>
+<line x1="415" y1="90" x2="415" y2="128" class="ln" marker-end="url(#a1)"/>
+<line x1="272" y1="185" x2="288" y2="185" class="ln" marker-end="url(#a1)"/>
+<line x1="415" y1="240" x2="415" y2="278" class="ln" marker-end="url(#a1)"/>
+<text x="20" y="372" class="h2">A new session id comes from:</text>
+<text x="20" y="394" class="t">/clear  (same pid and job)       ←  (a fork into a new background job)</text>
+<text x="20" y="414" class="t">--fork-session, --resume with flags or while live, -c, a resume by name</text>
+<text x="20" y="434" class="t">(a copy: no labels, often the same name)</text>
+<text x="20" y="458" class="t">The same id continues on: stop, kill, rm + resume, respawn, attach, /compact</text>
+</svg><p class="sub">Claude Code: one process runs one session id. A job row (background only) can carry several session ids over time.</p></div>
+<div><svg viewBox="0 0 560 470" role="img" aria-label="nimitz identity model">
+<defs><marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker></defs>
+<rect x="20" y="20" width="250" height="88" rx="8" class="bx id"/>
+<text x="36" y="46" class="h">Identity (config)</text>
+<text x="36" y="68" class="t">F, F/SQ, F/SQ/SHIP, F/SQ/~task</text>
+<text x="36" y="86" class="t">a folder, a name, a role</text>
+<rect x="290" y="20" width="250" height="88" rx="8" class="bx"/>
+<text x="306" y="46" class="h">Launch with labels</text>
+<text x="306" y="68" class="t">claude --bg --name … --settings</text>
+<text x="306" y="86" class="t">{"env":{NIMITZ_ID, NIMITZ_ROLE …}}</text>
+<rect x="290" y="148" width="250" height="88" rx="8" class="bx"/>
+<text x="306" y="174" class="h">Hooks (plugin)</text>
+<text x="306" y="196" class="t">SessionStart: labels, pid, source</text>
+<text x="306" y="214" class="t">→ events.jsonl (+ role rules)</text>
+<rect x="20" y="148" width="250" height="88" rx="8" class="bx id"/>
+<text x="36" y="174" class="h">Registry  (NIMITZ_STATE)</text>
+<text x="36" y="196" class="t">identity → current session</text>
+<text x="36" y="214" class="t">+ lineage of session ids</text>
+<rect x="20" y="276" width="520" height="88" rx="8" class="bx"/>
+<text x="36" y="302" class="h">Snapshot (status, check, Admiralty)</text>
+<text x="36" y="324" class="t">session files + claude agents --json + events + registry + panes</text>
+<text x="36" y="342" class="t">→ member status, issues, fixes; unlabelled sessions in scope = stowaways</text>
+<line x1="272" y1="64" x2="288" y2="64" class="ln" marker-end="url(#a2)"/>
+<line x1="415" y1="108" x2="415" y2="146" class="ln" marker-end="url(#a2)"/>
+<line x1="288" y1="192" x2="272" y2="192" class="ln dash" marker-end="url(#a2)"/>
+<line x1="145" y1="236" x2="145" y2="274" class="ln" marker-end="url(#a2)"/>
+<line x1="415" y1="236" x2="415" y2="274" class="ln" marker-end="url(#a2)"/>
+<text x="20" y="394" class="h2">Today the registry moves only on a nimitz action:</text>
+<text x="20" y="414" class="t">launch, start, relaunch, adopt (the dashed arrow: ships only,</text>
+<text x="20" y="434" class="t">at bind time). A /clear, a fork or a by-hand session does not</text>
+<text x="20" y="454" class="t">move it. Leads started outside a nimitz pane never bind.</text>
+</svg><p class="sub">nimitz: the identity is fixed. The labels and the hooks connect a session to it. The snapshot reads Claude Code's files to find the live state.</p></div></div>
+<h3>Words used in this report</h3>
+<div class="tw"><table><tr><th>word</th><th>meaning</th></tr>
+<tr><td>identity</td><td>A fleet member: admiral <code>F</code>, commodore <code>F/SQ</code>, ship <code>F/SQ/SHIP</code>, tender <code>F/SQ/~task</code>. It does not change.</td></tr>
+<tr><td>session id</td><td>Claude Code's id for one conversation. Claude Code chooses it.</td></tr>
+<tr><td>job row</td><td>Claude Code's record of a background session (<code>~/.claude/jobs/&lt;job id&gt;/state.json</code>). It stays after the session stops.</td></tr>
+<tr><td>session file</td><td><code>~/.claude/sessions/&lt;pid&gt;.json</code>. It exists while the process runs.</td></tr>
+<tr><td>labels</td><td>The <code>NIMITZ_*</code> environment values that nimitz gives a session at start.</td></tr>
+<tr><td>registry, lineage, current</td><td>nimitz's record per identity: the list of its session ids (lineage) and the one that is the identity now (current).</td></tr>
+<tr><td>stowaway</td><td>A session in fleet scope with no labels.</td></tr>
+<tr><td>copy</td><td>A second session made from a member's session (a fork or a resume that Claude Code turns into a new id).</td></tr>
+<tr><td>source</td><td>The SessionStart hook's <code>source</code>: startup, resume, clear, compact or fork.</td></tr>
+<tr><td>parked</td><td>(proposed) A member that the daemon or a reboot stopped. Same id. Not an error.</td></tr>
+</table></div>
+
+<h2 id="case0">Case 0: why a background ship stops on its own</h2>
+<div class="card">
+<p>NIMITZ_DEV stopped twice with a <code>Stop</code> line and no <code>SessionEnd</code>. The daemon log gives the cause:</p>
+<pre style="white-space:pre-wrap;font-size:12px">[2026-10-05T07:09:01Z] [bg] bg retire 9aacf927: settled, idle 60m
+[2026-10-06T02:18:02Z] [bg] bg retire 9aacf927: idle-prompt, idle 61m
+[2026-10-06T02:18:02Z] [bg] bg settled 9aacf927 (done)</pre>
+<ul class="tight">
+<li>The daemon stops a background session that is idle at the prompt and not attached for about 60 minutes. The docs confirm it (agent view, "The supervisor process"). The conversation stays on disk.</li>
+<li>No SessionEnd hook fires for it. The job row goes to <code>done</code>. nimitz shows the member as stopped, with no reason.</li>
+<li>No setting, variable or flag changes the time. The documented opt-out is a pin (<code>Ctrl+T</code> in agent view). We found no file or command that sets the pin.</li>
+<li>Other causes: a new binary restarts the daemon, but the daemon adopts the live workers (no stop). A crash restarts in about 15 s. A reboot stops all sessions, and they do not come back by themselves.</li>
+<li>Recovery works today: <code>nimitz start</code> does a native resume with the same id (this session came back that way). The gap is that nothing does it automatically, and the status does not say why (G11).</li>
+</ul></div>
+
+<h2 id="matrix">Test matrix</h2>
+<p class="sub">Expected = what the user wants. Observed = what Claude Code did and what nimitz showed. OK = the mapping holds or nimitz recovers it cleanly. GAP = a wrong status, a wrong fix or a manual step. BREAK = a lost member, lost history, or a fix that hurts the real member.</p>
+<h3>Case 0: Why background sessions stop</h3><div class="tw"><table><tr><th>case</th><th>expected</th><th>observed</th><th>verdict</th></tr>
+<tr><td>0a</td><td>A ship stays live until nimitz or the user stops it.</td><td>The daemon retires a background session that is idle at the prompt and not attached for about 60 minutes: <code>bg retire 9aacf927: idle-prompt, idle 61m</code>, then <code>settled (done)</code>. No SessionEnd line. The job row goes to <code>done</code>. This stopped NIMITZ_DEV on 2026-10-06 02:18 UTC. The docs say pinning (<code>Ctrl+T</code> in agent view) prevents it. No setting, variable or flag changes the time.</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>0b</td><td>An update keeps the live sessions.</td><td>On a new binary the daemon restarts itself (<code>cause=upgrade</code>) and adopts the live workers (<code>bg adopt: adopted=2</code>). The workers keep their id, name and labels. They keep running the old binary (session file <code>version 2.1.290</code> under daemon 2.1.292).</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>0c</td><td>A crash is visible and recoverable.</td><td>After <code>kill -9</code> of a worker, the daemon restarts it by itself after about 11 to 15 s, with the same id, name and labels. The job state shows <code>crashed</code> for that time. The daemon log has no line for it.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>0d</td><td>After a reboot the fleet comes back.</td><td>Not simulated (a daemon stop would stop the live fleet). The docs say: running sessions stop; they show <code>failed</code> or <code>stopped</code>; they restart only when you attach or reply. No automatic respawn.</td><td><span class="b nr">LIMIT</span></td></tr>
+</table></div>
+<h3>Case 1: By-hand CLI on a ship</h3><div class="tw"><table><tr><th>case</th><th>expected</th><th>observed</th><th>verdict</th></tr>
+<tr><td>1a/1b</td><td><code>claude stop</code> or <code>kill</code>: stopped, same identity.</td><td>Row <code>done</code>, SessionEnd <code>other</code> with labels. <code>kill</code> is an alias of <code>stop</code>. <code>nimitz start</code> does a native resume: same id, labels, lineage entry.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>1c</td><td><code>claude rm</code> while stopped: row gone, history kept.</td><td>Transcript stays. <code>nimitz start</code> resumes with every flag: same id, history, name and labels.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>1d</td><td><code>claude respawn &lt;id&gt;</code>: same identity.</td><td>Same id and labels (the job keeps <code>respawnFlags</code>). No lineage line (not needed).</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>1e</td><td><code>claude attach</code>, then <code>/exit</code> or ctrl-c: the session keeps running.</td><td>The session keeps running. But <code>/exit</code> opens the agent view of the whole machine, and the view claims a spare process in the cwd. That spare shows as a stowaway until the view closes.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>1f-i</td><td><code>claude --bg --resume &lt;id&gt;</code>, no flags, while stopped: native resume.</td><td>"woke session ... with its saved options": same id and labels.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>1f-ii</td><td>The same command while the ship is live: refuse or attach.</td><td>Claude Code starts a copy (new id, same name, no labels, SessionStart <code>fork</code>). nimitz shows a stowaway and <code>name.taken</code>. <code>start</code> and <code>relaunch</code> refuse. <code>sweep</code> ignores the copy.</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>1f-iii</td><td><code>--bg --resume &lt;id&gt;</code> with a flag (<code>--name</code>, <code>--permission-mode</code>).</td><td>Claude Code starts a copy that carries the full history (2.1.292). Often with the identity's name. Same result as 1f-ii.</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>1g</td><td><code>kill -9</code> of the worker, then <code>nimitz start</code> within 10 s.</td><td><code>nimitz start</code> runs a resume while the daemon restarts the session. Claude Code makes an unlabelled copy with the identity's name. nimitz prints <code>[OK] ... backgrounded &middot; ed8fea31</code> (the wrong short id) and binds the daemon's restart.</td><td><span class="b brk">BREAK</span></td></tr>
+</table></div>
+<h3>Case 2: A new session in a member's folder, by hand</h3><div class="tw"><table><tr><th>case</th><th>expected</th><th>observed</th><th>verdict</th></tr>
+<tr><td>2a</td><td>Plain <code>claude</code>: a stowaway while live.</td><td>Correct stowaway. It goes away after <code>/exit</code>. The fix text (<code>nimitz stop</code>) does not work for an interactive session.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>2b</td><td><code>claude -c</code> while the ship is live.</td><td>"No conversation found": <code>-c</code> skips a session with a live job row.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>2c</td><td><code>claude --resume &lt;ship id&gt;</code> while the ship is live.</td><td>The CLI turns it into <code>claude attach</code>. The ship stays intact.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>2c'</td><td><code>claude --resume &lt;ship id&gt;</code> (or <code>-c</code>) while the ship is stopped.</td><td>The ship runs interactive, with no labels and no rules. nimitz says <code>labels.missing</code> (wrong cause) and suggests <code>relaunch</code>, which refuses (<code>session.none</code>). After <code>/exit</code>, <code>nimitz start</code> repairs it: same id, history kept.</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>2d</td><td><code>claude --bg "..."</code>: a stowaway, easy to remove.</td><td>Correct stowaway. <code>nimitz stop</code> and <code>nimitz rm</code> work.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>2e</td><td><code>--fork-session</code> of the ship (interactive or <code>--bg</code>): a copy of the ship.</td><td>nimitz shows a stowaway, never a copy. On 2.1.292 a fork records no parent, and a background fork gets an automatic name. The interactive fork keeps the ship's exact name: <code>name.taken</code>, and the fix fails.</td><td><span class="b gap">GAP</span></td></tr>
+</table></div>
+<h3>Case 3: Inside a member session</h3><div class="tw"><table><tr><th>case</th><th>expected</th><th>observed</th><th>verdict</th></tr>
+<tr><td>3a</td><td><code>/clear</code> in a background ship: the identity follows the new conversation.</td><td>Same pid and job, new session id (9b737eb1 &rarr; 533ea11e). SessionStart <code>clear</code> keeps the labels. The job keeps <code>sessionId</code> = the launch id and sets <code>resumeSessionId</code> = the new id. The registry does not move. nimitz shows the live ship as <code>Stopped</code>, and every command refuses. <code>check</code> says "no errors". <code>relaunch</code> later resumes the conversation from before the clear, so the work after the clear is lost.</td><td><span class="b brk">BREAK</span></td></tr>
+<tr><td>3b</td><td><code>/clear</code> in a bound commodore.</td><td>nimitz keeps the old current. The commodore shows <code>Stopped</code> with a <code>role.background</code> error. The live session shows as a copy. <code>relaunch --plan</code> offers a second <code>claude -c</code> while the commodore is live.</td><td><span class="b brk">BREAK</span></td></tr>
+<tr><td>3c</td><td><code>/compact</code>: same id.</td><td>Same id, SessionStart <code>compact</code> with labels.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>3d</td><td><code>/resume</code> to another conversation.</td><td>SessionEnd <code>resume</code>, SessionStart <code>resume</code> with labels, new id. Same failure as 3b once the lead is bound.</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>3e</td><td><code>/rename</code>: the drift is flagged, with a fix that works.</td><td>No hook fires. <code>name.drift</code> is raised for a live lead, but the fix (<code>relaunch</code>) refuses. <code>/rename</code> back is not suggested. On a ship, <code>/rename</code> removes <code>--name</code> from <code>respawnFlags</code>. A stopped renamed ship shows no issue, and <code>start</code> wakes it under the wrong name.</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>3f</td><td><code>&larr;</code> (move an interactive lead to the background).</td><td>Claude Code opens the agent view of the whole machine. It forks the conversation into a new background job (SessionStart <code>fork</code>, <code>interactiveLineage:true</code>). It claims a spare in the folder with the lead's labels. nimitz takes the spare as the lead. The stale fork row later blocks <code>up</code> and <code>start</code> of the squadron, also with <code>--force</code>.</td><td><span class="b brk">BREAK</span></td></tr>
+</table></div>
+<h3>Case 4: Interactive leads</h3><div class="tw"><table><tr><th>case</th><th>expected</th><th>observed</th><th>verdict</th></tr>
+<tr><td>4a</td><td>A lead started with the exact plan command outside a nimitz pane binds.</td><td>The lead runs and nimitz finds it by labels. The registry never gets it: nothing binds a lead outside <code>open_step</code>. The warning "the registry binds it later" is not implemented.</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>4b</td><td>A second lead by hand (<code>claude -c</code>) while the first is live: refused or flagged.</td><td>Claude Code opens the same session id in a second process. No copy, no refusal. nimitz merges both rows and takes the labels of the newest (unlabelled) start. The real lead shows <code>Stopped</code>, its own session shows as a stowaway, and the fix stops the real lead. This stays after the duplicate exits. The transcript branches.</td><td><span class="b brk">BREAK</span></td></tr>
+<tr><td>4c</td><td>The lead's terminal closes; <code>nimitz start</code> continues the same session.</td><td>nimitz restarts a lead with <code>claude -c</code>: the newest transcript in the folder. With a newer by-hand conversation there, it continued that one, renamed it and gave it the lead's labels. <code>check</code> was clean. The real history was orphaned.</td><td><span class="b brk">BREAK</span></td></tr>
+<tr><td>4d</td><td>A lead started with no labels.</td><td>A stowaway in the lead's folder. <code>adopt</code> would bind it without a warning that another live labelled session exists.</td><td><span class="b ok">OK</span></td></tr>
+</table></div>
+<h3>Case 5: Environment</h3><div class="tw"><table><tr><th>case</th><th>expected</th><th>observed</th><th>verdict</th></tr>
+<tr><td>5a</td><td>A transcript deleted (live, or stopped with its row): flagged before history is lost.</td><td>Claude Code writes a stub, renames it <code>*.orphaned-*.jsonl</code> and starts fresh under the same id (SessionStart <code>startup</code>). nimitz prints <code>[OK] verified</code>. History is lost with no warning.</td><td><span class="b brk">BREAK</span></td></tr>
+<tr><td>5b</td><td>A transcript deleted and no job row.</td><td><code>lineage.broken</code> with a cold-start fix. Clear.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>5c</td><td>A transcript moved to another project folder.</td><td>nimitz finds it by id and <code>--resume</code> continues it (background). A lead resumed with <code>-c</code> would not find it (inferred).</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>5d</td><td><code>kill -9</code> of an interactive lead.</td><td>No SessionEnd. With a stale fork row from 3f, <code>up</code>, <code>start</code> of the lead and <code>start</code> of its ships all refuse, also with <code>--force</code>. Only <code>relaunch</code> of the lead works.</td><td><span class="b brk">BREAK</span></td></tr>
+</table></div>
+<h3>Case 6: Other session commands</h3><div class="tw"><table><tr><th>case</th><th>expected</th><th>observed</th><th>verdict</th></tr>
+<tr><td>6a</td><td><code>--bg --session-id</code>.</td><td>Ignored with a warning (as in probe 1). A new stowaway.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>6b</td><td><code>--bg -c</code>, <code>--bg --resume &lt;name&gt;</code>, <code>--fork-session</code> while stopped.</td><td>Each starts a copy with no labels, often with the identity's name. With the ship stopped, <code>nimitz start</code> refuses on <code>name.taken</code>.</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>6c</td><td><code>claude -p --resume &lt;id&gt;</code> while stopped.</td><td>Same id in the foreground, no labels. nimitz raises <code>labels.missing</code> with a wrong cause. <code>start</code> repairs it.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>6d</td><td><code>claude purge</code>.</td><td>Not run: it edits <code>~/.claude.json</code>. Simulated (row and transcript gone): nimitz gives <code>lineage.broken</code> with a cold-start fix.</td><td><span class="b ok">OK</span></td></tr>
+<tr><td>6e</td><td>A <code>claude</code> started from inside a member session.</td><td>The child inherits <code>CLAUDE_CODE_*</code> from its parent. An interactive resume started that way took the live parent's name <code>[HOME.GITHUB]-NIMITZ_DEV</code> for about 40 s (found by the test harness).</td><td><span class="b gap">GAP</span></td></tr>
+<tr><td>6f</td><td>A nimitz on another <code>NIMITZ_HOME</code>.</td><td>It reports every labelled session it does not declare as <code>config.invalid</code> with the fix <code>nimitz rm &lt;id&gt;</code>, including the live HOME ships. That fix would remove another fleet's live job row.</td><td><span class="b gap">GAP</span></td></tr>
+</table></div>
+
+<h2 id="gaps">Gaps</h2>
+<p>We merged the results of the four test areas into these gaps. Each gap has the trigger, the effect, the severity, the evidence and a short repro.</p>
+<div class="tw"><table><tr><th>gap</th><th>severity</th><th>what</th><th>trigger</th><th>what breaks</th><th>evidence</th><th>repro</th></tr>
+<tr><td><b>G1</b></td><td><span class="b brk">high</span></td><td><code>/clear</code>, <code>/resume</code> and a fork change the session id; the registry does not follow.</td><td>A user or an agent types <code>/clear</code> or <code>/resume</code> in any member.</td><td>A live member shows <code>Stopped</code>. The fixes stop the real session. Every command refuses. <code>relaunch</code> rolls back to the conversation before the clear.</td><td>3a, 3b, 3d: SessionEnd <code>clear</code> then SessionStart <code>clear</code> from one pid, with the labels; job <code>resumeSessionId</code> = the new id; registry current unchanged.</td><td><code>nimitz start F/SQ/S --yes; claude attach &lt;short&gt;</code>, type <code>/clear</code>, press ctrl-z, run <code>nimitz status</code>.</td></tr>
+<tr><td><b>G2</b></td><td><span class="b brk">high</span></td><td>Rows are keyed by session id, not by job id; labels are kept per session id, not per pid.</td><td>Any event that gives one job two session ids (G1), or one session id two processes (G4).</td><td>nimitz splits one job into a stopped current and a live copy, or merges two processes into one row with the wrong labels.</td><td>3a (job 9b737eb1 shows 533ea11e live); 4b (two pids on 14f7b4aa).</td><td>As G1 and G4.</td></tr>
+<tr><td><b>G3</b></td><td><span class="b brk">high</span></td><td>Lead recovery uses <code>claude -c</code> (the newest transcript in the folder).</td><td>A lead stops, and a newer conversation exists in its folder: a by-hand <code>claude</code>, a fork, a tender.</td><td>nimitz continues the wrong conversation, gives it the lead's name and labels, and reports it healthy. The real history is orphaned.</td><td>4c: e04181c2 became the COMMODORE; <code>check</code> clean.</td><td>Stop a commodore; run <code>claude</code> in its folder with one prompt; <code>/exit</code>; run the <code>claude -c ...</code> step from <code>nimitz start --plan</code>.</td></tr>
+<tr><td><b>G4</b></td><td><span class="b brk">high</span></td><td>Two live processes on one session id.</td><td><code>claude -c</code> or <code>claude --resume &lt;id&gt;</code> in a live lead's folder.</td><td>Claude Code neither copies nor refuses. The real lead shows <code>Stopped</code> and as a stowaway; the fix stops it. The transcript branches; one branch is lost at the next resume.</td><td>4b: pids 747465 and 757495 on 14f7b4aa.</td><td>Start a commodore; in another terminal in its folder run <code>claude -c</code>; run <code>nimitz status</code>.</td></tr>
+<tr><td><b>G5</b></td><td><span class="b brk">high</span></td><td><code>&larr;</code> turns an interactive lead into a forked background job plus a labelled spare; a stale lead row blocks every start under it.</td><td>The user presses <code>&larr;</code> on an empty prompt in an admiral or commodore.</td><td>nimitz takes the spare as the lead. Later a stopped background row of the lead raises <code>role.background</code> as an error and blocks <code>up</code>, <code>start</code> of the lead and of its ships, also with <code>--force</code>. <code>sweep</code> and <code>rm</code> do not remove it.</td><td>3f, 5d: job 7e1875a4 (<code>interactiveLineage:true</code>), spare aa26510f with the commodore's labels.</td><td>Interactive commodore in tmux; send <code>Left</code>; return; kill the lead; <code>nimitz up F --plan</code>.</td></tr>
+<tr><td><b>G6</b></td><td><span class="b brk">high</span></td><td>History loss is silent.</td><td>A transcript is deleted or lost while its job row exists.</td><td>Claude Code starts fresh under the same id. nimitz says <code>[OK] verified</code>.</td><td>5a: SessionStart <code>startup</code> on a resume; <code>&lt;sid&gt;.orphaned-*.jsonl</code> in the project folder.</td><td>Stop a ship; move its <code>&lt;sid&gt;.jsonl</code> away; <code>nimitz start</code>; read the SessionStart <code>source</code>.</td></tr>
+<tr><td><b>G7</b></td><td><span class="b brk">high</span></td><td>A nimitz on another home acts on this home's sessions.</td><td>Two NIMITZ_HOMEs on one machine (tests, a second set of fleets).</td><td>It shows this home's live members as <code>config.invalid</code> with the fix <code>nimitz rm</code>.</td><td>byhand side finding: 9aacf927 and 0abc1234 flagged from a test home.</td><td>Run <code>nimitz status</code> with a temp <code>NIMITZ_HOME</code>/<code>NIMITZ_STATE</code> while a live fleet runs.</td></tr>
+<tr><td><b>G8</b></td><td><span class="b gap">med-high</span></td><td>A start races the daemon's crash restart.</td><td>A worker crashes (or is killed) and <code>nimitz start</code> runs within about 15 s.</td><td>An unlabelled copy with the identity's name. nimitz prints OK and binds the daemon's restart.</td><td>1g: <code>[OK] ... backgrounded &middot; ed8fea31</code>; Claude Code's note "started a copy" not read.</td><td><code>kill -9 &lt;worker pid&gt;; sleep 1; nimitz start F/SQ/S --yes</code>.</td></tr>
+<tr><td><b>G9</b></td><td><span class="b gap">med-high</span></td><td>Leads started outside a nimitz pane never bind; the lineage records only nimitz launches.</td><td>The user runs the lead's command by hand, or its SessionStart comes after <code>NIMITZ_BIND_TIMEOUT</code>.</td><td>No current and no lineage for the lead. This makes G3 and G4 unrecoverable by id.</td><td>4a: registry lists only the ship; <code>run.rs</code> promises a later binding that nothing does.</td><td><code>nimitz start F/SQ</code> with a slow pane; run the planned command by hand; read <code>registry.json</code>.</td></tr>
+<tr><td><b>G10</b></td><td><span class="b gap">med</span></td><td>By-hand resumes, <code>-c</code> and forks leave copies that nimitz does not link to the identity.</td><td><code>--resume</code> with flags or while live, <code>--fork-session</code>, <code>-c</code>, a resume by name.</td><td>A stowaway with the identity's name: <code>name.taken</code> blocks <code>start</code> and <code>relaunch</code>, also while the member is stopped. <code>sweep</code> ignores it. On 2.1.292 the copy carries the history.</td><td>1f-ii, 1f-iii, 2e, 6b: <code>source fork</code>, no labels, no parent field.</td><td><code>claude --bg --resume &lt;ship id&gt; --fork-session "x"</code>; <code>nimitz start &lt;ship&gt;</code>.</td></tr>
+<tr><td><b>G11</b></td><td><span class="b gap">med</span></td><td>Members stop after about one idle hour, and after a reboot; nothing revives them.</td><td>The daemon retires an idle unattached background member; or the machine restarts.</td><td>Ships and tenders are <code>Stopped</code> in the morning. No SessionEnd, so nimitz cannot give the reason. A signal to a stopped ship does not run.</td><td>Case 0 log lines; the docs (agent view, "The supervisor process").</td><td>Leave a ship idle for 61 minutes.</td></tr>
+<tr><td><b>G12</b></td><td><span class="b gap">med</span></td><td>A stopped ship resumed by hand runs interactive, with no labels and no rules; the fix is a dead end.</td><td><code>claude --resume &lt;ship id&gt;</code> or <code>claude -c</code> in a stopped ship's folder.</td><td>The ship works without its labels and role rules. <code>check</code> says <code>relaunch</code>; <code>relaunch</code> refuses.</td><td>2c'.</td><td><code>nimitz stop F/SQ/S</code>; in its folder <code>claude --resume &lt;sid&gt;</code>; <code>nimitz relaunch F/SQ/S --plan</code>.</td></tr>
+<tr><td><b>G13</b></td><td><span class="b gap">med</span></td><td>A child <code>claude</code> inherits <code>CLAUDE_CODE_*</code> and can take its parent's name.</td><td>A member runs <code>claude</code> from its Bash tool, or a script runs it from inside a session.</td><td>A second session answers to a live member's name for a while.</td><td>6e: the test harness.</td><td>From inside a member, run an interactive <code>claude --resume &lt;other id&gt;</code> without <code>env -i</code>; read the session file <code>name</code>.</td></tr>
+<tr><td><b>G14</b></td><td><span class="b nr">low</span></td><td><code>/rename</code> drift is not handled.</td><td><code>/rename</code> in a member.</td><td>A stopped renamed ship shows no issue and wakes under the wrong name. For a live lead the fix refuses; <code>/rename &lt;expected&gt;</code> is not suggested.</td><td>3e, 6h: <code>--name</code> removed from <code>respawnFlags</code>.</td><td><code>/rename X</code> in an attached ship; stop it; <code>nimitz status</code>.</td></tr>
+<tr><td><b>G15</b></td><td><span class="b nr">low</span></td><td>Fixes and reasons are wrong for some kinds.</td><td>Any interactive stowaway or name holder; any crash.</td><td><code>nimitz stop &lt;sid&gt;</code> for an interactive session fails. <code>labels.missing</code> says "resumed with flags" when no flag was used. A Stopped reason quotes an old SessionEnd. <code>lineage.broken</code> says "a copy" after a correct resume.</td><td>2a, 2c', 1g, 3a.</td><td>See the cases.</td></tr>
+<tr><td><b>G16</b></td><td><span class="b nr">low</span></td><td>The agent view leaks into member folders.</td><td><code>/exit</code> in <code>claude attach</code>, <code>&larr;</code>, <code>claude agents</code>.</td><td>A spare process becomes a short-lived stowaway (with labels after <code>&larr;</code>). The view lists every session on the machine, and the order changes while you look.</td><td>1e, 2c, 3f.</td><td><code>claude attach &lt;ship&gt;</code>, <code>/exit</code>, <code>nimitz status</code>.</td></tr>
+</table></div>
+
+<h2 id="design">Proposed design: one solid identity &rarr; session mapping</h2>
+<p>Goal: the identity is the only thing the user must know. A session is only the identity's current body. nimitz follows every body change, and it repairs every by-hand change, or tells the user the one step that repairs it.</p>
+<div class="tw"><table><tr><th>invariant</th><th>rule</th><th>how nimitz enforces or repairs it</th><th>closes</th></tr>
+<tr><td><b>I1</b></td><td>One identity has one lineage and one current session. Only the registry says which session is the identity.</td><td>A name, the newest transcript and <code>-c</code> never decide it. All binds go through one writer under the registry lock. Each lineage entry records <code>via</code>: launch, resume, relaunch, clear, compact, fork, adopt or hook.</td><td>G1, G3, G9</td></tr>
+<tr><td><b>I2</b></td><td>Every session that starts with an identity's labels joins that identity's lineage, whatever its SessionStart <code>source</code>.</td><td>The SessionStart hook binds: <code>startup</code> and <code>resume</code> bind or confirm; <code>clear</code> and <code>fork</code> append and move current; <code>compact</code> confirms. If a hook line is lost, <code>status</code> replays the events under the lock. A lead binds the same way as a ship.</td><td>G1, G5, G9</td></tr>
+<tr><td><b>I3</b></td><td>nimitz keys a background member by its job id, and it keeps labels per process.</td><td>Join rows by session file <code>jobId</code> and job <code>daemonShort</code>. The live id is the session file <code>sessionId</code> or the job <code>resumeSessionId</code>; the job <code>sessionId</code> is only the launch id. A labelled pid is the member; an unlabelled pid on the same id is an intruder.</td><td>G1, G2, G4</td></tr>
+<tr><td><b>I4</b></td><td>An identity has at most one live process, and a session id has at most one live process.</td><td>Two live pids for one identity or one session id give <code>dup.live</code> with the exact terminal of each (the session file <code>tmux</code> or Herdr fields). nimitz never merges them.</td><td>G4</td></tr>
+<tr><td><b>I5</b></td><td>Recovery continues the lineage current by its id.</td><td>Leads and ships resume with <code>--resume &lt;current&gt;</code>; never <code>-c</code>. A resume that comes back with SessionStart <code>startup</code> is a history loss: nimitz raises <code>history.lost</code>, shows the <code>*.orphaned-*</code> file and stops.</td><td>G3, G6</td></tr>
+<tr><td><b>I6</b></td><td>Every launch is verified against what it should give.</td><td>nimitz reads the short id and Claude Code's notes ("started a copy as X"). A wrong id fails the step and removes the copy in the same plan. A job in the crash window (<code>state crashed</code>, or a dead pid on a <code>working</code> row) is given about 20 s to restart before nimitz resumes it.</td><td>G8</td></tr>
+<tr><td><b>I7</b></td><td>A by-hand action is reconciled, not refused.</td><td>nimitz classifies each unlabelled session in a member's folder: a copy of the identity (same job, a <code>fork</code> whose transcript shares the identity's message uuids, or the identity's name) or a stowaway. <code>start</code> and <code>sweep</code> repair copies after one confirm. Each issue has one fix that works for its kind: a background session is stopped and removed; an interactive one is ended in its terminal (nimitz names the terminal); a live rename is fixed with <code>/rename &lt;expected&gt;</code>.</td><td>G10, G12, G14, G15</td></tr>
+<tr><td><b>I8</b></td><td>A nimitz home acts only on sessions labelled for that home.</td><td>Labels carry <code>NIMITZ_HOME</code> (they do already). A session labelled for another home is never an issue and never a fix target.</td><td>G7</td></tr>
+<tr><td><b>I9</b></td><td>Parked is a normal state.</td><td>A member that the daemon retired, or that a reboot stopped, is <code>parked</code>: same id, no error. The commodore revives a parked ship (native resume, same id) before it signals it. <code>nimitz up</code> after login brings the leads back.</td><td>G11</td></tr>
+<tr><td><b>I10</b></td><td>A by-hand session in a member's folder is told at once.</td><td>The SessionStart hook gives an unlabelled session in a member's folder a short context: "this folder belongs to F/SQ/S; exit, or ask nimitz". It also records the session as an intruder for <code>status</code>. A stale row of a lead is history, not an error that blocks its ships.</td><td>G4, G5, G12, G16</td></tr>
+</table></div>
+<h3>Parts of the design</h3>
+<ul class="tight">
+<li><b>Hook binder.</b> The SessionStart hook writes the binding at once, under the registry lock (now it only logs). It uses <code>source</code>, the labels, the pid and the job id. SessionEnd records the reason per pid.</li>
+<li><b>Job-keyed rows, labels per pid.</b> The snapshot joins by job id, reads <code>resumeSessionId</code>, <code>respawnFlags</code>, <code>name</code>, <code>nameSource</code>, <code>interactiveLineage</code>, <code>parkedJobId</code> and <code>spare</code>, and keeps labels per pid.</li>
+<li><b>Reconcile engine.</b> One function turns the snapshot into actions: rebind, park, mark a copy, mark an intruder, mark a history loss. <code>status</code> shows the result; <code>start</code> and <code>sweep</code> apply the safe ones; <code>check</code> shows one working fix per issue.</li>
+<li><b>Recovery by id.</b> <code>start</code> and <code>relaunch</code> resume <code>current</code> by id for every role. <code>-c</code> is used only for an identity with an empty lineage, and the plan shows which transcript it will continue.</li>
+<li><b>Verified launch.</b> Every <code>--bg</code> step parses Claude Code's output; a copy note fails the step and removes the copy. A crash window gets a short wait.</li>
+<li><b>Guard context.</b> The SessionStart hook tells an unlabelled session in a member's folder who owns the folder.</li>
+<li><b>Parking and revive.</b> <code>parked</code> becomes a status. The commodore skill and Admiralty revive a parked ship before they send it work. <code>nimitz up</code> at login revives leads after a reboot.</li>
+</ul>
+
+<h3 id="limits">What Claude Code makes impossible to close</h3>
+<div class="tw"><table><tr><th>Claude Code limit</th><th>effect</th><th>best mitigation</th></tr>
+<tr><td>No hook can refuse a session.</td><td><code>claude -c</code> can open a live lead's session a second time, and any by-hand <code>claude</code> runs. nimitz can only see it after the fact.</td><td>I4, I10: detect within one refresh, tell the by-hand session, name the exact terminal.</td></tr>
+<tr><td>Idle retirement is not configurable.</td><td>The daemon stops idle unattached members after about one hour. The documented opt-out is a pin (<code>Ctrl+T</code> in agent view); no file, flag or setting for the pin was found.</td><td>I9: treat it as parked; revive on demand by id. Ask Anthropic for a setting or a CLI pin.</td></tr>
+<tr><td><code>/clear</code>, <code>&larr;</code> and forks always make new ids, and a fork records no parent (2.1.292).</td><td>The session id is not stable for an identity.</td><td>I1 to I3: follow by hook <code>source</code>, by job id and by transcript message uuids.</td></tr>
+<tr><td>A reboot does not respawn sessions.</td><td>Ships and leads stay stopped until someone attaches or replies.</td><td>I9: <code>nimitz up</code> at login (a user service or the Herdr layout).</td></tr>
+<tr><td>Claude Code replaces a lost transcript in silence.</td><td>The resumed session starts empty under the same id.</td><td>I5: detect <code>startup</code> on a resume and the <code>*.orphaned-*</code> stub; an optional transcript backup per lineage.</td></tr>
+<tr><td>A child <code>claude</code> inherits the parent's <code>CLAUDE_CODE_*</code>.</td><td>A tool call can create a session that takes a member's name.</td><td>nimitz clears <code>CLAUDE_CODE_*</code> on every <code>claude</code> it runs; the role rules tell members not to run interactive <code>claude</code>.</td></tr>
+</table></div>
+
+<h2 id="method">Method, safety and clean-up</h2>
+<ul class="tight">
+<li>Four agents ran in parallel: by-hand CLI on a ship (cases 1 and 6), by-hand sessions and interactive leads (2 and 4), in-session commands and the environment (3 and 5), and a docs check (Claude Code docs: agent view, sessions, hooks, CLI reference).</li>
+<li>Each test used a throwaway fleet (<code>NIMITZ_E2E_*</code>) with <code>NIMITZ_HOME</code> and <code>NIMITZ_STATE</code> in temp folders under <code>~/.cache/nimitz-e2e</code>. The hooks of the test sessions wrote to the temp state. Interactive sessions ran in private tmux servers. The live HOME and MAIN sessions were not touched.</li>
+<li>One harness problem was found and fixed during the run: a child <code>claude</code> kept the parent's <code>CLAUDE_CODE_*</code> values, and one test session took the name <code>[HOME.GITHUB]-NIMITZ_DEV</code> for about 40 s. nimitz wrote the right name back. This is gap G13.</li>
+<li>One accidental print-mode session ran one turn in the repo folder and wrote four unlabelled hook lines to the live events file. It is harmless.</li>
+<li>The org policy replaced the haiku model with Opus, so each test turn cost about $0.25. Turns were kept very short.</li>
+<li>Not run: a real daemon stop, a reboot and a 60-minute idle wait (they would stop the live fleet or take too long; the log and the docs cover them); <code>respawn --all</code>; <code>claude purge</code> (it edits <code>~/.claude.json</code>; simulated).</li>
+<li>Clean-up: every test job is stopped and removed, every tmux server is killed, every test folder is removed. Transcript folders stay for you to delete:
+<ul>
+<li><code>~/.claude/projects/-home-user--cache-nimitz-e2e-nimitz-e2e-map-cli-647776-ship1/</code></li>
+<li><code>~/.claude/projects/-home-user--cache-nimitz-e2e-nimitz-e2e-map-byhand-649485-ship1</code></li>
+<li><code>~/.claude/projects/-home-user--cache-nimitz-e2e-nimitz-e2e-map-byhand-649485-nimitz-nimitz-e2e-bh-squadrons-sq</code></li>
+<li><code>~/.claude/projects/-home-user--cache-nimitz-e2e-nimitz-e2e-map-inside-649964-nimitz-nimitz-e2e-in-squadrons-sq/</code></li>
+<li><code>~/.claude/projects/-home-user--cache-nimitz-e2e-nimitz-e2e-map-inside-649964-ship1/</code> and <code>…-ship1-moved/</code></li>
+<li><code>~/.claude/projects/-home-user-Github-claude-nimitz/00000000-2222-4222-8333-555555555555.jsonl</code> (the accidental session)</li>
+</ul></li>
+<li>The detailed notes of each area (all ids and log lines) are in <code>docs/design/session-mapping/notes/</code>.</li>
+</ul>
+</main></body></html>
