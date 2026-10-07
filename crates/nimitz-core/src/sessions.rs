@@ -744,6 +744,24 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
     }
     let step = |cmd: Vec<String>, why: &str| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string()), why: why.into() };
     let needs_relabel = session_issues(env, m).iter().any(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing"));
+    // The conversation Claude Code wakes is the row's `resumeSessionId` (it
+    // follows /clear only). The one the member ran last may be a later
+    // /branch or /resume (the registry's `session`): a native wake would bring
+    // the older one back in silence. Then the row goes and the last one is
+    // resumed by id with every flag, and the plan says so (r3-e2e finding 11).
+    let short8 = |s: &str| s[..s.len().min(8)].to_string();
+    let last = crate::registry::load(env).identities.get(&id.0).and_then(|r| r.session.clone()).filter(|s| *s != p.session_id);
+    if let Some(last) = last.filter(|s| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), Some(cwd), s).is_some()) {
+        let mut v = relabel_to(env, id, mode, p, cwd, &last);
+        if let Some(s) = v.last_mut() {
+            s.why = format!(
+                "the job would wake on {} (resumeSessionId follows /clear only), not on {} that it ran last (a /branch or /resume): resume that one with every flag, same history, new row",
+                short8(&p.session_id),
+                short8(&last)
+            );
+        }
+        return Ok(v);
+    }
     // with its labels and its name: resume = native binary, NO flags, from its
     // folder (row 4). A resume restores the saved name too, so a drifted name
     // goes the relaunch way instead (row 5).
@@ -1247,6 +1265,12 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
 /// if live, `rm` its row (native), then `--resume <id>` with every flag. If the
 /// rm fails, `apply` stops there and nothing is resumed.
 fn relabel_steps(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str) -> Vec<Step> {
+    relabel_to(env, id, mode, p, cwd, &p.session_id)
+}
+
+/// `relabel_steps` onto `sid`: the conversation to resume with every flag
+/// once the row is gone (its own, or a later one of the member's lineage).
+fn relabel_to(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str, sid: &str) -> Vec<Step> {
     let step = |cmd: Vec<String>, why: String| Step { id: Some(id.clone()), cmd, cwd: Some(cwd.to_string()), why };
     let mut v = vec![];
     if let Some(short) = &p.short_id {
@@ -1256,8 +1280,8 @@ fn relabel_steps(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str) -> 
         v.push(step(crate::claude::rm(env, short), format!("remove row {short} first: a resume with flags while it exists makes an empty copy")));
     }
     v.push(step(
-        crate::claude::relaunch_bg(env, id, mode, &p.session_id),
-        format!("resume {} with every flag: same id and history, new name and labels", &p.session_id[..p.session_id.len().min(8)]),
+        crate::claude::relaunch_bg(env, id, mode, sid),
+        format!("resume {} with every flag: same id and history, new name and labels", &sid[..sid.len().min(8)]),
     ));
     v
 }
@@ -1834,6 +1858,15 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         .collect::<std::collections::BTreeMap<_, _>>()
         .into_iter()
         .collect();
+    // Claude Code's daemon settles a stopped job a moment after its process
+    // ended: a `--bg --resume` inside that moment is "already running in the
+    // background" and starts a copy (r3-e2e finding 12). Before a wake, wait
+    // (briefly) until `claude agents` no longer lists the job as running.
+    for (_, sid) in &waking {
+        if let Some(job) = find_row_by_session(env, sid).filter(|r| !r.live()).and_then(|r| r.short_id) {
+            wait_settled(env, &job, SETTLE_WAIT_S);
+        }
+    }
     let mut restarted: Vec<Id> = vec![];
     for (id, what) in wait_crash_window(env, &waking) {
         restarted.push(id.clone());

@@ -444,6 +444,7 @@ impl E2e {
     /// `claude attach <job>` in a private tmux window started in `cwd`; waits
     /// until the pane shows the session (its name in the status line).
     fn attach(&self, cwd: &Path, job: &str, name: &str) {
+        let _ = self.tx(&["kill-session", "-t", "e2e"]); // a second attach in one test
         let (code, out) = self.tx(&["new-session", "-d", "-s", "e2e", "-x", "180", "-y", "50", "-c", cwd.to_str().unwrap()]);
         assert_eq!(code, 0, "tmux new-session: {out}");
         self.tx(&["send-keys", "-t", "e2e", "-l", &format!("'{}' attach {job}", self.native)]);
@@ -1079,5 +1080,87 @@ fn e2e_13_clear_then_stop_then_start_wakes_the_same_job() {
     assert_eq!((me["job"].as_str(), me["session"].as_str()), (Some(job.as_str()), Some(now.as_str())), "{me}");
     let codes = w.issue_codes();
     assert!(!codes.iter().any(|(c, _)| matches!(c.as_str(), "copy" | "copy.rows" | "dup.live" | "labels.missing" | "lineage.broken" | "name.drift")), "{codes:?}");
+    // /branch, then stop, then start: a native wake would bring the pre-branch
+    // conversation back (`resumeSessionId` follows /clear only, case 14), so
+    // nimitz removes the row and resumes the branch with every flag, and says so
+    w.attach(&w.ship_dir(), &job, &format!("[{}.SQ]-SHIP", w.fleet));
+    w.type_line("/branch");
+    let branched = w
+        .wait(60, || w.events().into_iter().rev().find(|e| e["event"] == "SessionStart" && e["labels"]["NIMITZ_ID"] == w.ship() && e["session_id"] != now.as_str() && e["session_id"] != birth.as_str()))
+        .expect("a SessionStart after /branch");
+    w.detach();
+    let branch = branched["session_id"].as_str().unwrap().to_string();
+    println!("/branch: SessionStart source {} session {branch} job {} binding {}", branched["source"], branched["job"], branched["binding"]);
+    w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["session_id"] == branch.as_str())).expect("status follows the branch");
+    w.ok(&["stop", &w.ship(), "--yes"]);
+    w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped again");
+    let plan = w.ok(&["start", &w.ship(), "--plan"]);
+    println!("{plan}");
+    assert!(plan.contains(&format!("rm {job}")) && plan.contains(&format!("--resume {branch} --name")), "{plan}");
+    assert!(plan.contains("resumeSessionId follows /clear only") && !plan.contains(&format!("--bg --resume {birth}\n")), "{plan}");
+    let out = w.ok(&["start", &w.ship(), "--yes"]);
+    println!("{out}");
+    assert!(out.contains("verified by re-reading") && !out.contains("history.lost"), "{out}");
+    let on_branch = w.wait(45, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null())).expect("ship live on the branch");
+    assert_eq!(on_branch["session"]["session_id"], branch.as_str(), "the branch is what runs: {on_branch}");
+    assert_eq!(on_branch["session"]["labels"]["NIMITZ_ID"], w.ship());
+    assert_eq!(on_branch["session"]["name"], format!("[{}.SQ]-SHIP", w.fleet));
+    assert_eq!(w.ship_rows().len(), 1, "one row: {:?}", w.ship_rows());
+    assert_eq!(w.registry()["identities"][w.ship()]["session"], branch.as_str());
+    let codes = w.issue_codes();
+    assert!(!codes.iter().any(|(c, _)| matches!(c.as_str(), "copy" | "copy.rows" | "dup.live" | "labels.missing" | "lineage.broken" | "history.lost" | "name.drift")), "{codes:?}");
     w.finish();
 }
+/// 14. `/branch`, then stop, then a raw wake by the job's birth id: Claude
+/// Code brings the pre-branch conversation back (`resumeSessionId` follows
+/// `/clear` only; r3-e2e finding 11), and nimitz follows what woke. nimitz's
+/// own start after a `/branch` goes the other way (case 13: rm + resume of
+/// the branch with every flag).
+#[test]
+fn e2e_14_raw_birth_id_wake_after_branch_returns_the_pre_branch_conversation() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(14);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let m = w.start_ship_idle();
+    let (job, birth) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    w.attach(&w.ship_dir(), &job, &format!("[{}.SQ]-SHIP", w.fleet));
+    w.type_line("/branch");
+    let branched = w
+        .wait(60, || w.events().into_iter().rev().find(|e| e["event"] == "SessionStart" && e["labels"]["NIMITZ_ID"] == w.ship() && e["session_id"] != birth.as_str()))
+        .expect("a SessionStart after /branch");
+    w.detach();
+    let branch = branched["session_id"].as_str().unwrap().to_string();
+    println!("/branch: SessionStart source {} session {branch} job {}", branched["source"], branched["job"]);
+    w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["session_id"] == branch.as_str())).expect("status follows the branch");
+    w.ok(&["stop", &w.ship(), "--yes"]);
+    w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
+    let state = read_json(&home().join(".claude/jobs").join(&job).join("state.json"));
+    println!("state.json after /branch + stop: sessionId {} resumeSessionId {}", state["sessionId"], state["resumeSessionId"]);
+    // the daemon's own bookkeeping settles a moment after the process ended: a
+    // wake inside that moment makes a copy ("already running in the background";
+    // r3-e2e finding 12), so wait until `claude agents` no longer lists the job as running
+    w.wait(30, || w.agents().into_iter().find(|r| r.short_id.as_deref() == Some(job.as_str()) && r.pid.is_none() && r.state.as_deref() != Some("running"))).expect("the daemon settled the stopped job");
+    std::thread::sleep(secs(3));
+    // the raw fact: a wake by the birth id, by hand
+    let before = w.events().len();
+    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &birth]);
+    println!("raw wake ({code}): {out}");
+    let woke = w
+        .wait(45, || w.events().into_iter().skip(before).find(|e| e["event"] == "SessionStart" && e["labels"]["NIMITZ_ID"] == w.ship()))
+        .expect("a SessionStart after the raw wake");
+    let woken = woke["session_id"].as_str().unwrap().to_string();
+    println!("the birth-id wake brought back {woken} (birth {birth}, branch {branch}); source {}", woke["source"]);
+    assert_eq!(woke["job"], job.as_str(), "the same job: {woke}");
+    assert_ne!(woken, branch, "Claude Code 2.1.292 wakes on resumeSessionId, which /branch does not move; if this changed, r3-e2e finding 11 is out of date");
+    assert_eq!(woken, state["resumeSessionId"].as_str().unwrap_or(&birth), "{woke}");
+    // nimitz follows what woke, and says the branch is still in the lineage
+    let now = w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["session_id"] == woken.as_str() && !m["session"]["pid"].is_null())).expect("status follows the woken conversation");
+    assert_eq!(now["session"]["short_id"], job.as_str());
+    let me = &w.registry()["identities"][w.ship()];
+    assert_eq!(me["session"], woken.as_str(), "{me}");
+    assert!(me["lineage"].as_array().unwrap().iter().any(|l| l["session_id"] == branch.as_str()), "the branch stays in the lineage: {me}");
+    w.finish();
+}
+
