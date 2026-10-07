@@ -646,20 +646,21 @@ fn r08_with_resume_agents_on_restore_herdr_holds_every_lead_and_nothing_is_woken
         assert!(held, "{id}: its conversation is held by an interactive process: {m}");
     }
     let before = sb.n_runs();
-    let r = sb.ok(&["restore", "MAIN", "--plan"]);
+    let r = sb.run(&["restore", "MAIN", "--plan"]).out; // (--plan exits by the gate; the verdict's exit 1 is --yes's)
     assert_eq!(lines_with(&r, "(tab.resumed)").len(), 3, "{r}");
     for (id, _) in &sids {
         let pane = sb.world()["panes"].as_array().unwrap().iter().find(|p| p["agent_session"]["value"] == sb.sid(id).as_str()).map(|p| p["pane_id"].as_str().unwrap().to_string()).expect("the pane that holds it");
-        assert!(r.contains(&format!("Herdr resumed it in pane {pane} (resume_agents_on_restore is on): type /exit there, then nimitz restore MAIN")), "{id} in its own pane:\n{r}");
+        assert!(r.contains(&format!("is open in pane {pane} (Herdr's resume_agents_on_restore, or a claude --resume by hand)")) && r.contains(&format!("type /exit in pane {pane}, then nimitz restore MAIN")), "{id} in its own pane:\n{r}");
     }
     for (id, sid) in &sids {
         assert!(!r.contains(&format!("--bg --resume {sid}")), "{id}: a wake would make a copy beside the held conversation:\n{r}");
     }
     assert!(!r.contains("herdr pane run"), "never typed into:\n{r}");
     // (the ships of the active set are not held: they wake as in R-08)
-    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 1, "the leads are stuck: never [OK]\n{}", r.out);
     assert_eq!(sb.n_runs(), before, "nothing typed into any pane");
-    assert!(r.contains("[OK] MAIN: restored 0 lead(s)") && r.contains("3 held in a pane"), "{r}");
+    assert!(r.out.contains("[ERROR] MAIN: 3 member(s) not restored") && r.out.contains("3 held in a pane"), "{}", r.out);
     for (id, _) in &sids {
         assert!(!sb.live(id), "{id} stays parked");
     }
@@ -689,8 +690,8 @@ fn r02_with_resume_agents_on_restore_a_retired_lead_is_held_not_woken() {
         assert!(sb.member(id)["extra_rows"].as_array().unwrap().is_empty(), "{id}: a live job's resume is refused");
     }
     let r = sb.run(&["restore", "MAIN", "--yes"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("(tab.resumed)") && r.out.contains(&format!("Herdr resumed it in pane {pane}")), "{}", r.out);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(tab.resumed)") && r.out.contains(&format!("is open in pane {pane}")) && r.out.contains("[ERROR] MAIN: 1 member(s) not restored"), "{}", r.out);
     assert!(!r.out.contains(&format!("--bg --resume {sid}")) && !sb.runs().iter().any(|(p, l)| p == &pane && l.contains("attach") && sb.runs().iter().filter(|(q, _)| q == p).count() > 1), "{}", r.out);
     assert!(!sb.live("MAIN/ARGOS"));
     // the other two leads got their attach again (shells after the refused resume)
@@ -698,6 +699,43 @@ fn r02_with_resume_agents_on_restore_a_retired_lead_is_held_not_woken() {
     assert_eq!(sb.exit_resumed(), 1);
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(sb.live("MAIN/ARGOS") && sb.sid("MAIN/ARGOS") == sid, "{r}");
+}
+
+#[test]
+fn a_held_process_is_matched_to_its_pane_by_pid_when_nothing_names_the_session() {
+    // a `claude -c` typed by hand in the lead's tab after it was retired: no
+    // `--resume <sid>` in the argv, no agent detected; only the pid says which pane
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    let sid = sb.sid("MAIN/ARGOS");
+    let dir = sb.cwd_of("MAIN/ARGOS");
+    sb.claude(&dir, &["__retire", &job]);
+    sb.shell(&pane);
+    // the held process: this test's own pid (alive, and not the fake's pid 1)
+    let pid = std::process::id() as i64;
+    let now = (nimitz_core::evidence::now() * 1000.0) as i64;
+    std::fs::write(
+        sb.base.join("claude_home/sessions/i-byhand.json"),
+        json!({"pid": pid, "sessionId": sid, "cwd": dir.to_string_lossy(), "startedAt": now, "kind": "interactive", "name": "[MAIN.ARGOS]-COMMODORE",
+               "jobId": null, "status": "idle", "statusUpdatedAt": now, "bridgeSessionId": null, "entrypoint": "cli", "version": "2.1.288"}).to_string(),
+    ).unwrap();
+    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    sb.set_pane(&pane, |p| {
+        p["foreground"] = json!([bin, "-c"]);
+        p["pid"] = json!(pid);
+    });
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(tab.resumed)") && r.out.contains(&format!("is open in pane {pane}")), "{}", r.out);
+    assert!(!r.out.contains(&format!("--bg --resume {sid}")) && !sb.runs().iter().any(|(p, l)| p == &pane && l.contains("attach") && l.contains(&job) && sb.runs().iter().filter(|(q, _)| q == p).count() > 1), "{}", r.out);
+    // another pid in that pane: the held process is somewhere nimitz cannot see
+    let other = std::os::unix::process::parent_id() as i64;
+    sb.set_pane(&pane, |p| p["pid"] = json!(other));
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(lead.interactive)") && !r.out.contains("(tab.resumed)"), "{}", r.out);
 }
 
 #[test]

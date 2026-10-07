@@ -198,7 +198,7 @@ fn report(rp: &rs::RestorePlan, failed: &[Id], issues: &[Issue]) -> i32 {
         let parked = if f.parked > 0 { format!("; {} parked", f.parked) } else { String::new() };
         let stopped = if f.stopped > 0 { format!("; {} stopped on purpose", f.stopped) } else { String::new() };
         let not_started = if f.not_started > 0 { format!("; {} not started", f.not_started) } else { String::new() };
-        let held = if f.held > 0 { format!("; {} held in a pane (Herdr resumed it; see the fix above)", f.held) } else { String::new() };
+        let held = if f.held > 0 { format!("; {} held in a pane (see the fix above)", f.held) } else { String::new() };
         if failed_here > 0 {
             out::error(&format!("{}: {failed_here} member(s) not restored (see the fixes above){parked}{stopped}{held}", f.fleet));
         } else if planned == 0 {
