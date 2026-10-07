@@ -96,9 +96,15 @@ pub fn member_mux_vars(env: &Env, vars: &HashMap<String, String>) -> HashMap<Str
     // the inherited socket never counts; the recorded one names the server
     v.remove("HERDR_SOCKET_PATH");
     match load(env).and_then(|a| a.herdr) {
-        Some(HerdrIdentity { session: Some(s), .. }) => {
+        Some(HerdrIdentity { session: Some(s), socket }) => {
             v.insert("NIMITZ_MUX".into(), "herdr".into());
             v.insert("NIMITZ_HERDR_SESSION".into(), s);
+            // the child herdr inherits the process env (the inherited
+            // HERDR_SOCKET_PATH included): name the recorded socket too, so
+            // the two never disagree
+            if let Some(sock) = socket {
+                v.insert("NIMITZ_HERDR_SOCKET".into(), sock);
+            }
         }
         // the default server (no session name): its recorded socket
         Some(HerdrIdentity { session: None, socket: Some(sock) }) => {
