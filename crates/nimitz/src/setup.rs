@@ -105,7 +105,9 @@ fn plugin_hooks_path(ctx: &Ctx) -> Option<PathBuf> {
 
 /// Fields nimitz reads in Claude Code's files (the pinned formats).
 const SESSION_FIELDS: [&str; 4] = ["pid", "sessionId", "status", "kind"];
-const JOB_FIELDS: [&str; 4] = ["sessionId", "state", "name", "cwd"];
+/// (`name` is not pinned: Claude Code writes none for a copy of a running
+/// job, and nimitz reads a missing one as "", acceptance F5)
+const JOB_FIELDS: [&str; 3] = ["sessionId", "state", "cwd"];
 
 fn settings_path(ctx: &Ctx) -> PathBuf {
     ctx.env.claude_home.join("settings.json")
