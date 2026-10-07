@@ -10,7 +10,7 @@ pub struct Caps {
     pub layout: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PaneRef {
     pub pane_id: String,
     pub tab_id: Option<String>,
@@ -25,6 +25,64 @@ pub struct Pane {
     pub cwd: String,
     /// the multiplexer's own state for the pane's agent (Herdr: working|blocked|done|idle|unknown)
     pub state: String,
+}
+
+/// One workspace of the multiplexer's shape (Herdr WorkspaceInfo).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShapeWorkspace {
+    pub id: String,
+    pub label: String,
+    pub active_tab_id: String,
+}
+
+/// One tab of the shape (Herdr TabInfo).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShapeTab {
+    pub id: String,
+    pub workspace_id: String,
+    pub label: String,
+}
+
+/// One pane of the shape: where it is, its folder, the agent Herdr sees in
+/// it (`agents[]`: `agent_session.value` is the Claude session id) and what
+/// runs in its foreground (`pane process-info`): `Some(argv)`, empty for an
+/// idle shell; `None` when it could not be read (never typed into).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ShapePane {
+    pub pane: PaneRef,
+    pub cwd: String,
+    pub title: String,
+    pub agent: Option<String>,
+    pub session_id: Option<String>,
+    /// the multiplexer's state for the pane's agent (idle|working|blocked|done|unknown)
+    pub state: String,
+    pub foreground: Option<Vec<String>>,
+}
+
+/// The whole shape at once (`herdr api snapshot` + `pane process-info` per
+/// pane): what a restore matches members against.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shape {
+    pub version: String,
+    pub protocol: u64,
+    pub workspaces: Vec<ShapeWorkspace>,
+    pub tabs: Vec<ShapeTab>,
+    pub panes: Vec<ShapePane>,
+}
+
+impl Shape {
+    pub fn tab(&self, tab_id: &str) -> Option<&ShapeTab> {
+        self.tabs.iter().find(|t| t.id == tab_id)
+    }
+    pub fn workspace(&self, ws_id: &str) -> Option<&ShapeWorkspace> {
+        self.workspaces.iter().find(|w| w.id == ws_id)
+    }
+    /// The panes of a tab, in id order.
+    pub fn panes_of(&self, tab_id: &str) -> Vec<&ShapePane> {
+        let mut v: Vec<&ShapePane> = self.panes.iter().filter(|p| p.pane.tab_id.as_deref() == Some(tab_id)).collect();
+        v.sort_by(|a, b| a.pane.pane_id.cmp(&b.pane.pane_id));
+        v
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -89,25 +147,35 @@ pub trait Mux {
     }
 
     /// Run a command line in a pane's shell (`herdr pane run`). Only
-    /// `attach` calls it, and only into a pane whose foreground is a shell.
+    /// `attach` and a restore call it, and only into a pane whose foreground
+    /// is a shell.
     fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError> {
         let _ = (pane, cmd);
         Err(MuxError::Unsupported("running a command in a pane"))
     }
+
+    /// The whole shape: workspaces, tabs, panes, each pane's agent session
+    /// and, with `foregrounds`, its foreground argv (`herdr api snapshot`,
+    /// then `pane process-info` per pane). A restore reads it once with the
+    /// foregrounds, then matches members against it; the active set needs
+    /// only where the sessions show.
+    fn shape(&self, foregrounds: bool) -> Result<Shape, MuxError> {
+        let _ = foregrounds;
+        Err(MuxError::Unsupported("reading the shape"))
+    }
+
+    /// Give a tab its full label (`herdr tab rename`): a restore claims a
+    /// legacy short tab (`COMMODORE`) or a new workspace's unlabelled root tab.
+    fn rename_tab(&self, tab_id: &str, label: &str) -> Result<(), MuxError> {
+        let _ = (tab_id, label);
+        Err(MuxError::Unsupported("renaming a tab"))
+    }
 }
 
 /// Is this the argv of a shell sitting at its prompt (nothing in the
-/// foreground but the shell itself)?
-pub fn is_shell(argv: &[String]) -> bool {
-    const SHELLS: [&str; 9] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"];
-    match argv.first() {
-        None => true,
-        Some(p) => {
-            let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            SHELLS.contains(&name.trim_start_matches('-'))
-        }
-    }
-}
+/// foreground but the shell itself)? One list, core's (the restore planner
+/// judges panes with the same rule).
+pub use nimitz_core::restore::is_shell;
 
 /// What a member's tab shows now (restore-scenarios.md, decision 5).
 #[derive(Clone, Debug, PartialEq)]
@@ -285,7 +353,7 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
         Some("herdr") => {
             // explicit override: take the configured binary even if it does not resolve yet
             let bin = resolve_herdr_bin(vars).unwrap_or_else(|| "herdr".into());
-            return Box::new(herdr::Herdr { bin });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars) });
         }
         // `auto` (the default) and unset: detect. An unknown name: safest is no mux
         // (the CLI refuses it first with `valid_mux_setting`).
@@ -294,10 +362,17 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
     }
     if vars.get("HERDR_ENV").map(String::as_str) == Some("1") {
         if let Some(bin) = resolve_herdr_bin(vars) {
-            return Box::new(herdr::Herdr { bin });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars) });
         }
     }
     Box::new(none::NoMux)
+}
+
+/// `NIMITZ_HERDR_SESSION`: the named Herdr session every herdr call gets as
+/// `--session` (a test server; the checklist), so a live pane's inherited
+/// socket is never the one spoken to. None: Herdr's own resolution.
+pub fn herdr_session(vars: &std::collections::HashMap<String, String>) -> Option<String> {
+    vars.get("NIMITZ_HERDR_SESSION").filter(|s| !s.is_empty()).cloned()
 }
 
 /// `NIMITZ_HERDR_BIN` (checked as a path when it has a `/`, else searched on
@@ -385,6 +460,14 @@ mod tests {
         let m = detect(&v);
         assert_eq!(m.name(), "herdr");
         assert!(m.caps().open && m.caps().focus && m.caps().type_text && m.caps().layout);
+    }
+
+    #[test]
+    fn a_named_herdr_session_goes_on_every_call() {
+        assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "nimitz-e2e")])), Some("nimitz-e2e".into()));
+        assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "")])), None);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: Some("nimitz-e2e".into()) }.argv(&["api", "snapshot"]), ["--session", "nimitz-e2e", "api", "snapshot"]);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: None }.argv(&["api", "snapshot"]), ["api", "snapshot"]);
     }
 
     #[test]

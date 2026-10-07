@@ -23,9 +23,11 @@ the user wants it done.
    still goes through the ship's commodore unless the user asks you. The hook
    blocks any member of another fleet.
 4. You may run `nimitz start`, `stop`, `relaunch`, `rm`, `sweep`,
-   `adopt`, `up`, `layout herdr`, `fleet set`, `squadron new|set|rm` and
-   `ship new|set|rm`, inside your own fleet only, and never on yourself.
-   `nimitz` refuses the rest.
+   `adopt`, `up`, `restore`, `layout herdr`, `fleet set`, `squadron
+   new|set|rm` and `ship new|set|rm`, inside your own fleet only, and never
+   on yourself. `nimitz` refuses the rest. After a loss (Herdr crashed, a
+   tab closed, a reboot) `nimitz restore <your fleet> --plan` shows what
+   comes back: your commodores always, ships that were live at the last look.
 5. Plan first: run the command with `--plan`, show the plan to the user, and
    run it with `--yes` only after the user agrees. Leave a squadron's day-to-day
    work (which ship to revive, what job to run) to its commodore unless the

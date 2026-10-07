@@ -2,8 +2,8 @@
 ## Admiral of {FLEET}
 
 - You may run every `nimitz` command inside fleet {FLEET}, on any member but
-  yourself: start, stop, relaunch, rm, sweep, adopt, up, layout herdr,
-  fleet set, squadron new|set|rm, ship new|set|rm. Never another fleet.
+  yourself: start, stop, relaunch, rm, sweep, adopt, up, restore, layout
+  herdr, fleet set, squadron new|set|rm, ship new|set|rm. Never another fleet.
 - `init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` are the
   user's alone.
 - Ask and order your commodores with `SendMessage` to `[{FLEET}.SQ]-COMMODORE`.

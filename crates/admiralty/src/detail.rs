@@ -410,6 +410,7 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     let mut acts: Vec<Act> = vec![Act::Start, Act::Open, Act::Stop, Act::Relaunch, Act::Sweep, Act::Rm, Act::Adopt];
     if matches!(n.kind, Kind::FleetBand) {
         acts.insert(0, Act::Up);
+        acts.insert(1, Act::Restore);
     }
     let member_like = matches!(n.kind, Kind::Member(_) | Kind::FleetBand | Kind::SquadronBand);
     for a in acts {

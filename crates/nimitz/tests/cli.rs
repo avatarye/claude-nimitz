@@ -419,6 +419,7 @@ fn every_command_goes_by_the_role_table() {
         ("signal", &["MAIN/ARGOS", "hi"], [true, true, true]),
         ("open", &["MAIN/ARGOS/CLEAN"], [false, false, false]),
         ("layout", &["herdr", "MAIN"], [true, false, false]),
+        ("restore", &["MAIN"], [true, false, false]),
         ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false]),
     ];
     let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];

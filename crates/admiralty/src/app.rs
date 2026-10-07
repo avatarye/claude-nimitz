@@ -552,7 +552,7 @@ impl App {
             }
         }
         if let Target::Fleet(id) = self.target() {
-            for a in [Act::Layout, Act::LayoutShips] {
+            for a in [Act::Restore, Act::Layout, Act::LayoutShips] {
                 v.push(MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(a), action: MenuAction::Act(a) });
             }
             v.push(MenuItem { key: 'M', label: "remove a machine from this fleet".into(), enabled: Ok(()), action: MenuAction::MachineRm(id.0) });
@@ -679,6 +679,13 @@ impl App {
             }
         }
         let Some(b) = &self.bundle else { return None };
+        if let (Act::Restore, Target::Fleet(f)) = (act, self.target()) {
+            match actions::prepare_restore(&self.ctx, b.mux_caps, &b.snap, &f) {
+                Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                Err(why) => self.notify(format!("restore: not available. {why}"), st(mono::WARN)),
+            }
+            return None;
+        }
         if let (Act::Layout | Act::LayoutShips, Target::Fleet(f)) = (act, self.target()) {
             match actions::prepare_layout(&self.ctx, b.mux_caps, &b.snap, &b.panes, &f, act == Act::LayoutShips) {
                 Ok(p) => self.modal = Some(Modal::Confirm(p)),

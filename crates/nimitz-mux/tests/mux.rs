@@ -52,6 +52,8 @@ fn main() {
         ("fixtures: process-info (herdr 0.9.3) nests the list under process_info; no list is an error", fixture_process_info),
         ("fixtures: the snapshot's workspaces, tabs, panes and agents parse like the list replies", fixture_snapshot_lists),
         ("fixtures: create replies without root_pane resolve the pane through pane list", fixture_create_replies),
+        ("shape: the snapshot fixture and the fake's api snapshot parse alike, field for field", fixture_snapshot_shape),
+        ("shape: the adapter reads every pane's foreground; rename_tab renames; exec runs the line", shape_through_the_adapter),
         ("errors: workspace create failure propagates", error_workspace_create),
         ("errors: pane run failure propagates", error_pane_run),
     ];
@@ -113,7 +115,7 @@ impl World {
     }
 
     fn mux(&self) -> Herdr {
-        Herdr { bin: self.dir.join("herdr").to_string_lossy().into_owned() }
+        Herdr { bin: self.dir.join("herdr").to_string_lossy().into_owned(), session: None }
     }
 
     fn world(&self) -> Value {
@@ -185,7 +187,7 @@ fn panes_parse() {
 }
 
 fn panes_broken_bin() {
-    let m = Herdr { bin: "/nonexistent/nimitz-no-such-herdr".into() };
+    let m = Herdr { bin: "/nonexistent/nimitz-no-such-herdr".into(), session: None };
     assert!(m.panes().is_empty());
 }
 
@@ -632,6 +634,84 @@ fn fixture_create_replies() {
     assert_eq!(created_tab(&bare_tab).unwrap(), ("w9:t2".into(), None));
 }
 
+/// The key set of a JSON object, sorted.
+fn keys(v: &Value) -> Vec<String> {
+    let mut k: Vec<String> = v.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+    k.sort();
+    k
+}
+
+fn fixture_snapshot_shape() {
+    use nimitz_mux::herdr::parse_snapshot;
+    let v = fixture("snapshot.json");
+    let shape = parse_snapshot(&v).expect("the snapshot");
+    assert_eq!((shape.version.as_str(), shape.protocol), ("0.9.3", 22));
+    assert_eq!((shape.workspaces.len(), shape.tabs.len(), shape.panes.len()), (12, 12, 14));
+    // panes[] carry no agent; agents[] are joined in by pane id
+    let adm = shape.panes.iter().find(|p| p.pane.pane_id == "w3:p1").expect("w3:p1");
+    assert_eq!((adm.agent.as_deref(), adm.session_id.as_deref().map(|s| &s[..8]), adm.state.as_str(), adm.title.as_str()), (Some("claude"), Some("41a2ca48"), "idle", "[ALPHA]-ADMIRAL"));
+    assert_eq!(adm.cwd, "/home/user/nimitz/353517");
+    assert_eq!(adm.foreground, None, "unread until process-info");
+    let shell = shape.panes.iter().find(|p| p.pane.pane_id == "w1:p1").expect("w1:p1");
+    assert_eq!((shell.agent.as_deref(), shell.session_id.as_deref(), shell.state.as_str()), (None, None, "unknown"));
+    assert_eq!(shape.tab("w6:t1").map(|t| (t.workspace_id.as_str(), t.label.as_str())), Some(("w6", "BRAVO.SQA.COMMODORE")));
+    assert_eq!(shape.workspace("w5").map(|w| (w.label.as_str(), w.active_tab_id.as_str())), Some(("BRAVO", "w5:t2")));
+    assert_eq!(shape.panes_of("w4:t1").iter().map(|p| p.pane.pane_id.as_str()).collect::<Vec<_>>(), ["w4:p1", "w4:pF", "w4:pT"]);
+    assert!(parse_snapshot(&json!({"result": {"type": "ok"}})).is_err(), "no snapshot: an error");
+    // the fake answers with the same field set, row for row
+    let w = World::new(None);
+    let out = Command::new(w.dir.join("herdr")).args(["api", "snapshot"]).output().expect("fake");
+    let fv: Value = serde_json::from_slice(&out.stdout).expect("json");
+    let real = v.pointer("/result/snapshot").unwrap();
+    let fake = fv.pointer("/result/snapshot").expect("result.snapshot");
+    assert_eq!(keys(real), keys(fake), "snapshot keys");
+    for list in ["workspaces", "tabs", "panes", "layouts"] {
+        assert_eq!(keys(&real[list][0]), keys(&fake[list][0]), "{list}[0] keys");
+    }
+    // an agent row: the real sample's pane and the fake's agent pane
+    assert_eq!(keys(&real["agents"][0]), keys(&fake["agents"][0]), "agents[0] keys");
+    assert_eq!(keys(&real["agents"][0]["agent_session"]), keys(&fake["agents"][0]["agent_session"]), "agent_session keys");
+    assert_eq!(keys(&real["layouts"][0]["panes"][0]), keys(&fake["layouts"][0]["panes"][0]));
+    let fs = parse_snapshot(&fv).expect("the fake's snapshot parses through the same reader");
+    assert_eq!(fs.panes.len(), 2);
+    assert_eq!(fs.panes[0].session_id.as_deref(), Some("11111111-2222-3333-4444-555555555555"));
+    assert_eq!(fs.panes[1].state, "blocked");
+}
+
+fn shape_through_the_adapter() {
+    let w = tab_world(Some(vec!["yazi"]));
+    let shape = w.mux().shape(true).expect("shape");
+    assert_eq!(shape.workspaces.len(), 1);
+    assert_eq!(shape.tabs.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), ["HOME.GITHUB.COMMODORE", "HOME.GITHUB.NIMITZ_DEV"]);
+    let p1 = shape.panes.iter().find(|p| p.pane.pane_id == "w1:p1").unwrap();
+    let p2 = shape.panes.iter().find(|p| p.pane.pane_id == "w1:p2").unwrap();
+    assert_eq!(p1.foreground, Some(vec![]), "an idle shell");
+    assert_eq!(p2.foreground, Some(cmdv(&["yazi"])));
+    assert_eq!(p2.cwd, "/dev");
+    let n = w.calls().iter().filter(|c| c[..2] == ["pane".to_string(), "process-info".to_string()]).count();
+    assert_eq!(n, 2, "one process-info per pane: {:?}", w.calls());
+    assert!(w.calls().iter().any(|c| c[..2] == ["api".to_string(), "snapshot".to_string()]));
+    // rename a tab
+    w.mux().rename_tab("w1:t2", "HOME.GITHUB.S").expect("rename");
+    assert_eq!(w.mux().shape(false).unwrap().tab("w1:t2").map(|t| t.label.clone()), Some("HOME.GITHUB.S".into()));
+    assert!(w.mux().rename_tab("w9:t9", "X").is_err());
+    // a named session: `--session <name>` before every call, which the fake logs and strips
+    let named = Herdr { bin: w.dir.join("herdr").to_string_lossy().into_owned(), session: Some("nimitz-e2e".into()) };
+    assert_eq!(named.shape(false).unwrap().workspaces.len(), 1);
+    assert!(w.calls().last().unwrap().starts_with(&["--session".to_string(), "nimitz-e2e".to_string(), "api".to_string()]), "{:?}", w.calls().last());
+    // the exec knob: `pane run` really runs the line in the pane's folder
+    let mut world = w.world();
+    world["exec"] = json!(true);
+    let mark = w.dir.join("mark.txt");
+    for p in world["panes"].as_array_mut().unwrap().iter_mut().filter(|p| p["pane_id"] == "w1:p1") {
+        p["cwd"] = json!(w.dir.to_string_lossy());
+    }
+    fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
+    w.mux().run_in(&pane_ref("w1:p1", "w1:t1", "w1"), &cmdv(&["sh", "-c", "pwd > mark.txt"])).expect("run");
+    let text = fs::read_to_string(&mark).expect("the line ran in the pane's cwd");
+    assert_eq!(text.trim(), w.dir.canonicalize().unwrap().to_string_lossy());
+}
+
 // ---------- error paths ----------
 
 fn error_workspace_create() {
@@ -712,7 +792,7 @@ fn e2e_body(bin: &str, sock: &Path, tmp: &Path) {
         assert!(std::time::Instant::now() < deadline, "private herdr server did not come up: {text}");
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    let m = Herdr { bin: bin.to_string() };
+    let m = Herdr { bin: bin.to_string(), session: None };
     let dummy = cmdv(&["sh", "-c", "sleep 30"]);
     let api = |args: &[&str]| -> Value {
         let out = Command::new(bin).args(args).output().expect("herdr");

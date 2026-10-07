@@ -138,6 +138,17 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
                 Some(sid) => bind_start(env, &id, &input, &session, &sid, now).as_str(),
                 None => "none",
             });
+            // the member is live now: the active set says so (a lost note is
+            // made good by the next `status`)
+            if matches!(binding, Some("bound") | Some("same")) {
+                let _ = crate::active::note_start(env, &id, str_at(&session, "jobId").as_deref(), &sid);
+            }
+        }
+    } else if event == "SessionEnd" && reason.as_deref() != Some("clear") {
+        // a member's process ended (a `claude stop`, `/stop`, an exit): out of
+        // the active set; a `/clear` ends only the conversation, the job goes on
+        if let (Some(id), Some(sid)) = (crate::registry::identity_of(env, &labels), str_at(&input, "session_id")) {
+            let _ = crate::active::note_end(env, &id, &sid, None);
         }
     } else if UPDATE_EVENTS.contains(&event) && labels.get("NIMITZ_HOME").map_or(true, |h| h.is_empty() || std::path::Path::new(h) == env.home || crate::env::canon(std::path::Path::new(h)) == crate::env::canon(&env.home)) {
         // (another nimitz home's member gets no update from this home)

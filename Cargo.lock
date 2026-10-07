@@ -707,6 +707,7 @@ dependencies = [
 name = "nimitz-mux"
 version = "0.4.0"
 dependencies = [
+ "nimitz-core",
  "serde",
  "serde_json",
 ]

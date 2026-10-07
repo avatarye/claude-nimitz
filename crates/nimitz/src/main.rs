@@ -8,6 +8,7 @@ mod crud;
 mod members;
 mod notify;
 mod out;
+mod restore;
 mod run;
 mod sandbox_cmd;
 mod setup;
@@ -71,7 +72,9 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member (ships: through the commodore)
   open <id>                        attach to a member in a tab (detach: ctrl-z)
-  layout herdr [<F>]               workspaces and tabs for fleets in Herdr
+  restore [<F>] [--all]            bring a fleet back from the Herdr shape: leads always, ships from the
+                                   last active set (--all: every ship with a job row); --jobs-only (no tabs)
+  layout herdr [<F>] [--ships]     the shape only (an alias of restore for one release)
   migrate fleet-skill <dir...> --into <F>
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
   sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)
@@ -155,6 +158,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("adopt", members::adopt),
     ("signal", members::signal),
     ("open", members::open),
+    ("restore", restore::restore),
     ("layout", members::layout),
     ("sandbox", sandbox_cmd::sandbox),
     ("__commands", |_| {

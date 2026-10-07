@@ -15,9 +15,12 @@
 //!                   "agent_session": {"kind": "id", "value": "<uuid>"},
 //!                   "foreground": ["claude"]}],   // argv in the pane's foreground; absent = an idle shell
 //!   "next_ws": 2,
-//!   "fail": "workspace create"   // optional: any call starting with this errors
+//!   "fail": "workspace create",  // optional: any call starting with this errors
+//!   "exec": true                 // optional: `pane run` really runs the line (sh -c, in the pane's cwd)
 //! }
 //! ```
+//! `api snapshot` replies with the whole shape in the exact field set of
+//! herdr 0.9.3 (`tests/fixtures/herdr-0.9.3/snapshot.json`).
 //! Output shapes copy the real CLI (herdr 0.9): one JSON object on stdout,
 //! errors as `{"error":{"code","message"},"id"}` on stderr with exit 1.
 //! `pane run` records the line in `ran` and makes it the pane's `foreground`
@@ -123,7 +126,9 @@ pub fn fake_herdr(base: &Path, args: &[String]) -> i32 {
             return err("fail", "injected_failure", &format!("world.json fail matched `{joined}`"));
         }
     }
+    // `--session <name>` (NIMITZ_HERDR_SESSION) is logged with the call and stripped
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let a: Vec<&str> = if a.len() >= 2 && a[0] == "--session" { a[2..].to_vec() } else { a };
     let code = dispatch(&mut world, &a);
     let _ = fs::write(base.join("world.json"), serde_json::to_vec_pretty(&world).unwrap_or_default());
     code
@@ -154,8 +159,110 @@ fn new_tab(world: &mut Value, ws: &str, label: &str, focused: bool) -> Value {
     tab
 }
 
+fn num(v: &Value, k: &str, d: u64) -> u64 {
+    v.get(k).and_then(Value::as_u64).unwrap_or(d)
+}
+
+/// `api snapshot`, field for field as herdr 0.9.3 replies
+/// (`tests/fixtures/herdr-0.9.3/snapshot.json`): `panes[]` carry no agent
+/// fields; `agents[]` lists the panes that show an agent with their
+/// `agent_session`; one layout per tab.
+fn snapshot(world: &Value) -> Value {
+    let (ws, tabs, panes) = (arr(world, "workspaces"), arr(world, "tabs"), arr(world, "panes"));
+    let status = |v: &Value| {
+        let st = s(v, "agent_status");
+        if st.is_empty() { "unknown".to_string() } else { st }
+    };
+    let title = |p: &Value| {
+        let t = s(p, "terminal_title_stripped");
+        if t.is_empty() { "user@host:~".to_string() } else { t }
+    };
+    let fg_cwd = |p: &Value| {
+        let f = s(p, "foreground_cwd");
+        if f.is_empty() { s(p, "cwd") } else { f }
+    };
+    let focused = |v: &Value| v.get("focused").and_then(Value::as_bool).unwrap_or(false);
+    let workspaces: Vec<Value> = ws
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let id = s(w, "workspace_id");
+            let my_tabs: Vec<&Value> = tabs.iter().filter(|t| s(t, "workspace_id") == id).collect();
+            let active = s(w, "active_tab_id");
+            let active = if active.is_empty() { my_tabs.first().map(|t| s(t, "tab_id")).unwrap_or_default() } else { active };
+            json!({
+                "active_tab_id": active,
+                "agent_status": status(w), "focused": focused(w),
+                "label": s(w, "label"), "number": num(w, "number", i as u64 + 1),
+                "pane_count": panes.iter().filter(|p| s(p, "workspace_id") == id).count(),
+                "tab_count": my_tabs.len(), "workspace_id": id,
+            })
+        })
+        .collect();
+    let tab_rows: Vec<Value> = tabs
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let id = s(t, "tab_id");
+            json!({"agent_status": status(t), "focused": focused(t), "label": s(t, "label"),
+                   "number": num(t, "number", i as u64 + 1), "pane_count": panes.iter().filter(|p| s(p, "tab_id") == id).count(),
+                   "tab_id": id, "workspace_id": s(t, "workspace_id")})
+        })
+        .collect();
+    let pane_rows: Vec<Value> = panes
+        .iter()
+        .map(|p| {
+            json!({"agent_status": status(p), "cwd": s(p, "cwd"), "focused": focused(p),
+                   "foreground_cwd": fg_cwd(p),
+                   "pane_id": s(p, "pane_id"), "revision": num(p, "revision", 1),
+                   "scroll": {"max_offset_from_bottom": 0, "offset_from_bottom": 0, "viewport_rows": 40},
+                   "tab_id": s(p, "tab_id"), "terminal_id": format!("term_{}", s(p, "pane_id").replace(':', "")),
+                   "terminal_title": title(p), "terminal_title_stripped": title(p), "workspace_id": s(p, "workspace_id")})
+        })
+        .collect();
+    let agents: Vec<Value> = panes
+        .iter()
+        .filter(|p| !s(p, "agent_status").is_empty())
+        .map(|p| {
+            let kind = s(p, "agent");
+            let kind = if kind.is_empty() { "claude".to_string() } else { kind };
+            // AgentSessionInfo: {agent, kind, source, value}; a world may give only the value
+            let session = p.get("agent_session").filter(|x| x.is_object()).map(|x| {
+                let or = |k: &str, d: &str| { let v = s(x, k); if v.is_empty() { d.to_string() } else { v } };
+                json!({"agent": or("agent", &kind), "kind": or("kind", "id"), "source": or("source", "herdr:claude"), "value": s(x, "value")})
+            }).unwrap_or(Value::Null);
+            json!({"agent": kind,
+                   "agent_session": session, "agent_status": status(p),
+                   "completion_seq": 0, "cwd": s(p, "cwd"), "focused": focused(p),
+                   "foreground_cwd": fg_cwd(p),
+                   "pane_id": s(p, "pane_id"), "revision": num(p, "revision", 1), "state_change_seq": 0,
+                   "tab_id": s(p, "tab_id"), "terminal_id": format!("term_{}", s(p, "pane_id").replace(':', "")),
+                   "terminal_title": title(p), "terminal_title_stripped": title(p), "workspace_id": s(p, "workspace_id")})
+        })
+        .collect();
+    let layouts: Vec<Value> = tabs
+        .iter()
+        .map(|t| {
+            let id = s(t, "tab_id");
+            let in_tab: Vec<Value> = panes.iter().filter(|p| s(p, "tab_id") == id).map(|p| json!({"focused": false, "pane_id": s(p, "pane_id"), "rect": {"height": 40, "width": 120, "x": 0, "y": 0}})).collect();
+            json!({"area": {"height": 40, "width": 120, "x": 0, "y": 0}, "focused_pane_id": in_tab.first().map(|p| s(p, "pane_id")).unwrap_or_default(),
+                   "panes": in_tab, "splits": [], "tab_id": id, "workspace_id": s(t, "workspace_id"), "zoomed": false})
+        })
+        .collect();
+    let focused_ws = ws.iter().find(|w| focused(w)).map(|w| s(w, "workspace_id"));
+    let focused_tab = tabs.iter().find(|t| focused(t)).map(|t| s(t, "tab_id"));
+    json!({
+        "agents": agents, "focused_pane_id": Value::Null, "focused_tab_id": focused_tab, "focused_workspace_id": focused_ws,
+        "layouts": layouts, "panes": pane_rows, "protocol": 22, "tabs": tab_rows, "version": "0.9.3", "workspaces": workspaces,
+    })
+}
+
 fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
     match a {
+        ["api", "snapshot"] => {
+            let snap = snapshot(world);
+            ok("api:snapshot", json!({"snapshot": snap}))
+        }
         ["agent", "list"] => {
             let agents: Vec<Value> = arr(world, "panes").into_iter().filter(|p| !s(p, "agent_status").is_empty()).collect();
             ok("agent:list", json!({"type": "agent_list", "agents": agents}))
@@ -269,7 +376,8 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                                            "foreground_process_group_id": 4242, "foreground_processes": [proc_]}}))
         }
         ["pane", "run", target, cmd @ ..] if !cmd.is_empty() => {
-            let mut hit = false;
+            let exec = world.get("exec").and_then(Value::as_bool).unwrap_or(false);
+            let mut hit = None;
             for p in world["panes"].as_array_mut().expect("panes") {
                 if s(p, "pane_id") == *target {
                     if !p["ran"].is_array() {
@@ -280,11 +388,22 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                     p["ran"].as_array_mut().expect("ran").push(json!(line));
                     // ... which now runs in the pane's foreground (quotes dropped: enough for `claude attach <job>`)
                     p["foreground"] = json!(line.split_whitespace().map(|w| w.trim_matches('\'')).collect::<Vec<_>>());
-                    hit = true;
+                    hit = Some((line, s(p, "cwd")));
                 }
             }
-            if !hit {
+            let Some((line, cwd)) = hit else {
                 return err("pane:run", "pane_not_found", &format!("pane {target} not found"));
+            };
+            // `"exec": true` (a sandbox): the shell really runs the line in the
+            // pane's folder, as Herdr's pty would (a `claude attach <job>` of
+            // the fake claude wakes a parked job); its output is dropped
+            if exec {
+                let mut c = std::process::Command::new("sh");
+                c.arg("-c").arg(&line).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                if !cwd.is_empty() && Path::new(&cwd).is_dir() {
+                    c.current_dir(&cwd);
+                }
+                let _ = c.status();
             }
             ok("pane:run", json!({"type": "ok"}))
         }

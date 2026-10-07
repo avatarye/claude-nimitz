@@ -50,6 +50,8 @@ pub enum Act {
     Layout,
     /// the same with `--ships` (a tab attaching each live ship)
     LayoutShips,
+    /// `nimitz restore F`, run by the CLI: the fleet back from the Herdr shape
+    Restore,
 }
 
 impl Act {
@@ -70,6 +72,7 @@ impl Act {
             Act::Save => 'c',
             Act::Layout => 'L',
             Act::LayoutShips => 'S',
+            Act::Restore => 'R',
         }
     }
 
@@ -87,6 +90,7 @@ impl Act {
             Act::Save => "save the config change",
             Act::Layout => "layout herdr: workspaces and tabs for this fleet",
             Act::LayoutShips => "layout herdr --ships: and a tab attaching each live ship",
+            Act::Restore => "restore: bring this fleet back from the Herdr shape (leads always, ships from the last active set)",
         }
     }
 
@@ -103,6 +107,7 @@ impl Act {
             Act::ConfigRm => "remove",
             Act::Save => "save",
             Act::Layout | Act::LayoutShips => "layout",
+            Act::Restore => "restore",
         }
     }
 
@@ -116,7 +121,7 @@ impl Act {
     }
 
     fn needs_mux(self) -> bool {
-        matches!(self, Act::Up | Act::Open | Act::Layout | Act::LayoutShips)
+        matches!(self, Act::Up | Act::Open | Act::Layout | Act::LayoutShips | Act::Restore)
     }
 }
 
@@ -218,6 +223,12 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
             None => Err("not in the snapshot".into()),
         },
         (Act::Layout | Act::LayoutShips, _) => Err("layout is for a fleet (select its band)".into()),
+        (Act::Restore, Target::Fleet(id)) => match snap.fleets.iter().find(|f| &f.id == id) {
+            Some(f) if f.machine.is_some() => Ok(()),
+            Some(_) => Err("this fleet does not run on this machine".into()),
+            None => Err("not in the snapshot".into()),
+        },
+        (Act::Restore, _) => Err("restore is for a fleet (select its band)".into()),
         (_, Target::None) => Err("nothing to act on here".into()),
         (Act::Start, Target::Member(id)) => {
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
@@ -416,6 +427,70 @@ pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fl
     Ok(Pending { act, command, plan, config: false, panes: vec![], layout: Some(lp) })
 }
 
+/// The `nimitz` binary a restore runs: `NIMITZ_BIN`, else the one beside
+/// this binary (or beside its folder: `target/debug/deps/` in a test), else
+/// `nimitz` on PATH.
+pub fn nimitz_bin() -> String {
+    if let Some(b) = std::env::var_os("NIMITZ_BIN").filter(|b| !b.is_empty()) {
+        return b.to_string_lossy().into_owned();
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        for dir in exe.parent().into_iter().chain(exe.parent().and_then(Path::parent)) {
+            let p = dir.join("nimitz");
+            if p.is_file() {
+                return p.to_string_lossy().into_owned();
+            }
+        }
+    }
+    "nimitz".into()
+}
+
+/// The last JSON value on a CLI's stdout (`--json` prints the plan or the
+/// outcome there; the human lines go to stderr).
+fn last_json<T: serde::de::DeserializeOwned>(stdout: &str) -> Option<T> {
+    let text = stdout.trim();
+    let start = text.rfind("\n{").map(|i| i + 1).unwrap_or(0);
+    serde_json::from_str(&text[start..]).ok().or_else(|| serde_json::from_str(text).ok())
+}
+
+/// `R` on a fleet band: `nimitz restore F --plan --json` gives the plan the
+/// confirm dialog shows; `y` then runs `nimitz restore F --yes` (`apply`).
+/// The CLI holds the whole engine (the Herdr shape, the wakes, the tabs), so
+/// Admiralty says the same as the command line (M25).
+pub fn prepare_restore(ctx: &Ctx, caps: Caps, snap: &Snapshot, fleet: &Id) -> Result<Pending, String> {
+    available(caps, snap, &Target::Fleet(fleet.clone()), Act::Restore)?;
+    let bin = nimitz_bin();
+    let out = cli_command(&ctx.env, &bin).args(["restore", fleet.fleet(), "--plan", "--json"]).output().map_err(|e| format!("{bin}: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let plan: Plan = last_json(&stdout).ok_or_else(|| {
+        let err = String::from_utf8_lossy(&out.stderr);
+        format!("`{bin} restore {} --plan --json` gave no plan: {}", fleet.fleet(), err.lines().last().unwrap_or("no output"))
+    })?;
+    Ok(Pending { act: Act::Restore, command: format!("nimitz restore {}", fleet.fleet()), plan, config: false, panes: vec![], layout: None })
+}
+
+/// Run `nimitz restore F --yes --json` and read its outcome (a run with
+/// nothing to restore prints none: then the exit code is the verdict).
+fn run_restore(env: &Env, command: &str) -> Outcome {
+    let bin = nimitz_bin();
+    let args: Vec<&str> = command.split_whitespace().skip(1).collect(); // after `nimitz`
+    let out = match cli_command(env, &bin).args(&args).args(["--yes", "--json"]).output() {
+        Ok(o) => o,
+        Err(e) => {
+            return Outcome { ran: vec![], verified: false, issues: vec![nimitz_core::Issue { code: "step.failed".into(), severity: nimitz_core::Severity::Error, message: format!("{bin}: {e}"), fix: None, id: None }] };
+        }
+    };
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if let Some(o) = last_json::<Outcome>(&stdout) {
+        return o;
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let last = stderr.lines().rev().find(|l| l.starts_with("[OK]") || l.starts_with("[ERROR]")).unwrap_or("").to_string();
+    let issues = if code == 0 { vec![] } else { vec![nimitz_core::Issue { code: "step.failed".into(), severity: nimitz_core::Severity::Error, message: format!("{command} exited {code}: {last}"), fix: None, id: None }] };
+    Outcome { ran: vec![], verified: code == 0, issues }
+}
+
 /// What the tab `A` would attach in shows now (`nimitz_mux::tab_state`): a
 /// pane with the session (jump there), a plain shell (claim it: the attach
 /// runs there), something else (`tab.taken`: never typed into), or no tab
@@ -503,6 +578,9 @@ pub fn apply(env: &Env, p: &Pending) -> Outcome {
     if p.act == Act::Open || p.layout.is_some() {
         return Outcome { verified: true, ..Default::default() };
     }
+    if p.act == Act::Restore {
+        return run_restore(env, &p.command);
+    }
     if p.config {
         nimitz_core::config::apply_config_plan(env, &p.plan)
     } else {
@@ -523,6 +601,9 @@ pub fn outcome_text(p: &Pending, o: &Outcome) -> (bool, String) {
     if let Some(lp) = &p.layout {
         let tabs: usize = lp.workspaces.iter().map(|(_, t)| t.len()).sum();
         return (true, format!("layout: {} ({tabs} tab(s) in {} workspace(s); members bind at their SessionStart)", p.plan.summary, lp.workspaces.len()));
+    }
+    if p.act == Act::Restore && o.ran.is_empty() {
+        return (true, format!("restore: {}: nothing to restore", p.plan.summary.trim_start_matches("restore ")));
     }
     let checked = if o.verified || p.config { "verified" } else { "done" };
     (true, format!("{}: {} ({} steps, {checked})", p.act.word(), p.plan.summary, o.ran.len()))

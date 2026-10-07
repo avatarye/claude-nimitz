@@ -9,10 +9,12 @@ use std::process::Command;
 
 use serde_json::Value;
 
-use crate::{Caps, LayoutPlan, Mux, MuxError, Pane, PaneRef, Place};
+use crate::{Caps, LayoutPlan, Mux, MuxError, Pane, PaneRef, Place, Shape, ShapePane, ShapeTab, ShapeWorkspace};
 
 pub struct Herdr {
     pub bin: String,
+    /// `--session <name>` on every call (`NIMITZ_HERDR_SESSION`), else Herdr's own resolution
+    pub session: Option<String>,
 }
 
 /// Loose label matching, the herdr-fleet skill's rules in their order:
@@ -110,6 +112,55 @@ pub fn pane_rows_in(list: &Value) -> Vec<PaneRef> {
     v
 }
 
+/// `api snapshot` (`session.snapshot`: `result.snapshot` is a SessionSnapshot
+/// with `version`, `protocol`, `workspaces[]`, `tabs[]`, `panes[]`,
+/// `agents[]`, `layouts[]`) -> the shape, foregrounds unread (`None`). The
+/// `panes[]` rows carry no agent fields (herdr 0.9.3); `agents[]` lists the
+/// panes that show an agent, with `agent_session.value` the Claude session
+/// id: both are joined by `pane_id`. A reply with no `snapshot` is an error.
+pub fn parse_snapshot(v: &Value) -> Result<Shape, String> {
+    let snap = v.pointer("/result/snapshot").filter(|s| s.is_object()).ok_or_else(|| format!("no snapshot in the api snapshot reply: {}", v.get("result").map(|r| r.to_string()).unwrap_or_default()))?;
+    let workspaces = workspaces_in(&snap["workspaces"]).into_iter().map(|(id, label, active_tab_id)| ShapeWorkspace { id, label, active_tab_id }).collect();
+    let tabs = snap["tabs"]
+        .as_array()
+        .map(|a| a.iter().filter(|t| !s(t, "tab_id").is_empty()).map(|t| ShapeTab { id: s(t, "tab_id"), workspace_id: s(t, "workspace_id"), label: s(t, "label") }).collect())
+        .unwrap_or_default();
+    let agents = agents_in(&snap["agents"]);
+    let agent_kind: std::collections::HashMap<String, String> = snap["agents"].as_array().map(|a| a.iter().map(|x| (s(x, "pane_id"), s(x, "agent"))).collect()).unwrap_or_default();
+    let mut panes: Vec<ShapePane> = snap["panes"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|p| !s(p, "pane_id").is_empty())
+                .map(|p| {
+                    let id = s(p, "pane_id");
+                    let agent = agents.iter().find(|a| a.pane.pane_id == id);
+                    ShapePane {
+                        pane: PaneRef { pane_id: id.clone(), tab_id: Some(s(p, "tab_id")).filter(|x| !x.is_empty()), workspace_id: Some(s(p, "workspace_id")).filter(|x| !x.is_empty()) },
+                        cwd: {
+                            let f = s(p, "foreground_cwd");
+                            if f.is_empty() { s(p, "cwd") } else { f }
+                        },
+                        title: s(p, "terminal_title_stripped"),
+                        agent: agent_kind.get(&id).filter(|k| !k.is_empty()).cloned(),
+                        session_id: agent.and_then(|a| a.session_id.clone()),
+                        state: agent.map(|a| a.state.clone()).unwrap_or_else(|| s(p, "agent_status")),
+                        foreground: None,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // an agent whose pane the panes list lacks (never seen; kept for safety)
+    for a in agents {
+        if !panes.iter().any(|p| p.pane.pane_id == a.pane.pane_id) {
+            panes.push(ShapePane { pane: a.pane, cwd: a.cwd, title: a.title, agent: Some("claude".into()), session_id: a.session_id, state: a.state, foreground: None });
+        }
+    }
+    panes.sort_by(|a, b| a.pane.pane_id.cmp(&b.pane.pane_id));
+    Ok(Shape { version: s(snap, "version"), protocol: snap.get("protocol").and_then(Value::as_u64).unwrap_or(0), workspaces, tabs, panes })
+}
+
 /// `pane process-info` (`pane_process_info`: `result.process_info` is a
 /// PaneProcessInfo with `foreground_processes[]` of `{pid, name, argv0,
 /// argv[], cmdline, cwd}`; Herdr 0.9.3 nests it so, the flat
@@ -186,9 +237,19 @@ pub fn created_pane(v: &Value) -> Result<(String, String), String> {
 }
 
 impl Herdr {
+    /// The argv of a call: `--session <name>` first when one is set.
+    pub fn argv(&self, args: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = vec![];
+        if let Some(s) = &self.session {
+            v.extend(["--session".to_string(), s.clone()]);
+        }
+        v.extend(args.iter().map(|a| a.to_string()));
+        v
+    }
+
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
         let out = Command::new(&self.bin)
-            .args(args)
+            .args(self.argv(args))
             .output()
             .map_err(|e| MuxError::Failed(format!("{}: {e}", self.bin)))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -331,6 +392,24 @@ impl Mux for Herdr {
 
     fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError> {
         self.pane_run(&pane.pane_id, cmd)
+    }
+
+    /// `herdr api snapshot` (the whole shape in one reply), then `pane
+    /// process-info` for every pane: a pane whose foreground cannot be read
+    /// stays `None` (a restore never types into it).
+    fn shape(&self, foregrounds: bool) -> Result<Shape, MuxError> {
+        let v = self.run(&["api", "snapshot"])?;
+        let mut shape = parse_snapshot(&v).map_err(MuxError::Failed)?;
+        if foregrounds {
+            for p in shape.panes.iter_mut() {
+                p.foreground = self.foreground(&p.pane).ok();
+            }
+        }
+        Ok(shape)
+    }
+
+    fn rename_tab(&self, tab_id: &str, label: &str) -> Result<(), MuxError> {
+        self.run(&["tab", "rename", tab_id, label]).map(|_| ())
     }
 
     fn caps(&self) -> Caps {
