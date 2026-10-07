@@ -26,8 +26,8 @@ ul.tight li{margin:3px 0}
 <main>
 <section id="v4">
 <h1>nimitz 0.4.0: build and acceptance</h1>
-<p class="sub">Branch <code>feat/identity-v4</code> at <code>324ac3e</code> (101 commits since the round-2 report). Claude Code 2.1.292. Not merged to dev, not pushed, not installed.</p>
-<div class="card"><b>Result.</b> Unit and sandbox suite: 554 passed, 1 known failure (the tmux glyph test, failing before 0.4.0). Real-Claude-Code e2e suite: 21 of 21 passed on the final binary, live-fleet guard OK before and after. Acceptance, 181 by-hand rows over four areas: first pass PASS 133 &middot; FAIL 14 &middot; GAP 3 &middot; NOT RUN 28 &middot; N/A 3; final PASS 148 &middot; GAP 3 &middot; NOT RUN 23 &middot; N/A 7. Every first-pass FAIL was fixed (reviewed by a separate Fable reviewer; the last small batch after the Fable credits ran out was reviewed in this session) and re-run on the final binary. Restore: 35 of 35 scenario rows (R-01 to R-35; R-07a-d is one row) have a passing fake-Herdr test; real Herdr is the by-hand checklist <code>docs/test/restore-checklist.md</code>.</div>
+<p class="sub">Branch <code>feat/identity-v4</code> at <code>e751b0d</code> (114 commits since the round-2 report). Claude Code 2.1.292. Not merged to dev, not pushed, not installed.</p>
+<div class="card"><b>Result.</b> Unit and sandbox suite: 563 passed, 1 known failure (the tmux glyph test, failing before 0.4.0). Real-Claude-Code e2e suite: 21 of 21 passed on the final binary, live-fleet guard OK before and after. Acceptance, 181 by-hand rows over four areas: first pass PASS 133 &middot; FAIL 14 &middot; GAP 3 &middot; NOT RUN 28 &middot; N/A 3; final PASS 148 &middot; GAP 3 &middot; NOT RUN 23 &middot; N/A 7. Every first-pass FAIL was fixed, reviewed and re-run on the final binary; a later independent Opus review of the last batch found more (see Method), all fixed, reviewed and re-tested (21 of 21 e2e again). Restore: 35 of 35 scenario rows (R-01 to R-35; R-07a-d is one row) have a passing fake-Herdr test; real Herdr is the by-hand checklist <code>docs/test/restore-checklist.md</code>.</div>
 
 <h2 id="v4-what">What 0.4.0 changes</h2>
 <ul class="tight">
@@ -258,7 +258,7 @@ ul.tight li{margin:3px 0}
 <tr><td><code>R-21</code></td><td>config changed on another machine</td><td>should</td><td><span class="b ok">PASS</span> <span class="ev">fake Herdr</span></td><td class="ev"><code>r21_config_changed_on_another_machine_no_cold_launch_and_conflicts_reported</code></td></tr>
 <tr><td><code>R-22</code></td><td>daemon stopped/died</td><td>must</td><td><span class="b ok">PASS</span> <span class="ev">fake Herdr</span></td><td class="ev"><code>r22_the_daemon_died_leads_wake_by_attach_and_active_ships_resume</code></td></tr>
 <tr><td><code>R-23</code></td><td>low-memory sweep</td><td>should</td><td><span class="b ok">PASS</span> <span class="ev">fake Herdr</span></td><td class="ev"><code>r02_r23_lead_detached_then_retired_wakes_by_attach_and_is_repinned</code></td></tr>
-<tr><td><code>R-24</code></td><td>tab in agent view</td><td>must</td><td><span class="b ok">PASS</span> <span class="ev">fake Herdr</span></td><td class="ev"><code>r24_a_tab_left_in_the_agent_view_is_never_typed_into</code></td></tr>
+<tr><td><code>R-24</code></td><td>tab in agent view</td><td>must</td><td><span class="b ok">PASS</span> <span class="ev">fake Herdr</span></td><td class="ev"><code>r24_a_tab_left_in_the_agent_view_is_never_typed_into</code>, <code>r24b_a_ships_claim_on_its_commodores_attach_pane_is_not_the_agent_view</code></td></tr>
 <tr><td><code>R-25</code></td><td>lead job rm&#x27;d</td><td>must</td><td><span class="b ok">PASS</span> <span class="ev">fake Herdr</span></td><td class="ev"><code>r25_a_leads_job_removed_under_its_tab_resumes_with_every_flag_and_repins</code></td></tr>
 <tr><td><code>R-26</code></td><td>copy from an old race</td><td>must</td><td><span class="b ok">PASS</span> <span class="ev">fake Herdr</span></td><td class="ev"><code>r26_a_copy_from_an_earlier_race_blocks_the_ship_until_swept</code></td></tr>
 <tr><td><code>R-27</code></td><td>no active.json</td><td>must</td><td><span class="b ok">PASS</span> <span class="ev">fake Herdr</span></td><td class="ev"><code>r27_no_active_set_recorded_leads_only_and_it_says_so</code></td></tr>
@@ -290,6 +290,8 @@ ul.tight li{margin:3px 0}
 <tr><td>A daemon-restarted worker inherits the daemon's environment</td><td>a member may carry the user's live <code>HERDR_*</code></td><td>a member's command and the hook never reach Herdr through inherited env; tests set <code>NIMITZ_MUX=none</code></td></tr>
 <tr><td>Hooks written as one command string run under <code>sh -c</code></td><td>the hook's parent is a shell, not the session</td><td>the plugin uses command + args; the hook also tries the parent's parent; <code>doctor</code> warns</td></tr>
 <tr><td>An interactive <code>--resume</code> of a stopped job holds the conversation with no job</td><td>a wake meanwhile makes a copy</td><td><code>held</code> with one fix; never woken while held</td></tr>
+<tr><td>Claude Code's daemon keeps the environment of whichever <code>claude</code> started it, for every job it ever starts</td><td>a daemon started from a labelled 0.3.x lead's shell gave every unlabelled job (the user's own <code>claude --bg</code>, copies, the agent view's drafts) that lead's <code>NIMITZ_*</code>, its Herdr pane id and its messaging socket (seen live, 2026-10-07)</td><td>a job's labels count only when its own launch saved them; every <code>claude</code> nimitz starts begins without the caller's session state (a denylist; the user's own config passes)</td></tr>
+<tr><td>Herdr learns a pane's session from its own SessionStart hook, keyed by the process's inherited <code>HERDR_PANE_ID</code></td><td>a background ship was shown in its commodore's pane</td><td>a pane shows a session only when its foreground backs Herdr's claim (argv, <code>attach &lt;job&gt;</code>, or the process's session file)</td></tr>
 </table>
 
 <h2 id="v4-method">Method and incidents</h2>
@@ -297,9 +299,11 @@ ul.tight li{margin:3px 0}
 <li>Fable agents built each phase in its own worktree; a separate Fable reviewer reviewed every diff before it merged (several rounds where needed). After the Fable credits ran out, the last fixes and the final acceptance re-runs were done in this session, the final ones as real-Claude-Code e2e cases 15 to 21.</li>
 <li>Isolation incident (read-only): during acceptance area D a daemon-restarted test ship inherited the daemon's environment and its <code>nimitz status</code> read the live Herdr shape (<code>herdr api snapshot</code>); nothing was written to Herdr. Fixed in code (members never reach Herdr through inherited env) and in every harness.</li>
 <li>Registry loss (one test registry, found by the guard work): a hook of a session labelled for another home stripped this home's records inside the write path. Root cause found from the evidence and fixed; a guard now refuses any write that would drop an identity.</li>
+<li>An independent Opus review of the last self-reviewed batch (requested by the user) found and the fixes closed: the herdr child still inherited the caller's <code>HERDR_*</code>; <code>stop</code> refused a live job beside a by-hand resume; a hook could die on a closed pipe; a ship's Herdr claim on its commodore's attach pane read as the agent view; a first scrub that stripped the user's own <code>CLAUDE_CODE_*</code> config. Each fix has a test that fails without it; the review closed at MERGE.</li>
 <li>The live fleet (HOME, MAIN, ADMIRALTY) was checked before and after every agent run and every 25 minutes: unchanged throughout, except one retire Claude Code's daemon made on its own (<code>[MAIN.LUX]-DEV</code>, abandoned-stale, logged in <code>daemon.log</code>).</li>
 </ul>
 </section>
+
 
 
 
