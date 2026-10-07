@@ -84,6 +84,13 @@ Command: `NIMITZ_E2E=1 cargo test -p nimitz --test e2e -- --test-threads=4`.
    commodore too (each a tool-using Opus turn). The harness launches both leads by
    hand with their exact labels and names and a one-word prompt; a live, clean lead
    is left alone by `start`.
+9. **A third retire reason exists.** Besides `settled, idle 61m` and `idle-prompt, idle
+   61m`, the daemon wrote `[2026-10-07T05:14:03.119Z] [bg] bg retire 0abc1234:
+   abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)` (a job whose worker
+   was an older build, retired after a daemon upgrade), then `bg settled 0abc1234
+   (done)`. `evidence::daemon_retired` takes any text after the colon, so the parked
+   reason reads it whole; the unit test
+   `daemon_retire_reason_is_any_text_after_the_colon` pins the three shapes.
 
 ## Harness notes
 

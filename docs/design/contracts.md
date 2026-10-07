@@ -305,9 +305,11 @@ SessionStart lines that name the job, and the SessionEnd lines from those
 pids; the session id alone decides only for a line an older nimitz wrote) is a
 SessionEnd (`claude stop`, `/stop`, an exit) or its state is `failed`, else
 **Parked** (the daemon retired it: a `[2026-10-07T01:47:03.070Z] [bg] bg retire
-<id>: settled, idle 61m` line in the Claude home's `daemon.log` newer than the
-job's last start, named in the
-reason; it crashed; or the machine went down: no SessionEnd fires for those).
+<id>: <why>` line in the Claude home's `daemon.log` newer than the job's last
+start, named in the reason; `<why>` is any text after the colon, as seen:
+`settled, idle 61m`, `idle-prompt, idle 61m`, `abandoned-stale, idle 48h, worker
+2.1.289 (daemon 2.1.292)`; it crashed; or the machine went down: no SessionEnd
+fires for those).
 Parked is not an error; `start` wakes it by id.
 A live row goes by its session file.
 Session files of `kind` `daemon` or `daemon-worker` are Claude Code's own
