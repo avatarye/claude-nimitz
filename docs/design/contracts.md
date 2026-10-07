@@ -334,6 +334,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | --- | --- |
 | `mux.none` | the action needs a multiplexer and there is none (attaching, typing; never a start) |
 | `mux.nopane` | the mux cannot open a pane here |
+| `tab.taken` | the member's tab is open but its pane runs something else (another agent, a copy, the agent view, yazi): nothing is typed into it; fix: ctrl-z or quit it in that pane, then `nimitz open` |
 | `mux.failed` | the mux returned an error |
 | `comms.denied` | a signal the chain of command or `comms` rule forbids |
 | `config.pending` | a config change is waiting for a relaunch |
@@ -432,9 +433,28 @@ pub trait Mux {
     fn focus(&self, pane: &PaneRef) -> Result<(), MuxError>;
     fn type_text(&self, pane: &PaneRef, text: &str) -> Result<(), MuxError>;
     fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError>;
+    fn tab(&self, place: &Place) -> Option<PaneRef>;                        // the tab by its full label: its shell pane, never a split running a program
+    fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError>; // argv in the pane's foreground; empty = an idle shell (herdr pane process-info)
+    fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError>; // herdr pane run, only into a shell pane
 }
 pub fn detect() -> Box<dyn Mux>;                       // HERDR_ENV=1 -> Herdr, else None
+pub fn tab_state(mux, cmd, place, session_id) -> Result<TabState, MuxError>;   // Shown | Shell | Taken { pane, running } | Missing
+pub fn attach(mux, cmd, cwd, place, session_id) -> Result<Attached, AttachError>; // Focused | Claimed | Opened; Err Taken: nothing typed
 ```
+
+The tab rule (restore-scenarios.md R2, decision 5): a member's tab is found
+by a pane that shows its session (anywhere), else by the pane that already
+runs its exact `claude attach <job>` (visible in `pane process-info` while it
+runs), else by its full label in its workspace. A found tab's pane is judged
+by its foreground: a shell (`is_shell`: sh, bash, zsh, fish, ...) is claimed
+(`pane run claude attach <job>`); anything else (another agent, a copy, the
+agent view, yazi) is `tab.taken` and never typed into; a foreground nimitz
+cannot read is treated the same. A tab with a split that runs another
+program is attached in its shell pane. `layout` reruns a tab's command only
+into a shell pane (a Herdr restore, an ended attach client). An attach of a
+parked job wakes it (cli-07): `layout::attach_tab` sets `wakes`, and a parked
+lead with a shell tab needs no resume first (its transcript must exist, else
+`history.lost`).
 
 `None`: `caps` all false; every call returns `MuxError::Unsupported`. Nothing
 starts in a pane: `up` and `start` need no mux; attaching and typing do, and

@@ -13,7 +13,7 @@ use std::process::Command;
 
 use nimitz_mux::fake::{calls, default_world, write_world};
 use nimitz_mux::herdr::Herdr;
-use nimitz_mux::{LayoutPlan, Mux, MuxError, PaneRef, Place};
+use nimitz_mux::{AttachError, Attached, LayoutPlan, Mux, MuxError, PaneRef, Place, TabState};
 use serde_json::{json, Value};
 
 fn main() {
@@ -43,9 +43,12 @@ fn main() {
         ("layout: fills only the missing tab", layout_partial),
         ("layout: loose label variants match (skill normalisation)", layout_loose_labels),
         ("layout: a short tab name from before full names is reused and renamed", layout_short_tab_renamed),
-        ("open_or_focus: a pane showing the session is focused, nothing opens", reuse_by_session),
-        ("open_or_focus: the tab named for it is focused, nothing opens", reuse_by_tab_name),
-        ("open_or_focus: nothing there yet opens a new tab", reuse_none_opens),
+        ("attach: a pane showing the session is focused, nothing opens", reuse_by_session),
+        ("attach: the tab named for it with a shell pane is claimed; then shown", reuse_by_tab_name),
+        ("attach: a taken tab (yazi, another agent, the agent view) is never typed into", taken_tab_is_never_typed_into),
+        ("attach: a Yazi split is not the tab's pane; the shell pane is", a_split_running_another_program_is_not_the_attach_pane),
+        ("attach: nothing there yet opens a new tab", reuse_none_opens),
+        ("layout: reruns a command only into a pane that is a shell again", layout_reruns_only_into_a_shell_pane),
         ("errors: workspace create failure propagates", error_workspace_create),
         ("errors: pane run failure propagates", error_pane_run),
     ];
@@ -390,8 +393,8 @@ fn layout_loose_labels() {
             {"tab_id": "w1:t2", "workspace_id": "w1", "label": "YAZI", "focused": false}
         ],
         "panes": [
-            {"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/fleet/argos"},
-            {"pane_id": "w1:p2", "tab_id": "w1:t2", "workspace_id": "w1", "cwd": "/fleet/argos"}
+            {"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/fleet/argos", "foreground": ["ccl"]},
+            {"pane_id": "w1:p2", "tab_id": "w1:t2", "workspace_id": "w1", "cwd": "/fleet/argos", "foreground": ["yazi"]}
         ]
     })));
     let mut p = plan();
@@ -408,10 +411,10 @@ fn layout_short_tab_renamed() {
         "next_ws": 2,
         "workspaces": [{"workspace_id": "w1", "label": "HOME.GITHUB", "focused": false, "active_tab_id": "w1:t1"}],
         "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "COMMODORE", "focused": true}],
-        "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/fleet/github"}]
+        "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/fleet/github", "foreground": ["claude", "attach", "9aacf927"]}]
     })));
     let p = LayoutPlan {
-        workspaces: vec![("HOME.GITHUB".into(), vec![("HOME.GITHUB.COMMODORE".into(), cmdv(&["claude", "-c"]), PathBuf::from("/fleet/github"))])],
+        workspaces: vec![("HOME.GITHUB".into(), vec![("HOME.GITHUB.COMMODORE".into(), cmdv(&["claude", "attach", "9aacf927"]), PathBuf::from("/fleet/github"))])],
     };
     let refs = w.mux().layout(&p).expect("layout");
     assert_eq!(refs, vec![pane_ref("w1:p1", "w1:t1", "w1")]);
@@ -430,43 +433,115 @@ fn reuse_by_session() {
     let place = Place::Tab { workspace: "MAIN.ARGOS".into(), label: "MAIN.ARGOS.LEAD".into() };
     let before = opened_tabs(&w);
     // pane w1:p2 shows session 6666...: that is the one
-    let (p, reused) = nimitz_mux::open_or_focus(&w.mux(), &cmdv(&["claude", "attach", "66666666"]), Path::new("/w"), place, Some("66666666-7777-8888-9999-000000000000")).expect("open_or_focus");
-    assert!(reused);
-    assert_eq!(p.pane_id, "w1:p2");
+    let a = nimitz_mux::attach(&w.mux(), &cmdv(&["claude", "attach", "66666666"]), Path::new("/w"), place, Some("66666666-7777-8888-9999-000000000000")).expect("attach");
+    assert_eq!(a, Attached::Focused(pane_ref("w1:p2", "w1:t1", "w1")));
     assert_eq!(opened_tabs(&w), before, "no new tab");
     assert!(w.calls().iter().any(|c| c[..2] == ["agent".to_string(), "focus".to_string()] && c[2] == "w1:p2"), "{:?}", w.calls());
+    assert!(!w.calls().iter().any(|c| c[..2] == ["pane".to_string(), "run".to_string()]), "nothing typed anywhere: {:?}", w.calls());
 }
 
-fn reuse_by_tab_name() {
-    // an earlier `nimitz open` left tab HOME.GITHUB.NIMITZ_DEV in workspace HOME.GITHUB
-    let w = World::new(Some(json!({
+/// A world with workspace HOME.GITHUB and the tab HOME.GITHUB.NIMITZ_DEV an
+/// earlier `nimitz open` left; its pane runs `foreground` (none: a shell).
+fn tab_world(foreground: Option<Vec<&str>>) -> World {
+    let mut pane = json!({"pane_id": "w1:p2", "tab_id": "w1:t2", "workspace_id": "w1", "cwd": "/dev"});
+    if let Some(fg) = foreground {
+        pane["foreground"] = json!(fg);
+    }
+    World::new(Some(json!({
         "next_ws": 2,
         "workspaces": [{"workspace_id": "w1", "label": "HOME.GITHUB", "focused": false, "active_tab_id": "w1:t1"}],
         "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "HOME.GITHUB.COMMODORE", "focused": true},
                  {"tab_id": "w1:t2", "workspace_id": "w1", "label": "HOME.GITHUB.NIMITZ_DEV", "focused": false}],
-        "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/sq"},
-                  {"pane_id": "w1:p2", "tab_id": "w1:t2", "workspace_id": "w1", "cwd": "/dev"}]
-    })));
+        "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/sq"}, pane]
+    })))
+}
+
+fn reuse_by_tab_name() {
+    // the tab is there and its pane is a plain shell (Herdr restored it, or the
+    // attach client ended): the attach runs there, nothing opens
+    let w = tab_world(None);
     let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
-    let (p, reused) = nimitz_mux::open_or_focus(&w.mux(), &cmdv(&["claude", "attach", "9aacf927"]), Path::new("/dev"), place, Some("not-in-any-pane")).expect("open_or_focus");
-    assert!(reused, "found by its tab name");
-    assert_eq!(p, pane_ref("w1:p2", "w1:t2", "w1"));
+    let cmd = cmdv(&["claude", "attach", "9aacf927"]);
+    assert_eq!(nimitz_mux::tab_state(&w.mux(), &cmd, &place, Some("not-in-any-pane")).expect("state"), TabState::Shell(pane_ref("w1:p2", "w1:t2", "w1")));
+    let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place.clone(), Some("not-in-any-pane")).expect("attach");
+    assert_eq!(a, Attached::Claimed(pane_ref("w1:p2", "w1:t2", "w1")));
     assert_eq!(opened_tabs(&w), 2, "no new tab");
-    assert!(w.pane("w1:p2").get("ran").is_none(), "nothing ran in it again");
+    assert_eq!(w.pane("w1:p2")["ran"], json!(["claude attach 9aacf927"]));
+    // again: the pane runs that very attach now: shown, nothing typed again
+    assert_eq!(nimitz_mux::tab_state(&w.mux(), &cmd, &place, Some("not-in-any-pane")).expect("state"), TabState::Shown(pane_ref("w1:p2", "w1:t2", "w1")));
+    let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place, Some("not-in-any-pane")).expect("attach");
+    assert_eq!(a, Attached::Focused(pane_ref("w1:p2", "w1:t2", "w1")));
+    assert_eq!(w.pane("w1:p2")["ran"], json!(["claude attach 9aacf927"]), "ran once");
+}
+
+fn taken_tab_is_never_typed_into() {
+    // R-14 / R-24 / R-33: the tab's pane runs something else (yazi, another
+    // agent, the agent view): tab.taken, no pane run, no new tab
+    for fg in [vec!["yazi"], vec!["claude", "attach", "deadbeef"], vec!["claude"], vec!["/usr/bin/python3", "x.py"]] {
+        let w = tab_world(Some(fg.clone()));
+        let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
+        let cmd = cmdv(&["claude", "attach", "9aacf927"]);
+        let state = nimitz_mux::tab_state(&w.mux(), &cmd, &place, Some("not-in-any-pane")).expect("state");
+        assert_eq!(state, TabState::Taken { pane: pane_ref("w1:p2", "w1:t2", "w1"), running: fg.join(" ") }, "{fg:?}");
+        let e = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place, Some("not-in-any-pane")).expect_err("taken");
+        assert!(matches!(e, AttachError::Taken { .. }), "{e:?}");
+        assert_eq!(opened_tabs(&w), 2, "no new tab for {fg:?}");
+        assert!(w.pane("w1:p2").get("ran").is_none(), "nothing typed for {fg:?}");
+    }
+    // a shell by any of its names is a shell
+    for sh in ["zsh", "/bin/bash", "-zsh", "fish"] {
+        assert!(nimitz_mux::is_shell(&cmdv(&[sh])), "{sh}");
+    }
+    assert!(nimitz_mux::is_shell(&[]));
+}
+
+fn a_split_running_another_program_is_not_the_attach_pane() {
+    // the tab holds a Yazi split (first by id) and a shell pane: the shell one is the tab's
+    let w = tab_world(Some(vec!["yazi"]));
+    let mut world = w.world();
+    world["panes"].as_array_mut().unwrap().push(json!({"pane_id": "w1:p3", "tab_id": "w1:t2", "workspace_id": "w1", "cwd": "/dev"}));
+    fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
+    let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
+    let cmd = cmdv(&["claude", "attach", "9aacf927"]);
+    assert_eq!(w.mux().tab(&place), Some(pane_ref("w1:p3", "w1:t2", "w1")), "the shell pane, never the yazi split");
+    let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place, None).expect("attach");
+    assert_eq!(a, Attached::Claimed(pane_ref("w1:p3", "w1:t2", "w1")));
+    assert!(w.pane("w1:p2").get("ran").is_none(), "yazi's pane untouched");
 }
 
 fn reuse_none_opens() {
     let w = World::new(None);
     let place = Place::Tab { workspace: "ADMIRALTY".into(), label: "MAIN.ARGOS.CLEAN".into() };
     let before = opened_tabs(&w);
-    let (p, reused) = nimitz_mux::open_or_focus(&w.mux(), &cmdv(&["claude", "attach", "2287e6e4"]), Path::new("/clean"), place.clone(), Some("no-such-session")).expect("open");
-    assert!(!reused);
+    let cmd = cmdv(&["claude", "attach", "2287e6e4"]);
+    assert_eq!(nimitz_mux::tab_state(&w.mux(), &cmd, &place, Some("no-such-session")).expect("state"), TabState::Missing);
+    let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/clean"), place.clone(), Some("no-such-session")).expect("open");
+    let Attached::Opened(p) = a else { panic!("{a:?}") };
     assert_eq!(opened_tabs(&w), before + 1, "a new tab");
     assert_eq!(w.pane(&p.pane_id)["ran"], json!(["claude attach 2287e6e4"]));
-    // and a second call finds that tab
-    let (again, reused) = nimitz_mux::open_or_focus(&w.mux(), &cmdv(&["claude", "attach", "2287e6e4"]), Path::new("/clean"), place, Some("no-such-session")).expect("again");
-    assert!(reused && again.pane_id == p.pane_id, "{again:?}");
+    // and a second call finds that tab, running that attach: focused, nothing more
+    let again = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/clean"), place, Some("no-such-session")).expect("again");
+    assert_eq!(again, Attached::Focused(p));
     assert_eq!(opened_tabs(&w), before + 1);
+}
+
+fn layout_reruns_only_into_a_shell_pane() {
+    // a restored Herdr: the tabs are there, their panes plain shells; the
+    // layout runs the commands again there (R-03), but never into a pane
+    // that runs something (the first run's `ccl`)
+    let w = World::new(Some(json!({"next_ws": 2})));
+    w.mux().layout(&plan()).expect("first layout");
+    assert_eq!(w.pane("w2:p1")["ran"], json!(["ccl"]));
+    let tabs_before = opened_tabs(&w);
+    let mut world = w.world();
+    for p in world["panes"].as_array_mut().unwrap().iter_mut().filter(|p| p["pane_id"] == "w2:p1") {
+        p["foreground"] = json!(["zsh"]); // the attach client ended: a shell again
+    }
+    fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
+    w.mux().layout(&plan()).expect("second layout");
+    assert_eq!(w.pane("w2:p1")["ran"], json!(["ccl", "ccl"]), "ran again in the shell pane");
+    assert_eq!(w.pane("w2:p2")["ran"], json!(["yazi"]), "yazi still runs there: left alone");
+    assert_eq!(opened_tabs(&w), tabs_before, "no duplicate tabs");
 }
 
 // ---------- error paths ----------

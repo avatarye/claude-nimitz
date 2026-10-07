@@ -692,20 +692,43 @@ impl App {
             }
             return None;
         }
-        // `A` on a session that is shown already: jump there, open nothing new
+        // `A` on a session that is shown already: jump there, open nothing new;
+        // its tab with a plain shell: attach there; a tab that runs something
+        // else: never typed into (R2)
         if act == Act::Open && self.available(Act::Open).is_ok() {
-            if let Some(pane) = actions::existing_open(&self.ctx, &b.snap, &self.target()) {
-                match self.ctx.mux.focus(&pane) {
-                    Ok(()) => {
-                        actions::log(&self.ctx.env, "focus", &pane.pane_id);
-                        self.notify(format!("Open already: focused pane {}", pane.pane_id), st(mono::BUSY));
-                        if self.ctx.exit_after_jump {
-                            return Some(Effect::Quit);
+            match actions::existing_open(&self.ctx, &b.snap, &self.target()) {
+                Ok(nimitz_mux::TabState::Shown(pane)) => {
+                    match self.ctx.mux.focus(&pane) {
+                        Ok(()) => {
+                            actions::log(&self.ctx.env, "focus", &pane.pane_id);
+                            self.notify(format!("Open already: focused pane {}", pane.pane_id), st(mono::BUSY));
+                            if self.ctx.exit_after_jump {
+                                return Some(Effect::Quit);
+                            }
                         }
+                        Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
                     }
-                    Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
+                    return None;
                 }
-                return None;
+                Ok(nimitz_mux::TabState::Shell(pane)) => {
+                    match actions::claim_open(&self.ctx, &b.snap, &self.target(), &pane) {
+                        Ok(()) => {
+                            actions::log(&self.ctx.env, "attach", &pane.pane_id);
+                            self.notify(format!("Attached in its tab's pane {}", pane.pane_id), st(mono::BUSY));
+                        }
+                        Err(e) => self.notify(format!("Could not attach in pane {}: {e}", pane.pane_id), st(mono::ERROR)),
+                    }
+                    return None;
+                }
+                Ok(nimitz_mux::TabState::Taken { pane, running }) => {
+                    self.notify(format!("tab.taken: its tab's pane {} runs `{running}`; ctrl-z or quit it there, then A again", pane.pane_id), st(mono::ERROR));
+                    return None;
+                }
+                Ok(nimitz_mux::TabState::Missing) => {}
+                Err(e) => {
+                    self.notify(format!("Cannot see what its tab runs ({e}); nothing is typed into it"), st(mono::ERROR));
+                    return None;
+                }
             }
         }
         match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {

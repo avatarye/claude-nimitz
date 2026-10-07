@@ -91,6 +91,11 @@ impl Sb {
     fn calls(&self) -> String {
         std::fs::read_to_string(self.base.join("herdr/calls.jsonl")).unwrap_or_default()
     }
+    /// Run the sandbox's fake `claude` in `cwd` (the native binary).
+    fn claude(&self, cwd: &Path, args: &[&str]) -> String {
+        let o = Command::new(self.base.join("bin/claude")).args(args).current_dir(cwd).env_clear().env("PATH", "/usr/bin:/bin").envs(&self.vars).output().expect("fake claude");
+        format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    }
     fn herdr_world(&self, f: impl FnOnce(&mut Value)) {
         let p = self.base.join("herdr/world.json");
         let mut w: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
@@ -627,10 +632,27 @@ fn open_attaches_a_ship_and_focuses_a_pane() {
     let r = sb.run(&["open", "MAIN"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("attached in pane") && sb.calls().contains("MAIN.ADMIRAL"), "{}\n{}", r.out, sb.calls());
-    // not live: say so, with the start
+    // no job yet: say so, with the start
     let r = sb.run(&["open", "BETA"]);
     assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("not live") && r.out.contains("nimitz start BETA"), "{}", r.out);
+    assert!(r.out.contains("has no job") && r.out.contains("nimitz start BETA"), "{}", r.out);
+    // a parked job: the attach wakes it (cli-07)
+    let short = sb.member("MAIN/ARGOS/CLEAN")["session"]["short_id"].as_str().unwrap().to_string();
+    sb.claude(&sb.base.join("dirs/main/clean"), &["__retire", &short]);
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["status"], "Parked");
+    // its attach client ended with the job: the tab's pane is a shell again
+    let pane = sb.calls().lines().find(|l| l.contains("\"pane\",\"run\"") && l.contains(&format!("attach {short}"))).and_then(|l| l.split("\"pane\",\"run\",\"").nth(1)).map(|r| r.split('"').next().unwrap().to_string()).expect("the pane that ran the attach");
+    sb.herdr_world(|w| {
+        for p in w["panes"].as_array_mut().unwrap().iter_mut().filter(|p| p["pane_id"] == pane) {
+            p["foreground"] = Value::from(vec!["zsh"]);
+        }
+    });
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert!(r.out.contains("it wakes the parked job") && r.out.contains("attach there"), "{}", r.out);
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    // (the fake herdr types the line but runs nothing; real Herdr runs the attach, which wakes the job)
+    assert_eq!(sb.calls().lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains(&format!("attach {short}"))).count(), 2, "{}", sb.calls());
 }
 
 #[test]
@@ -646,10 +668,34 @@ fn open_reuses_the_tab_it_opened_before() {
     assert_eq!(tabs(&sb), 1);
     // again: the tab named MAIN.ARGOS.CLEAN is there; focus it, open nothing
     let r = sb.run(&["open", "MAIN/ARGOS/CLEAN", "--plan"]);
-    assert!(r.out.contains("its tab MAIN.ARGOS.CLEAN is open already"), "{}", r.out);
+    assert!(r.out.contains("its tab MAIN.ARGOS.CLEAN shows it already"), "{}", r.out);
     let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("is open already; focused pane"), "{}", r.out);
+    // the attach client ended (ctrl-z): the tab's pane is a plain shell again; the
+    // attach runs there, no second tab (R-02)
+    let pane = sb.calls().lines().find(|l| l.contains("\"pane\",\"run\"")).and_then(|l| l.split("\"pane\",\"run\",\"").nth(1)).map(|r| r.split('"').next().unwrap().to_string()).unwrap();
+    sb.herdr_world(|w| {
+        for p in w["panes"].as_array_mut().unwrap().iter_mut().filter(|p| p["pane_id"] == pane) {
+            p["foreground"] = Value::from(vec!["zsh"]);
+        }
+    });
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("attached in its tab's pane"), "{}", r.out);
+    assert_eq!(tabs(&sb), 1, "no second tab");
+    // something else runs in it (yazi, another agent, the agent view): never typed into (R-14, R-33)
+    sb.herdr_world(|w| {
+        for p in w["panes"].as_array_mut().unwrap().iter_mut().filter(|p| p["pane_id"] == pane) {
+            p["foreground"] = Value::from(vec!["yazi"]);
+        }
+    });
+    let before = sb.calls().lines().filter(|l| l.contains("\"pane\",\"run\"")).count();
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(tab.taken)") && r.out.contains("runs `yazi`") && r.out.contains(&format!("in pane {pane}")), "{}", r.out);
+    assert_eq!(sb.calls().lines().filter(|l| l.contains("\"pane\",\"run\"")).count(), before, "nothing typed");
+    assert_eq!(tabs(&sb), 1, "no second tab");
     assert_eq!(tabs(&sb), 1, "no second tab");
     assert!(sb.calls().contains("\"agent\",\"focus\""), "{}", sb.calls());
 }
@@ -719,7 +765,7 @@ fn layout_herdr() {
     assert!(r.out.contains("tab MAIN.ADMIRAL in workspace MAIN") && r.out.contains("tab MAIN.ARGOS.COMMODORE in workspace MAIN.ARGOS"), "{}", r.out);
     assert!(sb.calls().contains(" attach ") && sb.calls().contains("MAIN.ADMIRAL") && !sb.calls().contains("\"-c\""), "{}", sb.calls());
     let r = sb.run(&["layout", "herdr", "BETA", "--plan"]);
-    assert!(r.out.contains("BETA is not live") && r.out.contains("nimitz start BETA"), "{}", r.out);
+    assert!(r.out.contains("BETA has no job") && r.out.contains("nimitz start BETA"), "{}", r.out);
     // again: the tabs are there already (by label), so nothing is attached twice
     let r = sb.run(&["layout", "herdr", "MAIN", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);

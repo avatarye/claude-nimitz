@@ -1,4 +1,4 @@
-//! Herdr adapter (`herdr agent list/focus/prompt`, `pane run/split`,
+//! Herdr adapter (`herdr agent list/focus/prompt`, `pane run/split/list/process-info`,
 //! `workspace/tab create|list|focus`, `tab rename`). Owner: mux agent.
 //!
 //! Every operation shells out to the herdr CLI and parses its JSON reply;
@@ -107,18 +107,33 @@ impl Herdr {
         Ok(list.iter().map(|t| (s(t, "tab_id"), s(t, "label"))).collect())
     }
 
-    /// First pane of a tab (for reusing an existing tab in `layout`).
-    fn pane_in_tab(&self, workspace_id: &str, tab_id: &str) -> Result<PaneRef, MuxError> {
+    /// The panes of a tab, in id order (`herdr pane list`).
+    fn tab_panes(&self, workspace_id: &str, tab_id: &str) -> Result<Vec<PaneRef>, MuxError> {
         let v = self.run(&["pane", "list"])?;
         let list = v.pointer("/result/panes").and_then(Value::as_array).cloned().unwrap_or_default();
-        list.iter()
-            .find(|p| s(p, "tab_id") == tab_id)
-            .map(|p| PaneRef {
-                pane_id: s(p, "pane_id"),
-                tab_id: Some(tab_id.to_string()),
-                workspace_id: Some(workspace_id.to_string()),
-            })
-            .ok_or_else(|| MuxError::Failed(format!("herdr pane list: no pane in tab {tab_id}")))
+        let mut panes: Vec<PaneRef> = list
+            .iter()
+            .filter(|p| s(p, "tab_id") == tab_id)
+            .map(|p| PaneRef { pane_id: s(p, "pane_id"), tab_id: Some(tab_id.to_string()), workspace_id: Some(workspace_id.to_string()) })
+            .collect();
+        panes.sort_by(|a, b| a.pane_id.cmp(&b.pane_id));
+        Ok(panes)
+    }
+
+    /// The pane of a tab to attach in: its first shell pane (a tab can carry
+    /// a split running Yazi or another program: never that one), else its
+    /// first pane (then `tab_state` reports what runs there).
+    fn pane_in_tab(&self, workspace_id: &str, tab_id: &str) -> Result<PaneRef, MuxError> {
+        let panes = self.tab_panes(workspace_id, tab_id)?;
+        let shell = panes.iter().find(|p| self.foreground(p).map(|fg| crate::is_shell(&fg)).unwrap_or(false)).cloned();
+        shell.or_else(|| panes.first().cloned()).ok_or_else(|| MuxError::Failed(format!("herdr pane list: no pane in tab {tab_id}")))
+    }
+
+    /// The tab labelled `label` in workspace `workspace`, both loosely matched.
+    fn find_tab(&self, workspace: &str, label: &str) -> Result<Option<(String, String)>, MuxError> {
+        let (want_ws, want) = (normalize_label(workspace), normalize_label(label));
+        let Some((ws_id, _, _)) = self.workspaces()?.into_iter().find(|(_, l, _)| normalize_label(l) == want_ws) else { return Ok(None) };
+        Ok(self.tabs(&ws_id)?.into_iter().find(|(_, l)| normalize_label(l) == want).map(|(tab_id, _)| (ws_id, tab_id)))
     }
 
     /// `workspace create --label <label> --cwd <cwd> --no-focus`
@@ -176,16 +191,36 @@ impl Mux for Herdr {
         "herdr"
     }
 
-    fn existing(&self, session_id: Option<&str>, place: &Place) -> Option<PaneRef> {
-        if let Some(p) = session_id.and_then(|sid| self.panes().into_iter().find(|p| p.session_id.as_deref() == Some(sid))) {
-            return Some(p.pane);
-        }
-        // the tab nimitz names for it (`F.SQ.SHIP`), in its workspace
+    fn tab(&self, place: &Place) -> Option<PaneRef> {
+        // the tab nimitz names for it (`F.ADMIRAL`, `F.SQ.SHIP`), in its workspace
         let Place::Tab { workspace, label } = place else { return None };
-        let (ws, want_ws, want) = (self.workspaces().ok()?, normalize_label(workspace), normalize_label(label));
-        let (ws_id, _, _) = ws.into_iter().find(|(_, l, _)| normalize_label(l) == want_ws)?;
-        let (tab_id, _) = self.tabs(&ws_id).ok()?.into_iter().find(|(_, l)| normalize_label(l) == want)?;
+        let (ws_id, tab_id) = self.find_tab(workspace, label).ok()??;
         self.pane_in_tab(&ws_id, &tab_id).ok()
+    }
+
+    /// `herdr pane process-info --pane <id>`: the foreground process group of
+    /// the pane's pty (`foreground_processes[].argv`). The first process that
+    /// is not a shell is what runs; none means an idle shell.
+    fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError> {
+        let v = self.run(&["pane", "process-info", "--pane", &pane.pane_id])?;
+        let procs = v.pointer("/result/foreground_processes").and_then(Value::as_array).cloned().unwrap_or_default();
+        for p in &procs {
+            let mut argv: Vec<String> = p.get("argv").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            if argv.is_empty() {
+                argv = s(p, "cmdline").split_whitespace().map(String::from).collect();
+            }
+            if argv.is_empty() {
+                argv = vec![s(p, "name")].into_iter().filter(|x| !x.is_empty()).collect();
+            }
+            if !crate::is_shell(&argv) {
+                return Ok(argv);
+            }
+        }
+        Ok(vec![])
+    }
+
+    fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError> {
+        self.pane_run(&pane.pane_id, cmd)
     }
 
     fn caps(&self) -> Caps {
@@ -262,18 +297,27 @@ impl Mux for Herdr {
     }
 
     /// One workspace per entry, tabs with commands. Idempotent: an existing
-    /// workspace/tab is reused by loose label match (`normalize_label`) and its
-    /// command is NOT run again.
+    /// workspace/tab is reused by loose label match (`normalize_label`); its
+    /// command runs again only in a pane that is a plain shell (a tab Herdr
+    /// restored, an attach client that ended), never into a pane that runs
+    /// something (R2).
     fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError> {
         let mut out = vec![];
         for (ws_label, tabs) in &plan.workspaces {
             let first_cwd = tabs.first().map(|(_, _, c)| c.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
             let (ws, mut fresh_tab) = self.find_or_create_workspace(ws_label, &first_cwd)?;
             let existing = self.tabs(&ws)?;
+            let reuse = |tab_id: &str, cmd: &[String]| -> Result<PaneRef, MuxError> {
+                let pane = self.pane_in_tab(&ws, tab_id)?;
+                if self.foreground(&pane).map(|fg| crate::is_shell(&fg)).unwrap_or(false) {
+                    self.pane_run(&pane.pane_id, cmd)?;
+                }
+                Ok(pane)
+            };
             for (tab_label, cmd, cwd) in tabs {
                 let want = normalize_label(tab_label);
                 if let Some((tab_id, _)) = existing.iter().find(|(_, l)| normalize_label(l) == want) {
-                    out.push(self.pane_in_tab(&ws, tab_id)?);
+                    out.push(reuse(tab_id, cmd)?);
                     continue;
                 }
                 // a tab from before full names (`COMMODORE` for `F.SQ.COMMODORE`):
@@ -281,7 +325,7 @@ impl Mux for Herdr {
                 let short = tab_label.strip_prefix(&format!("{ws_label}.")).map(normalize_label);
                 if let Some((tab_id, _)) = existing.iter().find(|(_, l)| short.as_deref() == Some(normalize_label(l).as_str())) {
                     let _ = self.run(&["tab", "rename", tab_id, tab_label]);
-                    out.push(self.pane_in_tab(&ws, tab_id)?);
+                    out.push(reuse(tab_id, cmd)?);
                     continue;
                 }
                 let (tab, pane) = match fresh_tab.take() {

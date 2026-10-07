@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nimitz_core::env::Env;
 use nimitz_core::{Caller, Id, Member, Outcome, Plan, Role, Snapshot, Step};
-use nimitz_mux::{Caps, LayoutPlan, Mux, Pane, PaneRef, Place};
+use nimitz_mux::{Caps, LayoutPlan, Mux, MuxError, Pane, PaneRef, Place, TabState};
 
 /// Everything an action needs from the outside world.
 pub struct Ctx {
@@ -237,8 +237,9 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
         },
         (Act::Up, _) => Err("up is for a fleet (select its band)".into()),
         (Act::Open, Target::Member(id)) => {
+            // a job, live or parked (an attach wakes a parked job, cli-07)
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
-            let s = m.session.as_ref().filter(|s| s.pid.is_some()).ok_or("not running; `a` starts it")?;
+            let s = m.session.as_ref().ok_or("no job yet; `a` starts it")?;
             if s.short_id.is_none() {
                 return Err(if m.pane.is_some() {
                     "a process with no job: enter jumps to its pane".into()
@@ -415,20 +416,28 @@ pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fl
     Ok(Pending { act, command, plan, config: false, panes: vec![], layout: Some(lp) })
 }
 
-/// `open`: attach to a running job in a new pane (a member in its own tab,
-/// `nimitz_core::layout::attach_tab`; a stowaway under STOWAWAYS).
-/// The pane or tab that already shows the session `A` would attach to (its
-/// session in a pane, or the tab nimitz names for it), if one is open.
-pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Option<PaneRef> {
-    let (sid, place) = match target {
-        Target::Member(id) => (find_member(snap, id)?.session.as_ref()?.session_id.clone(), place_for(id)),
-        Target::Stowaway(sid) => {
-            let s = snap.stowaways.iter().find(|s| &s.session_id == sid)?;
-            (s.session_id.clone(), Place::Tab { workspace: "STOWAWAYS".into(), label: s.name.clone() })
-        }
-        _ => return None,
+/// What the tab `A` would attach in shows now (`nimitz_mux::tab_state`): a
+/// pane with the session (jump there), a plain shell (claim it: the attach
+/// runs there), something else (`tab.taken`: never typed into), or no tab
+/// (`Missing`: open one, after the confirm). `Err` when the pane cannot be
+/// read into. The attach step itself is `plan_open`'s.
+pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<TabState, MuxError> {
+    let Ok(p) = plan_open(ctx, snap, target) else { return Ok(TabState::Missing) };
+    let Some((step, place)) = p.panes.first() else { return Ok(TabState::Missing) };
+    let sid = match target {
+        Target::Member(id) => find_member(snap, id).and_then(|m| m.session.as_ref()).map(|s| s.session_id.clone()),
+        Target::Stowaway(sid) => Some(sid.clone()),
+        _ => None,
     };
-    ctx.mux.existing(Some(&sid), &place)
+    nimitz_mux::tab_state(ctx.mux.as_ref(), &step.cmd, place, sid.as_deref())
+}
+
+/// `A` on a tab whose pane is a plain shell: run the attach there and focus it.
+pub fn claim_open(ctx: &Ctx, snap: &Snapshot, target: &Target, pane: &PaneRef) -> Result<(), String> {
+    let p = plan_open(ctx, snap, target)?;
+    let (step, _) = p.panes.first().ok_or("nothing to attach")?;
+    ctx.mux.run_in(pane, &step.cmd).map_err(|e| e.to_string())?;
+    ctx.mux.focus(pane).map_err(|e| e.to_string())
 }
 
 fn plan_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<Pending, String> {
@@ -436,7 +445,8 @@ fn plan_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<Pending, Str
         Target::Member(id) => {
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
             let tab = nimitz_core::layout::attach_tab(&ctx.env, m).map_err(|i| i.message)?;
-            let step = Step { id: Some(id.clone()), cmd: tab.cmd, cwd: Some(tab.cwd), why: format!("attach to {} in tab {}; detaching (ctrl-z) leaves it running", m.expected_name, tab.label) };
+            let wake = if tab.wakes { "; it wakes the parked job" } else { "" };
+            let step = Step { id: Some(id.clone()), cmd: tab.cmd, cwd: Some(tab.cwd), why: format!("attach to {} in tab {}{wake}; detaching (ctrl-z) leaves it running", m.expected_name, tab.label) };
             (step, place_for(id), m.expected_name.clone())
         }
         Target::Stowaway(sid) => {

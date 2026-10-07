@@ -340,16 +340,13 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
             let pane = match pane {
                 Some(p) => p,
                 None => match run::attach_in_tab(mux.as_ref(), &ctx.env, via) {
-                    Ok((p, _)) => {
+                    Ok(a) => {
+                        let p = attached_pane(&a);
                         out::ok(&format!("{} attached in pane {}", via.id, p.pane_id));
                         p
                     }
-                    Err(Ok(i)) => {
+                    Err(i) => {
                         out::issue(&i);
-                        return Ok(1);
-                    }
-                    Err(Err(e)) => {
-                        out::error(&format!("opening {}'s tab failed: {e}", via.id));
                         return Ok(1);
                     }
                 },
@@ -416,40 +413,69 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
     }
     let tab = match nimitz_core::layout::attach_tab(&ctx.env, m) {
         Ok(t) => t,
+        Err(i) if i.code == "history.lost" => {
+            plan.refusals.push(i);
+            return Ok(finish_plan(ctx, &plan));
+        }
         Err(i) => {
-            // not live, or a process with no job: say so, with what to do
+            // no job, or a process with no job: say so, with what to do
             let fix = if live(m) { None } else { Some(format!("nimitz start {id}")) };
             plan.refusals.push(refusal("session.none", i.message, fix, Some(id)));
             return Ok(finish_plan(ctx, &plan));
         }
     };
-    // a tab already named for it (`F.ADMIRAL`, `F.SQ.SHIP`: an earlier `open` or a layout): show that one
-    if let Some(p) = mux.existing(tab.session_id.as_deref(), &run::place_for(&id)) {
-        plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["focus".into(), p.pane_id.clone()], cwd: None, why: format!("its tab {} is open already", tab.label) });
-    } else {
-        plan.steps.push(Step { id: Some(id.clone()), cmd: tab.cmd.clone(), cwd: Some(tab.cwd.clone()), why: "attach in a new tab; detaching (ctrl-z) leaves it running".into() });
+    let wake = if tab.wakes { "; it wakes the parked job (cli-07)" } else { "" };
+    // what its tab shows now: a pane with it (focus), a shell (claim it), something
+    // else (never typed into), or no tab (open one)
+    match nimitz_mux::tab_state(mux.as_ref(), &tab.cmd, &run::place_for(&id), tab.session_id.as_deref()) {
+        Ok(nimitz_mux::TabState::Shown(p)) => {
+            plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["focus".into(), p.pane_id.clone()], cwd: None, why: format!("its tab {} shows it already", tab.label) })
+        }
+        Ok(nimitz_mux::TabState::Shell(p)) => plan.steps.push(Step {
+            id: Some(id.clone()),
+            cmd: tab.cmd.clone(),
+            cwd: Some(tab.cwd.clone()),
+            why: format!("its tab {} is open and pane {} is a plain shell: attach there{wake}", tab.label, p.pane_id),
+        }),
+        Ok(nimitz_mux::TabState::Taken { pane, running }) => {
+            plan.refusals.push(run::attach_issue(&id, nimitz_mux::AttachError::Taken { pane, running }));
+            return Ok(finish_plan(ctx, &plan));
+        }
+        Ok(nimitz_mux::TabState::Missing) => {
+            plan.steps.push(Step { id: Some(id.clone()), cmd: tab.cmd.clone(), cwd: Some(tab.cwd.clone()), why: format!("attach in a new tab {}{wake}; detaching (ctrl-z) leaves it running", tab.label) })
+        }
+        Err(e) => {
+            plan.refusals.push(refusal("mux.failed", format!("cannot see what {id}'s tab runs ({e}); nothing is typed into a pane nimitz cannot see into"), None, Some(id)));
+            return Ok(finish_plan(ctx, &plan));
+        }
     }
     // Attaching changes no session: no confirmation needed.
     match out::gate(&plan, ctx.plan_only(), true) {
         out::Go::Exit(c) => Ok(c),
         out::Go::Run => match run::attach_in_tab(mux.as_ref(), &ctx.env, m) {
-            Ok((p, true)) => {
+            Ok(nimitz_mux::Attached::Focused(p)) => {
                 out::ok(&format!("{id} is open already; focused pane {}", p.pane_id));
                 Ok(0)
             }
-            Ok((p, false)) => {
-                out::ok(&format!("{id} attached in pane {}", p.pane_id));
+            Ok(nimitz_mux::Attached::Claimed(p)) => {
+                out::ok(&format!("{id} attached in its tab's pane {}{wake}", p.pane_id));
                 Ok(0)
             }
-            Err(Ok(i)) => {
+            Ok(nimitz_mux::Attached::Opened(p)) => {
+                out::ok(&format!("{id} attached in pane {}{wake}", p.pane_id));
+                Ok(0)
+            }
+            Err(i) => {
                 out::issue(&i);
                 Ok(1)
             }
-            Err(Err(e)) => {
-                out::error(&format!("open failed: {e}"));
-                Ok(1)
-            }
         },
+    }
+}
+
+fn attached_pane(a: &nimitz_mux::Attached) -> nimitz_mux::PaneRef {
+    match a {
+        nimitz_mux::Attached::Focused(p) | nimitz_mux::Attached::Claimed(p) | nimitz_mux::Attached::Opened(p) => p.clone(),
     }
 }
 

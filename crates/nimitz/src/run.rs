@@ -4,7 +4,7 @@
 use crate::{out, Ctx};
 use nimitz_core::env::Env;
 use nimitz_core::{Id, Issue, Member, Outcome, Plan, Severity};
-use nimitz_mux::{Mux, MuxError, PaneRef, Place};
+use nimitz_mux::{AttachError, Attached, Mux, PaneRef, Place};
 use std::path::Path;
 
 /// Herdr workspace for a member: `F` for the admiral, `F.SQ` for the rest.
@@ -56,12 +56,27 @@ pub fn execute(ctx: &Ctx, plan: &Plan) -> Outcome {
     nimitz_core::sessions::apply(&ctx.env, plan)
 }
 
-/// Show `m`'s live job in its tab (`claude attach <job>` in its folder, tab
-/// `F.ADMIRAL` / `F.SQ.COMMODORE` / `F.SQ.SHIP`): focus the pane or tab that
-/// shows it already, else open the tab. Returns the pane and whether it was
-/// open already. A member that is not live, or that runs with no job, is an
-/// `Err` with the `layout.skip` issue that says what to do.
-pub fn attach_in_tab(mux: &dyn Mux, env: &Env, m: &Member) -> Result<(PaneRef, bool), Result<Issue, MuxError>> {
-    let tab = nimitz_core::layout::attach_tab(env, m).map_err(Ok)?;
-    nimitz_mux::open_or_focus(mux, &tab.cmd, Path::new(&tab.cwd), place_for(&m.id), tab.session_id.as_deref()).map_err(Err)
+/// Show `m`'s job in its tab (`claude attach <job>` in its folder, tab
+/// `F.ADMIRAL` / `F.SQ.COMMODORE` / `F.SQ.SHIP`; a parked job wakes): focus
+/// the pane that shows it, claim its tab's shell pane, or open the tab
+/// (`nimitz_mux::attach`). A member with no job, or one whose tab runs
+/// something else (`tab.taken`: nothing is typed), is an `Err` with the issue
+/// that says what to do. The attach-a-lead step a restore uses too.
+pub fn attach_in_tab(mux: &dyn Mux, env: &Env, m: &Member) -> Result<Attached, Issue> {
+    let tab = nimitz_core::layout::attach_tab(env, m)?;
+    nimitz_mux::attach(mux, &tab.cmd, Path::new(&tab.cwd), place_for(&m.id), tab.session_id.as_deref()).map_err(|e| attach_issue(&m.id, e))
+}
+
+/// The issue for a failed attach: a taken tab names the pane and what runs
+/// there, with the one fix (end it there, or ctrl-z an attach of another job).
+pub fn attach_issue(id: &Id, e: AttachError) -> Issue {
+    match e {
+        AttachError::Taken { pane, running } => refusal(
+            "tab.taken",
+            format!("{id}'s tab is open but its pane {} runs `{running}`, not a shell; nothing was typed into it", pane.pane_id),
+            Some(format!("in pane {}: ctrl-z (an attach) or quit `{running}`, then nimitz open {id}", pane.pane_id)),
+            Some(id.clone()),
+        ),
+        AttachError::Mux(e) => refusal("mux.failed", format!("attaching {id} failed: {e}"), None, Some(id.clone())),
+    }
 }

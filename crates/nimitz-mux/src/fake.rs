@@ -12,13 +12,16 @@
 //!   "panes":      [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "agent": "claude",
 //!                   "agent_status": "idle", "terminal_title_stripped": "[ADMIRALTY]",
 //!                   "cwd": "/x", "foreground_cwd": "/x",
-//!                   "agent_session": {"kind": "id", "value": "<uuid>"}}],
+//!                   "agent_session": {"kind": "id", "value": "<uuid>"},
+//!                   "foreground": ["claude"]}],   // argv in the pane's foreground; absent = an idle shell
 //!   "next_ws": 2,
 //!   "fail": "workspace create"   // optional: any call starting with this errors
 //! }
 //! ```
 //! Output shapes copy the real CLI (herdr 0.9): one JSON object on stdout,
 //! errors as `{"error":{"code","message"},"id"}` on stderr with exit 1.
+//! `pane run` records the line in `ran` and makes it the pane's `foreground`
+//! (what `pane process-info` then reports, as the real one reads from the OS).
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -250,6 +253,18 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             let panes = arr(world, "panes");
             ok("pane:list", json!({"type": "pane_list", "panes": panes}))
         }
+        ["pane", "process-info", "--pane", target] | ["pane", "process-info", target] => {
+            let panes = arr(world, "panes");
+            let Some(p) = find(&panes, "pane_id", target) else {
+                return err("pane:process-info", "pane_not_found", &format!("pane {target} not found"));
+            };
+            // the foreground process group: the shell alone when idle (herdr-shape.md, PaneProcessInfo)
+            let argv: Vec<String> = p.get("foreground").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_else(|| vec!["zsh".into()]);
+            let proc_ = json!({"pid": 4242, "name": argv.first().cloned().unwrap_or_default(), "argv0": argv.first().cloned().unwrap_or_default(),
+                               "argv": argv, "cmdline": argv.join(" "), "cwd": s(p, "cwd")});
+            ok("pane:process-info", json!({"type": "pane_process_info", "pane_id": target, "shell_pid": 4241, "tty": "/dev/pts/9",
+                                           "foreground_process_group_id": 4242, "foreground_processes": [proc_]}))
+        }
         ["pane", "run", target, cmd @ ..] if !cmd.is_empty() => {
             let mut hit = false;
             for p in world["panes"].as_array_mut().expect("panes") {
@@ -258,7 +273,10 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                         p["ran"] = json!([]);
                     }
                     // like herdr: the arguments joined with spaces, as typed into the shell
-                    p["ran"].as_array_mut().expect("ran").push(json!(cmd.join(" ")));
+                    let line = cmd.join(" ");
+                    p["ran"].as_array_mut().expect("ran").push(json!(line));
+                    // ... which now runs in the pane's foreground (quotes dropped: enough for `claude attach <job>`)
+                    p["foreground"] = json!(line.split_whitespace().map(|w| w.trim_matches('\'')).collect::<Vec<_>>());
                     hit = true;
                 }
             }

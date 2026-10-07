@@ -4,10 +4,12 @@
 //!
 //! One workspace per fleet (its admiral) and one per squadron (its commodore).
 //! Every member is a background job (plan-v4 section 7), so every tab attaches
-//! (`claude attach <job>`; detaching leaves the job running): a live lead gets
-//! its tab (`F.ADMIRAL`, `F.SQ.COMMODORE`); with `ships`, a live ship too. A
-//! member that is not live gets no tab (`nimitz start` first); the mux layer
-//! drops the tabs whose session already has a pane (`TabSpec::session_id`).
+//! (`claude attach <job>`; detaching leaves the job running; an attach of a
+//! parked job wakes it, cli-07): a lead with a job gets its tab (`F.ADMIRAL`,
+//! `F.SQ.COMMODORE`); with `ships`, a live ship too. A member with no job gets
+//! no tab (`nimitz start` first); the mux layer drops the tabs whose session
+//! already has a pane (`TabSpec::session_id`) and never types into a pane that
+//! runs something (`nimitz_mux::tab_state`).
 use crate::env::Env;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
@@ -19,8 +21,10 @@ pub struct TabSpec {
     /// `claude attach <job>`
     pub cmd: Vec<String>,
     pub cwd: String,
-    /// the live session the tab shows (skip it if a pane has it already)
+    /// the session the tab shows (skip it if a pane has it already)
     pub session_id: Option<String>,
+    /// the job is parked or stopped: the attach wakes it as itself (cli-07)
+    pub wakes: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,25 +72,38 @@ fn live(m: &Member) -> bool {
     m.session.as_ref().map(|s| s.pid.is_some()).unwrap_or(false)
 }
 
-/// The tab that attaches to `m`'s live job (`claude attach <job>` in its
-/// folder, labelled `tab_of`): what `layout herdr`, `nimitz open`, Admiralty's
-/// `A` and a restore run in the member's tab. A member that is not live, or
-/// that runs with no job (an interactive or SDK process), gets a
-/// `layout.skip` instead, with what to do.
+/// The tab that attaches to `m`'s job (`claude attach <job>` in its folder,
+/// labelled `tab_of`): what `layout herdr`, `nimitz open`, Admiralty's `A`
+/// and a restore run in the member's tab. A parked or stopped job is woken by
+/// the attach itself (cli-07; `wakes`), so a lead with a shell tab needs no
+/// resume first; its transcript must be there (else `history.lost`, as for a
+/// resume). A member with no job row, or one that runs with no job (an
+/// interactive or SDK process), gets a `layout.skip` instead, with what to do.
 pub fn attach_tab(env: &Env, m: &Member) -> Result<TabSpec, Issue> {
     let id = &m.id;
-    let Some(s) = m.session.as_ref().filter(|_| live(m)) else {
-        return Err(skip(id, format!("{id} is not live; no tab (`nimitz start {id}` first)")));
+    let Some(s) = m.session.as_ref() else {
+        return Err(skip(id, format!("{id} has no job; no tab (`nimitz start {id}` first)")));
     };
     let Some(short) = &s.short_id else {
         return Err(skip(id, format!("{id} runs in a process with no job ({}); nothing to attach to", s.entrypoint.as_deref().unwrap_or(&s.kind))));
     };
+    let wakes = !live(m);
+    if wakes && crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), m.cwd.as_deref(), &s.session_id).is_none() {
+        return Err(Issue {
+            code: "history.lost".into(),
+            severity: Severity::Error,
+            message: format!("{id}'s conversation {} has no transcript; an attach would wake it with no history", s.session_id),
+            fix: Some(format!("nimitz start {id} --fresh")),
+            id: Some(id.clone()),
+        });
+    }
     Ok(TabSpec {
         label: tab_of(id),
         id: id.clone(),
         cmd: crate::claude::attach(env, short),
         cwd: m.cwd.clone().unwrap_or_else(|| ".".into()),
         session_id: Some(s.session_id.clone()),
+        wakes,
     })
 }
 
@@ -103,7 +120,8 @@ impl LayoutSpec {
     fn attach(&mut self, env: &Env, m: &Member) {
         match attach_tab(env, m) {
             Ok(tab) => {
-                let why = format!("tab {} in workspace {}: attach; detaching (ctrl-z) leaves it running", tab.label, workspace_of(&m.id));
+                let wake = if tab.wakes { "; it wakes the parked job" } else { "" };
+                let why = format!("tab {} in workspace {}: attach{wake}; detaching (ctrl-z) leaves it running", tab.label, workspace_of(&m.id));
                 self.push(tab, why);
             }
             Err(i) => self.plan.warnings.push(i),
@@ -144,8 +162,13 @@ pub fn plan(env: &Env, snap: &Snapshot, fleet: Option<&str>, ships: bool, caller
         for sq in &f.squadrons {
             spec.attach(env, &sq.commodore);
             if ships {
-                for m in &sq.ships {
-                    spec.attach(env, m);
+                // a ship parks on purpose: only a live one gets a tab here
+                for m in sq.ships.iter() {
+                    if live(m) {
+                        spec.attach(env, m);
+                    } else {
+                        spec.plan.warnings.push(skip(&m.id, format!("{} is not live; no tab (`nimitz start {}` first)", m.id, m.id)));
+                    }
                 }
             }
         }
