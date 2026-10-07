@@ -1527,6 +1527,58 @@ fn a_lead_that_branched_beside_an_older_stray_keeps_its_job() {
     assert!(intruder["message"].as_str().unwrap().contains(&stray), "{intruder}");
 }
 
+/// The real job `/branch`ed after a relaunch (Claude Code renames it
+/// "<prompt> (Branch)") beside an older stray with the lead's name: the
+/// registry job stays the lead (the name-based handover is gone; only a job
+/// whose first lineage entry says `via branch` hands over) (merge minor 1).
+#[test]
+fn a_renamed_registry_job_stays_the_lead_beside_an_older_stray() {
+    let sb = Sb::new(false);
+    let adm = sb.member("MAIN");
+    let dir = adm["cwd"].as_str().unwrap().to_string();
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(&dir).args(args).output().unwrap();
+    let o = fake(&["--bg", "--name", "[MAIN]-ADMIRAL", "--settings", &lead_labels(&sb), "ok"]);
+    let stray = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    assert!(o.status.success() && stray.len() == 8, "{stray}");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(sb.run(&["relaunch", "MAIN", "--yes"]).code, 0);
+    let job = sb.member("MAIN")["session"]["short_id"].as_str().unwrap().to_string();
+    assert!(fake(&["__inside", &job, "branch", "x (Branch)"]).status.success());
+    let adm = sb.member("MAIN");
+    assert_eq!(adm["session"]["short_id"], job.as_str(), "the registry job stays, renamed or not: {adm}");
+    assert_eq!(adm["session"]["name"], "x (Branch)");
+    let codes: Vec<&str> = adm["issues"].as_array().unwrap().iter().filter_map(|i| i["code"].as_str()).collect();
+    assert!(codes.contains(&"lead.intruder") && codes.contains(&"name.drift") && !codes.contains(&"dup.live"), "{adm}");
+    let intruder = adm["issues"].as_array().unwrap().iter().find(|i| i["code"] == "lead.intruder").unwrap();
+    assert!(intruder["message"].as_str().unwrap().contains(&stray), "{intruder}");
+}
+
+/// A crashed ship that also has a stale copy row: the start waits the crash
+/// window for the SHIP's job (the plan's rm of the copy row names another
+/// job) (merge minor 2).
+#[test]
+fn a_crashed_ship_with_a_stale_copy_row_is_waited_for() {
+    let sb = Sb::new(false);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    let (job, sid, dir) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string(), m["cwd"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(&dir).args(args).output().unwrap();
+    // a stale copy row: a copy of the live ship (a resume with a flag), then stopped
+    let o = fake(&["--bg", "--resume", &sid, "--name", "[MAIN.ARGOS]-CLEAN"]);
+    let out = String::from_utf8_lossy(&o.stdout).to_string();
+    let copy = out.split("copy as ").nth(1).map(|s| s[..8].to_string()).expect(&out);
+    assert!(fake(&["stop", &copy]).status.success());
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(m["extra_rows"].as_array().unwrap().iter().any(|r| r["short_id"] == copy.as_str() && r["pid"].is_null()), "{m}");
+    assert!(fake(&["__crash", &job]).status.success());
+    let t0 = std::time::Instant::now();
+    let r = raw(&sb.vars, &["start", "MAIN/ARGOS/CLEAN", "--yes"], &[("NIMITZ_CRASH_WINDOW", "2")], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(t0.elapsed().as_secs_f64() >= 2.0, "no crash window wait with a stale copy row in the plan: {:.1}s\n{}", t0.elapsed().as_secs_f64(), r.out);
+    assert!(r.out.contains(&format!("rm {copy}")), "the stale copy row is dropped: {}", r.out);
+    let m = sb.member("MAIN/ARGOS/CLEAN");
+    assert!(live(&m) && m["session"]["short_id"] == job.as_str() && m["extra_rows"].as_array().unwrap().is_empty(), "{m}");
+}
+
 /// No row and no transcript is `history.lost` with the `--fresh` fix (one
 /// word, one flag, as with a row and no transcript); the `--fresh` plan does
 /// not repeat the error (acceptance env E9).

@@ -742,11 +742,11 @@ fn build_member(
         });
     // A lead's row is its registry job (a hand rm + resume binds the new job
     // beside an older labelled stray: the registry job stays, the stray is the
-    // intruder). Two cases hand the lead to another own live job: (i) the
-    // registry has no job; (ii) the registry job's row does not carry the
-    // expected name while another own live job row does (a /fork copy is
-    // named "<name> ⑂", and a fork's hook binds itself as the job when the
-    // lead had none). Then the earliest-started own live job carrying the
+    // intruder; a /branch or /rename of the real job changes nothing). Two
+    // cases hand the lead to another own live job: (i) the registry has no
+    // job; (ii) the registry job bound itself as a fork (the FIRST lineage
+    // entry of that job says `via branch`: a /fork copy's hook binds when the
+    // lead had no job). Then the earliest-started own live job carrying the
     // expected name, else the earliest with a started_at; never on a None or
     // an equal started_at.
     let mut primary_at = primary_at;
@@ -760,7 +760,9 @@ fn build_member(
         };
         let handover = match reg_job_at {
             None => true,
-            Some(i) => rows[i].name != expected && named.iter().any(|&j| j != i),
+            Some(_) => rec
+                .and_then(|x| x.job.as_deref().and_then(|job| x.lineage.iter().find(|l| l.job.as_deref() == Some(job))))
+                .is_some_and(|first| first.via == "branch"),
         };
         if handover {
             if let Some(c) = earliest(&named).or_else(|| earliest(&cands)) {

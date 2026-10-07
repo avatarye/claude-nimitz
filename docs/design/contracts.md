@@ -285,9 +285,10 @@ the lead (the stray is its `lead.intruder`; neither a relaunch's `dup.live`
 check nor `apply`'s "live already" guard counts a lead's intruder, and the
 labels-in-folder rule of that guard holds only while the registry names no
 job). Only two cases hand a lead to another own live job: the registry has no
-job, or the registry job's row does not carry the expected name while another
-own live job row does (a `/fork` copy is named `<name> ⑂`, and a fork's hook
-binds itself when the lead had none). Then the earliest-started own live job
+job, or the registry job bound itself as a fork (the first lineage entry of
+that job says `via branch`: a `/fork` copy's hook binds when the lead had no
+job). A `/branch` or `/rename` of the real job (Claude Code names a branch
+`<prompt> (Branch)`) changes nothing. Then the earliest-started own live job
 carrying the expected name, else the earliest with a `started_at`; never on a
 missing or equal `started_at`. `jobs/pins.json` gives `pinned` (the daemon
 never idle-retires a pinned job; `status` says so). A live session file's
