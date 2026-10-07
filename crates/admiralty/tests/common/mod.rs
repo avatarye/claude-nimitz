@@ -19,8 +19,15 @@ use ratatui::Terminal;
 #[derive(Clone, Default)]
 pub struct TestMux {
     pub calls: Arc<Mutex<Vec<String>>>,
-    /// tabs `open` made: (workspace, label, pane id), so `existing` finds them
-    pub tabs: Arc<Mutex<Vec<(String, String, String)>>>,
+    /// tabs `open` made: (workspace, label, pane id, the pane's foreground argv), so `tab` finds them
+    pub tabs: Arc<Mutex<Vec<(String, String, String, Vec<String>)>>>,
+}
+
+impl TestMux {
+    /// Make a tab exist already, with `foreground` running in its pane (empty: a shell).
+    pub fn with_tab(&self, workspace: &str, label: &str, pane: &str, foreground: &[&str]) {
+        self.tabs.lock().unwrap().push((workspace.into(), label.into(), pane.into(), foreground.iter().map(|s| s.to_string()).collect()));
+    }
 }
 
 impl Mux for TestMux {
@@ -36,14 +43,24 @@ impl Mux for TestMux {
     fn open(&self, cmd: &[String], cwd: &Path, place: Place) -> Result<PaneRef, MuxError> {
         self.calls.lock().unwrap().push(format!("open {:?} in {} at {:?}", cmd, cwd.display(), place));
         if let Place::Tab { workspace, label } = &place {
-            self.tabs.lock().unwrap().push((workspace.clone(), label.clone(), "new".into()));
+            self.tabs.lock().unwrap().push((workspace.clone(), label.clone(), "new".into(), cmd.to_vec()));
         }
         Ok(PaneRef { pane_id: "new".into(), tab_id: None, workspace_id: None })
     }
-    fn existing(&self, _session_id: Option<&str>, place: &Place) -> Option<PaneRef> {
+    fn tab(&self, place: &Place) -> Option<PaneRef> {
         let Place::Tab { workspace, label } = place else { return None };
         let tabs = self.tabs.lock().unwrap();
-        tabs.iter().find(|(w, l, _)| w == workspace && l == label).map(|(_, _, p)| PaneRef { pane_id: p.clone(), tab_id: None, workspace_id: None })
+        tabs.iter().find(|(w, l, _, _)| w == workspace && l == label).map(|(_, _, p, _)| PaneRef { pane_id: p.clone(), tab_id: None, workspace_id: None })
+    }
+    fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError> {
+        Ok(self.tabs.lock().unwrap().iter().find(|(_, _, p, _)| *p == pane.pane_id).map(|(_, _, _, fg)| fg.clone()).unwrap_or_default())
+    }
+    fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError> {
+        self.calls.lock().unwrap().push(format!("run {} {:?}", pane.pane_id, cmd));
+        for t in self.tabs.lock().unwrap().iter_mut().filter(|(_, _, p, _)| *p == pane.pane_id) {
+            t.3 = cmd.to_vec();
+        }
+        Ok(())
     }
     fn focus(&self, pane: &PaneRef) -> Result<(), MuxError> {
         self.calls.lock().unwrap().push(format!("focus {}", pane.pane_id));

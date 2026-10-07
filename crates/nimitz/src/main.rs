@@ -1,8 +1,8 @@
 //! `nimitz`: the fleet command line and the hook binary (contracts.md section 10).
 //!
 //! Every rule lives in nimitz-core; this crate parses arguments, prints plans,
-//! asks before it changes anything, and opens interactive members in a
-//! multiplexer pane (core never depends on the mux).
+//! asks before it changes anything, and attaches to members in multiplexer
+//! tabs (core never depends on the mux).
 mod args;
 mod crud;
 mod members;
@@ -64,13 +64,13 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine
-  up <F>                           start every member of a fleet (needs a multiplexer)
-  start|stop|relaunch <id>         one member; start brings up missing parents first
+  up <F>                           start every member of a fleet
+  start|stop|relaunch <id>         one member; start brings up missing parents first (--fresh: a cold launch, new lineage)
   rm <id|session>                  remove job rows (never transcripts)
   sweep [<id>]                     drop stale rows and copies of members
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member (ships: through the commodore)
-  open <id>                        show a member in a pane
+  open <id>                        attach to a member in a tab (detach: ctrl-z)
   layout herdr [<F>]               workspaces and tabs for fleets in Herdr
   migrate fleet-skill <dir...> --into <F>
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)

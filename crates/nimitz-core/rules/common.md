@@ -9,7 +9,8 @@ CLAUDE.md.
   squadron) > ships (long work in one folder). One-off work is a subagent in
   the lead's own session, or a ship.
 - Every member is a Claude Code background job. The user attaches to a lead's
-  tab (`nimitz open <id>`) and detaches with ctrl-z.
+  tab (`nimitz open <id>`) and detaches with ctrl-z; `/exit` inside an attach
+  opens the agent view, so never ask the user to `/exit` a member.
 - Every member may run `nimitz`: what your role may do is below, and nimitz
   refuses the rest. `nimitz status --json` is the picture; `nimitz check <id>`
   finds problems; `nimitz rules` prints these rules. Do not edit fleet files

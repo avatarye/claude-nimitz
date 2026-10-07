@@ -267,7 +267,7 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             _ => r.err(&format!("Claude Code {v} is older than the supported floor {}", range.min), Some("update Claude Code")),
         },
     }
-    // The launch binary (cold launches, interactive members): NIMITZ_CLAUDE_BIN or `claude` on PATH.
+    // The launch binary (cold launches): NIMITZ_CLAUDE_BIN or `claude` on PATH.
     let launch = resolved(&env.claude_bin);
     let launch_v = std::process::Command::new(&env.claude_bin)
         .arg("--version")

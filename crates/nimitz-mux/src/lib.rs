@@ -70,26 +70,137 @@ pub trait Mux {
     fn type_text(&self, pane: &PaneRef, text: &str) -> Result<(), MuxError>;
     fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError>;
 
-    /// A pane that already shows this session (the agent the multiplexer sees
-    /// in it), else the tab `place` names (a `Place::Tab`, by its label in its
-    /// workspace), if either is open. An adapter that cannot list tabs matches
-    /// by session only.
-    fn existing(&self, session_id: Option<&str>, place: &Place) -> Option<PaneRef> {
+    /// The pane of the tab `place` names (a `Place::Tab`, by its label in its
+    /// workspace, loosely), if that tab is open: its shell pane (the first
+    /// pane whose foreground is a shell), else its first pane. A tab can hold
+    /// a split that runs another program (a Yazi pane): never that one. An
+    /// adapter that cannot list tabs knows no tab.
+    fn tab(&self, place: &Place) -> Option<PaneRef> {
         let _ = place;
-        let sid = session_id?;
-        self.panes().into_iter().find(|p| p.session_id.as_deref() == Some(sid)).map(|p| p.pane)
+        None
+    }
+
+    /// What runs in the foreground of a pane's terminal: the argv of the
+    /// foreground process, or empty for an idle shell. `Err` when it cannot be
+    /// read (then nothing is typed into the pane).
+    fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError> {
+        let _ = pane;
+        Err(MuxError::Unsupported("reading a pane's foreground"))
+    }
+
+    /// Run a command line in a pane's shell (`herdr pane run`). Only
+    /// `attach` calls it, and only into a pane whose foreground is a shell.
+    fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError> {
+        let _ = (pane, cmd);
+        Err(MuxError::Unsupported("running a command in a pane"))
     }
 }
 
-/// Show `session_id` at `place`: focus the pane or tab that already shows it
-/// (`Mux::existing`), else open `cmd` there. Returns the pane and whether it
-/// was already open (nothing new was created).
-pub fn open_or_focus(mux: &dyn Mux, cmd: &[String], cwd: &Path, place: Place, session_id: Option<&str>) -> Result<(PaneRef, bool), MuxError> {
-    if let Some(p) = mux.existing(session_id, &place) {
-        mux.focus(&p)?;
-        return Ok((p, true));
+/// Is this the argv of a shell sitting at its prompt (nothing in the
+/// foreground but the shell itself)?
+pub fn is_shell(argv: &[String]) -> bool {
+    const SHELLS: [&str; 9] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"];
+    match argv.first() {
+        None => true,
+        Some(p) => {
+            let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            SHELLS.contains(&name.trim_start_matches('-'))
+        }
     }
-    mux.open(cmd, cwd, place).map(|p| (p, false))
+}
+
+/// What a member's tab shows now (restore-scenarios.md, decision 5).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TabState {
+    /// a pane shows the member's session, or runs its exact attach already
+    Shown(PaneRef),
+    /// the tab is there and its pane is a plain shell: claim it
+    Shell(PaneRef),
+    /// the tab is there but its pane runs something else (another agent, a
+    /// copy, the agent view, yazi): never typed into
+    Taken { pane: PaneRef, running: String },
+    /// no tab for it yet
+    Missing,
+}
+
+/// Find the member's tab: a pane showing `session_id` anywhere (R1), else the
+/// pane that already runs `cmd` (`claude attach <job>`, visible while it
+/// runs), else the tab `place` names by its full label, judged by what its
+/// pane runs. `Err` when the pane's foreground cannot be read: nothing is
+/// typed into a pane nimitz cannot see into (R2).
+pub fn tab_state(mux: &dyn Mux, cmd: &[String], place: &Place, session_id: Option<&str>) -> Result<TabState, MuxError> {
+    if let Some(p) = session_id.and_then(|sid| mux.panes().into_iter().find(|p| p.session_id.as_deref() == Some(sid))) {
+        return Ok(TabState::Shown(p.pane));
+    }
+    let Some(pane) = mux.tab(place) else { return Ok(TabState::Missing) };
+    let fg = mux.foreground(&pane)?;
+    if is_shell(&fg) {
+        return Ok(TabState::Shell(pane));
+    }
+    // the same attach, by its program name and arguments (`claude attach <job>`)
+    let same = cmd.len() > 1 && fg.len() == cmd.len() && fg[1..] == cmd[1..] && program_name(&fg[0]) == program_name(&cmd[0]);
+    if same {
+        return Ok(TabState::Shown(pane));
+    }
+    Ok(TabState::Taken { pane, running: fg.join(" ") })
+}
+
+fn program_name(p: &str) -> String {
+    std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string())
+}
+
+/// How `attach` showed a member.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Attached {
+    /// a pane showed it already: focused, nothing ran
+    Focused(PaneRef),
+    /// its tab's shell pane was claimed: the attach ran there, then focused
+    Claimed(PaneRef),
+    /// a new tab was opened with the attach
+    Opened(PaneRef),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttachError {
+    /// the member's tab runs something else: nothing was typed (`tab.taken`)
+    Taken { pane: PaneRef, running: String },
+    Mux(MuxError),
+}
+
+impl std::fmt::Display for AttachError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AttachError::Taken { pane, running } => write!(f, "its tab's pane {} runs `{running}`, not a shell; nothing was typed into it", pane.pane_id),
+            AttachError::Mux(e) => e.fmt(f),
+        }
+    }
+}
+
+impl From<MuxError> for AttachError {
+    fn from(e: MuxError) -> Self {
+        AttachError::Mux(e)
+    }
+}
+
+/// Show a member in its tab: focus the pane that shows it (`TabState::Shown`),
+/// run `cmd` (`claude attach <job>`) in its tab's shell pane (`Shell`), or
+/// open the tab with `cmd` (`Missing`). A taken tab is an error and nothing is
+/// typed (R2). The attach-a-lead step of `nimitz open`, `signal`, Admiralty's
+/// `A` and a restore.
+pub fn attach(mux: &dyn Mux, cmd: &[String], cwd: &Path, place: Place, session_id: Option<&str>) -> Result<Attached, AttachError> {
+    match tab_state(mux, cmd, &place, session_id)? {
+        TabState::Shown(p) => {
+            mux.focus(&p)?;
+            Ok(Attached::Focused(p))
+        }
+        TabState::Shell(p) => {
+            mux.run_in(&p, cmd)?;
+            mux.focus(&p)?;
+            Ok(Attached::Claimed(p))
+        }
+        TabState::Taken { pane, running } => Err(AttachError::Taken { pane, running }),
+        TabState::Missing => Ok(Attached::Opened(mux.open(cmd, cwd, place)?)),
+    }
 }
 
 pub mod fake;

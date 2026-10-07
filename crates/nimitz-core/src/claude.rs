@@ -144,7 +144,28 @@ fn mode_args(mode: &str) -> Vec<String> {
     }
 }
 
-/// Cold launch of a ship: `claude --bg --name N --permission-mode M --settings S [prompt]`.
+/// The prompt a lead's cold launch carries (a `--bg` job with no prompt sits
+/// "waiting for a prompt"; a copy of such a job fails): who it is, and what
+/// to do first. The brief in its folder (CLAUDE.md) and the rules the hook
+/// hands it say the rest.
+pub fn lead_prompt(id: &Id) -> String {
+    match id.role() {
+        Role::Admiral => format!(
+            "You are {}, the admiral of fleet {}. Read CLAUDE.md in this folder, run `nimitz status`, report the fleet TLDR-first, then wait for the user.",
+            id.name(),
+            id.fleet()
+        ),
+        _ => format!(
+            "You are {}, the commodore of squadron {} in fleet {}. Read CLAUDE.md and SQUADRON.md in this folder, run `nimitz status`, report your squadron TLDR-first, then wait for the user.",
+            id.name(),
+            id.squadron().unwrap_or_default(),
+            id.fleet()
+        ),
+    }
+}
+
+/// Cold launch of any member: `claude --bg --name N --permission-mode M --settings S [prompt]`
+/// (a ship's prompt comes from squadron.toml, a lead's from `lead_prompt`).
 pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--name".into(), id.name()];
     c.extend(mode_args(mode));
@@ -169,19 +190,6 @@ pub fn resume_bg(env: &Env, session_id: &str) -> Vec<String> {
     vec![env.native_claude_bin.clone(), "--bg".into(), "--resume".into(), session_id.into()]
 }
 
-/// An admiral or commodore: `claude [-c] --name N [--permission-mode M] --settings S`,
-/// run in a terminal (a mux pane), never in the background.
-pub fn interactive(env: &Env, id: &Id, mode: &str, cont: bool) -> Vec<String> {
-    let mut c = vec![env.claude_bin.clone()];
-    if cont {
-        c.push("-c".into());
-    }
-    c.extend(["--name".into(), id.name()]);
-    c.extend(mode_args(mode));
-    c.extend(["--settings".into(), settings_json(env, id, false)]);
-    c
-}
-
 pub fn stop(env: &Env, short_id: &str) -> Vec<String> {
     vec![env.native_claude_bin.clone(), "stop".into(), short_id.into()]
 }
@@ -190,8 +198,75 @@ pub fn rm(env: &Env, short_id: &str) -> Vec<String> {
     vec![env.native_claude_bin.clone(), "rm".into(), short_id.into()]
 }
 
+/// `claude attach <job>`: what a lead's Herdr tab (and `nimitz open`) runs.
+/// Detach is ctrl-z; `/exit` inside an attach opens the agent view.
 pub fn attach(env: &Env, short_id: &str) -> Vec<String> {
     vec![env.native_claude_bin.clone(), "attach".into(), short_id.into()]
+}
+
+// ------------------------------------------------------------------ reading a launch's output
+
+/// `text` with every ANSI escape sequence removed (FORCE_COLOR, a terminal
+/// that is a tty): CSI `ESC [ ... <final>`, OSC `ESC ] ... BEL|ESC \`, and
+/// two-byte `ESC x`.
+pub fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('[') => {
+                for d in it.by_ref() {
+                    if ('@'..='~').contains(&d) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(d) = it.next() {
+                    if d == '\u{7}' || (d == '\u{1b}' && it.peek() == Some(&'\\')) {
+                        if d == '\u{1b}' {
+                            it.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A short job id as Claude Code prints it (8 hex digits), from the token
+/// after `word`: `backgrounded · 9cdceb2d`, `started a copy as 9cdceb2d`.
+fn short_after(text: &str, word: &str) -> Option<String> {
+    let i = text.find(word)? + word.len();
+    let tok = text[i..].trim_start().split(|c: char| !c.is_ascii_hexdigit()).next()?;
+    (tok.len() >= 8).then(|| tok[..8].to_string())
+}
+
+/// The job Claude Code says it started a COPY as (a stderr note: "... so this
+/// started a copy as X", "the flags you passed started a copy as X", "started
+/// a copy of that conversation as X"; 2.1.292), if the output carries one.
+/// Escape sequences are stripped first (FORCE_COLOR).
+pub fn copy_started(text: &str) -> Option<String> {
+    let text = plain(text);
+    let i = text.find("started a copy")?;
+    short_after(&text[i..], " as ")
+}
+
+/// The job a launch or wake names: every `--bg` launch and every native wake
+/// prints `backgrounded · <short>[ · <name>]` on stdout (2.1.292; notes go to
+/// stderr); the sandbox's wake of a job with no row prints `resumed <session>
+/// as <short>`. None when the output names no job (an older wording: `woke
+/// session <id> ...`). Escape sequences are stripped first (FORCE_COLOR).
+pub fn job_started(text: &str) -> Option<String> {
+    let text = plain(text);
+    short_after(&text, "backgrounded \u{b7}").or_else(|| short_after(&text, " as "))
 }
 
 #[cfg(test)]
@@ -217,9 +292,28 @@ mod tests {
         let r = relaunch_bg(&env, &id, "", "sid");
         assert_eq!(&r[..4], &["claude", "--bg", "--resume", "sid"]);
         assert!(r.last().unwrap().contains("\"Bash(nimitz *)\""), "{r:?}");
-        // interactive sessions have no worktree key, but the permission rule too
-        let i = interactive(&env, &Id::commodore("F", "SQ"), "", true);
-        assert_eq!(&i[..4], &["claude", "-c", "--name", "[F.SQ]-COMMODORE"]);
-        assert!(!i[5].contains("worktree") && i[5].contains("\"Bash(nimitz *)\""), "{}", i[5]);
+        // a lead launches the same way, with its own prompt (plan-v4 section 7)
+        let adm = Id::admiral("F");
+        let l = launch_bg(&env, &adm, "", Some(&lead_prompt(&adm)));
+        assert_eq!(&l[..4], &["claude", "--bg", "--name", "[F]-ADMIRAL"]);
+        assert!(l[5].contains("\"bgIsolation\":\"none\"") && l[5].contains("\"Bash(nimitz *)\""), "{}", l[5]);
+        assert!(l.last().unwrap().starts_with("You are [F]-ADMIRAL, the admiral of fleet F."));
+        assert!(lead_prompt(&Id::commodore("F", "SQ")).contains("SQUADRON.md"));
+    }
+
+    #[test]
+    fn a_launch_output_is_read_for_the_job_and_for_a_copy_note() {
+        assert_eq!(copy_started("note: session 9cdceb2d-... is already running in the background, so this started a copy as dc74d940. `claude attach` opens the original."), Some("dc74d940".into()));
+        assert_eq!(copy_started("the flags you passed started a copy as 19da599d"), Some("19da599d".into()));
+        assert_eq!(copy_started("started a copy of that conversation as 55a9057c"), Some("55a9057c".into()));
+        assert_eq!(copy_started("backgrounded \u{b7} 29a81431"), None);
+        assert_eq!(job_started("backgrounded \u{b7} 29a81431"), Some("29a81431".into()));
+        assert_eq!(job_started("resumed 9cdceb2d-0000-4000-8000-000000000001 as 9cdceb2d"), Some("9cdceb2d".into()));
+        assert_eq!(job_started("woke session 942bf763-0000-4000-8000-000000000001 with its saved options"), None);
+        assert_eq!(job_started(""), None);
+        // the name after the id, and colour (FORCE_COLOR) around it, change nothing
+        assert_eq!(job_started("\u{1b}[1mbackgrounded\u{1b}[0m \u{b7} \u{1b}[36m29a81431\u{1b}[0m \u{b7} [F.SQ]-S1"), Some("29a81431".into()));
+        assert_eq!(copy_started("\u{1b}[33mnote:\u{1b}[0m session x is already running in the background, so this started a copy as \u{1b}[1mdc74d940\u{1b}[0m."), Some("dc74d940".into()));
+        assert_eq!(plain("a\u{1b}]0;title\u{7}b\u{1b}[31mc\u{1b}[0m"), "abc");
     }
 }

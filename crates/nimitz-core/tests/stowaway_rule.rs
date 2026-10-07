@@ -383,10 +383,13 @@ fn r_10_a_picker_with_no_transcript_and_no_session_start_is_ignored_for_the_grac
     w.session_file("98651002", &sq, json!({"name": "nimitz-e2e-r2-remote-3e", "tmux": "probe:@1.%1", "startedAt": old}));
     let snap = w.snap();
     assert!(stowaway(&snap, &sid));
-    // a process with no job is ended in its terminal, never `nimitz stop`
-    let i = check::check(&w.env, &snap, None).into_iter().find(|i| i.code == "stowaway" && i.message.contains(&sid)).unwrap();
+    // a process with no job is ended in its terminal, never `nimitz stop`; in a
+    // lead's folder it is that lead's `lead.intruder` (one issue per row)
+    let issues = check::check(&w.env, &snap, None);
+    assert!(!issues.iter().any(|i| i.code == "stowaway" && i.message.contains(&sid)), "{issues:?}");
+    let i = issues.into_iter().find(|i| i.code == "lead.intruder" && i.message.contains("98651002") && i.id == Some(Id::commodore("MAIN", "ARGOS"))).unwrap();
     let fix = i.fix.unwrap();
-    assert!(fix.starts_with("end it in its terminal (tmux probe:@1.%1)"), "{fix}");
+    assert_eq!(fix, "end it in its terminal (tmux probe:@1.%1): /exit, or close the host");
     assert!(!fix.contains("nimitz stop"), "{fix}");
 }
 

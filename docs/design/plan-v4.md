@@ -139,6 +139,21 @@ lock (same rules). Labels are kept **per pid** in evidence, not per session id.
 - `layout herdr` and `open` attach; `signal` to a lead types into its attached tab
   (as now) or, with no tab, opens one.
 
+### 7.1 What P2 and P3 built (for P9)
+
+- `sessions::wake_steps(env, member, mode, cwd)`: the steps that wake a
+  stopped or parked member by its exact id (resume, or rm + resume with every
+  flag), after the transcript check (`history.lost`); `Err(session.live)` for a
+  live job. `sessions::plan_start_with(.., StartOpts { force, fresh })`.
+- `apply`: the crash window (`env.crash_window_s`, `NIMITZ_CRASH_WINDOW`), the
+  copy note and job id checks on Claude Code's output, the `startup` check on
+  the SessionStart of a resume, the lead pin after a bind, the unpin after an rm.
+- `layout::attach_tab(env, member)` (the `claude attach <job>` tab, labelled
+  `F.ADMIRAL` / `F.SQ.COMMODORE` / `F.SQ.SHIP`) and the CLI's
+  `run::attach_in_tab(mux, env, member)` (focus what shows it, else open it).
+- `pins::pin` / `pins::unpin` (own ids only); `held` for every role;
+  `lead.intruder`; `name.drift` from the job row.
+
 ## 8. Tender removal
 
 Remove `Role::Tender`, `F/SQ/~task` ids and names, `nimitz tender`, the tender

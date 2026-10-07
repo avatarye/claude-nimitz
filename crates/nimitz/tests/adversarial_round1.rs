@@ -25,7 +25,7 @@ struct Run {
 
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)], stdin: Option<&str>, cwd: Option<&Path>) -> Run {
     let mut c = Command::new(EXE);
-    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_BIND_TIMEOUT", "0").envs(vars).args(args);
+    c.env_clear().env("PATH", "/usr/bin:/bin").envs(vars).args(args);
     for (k, v) in extra {
         c.env(k, v);
     }
@@ -500,14 +500,18 @@ fn bug43_signal_text_is_not_typed_with_control_characters() {
 }
 
 #[test]
-fn bug47_a_second_start_does_not_open_a_second_admiral_pane() {
+fn bug47_a_second_start_does_not_start_a_second_admiral() {
     let sb = Sb::new(true);
+    // the admiral's process is gone (a parked job); the first start wakes it
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
-    sb.run(&["start", "MAIN", "--yes"]);
-    sb.run(&["start", "MAIN", "--yes"]); // the first pane has not bound yet
-    let calls = std::fs::read_to_string(sb.dir("herdr/calls.jsonl")).unwrap_or_default();
-    let runs = calls.lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("[MAIN]-ADMIRAL")).count();
-    assert_eq!(runs, 1, "two panes now run `claude -c` for the admiral:\n{calls}");
+    let r = sb.run(&["start", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = sb.run(&["start", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("nothing to do"), "the second start finds it live:\n{}", r.out);
+    let calls = std::fs::read_to_string(sb.dir("calls.log")).unwrap_or_default();
+    let wakes = calls.lines().filter(|l| l.contains("--resume") || l.contains("\"--bg\",\"--name\",\"[MAIN]-ADMIRAL\"")).count();
+    assert_eq!(wakes, 1, "one wake, as itself, never a second job:\n{calls}");
 }
 
 #[test]
@@ -661,11 +665,19 @@ fn bug55_relaunch_is_not_skipped_because_an_impostor_carries_the_labels() {
 
 #[test]
 fn final_e_check_of_a_fleet_lists_stowaways_in_its_folders() {
+    // 0.4.0 (plan-v4 section 6): a ship folder is shared with the user's own
+    // work, so an unlabelled session there is not shown; the squadron's own
+    // ships folder under NIMITZ_HOME is fleet scope, so one there is a stowaway
     let sb = Sb::new(false);
     sb.claude(&sb.dir("dirs/main/fresh"), &["--bg", "an unlabelled session in a ship folder"]);
+    let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
+    assert!(!c.out.contains("stowaway"), "the user's own session in FRESH's folder is shown:\n{}", c.out);
+    let stray = sb.dir("nimitz/main/ships/argos/stray");
+    std::fs::create_dir_all(&stray).unwrap();
+    sb.claude(&stray, &["--bg", "an unlabelled session under the squadron's ships folder"]);
     for id in ["MAIN", "MAIN/ARGOS"] {
         let c = sb.run(&["check", id]);
-        assert!(c.out.contains("stowaway"), "`nimitz check {id}` hides a stowaway in FRESH's folder:\n{}", c.out);
+        assert!(c.out.contains("(stowaway)"), "`nimitz check {id}` hides a stowaway under ships/argos:\n{}", c.out);
     }
 }
 

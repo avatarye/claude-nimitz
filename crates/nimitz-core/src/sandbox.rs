@@ -35,7 +35,12 @@
 //! - `__retire <short>` is the daemon's idle retire (no SessionEnd, a
 //!   `bg retire` line in `daemon.log`); `__crash <short>` a dead worker (state
 //!   `crashed`, no SessionEnd); `__pin`/`__unpin <short>` edit `jobs/pins.json`;
-//!   `__end <id>` ends an interactive or SDK process.
+//!   `__end <id>` ends an interactive or SDK process;
+//! - two knobs in `world.json` model what a resume cannot see coming:
+//!   `copy_on_resume` (a flag-free resume of a stopped job races the daemon's
+//!   restart: a copy is started with the "started a copy as X" note and the
+//!   job comes back live by itself, cli-31) and `resume_loses_history` (the
+//!   wake fires SessionStart `startup`: Claude Code found no transcript, E8).
 //!
 //! Live sandbox sessions record pid 1 (always alive), so the real `kill(pid, 0)`
 //! liveness check works unchanged; a stopped session simply has no session file.
@@ -475,7 +480,9 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let argos_dir = fod.squadrons.iter().find(|(_, s)| s.squadron == "ARGOS").map(|(d, _)| d.clone()).ok_or("ARGOS dir")?;
     let boreal_dir = fod.squadrons.iter().find(|(_, s)| s.squadron == "BOREAL").map(|(d, _)| d.clone()).ok_or("BOREAL dir")?;
 
-    // BETA: an admiral that ended and left only its transcript (row 6).
+    // BETA: a 0.3.x admiral that ended and left only its transcript, bound in
+    // the registry as its conversation (no job): a start resumes it with every
+    // flag as a background job (row 6, the lead migration).
     apply_cfg(&e, &crate::config::plan_fleet_new(&e, "BETA", "sandbox"))?;
     let beta_toml = e.fleet_dir("BETA").join("fleet.toml");
     let raw = fs::read_to_string(&beta_toml).map_err(|e| e.to_string())?;
@@ -494,22 +501,23 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
         S { live, labels, ..Default::default() }
     }
 
-    // The admiral: interactive, live, clean (so a ship's start needs no parent work).
+    // The admiral: a live, clean background job (every member is one in
+    // 0.4.0), so a ship's start needs no parent work.
     let adm = Id::admiral("MAIN");
-    let (_, adm_sid) = w.session(&adm.name(), &admiral_dir, S { kind: "interactive", live: true, status: "busy", labels: Some(&adm), ..Default::default() });
+    let (_, adm_sid) = w.session(&adm.name(), &admiral_dir, S { status: "busy", ..bg(true, Some(&adm)) });
     w.bind(&adm, &admiral_dir, &adm_sid, "launch");
     let team = format!("session-{}", &adm_sid[..8]);
     w.subagent(&adm_sid, &admiral_dir, "planner-1", "planner", 5.0, true, &team);
     w.subagent(&adm_sid, &admiral_dir, "worker-1", "Draft the order", 4000.0, false, &team);
     w.task(&team, 1, "Plan the sortie", "in_progress");
 
-    // ARGOS's commodore: interactive, live, clean.
+    // ARGOS's commodore: a live, clean background job.
     let argos = Id::commodore("MAIN", "ARGOS");
     let argos_dir_s = argos_dir.to_string_lossy().into_owned();
-    let (_, argos_sid) = w.session(&argos.name(), &argos_dir_s, S { kind: "interactive", live: true, labels: Some(&argos), ..Default::default() });
+    let (_, argos_sid) = w.session(&argos.name(), &argos_dir_s, bg(true, Some(&argos)));
     w.bind(&argos, &argos_dir_s, &argos_sid, "launch");
 
-    // BOREAL's commodore: a background job (every member is one in 0.4.0).
+    // BOREAL's commodore: a background job too, in a commodore-only squadron.
     let boreal = Id::commodore("MAIN", "BOREAL");
     let boreal_dir_s = boreal_dir.to_string_lossy().into_owned();
     let (_, boreal_sid) = w.session(&boreal.name(), &boreal_dir_s, bg(true, Some(&boreal)));
@@ -603,12 +611,15 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
         write_json(&reg_path, &reg);
     }
 
-    // BETA's admiral: a transcript only (row 6).
+    // BETA's admiral: a transcript only, known to the registry (row 6).
     let _ = fs::create_dir_all(&beta_admiral);
-    w.transcript(&beta_admiral, &Id::admiral("BETA").name(), 86400.0);
+    let beta_sid = w.transcript(&beta_admiral, &Id::admiral("BETA").name(), 86400.0);
+    w.bind(&Id::admiral("BETA"), &beta_admiral, &beta_sid, "launch");
 
-    // A stowaway: an unlabelled session in the fleet's own folder.
-    w.session("quick look at the logs", &argos_dir_s, bg(true, None));
+    // A stowaway: an unlabelled session in the fleet's own folder (a lead's
+    // folder is exclusive: a session there is its `lead.intruder` instead).
+    let fleet_dir_s = fod.dir.to_string_lossy().into_owned();
+    w.session("quick look at the logs", &fleet_dir_s, bg(true, None));
 
     trust(&base, &w.trusted.clone());
     let mut world = read_json(&base.join("world.json")).unwrap_or(json!({}));
@@ -790,6 +801,11 @@ fn save_job(base: &Path, short: &str, j: &Value) {
     write_json(&job_file(base, short), j);
 }
 
+/// A boolean knob in `world.json` (`copy_on_resume`, `resume_loses_history`).
+fn knob(base: &Path, name: &str) -> bool {
+    read_json(&base.join("world.json")).and_then(|w| w.get(name).and_then(|v| v.as_bool())).unwrap_or(false)
+}
+
 fn next_id(base: &Path) -> (String, String) {
     let mut w = read_json(&base.join("world.json")).unwrap_or(json!({}));
     let n = w.get("next").and_then(|v| v.as_u64()).unwrap_or(1) + 1;
@@ -911,6 +927,8 @@ fn wake(base: &Path, row: &crate::evidence::SessionRow, sid: &str, source: &str)
     save_job(base, &short, &j);
     write_session_file(base, &short, sid, &row.cwd, &name, t);
     let labels = labels_from_settings(settings.as_ref());
+    // the transcript is gone: Claude Code starts the id over (E8, 5a)
+    let source = if knob(base, "resume_loses_history") { "startup" } else { source };
     if !labels.is_empty() {
         fire(base, job_hook(base, &short, "SessionStart", sid, Some(source), &row.cwd), &labels);
     }
@@ -1258,6 +1276,21 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                     eprintln!("note: --name is ignored for a copy of a running session");
                 }
                 println!("session {} is already running in the background, so this started a copy as {short}", row.session_id);
+                return 0;
+            }
+            if !flags && knob(&base, "copy_on_resume") {
+                // cli-31: the resume raced the daemon's restart of the job: a copy
+                // (no labels, `respawnFlags []`) with the note, and the job itself
+                // comes back live right after
+                let name = saved_name.clone().unwrap_or_else(|| row.name.clone());
+                let short = start(&base, &cwd, &name, "", None, "fork", false);
+                record_fork(&base, &short, &row.session_id);
+                if let Some(mut j) = job_state(&base, &short) {
+                    j["respawnFlags"] = json!([]);
+                    save_job(&base, &short, &j);
+                }
+                wake(&base, &row, target, "resume");
+                println!("note: session {} is already running in the background, so this started a copy as {short}. `claude attach {}` opens the original.", row.session_id, row.short_id.clone().unwrap_or_default());
                 return 0;
             }
             if !flags {

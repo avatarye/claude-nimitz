@@ -13,11 +13,16 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 
 | Word | Meaning | Id | Name (address) |
 | --- | --- | --- | --- |
-| admiral | Commands one fleet. Interactive. | `F` | `[F]-ADMIRAL` |
-| commodore | Commands one squadron. Interactive. | `F/SQ` | `[F.SQ]-COMMODORE` |
-| ship | Long-term work in one folder. Background. | `F/SQ/SHIP` | `[F.SQ]-SHIP` |
+| admiral | Commands one fleet. A background job, attached in its Herdr tab. | `F` | `[F]-ADMIRAL` |
+| commodore | Commands one squadron. A background job, attached in its Herdr tab. | `F/SQ` | `[F.SQ]-COMMODORE` |
+| ship | Long-term work in one folder. A background job that parks and wakes on demand. | `F/SQ/SHIP` | `[F.SQ]-SHIP` |
 
-One-off work is a subagent in the lead's own session, or a ship.
+One-off work is a subagent in the lead's own session, or a ship. Every member
+is a Claude Code background job (`claude --bg`); a lead's job is pinned, so it
+is never idle-retired. You talk to a lead in its tab: `nimitz open <id>` runs
+`claude attach <job>` there; detach with ctrl-z. Never type `/exit` inside an
+attach: it opens the agent view of the whole machine instead of ending the
+member (`nimitz stop <id>` stops one).
 
 ## Rules
 
@@ -34,6 +39,13 @@ One-off work is a subagent in the lead's own session, or a ship.
 6. A refusal is an answer. When `nimitz` prints `[ERROR]` with a `fix:`, show
    the fix to the user. Do not work around the refusal.
 7. Never resume, stop or remove a session that is not in the fleet.
+8. Recovery is by exact id. `nimitz start` wakes a stopped or parked member
+   with `claude --bg --resume <its session>`, never `-c`. A member whose
+   transcript is gone is `history.lost`: nothing starts until you run
+   `nimitz start <id> --fresh` (a cold launch, a new lineage entry). A lead
+   that still runs as a 0.3.x interactive session is ended with `/exit` in
+   its own terminal, then `nimitz start <id>` brings the same conversation
+   back as a job.
 
 ## Who may start what
 
@@ -83,14 +95,14 @@ types the text into the commodore's pane.
 | Retire a ship | `nimitz ship rm <F/SQ/SHIP>` (stops it, removes job rows, keeps transcripts) |
 | Delete a squadron or fleet | `nimitz squadron rm <F/SQ>`, `nimitz fleet rm <F>` (only when empty and not live) |
 | Add or remove a machine | `nimitz machine add <F> <label> [--dir F/SQ/SHIP=<folder>]`, `nimitz machine rm <F> <label>` |
-| Bring a fleet up | `nimitz up <F>` (needs Herdr) |
-| Start one member | `nimitz start <id>` (admiral and commodore open in a Herdr tab) |
+| Bring a fleet up | `nimitz up <F>` (every member as a background job; then `nimitz layout herdr <F>` attaches the leads) |
+| Start one member | `nimitz start <id>` (wakes it by its exact id; `--fresh` after `history.lost`) |
 | Stop one member | `nimitz stop <id>`; one copy of two: `nimitz stop <short id>` |
 | Same session id and history; labels, name and mode restored | `nimitz relaunch <id>` |
 | Remove stale rows and copies of a member | `nimitz sweep [<id>]` (a commodore: `nimitz sweep <F/SQ>`), or one row: `nimitz rm <short id>`. A background copy is stopped and removed; a copy with no job (interactive, SDK) is ended in its own terminal |
 | A session with no labels (a stowaway) | `nimitz adopt <session> <id>`, or `nimitz rm <session>`; a live one with no job: end it in its terminal |
-| Show a member | `nimitz open <id>` |
-| Herdr workspaces for fleets | `nimitz layout herdr [<F>]` |
+| Show a member | `nimitz open <id>` (attaches in its tab; detach with ctrl-z; a parked job wakes) |
+| Herdr workspaces for fleets | `nimitz layout herdr [<F>]` (a tab attaching each lead; `--ships` each live ship) |
 | Move a fleet-skill fleet | `nimitz migrate fleet-skill <old dir>... --into <F>` (plan), then add `--yes` |
 
 ## Status words
@@ -98,5 +110,14 @@ types the text into the commodore's pane.
 `not-started`, `stopped`, `parked`, `idle`, `busy`, `needs-you`, `unknown`.
 `reasons` says why. `parked` is a job with no process that nobody stopped
 (the daemon retired it, it crashed, or the machine went down): not an error,
-`nimitz start` wakes it. `unknown` means the evidence does not decide; do not
-guess.
+`nimitz start` wakes it (a crashed job gets the daemon about 20 s to restart
+it first). `unknown` means the evidence does not decide; do not guess.
+
+## Issues to know
+
+`held`: a process with no job runs the member's conversation (an SDK host, a
+by-hand `claude --resume`, a 0.3.x interactive lead); end it there, then
+`nimitz start`. `lead.intruder`: a live session in a lead's folder that is not
+the lead's job; the fix names it (stop then rm a job; end a process in its
+terminal). `history.lost`: see rule 8. `name.drift`: a `/rename`; `nimitz
+relaunch` (or `start`) restores the name.

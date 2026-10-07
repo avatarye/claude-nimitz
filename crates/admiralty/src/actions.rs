@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nimitz_core::env::Env;
 use nimitz_core::{Caller, Id, Member, Outcome, Plan, Role, Snapshot, Step};
-use nimitz_mux::{Caps, LayoutPlan, Mux, Pane, PaneRef, Place};
+use nimitz_mux::{Caps, LayoutPlan, Mux, Pane, PaneRef, Place, TabState};
 
 /// Everything an action needs from the outside world.
 pub struct Ctx {
@@ -120,7 +120,7 @@ impl Act {
     }
 }
 
-pub const MONITOR_ONLY: &str = "monitor-only: no multiplexer here (run Admiralty inside Herdr to start an admiral or commodore, or to open, jump or type)";
+pub const MONITOR_ONLY: &str = "monitor-only: no multiplexer here (run Admiralty inside Herdr to open, jump or type)";
 
 /// A plan ready for the confirm dialog.
 #[derive(Clone, Debug)]
@@ -131,7 +131,7 @@ pub struct Pending {
     pub plan: Plan,
     /// a config plan (apply with `config::apply_config_plan`)
     pub config: bool,
-    /// steps the multiplexer opens as panes (interactive members), with where
+    /// steps the multiplexer opens as panes (`open`: the attach), with where
     pub panes: Vec<(Step, Place)>,
     /// a layout for the multiplexer (core's `layout::plan`, mapped onto the mux)
     pub layout: Option<LayoutPlan>,
@@ -219,7 +219,6 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
         },
         (Act::Layout | Act::LayoutShips, _) => Err("layout is for a fleet (select its band)".into()),
         (_, Target::None) => Err("nothing to act on here".into()),
-        (Act::Start | Act::Relaunch, Target::Member(id)) if id.role().interactive() && !caps.open => Err(MONITOR_ONLY.into()),
         (Act::Start, Target::Member(id)) => {
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
             if live(m) && m.issues.is_empty() {
@@ -238,20 +237,21 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
         },
         (Act::Up, _) => Err("up is for a fleet (select its band)".into()),
         (Act::Open, Target::Member(id)) => {
+            // a job, live or parked (an attach wakes a parked job, cli-07)
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
-            let s = m.session.as_ref().filter(|s| s.pid.is_some()).ok_or("not running; `a` starts it")?;
-            if s.kind != "background" {
+            let s = m.session.as_ref().ok_or("no job yet; `a` starts it")?;
+            if s.short_id.is_none() {
                 return Err(if m.pane.is_some() {
-                    "interactive: enter jumps to its pane".into()
+                    "a process with no job: enter jumps to its pane".into()
                 } else {
-                    "interactive: it lives in the terminal that started it".into()
+                    "a process with no job (interactive or SDK): it lives in the terminal that started it".into()
                 });
             }
             Ok(())
         }
         (Act::Open, Target::Stowaway(sid)) => match snap.stowaways.iter().find(|s| &s.session_id == sid) {
-            Some(s) if s.pid.is_some() && s.kind == "background" => Ok(()),
-            Some(s) if s.pid.is_some() => Err("interactive: it lives in the terminal that started it".into()),
+            Some(s) if s.pid.is_some() && s.short_id.is_some() => Ok(()),
+            Some(s) if s.pid.is_some() => Err("a process with no job (interactive or SDK): it lives in the terminal that started it".into()),
             _ => Err("not running".into()),
         },
         (Act::Open, _) => Err("open names a running session".into()),
@@ -322,38 +322,16 @@ pub fn place_for(id: &Id) -> Place {
     Place::Tab { workspace: nimitz_core::layout::workspace_of(id), label: nimitz_core::layout::tab_of(id) }
 }
 
-/// Without a multiplexer a plan that must open a pane (an admiral or commodore
-/// to start first) cannot run: say which, as a refusal.
-fn need_panes(caps: Caps, p: &mut Pending) {
-    if caps.open || p.panes.is_empty() {
-        return;
-    }
-    for (s, _) in &p.panes {
-        let who = s.id.as_ref().map(|i| i.0.clone()).unwrap_or_default();
-        p.plan.refusals.push(nimitz_core::Issue {
-            code: "mux.none".into(),
-            severity: nimitz_core::Severity::Error,
-            message: format!("{who} must start first, in a pane; there is no multiplexer here"),
-            fix: Some("run Admiralty inside Herdr (or start it there yourself)".into()),
-            id: s.id.clone(),
-        });
-    }
-}
-
 /// A `legacy` warning belongs to the member it names: keep it only in that
 /// member's own dialog.
 fn only_own_legacy(p: &mut Pending, target: Option<&Id>) {
     p.plan.warnings.retain(|w| w.code != "legacy" || w.id.as_ref() == target);
 }
 
+/// A core plan as a pending action: every step is `apply`'s (every member is
+/// a background job), so nothing opens a pane.
 fn with_panes(act: Act, command: String, plan: Plan) -> Pending {
-    let panes = plan
-        .steps
-        .iter()
-        .filter(|s| nimitz_core::sessions::is_pane_step(s))
-        .map(|s| (s.clone(), place_for(s.id.as_ref().unwrap_or(&Id("ADMIRALTY".into())))))
-        .collect();
-    Pending { act, command, plan, config: false, panes, layout: None }
+    Pending { act, command, plan, config: false, panes: vec![], layout: None }
 }
 
 /// Build the core plan for `act` on `target`; `caps` are what the loader's
@@ -411,7 +389,6 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
         _ => return Err(format!("{} does not apply here", act.word())),
     };
     let mut p = p;
-    need_panes(caps, &mut p);
     if matches!(act, Act::Start | Act::Relaunch | Act::Stop) {
         only_own_legacy(&mut p, member_id(target).as_ref());
     }
@@ -439,45 +416,62 @@ pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fl
     Ok(Pending { act, command, plan, config: false, panes: vec![], layout: Some(lp) })
 }
 
-/// `open`: attach to a running background session in a new pane.
-/// The pane or tab that already shows the session `A` would attach to (its
-/// session in a pane, or the tab nimitz names for it), if one is open.
-pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Option<PaneRef> {
-    let (sid, place) = match target {
-        Target::Member(id) => (find_member(snap, id)?.session.as_ref()?.session_id.clone(), place_for(id)),
-        Target::Stowaway(sid) => {
-            let s = snap.stowaways.iter().find(|s| &s.session_id == sid)?;
-            (s.session_id.clone(), Place::Tab { workspace: "STOWAWAYS".into(), label: s.name.clone() })
-        }
-        _ => return None,
+/// What the tab `A` would attach in shows now (`nimitz_mux::tab_state`): a
+/// pane with the session (jump there), a plain shell (claim it: the attach
+/// runs there), something else (`tab.taken`: never typed into), or no tab
+/// (`Missing`: open one, after the confirm). `Err` with the issue when the
+/// attach is refused (`history.lost`, `name.drift`, ...: its fix says what
+/// first) or the pane cannot be read into. The attach step itself is `plan_open`'s.
+pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<TabState, nimitz_core::Issue> {
+    if let Target::Member(id) = target {
+        let m = find_member(snap, id).ok_or_else(|| refusal_issue(id, "not in the snapshot".into()))?;
+        nimitz_core::layout::attach_tab(&ctx.env, m)?;
+    }
+    let Ok(p) = plan_open(ctx, snap, target) else { return Ok(TabState::Missing) };
+    let Some((step, place)) = p.panes.first() else { return Ok(TabState::Missing) };
+    let sid = match target {
+        Target::Member(id) => find_member(snap, id).and_then(|m| m.session.as_ref()).map(|s| s.session_id.clone()),
+        Target::Stowaway(sid) => Some(sid.clone()),
+        _ => None,
     };
-    ctx.mux.existing(Some(&sid), &place)
+    nimitz_mux::tab_state(ctx.mux.as_ref(), &step.cmd, place, sid.as_deref()).map_err(|e| refusal_issue(&member_id(target).unwrap_or(Id("?".into())), format!("cannot see what its tab runs ({e}); nothing is typed into it")))
+}
+
+fn refusal_issue(id: &Id, message: String) -> nimitz_core::Issue {
+    nimitz_core::Issue { code: "mux.failed".into(), severity: nimitz_core::Severity::Error, message, fix: None, id: Some(id.clone()) }
+}
+
+/// `A` on a tab whose pane is a plain shell: run the attach there and focus it.
+pub fn claim_open(ctx: &Ctx, snap: &Snapshot, target: &Target, pane: &PaneRef) -> Result<(), String> {
+    let p = plan_open(ctx, snap, target)?;
+    let (step, _) = p.panes.first().ok_or("nothing to attach")?;
+    ctx.mux.run_in(pane, &step.cmd).map_err(|e| e.to_string())?;
+    ctx.mux.focus(pane).map_err(|e| e.to_string())
 }
 
 fn plan_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<Pending, String> {
-    let (id, s) = match target {
+    let (step, place, name) = match target {
         Target::Member(id) => {
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
-            (id.clone(), m.session.clone().ok_or("no session")?)
+            let tab = nimitz_core::layout::attach_tab(&ctx.env, m).map_err(|i| i.message)?;
+            let wake = if tab.wakes { "; it wakes the parked job" } else { "" };
+            let step = Step { id: Some(id.clone()), cmd: tab.cmd, cwd: Some(tab.cwd), why: format!("attach to {} in tab {}{wake}; detaching (ctrl-z) leaves it running", m.expected_name, tab.label) };
+            (step, place_for(id), m.expected_name.clone())
         }
         Target::Stowaway(sid) => {
             let s = snap.stowaways.iter().find(|s| &s.session_id == sid).cloned().ok_or("not in the snapshot")?;
-            (Id(format!("stowaway {}", short_of(&s))), s)
+            let short = s.short_id.clone().ok_or("a process with no job: nothing to attach to")?;
+            let step = Step {
+                id: Some(Id(format!("stowaway {short}"))),
+                cmd: nimitz_core::claude::attach(&ctx.env, &short),
+                cwd: Some(s.cwd.clone()),
+                why: format!("attach to {} in a new pane; detaching leaves it running", s.name),
+            };
+            (step, Place::Tab { workspace: "STOWAWAYS".into(), label: s.name.clone() }, s.name.clone())
         }
         _ => return Err("open names a running session".into()),
     };
-    let short = short_of(&s);
-    let step = Step {
-        id: Some(id.clone()),
-        cmd: nimitz_core::claude::attach(&ctx.env, &short),
-        cwd: Some(s.cwd.clone()),
-        why: format!("attach to {} in a new pane; detaching leaves it running", s.name),
-    };
-    let place = match target {
-        Target::Member(id) => place_for(id),
-        _ => Place::Tab { workspace: "STOWAWAYS".into(), label: s.name.clone() },
-    };
-    let plan = Plan { summary: format!("open {}", s.name), steps: vec![step.clone()], ..Default::default() };
+    let plan = Plan { summary: format!("open {name}"), steps: vec![step.clone()], ..Default::default() };
     let command = match target {
         Target::Member(id) => format!("nimitz open {id}"),
         _ => shell(&step.cmd),

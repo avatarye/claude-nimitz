@@ -203,7 +203,8 @@ fn inside_3_4d_then_cli_30_a_branch_then_a_crash_is_parked() {
     let m = w.member(&id);
     assert_eq!(m.status, Status::Parked, "{:?}", m.reasons);
     assert!(m.reasons.iter().any(|r| r.contains("state crashed")), "{:?}", m.reasons);
-    assert!(m.issues.is_empty(), "{:?}", m.issues);
+    // the branch named the job "b1" (3.4c): that is name.drift, stopped or not (M19); nothing else
+    assert_eq!(codes(&m), ["name.drift"], "{:?}", m.issues);
 }
 
 #[test]

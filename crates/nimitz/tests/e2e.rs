@@ -35,7 +35,6 @@ impl World {
             .env("NIMITZ_STATE", b("state"))
             .env("NIMITZ_MUX", "herdr")
             .env("NIMITZ_HERDR_BIN", b("herdr-bin"))
-            .env("NIMITZ_BIND_TIMEOUT", "0")
             .args(args)
             .stdin(Stdio::null());
         let o = c.output().expect("run nimitz");

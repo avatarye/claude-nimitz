@@ -23,6 +23,7 @@ pub mod evidence;
 pub mod hook;
 pub mod layout;
 pub mod notify;
+pub mod pins;
 pub mod rules;
 pub mod sandbox;
 pub mod sessions;

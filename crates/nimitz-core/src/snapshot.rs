@@ -507,6 +507,43 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         for_each_member(f, |m| m.issues.extend(legacy.iter().filter(|i| i.id.as_ref() == Some(&m.id)).cloned()));
     }
 
+    // lead.intruder (plan-v4 section 6): a lead's folder is exclusive. Any
+    // live session there that is not the lead's own (its job, a held process
+    // on its conversation, a live copy: those carry their own issue) is an
+    // intruder, with the one fix per kind. A 0.3.x tender's row stays
+    // `tender.retired` only.
+    let tender_rows: HashSet<&str> = rows.iter().filter(|r| r.session_ids().any(|sid| retired_of.contains_key(sid)) || r.short_id.as_deref().is_some_and(|j| retired_job.contains_key(j))).map(|r| r.session_id.as_str()).collect();
+    for f in &mut snap.fleets {
+        let intrude = |m: &mut Member| {
+            let Some(dir) = m.cwd.as_deref().map(norm_dir) else { return };
+            let own: HashSet<&str> = m.session.iter().chain(m.extra_rows.iter()).map(|s| s.session_id.as_str()).collect();
+            for r in rows.iter().filter(|r| r.live() && norm_dir(&r.cwd) == dir && !own.contains(r.session_id.as_str()) && !tender_rows.contains(r.session_id.as_str())) {
+                let short = r.short_id.as_deref().unwrap_or(&r.session_id);
+                let fix = match &r.short_id {
+                    Some(j) => format!("nimitz stop {j}  # then nimitz rm {j}"),
+                    None => format!("end it in its terminal{}: /exit, or close the host", r.terminal.as_deref().map(|t| format!(" ({t})")).unwrap_or_default()),
+                };
+                m.issues.push(Issue {
+                    code: "lead.intruder".into(),
+                    severity: Severity::Error,
+                    message: format!(
+                        "{}'s folder is exclusive, but live session {short} ({}, {}, pid {}) runs there and is not its job",
+                        m.id,
+                        if r.name.is_empty() { "unnamed" } else { &r.name },
+                        if r.short_id.is_some() { "a background job" } else { r.entrypoint.as_deref().unwrap_or(&r.kind) },
+                        r.pid.unwrap_or(0)
+                    ),
+                    fix: Some(fix),
+                    id: Some(m.id.clone()),
+                });
+            }
+        };
+        intrude(&mut f.admiral);
+        for sq in &mut f.squadrons {
+            intrude(&mut sq.commodore);
+        }
+    }
+
     // name.taken: a member's expected name held by a live session that is not its own.
     let all_rows_info: Vec<SessionInfo> = rows.iter().map(|r| r.info(labels.get(&r.session_id).cloned().unwrap_or_default())).collect();
     for f in &mut snap.fleets {
@@ -720,15 +757,11 @@ fn build_member(
             status
         }
         None => {
-            // No row at all. An interactive member may have ended, leaving its
-            // transcript (resume with `claude -c`); otherwise it never started.
-            let transcript =
-                id.role().interactive() && cwd.as_deref().map(|c| !evidence::transcripts_in(env, c).is_empty()).unwrap_or(false);
+            // No row at all: the registry's conversation may still have its
+            // transcript (a resume with every flag continues it); otherwise it
+            // never started, or its history is gone.
             let current_transcript = current.as_deref().and_then(|sid| evidence::transcript(env, &mut cache.files, cwd.as_deref(), sid));
-            if transcript {
-                reasons.push("no session row; a transcript in its folder (continue with -c)".into());
-                Status::Stopped
-            } else if let Some(t) = current_transcript {
+            if let Some(t) = current_transcript {
                 if crate::sessions::pending_relaunch(env, id).is_some() {
                     reasons.push("an interrupted relaunch: its row was removed before the resume ran (nimitz start recovers it)".into());
                 }

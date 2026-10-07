@@ -42,10 +42,22 @@ sandbox: `nimitz sandbox create /tmp/nz --herdr && eval "$(nimitz sandbox env /t
 | `probes/p0_probe.py` | The probe script. |
 
 Vocabulary: a **fleet** has one **admiral**; a fleet has **squadrons**, each
-commanded by a **commodore**; a squadron has **ships** (background agents); sessions carry **crew**
+commanded by a **commodore**; a squadron has **ships**; sessions carry **crew**
 (sub-agents). Admiralty is the office where the admirals work. (The tender
 role of 0.3.x, one job for a commodore, was removed in 0.4.0: one-off work is
 a subagent in the lead's session, or a ship.)
+
+Every member, leads too, is a Claude Code **background job** (`claude --bg`,
+0.4.0). You talk to a lead in its Herdr tab: `nimitz open <id>` (or `nimitz
+layout herdr <F>`) runs `claude attach <job>` there; detach with ctrl-z. Do not
+type `/exit` inside an attach: it opens the agent view of the whole machine
+(`nimitz stop <id>` is how a member stops). A lead's job is pinned
+(`~/.claude/jobs/pins.json`), so the daemon never idle-retires it; a ship parks
+after an idle hour and `nimitz start` wakes it by its exact session id, never
+`-c`. A member whose transcript is gone is `history.lost`: `nimitz start <id>
+--fresh` is the cold launch that starts over. A 0.3.x lead that still runs
+interactive is ended with `/exit` in its own terminal, then `nimitz start`
+brings the same conversation back as a job.
 
 Identity (0.4.0): a member is anchored to its Claude Code **job** (the short
 id you see in `claude agents`), which is stable across stop, kill, respawn,

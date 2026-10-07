@@ -13,8 +13,10 @@ same commit, and say why.
 | `nimitz` | core, mux | CLI (`nimitz ...`), hook binary (`nimitz hook <Event>`), plugin files under `plugin/` |
 | `admiralty` | core, mux, ratatui | the TUI (`admiralty`). No rule or Claude Code file parsing of its own: it calls core. |
 
-`nimitz-core` never depends on `nimitz-mux`. A multiplexer matters only to
-starting/opening interactive members and to Admiralty's pane actions.
+`nimitz-core` never depends on `nimitz-mux`. Every member, leads too, is a
+Claude Code background job (plan-v4 section 7): a multiplexer matters only to
+attaching (`nimitz open`, `layout herdr`, `signal` to a lead, Admiralty's `A`
+and jump), never to starting.
 
 ## 2. Paths and overrides (tests MUST use them)
 
@@ -28,7 +30,7 @@ starting/opening interactive members and to Admiralty's pane actions.
 | `NIMITZ_HERDR_BIN` | `herdr` on PATH (only when `HERDR_ENV=1`) | Herdr adapter |
 | `NIMITZ_HOSTNAME` | `gethostname()` | machine matching |
 | `NIMITZ_MUX` | auto | `herdr` or `none` |
-| `NIMITZ_BIND_TIMEOUT` | `10` (s) | how long the CLI waits for a pane's session to start and bind; tests set `0` |
+| `NIMITZ_CRASH_WINDOW` | `20` (s) | how long a start waits for the daemon to restart a crashed job (state `crashed`, or `working` with no live pid) before it resumes the job itself; tests set it low |
 | `NIMITZ_HOOK_PID` | `getppid()` | the hook's Claude Code process (test override: the sandbox's fake `claude` names a stable fake pid per job) |
 | `NIMITZ_HOOK_SESSION_FILE` | `<claude home>/sessions/<pid>.json` | the session file the SessionStart hook reads (test override) |
 | `NIMITZ_PLUGIN_HOOKS` | the `installPath` of the `nimitz@...` entry in `~/.claude/plugins/installed_plugins.json`, plus `hooks/hooks.json` | the installed plugin's hooks file `doctor` checks; tests point it at a file |
@@ -102,8 +104,10 @@ while it is live).
 
 Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
 `NIMITZ_ROLE` (`admiral|commodore|ship`), `NIMITZ_ID`, `NIMITZ_HOME`. Every
-`nimitz` launch sets all of them, plus
-`"worktree":{"bgIsolation":"none"}` for background sessions.
+`nimitz` launch is `claude --bg` and sets all of them, plus
+`"worktree":{"bgIsolation":"none"}` and the `Bash(nimitz *)` allow
+(`claude::settings_json`). A lead's cold launch carries `claude::lead_prompt`
+(who it is, what to do first); a ship's the prompt from `squadron.toml`.
 
 ## 5. Registry and events (`NIMITZ_STATE`)
 
@@ -264,7 +268,17 @@ earliest of the file's birth time, its mtime and `startedAt`), a `spare: true`
 session file (the agent view's "new session" or draft) and a picker (a live
 process with no job, no transcript and no SessionStart yet); after the grace
 time they are classified like any other row. `jobs/pins.json` gives `pinned` (the daemon
-never idle-retires a pinned job; `status` says so).
+never idle-retires a pinned job; `status` says so). A live session file's
+`tmux` (or a Herdr pane field) is the row's `terminal`, for the fix that says
+where to end a process. nimitz pins each lead's job after it starts and
+removes that pin when the lead's row goes (`claude rm` leaves it behind,
+M24), under Claude Code's own lock for the file: the directory
+`jobs/pins.json.lock` (`mkdir`; Claude Code's proper-lockfile stale time is
+5 s, the holder refreshing the mtime every 2.5 s; nimitz takes a lock over
+only when it is 10 s old, twice that, so it never takes a live one), read,
+add or remove, temp file, rename, `rmdir`. `NIMITZ_STATE/pins.json` lists the ids
+nimitz pinned; it never touches another id (`pins::pin`, `pins::unpin`). Ships
+are not pinned: they park and wake on demand.
 
 Snapshot types (serde-serializable; `nimitz status --json` prints them):
 
@@ -276,7 +290,7 @@ Member { id, role, name, expected_name, cwd, status, reasons: [String], session:
          crew: [Crew], tasks: [Task], issues: [Issue], pane: Option<PaneRef> }
 Status = NotStarted | Stopped | Parked | Idle | Busy | NeedsYou | Unknown
 SessionInfo { session_id, short_id, pid, kind, state, status, waiting_for, started_at, status_since, name,
-              cwd, labels, birth_id, entrypoint, pinned }
+              cwd, labels, birth_id, entrypoint, pinned, terminal }
 Issue { code, severity: Info|Warn|Error, message, fix: Option<String> }   // fix = a nimitz command
 ```
 
@@ -309,7 +323,7 @@ Each finding is an `Issue` with a stable `code`:
 | `config.conflict` | a Dropbox conflicted copy next to `fleet.toml`, `squadron.toml`, `legacy.toml` or a member's `CLAUDE.md` (Warn; names both files; fix: compare the two files, keep one, delete the other) |
 | `config.layout` | an inherited instructions file (`CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`) in `NIMITZ_HOME/`, `<fleet>/`, `<fleet>/squadrons/`, `<fleet>/ships/` or `<fleet>/ships/<sq>/` (Error); two members with one folder (Error); a member folder inside a nimitz-managed folder (admiral, commodore, managed ship) (Error); a member folder inside a user project folder that has a `CLAUDE.md` (Warn). A member folder inside a user folder without one (e.g. a ship at `~`) is fine |
 | `folder.missing` / `folder.untrusted` | a member's folder does not exist / is not trusted. Trusted: inside `NIMITZ_HOME`; an accepted entry on the folder's repository itself (git root or below: Claude Code keys trust on the git root, M16); Claude Code already started a session in that exact folder (transcript birth, job row `createdAt` or session file `startedAt` with that cwd), and, inside a repository, started it since the repository appeared (`.git` birth; a folder that became a git root after its sessions ran is asked again; on a file system with no birth times any run counts, as before); or, outside git, an accepted entry on the folder or a parent (keys as given and as real paths). A git repository or worktree (`.git` folder or file) covered only by a parent, with no session started there since: Warn "may not be trusted" (real Claude Code refuses both). Nothing accepts it: Error. The fix names the git root when there is one; a launch that fails with "Workspace not trusted" carries the same fix (`check::untrusted_fix`). `evidence::folder_trusted` (doctor, `folder.moved`) applies the same git-root cut |
-| `name.drift` | live session's name differs from the expected name |
+| `name.drift` | the job's name (its `state.json`, or the live session file) differs from the expected name; a stopped renamed job too, since a wake keeps the name (M19); fix `nimitz relaunch` (`start` relabels it as well) |
 | `name.taken` | the expected name is held by a live session of another identity |
 | `labels.missing` | the identity's current session has no labels (e.g. resumed with flags, legacy). Only a session in its lineage (or its registry current) can be its current session; an unlabelled row outside the lineage never is |
 | `labels.mismatch` | labels name another identity |
@@ -317,24 +331,27 @@ Each finding is an `Issue` with a stable `code`:
 | `copy.rows` | extra job rows of the identity that are its own stale rows (labelled, or in its lineage) and not copies (below) |
 | `copy` | a copy of a ship's conversation (plan-v4 section 6; Warn, one per copy, `SessionInfo::copy` says how): an unlabelled session in the ship's folder whose transcript shares the root of a lineage conversation (`evidence::transcript_root`: the first uuid and the first message; a `/branch`, `/fork`, `--fork-session` or `--bg -c` copies the transcript), or that resumes a lineage session id that is not the conversation now (a process with no job on the conversation now is `held`, not a copy), or that carries the ship's exact name (or an old fleet name); anywhere, a row named `<expected name>-<word>-<word>` (Claude Code's copy name) or unnamed with a job row recording a fork of a lineage session. A copy is never the current session, never `dup.live`, `held` or `name.taken`. Fix per kind: a background job, `nimitz sweep <id>` (stop, then rm); a process with no job (interactive, SDK), "end it in its terminal" with the `tmux` pane from the session file when there is one |
 | `lineage.broken` | the registry's session (the conversation now) has no job row and no transcript |
-| `held` | a background member's conversation (the one it runs now) runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`); nimitz can neither stop nor resume it there (Warn; fix: end that process in its host, then `nimitz start`) (M13). Such a row is never a copy or a second live session of the member; a process with no job on an older lineage conversation is a `copy` |
+| `held` | a member's conversation (any role; the one it runs now) runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`, a 0.3.x interactive lead); nimitz can neither stop nor resume it there, and `start` of that member refuses until it ends (a resume would start a copy); a held parent is live for the chain (its ships start, the warning rides along) (Warn in `check`; fix: end that process in its host, then `nimitz start`; for a 0.3.x lead: "end the interactive lead with /exit, then run nimitz start <id> again", which brings the same conversation back as a job, lineage `via migrate`) (M13). Such a row is never a copy or a second live session of the member; a process with no job on an older lineage conversation is a `copy` |
+| `lead.intruder` | a lead's folder is exclusive: a live session there that is not the lead's own (its job, a held process on its conversation, a live copy) is an intruder (Error; one fix per kind: a background job `nimitz stop <short>` then `nimitz rm <short>`; an interactive or SDK process "end it in its terminal (tmux ...): /exit, or close the host", with the session file's terminal when it says). A retired tender's row stays `tender.retired` only; `check` lists such a row as the lead's intruder, not as a stowaway as well; it rides along a start as a warning (the lead's own job is apart from it) |
+| `history.lost` | a resume would run with no history: the member's job row is there but its conversation has no transcript in any project dir (no launch; fix `nimitz start <id> --fresh`: a cold launch that starts a new lineage entry and drops the old rows); or a resume came back with SessionStart `startup` instead of `resume` (Claude Code found no history; the start is never verified) (M5, E8). A lead with no transcript and no row gets a cold launch, never a fleet-wide `lineage.broken` (M11) |
+| `pin.failed` | a lead's job could not be pinned (`pins.json.lock` held); the start stands (Warn; fix `nimitz relaunch`) |
 | `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml`: newer than `max` (the highest tested) is a Warn and launches go ahead; below `min`, unknown, or a pre-release `prerelease = [...]` does not list is an Error |
 | `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
 | `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
-| `stowaway` | an unlabelled session under `NIMITZ_HOME` (outside ship folders) or in a lead's folder itself (not its subfolders). A ship's folder may be shared by several ships and by the user's own work: an unlabelled session there is the user's own and is not shown at all, unless it is a `copy` of a ship in that folder (plan-v4 section 6). `check` lists all, `check F` / `check F/SQ` / `check F/SQ/SHIP` those in the target's folders (fleet or squadron nimitz folders, or a member folder under the target). Fix per kind: a live background job, stop, then `rm`; a live process with no job (interactive, SDK), "end it in its terminal" (with its `tmux` pane when the session file names one); stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
+| `stowaway` | an unlabelled session under `NIMITZ_HOME` (outside ship folders), a lead's folder included (where a live one is listed as the lead's `lead.intruder` instead; a stopped one stays a stowaway). A ship's folder may be shared by several ships and by the user's own work: an unlabelled session there is the user's own and is not shown at all, unless it is a `copy` of a ship in that folder (plan-v4 section 6). `check` lists all, `check F` / `check F/SQ` / `check F/SQ/SHIP` those in the target's folders (fleet or squadron nimitz folders, or a member folder under the target). Fix per kind: a live background job, stop, then `rm`; a live process with no job (interactive, SDK), "end it in its terminal" (with its `tmux` pane when the session file names one); stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
 | `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`). The name alone decides (another agent in a member's folder is a stowaway). Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |
 
 Refusal-only codes (in `Plan.refusals`, not from `check`):
 
 | Code | Condition |
 | --- | --- |
-| `mux.none` | the action needs a multiplexer and there is none |
+| `mux.none` | the action needs a multiplexer and there is none (attaching, typing; never a start) |
 | `mux.nopane` | the mux cannot open a pane here |
+| `tab.taken` | the member's tab is open but its pane runs something else (another agent, a copy, the agent view, yazi): nothing is typed into it; fix: ctrl-z or quit it in that pane, then `nimitz open` |
 | `mux.failed` | the mux returned an error |
 | `comms.denied` | a signal the chain of command or `comms` rule forbids |
-| `lineage.pending` | a pane was opened but its session did not bind in time |
 | `config.pending` | a config change is waiting for a relaunch |
 | `layout.skip` | a member has no place in the layout |
 | `authority` | the caller may not do this (plan-v3 5.5); partial or inconsistent `NIMITZ_*` labels make a caller with no authority, never the user |
@@ -350,7 +367,8 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `session.unknown` | the target names no member's session, no stowaway and no holder of a fleet name |
 | `session.none` | the action needs a (live, background) session and there is none |
 | `session.live` | the action needs the session stopped first (`rm`, retire) |
-| `session.interactive` | an interactive member is ended in its own pane, not by nimitz |
+| `session.interactive` | the member runs in a process with no job (a 0.3.x interactive lead, an SDK host): `stop` and `relaunch` cannot reach it; end it in its own terminal (`/exit`) |
+| `session.live` | also `wake_steps` of a live job: a resume of a live job starts a copy |
 | `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
 | `lineage.current` | `rm` of an identity's current session (it would break the lineage) |
 | `tender.retired` | (info) a job row of a 0.3.x tender, history only (fix: `nimitz rm <short>`, after `nimitz stop <short>` while live) |
@@ -373,13 +391,16 @@ target. For each member, one action from this table:
 | live, labels right, name right | nothing |
 | live, name drift or labels missing | refuse; Issue with fix `nimitz relaunch <id>` (needs a stop) |
 | two live sessions | refuse; list both; fix `nimitz stop <short>` for the one you drop |
-| stopped or parked (job row, no pid), labels right | resume: native binary, **no flags**, from its folder (the job keeps its short id; `resumeSessionId` is the conversation it wakes on) |
+| stopped or parked (job row, no pid), labels right | resume: native binary, **no flags**, from its folder (the job keeps its short id; `resumeSessionId` is the conversation it wakes on). Every role: a lead is a job too, never `-c`. Before it, the transcript must exist (any project dir), else `history.lost`. `sessions::wake_steps` builds this row and the next (a restore uses it) |
 | stopped, labels missing (resumed with flags earlier), or a drifted name | relabel (BUG-53): `rm` its job row (native; if that fails the plan stops), then cold launch `--resume <id>` with all flags: with no row Claude Code keeps the **same id and its history** and takes the new name and labels. (With the row present the same command starts an empty copy with a new id; `apply` refuses such a step.) Same path for `relaunch`, `folder.moved`, adopt + start |
 | no row, but the registry's current (or an interrupted relaunch's) session has a transcript (background member) | resume `--resume <id>` with all flags: Claude Code keeps the id and history. A relaunch writes `NIMITZ_STATE/pending/<id>.json` before its `rm` and clears it after the bind, so a start after a crash between the two says "recovering an interrupted relaunch" |
-| no row, transcript exists (interactive member) | `claude -c` in its folder with the name and labels |
-| no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): `rm` its row, then cold launch `--resume <it>` with all flags, so the old session id becomes the ship's with its history, lineage `via: migrate`; the other old rows stay as Info `legacy`, removed only by `sweep`. An interactive member whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
-| no row, no transcript | cold launch (ship: prompt from config) |
-| row `failed` / unknown id | mark lineage broken; cold launch only with `--force` |
+| no row, transcript exists (a lead that never had a job: a 0.3.x interactive lead that ended) | resume `--resume <id>` with all flags, like the row above, lineage `via: migrate` |
+| no row, but stopped old-fleet sessions of the ship in its folder (names from `legacy.toml`) | continue the newest (job `updatedAt`, else `startedAt`): `rm` its row, then cold launch `--resume <it>` with all flags, so the old session id becomes the ship's with its history, lineage `via: migrate`; the other old rows stay as Info `legacy`, removed only by `sweep`. A lead whose old lead ran in another folder gets a first launch (resume works only in the conversation's folder) |
+| no row, no transcript | cold launch (ship: prompt from config; lead: `claude::lead_prompt`), `--bg` for every role; also a lead whose registry session has no transcript (never `lineage.broken` for a lead) |
+| row `failed` / unknown id | mark lineage broken; cold launch only with `--force` (ships) |
+| `--fresh` | a cold launch whatever the rows (the `history.lost` fix): a new lineage entry `via launch`; the member's stopped rows are removed after it |
+| a job in the crash window (`state crashed`, or `working` with no live pid) | `apply` waits up to `NIMITZ_CRASH_WINDOW` s for the daemon's restart before any resume or relaunch of it; restarted, its steps are skipped ("the daemon restarted it") |
+| a live process with no job on the conversation (`held`) | refuse: end it first (a resume would start a copy, cli-L2) |
 | copy rows of the identity | after the start, `rm` every row that is not current; verify |
 | folder missing or untrusted | refuse with the fix |
 | Claude Code version newer than tested | warn ("tested up to X"); launches go ahead |
@@ -390,6 +411,14 @@ target. For each member, one action from this table:
 Rules that hold in every row: never resume a live session; never pass flags to
 a resume that must keep the id; `stop`/`rm` through the native binary and verify
 by re-reading; never touch a session that is not in the identity's lineage.
+After every launch, resume or relaunch `apply` reads Claude Code's output
+(`claude::copy_started`, `claude::job_started`): a "started a copy as X" note
+fails the step and stops and removes X in the same run (`step.failed`); the
+job named must be the one expected (a resume: the row's job; a cold launch:
+the new job), checked again against the row that runs the bound session. The
+SessionStart that binds a resume must say `source resume`; `startup` is
+`history.lost`, never "[OK] verified". After a lead binds, its job is pinned;
+after an `rm`, nimitz's own pin of that row goes.
 
 Authority for `sweep`: the user, any scope; an admiral, its own fleet; a
 commodore, its own squadron only (the stale rows and copies of its own
@@ -405,6 +434,38 @@ Core owns a plan for every mutating command, including `fleet set`,
 session and config steps in one plan, one verified `apply`) and the layout
 (`layout::plan` -> `LayoutSpec`, mux-free; the CLI and Admiralty map it onto
 `nimitz_mux::LayoutPlan`, dropping attach tabs a pane already shows with `layout::drop_shown`).
+`layout::attach_tab(env, member)` is the one tab that shows a member: `claude
+attach <job>` in its folder, labelled `F.ADMIRAL` / `F.SQ.COMMODORE` /
+`F.SQ.SHIP` (a `layout.skip` when the member is not live, or runs with no
+job); `layout herdr` (every live lead; `--ships` every live ship), `nimitz
+open`, `signal` to a lead with no tab, Admiralty's `A` and a restore build on
+it. The CLI's `run::attach_in_tab(mux, env, member)` focuses the pane or tab
+that shows it already, else opens it (`nimitz_mux::attach`). Detach is
+ctrl-z; `/exit` inside an attach opens the agent view. A wake by attach keeps
+the relaunch table's checks (a drifted name or missing labels: `nimitz start`
+relabels first; a lost transcript: `history.lost`); the CLI says "the attach
+wakes the parked job; check with nimitz status <id> in a moment", never
+"[OK] attached", for a wake. `signal` into a tab it just attached waits up
+to 10 s (`NIMITZ_SIGNAL_WAIT`) for a pane to show the session before it
+types; otherwise it types nothing and says so.
+
+Every Herdr reply nimitz reads is parsed by a pure function over the JSON
+(`herdr::parse_process_info`, `foreground_of`, `workspaces_in`, `tabs_in`,
+`pane_rows_in`, `agents_in`/`parse_panes`, `created_workspace`,
+`created_tab`, `created_pane`), and the tests
+`crates/nimitz-mux/tests/mux.rs` `fixture_process_info`,
+`fixture_snapshot_lists` and `fixture_create_replies` MUST run them on the
+real captures in `crates/nimitz-mux/tests/fixtures/herdr-0.9.3/`
+(`process-info.json`: `result.process_info.foreground_processes[]`;
+`snapshot.json`: `result.snapshot.{workspaces,tabs,panes,agents}`, the same
+rows the list replies carry under `result.{workspaces,tabs,panes,agents}`)
+and on the schema's create replies (`ResponseResult`: `workspace_created` =
+`result.workspace` WorkspaceInfo + `result.tab` TabInfo + `result.root_pane`
+PaneInfo, all required; `tab_created` = `result.tab` + `result.root_pane`;
+a split replies `pane_info` = `result.pane`). The new tab's pane is read from
+`root_pane`; `active_tab_id` + `pane list` stand in only when a reply names
+no tab or pane. The fake Herdr emits these exact shapes. A `process-info`
+reply with no list is an error, never an idle shell.
 
 ## 9. Mux trait (`nimitz-mux`)
 
@@ -417,13 +478,33 @@ pub trait Mux {
     fn focus(&self, pane: &PaneRef) -> Result<(), MuxError>;
     fn type_text(&self, pane: &PaneRef, text: &str) -> Result<(), MuxError>;
     fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError>;
+    fn tab(&self, place: &Place) -> Option<PaneRef>;                        // the tab by its full label: its shell pane, never a split running a program
+    fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError>; // argv in the pane's foreground; empty = an idle shell (herdr pane process-info)
+    fn run_in(&self, pane: &PaneRef, cmd: &[String]) -> Result<(), MuxError>; // herdr pane run, only into a shell pane
 }
 pub fn detect() -> Box<dyn Mux>;                       // HERDR_ENV=1 -> Herdr, else None
+pub fn tab_state(mux, cmd, place, session_id) -> Result<TabState, MuxError>;   // Shown | Shell | Taken { pane, running } | Missing
+pub fn attach(mux, cmd, cwd, place, session_id) -> Result<Attached, AttachError>; // Focused | Claimed | Opened; Err Taken: nothing typed
 ```
 
-`None`: `caps` all false; every call returns `MuxError::Unsupported`. Starting an
-admiral or a commodore needs `caps.open`; without it `nimitz` refuses with a
-clear message. Admiralty runs anywhere; without a mux it is monitor-only.
+The tab rule (restore-scenarios.md R2, decision 5): a member's tab is found
+by a pane that shows its session (anywhere), else by the pane that already
+runs its exact `claude attach <job>` (visible in `pane process-info` while it
+runs), else by its full label in its workspace. A found tab's pane is judged
+by its foreground: a shell (`is_shell`: sh, bash, zsh, fish, ...) is claimed
+(`pane run claude attach <job>`); anything else (another agent, a copy, the
+agent view, yazi) is `tab.taken` and never typed into; a foreground nimitz
+cannot read is treated the same. A tab with a split that runs another
+program is attached in its shell pane. `layout` reruns a tab's command only
+into a shell pane (a Herdr restore, an ended attach client). An attach of a
+parked job wakes it (cli-07): `layout::attach_tab` sets `wakes`, and a parked
+lead with a shell tab needs no resume first (its transcript must exist, else
+`history.lost`).
+
+`None`: `caps` all false; every call returns `MuxError::Unsupported`. Nothing
+starts in a pane: `up` and `start` need no mux; attaching and typing do, and
+without one `nimitz` refuses those with a clear message. Admiralty runs
+anywhere; without a mux it is monitor-only for open, jump and type.
 
 ## 10. CLI surface (`nimitz`)
 
@@ -431,7 +512,7 @@ clear message. Admiralty runs anywhere; without a mux it is monitor-only.
 member under it, and its parents; the pre-start gate checks the target and its
 parents only),
 `fleet new|set|rm`, `squadron new|set|rm`, `ship new|set|rm`, `machine add [--hostname H]|rm`,
-`up <fleet> [--plan]`, `start <id>`, `stop <id>`, `relaunch <id>`, `rm <id>`,
+`up <fleet> [--plan]`, `start <id> [--force] [--fresh]`, `stop <id>`, `relaunch <id>`, `rm <id>`,
 `sweep [<id>]`, `adopt <session> <id>`, `signal <id> <text>`,
 `open <id>`, `layout herdr [<fleet>]`, `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
@@ -442,7 +523,10 @@ whatever its state; or a new job named by the short resumed id after `rm`),
 `-p --resume` (an SDK host, refused on a live
 job), `stop|kill`, `rm`, `respawn`, `attach`, `agents`, and the sandbox-only
 verbs `__inside <short> clear|branch <name>|resume <id>|rename <name>|fork`,
-`__retire <short>`, `__crash <short>`, `__pin|__unpin <short>`, `__end <id>`. Every command exits non-zero on failure and prints `[OK]`, `[INFO]`,
+`__retire <short>`, `__crash <short>`, `__pin|__unpin <short>`, `__end <id>`; two
+`world.json` knobs, `copy_on_resume` (a flag-free resume races the daemon's
+restart: a copy with the "started a copy as X" note, cli-31) and
+`resume_loses_history` (the wake fires SessionStart `startup`, E8). Every command exits non-zero on failure and prints `[OK]`, `[INFO]`,
 `[WARN]`, `[ERROR]` lines (no emoji). Mutating commands support `--plan` (print,
 do nothing).
 
