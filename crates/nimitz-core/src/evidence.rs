@@ -729,18 +729,18 @@ pub fn transcript(env: &Env, cache: &mut FileCache, cwd: Option<&str>, sid: &str
     None
 }
 
-/// A transcript that holds at least one message (a line with a `uuid`). A
-/// stub `claude stop` writes after the real file was moved away has none: a
+/// A transcript that holds at least one message (a line with a `uuid`,
+/// within `ROOT_BYTES`: a `/branch` copy hoists every file-history snapshot
+/// line, up to 4 KB each and many of them, above the first message). A stub
+/// `claude stop` writes after the real file was moved away has none: a
 /// resume of it would start the conversation over (acceptance env F5), so it
-/// is no transcript. Only the head of the file is read.
+/// is no transcript.
 pub fn has_message(p: &Path) -> bool {
     let Ok(f) = fs::File::open(p) else { return false };
     if !f.metadata().map(|m| m.is_file()).unwrap_or(false) {
         return false;
     }
-    let mut head = vec![0u8; 64 * 1024];
-    let n = std::io::Read::read(&mut std::io::Read::take(f, head.len() as u64), &mut head).unwrap_or(0);
-    String::from_utf8_lossy(&head[..n]).contains("\"uuid\"")
+    !root_of_reader(std::io::BufReader::new(f)).is_empty()
 }
 
 /// How much of a transcript the root reader reads at most: the metadata
@@ -1083,4 +1083,23 @@ mod tests {
         assert_eq!(daemon_retired(&env, "0abc1234", Some(between)).as_deref(), Some("abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)"));
         assert_eq!(daemon_retired(&env, "deadbeef", None), None);
     }
+    /// A `/branch` copy hoists every file-history snapshot line (up to 4 KB
+    /// each, many of them) above the first message: still a transcript. A
+    /// stub (`claude stop` after the file was moved away) is none.
+    #[test]
+    fn a_branch_copy_with_many_hoisted_snapshots_still_has_a_message() {
+        let td = tempfile::tempdir().unwrap();
+        let p = td.path().join("branch.jsonl");
+        let snap = format!("{{\"type\": \"file-history-snapshot\", \"snapshot\": \"{}\"}}\n", "x".repeat(4000));
+        let mut text = snap.repeat(200);
+        text.push_str("{\"type\": \"user\", \"uuid\": \"u1\", \"parentUuid\": null, \"sessionId\": \"s\"}\n");
+        fs::write(&p, &text).unwrap();
+        assert!(text.len() > 64 * 1024);
+        assert!(has_message(&p), "200 hoisted 4 KB lines before the first message");
+        let stub = td.path().join("stub.jsonl");
+        fs::write(&stub, "{\"type\": \"summary\", \"summary\": \"x\", \"leafUuid\": \"y\"}\n{\"type\": \"system\", \"content\": \"stopped\"}\n").unwrap();
+        assert!(!has_message(&stub));
+        assert!(!has_message(&td.path().join("missing.jsonl")));
+    }
+
 }
