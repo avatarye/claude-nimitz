@@ -239,7 +239,7 @@ impl Form {
             format!("Adopt stowaway {short}"),
             vec![
                 Field::new("session", "session", short, FieldKind::Fixed, ""),
-                Field::new("id", "as identity", suggestion, FieldKind::Text, "F/SQ/SHIP (a ship in the config) or F/SQ/~task"),
+                Field::new("id", "as identity", suggestion, FieldKind::Text, "F/SQ/SHIP (a ship in the config)"),
             ],
         )
     }

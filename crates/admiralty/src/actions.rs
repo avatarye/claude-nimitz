@@ -333,7 +333,7 @@ fn member_id(target: &Target) -> Option<Id> {
 }
 
 /// The pane a member opens in, as `nimitz` places it: workspace `F` or
-/// `F.SQ`, tab `F.ADMIRAL`, `F.SQ.COMMODORE`, `F.SQ.SHIP` or `F.SQ.~task`.
+/// `F.SQ`, tab `F.ADMIRAL`, `F.SQ.COMMODORE` or `F.SQ.SHIP`.
 pub fn place_for(id: &Id) -> Place {
     Place::Tab { workspace: nimitz_core::layout::workspace_of(id), label: nimitz_core::layout::tab_of(id) }
 }

@@ -421,7 +421,7 @@ pub fn plan_lines(p: &Plan, pane_steps: &[Step], width: usize) -> Vec<Line<'stat
     }
     if !p.warnings.is_empty() {
         for i in &p.warnings {
-            v.extend(wrap(vec![Span::styled(format!("  warn {:<12}", i.code), bold(mono::WARN)), Span::styled(i.message.clone(), st(mono::SOFT))], width, 19));
+            v.extend(wrap(vec![Span::styled(format!("  warn {:<12} ", i.code), bold(mono::WARN)), Span::styled(i.message.clone(), st(mono::SOFT))], width, 19));
         }
         v.push(Line::raw(""));
     }
@@ -567,7 +567,8 @@ fn draw_menu(f: &mut Frame, area: Rect, title: &str, items: &[MenuItem], sel: us
         let mut spans = vec![Span::styled(format!("  {}   ", it.key), ks), Span::styled(pad(&it.label, 46), ls)];
         if let Err(why) = &it.enabled {
             let why = if why == crate::actions::MONITOR_ONLY { "monitor-only: no multiplexer".to_string() } else { why.clone() };
-            spans.push(Span::styled(why, st(mono::COMMENT)));
+            // a label longer than its column still gets a separator (acceptance F4)
+            spans.push(Span::styled(format!("  {why}"), st(mono::COMMENT)));
         }
         lines.push(selectable(Line::from(spans), i == sel));
     }
