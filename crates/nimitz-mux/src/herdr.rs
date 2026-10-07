@@ -13,6 +13,8 @@ use crate::{Caps, LayoutPlan, Mux, MuxError, Pane, PaneRef, Place, Shape, ShapeP
 
 pub struct Herdr {
     pub bin: String,
+    /// `--session <name>` on every call (`NIMITZ_HERDR_SESSION`), else Herdr's own resolution
+    pub session: Option<String>,
 }
 
 /// Loose label matching, the herdr-fleet skill's rules in their order:
@@ -235,9 +237,19 @@ pub fn created_pane(v: &Value) -> Result<(String, String), String> {
 }
 
 impl Herdr {
+    /// The argv of a call: `--session <name>` first when one is set.
+    pub fn argv(&self, args: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = vec![];
+        if let Some(s) = &self.session {
+            v.extend(["--session".to_string(), s.clone()]);
+        }
+        v.extend(args.iter().map(|a| a.to_string()));
+        v
+    }
+
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
         let out = Command::new(&self.bin)
-            .args(args)
+            .args(self.argv(args))
             .output()
             .map_err(|e| MuxError::Failed(format!("{}: {e}", self.bin)))?;
         let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();

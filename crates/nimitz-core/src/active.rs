@@ -85,10 +85,15 @@ pub fn load(env: &Env) -> Option<ActiveSet> {
 
 /// The Herdr identity of this process's env, when it runs inside Herdr.
 pub fn herdr_identity(vars: &HashMap<String, String>) -> Option<HerdrIdentity> {
+    let get = |k: &str| vars.get(k).filter(|v| !v.is_empty()).cloned();
+    // a named session (`NIMITZ_HERDR_SESSION`, passed as `--session`) is the
+    // identity whatever the pane env says; else the pane env, inside Herdr
+    if let Some(s) = get("NIMITZ_HERDR_SESSION") {
+        return Some(HerdrIdentity { session: Some(s), socket: None });
+    }
     if vars.get("HERDR_ENV").map(String::as_str) != Some("1") {
         return None;
     }
-    let get = |k: &str| vars.get(k).filter(|v| !v.is_empty()).cloned();
     Some(HerdrIdentity { session: get("HERDR_SESSION"), socket: get("HERDR_SOCKET_PATH") })
 }
 
@@ -295,6 +300,68 @@ mod tests {
         assert!(!note_start(&env, &id, Some("j2"), "s3").unwrap());
     }
 
+    fn snap_member(id: &Id, status: Status, reasons: &[&str], job: &str, sid: &str, live: bool) -> Member {
+        let s = SessionInfo {
+            session_id: sid.into(),
+            short_id: Some(job.into()),
+            pid: live.then_some(1),
+            kind: "background".into(),
+            state: None,
+            status: live.then(|| "idle".into()),
+            waiting_for: None,
+            started_at: None,
+            status_since: None,
+            name: id.name(),
+            cwd: "/f".into(),
+            labels: BTreeMap::new(),
+            birth_id: None,
+            entrypoint: None,
+            pinned: false,
+            copy: None,
+            terminal: None,
+        };
+        Member { id: id.clone(), role: id.role(), expected_name: id.name(), cwd: Some("/f".into()), status, reasons: reasons.iter().map(|r| r.to_string()).collect(), session: Some(s), extra_rows: vec![], crew: vec![], tasks: vec![], issues: vec![], pane: None }
+    }
+
+    #[test]
+    fn a_member_taken_down_by_the_machine_stays_in_the_set_a_retired_one_goes() {
+        let adm = Id::admiral("F");
+        let (s1, s2) = (Id::ship("F", "SQ", "S1"), Id::ship("F", "SQ", "S2"));
+        let place = Place { workspace_id: "w3".into(), workspace: "F.SQ".into(), tab_id: "w3:t2".into(), tab: "F.SQ.S1".into(), pane_id: "w3:p2".into() };
+        let mut prev = ActiveSet::default();
+        prev.members.insert(s1.0.clone(), ActiveMember { attached: true, place: Some(place.clone()), status: "busy".into(), ..member("j1", "x1") });
+        prev.members.insert(s2.0.clone(), member("j2", "x2"));
+        prev.members.insert(adm.0.clone(), member("j0", "x0"));
+        // after the loss: S1 parked with no retire line (the machine went down), S2 retired by the daemon, the admiral live
+        let fleet = Fleet {
+            id: adm.clone(),
+            dir: "/f".into(),
+            machine: Some("m1".into()),
+            admiral: snap_member(&adm, Status::Idle, &["session file: status idle"], "j0", "x0", true),
+            squadrons: vec![Squadron {
+                id: Id::commodore("F", "SQ"),
+                commodore: snap_member(&Id::commodore("F", "SQ"), Status::NotStarted, &[], "j9", "x9", false),
+                ships: vec![
+                    snap_member(&s1, Status::Parked, &["job row j1 with no live pid (state working)", "parked: no SessionEnd (retired, crashed or stopped with the machine); a start wakes it"], "j1", "x1", false),
+                    snap_member(&s2, Status::Parked, &["job row j2 with no live pid (state done)", "parked: the daemon retired it (bg retire j2: settled, idle 61m); a start wakes it"], "j2", "x2", false),
+                ],
+                comms: Comms::default(),
+                issues: vec![],
+            }],
+            issues: vec![],
+        };
+        let snap = Snapshot { taken_at: 0.0, machine: Some("m1".into()), fleets: vec![fleet], stowaways: vec![], issues: vec![], cc_version: None, compat_ok: true };
+        let seen = Seen { shown: vec![], empty_panes: vec!["w3:p2".into()] };
+        let set = from_snapshot(&snap, Some(&seen), None, Some(&prev));
+        assert_eq!(set.members.keys().cloned().collect::<Vec<_>>(), vec![adm.0.clone(), s1.0.clone()], "S2 (retired) is out; S1 (taken down) stays");
+        assert_eq!(set.members[&s1.0].place.as_ref(), Some(&place), "with its recorded place and status");
+        assert_eq!(set.members[&s1.0].status, "busy");
+        assert!(!set.members[&adm.0].attached, "the live admiral shows in no pane now");
+        // the same with no previous set: only the live member
+        let fresh = from_snapshot(&snap, Some(&seen), None, None);
+        assert_eq!(fresh.members.keys().cloned().collect::<Vec<_>>(), vec![adm.0.clone()]);
+    }
+
     #[test]
     fn herdr_identity_comes_from_the_pane_env_only_inside_herdr() {
         let v = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<_, _>>();
@@ -302,5 +369,7 @@ mod tests {
         let h = herdr_identity(&v(&[("HERDR_ENV", "1"), ("HERDR_SESSION", "NIMITZ"), ("HERDR_SOCKET_PATH", "/s/herdr.sock")])).unwrap();
         assert_eq!((h.session.as_deref(), h.socket.as_deref()), (Some("NIMITZ"), Some("/s/herdr.sock")));
         assert_eq!(herdr_identity(&v(&[("HERDR_ENV", "1")])), Some(HerdrIdentity::default()));
+        let h = herdr_identity(&v(&[("HERDR_ENV", "1"), ("HERDR_SESSION", "NIMITZ"), ("NIMITZ_HERDR_SESSION", "nimitz-e2e")])).unwrap();
+        assert_eq!((h.session.as_deref(), h.socket), (Some("nimitz-e2e"), None), "the named session wins over the pane env");
     }
 }

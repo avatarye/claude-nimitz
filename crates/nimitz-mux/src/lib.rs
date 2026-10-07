@@ -173,17 +173,9 @@ pub trait Mux {
 }
 
 /// Is this the argv of a shell sitting at its prompt (nothing in the
-/// foreground but the shell itself)?
-pub fn is_shell(argv: &[String]) -> bool {
-    const SHELLS: [&str; 9] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"];
-    match argv.first() {
-        None => true,
-        Some(p) => {
-            let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            SHELLS.contains(&name.trim_start_matches('-'))
-        }
-    }
-}
+/// foreground but the shell itself)? One list, core's (the restore planner
+/// judges panes with the same rule).
+pub use nimitz_core::restore::is_shell;
 
 /// What a member's tab shows now (restore-scenarios.md, decision 5).
 #[derive(Clone, Debug, PartialEq)]
@@ -361,7 +353,7 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
         Some("herdr") => {
             // explicit override: take the configured binary even if it does not resolve yet
             let bin = resolve_herdr_bin(vars).unwrap_or_else(|| "herdr".into());
-            return Box::new(herdr::Herdr { bin });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars) });
         }
         // `auto` (the default) and unset: detect. An unknown name: safest is no mux
         // (the CLI refuses it first with `valid_mux_setting`).
@@ -370,10 +362,17 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
     }
     if vars.get("HERDR_ENV").map(String::as_str) == Some("1") {
         if let Some(bin) = resolve_herdr_bin(vars) {
-            return Box::new(herdr::Herdr { bin });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars) });
         }
     }
     Box::new(none::NoMux)
+}
+
+/// `NIMITZ_HERDR_SESSION`: the named Herdr session every herdr call gets as
+/// `--session` (a test server; the checklist), so a live pane's inherited
+/// socket is never the one spoken to. None: Herdr's own resolution.
+pub fn herdr_session(vars: &std::collections::HashMap<String, String>) -> Option<String> {
+    vars.get("NIMITZ_HERDR_SESSION").filter(|s| !s.is_empty()).cloned()
 }
 
 /// `NIMITZ_HERDR_BIN` (checked as a path when it has a `/`, else searched on
@@ -461,6 +460,14 @@ mod tests {
         let m = detect(&v);
         assert_eq!(m.name(), "herdr");
         assert!(m.caps().open && m.caps().focus && m.caps().type_text && m.caps().layout);
+    }
+
+    #[test]
+    fn a_named_herdr_session_goes_on_every_call() {
+        assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "nimitz-e2e")])), Some("nimitz-e2e".into()));
+        assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "")])), None);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: Some("nimitz-e2e".into()) }.argv(&["api", "snapshot"]), ["--session", "nimitz-e2e", "api", "snapshot"]);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: None }.argv(&["api", "snapshot"]), ["api", "snapshot"]);
     }
 
     #[test]

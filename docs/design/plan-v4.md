@@ -354,9 +354,10 @@ Rules that stay text only (no `may_run` row and no PreToolUse deny can hold them
 
 `nimitz_core::restore::plan` is the one engine: shape (the mux's
 workspaces, tabs, panes, each pane's session and foreground) + jobs (the
-snapshot) + the active set -> steps of four kinds (a wake by exact id through
+snapshot) + the active set -> steps of five kinds (a wake by exact id through
 `sessions::apply`, a claim of a shell pane with `pane run claude attach
-<job>`, a new tab, a pin) plus reports. Three entry points:
+<job>`, a new tab, a pin, and with `--rename` a `tab rename` of a tab that
+shows a member under another name) plus reports. Three entry points:
 
 - `nimitz restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`
   (`--plan`/`--yes`): leads always; ships from the active set (`--all`:
@@ -387,9 +388,15 @@ snapshot) + the active set -> steps of four kinds (a wake by exact id through
   outside Herdr keeps the recorded places. The recorded Herdr identity is
   the pane env (`HERDR_SESSION`, `HERDR_SOCKET_PATH`): nimitz runs no other
   Herdr command than the shape readers and those it already used.
-- `NIMITZ_STATE/restore.json`: a run's progress; an interrupted run is
-  reported by the next ("N of M steps done") and converges; removed on a
-  clean finish.
+- `NIMITZ_STATE/restore.json`: a run's progress; a run that died partway is
+  reported by the next ("N of M steps done"), which converges; removed when
+  a run reaches the end of its list (failed members are "finished, N failed").
+- `NIMITZ_HERDR_SESSION`: `--session <name>` on every herdr call and the
+  identity `active.json` records (a test server from a plain terminal; the
+  by-hand checklist runs against `herdr --session nimitz-e2e`, never the
+  live server). The E22 hazard is accepted: the shape and the identity come
+  from the same invocation in the same env.
+- One shell list: core's `restore::SHELLS` / `is_shell`; the mux re-exports it.
 - Matching (restore-scenarios.md decision 5), the `tab.taken` /
   `tab.agentview` / `tab.dup` / `tab.renamed` / `tab.moved` / `tab.orphan`
   reports, `turn.interrupted` / `prompt.lost` / `needs-you` / `cc.old` /

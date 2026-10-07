@@ -126,7 +126,9 @@ pub fn fake_herdr(base: &Path, args: &[String]) -> i32 {
             return err("fail", "injected_failure", &format!("world.json fail matched `{joined}`"));
         }
     }
+    // `--session <name>` (NIMITZ_HERDR_SESSION) is logged with the call and stripped
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let a: Vec<&str> = if a.len() >= 2 && a[0] == "--session" { a[2..].to_vec() } else { a };
     let code = dispatch(&mut world, &a);
     let _ = fs::write(base.join("world.json"), serde_json::to_vec_pretty(&world).unwrap_or_default());
     code

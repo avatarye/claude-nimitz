@@ -142,6 +142,9 @@ pub fn run_shape(ctx: &Ctx, fleet: Option<&str>, opts: rs::RestoreOpts, confirme
             }
         }
         let code = report(&rp, &[], &[]);
+        if out::json_mode() && !ctx.plan_only() {
+            out::json(&Outcome { ran: vec![], verified: code == 0, issues: rp.plan.warnings.iter().filter(|i| i.severity == Severity::Error).cloned().collect() });
+        }
         if let Some(r) = raw.as_ref() {
             record_active(ctx, &snap, mux.as_ref(), Some(r));
         }
@@ -331,6 +334,16 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
                     }
                 }
             }
+            rs::RestoreStep::Rename { tab_id, label, .. } => {
+                let display = step.display().remove(0);
+                match mux.rename_tab(tab_id, label) {
+                    Ok(()) => out.ran.push((display, 0, format!("tab {tab_id} is {label} now"))),
+                    Err(e) => {
+                        out.ran.push((display, 1, e.to_string()));
+                        fail(&mut out, &mut failed, &id, refusal("mux.failed", format!("renaming tab {tab_id} to {label} failed: {e}"), None, Some(id.clone())));
+                    }
+                }
+            }
             rs::RestoreStep::Pin { job, .. } => {
                 let display = step.display().remove(0);
                 match nimitz_core::pins::pin(env, job) {
@@ -346,8 +359,10 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
         prog.done = n + 1;
         let _ = rs::progress_write(env, &prog);
     }
-    if failed.is_empty() {
-        rs::progress_clear(env);
+    // the run reached the end of its list: not interrupted, whatever failed
+    rs::progress_clear(env);
+    if !failed.is_empty() {
+        out::line(&format!("[INFO] restore run {}: finished, {} member(s) failed (see the fixes above)", prog.run, failed.len()));
     }
     out.verified = failed.is_empty();
     (out, failed)

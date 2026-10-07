@@ -115,7 +115,7 @@ impl World {
     }
 
     fn mux(&self) -> Herdr {
-        Herdr { bin: self.dir.join("herdr").to_string_lossy().into_owned() }
+        Herdr { bin: self.dir.join("herdr").to_string_lossy().into_owned(), session: None }
     }
 
     fn world(&self) -> Value {
@@ -187,7 +187,7 @@ fn panes_parse() {
 }
 
 fn panes_broken_bin() {
-    let m = Herdr { bin: "/nonexistent/nimitz-no-such-herdr".into() };
+    let m = Herdr { bin: "/nonexistent/nimitz-no-such-herdr".into(), session: None };
     assert!(m.panes().is_empty());
 }
 
@@ -695,6 +695,10 @@ fn shape_through_the_adapter() {
     w.mux().rename_tab("w1:t2", "HOME.GITHUB.S").expect("rename");
     assert_eq!(w.mux().shape(false).unwrap().tab("w1:t2").map(|t| t.label.clone()), Some("HOME.GITHUB.S".into()));
     assert!(w.mux().rename_tab("w9:t9", "X").is_err());
+    // a named session: `--session <name>` before every call, which the fake logs and strips
+    let named = Herdr { bin: w.dir.join("herdr").to_string_lossy().into_owned(), session: Some("nimitz-e2e".into()) };
+    assert_eq!(named.shape(false).unwrap().workspaces.len(), 1);
+    assert!(w.calls().last().unwrap().starts_with(&["--session".to_string(), "nimitz-e2e".to_string(), "api".to_string()]), "{:?}", w.calls().last());
     // the exec knob: `pane run` really runs the line in the pane's folder
     let mut world = w.world();
     world["exec"] = json!(true);
@@ -788,7 +792,7 @@ fn e2e_body(bin: &str, sock: &Path, tmp: &Path) {
         assert!(std::time::Instant::now() < deadline, "private herdr server did not come up: {text}");
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    let m = Herdr { bin: bin.to_string() };
+    let m = Herdr { bin: bin.to_string(), session: None };
     let dummy = cmdv(&["sh", "-c", "sleep 30"]);
     let api = |args: &[&str]| -> Value {
         let out = Command::new(bin).args(args).output().expect("herdr");

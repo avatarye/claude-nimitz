@@ -65,14 +65,21 @@ pub fn norm_label(label: &str) -> String {
     t.chars().filter(|c| !matches!(c, '[' | ']')).collect::<String>().to_uppercase()
 }
 
-/// A shell at its prompt: nothing in the foreground but the shell itself.
+/// The shells: a pane whose foreground is one of these alone is at its
+/// prompt. The one list; `nimitz_mux::is_shell` is this function.
+pub const SHELLS: [&str; 9] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"];
+
+/// A shell at its prompt: nothing in the foreground but the shell itself
+/// (by its program name, a login `-zsh` included).
 pub fn is_shell(argv: &[String]) -> bool {
-    const SHELLS: [&str; 9] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"];
     match argv.first() {
         None => true,
         Some(p) => SHELLS.contains(&program_name(p).trim_start_matches('-')),
     }
 }
+
+/// What `shell_pane_of` says of a pane whose foreground could not be read.
+const UNREADABLE: &str = "a foreground nimitz cannot read";
 
 fn program_name(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
@@ -123,12 +130,14 @@ pub enum RestoreStep {
     Open { id: Id, workspace: String, label: String, cmd: Vec<String>, cwd: String, session: String, wakes: bool },
     /// pin a lead's job (a lost or missing pin, R-02)
     Pin { id: Id, job: String },
+    /// give the tab that shows the member its full label (`--rename`, R-07a)
+    Rename { id: Id, tab_id: String, label: String },
 }
 
 impl RestoreStep {
     pub fn id(&self) -> &Id {
         match self {
-            RestoreStep::Wake { id, .. } | RestoreStep::Claim { id, .. } | RestoreStep::Open { id, .. } | RestoreStep::Pin { id, .. } => id,
+            RestoreStep::Wake { id, .. } | RestoreStep::Claim { id, .. } | RestoreStep::Open { id, .. } | RestoreStep::Pin { id, .. } | RestoreStep::Rename { id, .. } => id,
         }
     }
     /// How the step reads in a plan (the `herdr` lines are what the mux runs).
@@ -152,6 +161,7 @@ impl RestoreStep {
                 vec![Step { id: Some(id.clone()), cmd: c, cwd: Some(cwd.clone()), why: format!("tab {label} in workspace {workspace}: attach{}; detaching (ctrl-z) leaves it running", why_wake(*wakes)) }]
             }
             RestoreStep::Pin { id, job } => vec![Step { id: Some(id.clone()), cmd: vec!["pin".into(), job.clone()], cwd: None, why: "a lead stays up: pin its job".into() }],
+            RestoreStep::Rename { id, tab_id, label } => vec![Step { id: Some(id.clone()), cmd: vec!["herdr".into(), "tab".into(), "rename".into(), tab_id.clone(), label.clone()], cwd: None, why: format!("the tab shows {id} under another name; --rename gives it its full name") }],
         }
     }
 }
@@ -186,8 +196,9 @@ pub struct RestorePlan {
 
 // ------------------------------------------------------------------ progress of a run (restore.json)
 
-/// `NIMITZ_STATE/restore.json`: an interrupted run's progress, so the next
-/// run says "N of M done" and converges (R-10). Removed on a clean finish.
+/// `NIMITZ_STATE/restore.json`: a run's progress, so a run that died partway
+/// is reported by the next ("N of M done") and converges (R-10). Removed when
+/// the run reaches the end of its step list, failed members or not.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Progress {
     pub run: String,
@@ -284,7 +295,7 @@ impl Ctx<'_> {
                 format!("an agent: {who}")
             }
             (None, Some(fg)) => fg.join(" "),
-            (None, None) => "a foreground nimitz cannot read".into(),
+            (None, None) => UNREADABLE.into(),
         };
         Err((at(p), running))
     }
@@ -334,11 +345,16 @@ impl Ctx<'_> {
         if let Some(t) = taken {
             return t;
         }
-        // (d) the short label of 0.3.0 in the member's workspace
+        // (d) the short label of 0.3.0 in the member's workspace: a shell is
+        // claimed and renamed; anything else is taken, as in (b)
         let legacy = norm_label(&legacy_tab_of(id));
         for (tab_id, ws_id, _) in self.shape.tabs.iter().filter(|(_, ws, l)| in_ws(ws) && norm_label(l) == legacy) {
-            if let Ok(p) = self.shell_pane_of(tab_id) {
-                return TabMatch::Shell { pane: at(p), rename: Some((tab_id.clone(), tab_of(id))), ws_label: self.shape.workspace_label(ws_id) };
+            match self.shell_pane_of(tab_id) {
+                Ok(p) => return TabMatch::Shell { pane: at(p), rename: Some((tab_id.clone(), tab_of(id))), ws_label: self.shape.workspace_label(ws_id) },
+                Err((pane, running)) => {
+                    let agent_view = self.shape.panes.iter().any(|p| p.pane_id == pane.pane_id && p.foreground.as_deref().is_some_and(|fg| fg.len() == cmd.len() && cmd.len() > 1 && fg[1..] == cmd[1..]));
+                    return TabMatch::Taken { pane, running, agent_view };
+                }
             }
         }
         // (e) a default-named tab (`1`) of the workspace, a shell in the member's folder
@@ -565,10 +581,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 rp.plan.warnings.push(issue("needs-you", Severity::Warn, format!("{id} waits on you ({}); nimitz answers nothing", s.waiting_for.as_deref().unwrap_or("a question")), Some(format!("nimitz open {id}")), Some(id.clone())));
             }
             if !wants_tab {
-                if !lead && opts.shape_only {
-                    rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} is live; no tab (`--ships` adds one)"), None, Some(id.clone())));
-                }
-                return;
+                return; // a live ship gets a tab only when it had one, or with `--ships`
             }
             tab_step(ctx, m, false, rep, rp);
         }
@@ -705,6 +718,9 @@ fn count(rep: &mut FleetReport, lead: bool) {
 /// The `tab.taken` family: the one fix that works, by what runs there.
 fn taken_fix(id: &Id, pane: &PaneAt, running: &str, agent_view: bool) -> (&'static str, String) {
     let fleet = id.fleet();
+    if running == UNREADABLE {
+        return ("tab.unreadable", format!("herdr pane process-info --pane {} failed; retry nimitz restore {fleet}, or rename the tab", pane.pane_id));
+    }
     if agent_view {
         return ("tab.agentview", format!("close that pane {} (or Esc / ctrl-c until a shell), then nimitz restore {fleet}", pane.pane_id));
     }
@@ -799,7 +815,12 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
     match found {
         TabMatch::Shown { pane, tab_label, ws_label } => {
             if norm_label(&tab_label) != norm_label(&tab_of(id)) {
-                rp.plan.warnings.push(issue("tab.renamed", Severity::Info, format!("tab {tab_label} (pane {}) shows {id}; nimitz looks for {}", pane.pane_id, tab_of(id)), Some(format!("herdr tab rename {} {}", pane.tab_id, tab_of(id))), Some(id.clone())));
+                if opts.rename {
+                    count(rep, lead);
+                    rp.steps.push(RestoreStep::Rename { id: id.clone(), tab_id: pane.tab_id.clone(), label: tab_of(id) });
+                } else {
+                    rp.plan.warnings.push(issue("tab.renamed", Severity::Info, format!("tab {tab_label} (pane {}) shows {id}; nimitz looks for {}", pane.pane_id, tab_of(id)), Some(format!("herdr tab rename {} {}  # or nimitz restore {} --rename", pane.tab_id, tab_of(id), id.fleet())), Some(id.clone())));
+                }
             } else if norm_label(&ws_label) != norm_label(&workspace_of(id)) {
                 rp.plan.warnings.push(issue("tab.moved", Severity::Info, format!("{id}'s tab is in workspace {ws_label}, not {}; left there", workspace_of(id)), None, Some(id.clone())));
             }

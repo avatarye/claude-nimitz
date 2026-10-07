@@ -356,6 +356,7 @@ Four sub-cases; all "before": leads attached, S1 attached, all names standard.
 - Expected: outside Herdr (`HERDR_ENV` not 1): refuse `mux.none` with the fix ("run inside Herdr; or `--jobs-only` to resume the jobs without tabs"). In another Herdr session: the recorded Herdr identity (session name / socket) differs from the current: refuse `mux.other` "the fleet's tabs live in Herdr session NIMITZ; run restore there (or `--here` to rebuild the shape in this session)". Note the E22 hazard: the Herdr CLI may resolve a named session's socket regardless of env; nimitz must take the identity from `herdr status`, not from env alone.
 - Must not: rebuild every tab in the second session, attaching each lead twice.
 - nimitz knows: must record the Herdr identity in `active.json` at every write; must read it from `herdr status` (`session` / socket path) at restore.
+- Built (P9): the identity is the env (`NIMITZ_HERDR_SESSION`, passed as `--session`; else the pane's `HERDR_SESSION` / `HERDR_SOCKET_PATH`), not `herdr status`: the shape nimitz reads and the identity it records come from the same `herdr` invocation in the same env, so they name the same server by construction, and the E22 hazard is accepted on that ground. `--jobs-only` and `--here` as above.
 - Priority: should.
 
 ### R-30 A member's folder gone, moved, or untrusted

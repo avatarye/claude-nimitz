@@ -208,7 +208,11 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
         }
         return Ok(code);
     }
-    if code != 0 || !mux.caps().open {
+    if !mux.caps().open {
+        return Ok(code);
+    }
+    if code != 0 {
+        out::line(&format!("[INFO] the leads' tabs were not made; nimitz restore {fleet} makes them once the jobs run"));
         return Ok(code);
     }
     let opts = nimitz_core::restore::RestoreOpts { all: true, shape_only: true, ..Default::default() };

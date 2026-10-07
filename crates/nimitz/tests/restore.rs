@@ -440,6 +440,20 @@ fn r07a_r07b_a_renamed_or_moved_tab_is_found_by_session_and_reused_after_a_resta
     assert!(r.contains("(tab.renamed)") && r.contains("herdr tab rename") && r.contains("nothing to restore"), "{r}");
     assert_eq!(sb.n_runs(), before);
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 0);
+    // --rename: the one step is the rename, through the mux; nothing typed
+    let r = sb.ok(&["restore", "MAIN", "--yes", "--rename"]);
+    assert!(r.contains("herdr tab rename") && r.contains("MAIN.ARGOS.COMMODORE now"), "{r}");
+    assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
+    assert_eq!(sb.tabs("cmdr").len(), 0);
+    assert_eq!(sb.n_runs(), before);
+    let r = sb.ok(&["restore", "MAIN", "--yes", "--rename"]);
+    assert!(r.contains("nothing to restore") && !r.contains("tab.renamed"), "{r}");
+    // the rename hint again, for the restart below
+    sb.herdr_world(|w| {
+        for t in w["tabs"].as_array_mut().unwrap().iter_mut().filter(|t| t["tab_id"] == tab) {
+            t["label"] = json!("cmdr");
+        }
+    });
     // after a restart `cmdr` is a shell with no session: a new tab is made, cmdr stays
     sb.herdr_restart();
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
@@ -562,6 +576,13 @@ fn r08_r19_reboot_resumes_leads_and_the_active_set_leaves_parked_ships() {
     for id in ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/NOLABEL"] {
         assert!(!sb.live(id));
     }
+    // a status after the loss keeps the set: the members the machine took down stay, with their places
+    sb.ok(&["status"]);
+    let a = sb.active().unwrap();
+    assert_eq!(a["members"]["MAIN/ARGOS/CLEAN"]["place"]["tab"], "MAIN.ARGOS.CLEAN", "{a}");
+    assert_eq!(a["members"]["MAIN/ARGOS/CLEAN"]["status"], "busy");
+    assert!(a["members"].get("MAIN/ARGOS/NOLABEL").is_some(), "{a}");
+    assert!(a["members"].get("MAIN/ARGOS/STOPPED").is_none());
     let r = sb.run(&["restore", "MAIN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("(turn.interrupted)") && r.out.contains("MAIN/ARGOS/CLEAN was mid-turn"), "{}", r.out);
@@ -617,6 +638,16 @@ fn r10_an_interrupted_restore_converges_on_the_second_run() {
     assert!(!sb.base.join("state/restore.json").exists(), "a clean finish removes the progress file");
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(r.contains("nothing to restore") && !r.contains("restore.interrupted"), "{r}");
+    // a run that reaches the end with a failed member is finished, not interrupted
+    let job = sb.short("MAIN/ARGOS");
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    sb.set_pane("w3:p1", |p| p["foreground"] = json!(["yazi"]));
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(tab.taken)"), "{}", r.out);
+    assert!(!sb.base.join("state/restore.json").exists(), "the run reached its end");
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert!(!r.out.contains("restore.interrupted"), "{}", r.out);
 }
 
 #[test]
@@ -646,6 +677,11 @@ fn r12_r34_run_twice_the_second_run_types_nothing() {
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(r.contains("[OK] MAIN: nothing to restore"), "{r}");
     assert_eq!(sb.n_runs(), before, "typing `claude attach` into an attached pane would be a prompt to the lead");
+    let r = sb.run(&["restore", "MAIN", "--yes", "--json"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let start = r.out.find("{\n").expect("an Outcome on stdout");
+    let o: Value = serde_json::Deserializer::from_str(&r.out[start..]).into_iter::<Value>().next().unwrap().expect("outcome json");
+    assert_eq!((o["verified"].as_bool(), o["ran"].as_array().map(Vec::len)), (Some(true), Some(0)), "{o}");
     assert!(!sb.calls().contains("\"agent\",\"prompt\""));
     assert_eq!(sb.world()["tabs"].as_array().unwrap().len(), tabs);
     // the same without Herdr's agent detection: the panes run the attach (R-12, by the exact argv)
@@ -1043,6 +1079,78 @@ fn r_layout_is_the_shape_only_alias() {
     assert_eq!(sb.run_as("MAIN", &["restore", "MAIN", "--plan"]).code, 0);
     assert!(sb.run_as("MAIN/ARGOS", &["restore", "MAIN", "--plan"]).out.contains("(authority)"));
     assert!(sb.run_as("BETA", &["restore", "MAIN", "--plan"]).out.contains("(authority)"));
+}
+
+#[test]
+fn r_legacy_short_labels_are_renamed_and_claimed_once() {
+    // the user's real layout: workspace MAIN with tab ADMIRAL, MAIN.ARGOS with tab COMMODORE
+    let sb = Sb::new(true);
+    lay(&sb);
+    sb.herdr_world(|w| {
+        for t in w["tabs"].as_array_mut().unwrap() {
+            match t["label"].as_str().unwrap_or("") {
+                "MAIN.ADMIRAL" => t["label"] = json!("ADMIRAL"),
+                "MAIN.ARGOS.COMMODORE" => t["label"] = json!("COMMODORE"),
+                _ => {}
+            }
+        }
+    });
+    sb.herdr_restart();
+    let before = sb.n_runs();
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert!(r.contains("herdr tab rename") && r.contains("MAIN.ARGOS.COMMODORE"), "{r}");
+    let runs = &sb.runs()[before..];
+    assert_eq!(runs.len(), 3, "one attach per lead:\n{r}\n{runs:?}");
+    for (label, short) in [("MAIN.ADMIRAL", "ADMIRAL"), ("MAIN.ARGOS.COMMODORE", "COMMODORE")] {
+        assert_eq!(sb.tabs(label).len(), 1, "{label}: renamed, not made beside the short one");
+        assert_eq!(sb.tabs(short).len(), 0, "{short} is gone");
+    }
+    assert_eq!(sb.workspaces("MAIN.ARGOS").len(), 1);
+    // a legacy tab whose pane is not a shell is taken, as a full-named one would be
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    sb.herdr_world(|w| {
+        for t in w["tabs"].as_array_mut().unwrap().iter_mut().filter(|t| t["label"] == "MAIN.ARGOS.COMMODORE") {
+            t["label"] = json!("COMMODORE");
+        }
+    });
+    sb.herdr_restart();
+    sb.set_pane(&pane, |p| p["foreground"] = json!(["yazi"]));
+    let before = sb.n_runs();
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(tab.taken)") && r.out.contains("runs `yazi`"), "{}", r.out);
+    assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 0, "no tab made beside the taken one");
+    assert!(!sb.runs()[before..].iter().any(|(p, _)| p == &pane));
+}
+
+#[test]
+fn r_an_unreadable_foreground_is_never_typed_into_and_has_its_fix() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    sb.shell(&pane);
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    sb.herdr_world(|w| w["fail"] = json!("pane process-info"));
+    let before = sb.n_runs();
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(tab.unreadable)") && r.out.contains(&format!("herdr pane process-info --pane {pane} failed; retry nimitz restore MAIN, or rename the tab")), "{}", r.out);
+    assert_eq!(sb.n_runs(), before, "nothing typed into a pane nimitz cannot see into");
+    assert!(!sb.live("MAIN/ARGOS"));
+    assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
+}
+
+#[test]
+fn r_up_that_fails_says_the_tabs_were_not_made() {
+    let sb = Sb::new(true);
+    // the LAYOUT fleet has a CLAUDE.md in its folder: its up refuses
+    let r = sb.run(&["up", "LAYOUT", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("the leads' tabs were not made; nimitz restore LAYOUT makes them once the jobs run"), "{}", r.out);
+    assert!(sb.tabs("LAYOUT.ADMIRAL").is_empty());
 }
 
 fn walkdir(d: &Path) -> Vec<PathBuf> {
