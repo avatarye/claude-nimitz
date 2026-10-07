@@ -392,3 +392,26 @@ fn the_issues_view_lists_a_broken_squadron_once() {
     keys.dedup();
     assert_eq!(keys.len(), n, "every issue once");
 }
+
+#[test]
+fn a_broken_fleet_toml_is_a_red_band_with_the_error_in_full_and_the_other_fleets_stay() {
+    let w = world();
+    let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]);
+    std::fs::create_dir_all(base.join("bad/admiral")).unwrap();
+    std::fs::write(base.join("bad/fleet.toml"), "fleet = \"BAD\"\n\n[m").unwrap();
+    let mut app = app_on(&w, TestMux::default());
+    let snap = app.bundle.as_ref().unwrap().snap.clone();
+    assert!(snap.fleets.iter().any(|f| f.id.0 == "MAIN"), "the other fleets stay");
+    assert!(admiralty::view::tabs(&snap).contains(&"BAD".to_string()));
+    tab(&mut app, "BAD");
+    let buf = draw(&mut app, 200, 60);
+    let ls = lines(&buf);
+    let y = ls.iter().position(|l| l.contains("[BAD]")).expect("the broken fleet is on screen");
+    assert_eq!(buf[(1, y as u16)].fg, admiralty::theme::mono::ERROR, "its frame takes the error hue");
+    let all = ls.join("\n");
+    assert!(all.contains("config does not load"), "{all}");
+    assert!(all.contains("fleet.toml") && all.contains(":3:3") && all.contains("unclosed table"), "the file, line and the parse error's own words:\n{all}");
+    assert!(all.contains("fix: fix") && all.contains("line 3"), "{all}");
+    let parse: Vec<_> = all_issues(&snap).into_iter().filter(|i| i.message.contains("does not parse")).collect();
+    assert_eq!(parse.len(), 1, "{parse:?}");
+}

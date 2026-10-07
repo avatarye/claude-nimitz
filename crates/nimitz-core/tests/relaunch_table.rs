@@ -553,11 +553,11 @@ fn row13_a_session_file_with_extra_bytes_is_read_not_flagged() {
 fn issue_config_invalid_and_config_layout() {
     let w = world();
     sandbox::break_a_config(&w.base, "BAD");
-    // the broken fleet's commodore is live (its labels say so) and in the registry
+    // the broken fleet's commodore is live, known by its labels only
     let sq = Id::commodore("BAD", "SQ");
     let sq_dir = w.env.fleet_dir("BAD").join("squadrons/sq");
     std::fs::create_dir_all(&sq_dir).unwrap();
-    let sid = sandbox::live_session(&w.base, &sq, sq_dir.to_str().unwrap());
+    let sid = sandbox::live_session(&w.base, &sq, sq_dir.to_str().unwrap(), false);
     let snap = w.snap();
     // M8: the broken fleet still shows, with the parse error on it and on its members
     let bad = snap.fleets.iter().find(|f| f.id.fleet() == "BAD").expect("the BAD fleet shows");
@@ -570,6 +570,11 @@ fn issue_config_invalid_and_config_layout() {
     let m = w.member(&snap, &sq);
     assert_eq!(m.status, Status::Idle, "{:?}", m.reasons);
     assert_eq!(m.session.as_ref().map(|s| s.session_id.as_str()), Some(sid.as_str()));
+    assert_eq!(m.cwd.as_deref(), sq_dir.to_str(), "a commodore known only by its labels still has its squadron folder");
+    // `check BAD` also runs the NIMITZ_HOME layout rule
+    std::fs::write(w.env.home.join("CLAUDE.md"), "x").unwrap();
+    assert!(has(&nimitz_core::check::check_tree(&w.env, &snap, Some(&Id::admiral("BAD"))), "config.layout"));
+    std::fs::remove_file(w.env.home.join("CLAUDE.md")).unwrap();
     assert!(!snap.issues.iter().any(|i| i.code == "config.invalid"), "the fleet carries the error; not the snapshot too: {:?}", codes(&snap.issues));
     // the other fleets are not blocked: FRESH starts, and its check is clean of it
     assert!(w.start(&snap, &w.ship("FRESH"), false).ok());

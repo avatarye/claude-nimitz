@@ -273,6 +273,9 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             let sqid = Id::commodore(fid.fleet(), sq);
             if !fleet.squadrons.iter().any(|s| s.id == sqid) {
                 let mut commodore = build_member(env, cache, &fc, &sqid, &reg, &mut by_identity, &labels, &events);
+                if commodore.cwd.is_none() {
+                    commodore.cwd = Some(dir.join("squadrons").join(sq.to_lowercase()).to_string_lossy().into_owned());
+                }
                 unread(&mut commodore);
                 fleet.squadrons.push(Squadron { id: sqid.clone(), commodore, ships: vec![], tenders: vec![], comms: Comms::default(), issues: vec![] });
             }

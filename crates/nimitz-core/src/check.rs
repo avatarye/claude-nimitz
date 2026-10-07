@@ -29,26 +29,18 @@ fn trust_projects(env: &Env) -> Option<serde_json::Map<String, serde_json::Value
     v.get("projects")?.as_object().cloned()
 }
 
-/// Has Claude Code already run a session in exactly this folder? A transcript
-/// folder for it under `projects/`, or a job row or session file with that cwd.
-/// Then it accepted the folder, whatever the trust file says.
-pub fn ran_here(env: &Env, dir: &Path) -> bool {
-    last_ran_here(env, dir).is_some()
-}
-
-/// When Claude Code last started a session in exactly this folder (epoch
-/// seconds): the newest transcript birth under its `projects/` dir, job row
-/// (`createdAt`) or live session file (`startedAt`) with that cwd. A start is
-/// the moment Claude Code accepts a folder, so later writes do not count.
-/// None: never.
-pub fn last_ran_here(env: &Env, dir: &Path) -> Option<f64> {
+/// Has Claude Code already started a session in exactly this folder (a
+/// transcript under its `projects/` dir, or a job row or session file with
+/// that cwd)? Then it accepted the folder, whatever the trust file says. The
+/// time is the newest start (transcript birth, job row `createdAt`, live
+/// session file `startedAt`): a start is the moment Claude Code accepts a
+/// folder, so later writes do not count. `Some(None)`: it ran here, but one
+/// piece of evidence has no stamp, so when is not known.
+pub fn last_ran_here(env: &Env, dir: &Path) -> Option<Option<f64>> {
     let cwd = dir.to_string_lossy();
-    let mut newest: Option<f64> = crate::evidence::transcript_files_in(env, &cwd)
-        .iter()
-        .map(|p| crate::evidence::birth_secs(p).unwrap_or(0.0))
-        .fold(None, |a: Option<f64>, t| Some(a.map_or(t, |x| x.max(t))));
+    let mut starts: Vec<Option<f64>> = crate::evidence::transcript_files_in(env, &cwd).iter().map(|p| crate::evidence::birth_secs(p)).collect();
     let want = [dir.to_path_buf(), crate::env::canon(dir)];
-    let mut rows = |sub: &str, file: Option<&str>, stamps: &[&str]| {
+    let mut rows = |sub: &str, file: Option<&str>, stamp: &str| {
         for e in std::fs::read_dir(env.claude_home.join(sub)).into_iter().flatten().flatten() {
             let p = match file {
                 Some(f) => e.path().join(f),
@@ -56,28 +48,30 @@ pub fn last_ran_here(env: &Env, dir: &Path) -> Option<f64> {
             };
             let Some(v) = std::fs::read(p).ok().and_then(|b| crate::evidence::first_json(&b)) else { continue };
             let Some(c) = v.get("cwd").and_then(|c| c.as_str()).map(|c| PathBuf::from(c.trim_end_matches('/'))) else { continue };
-            if !want.contains(&c) {
-                continue;
+            if want.contains(&c) {
+                starts.push(crate::evidence::stamp(&v, stamp));
             }
-            // a row with no readable stamp still counts as a run, at time 0
-            let at = stamps.iter().filter_map(|k| crate::evidence::stamp(&v, k)).fold(0.0, f64::max);
-            newest = Some(newest.map_or(at, |n| n.max(at)));
         }
     };
-    rows("jobs", Some("state.json"), &["createdAt"]);
-    rows("sessions", None, &["startedAt"]);
-    newest
+    rows("jobs", Some("state.json"), "createdAt");
+    rows("sessions", None, "startedAt");
+    if starts.is_empty() {
+        return None;
+    }
+    Some(starts.iter().try_fold(f64::MIN, |a, t| Some(a.max((*t)?))))
 }
 
-/// Did Claude Code run a session in `dir` that proves it accepts the folder as
-/// it is now? Outside git, any run. Inside a repository, a run since the
+/// Did Claude Code start a session in `dir` that proves it accepts the folder
+/// as it is now? Outside git, any run. Inside a repository, a start since the
 /// repository appeared: a folder that became a git root after its sessions ran
-/// loses the parent's trust, and Claude Code asks again (M16, cli-G6).
+/// loses the parent's trust, and Claude Code asks again (M16, cli-G6). When a
+/// time is not known (a file system with no birth times), any run counts, as
+/// before.
 fn ran_since_repo(env: &Env, dir: &Path) -> bool {
     let Some(last) = last_ran_here(env, dir) else { return false };
-    match crate::env::git_root(dir).and_then(|r| crate::env::git_birth(&r)) {
-        Some(birth) => last >= birth,
-        None => true,
+    match (crate::env::git_root(dir).and_then(|r| crate::env::git_birth(&r)), last) {
+        (Some(birth), Some(t)) => t >= birth,
+        _ => true,
     }
 }
 
@@ -189,7 +183,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
     // Config and layout issues, from the files themselves.
     let (fleets, load_issues) = crate::config::load_all(env);
     out.extend(load_issues.into_iter().filter(|i| scoped(i)));
-    if id.is_none() || fleets.iter().any(|f| id.is_some_and(|t| t.fleet() == f.config.fleet)) {
+    if id.is_none() || snap.fleets.iter().any(|f| id.is_some_and(|t| t.fleet() == f.id.fleet())) {
         out.extend(crate::config::home_layout(env));
     }
     out.extend(crate::registry::health(env));
@@ -524,6 +518,8 @@ pub(crate) mod tests {
         assert_eq!((i.code.as_str(), i.severity), ("folder.untrusted", Severity::Warn));
         assert!(i.message.contains("git repository"), "{}", i.message);
         assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt", ship.display()).as_str()));
+        // (this needs birth times; without them the old answer, "ran here", stands)
+        assert!(crate::env::git_birth(&ship).is_some(), "the test file system keeps no birth time");
         // a later write to the old transcript is no proof either: only a start is
         std::fs::write(proj.join("0b1d2c3e-0000-4000-8000-000000000001.jsonl"), "{}\n{}\n").unwrap();
         assert!(folder_issue(&env, &id, ship.to_str().unwrap()).is_some());

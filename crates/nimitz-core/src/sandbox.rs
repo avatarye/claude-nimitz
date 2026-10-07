@@ -115,16 +115,16 @@ fn trusted(base: &Path, cwd: &str) -> bool {
     // a git repo only a run since the repo appeared counts (M16: a folder that
     // became a git root after its sessions ran is asked again)
     let proj = claude_home(base).join("projects");
-    let last_run = [cwd.to_string(), real.to_string_lossy().into_owned()]
+    let starts: Vec<Option<f64>> = [cwd.to_string(), real.to_string_lossy().into_owned()]
         .iter()
         .flat_map(|c| fs::read_dir(proj.join(crate::evidence::project_dir_name(c))).into_iter().flatten().flatten())
-        .filter_map(|e| crate::evidence::birth_secs(&e.path()))
-        .fold(None, |a: Option<f64>, t| Some(a.map_or(t, |x| x.max(t))));
+        .map(|e| crate::evidence::birth_secs(&e.path()))
+        .collect();
     let root = crate::env::git_root(&real);
-    let ran_here = match (last_run, root.as_ref().and_then(|r| crate::env::git_birth(r))) {
-        (Some(t), Some(birth)) => t >= birth,
-        (Some(_), None) => true,
-        (None, _) => false,
+    let ran_here = match (starts.is_empty(), root.as_ref().and_then(|r| crate::env::git_birth(r))) {
+        (true, _) => false,
+        (false, Some(birth)) => starts.iter().any(|t| t.map_or(true, |t| t >= birth)),
+        (false, None) => true,
     };
     // inside a git repo, a parent's trust is not enough, unless sessions ran
     // here since (Claude Code accepted the repo then; check.rs ran_since_repo)
@@ -547,15 +547,18 @@ pub fn break_a_config(base: &Path, fleet: &str) {
 }
 
 /// A live, labelled background session of `id` in `cwd`, bound in the registry
-/// as its current session (a member added after `create`). Its session id.
-pub fn live_session(base: &Path, id: &Id, cwd: &str) -> String {
+/// as its current session when `bind` (a member added after `create`). Its
+/// session id.
+pub fn live_session(base: &Path, id: &Id, cwd: &str, bind: bool) -> String {
     let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
     let e = env(&base);
     let settings = json!({"env": crate::claude::labels_for(&e, id), "worktree": {"bgIsolation": "none"}}).to_string();
     let short = start(&base, cwd, &id.name(), "bypassPermissions", Some(&settings), "startup", true);
     let sid = job_state(&base, &short).and_then(|j| j.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default();
-    let now = crate::evidence::now();
-    let _ = crate::registry::update(&e, |r| crate::registry::bind(r, id, id.role(), &id.name(), cwd, &sid, "launch", now));
+    if bind {
+        let now = crate::evidence::now();
+        let _ = crate::registry::update(&e, |r| crate::registry::bind(r, id, id.role(), &id.name(), cwd, &sid, "launch", now));
+    }
     sid
 }
 

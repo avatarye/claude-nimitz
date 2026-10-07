@@ -615,10 +615,12 @@ pub fn unlisted_sessions(snap: &Snapshot, id: &nimitz_core::Id) -> usize {
         .count()
 }
 
-/// Fleets named by load errors that are not in the snapshot.
+/// Fleets named by load errors that are not in the snapshot (core lists a
+/// fleet whose fleet.toml does not parse with the error on `Fleet.issues`;
+/// this catches an error that names a fleet core left out).
 pub fn broken_fleets(snap: &Snapshot) -> Vec<nimitz_core::Id> {
     let mut out: Vec<nimitz_core::Id> = vec![];
-    for i in snap.issues.iter().filter(|i| is_load_error(i)) {
+    for i in all_issues(snap).into_iter().filter(|i| is_load_error(i)) {
         let Some(id) = &i.id else { continue };
         let f = nimitz_core::Id::admiral(id.fleet());
         if !snap.fleets.iter().any(|x| x.id == f) && !out.contains(&f) {
@@ -722,24 +724,32 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
             continue;
         }
         let issues: Vec<&Issue> = fleet_issues(f);
+        // a fleet.toml that does not load: the error frame, the error in full above its members
+        let load_errors: Vec<&Issue> = f.issues.iter().filter(|i| is_load_error(i) && i.id.as_ref() == Some(&f.id)).collect();
+        let broken = !load_errors.is_empty();
         let mut n = Node::new(format!("F:{}", f.id.0), Kind::FleetBand);
         n.member = Some(f.id.clone());
-        n.default_expand = f.machine.is_some();
+        n.default_expand = f.machine.is_some() || broken;
         n.icon = v.icons.fleet;
-        n.icon_style = bold(mono::STRONG);
+        n.icon_style = bold(if broken { mono::ERROR } else { mono::STRONG });
         n.name = format!("[{}]", f.id.0);
-        n.name_style = bold(mono::STRONG);
+        n.name_style = bold(if broken { mono::ERROR } else { mono::STRONG });
         n.kind_text = "fleet".into();
-        n.frame = Some(state.frame());
-        n.band_bg = Some(state.tint());
+        n.frame = Some(if broken { mono::ERROR } else { state.frame() });
+        n.band_bg = Some(if broken { mono::BG_HI } else { state.tint() });
         n.worst = worst_of(&f.issues);
         n.issue_count = f.issues.len();
         let place = f.machine.clone().unwrap_or_else(|| "not on this machine".into());
-        n.detail = vec![
-            Span::styled(state.label().to_string(), bold(state.color())),
-            Span::styled(format!("   {place}   {}", f.dir), st(mono::SOFT)),
-        ];
+        n.detail = if broken {
+            vec![Span::styled("config does not load", bold(mono::ERROR)), Span::styled(format!("   {}", f.dir), st(mono::SOFT))]
+        } else {
+            vec![
+                Span::styled(state.label().to_string(), bold(state.color())),
+                Span::styled(format!("   {place}   {}", f.dir), st(mono::SOFT)),
+            ]
+        };
         n.counts = status_counts(&fleet_members(f), &issues, v.icons);
+        n.children = error_notes(&f.id, &load_errors);
         if matches(&f.admiral) {
             n.children.push(member_node(&f.admiral, v));
         }

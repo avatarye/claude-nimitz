@@ -191,7 +191,13 @@ pub fn unreadable_squadrons(f: &FleetOnDisk) -> Vec<(Id, PathBuf, Issue)> {
 /// The fleet as far as it loads: a squadron whose squadron.toml does not parse
 /// is left out (see `unreadable_squadrons`). Err only when fleet.toml itself is bad.
 pub fn load_fleet(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
-    let dir = env.fleet_dir(fleet);
+    let mut dir = env.fleet_dir(fleet);
+    if !dir.join("fleet.toml").is_file() {
+        // a mis-cased folder (`Bad/` for BAD): load it, and let the layout rule say so
+        if let Some(d) = fleet_dirs(env).into_iter().find(|d| fleet_of_dir(d) == fleet.to_uppercase()) {
+            dir = d;
+        }
+    }
     if !dir.join("fleet.toml").is_file() {
         return Err(issue(
             "config.missing",
@@ -398,7 +404,7 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
 /// 2026-10-07).toml` -> `fleet.toml`. None for any other name.
 pub fn conflict_original(name: &str) -> Option<String> {
     let open = name.find(" (")?;
-    let close = open + name[open..].find(')')?;
+    let close = name.rfind(')')?;
     if !name[open..close].contains("conflicted copy") {
         return None;
     }
@@ -1326,6 +1332,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_mis_cased_fleet_folder_loads_under_its_name() {
+        let (_td, env) = test_env();
+        let dir = env.home.join("Bad");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fleet.toml"), "fleet = ").unwrap();
+        // the parse error, not config.missing, for check/start of BAD
+        let e = load_fleet(&env, "BAD").unwrap_err();
+        assert_eq!(e.code, "config.invalid");
+        assert_eq!(e.id, Some(Id::admiral("BAD")));
+        assert_eq!(unreadable_fleets(&env)[0].0, Id::admiral("BAD"));
+        // fixed, it loads too, and the layout rule names the folder
+        std::fs::write(dir.join("fleet.toml"), "fleet = \"BAD\"\n").unwrap();
+        let f = load_fleet(&env, "BAD").unwrap();
+        assert!(validate(&env, &f).iter().any(|i| i.message.contains("folder must be the lowercased fleet name")));
+        assert_eq!(load_fleet(&env, "NONE").unwrap_err().code, "config.missing");
+    }
+
+    #[test]
     fn a_broken_squadron_toml_names_its_line() {
         let (_td, env) = test_env();
         make_fleet(&env);
@@ -1343,6 +1367,7 @@ pub(crate) mod tests {
     fn conflicted_copies_are_named_with_their_originals() {
         assert_eq!(conflict_original("fleet (conflicted copy 2026-10-07).toml").as_deref(), Some("fleet.toml"));
         assert_eq!(conflict_original("CLAUDE (Yongqing's conflicted copy 2026-10-07).md").as_deref(), Some("CLAUDE.md"));
+        assert_eq!(conflict_original("CLAUDE (Jo (home)'s conflicted copy 2026-10-07).md").as_deref(), Some("CLAUDE.md"));
         assert_eq!(conflict_original("fleet (old copy).toml"), None);
         assert_eq!(conflict_original("fleet.toml"), None);
 

@@ -30,11 +30,10 @@ pub fn mtime_secs(p: &Path) -> Option<f64> {
     mtime(p).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64())
 }
 
-/// When a file was made (epoch seconds): its birth time where the file system
-/// keeps one, else its last write.
+/// When a file was made (epoch seconds): its birth time. None when the file
+/// system keeps none ("cannot tell"; a later write is no answer).
 pub fn birth_secs(p: &Path) -> Option<f64> {
-    let m = fs::metadata(p).ok()?;
-    m.created().or_else(|_| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs_f64())
+    fs::metadata(p).ok()?.created().ok()?.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs_f64())
 }
 
 pub(crate) fn s(v: &Value, k: &str) -> Option<String> {
