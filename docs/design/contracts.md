@@ -152,16 +152,19 @@ kept **per pid**: a second process on a member's conversation (a `-p
 (`evidence::row_labels`).
 
 **Binding (SessionStart).** The hook reads `<claude home>/sessions/<pid>.json`
-(the first JSON value; a missing or partial file reads as no job) for `jobId`,
-`kind`, `entrypoint` and `name`, and writes `job`, `kind` and `entrypoint` in
-the line. Then, for labels that name a valid identity of this home
+(the first JSON value) for `jobId`, `kind`, `entrypoint` and `name`, and
+writes `job`, `kind`, `entrypoint` and `cwd` in the line. A missing or partial
+file binds nothing now: the line says `kind` `unknown`, `binding` `none`, and
+`status` replays it, judging the job from the row whose `state.json` runs the
+session. Then, for labels that name a valid identity of this home
 (`NIMITZ_HOME` absent or equal to this env's home, as written or as a real
-path; role and id agree; not a 0.3.x tender), under `registry.lock`
-(`registry::apply_start`), `binding` says what happened:
+path; role and id agree; not a 0.3.x tender), under `registry.lock` (waited
+for at most 2 s; a lock it cannot take, or a registry it cannot read or write,
+is `binding` `none`), `registry::apply_start` says what happened:
 
 | labels | session file | effect | `binding` |
 | --- | --- | --- | --- |
-| this home's identity | `jobId` = the identity's job, or none set yet | `job = jobId`, `session = session_id`, lineage appended with `via` from `source` (startup -> launch; resume; clear; compact: no new entry for the same conversation; fork -> branch in the same job, else fork) | `bound` (`same` when nothing moved) |
+| this home's identity | `jobId` = the identity's job, or none set yet | `job = jobId`, `session = session_id`, lineage appended with `via` from `source` (startup -> launch; resume; clear; compact: no new entry for the same conversation; fork -> branch in the same job, else fork). A wake (resume, relaunch) of the conversation it already runs never overwrites how it was born: the `clear` entry survives a stop and a start | `bound` (`same` when nothing moved) |
 | same | another `jobId` whose job row still exists | nothing rebound: two jobs claim one identity | `dup.job` |
 | same | `jobId` null (interactive or SDK) | nothing bound: a process with no job holds the conversation | `held` |
 | same | a `cwd` that is not the identity's folder (the registry's `cwd`, else the config) | nothing bound: an impostor (BUG-30, BUG-55) | `elsewhere` |
@@ -171,10 +174,15 @@ path; role and id agree; not a 0.3.x tender), under `registry.lock`
 The name is never taken from the SessionStart moment: the snapshot reads it
 from the session file (M21). A SessionEnd from a pid that never sent a
 SessionStart (a refused `-p --resume` fires one with no labels) is ignored by
-every reader (M21). If a hook's registry write is lost, `status` replays
-SessionStart lines newer than `updated_at` under the lock with the same rules
-(`registry::replay`; a line the hook judged `dup.job`, `held` or `elsewhere` is
-not replayed); it writes only when a line binds something. A nimitz launch
+every reader (M21). The hook takes one clock for the line's `ts` and the
+lineage `at`, and writes the registry before the line, so a line it bound is
+older than `updated_at`. If a hook's registry write is lost (`binding` `none`),
+`status` replays SessionStart lines newer than `updated_at` in time order under
+the lock with the same rules, the folder rule included (`registry::replay`; a
+line the hook judged `dup.job`, `held` or `elsewhere` is not replayed); it
+writes only when a line binds something. A registry file that is there but
+cannot be read (EACCES, EIO) is never written over: `update` fails, a read
+sees a fresh registry. A nimitz launch
 binds the started session itself (`sessions::bind_started`, with the job that
 runs it and nimitz's own `via`), so an impostor's job never keeps the identity.
 
@@ -232,11 +240,14 @@ waitingFor permission prompt"). Unknown is allowed; a guess is not. Session file
 Busy, `idle` Idle, `waiting` NeedsYou, anything else Unknown. Every job `state`
 Claude Code writes (starting, running, resuming, adopted, crashed, working,
 blocked, done, stopped, failed, or a newer word) is read as it is: a row with no
-live pid is **Stopped** when the last event of the job's own processes is a
+live pid is **Stopped** when the last event of the job's own processes (the
+SessionStart lines that name the job, and the SessionEnd lines from those
+pids; the session id alone decides only for a line an older nimitz wrote) is a
 SessionEnd (`claude stop`, `/stop`, an exit) or its state is `failed`, else
-**Parked** (the daemon retired it: `bg retire <id>` in the Claude home's
-`daemon.log`, named in the reason; it crashed; or the machine went down: no
-SessionEnd fires for those). Parked is not an error; `start` wakes it by id.
+**Parked** (the daemon retired it: a `[<stamp>] [bg] retire <id>: ...` line in
+the Claude home's `daemon.log` newer than the job's last start, named in the
+reason; it crashed; or the machine went down: no SessionEnd fires for those).
+Parked is not an error; `start` wakes it by id.
 A live row goes by its session file.
 Session files of `kind` `daemon` or `daemon-worker` are Claude Code's own
 processes: never a row, so never a member or a stowaway.

@@ -1134,8 +1134,9 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 // the daemon's idle retire: no hook, the row untouched (E1)
                 let _ = fs::remove_file(session_path(&base, &short));
                 if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(home.join("daemon.log")) {
-                    let _ = writeln!(f, "bg retire {short}: settled, idle 61m");
-                    let _ = writeln!(f, "bg settled {short} (done)");
+                    let stamp = iso_now();
+                    let _ = writeln!(f, "[{stamp}] [bg] retire {short}: settled, idle 61m");
+                    let _ = writeln!(f, "[{stamp}] [bg] settled {short} (done)");
                 }
                 println!("retired {short}");
             } else {
@@ -1306,6 +1307,27 @@ fn interactive(base: &Path, cwd: &str, a: &Args) -> i32 {
     fire(base, Hook { event: "SessionStart", sid: &sid, source: Some(source), reason: None, cwd, pid, session_file: Some(p.clone()) }, &labels);
     println!("[fake claude] interactive session {sid} in {cwd} ({source})");
     0
+}
+
+/// Now as the daemon stamps its log: `2026-10-07T01:47:03.070Z`.
+fn iso_now() -> String {
+    let t = crate::evidence::now();
+    let secs = t as i64;
+    let ms = ((t - secs as f64) * 1000.0) as i64;
+    // civil from days (Howard Hinnant), the reverse of evidence::parse_iso
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{ms:03}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
 }
 
 fn log_call(base: &Path, args: &[String]) {

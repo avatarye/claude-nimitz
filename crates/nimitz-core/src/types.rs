@@ -282,6 +282,9 @@ pub struct Event {
     /// SessionStart only: what the hook did with the registry (`Binding`)
     #[serde(default)]
     pub binding: Option<String>,
+    /// SessionStart only: the session's folder (the hook input's `cwd`)
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 // ------------------------------------------------------------------ snapshot

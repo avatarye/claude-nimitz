@@ -521,14 +521,18 @@ fn parked_or_stopped(env: &Env, p: &SessionRow, events: &[Event]) -> (Status, St
     if p.state.as_deref() == Some("failed") {
         return (Status::Stopped, "state failed: it never ran, or ended while the daemon was off".into());
     }
-    let mine = |e: &&Event| e.session_id.as_deref().is_some_and(|sid| p.session_ids().any(|s| s == sid));
-    let of_job = |e: &Event| e.job == p.short_id || (e.job.is_none() && e.kind.is_none());
-    let started: HashSet<i64> = events.iter().filter(|e| e.event == "SessionStart" && of_job(e)).filter_map(|e| e.pid).collect();
-    let last = events.iter().rev().filter(mine).find(|e| (e.event == "SessionStart" && of_job(e)) || (e.event == "SessionEnd" && e.pid.is_some_and(|pid| started.contains(&pid))));
+    // the job's own starts: lines that name the job; a line an older nimitz
+    // wrote (no job, no kind) by the conversation (a /branch moves it on, so
+    // the session id alone never decides for a 0.4.0 line)
+    let mine = |e: &Event| e.session_id.as_deref().is_some_and(|sid| p.session_ids().any(|s| s == sid));
+    let own_start = |e: &Event| e.event == "SessionStart" && (e.job.is_some() && e.job == p.short_id || (e.job.is_none() && e.kind.is_none() && mine(e)));
+    let started: HashSet<i64> = events.iter().filter(|e| own_start(e)).filter_map(|e| e.pid).collect();
+    let last = events.iter().rev().find(|e| own_start(e) || (e.event == "SessionEnd" && e.pid.is_some_and(|pid| started.contains(&pid))));
     if let Some(end) = last.filter(|e| e.event == "SessionEnd") {
         return (Status::Stopped, format!("SessionEnd event, reason {}", end.reason.as_deref().unwrap_or("not given")));
     }
-    let why = match (p.short_id.as_deref().and_then(|j| evidence::daemon_retired(env, j)), p.state.as_deref()) {
+    let since = last.map(|e| e.ts);
+    let why = match (p.short_id.as_deref().and_then(|j| evidence::daemon_retired(env, j, since)), p.state.as_deref()) {
         (Some(r), _) => format!("parked: the daemon retired it ({r}); a start wakes it"),
         (None, Some("crashed")) => "parked: state crashed, no SessionEnd; the daemon restarts it, else a start wakes it".into(),
         _ => "parked: no SessionEnd (retired, crashed or stopped with the machine); a start wakes it".into(),

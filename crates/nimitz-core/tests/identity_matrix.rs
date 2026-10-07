@@ -167,8 +167,81 @@ fn n10_nimitz_start_of_a_stopped_ship_is_the_native_resume_and_records_resume() 
     assert!(out.ran.iter().any(|(s, _, _)| s.cmd.contains(&"--resume".to_string()) && !s.cmd.contains(&"--settings".to_string())), "{:?}", out.ran);
     let rec = w.rec(&id);
     assert_eq!((rec.job.as_deref(), rec.session.as_deref()), (Some(job.as_str()), Some(sid.as_str())));
-    assert_eq!(lineage(&rec).last().map(|(_, v)| v.as_str()), Some("resume"), "nimitz's own via refines the hook's");
+    assert_eq!(lineage(&rec), vec![(sid.clone(), "launch".into())], "a wake of the conversation it already runs keeps how it was born");
     assert_eq!(w.member(&id).status, Status::Idle);
+}
+
+#[test]
+fn inside_3_4d_then_e1_a_branch_then_a_retire_is_parked() {
+    let w = world();
+    let (id, job, _, _) = clean(&w);
+    let out = w.claude_ok(&["__inside", &job, "branch", "b1"], None);
+    let new = out.split_whitespace().last().unwrap().to_string();
+    w.claude_ok(&["__inside", &job, "rename", &id.name()], None); // the branch named the session
+    w.claude_ok(&["__retire", &job], None);
+    let m = w.member(&id);
+    assert_eq!(m.status, Status::Parked, "{:?}", m.reasons);
+    assert!(m.reasons.iter().any(|r| r.contains("daemon retired it")), "{:?}", m.reasons);
+    assert!(m.issues.is_empty(), "{:?}", m.issues);
+    // a start wakes the job; the registry's conversation is the branch
+    assert_eq!(w.rec(&id).session.as_deref(), Some(new.as_str()));
+    w.start(&id);
+    assert_eq!(w.member(&id).session.unwrap().short_id.as_deref(), Some(job.as_str()));
+    // a branch, then a stop: stopped (the SessionEnd came from the job's own pid)
+    w.claude_ok(&["__inside", &job, "branch", "b2"], None);
+    w.claude_ok(&["stop", &job], None);
+    let m = w.member(&id);
+    assert_eq!(m.status, Status::Stopped, "{:?}", m.reasons);
+}
+
+#[test]
+fn inside_3_4d_then_cli_30_a_branch_then_a_crash_is_parked() {
+    let w = world();
+    let (id, job, _, _) = clean(&w);
+    w.claude_ok(&["__inside", &job, "branch", "b1"], None);
+    w.claude_ok(&["__crash", &job], None);
+    let m = w.member(&id);
+    assert_eq!(m.status, Status::Parked, "{:?}", m.reasons);
+    assert!(m.reasons.iter().any(|r| r.contains("state crashed")), "{:?}", m.reasons);
+    assert!(m.issues.is_empty(), "{:?}", m.issues);
+}
+
+#[test]
+fn e1_an_old_retire_line_does_not_name_a_later_crash() {
+    let w = world();
+    let (id, job, _, _) = clean(&w);
+    w.claude_ok(&["__retire", &job], None);
+    assert!(w.member(&id).reasons.iter().any(|r| r.contains("daemon retired it")));
+    w.start(&id);
+    w.claude_ok(&["__crash", &job], None);
+    let m = w.member(&id);
+    assert_eq!(m.status, Status::Parked, "{:?}", m.reasons);
+    assert!(m.reasons.iter().any(|r| r.contains("state crashed")), "the retire line is older than the last start: {:?}", m.reasons);
+    assert!(!m.reasons.iter().any(|r| r.contains("daemon retired it")), "{:?}", m.reasons);
+}
+
+#[test]
+fn a_registry_that_cannot_be_read_is_never_written_over_by_the_hook() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world();
+    let (id, job, sid, cwd) = clean(&w);
+    let before = std::fs::read_to_string(w.env.registry_path()).unwrap();
+    let n = registry::load(&w.env).identities.len();
+    assert!(n > 5);
+    std::fs::set_permissions(w.env.registry_path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+    // the hook runs (a respawn fires a SessionStart) and must not wipe the file
+    w.claude_ok(&["respawn", &job], None);
+    assert!(registry::update(&w.env, |_| ()).is_err(), "an unreadable registry is an error, never a fresh one");
+    std::fs::set_permissions(w.env.registry_path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(std::fs::read_to_string(w.env.registry_path()).unwrap(), before, "the file is untouched");
+    assert_eq!(registry::load(&w.env).identities.len(), n);
+    let e = w.last_start(&sid);
+    assert_eq!(e.binding.as_deref(), Some("none"), "the line says the write was lost");
+    // readable again: status replays the line (nothing new here: the same job and conversation)
+    let m = w.member(&id);
+    assert_eq!(m.session.as_ref().unwrap().short_id.as_deref(), Some(job.as_str()));
+    assert_eq!(m.status, Status::Idle);
+    let _ = cwd;
 }
 
 // ------------------------------------------------------------------ retire, pin, crash
@@ -312,7 +385,8 @@ fn cli_03_claude_rm_then_a_resume_is_a_new_job_named_by_the_short_resumed_id_and
     assert_eq!(s.short_id.as_deref(), Some(&sid[..8]), "the new job is the short form of the resumed id");
     let rec = w.rec(&id);
     assert_eq!(rec.job.as_deref(), Some(&sid[..8]), "rebound: the old job's row is gone");
-    assert_eq!(lineage(&rec).last().cloned(), Some((sid.clone(), "relaunch".into())));
+    // the same short id (the short form of the birth id) on the same conversation: one entry, born by launch
+    assert_eq!(lineage(&rec), vec![(sid.clone(), "launch".into())]);
     let _ = cwd;
 }
 

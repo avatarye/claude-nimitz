@@ -17,10 +17,20 @@ pub fn load(env: &Env) -> Registry {
 }
 
 /// `locked`: the caller holds `registry.lock` already (flock does not nest).
-/// The flag says the file on disk is still a 0.3.x (v1) registry.
+/// The flag says the file on disk is still a 0.3.x (v1) registry. A file
+/// that cannot be read (EACCES, EIO: anything but "not there") reads as a
+/// fresh registry for the read-only callers; `update` refuses to write over
+/// it (`read_registry`).
 fn load_with(env: &Env, locked: bool) -> (Registry, bool) {
+    load_checked(env, locked).unwrap_or_else(|_| (fresh(env), false))
+}
+
+/// `load_with`, with the read error when the file is there but unreadable:
+/// a fresh registry must never be written over it.
+fn load_checked(env: &Env, locked: bool) -> std::io::Result<(Registry, bool)> {
     let mut r = match std::fs::read_to_string(env.registry_path()) {
-        Err(_) => fresh(env),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => fresh(env),
+        Err(e) => return Err(std::io::Error::new(e.kind(), format!("registry {}: {e}", env.registry_path().display()))),
         Ok(raw) => match serde_json::from_str(&raw) {
             Ok(r) => r,
             Err(_) if locked => recover_locked(env),
@@ -37,7 +47,7 @@ fn load_with(env: &Env, locked: bool) -> (Registry, bool) {
     // and keeps the old file as `registry.json.v1`.
     crate::migrate::retire_tenders(&mut r);
     crate::migrate::registry_v2(env, &mut r);
-    (r, v1)
+    Ok((r, v1))
 }
 
 fn fresh(env: &Env) -> Registry {
@@ -188,10 +198,22 @@ pub fn save(env: &Env, r: &Registry) -> std::io::Result<()> {
 }
 
 /// Lock, load, apply `f`, save. The only way to change the registry. The
-/// first write over a v1 file keeps that file as `registry.json.v1`.
+/// first write over a v1 file keeps that file as `registry.json.v1`. A file
+/// that is there but cannot be read is an error: nothing is written over it.
 pub fn update<T>(env: &Env, f: impl FnOnce(&mut Registry) -> T) -> std::io::Result<T> {
-    let _lock = lock(env)?;
-    let (mut r, v1) = load_with(env, true);
+    let lock = lock(env)?;
+    update_locked(env, lock, f)
+}
+
+/// `update` that waits at most `budget` for the lock (the hook path: a hook
+/// must not hang a session; a lost write is replayed by `status`).
+pub fn try_update<T>(env: &Env, budget: std::time::Duration, f: impl FnOnce(&mut Registry) -> T) -> std::io::Result<T> {
+    let lock = lock_within(env, budget)?;
+    update_locked(env, lock, f)
+}
+
+fn update_locked<T>(env: &Env, _lock: File, f: impl FnOnce(&mut Registry) -> T) -> std::io::Result<T> {
+    let (mut r, v1) = load_checked(env, true)?;
     if v1 && !v1_path(env).exists() {
         let _ = std::fs::copy(env.registry_path(), v1_path(env));
     }
@@ -236,15 +258,25 @@ fn bind_into(map: &mut BTreeMap<String, IdentityRecord>, id: &Id, role: Role, na
     rec.session = Some(session_id.to_string());
     match rec.lineage.last_mut() {
         // the conversation it runs already: the same entry, unless another job
-        // took it over (a resume after `claude rm`)
+        // took it over (a resume after `claude rm`). How the conversation was
+        // born (launch, clear, branch, ...) is never overwritten by a wake
+        // (resume, relaunch): the clear entry survives a stop and a start.
         Some(last) if last.session_id == session_id && (last.job.is_none() || last.job == rec.job) => {
-            last.via = via.to_string();
+            if !(is_wake(via) && !is_wake(&last.via)) {
+                last.via = via.to_string();
+            }
             if last.job.is_none() {
                 last.job = rec.job.clone();
             }
         }
         _ => rec.lineage.push(LineageEntry { session_id: session_id.to_string(), job: rec.job.clone(), via: via.to_string(), at: now }),
     }
+}
+
+/// A `via` that wakes a conversation it already had, as against one that
+/// started it (launch, clear, branch, fork, adopt, migrate, compact).
+fn is_wake(via: &str) -> bool {
+    matches!(via, "resume" | "relaunch")
 }
 
 // ------------------------------------------------------------------ the hook's binding table
@@ -342,8 +374,11 @@ pub fn apply_start(r: &mut Registry, id: &Id, cwd: &str, folder: Option<&Path>, 
 }
 
 /// `apply_start` for one SessionStart event line of this home (the hook wrote
-/// the job in it; a line with no session id or no valid labels binds nothing).
-/// A line an older nimitz wrote (no `kind`, no `job`) binds the session only.
+/// the job and the cwd in it; a line with no session id or no valid labels
+/// binds nothing). A line an older nimitz wrote (no `kind`, no `job`) binds
+/// the session only. A line whose session file the hook could not read (`kind`
+/// `unknown`) is judged here from the job rows: the job whose `state.json`
+/// runs that session, if one does.
 pub fn apply_event(env: &Env, r: &mut Registry, e: &Event) -> Binding {
     let (Some(sid), Some(id)) = (e.session_id.as_deref(), identity_of(env, &e.labels)) else { return Binding::None };
     if e.kind.is_none() && e.job.is_none() {
@@ -356,7 +391,32 @@ pub fn apply_event(env: &Env, r: &mut Registry, e: &Event) -> Binding {
         return Binding::Bound(via);
     }
     let jobs = env.claude_home.join("jobs");
-    apply_start(r, &id, "", None, e.job.as_deref(), sid, e.source.as_deref(), e.ts, |j| jobs.join(j).join("state.json").is_file())
+    let job = match (e.kind.as_deref(), &e.job) {
+        (Some("unknown"), None) => job_running(env, sid),
+        (_, j) => j.clone(),
+    };
+    let cwd = e.cwd.clone().unwrap_or_default();
+    let folder = identity_folder(env, r, &id);
+    apply_start(r, &id, &cwd, folder.as_deref(), job.as_deref(), sid, e.source.as_deref(), e.ts, |j| jobs.join(j).join("state.json").is_file())
+}
+
+/// The job whose `state.json` runs `sid` now (`resumeSessionId`, else `sessionId`).
+fn job_running(env: &Env, sid: &str) -> Option<String> {
+    let rd = std::fs::read_dir(env.claude_home.join("jobs")).ok()?;
+    rd.filter_map(|e| e.ok()).find_map(|e| {
+        let d = crate::evidence::first_json(&std::fs::read(e.path().join("state.json")).ok()?)?;
+        let now = d.get("resumeSessionId").and_then(|v| v.as_str()).or_else(|| d.get("sessionId").and_then(|v| v.as_str()))?;
+        (now == sid).then(|| e.file_name().to_string_lossy().into_owned())
+    })
+}
+
+/// The identity's folder: what the registry recorded, else the config (one
+/// TOML read, only for an identity that never bound).
+pub fn identity_folder(env: &Env, r: &Registry, id: &Id) -> Option<PathBuf> {
+    match r.identities.get(&id.0).map(|x| x.cwd.clone()).filter(|c| !c.is_empty()) {
+        Some(c) => Some(PathBuf::from(c)),
+        None => crate::config::load_fleet(env, id.fleet()).ok().and_then(|f| crate::config::member_dir(env, &f, id)),
+    }
 }
 
 /// Replay SessionStart lines newer than the registry (a hook whose registry
@@ -366,10 +426,11 @@ pub fn replay(env: &Env, events: &[Event]) -> usize {
     let reg = load(env);
     // a line the hook judged (dup.job, held, elsewhere) bound nothing by design
     let judged = |e: &Event| e.binding.as_deref().is_some_and(|b| !matches!(b, "bound" | "none"));
-    let newer: Vec<&Event> = events.iter().filter(|e| e.event == "SessionStart" && e.ts > reg.updated_at && e.session_id.is_some() && !judged(e)).collect();
+    let mut newer: Vec<&Event> = events.iter().filter(|e| e.event == "SessionStart" && e.ts > reg.updated_at && e.session_id.is_some() && !judged(e)).collect();
     if newer.is_empty() {
         return 0;
     }
+    newer.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
     let mut probe = reg.clone();
     if !newer.iter().any(|e| matches!(apply_event(env, &mut probe, e), Binding::Bound(_))) {
         return 0;
@@ -379,14 +440,35 @@ pub fn replay(env: &Env, events: &[Event]) -> usize {
 
 /// `registry.lock`, held exclusively until the returned File drops.
 fn lock(env: &Env) -> std::io::Result<File> {
-    let ctx = |e: std::io::Error| std::io::Error::new(e.kind(), format!("registry lock {}: {e}", env.registry_lock_path().display()));
-    std::fs::create_dir_all(&env.state).map_err(ctx)?;
-    let f = File::create(env.registry_lock_path()).map_err(ctx)?;
+    let f = lock_file(env)?;
     let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
     if rc != 0 {
         return Err(std::io::Error::last_os_error());
     }
     Ok(f) // dropping the fd releases the flock
+}
+
+/// `lock`, but give up after `budget` (polling with `LOCK_NB`): a hook never
+/// waits on a stuck lock holder.
+fn lock_within(env: &Env, budget: std::time::Duration) -> std::io::Result<File> {
+    let f = lock_file(env)?;
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(f);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::WouldBlock || std::time::Instant::now() >= deadline {
+            return Err(std::io::Error::new(e.kind(), format!("registry lock {}: {e}", env.registry_lock_path().display())));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn lock_file(env: &Env) -> std::io::Result<File> {
+    let ctx = |e: std::io::Error| std::io::Error::new(e.kind(), format!("registry lock {}: {e}", env.registry_lock_path().display()));
+    std::fs::create_dir_all(&env.state).map_err(ctx)?;
+    File::create(env.registry_lock_path()).map_err(ctx)
 }
 
 /// Temp file next to registry.json, then rename (same device, atomic).
@@ -564,6 +646,74 @@ mod tests {
         let stamp2 = load(&env).updated_at;
         assert_eq!(replay(&env, &[line(stamp2 + 1.0, "s2", "j1", Some("bound"))]), 0, "already bound: nothing");
         assert_eq!(load(&env).updated_at, stamp2);
+    }
+
+    #[test]
+    fn a_wake_never_overwrites_how_the_conversation_was_born() {
+        let (_td, env) = test_env();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let mut r = load(&env);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s1", "launch", 1.0);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s2", "clear", 2.0);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s2", "resume", 3.0);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s2", "relaunch", 4.0);
+        let vias: Vec<&str> = r.identities[&id.0].lineage.iter().map(|l| l.via.as_str()).collect();
+        assert_eq!(vias, ["launch", "clear"]);
+        // a birth via refines a wake (nimitz adopts or migrates what the hook saw resumed)
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s3", "resume", 5.0);
+        bind_job(&mut r, &id, Role::Ship, &id.name(), "/w", Some("j1"), "s3", "migrate", 6.0);
+        assert_eq!(r.identities[&id.0].lineage.last().unwrap().via, "migrate");
+    }
+
+    #[test]
+    fn replay_applies_lines_in_time_order_and_the_folder_rule() {
+        let (_td, env) = test_env();
+        crate::config::tests::make_fleet(&env);
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let folder = crate::config::load_fleet(&env, "MAIN").ok().and_then(|f| crate::config::member_dir(&env, &f, &id)).unwrap().to_string_lossy().into_owned();
+        update(&env, |r| bind_job(r, &id, Role::Ship, &id.name(), &folder, Some("j1"), "s1", "launch", 1.0)).unwrap();
+        let stamp = load(&env).updated_at;
+        let line = |ts: f64, sid: &str, source: &str, cwd: &str| Event {
+            ts,
+            event: "SessionStart".into(),
+            session_id: Some(sid.into()),
+            source: Some(source.into()),
+            pid: Some(5),
+            labels: [("NIMITZ_ID".to_string(), id.0.clone()), ("NIMITZ_ROLE".to_string(), "ship".into())].into(),
+            job: Some("j1".into()),
+            kind: Some("bg".into()),
+            binding: Some("none".into()),
+            cwd: Some(cwd.into()),
+            ..Default::default()
+        };
+        // out of order in the file: a clear (t+2) before a resume of it (t+1)? no: the
+        // later line by ts wins, whatever the file order
+        let events = vec![line(stamp + 2.0, "s3", "clear", &folder), line(stamp + 1.0, "s2", "clear", &folder)];
+        assert_eq!(replay(&env, &events), 2);
+        let rec = load(&env).identities[&id.0].clone();
+        assert_eq!(rec.session.as_deref(), Some("s3"));
+        assert_eq!(rec.lineage.iter().map(|l| l.session_id.as_str()).collect::<Vec<_>>(), ["s1", "s2", "s3"]);
+        // a line from another folder: elsewhere, not bound
+        let stamp = load(&env).updated_at;
+        assert_eq!(replay(&env, &[line(stamp + 1.0, "s9", "startup", "/somewhere/else")]), 0);
+        assert_eq!(load(&env).identities[&id.0].session.as_deref(), Some("s3"));
+    }
+
+    #[test]
+    fn a_registry_that_cannot_be_read_is_an_error_for_update_and_fresh_for_a_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_td, env) = test_env();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        update(&env, |r| bind(r, &id, Role::Ship, &id.name(), "/w", "s1", "launch", 1.0)).unwrap();
+        let before = std::fs::read_to_string(env.registry_path()).unwrap();
+        std::fs::set_permissions(env.registry_path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert!(load(&env).identities.is_empty(), "a read-only caller sees nothing, and nothing is written");
+        let err = update(&env, |r| r.identities.clear()).unwrap_err();
+        assert!(err.to_string().contains("registry"), "{err}");
+        assert!(replay(&env, &[]) == 0);
+        std::fs::set_permissions(env.registry_path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(std::fs::read_to_string(env.registry_path()).unwrap(), before, "never written over");
+        assert_eq!(load(&env).identities.len(), 1);
     }
 
     #[test]

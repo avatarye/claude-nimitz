@@ -157,6 +157,7 @@ pub(crate) fn parse_event_line(line: &str) -> Option<Event> {
         kind: s(&v, "kind"),
         entrypoint: s(&v, "entrypoint"),
         binding: s(&v, "binding"),
+        cwd: s(&v, "cwd"),
     })
 }
 
@@ -288,15 +289,27 @@ pub fn pins(env: &Env) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The daemon's last `bg retire <short>: <why>` line in `daemon.log` (under the
-/// Claude home): the job was parked by the daemon, no SessionEnd fired.
-pub fn daemon_retired(env: &Env, short: &str) -> Option<String> {
+/// The daemon's last `retire <short>: <why>` line in `daemon.log` (under the
+/// Claude home; `[<iso stamp>] [bg] retire <short>: settled, idle 61m`): the
+/// job was parked by the daemon, no SessionEnd fired. A line older than
+/// `since` (the job's last SessionStart) is an earlier retire, not this one;
+/// a line with no stamp counts.
+pub fn daemon_retired(env: &Env, short: &str, since: Option<f64>) -> Option<String> {
     let raw = fs::read(env.claude_home.join("daemon.log")).ok()?;
-    let key = format!("bg retire {short}");
+    let key = format!("retire {short}");
     String::from_utf8_lossy(&raw)
         .lines()
         .filter_map(|l| {
             let i = l.find(&key)?;
+            if !l[..i].trim_end().ends_with("bg") && !l[..i].trim_end().ends_with("[bg]") {
+                return None;
+            }
+            let stamp = l.strip_prefix('[').and_then(|r| r.split_once(']')).and_then(|(t, _)| parse_iso(t));
+            if let (Some(t), Some(s)) = (stamp, since) {
+                if t < s {
+                    return None;
+                }
+            }
             Some(l[i + key.len()..].trim_start_matches(':').trim().to_string())
         })
         .last()

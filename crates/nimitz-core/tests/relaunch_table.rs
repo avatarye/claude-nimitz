@@ -195,7 +195,7 @@ fn row4_stopped_with_labels_resumes_with_no_flags_and_keeps_the_id() {
     let reg = nimitz_core::registry::load(&w.env);
     let rec = &reg.identities[&id.0];
     assert_eq!(rec.session.as_ref(), Some(&before.session_id));
-    assert_eq!(rec.lineage.last().unwrap().via, "resume");
+    assert_eq!(rec.lineage.last().unwrap().via, "launch", "a wake keeps how the conversation was born");
 }
 
 #[test]

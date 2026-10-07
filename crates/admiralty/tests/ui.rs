@@ -62,7 +62,7 @@ fn title_band_is_tinted_by_state_with_counts_on_the_right() {
     assert_eq!(buf[(x, y)].fg, mono::ERROR, "the state word carries the hue");
     // right side: `icon n`, slashes between, right-aligned as a group
     let band = &ls[y as usize];
-    assert!(band.contains("^10 / ^3 / *2 / -1 / x2 / o3 / ?1"), "{band}");
+    assert!(band.contains("^9 / ^4 / *2 / -1 / x2 / o3 / ?1"), "{band}");
     tab(&mut t.app, "MAIN");
     let ls = lines(&draw(&mut t.app, 200, 60));
     let main = ls.iter().find(|l| l.contains("[MAIN]") && l.contains("needs you")).unwrap();
@@ -91,7 +91,7 @@ fn band_counts_are_a_right_aligned_group_and_narrow_bands_keep_the_key_ones() {
     let main = ls.iter().find(|l| l.contains("[MAIN]")).unwrap();
     assert!(main.contains("!2") && !main.contains("*3"), "narrow: {main}");
     let forge = forge_ls.iter().find(|l| l.contains("[FORGE]")).unwrap();
-    assert!(forge.contains("^10") && !forge.contains("^3"), "narrow: errors only: {forge}");
+    assert!(forge.contains("^9") && !forge.contains("^4"), "narrow: errors only: {forge}");
 }
 
 #[test]
@@ -367,7 +367,7 @@ fn issues_view_lists_every_issue_code_with_its_fix() {
         "dup.live",
         "copy.rows",
         "lineage.broken",
-        "role.background",
+        "held",
         "ship.elsewhere",
         "cc.version",
         "stowaway",
@@ -396,7 +396,7 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
         ("[FORGE.IRON]-COMMODORE ", "labels.missing"),
         ("[FORGE.IRON]-HAMMER", "copy.rows"),
         ("[FORGE.IRON]-HAMMER", "lineage.broken"),
-        ("[FORGE]-ADMIRAL", "role.background"),
+        ("[FORGE]-ADMIRAL", "held"),
     ] {
         let l = ls.iter().find(|l| l.contains(row)).unwrap_or_else(|| panic!("{row}"));
         assert!(l.contains(code), "{row} shows {code}: {l}");
@@ -414,7 +414,7 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
     assert!(s.contains("fix  nimitz stop cc33dupe"));
     assert!(s.contains("expected [FORGE.IRON]-ANVIL"));
     // top bar counts errors
-    assert!(s.contains("10 errors"), "top bar");
+    assert!(s.contains("9 errors"), "top bar");
 }
 
 #[test]
@@ -810,7 +810,7 @@ fn the_header_shortens_counts_instead_of_cutting_words() {
     }
     let mut t = demo();
     let top80 = status_bar(&mut t.app, 80);
-    assert!(top80.contains("6 warn") || top80.contains("6w"), "80 columns keep the warning count: {top80}");
+    assert!(top80.contains("7 warn") || top80.contains("7w"), "80 columns keep the warning count: {top80}");
 }
 
 #[test]

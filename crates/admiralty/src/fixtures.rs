@@ -201,15 +201,15 @@ fn fleet_forge() -> Fleet {
     let mut admiral = member(
         adm_id.clone(),
         Status::Busy,
-        &["session file: status busy", "job row says background"],
+        &["session file: status busy", "job row ca11ca11"],
         Some(session(&adm_id, "ca11ca11", Some(5100), "background", Some("busy"), None, 1800.0, true)),
     );
-    // core's wording (sessions::session_issues)
+    // core's wording (sessions::session_issues): a process with no job runs its conversation
     admiral.issues = vec![issue(
-        "role.background",
-        Severity::Error,
-        "FORGE (an admiral) is a background session",
-        Some("claude attach ca11ca11  # and keep it in a terminal"),
+        "held",
+        Severity::Warn,
+        "FORGE's conversation ca11ca11-... runs in a process with no job (pid 5188, sdk-cli): nimitz cannot stop or resume it there",
+        Some("end that process in its host, then nimitz start FORGE"),
         Some(&adm_id),
     )];
 
