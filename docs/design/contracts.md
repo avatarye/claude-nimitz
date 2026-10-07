@@ -277,10 +277,19 @@ a live process with no job, no transcript and no SessionStart yet (the agent
 view's draft or "new session", `spare: true`, is one until it has a
 conversation; in a lead's folder too: no `lead.intruder` for a draft, inside
 FAIL-2); after the grace time, or once it has a conversation, it is classified
-like any other row. A member's row is the registry's `job`; a lead whose
-registry job is a later live job beside an earlier own live job (a `/fork`
-that bound itself while the lead had no job) keeps the earlier one as its
-own, the later is its `lead.intruder` (never the other way round). `jobs/pins.json` gives `pinned` (the daemon
+like any other row (the agent view's draft fires a SessionStart `startup`
+the moment it is claimed, so a spare is a picker whether or not it has one).
+A member's row is the registry's `job`, for a lead too: a hand rm + resume
+binds the new job beside an older labelled stray, and the registry job stays
+the lead (the stray is its `lead.intruder`; neither a relaunch's `dup.live`
+check nor `apply`'s "live already" guard counts a lead's intruder, and the
+labels-in-folder rule of that guard holds only while the registry names no
+job). Only two cases hand a lead to another own live job: the registry has no
+job, or the registry job's row does not carry the expected name while another
+own live job row does (a `/fork` copy is named `<name> ⑂`, and a fork's hook
+binds itself when the lead had none). Then the earliest-started own live job
+carrying the expected name, else the earliest with a `started_at`; never on a
+missing or equal `started_at`. `jobs/pins.json` gives `pinned` (the daemon
 never idle-retires a pinned job; `status` says so). A live session file's
 `tmux` (or a Herdr pane field) is the row's `terminal`, for the fix that says
 where to end a process. nimitz pins each lead's job after it starts and

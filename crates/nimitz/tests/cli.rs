@@ -1481,6 +1481,52 @@ fn a_fork_of_a_lead_is_its_intruder_and_ships_still_start() {
     assert!(sb.member("MAIN")["issues"].as_array().unwrap().iter().all(|i| i["code"] != "lead.intruder"));
 }
 
+fn lead_labels(sb: &Sb) -> String {
+    serde_json::json!({"env": {"NIMITZ_FLEET": "MAIN", "NIMITZ_ROLE": "admiral", "NIMITZ_ID": "MAIN", "NIMITZ_HOME": sb.vars["NIMITZ_HOME"]}}).to_string()
+}
+
+/// The registry job stays the lead beside an OLDER labelled stray: a relaunch
+/// (rm + resume with every flag) binds a job that started later than a stray
+/// launched by hand with the lead's labels and name; the stray is the
+/// intruder, and the fix never names the real admiral (re-review 1).
+#[test]
+fn the_registry_job_stays_the_lead_beside_an_older_labelled_stray() {
+    let sb = Sb::new(false);
+    let adm = sb.member("MAIN");
+    let dir = adm["cwd"].as_str().unwrap().to_string();
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(&dir).args(args).output().unwrap();
+    let o = fake(&["--bg", "--name", "[MAIN]-ADMIRAL", "--settings", &lead_labels(&sb), "ok"]);
+    let stray = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    assert!(o.status.success() && stray.len() == 8, "{stray}");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let r = sb.run(&["relaunch", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let adm = sb.member("MAIN");
+    let job = adm["session"]["short_id"].as_str().unwrap().to_string();
+    assert_ne!(job, stray, "the stray is not the lead: {adm}");
+    let intruder = adm["issues"].as_array().unwrap().iter().find(|i| i["code"] == "lead.intruder").expect("the stray is the intruder");
+    assert!(intruder["message"].as_str().unwrap().contains(&stray) && !intruder["fix"].as_str().unwrap().contains(&job), "{intruder}");
+    assert!(!adm["issues"].as_array().unwrap().iter().any(|i| i["code"] == "dup.live"), "{adm}");
+}
+
+/// A lead that `/branch`ed inside its own job, beside an older stray with its
+/// name: the registry job stays the lead (re-review 1).
+#[test]
+fn a_lead_that_branched_beside_an_older_stray_keeps_its_job() {
+    let sb = Sb::new(false);
+    let adm = sb.member("MAIN");
+    let (job, dir) = (adm["session"]["short_id"].as_str().unwrap().to_string(), adm["cwd"].as_str().unwrap().to_string());
+    let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).current_dir(&dir).args(args).output().unwrap();
+    let o = fake(&["--bg", "--name", "[MAIN]-ADMIRAL", "--settings", &lead_labels(&sb), "ok"]);
+    let stray = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    assert!(o.status.success() && stray.len() == 8, "{stray}");
+    assert!(fake(&["__inside", &job, "branch", "[MAIN]-ADMIRAL"]).status.success());
+    let adm = sb.member("MAIN");
+    assert_eq!(adm["session"]["short_id"], job.as_str(), "{adm}");
+    let intruder = adm["issues"].as_array().unwrap().iter().find(|i| i["code"] == "lead.intruder").expect("the stray is the intruder");
+    assert!(intruder["message"].as_str().unwrap().contains(&stray), "{intruder}");
+}
+
 /// No row and no transcript is `history.lost` with the `--fresh` fix (one
 /// word, one flag, as with a row and no transcript); the `--fresh` plan does
 /// not repeat the error (acceptance env E9).

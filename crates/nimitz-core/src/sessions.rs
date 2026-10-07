@@ -137,6 +137,14 @@ fn copy_fix(m: &Member, r: &SessionInfo) -> String {
     }
 }
 
+/// A live extra row of a LEAD in its own (exclusive) folder that is not its
+/// session: its `lead.intruder` (the snapshot names it, one fix: stop, then
+/// rm), never a second live session of the lead, a copy row, or a reason to
+/// refuse the lead's relaunch (acceptance inside FAIL-3, re-review 1).
+pub(crate) fn lead_intruder_row(m: &Member, r: &SessionInfo) -> bool {
+    m.role.lead() && r.pid.is_some() && m.cwd.as_deref().is_some_and(|d| same_folder(&r.cwd, d)) && m.session.as_ref().map(|p| p.session_id != r.session_id).unwrap_or(true)
+}
+
 /// How a copy was told, for a message.
 fn copy_how(r: &SessionInfo) -> &'static str {
     match r.copy.as_deref() {
@@ -161,7 +169,7 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     // a lead's folder is exclusive: a live extra row there (a /fork, a hand
     // launch with its labels) is its `lead.intruder` (the snapshot names it,
     // one fix), never a second live session or a copy row of the lead
-    let intruder = |r: &SessionInfo| m.role.lead() && r.pid.is_some() && m.cwd.as_deref().is_some_and(|d| same_folder(&r.cwd, d)) && m.session.as_ref().map(|p| p.session_id != r.session_id).unwrap_or(true);
+    let intruder = |r: &SessionInfo| lead_intruder_row(m, r);
     let live: Vec<&&SessionInfo> = rows.iter().filter(|r| r.pid.is_some() && !held_row(m, r) && r.copy.is_none() && !intruder(r)).collect();
     // A copy of the member's conversation (plan-v4 section 6): one Warn per
     // copy, with the fix that works for its kind.
@@ -1304,7 +1312,9 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
         refuse(&mut plan, "session.none", format!("{id} has no session to relaunch; use nimitz start"), Some(format!("nimitz start {id}")), Some(id.clone()));
         return plan;
     };
-    if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
+    // (a lead's live intruder is not its second session: it stays the
+    // intruder, with its own fix, and the relaunch goes on)
+    if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some() && !lead_intruder_row(m, r)) {
         let short = r.short_id.as_deref().unwrap_or(&r.session_id);
         refuse(
             &mut plan,
@@ -2350,9 +2360,14 @@ fn live_row(env: &Env, pick: impl Fn(&crate::evidence::SessionRow) -> bool) -> O
     rows.into_iter().find(|r| (r.live() || r.unreadable) && pick(r))
 }
 
-/// A live session of `id` right now: its registry job or session, or a row
-/// with its labels **in its own folder** (`cwd`). A session carrying the labels in
-/// another folder is an impostor (BUG-30) and never counts (BUG-55).
+/// A live session of `id` right now: its registry job or session, or, while
+/// the registry names no job yet (a first launch racing a concurrent start),
+/// a row with its labels **in its own folder** (`cwd`). Once the registry
+/// names a job, another labelled job in the folder is a lead's intruder or a
+/// ship's copy, never the member: counting it skipped a lead's relaunch after
+/// its stop + rm and left the stray as the lead (re-review 1). A session
+/// carrying the labels in another folder is an impostor (BUG-30) and never
+/// counts (BUG-55).
 fn live_session_of(env: &Env, id: &Id, cwd: Option<&str>) -> Option<crate::evidence::SessionRow> {
     let rec = crate::registry::load(env).identities.remove(&id.0);
     let (job, current) = (rec.as_ref().and_then(|r| r.job.clone()), rec.and_then(|r| r.session));
@@ -2363,7 +2378,7 @@ fn live_session_of(env: &Env, id: &Id, cwd: Option<&str>) -> Option<crate::evide
         (r.live() || r.unreadable)
             && (job.is_some() && r.short_id == job
                 || Some(&r.session_id) == current.as_ref()
-                || (labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
+                || (job.is_none() && labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")) == Some(&id.0) && here(r)))
     })
 }
 
