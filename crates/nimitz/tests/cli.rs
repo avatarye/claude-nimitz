@@ -325,6 +325,11 @@ fn adopt() {
     assert!(r.out.contains("labels.missing"), "warns that labels come at the next relaunch:\n{}", r.out);
     assert_eq!(sb.member("MAIN/ARGOS/FRESH")["session"]["session_id"], Value::from(stow.as_str()));
     assert_eq!(sb.run_as("MAIN/ARGOS", &["adopt", &stow, "MAIN/ARGOS/FRESH", "--yes"]).code, 1);
+    // a start of the adopted ship refuses with name.drift and labels.missing, each once (acceptance F6)
+    let r = sb.run(&["start", "MAIN/ARGOS/FRESH", "--plan"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert_eq!(r.out.matches("(name.drift)").count(), 1, "{}", r.out);
+    assert_eq!(r.out.matches("(labels.missing)").count(), 1, "{}", r.out);
 }
 
 // ------------------------------------------------------------------ caller authority

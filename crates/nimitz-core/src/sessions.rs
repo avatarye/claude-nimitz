@@ -1087,7 +1087,8 @@ fn dedup_issues(plan: &mut Plan) {
     let key = |i: &Issue| (i.code.clone(), i.id.clone(), i.message.clone());
     let mut seen = std::collections::HashSet::new();
     plan.refusals.retain(|i| seen.insert(key(i)));
-    let mut seen = std::collections::HashSet::new();
+    // an issue the gate kept as a warning and a member's own refusal name
+    // once (acceptance F6: name.drift twice on a start of an adopted ship)
     plan.warnings.retain(|i| seen.insert(key(i)));
 }
 
