@@ -28,8 +28,10 @@ pub fn detail_area(body: Rect) -> Rect {
 }
 
 pub fn draw(app: &mut App, f: &mut Frame) {
-    let area = f.area();
-    f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), area);
+    let full = f.area();
+    f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), full);
+    // the part the user sees: Herdr's overlay hides its last rows and columns
+    let area = Rect { width: full.width.saturating_sub(app.inset.1), height: full.height.saturating_sub(app.inset.0), ..full };
     // fleet tabs on top; the ADMIRALTY status bar sits right above the key bar
     let [tabs, body, top, bottom] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
@@ -281,14 +283,16 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
     let right_w: usize = right.iter().map(|s| s.content.width()).sum();
     let keys = [
         ("?", "help"),
+        // the two ways to reach a lead (jump to its pane, message it) and what
+        // waits on you, before the vim keys everyone knows
+        ("\u{23ce}", "pane"),
+        ("m", "message"),
+        ("!", "needs you"),
         ("j/k", "move"),
         ("h/l", "fold"),
-        ("\u{23ce}", "pane"),
-        ("!", "needs you"),
         ("i", "issues"),
         ("a", "start"),
         ("x", "actions"),
-        ("m", "message"),
         ("c", "create"),
         ("/", "filter"),
         ("z", "old crew"),
@@ -615,7 +619,7 @@ fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {
         Line::styled(how, st(mono::COMMENT)),
         Line::raw(""),
         // what is typed is shown as it will be sent: no control characters
-        Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(nimitz_mux::sanitize_text(text), st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
+        Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(nimitz_mux::strip_controls(text), st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
         Line::raw(""),
         Line::from(vec![Span::styled("command  ", st(mono::COMMENT)), Span::styled(crate::actions::signal_command(plan, if text.is_empty() { "..." } else { text }), bold(mono::ACCENT))]),
         keys_line(&[("enter", "send"), ("esc", "cancel"), ("ctrl-u", "clear")]),

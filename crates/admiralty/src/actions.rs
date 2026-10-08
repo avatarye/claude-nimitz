@@ -665,7 +665,7 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     }
     let Target::Member(id) = target else {
         return Err(match target {
-            Target::Stowaway(_) => "a stowaway has no chain of command; adopt it first".into(),
+            Target::Stowaway(_) => "a stowaway has no chain of command: adopt it as a ship first (x then d)".into(),
             Target::Fleet(id) | Target::Squadron(id) => return plan_message(caps, snap, panes, &Target::Member(id.clone())),
             _ => "message names a member".into(),
         });
@@ -680,28 +680,28 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     };
     if !live(via_m) {
         return Err(if relay {
-            format!("its commodore {} is not running; relay goes through it", via_m.expected_name)
+            format!("its commodore {} is not running and relays go through it: a on the commodore starts it", via_m.expected_name)
         } else {
-            "not running".into()
+            format!("{} is not running: a starts it", via_m.expected_name)
         });
     }
-    let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into", via_m.expected_name))?;
-    let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone"))?;
+    let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into: A opens its tab, then m (or nimitz signal {} <text>, which opens its tab and delivers it)", via_m.expected_name, via_m.id.0))?;
+    let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone: R refreshes"))?;
     // typed only into the pane that shows its session (a pane matched by its
     // title and folder alone may be anything, the agent view included)
     let via_sid = via_m.session.as_ref().map(|s| s.session_id.as_str());
     if !panes.iter().any(|p| p.pane.pane_id == pane_id && p.session_id.as_deref().is_some() && p.session_id.as_deref() == via_sid) {
-        return Err(format!("{}'s pane {pane_id} matches it by title only, not by its session; nothing is typed (jump there with enter and type it yourself)", via_m.expected_name));
+        return Err(format!("{}'s pane {pane_id} matches it by title only, not by its session; nothing is typed: enter jumps there to type it yourself", via_m.expected_name));
     }
     // read from its `claude attach` alone: typed into only while it runs
     // exactly that attach (checked when the message is sent)
     let attach_job = if panes.iter().any(|p| p.pane.pane_id == pane_id && p.inferred) {
-        Some(via_m.session.as_ref().and_then(|s| s.short_id.clone()).ok_or_else(|| format!("{}'s pane {pane_id} is known by its attach alone and it has no job to check it against; nothing is typed", via_m.expected_name))?)
+        Some(via_m.session.as_ref().and_then(|s| s.short_id.clone()).ok_or_else(|| format!("{}'s pane {pane_id} is known by its attach alone and it has no job to check it against; nothing is typed: enter jumps there to type it yourself", via_m.expected_name))?)
     } else {
         None
     };
     if relay && !live(m) {
-        return Err(format!("{} is not running", m.expected_name));
+        return Err(format!("{} is not running: a starts it", m.expected_name));
     }
     Ok(MessagePlan { id: id.clone(), to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, relay, attach_job })
 }
@@ -711,10 +711,11 @@ pub fn signal_command(p: &MessagePlan, text: &str) -> String {
     format!("nimitz signal {} {}", quote(&p.id.0), quote(&nimitz_mux::sanitize_text(text)))
 }
 
-/// The text typed into the pane: sanitised (no escape sequences or control
-/// characters, newlines as spaces), the same floor the Herdr adapter applies.
+/// The text typed into the pane: what the user typed, spaces as typed, with
+/// escape sequences and control characters removed (newlines as spaces), the
+/// same floor the Herdr adapter applies.
 pub fn message_text(p: &MessagePlan, text: &str) -> String {
-    let text = nimitz_mux::sanitize_text(text);
+    let text = nimitz_mux::strip_controls(text);
     if p.relay {
         format!("Relay to {} from the user: {text}", p.to)
     } else {

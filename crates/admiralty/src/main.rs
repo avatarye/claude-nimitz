@@ -18,7 +18,9 @@ const USAGE: &str = "usage:
 
 env: NIMITZ_HOME, NIMITZ_STATE, NIMITZ_CLAUDE_HOME, NIMITZ_MUX ... (contracts.md section 2),
      ADMIRALTY_ICONS=ascii (no Nerd Font), ADMIRALTY_STATE (where folds and filters are saved),
-     ADMIRALTY_EXIT_AFTER_JUMP=1 (same as --exit-after-jump: quit once a pane jump lands)";
+     ADMIRALTY_EXIT_AFTER_JUMP=1 (same as --exit-after-jump: quit once a pane jump lands),
+     ADMIRALTY_INSET=rows,cols (left blank at the bottom and right: the Herdr overlay hides them),
+     NIMITZ_NO_ANIM=1 or NO_COLOR (no status motion)";
 
 enum Source {
     Core,
@@ -101,6 +103,10 @@ fn main() -> ExitCode {
         }
     };
     let mut app = App::new(ctx, state_path, ascii);
+    // rows,cols the terminal never shows (Herdr's overlay: watch.sh sets 2,2)
+    if let Some((r, c)) = vars.get("ADMIRALTY_INSET").and_then(|v| v.split_once(',')) {
+        app.inset = (r.trim().parse().unwrap_or(0), c.trim().parse().unwrap_or(0));
+    }
     app.fixed_now = fixed_now;
     if dump {
         let mut src = make();

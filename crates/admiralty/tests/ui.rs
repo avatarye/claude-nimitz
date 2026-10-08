@@ -1559,3 +1559,91 @@ fn the_dim_glyph_passes_contrast_and_the_word_keeps_its_colour() {
     assert_eq!(buf[(x, y as u16)].fg, mono::BUSY, "the word keeps its colour");
     assert_eq!(buf[(x - 2, y as u16)].fg, BUSY_DIM, "the glyph is the dim one");
 }
+
+// ------------------------------------------------------------------ Herdr overlay (inset)
+
+/// Herdr's plugin overlay sizes the terminal to the whole tab, then draws a
+/// border inside it: the last 2 rows and 2 columns are never shown. With the
+/// inset `watch.sh` sets, the status bar and the key bar sit above that edge,
+/// and no row or box reaches into it.
+#[test]
+fn in_herdrs_overlay_the_status_and_key_bars_stay_in_view() {
+    for (w, h) in [(160u16, 44u16), (120, 30), (80, 24), (80, 12)] {
+        let mut t = demo();
+        t.app.inset = (2, 2);
+        let ls = lines(&draw(&mut t.app, w, h));
+        let (rows, cols) = (h as usize - 2, w as usize - 2);
+        assert!(ls[rows - 2].contains("ADMIRALTY"), "{w}x{h}: the status bar in view:\n{}", ls.join("\n"));
+        assert!(ls[rows - 1].contains("? help"), "{w}x{h}: the key bar in view: {}", ls[rows - 1]);
+        assert!(ls[rows..].iter().all(|l| l.trim().is_empty()), "{w}x{h}: nothing under the border:\n{}", ls[rows..].join("\n"));
+        assert!(ls.iter().all(|l| l.chars().skip(cols).all(|c| c == ' ')), "{w}x{h}: nothing under the right border");
+    }
+}
+
+// ------------------------------------------------------------------ m, message
+
+/// `m` is on the key bar at 80 columns, right after the pane jump: the two
+/// ways to reach a lead.
+#[test]
+fn the_key_bar_keeps_m_at_80_columns() {
+    let mut t = demo();
+    for w in [80u16, 100, 200] {
+        let ls = lines(&draw(&mut t.app, w, 24));
+        assert!(ls[23].contains("m message"), "{w}: {}", ls[23]);
+    }
+}
+
+/// `m` on a lead row opens the message dialog and types into the lead's pane;
+/// on a ship it is relayed by the commodore.
+#[test]
+fn m_on_a_lead_row_sends_into_its_pane() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    assert!(matches!(t.app.modal, Some(Modal::Message { .. })), "the dialog: {}", toast(&t.app));
+    keys(&mut t.app, "hello lead");
+    press(&mut t.app, KeyCode::Enter);
+    let calls = t.mux.calls.lock().unwrap().clone();
+    assert!(calls.iter().any(|c| c.starts_with("type ") && c.contains("hello lead")), "{calls:?}");
+    assert!(toast(&t.app).starts_with("Sent to"), "{}", toast(&t.app));
+}
+
+/// Where `m` cannot send, it says why and what to do.
+#[test]
+fn m_refusals_name_the_fix() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    // a stopped ship whose commodore runs, but the ship does not: relay refused
+    goto(&mut t.app, "M:MAIN/KITS/DOCS");
+    press(&mut t.app, KeyCode::Char('m'));
+    let why = toast(&t.app);
+    assert!(why.contains("not running") && why.contains("a starts it"), "{why}");
+    // a stowaway
+    t.app.show_stowaways = true;
+    t.app.rebuild();
+    let i = t.app.rows.iter().position(|r| r.node.kind == Kind::Stowaway).expect("a stowaway row");
+    t.app.cursor = i;
+    press(&mut t.app, KeyCode::Char('m'));
+    let why = toast(&t.app);
+    assert!(why.contains("adopt") && why.contains("x then d"), "{why}");
+}
+
+/// The message box shows exactly what was typed, trailing and repeated spaces
+/// included, the moment each key lands; the text sent is the same, minus
+/// control characters and escape sequences.
+#[test]
+fn the_message_box_shows_and_sends_exactly_what_was_typed() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    // one key, one frame: the space is on screen before anything follows it
+    keys(&mut t.app, "a ");
+    let s = screen(&mut t.app, 120, 30);
+    let line = s.lines().find(|l| l.contains("> a")).unwrap_or_else(|| panic!("{s}"));
+    assert!(line.contains("> a \u{2588}"), "the trailing space shows at once: {line}");
+    keys(&mut t.app, " b ");
+    let s = screen(&mut t.app, 120, 30);
+    assert!(s.contains("> a  b \u{2588}"), "repeated spaces stay:\n{s}");
+    press(&mut t.app, KeyCode::Enter);
+    let calls = t.mux.calls.lock().unwrap().clone();
+    assert!(calls.iter().any(|c| c.ends_with(" a  b ")), "sent as typed: {calls:?}");
+}

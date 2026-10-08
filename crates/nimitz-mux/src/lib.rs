@@ -339,11 +339,12 @@ pub mod fake;
 pub mod herdr;
 pub mod none;
 
-/// Text that is safe to type into an agent's pane: escape sequences (CSI, OSC,
-/// two-byte ESC) and every other C0/C1 control and DEL removed; newlines, CRs
-/// and tabs become spaces (Herdr's `agent prompt` has no paste mode, and a
-/// newline would submit early); runs of spaces collapse; ends trimmed.
-pub fn sanitize_text(text: &str) -> String {
+/// Text that is safe to type into an agent's pane, and otherwise exactly what
+/// the user typed: escape sequences (CSI, OSC, two-byte ESC) and every other
+/// C0/C1 control and DEL removed; newlines, CRs and tabs become spaces
+/// (Herdr's `agent prompt` has no paste mode, and a newline would submit
+/// early). Spaces stay as typed, repeated or trailing.
+pub fn strip_controls(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut it = text.chars().peekable();
     while let Some(c) = it.next() {
@@ -375,6 +376,13 @@ pub fn sanitize_text(text: &str) -> String {
             c => out.push(c),
         }
     }
+    out
+}
+
+/// `strip_controls`, with runs of spaces collapsed and the ends trimmed: for
+/// text built from words (a CLI's arguments), not for what a user typed.
+pub fn sanitize_text(text: &str) -> String {
+    let out = strip_controls(text);
     let mut collapsed = String::with_capacity(out.len());
     for w in out.split(' ').filter(|w| !w.is_empty()) {
         if !collapsed.is_empty() {
@@ -543,6 +551,7 @@ mod tests {
         assert_eq!(sanitize_text("\u{9b}31m red\u{7f}\u{1b}c ok\t\r\n end  "), "31m red ok end");
         assert_eq!(sanitize_text("plain text, kept: [MAIN.ARGOS]-SHIP"), "plain text, kept: [MAIN.ARGOS]-SHIP");
         assert_eq!(sanitize_text("\u{1b}[31m"), "");
+        assert_eq!(strip_controls("a  b \u{1b}[31mc\u{7}  "), "a  b c  ", "spaces as typed, controls gone");
     }
 
     #[test]

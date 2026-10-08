@@ -109,6 +109,11 @@ pub struct App {
     sq_rank: HashMap<String, u8>,
     /// squadrons whose status got worse, and the frame it happened
     sq_flash: HashMap<String, u64>,
+    /// rows and columns at the bottom and the right that the terminal never
+    /// shows: Herdr's plugin overlay sizes the terminal to the whole tab and
+    /// draws its border inside it (`ADMIRALTY_INSET`, set by the plugin's
+    /// watch.sh); nothing is drawn there
+    pub inset: (u16, u16),
     pub ctx: Ctx,
     pub bundle: Option<Bundle>,
     pub rows: Vec<Row>,
@@ -193,6 +198,7 @@ impl App {
             anim_frame: 0,
             sq_rank: HashMap::new(),
             sq_flash: HashMap::new(),
+            inset: (0, 0),
             rows: vec![],
             cursor: 0,
             scroll: 0,
@@ -1209,7 +1215,7 @@ impl App {
             Modal::Message { plan, mut text } => match k.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
-                    if nimitz_mux::sanitize_text(&text).is_empty() {
+                    if nimitz_mux::strip_controls(&text).trim().is_empty() {
                         self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::WARN));
                         self.modal = Some(Modal::Message { plan, text });
                     } else {
