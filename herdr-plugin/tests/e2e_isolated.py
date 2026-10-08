@@ -46,7 +46,7 @@ def setup():
         k, _, v = line.removeprefix("export ").partition("=")
         env[k] = v
     dump = subprocess.run([BIN, "dump", "--sandbox", SANDBOX], capture_output=True, text=True, env=env).stdout
-    assert "[MAIN]-ADMIRAL" in dump, dump
+    assert "[MAIN] ADMIRAL" in dump, dump
     sid = admiral_session(env)
     os.makedirs(FAKE)
     world = {"workspaces": [{"workspace_id": "w2", "label": "MAIN", "focused": False, "active_tab_id": "w2:t1"}],

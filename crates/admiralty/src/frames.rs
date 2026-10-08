@@ -87,6 +87,24 @@ pub fn col_widths_gap(w: u16, gap: u16) -> [u16; 5] {
 }
 
 
+/// `s` cut to `w` columns from the left (`…ARGOS]-BOLT`).
+pub fn truncate_left(s: &str, w: usize) -> String {
+    if s.width() <= w {
+        return s.to_string();
+    }
+    if w == 0 {
+        return String::new();
+    }
+    let mut kept: Vec<char> = vec![];
+    for ch in s.chars().rev() {
+        if kept.iter().collect::<String>().width() + ch.to_string().width() + 1 > w {
+            break;
+        }
+        kept.push(ch);
+    }
+    std::iter::once('\u{2026}').chain(kept.into_iter().rev()).collect()
+}
+
 pub fn truncate(s: &str, w: usize) -> String {
     if s.width() <= w {
         return s.to_string();
@@ -159,7 +177,7 @@ pub fn name_cell(r: &Row, width: usize, icons: &Icons) -> Vec<Span<'static>> {
         Span::styled(r.prefix.clone(), st(mono::DIM)),
         Span::styled(marker, st(mono::COMMENT)),
         Span::styled(format!("{} ", n.icon), n.icon_style),
-        Span::styled(pad(&truncate(&n.name, room), room), n.name_style),
+        Span::styled(pad(&if n.cut_left { truncate_left(&n.name, room) } else { truncate(&n.name, room) }, room), n.name_style),
     ]
 }
 

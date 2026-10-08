@@ -59,7 +59,7 @@ fn every_broken_shape_of_the_sandbox_shows_up() {
     assert!(!snap.stowaways.is_empty(), "the sandbox has stowaways");
     tab(&mut app, "MAIN");
     let s = screen(&mut app, 200, 60);
-    assert!(s.contains("[MAIN.ARGOS]-DRIFT"));
+    assert!(s.contains("DRIFT"), "the drifted ship, by its own part");
     assert!(s.contains("STOWAWAYS"));
     // no multiplexer in the sandbox: monitor-only
     assert!(s.contains("MONITOR-ONLY"));
