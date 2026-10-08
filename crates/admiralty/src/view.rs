@@ -537,8 +537,10 @@ fn member_node(m: &Member, v: &View) -> Node {
         full
     } else if full == m.expected_name {
         short_name(&m.id)
-    } else if let Some(rest) = own_prefix.and_then(|p| full.strip_prefix(p)) {
-        // a drift under the member's own prefix (`ANVIL-2`): the drift shows
+    } else if let Some(rest) = own_prefix.and_then(|p| full.strip_prefix(p)).filter(|rest| rest.starts_with(&short_name(&m.id))) {
+        // a drift of the member's own name (`ANVIL-2`): the drift shows; a
+        // sibling's name (`[F.SQ]-HAMMER` on ANVIL) stays in full, never a
+        // second HAMMER row
         rest.to_string()
     } else {
         full

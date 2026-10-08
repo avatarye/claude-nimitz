@@ -1334,7 +1334,7 @@ fn rows_name_only_their_own_part_inside_their_fleet_and_squadron() {
     assert!(ls.iter().any(|l| l.contains("[MAIN.ARGOS]-BOOM")), "{}", ls.join("\n"));
     // at 80 columns a search cuts the full name from the left: the own part stays
     let ls = lines(&draw(&mut t.app, 80, 40));
-    assert!(ls.iter().any(|l| l.contains("\u{2026}") && l.contains("BOOM")) || ls.iter().any(|l| l.contains("[MAIN.ARGOS]-BOOM")), "{}", ls.join("\n"));
+    assert!(ls.iter().any(|l| l.contains("\u{2026}") && l.contains("]-BOOM")), "cut from the left:\n{}", ls.join("\n"));
     // a squadron-only match: full names, and n steps through them
     press(&mut t.app, KeyCode::Esc);
     keys(&mut t.app, "/argos");
@@ -1351,4 +1351,25 @@ fn rows_name_only_their_own_part_inside_their_fleet_and_squadron() {
     tab(&mut t.app, "FORGE");
     let ls = lines(&draw(&mut t.app, 80, 60));
     assert!(ls.iter().any(|l| l.contains("ANVIL-2") && !l.contains("[FORGE.IRON]")), "{}", ls.join("\n"));
+}
+
+/// A session named after a sibling (ANVIL's session called `[F.SQ]-HAMMER`)
+/// keeps its full name: never a second HAMMER row that acts on ANVIL.
+#[test]
+fn a_session_named_after_a_sibling_keeps_its_full_name() {
+    let mut b = fixtures::demo();
+    for f in &mut b.snap.fleets {
+        for sq in &mut f.squadrons {
+            for m in sq.ships.iter_mut().filter(|m| m.id.0 == "MAIN/ARGOS/BOOM") {
+                if let Some(s) = m.session.as_mut() {
+                    s.name = "[MAIN.ARGOS]-BOLT".into();
+                }
+            }
+        }
+    }
+    let mut t = fixture_app(b, false);
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    assert_eq!(ls.iter().filter(|l| l.contains("[MAIN.ARGOS]-BOLT")).count(), 1, "{}", ls.join("\n"));
+    let boom = t.app.rows.iter().find(|r| r.node.id == "M:MAIN/ARGOS/BOOM").unwrap();
+    assert_eq!(boom.node.name, "[MAIN.ARGOS]-BOLT");
 }

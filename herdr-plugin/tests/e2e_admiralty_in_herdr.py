@@ -163,7 +163,8 @@ def main():
         shown = screen_with(apane, "[MAIN] ADMIRAL")
         # the row names only its own part (ADMIRAL) inside the [MAIN] ADMIRAL box
         row = next((l for l in shown.splitlines() if l.startswith("\u2503") and "ADMIRAL" in l and "admiral" in l), "")
-        check("the admiral row starts with Herdr's idle dot", row[2:4].startswith("○"), row)
+        # (the box's padding goes below 103 columns: the dot is at row[1] or row[2])
+        check("the admiral row starts with Herdr's idle dot", "○" in row[1:4], row)
         check("monitor-only is off inside Herdr", "MONITOR-ONLY" not in shown and "mux herdr" in shown, shown.splitlines()[0])
 
         # m: typed into the admiral's own pane
