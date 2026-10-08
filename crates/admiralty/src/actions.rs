@@ -711,10 +711,11 @@ pub fn signal_command(p: &MessagePlan, text: &str) -> String {
     format!("nimitz signal {} {}", quote(&p.id.0), quote(&nimitz_mux::sanitize_text(text)))
 }
 
-/// The text typed into the pane: sanitised (no escape sequences or control
-/// characters, newlines as spaces), the same floor the Herdr adapter applies.
+/// The text typed into the pane: what the user typed, spaces as typed, with
+/// escape sequences and control characters removed (newlines as spaces), the
+/// same floor the Herdr adapter applies.
 pub fn message_text(p: &MessagePlan, text: &str) -> String {
-    let text = nimitz_mux::sanitize_text(text);
+    let text = nimitz_mux::strip_controls(text);
     if p.relay {
         format!("Relay to {} from the user: {text}", p.to)
     } else {

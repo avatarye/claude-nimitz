@@ -616,7 +616,7 @@ fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {
         Line::styled(how, st(mono::COMMENT)),
         Line::raw(""),
         // what is typed is shown as it will be sent: no control characters
-        Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(nimitz_mux::sanitize_text(text), st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
+        Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(nimitz_mux::strip_controls(text), st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
         Line::raw(""),
         Line::from(vec![Span::styled("command  ", st(mono::COMMENT)), Span::styled(crate::actions::signal_command(plan, if text.is_empty() { "..." } else { text }), bold(mono::ACCENT))]),
         keys_line(&[("enter", "send"), ("esc", "cancel"), ("ctrl-u", "clear")]),

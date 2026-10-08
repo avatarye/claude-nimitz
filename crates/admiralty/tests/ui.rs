@@ -1373,3 +1373,24 @@ fn m_refusals_name_the_fix() {
         assert!(why.contains("adopt") && why.contains("x then d"), "{why}");
     }
 }
+
+/// The message box shows exactly what was typed, trailing and repeated spaces
+/// included, the moment each key lands; the text sent is the same, minus
+/// control characters and escape sequences.
+#[test]
+fn the_message_box_shows_and_sends_exactly_what_was_typed() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    // one key, one frame: the space is on screen before anything follows it
+    keys(&mut t.app, "a ");
+    let s = screen(&mut t.app, 120, 30);
+    let line = s.lines().find(|l| l.contains("> a")).unwrap_or_else(|| panic!("{s}"));
+    assert!(line.contains("> a \u{2588}"), "the trailing space shows at once: {line}");
+    keys(&mut t.app, " b ");
+    let s = screen(&mut t.app, 120, 30);
+    assert!(s.contains("> a  b \u{2588}"), "repeated spaces stay:\n{s}");
+    press(&mut t.app, KeyCode::Enter);
+    let calls = t.mux.calls.lock().unwrap().clone();
+    assert!(calls.iter().any(|c| c.ends_with(" a  b ")), "sent as typed: {calls:?}");
+}

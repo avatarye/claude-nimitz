@@ -1108,7 +1108,7 @@ impl App {
             Modal::Message { plan, mut text } => match k.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => {
-                    if nimitz_mux::sanitize_text(&text).is_empty() {
+                    if nimitz_mux::strip_controls(&text).trim().is_empty() {
                         self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::WARN));
                         self.modal = Some(Modal::Message { plan, text });
                     } else {
