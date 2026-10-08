@@ -512,8 +512,8 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     for (row, code) in [
-        ("[FORGE.IRON]-ANVIL-2", "dup.live"),
-        ("[FORGE.IRON]-ANVIL-2", "name.drift"),
+        ("ANVIL-2", "dup.live"),
+        ("ANVIL-2", "name.drift"),
         ("COMMODORE ", "labels.missing"),
         ("HAMMER", "copy.rows"),
         ("HAMMER", "lineage.broken"),
@@ -848,7 +848,7 @@ fn at_80x24_the_essentials_stay_on_screen() {
     let status = &ls[ls.len() - 2];
     assert!(status.contains("MONITOR-ONLY"), "the status bar, above the key bar, keeps the mux state: {status}");
     assert!(ls[23].contains("? help") && ls[23].contains("q/esc quit"), "footer keeps help and quit: {}", ls[23]);
-    let row = ls.iter().find(|l| l.contains("[FORGE.IRON]-AN") && l.contains("ship")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
+    let row = ls.iter().find(|l| l.contains("ANVIL-2") && l.contains("ship")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
     assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
     // the floating panel, opened on the same small screen
     keys(&mut t.app, "w");
@@ -1332,9 +1332,23 @@ fn rows_name_only_their_own_part_inside_their_fleet_and_squadron() {
     press(&mut t.app, KeyCode::Enter);
     let ls = lines(&draw(&mut t.app, 200, 60));
     assert!(ls.iter().any(|l| l.contains("[MAIN.ARGOS]-BOOM")), "{}", ls.join("\n"));
-    // a drifted session keeps its own name in full
+    // at 80 columns a search cuts the full name from the left: the own part stays
+    let ls = lines(&draw(&mut t.app, 80, 40));
+    assert!(ls.iter().any(|l| l.contains("\u{2026}") && l.contains("BOOM")) || ls.iter().any(|l| l.contains("[MAIN.ARGOS]-BOOM")), "{}", ls.join("\n"));
+    // a squadron-only match: full names, and n steps through them
+    press(&mut t.app, KeyCode::Esc);
+    keys(&mut t.app, "/argos");
+    press(&mut t.app, KeyCode::Enter);
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    assert!(ls.iter().any(|l| l.contains("[MAIN.ARGOS]-BOLT")), "{}", ls.join("\n"));
+    keys(&mut t.app, "n");
+    let first = t.app.current().unwrap().node.name.clone();
+    keys(&mut t.app, "n");
+    let second = t.app.current().unwrap().node.name.clone();
+    assert!(first.starts_with("[MAIN.ARGOS]-") && second.starts_with("[MAIN.ARGOS]-") && first != second, "{first} {second}");
+    // a drift under the member's own prefix shows its own part, drift and all
     press(&mut t.app, KeyCode::Esc);
     tab(&mut t.app, "FORGE");
-    let ls = lines(&draw(&mut t.app, 200, 60));
-    assert!(ls.iter().any(|l| l.contains("[FORGE.IRON]-ANVIL-2")));
+    let ls = lines(&draw(&mut t.app, 80, 60));
+    assert!(ls.iter().any(|l| l.contains("ANVIL-2") && !l.contains("[FORGE.IRON]")), "{}", ls.join("\n"));
 }

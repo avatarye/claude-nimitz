@@ -198,6 +198,9 @@ pub enum Kind {
 
 #[derive(Clone, Debug)]
 pub struct Node {
+    /// the name is cut from the left when it does not fit (a full name in a
+    /// search: its own part stays)
+    pub cut_left: bool,
     pub id: String,
     pub kind: Kind,
     /// nimitz identity this row is about (member rows and bands)
@@ -238,6 +241,7 @@ impl Node {
             kind,
             member: None,
             session_id: None,
+            cut_left: false,
             default_expand: false,
             icon: "",
             icon_style: Style::new(),
@@ -523,7 +527,22 @@ fn member_node(m: &Member, v: &View) -> Node {
     // is missing (a search across fleets), and a session that runs under
     // another name (a drift, a copy) shows that name in full
     let full = m.session.as_ref().map(|s| s.name.clone()).filter(|s| !s.is_empty()).unwrap_or(m.expected_name.clone());
-    n.name = if v.filter.trim().is_empty() && full == m.expected_name { short_name(&m.id) } else { full };
+    let searching = !v.filter.trim().is_empty();
+    // the member's own `[F.SQ]-` prefix, as its expected name carries it
+    let own_prefix = m.expected_name.strip_suffix(&short_name(&m.id)).filter(|p| p.ends_with('-'));
+    n.name = if searching {
+        // in a search the full name, cut from the left when it must be cut,
+        // so the part that tells rows apart stays
+        n.cut_left = true;
+        full
+    } else if full == m.expected_name {
+        short_name(&m.id)
+    } else if let Some(rest) = own_prefix.and_then(|p| full.strip_prefix(p)) {
+        // a drift under the member's own prefix (`ANVIL-2`): the drift shows
+        rest.to_string()
+    } else {
+        full
+    };
     n.name_style = name_style;
     n.status = (format!("{} {}", v.icons.status(m.status), status_word(m.status)), style);
     n.age = member_age(m, v.now);
@@ -602,7 +621,9 @@ fn comms_text(c: &Comms) -> String {
 }
 
 /// A member's own part of its name, for a row inside its fleet and
-/// squadron: `ADMIRAL`, `COMMODORE`, or the ship's name.
+/// squadron: `ADMIRAL`, `COMMODORE`, or the ship's name. (`layout::legacy_tab_of`
+/// says the same for a 0.3.x tab label, from the third part of the id; this
+/// takes the last, the name's own part whatever the depth.)
 pub fn short_name(id: &nimitz_core::Id) -> String {
     match id.role() {
         Role::Admiral => "ADMIRAL".into(),

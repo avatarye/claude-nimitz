@@ -160,8 +160,9 @@ def main():
         apane = [p["pane_id"] for p in hj("pane", "list")["panes"] if p["pane_id"] not in before][0]
         h("pane", "run", apane, f"NIMITZ_MUX=herdr ADMIRALTY_NO_CLIPBOARD=1 '{BIN}' --sandbox '{SB}'")
         pump(1)
-        shown = screen_with(apane, "[MAIN]-ADMIRAL")
-        row = next((l for l in shown.splitlines() if "[MAIN]-ADMIRAL" in l and "admiral" in l), "")
+        shown = screen_with(apane, "[MAIN] ADMIRAL")
+        # the row names only its own part (ADMIRAL) inside the [MAIN] ADMIRAL box
+        row = next((l for l in shown.splitlines() if l.startswith("\u2503") and "ADMIRAL" in l and "admiral" in l), "")
         check("the admiral row starts with Herdr's idle dot", row[2:4].startswith("○"), row)
         check("monitor-only is off inside Herdr", "MONITOR-ONLY" not in shown and "mux herdr" in shown, shown.splitlines()[0])
 
