@@ -85,7 +85,7 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   are errors and warnings, orange and yellow on the tab, told apart by their
   shape on a filled bar), right-aligned as a group; under 100 columns only
   needs-you and errors stay. `?` has a legend for every icon.
-- Columns NAME / STATUS / AGE / KIND / DETAIL line up across all boxes. NAME
+- Columns NAME / KIND / STATUS / AGE / DETAIL line up across all boxes. NAME
   starts with the pane dot (green working, pink blocked, grey done, plain
   idle, faint unknown) and an issue mark coloured by severity; DETAIL lists the
   issue codes.

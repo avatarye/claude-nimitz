@@ -2,7 +2,7 @@
 //! and counts; the fleet's tab already frames it), then its admiral in a
 //! heavy box (`┏━ ADMIRAL ━┓`), then a rounded box per squadron whose top
 //! border carries its title in the squadron's status colour, and a box for
-//! stowaways. Columns NAME / STATUS / AGE / KIND / DETAIL start at the same x
+//! stowaways. Columns NAME / KIND / STATUS / AGE / DETAIL start at the same x
 //! in every box, so they line up down the whole list. Spacing (blank lines
 //! between boxes, padding inside them, wider column gaps) is the first thing
 //! to go when the width or the height runs short (`Spacing`). Pure: rows in,
@@ -15,13 +15,16 @@ use unicode_width::UnicodeWidthStr;
 use crate::theme::{bold, mono, pane_color, pane_dot, severity_color, st, Icons};
 use crate::view::{Row, Section};
 
+// widths by field (drawn NAME KIND STATUS AGE DETAIL, `COL_ORDER`)
 //                 NAME STATUS AGE KIND DETAIL
-pub const COL_MIN: [u16; 5] = [24, 12, 4, 9, 0];
-pub const COL_MAX: [u16; 5] = [58, 14, 5, 10, 96];
+pub const COL_MIN: [u16; 5] = [12, 12, 4, 9, 0];
+pub const COL_MAX: [u16; 5] = [29, 14, 5, 10, 96];
+/// The order the columns are drawn in, as indexes into the width arrays.
+pub const COL_ORDER: [usize; 5] = [0, 3, 1, 2, 4];
 /// how the columns grow: the small fixed ones first, then NAME and DETAIL take
 /// turns, so a narrow window still shows some DETAIL (column, up to width)
 /// DETAIL first gets enough for an issue code or two
-const GROW: [(usize, u16); 8] = [(4, 22), (1, 14), (2, 5), (3, 10), (0, 40), (4, 40), (0, 58), (4, 96)];
+const GROW: [(usize, u16); 8] = [(4, 22), (1, 14), (2, 5), (3, 10), (0, 20), (4, 40), (0, 29), (4, 96)];
 /// The room around the content: blank lines between boxes, padding inside a
 /// box (columns each side), the gap between columns.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,7 +40,7 @@ pub const TIGHT: Spacing = Spacing { blank: false, pad: 0, gap: 1 };
 pub const ROOMY: Spacing = Spacing { blank: true, pad: 1, gap: 2 };
 /// NAME keeps this much, and DETAIL the room for an issue code or two
 /// (its first step in `GROW`), before the padding and gaps go.
-const KEEP_NAME: u16 = 40;
+const KEEP_NAME: u16 = 20;
 const KEEP_DETAIL: u16 = 22;
 
 impl Spacing {
@@ -54,7 +57,7 @@ impl Spacing {
 /// The spacing a list `width` columns wide affords: the padding and wider
 /// gaps while STATUS, AGE and KIND keep their tight widths, NAME keeps
 /// `KEEP_NAME` and DETAIL `KEEP_DETAIL` columns (or all they had tight):
-/// from 103 columns. The blank lines between boxes are on here: `layout` drops them
+/// from 83 columns. The blank lines between boxes are on here: `layout` drops them
 /// only when the list does not fit the height.
 pub fn spacing_for(width: usize) -> Spacing {
     let tight = col_widths_gap(TIGHT.inner(width) as u16, TIGHT.gap as u16);
@@ -199,7 +202,7 @@ fn body_spans(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons, fr
         .collect()
 }
 
-/// A row: NAME, STATUS, AGE, KIND, DETAIL, exactly `inner` columns wide.
+/// A row: NAME, KIND, STATUS, AGE, DETAIL, exactly `inner` columns wide.
 pub fn row_spans(r: &Row, w: &[u16; 5], inner: usize, icons: &Icons) -> Vec<Span<'static>> {
     row_spans_gap(r, w, inner, 1, icons)
 }
@@ -240,6 +243,8 @@ fn row_spans_anim(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons
     }
     let n = &r.node;
     out.push(Span::raw(sep.clone()));
+    out.push(Span::styled(pad(&truncate(&n.kind_text, w[3] as usize), w[3] as usize), st(mono::COMMENT)));
+    out.push(Span::raw(sep.clone()));
     let (glyph, status_style) = status_cell(r, frame, icons);
     let cell = pad(&truncate(&n.status.0, w[1] as usize), w[1] as usize);
     match (glyph, cell.split_once(' ')) {
@@ -252,8 +257,6 @@ fn row_spans_anim(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons
     }
     out.push(Span::raw(sep.clone()));
     out.push(Span::styled(format!("{:>width$}", truncate(&n.age, w[2] as usize), width = w[2] as usize), st(mono::COMMENT)));
-    out.push(Span::raw(sep.clone()));
-    out.push(Span::styled(pad(&truncate(&n.kind_text, w[3] as usize), w[3] as usize), st(mono::COMMENT)));
     out.push(Span::raw(sep));
     let used = spans_width(&out);
     let room = inner.saturating_sub(used);
@@ -276,8 +279,10 @@ pub fn header_line_with(width: u16, sp: Spacing) -> Line<'static> {
     let inner = sp.inner(width as usize);
     let w = col_widths_gap(inner as u16, sp.gap as u16);
     let mut spans = vec![Span::raw(" ".repeat(sp.side()))];
-    for (k, (name, cw)) in ["    NAME", "STATUS", "AGE", "KIND", "DETAIL"].iter().zip(w.iter()).enumerate() {
-        let text = if k == 2 { format!("{:>w$}", name, w = *cw as usize) } else { pad(name, *cw as usize) };
+    let names = ["    NAME", "STATUS", "AGE", "KIND", "DETAIL"];
+    for (k, &c) in COL_ORDER.iter().enumerate() {
+        let (name, cw) = (names[c], w[c]);
+        let text = if c == 2 { format!("{:>w$}", name, w = cw as usize) } else { pad(name, cw as usize) };
         spans.push(Span::styled(text, bold(mono::COMMENT)));
         if k < 4 {
             spans.push(Span::raw(" ".repeat(sp.gap)));

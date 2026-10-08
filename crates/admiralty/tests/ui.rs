@@ -115,15 +115,15 @@ fn a_squadrons_colour_is_its_worst_member_in_the_theme_order() {
     assert_eq!(c(&[with(Status::Stopped, Some(Severity::Error)), with(Status::NeedsYou, None)]), mono::NEEDS);
 }
 
-/// Spacing goes first: below 103 columns no padding and single gaps; the
+/// Spacing goes first: below 83 columns no padding and single gaps; the
 /// blank lines between boxes stay at any width while the list fits the
 /// height, and go (all of them, the one before STOWAWAYS too) when it does not.
 #[test]
 fn spacing_collapses_before_content() {
     use admiralty::frames::{spacing_for, ROOMY, TIGHT};
     assert_eq!(spacing_for(200), ROOMY);
-    assert_eq!(spacing_for(103), ROOMY);
-    assert_eq!((spacing_for(102).pad, spacing_for(102).gap), (TIGHT.pad, TIGHT.gap));
+    assert_eq!(spacing_for(83), ROOMY);
+    assert_eq!((spacing_for(82).pad, spacing_for(82).gap), (TIGHT.pad, TIGHT.gap));
     assert_eq!((spacing_for(80).pad, spacing_for(80).gap), (TIGHT.pad, TIGHT.gap));
     for w in [56, 55, 50, 30] {
         assert_eq!((spacing_for(w).pad, spacing_for(w).gap), (TIGHT.pad, TIGHT.gap), "{w}: no spacing where columns are cut");
