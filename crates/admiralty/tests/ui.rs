@@ -1673,6 +1673,52 @@ fn a_multi_line_paste_stays_in_the_message_box() {
     keys(&mut t.app, "/");
     t.app.on_paste("bs\nim");
     assert_eq!(t.app.filter, "bs im");
+    // a lone CR (some terminals send a pasted line break as one) is a break too
+    press(&mut t.app, KeyCode::Esc);
+    press(&mut t.app, KeyCode::Esc);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    t.app.on_paste("one\rtwo");
+    let Some(Modal::Message { text, .. }) = &t.app.modal else { panic!("the box is open") };
+    assert_eq!(text, "one two");
+}
+
+/// A paste into a form: a one-line field takes it as one line, a long field
+/// keeps its lines (CRLF and a lone CR become \n), a fixed or choice field
+/// takes nothing, and the form is checked as after a key.
+#[test]
+fn a_paste_into_a_form_keeps_long_lines_and_is_validated() {
+    use admiralty::forms::Form;
+    let mut f = Form::new_squadron("MAIN");
+    f.focus = 1;
+    f.paste("OPS\nTWO");
+    assert_eq!(f.fields[1].value, "OPS TWO");
+    f.focus = 3;
+    f.paste("line one\r\nline two\rline three\nend");
+    assert_eq!(f.fields[3].value, "line one\nline two\nline three\nend");
+    f.focus = 0;
+    f.paste("X");
+    assert_eq!(f.fields[0].value, "MAIN", "a fixed field takes nothing");
+
+    let mut t = demo();
+    keys(&mut t.app, "c");
+    keys(&mut t.app, "f");
+    t.app.on_paste("lab2");
+    let Some(Modal::Form(f)) = &t.app.modal else { panic!() };
+    assert_eq!(f.fields[0].value, "lab2");
+    assert!(f.fields[0].error.as_deref().is_some_and(|e| e.contains("UPPERCASE")), "checked without a key");
+}
+
+/// A dialog that is not for text ignores a paste: a pasted "y" never confirms.
+#[test]
+fn a_paste_into_a_confirm_dialog_does_nothing() {
+    let mut t = demo();
+    goto(&mut t.app, "M:MAIN/KITS/DOCS");
+    keys(&mut t.app, "a");
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))));
+    assert!(t.app.on_paste("y\n").is_none());
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "still asking");
+    assert!(t.mux.calls.lock().unwrap().iter().all(|c| !c.starts_with("type ")));
 }
 
 /// $EDITOR inside Herdr's overlay sees the terminal minus the inset, so its

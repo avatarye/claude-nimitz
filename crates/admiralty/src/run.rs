@@ -6,7 +6,7 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyModifiers};
 
 use crate::actions::Pending;
 use crate::app::{App, Effect};
@@ -20,6 +20,16 @@ type Term = ratatui::Terminal<crate::backend::GlyphSafe<ratatui::backend::Crosst
 /// a backend that keeps positions right whatever the terminal's glyph widths.
 fn init_terminal() -> std::io::Result<Term> {
     drop(ratatui::init());
+    // a panic restores the terminal through ratatui's hook; this one turns
+    // bracketed paste off first (installed once: init runs again after $EDITOR)
+    static PASTE_HOOK: std::sync::Once = std::sync::Once::new();
+    PASTE_HOOK.call_once(|| {
+        let next = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::DisableBracketedPaste);
+            next(info);
+        }));
+    });
     // a paste arrives whole (Event::Paste), never as keystrokes
     let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::EnableBracketedPaste);
     ratatui::Terminal::new(crate::backend::GlyphSafe(ratatui::backend::CrosstermBackend::new(std::io::stdout())))
@@ -66,7 +76,7 @@ pub fn editor_size(real: (u16, u16), inset: (u16, u16)) -> (u16, u16) {
 
 /// Run `f` with the terminal's size shrunk by `inset` (TIOCSWINSZ on stdout),
 /// then put the size back: an editor in Herdr's overlay keeps its last lines
-/// in view.
+/// in view. A size the terminal set while the editor ran (a resize) is kept.
 fn with_inset_size<T>(inset: (u16, u16), f: impl FnOnce() -> T) -> T {
     use std::os::unix::io::AsRawFd;
     if inset == (0, 0) {
@@ -83,7 +93,11 @@ fn with_inset_size<T>(inset: (u16, u16), f: impl FnOnce() -> T) -> T {
     ws.ws_col = cols;
     unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
     let out = f();
-    unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &real) };
+    let mut now: libc::winsize = unsafe { std::mem::zeroed() };
+    let resized = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut now) } == 0 && (now.ws_row, now.ws_col) != (rows, cols);
+    if !resized {
+        unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &real) };
+    }
     out
 }
 
@@ -152,8 +166,8 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
     app.anim_live = !app.anim_env_off;
     let started = Instant::now();
     let tick = Duration::from_millis(crate::theme::anim::TICK_MS);
-    // keys typed before the first data lands, replayed once it does
-    let mut early: Vec<KeyEvent> = vec![];
+    // keys and pastes before the first data lands, replayed in order once it does
+    let mut early: Vec<Event> = vec![];
     let result = 'main: loop {
         // the frame first: a refresh below stamps a bar's pulse with this frame
         let frame = (started.elapsed().as_millis() / tick.as_millis()) as u64;
@@ -170,8 +184,13 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
         if let Some(b) = latest {
             app.apply(b);
             dirty = true;
-            for k in std::mem::take(&mut early) {
-                if let Some(e) = app.on_key(k) {
+            for ev in std::mem::take(&mut early) {
+                let out = match ev {
+                    Event::Paste(text) => app.on_paste(&text),
+                    Event::Key(k) => app.on_key(k),
+                    _ => None,
+                };
+                if let Some(e) = out {
                     if effect(&mut app, e, &mut terminal, &cmd_tx, &done_tx) {
                         break 'main Ok(());
                     }
@@ -209,6 +228,10 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
             Err(e) => break Err(e),
         };
         dirty = true;
+        if matches!(ev, Event::Paste(_)) && app.bundle.is_none() {
+            early.push(ev);
+            continue;
+        }
         if let Event::Paste(text) = &ev {
             if let Some(e) = app.on_paste(text) {
                 if effect(&mut app, e, &mut terminal, &cmd_tx, &done_tx) {
@@ -220,7 +243,7 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
         let Event::Key(k) = ev else { continue };
         let ctrl_c = k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL);
         if app.bundle.is_none() && !ctrl_c {
-            early.push(k);
+            early.push(Event::Key(k));
             continue;
         }
         if let Some(e) = app.on_key(k) {

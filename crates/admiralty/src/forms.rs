@@ -255,12 +255,13 @@ impl Form {
     }
 
     /// A paste into the focused text field: a one-line field takes it as one
-    /// line (newlines become spaces), a long one keeps its lines.
+    /// line (newlines become spaces), a long one keeps its lines (CRLF and a
+    /// lone CR, which some terminals paste for a line break, become \n).
     pub fn paste(&mut self, text: &str) {
         let f = &mut self.fields[self.focus];
         match f.kind {
             FieldKind::Text => f.value.push_str(&crate::app::one_line(text)),
-            FieldKind::Long => f.value.push_str(&text.replace("\r\n", "\n")),
+            FieldKind::Long => f.value.push_str(&text.replace("\r\n", "\n").replace('\r', "\n")),
             _ => {}
         }
     }

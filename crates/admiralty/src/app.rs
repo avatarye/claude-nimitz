@@ -931,15 +931,18 @@ impl App {
 
     // ---------------------------------------------------------------- keys
 
-    /// Handle one key; returns work the run loop must do. Sticky state is
-    /// saved after every key that changed it.
     /// A paste (the terminal's bracketed paste): it lands whole where text is
     /// typed (the `m` box and the filter as one line, a form's field), and is
     /// never read as keys anywhere else.
     pub fn on_paste(&mut self, text: &str) -> Option<Effect> {
         match self.modal.as_mut() {
             Some(Modal::Message { text: box_text, .. }) => box_text.push_str(&one_line(text)),
-            Some(Modal::Form(form)) => form.paste(text),
+            Some(Modal::Form(form)) => {
+                form.paste(text);
+                if let Some(b) = &self.bundle {
+                    form.validate(&self.ctx.env, &b.snap);
+                }
+            }
             Some(_) => {}
             None if self.editing_filter => {
                 self.filter.push_str(&one_line(text));
@@ -947,18 +950,27 @@ impl App {
             }
             None => self.notify("A paste goes into the message box (m), a form or the filter (/); here it is ignored", st(mono::COMMENT)),
         }
+        self.after_input();
         None
     }
 
+    /// Handle one key; returns work the run loop must do. Sticky state is
+    /// saved after every key that changed it.
     pub fn on_key(&mut self, k: KeyEvent) -> Option<Effect> {
         let effect = self.handle_key(k);
+        self.after_input();
+        effect
+    }
+
+    /// After a key or a paste: save sticky state, and start the detail at
+    /// the top when the cursor's row changed.
+    fn after_input(&mut self) {
         self.persist();
         let now = self.current().map(|r| r.node.id.clone());
         if now != self.detail_for {
             self.detail_for = now;
             self.detail_scroll = 0;
         }
-        effect
     }
 
     fn handle_key(&mut self, k: KeyEvent) -> Option<Effect> {
