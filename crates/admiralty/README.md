@@ -45,7 +45,10 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   counted). The admiral is the first row inside.
 - A rounded frame per squadron inside its fleet, with its comms rule; ships
   are rows; crew, tasks and extra job rows sit under their member with tree
-  guides.
+  guides. Crew show while running and for 30 minutes after they
+  finish (a nested crew follows its parent; a running one keeps its parent in
+  view); older finished crew fold into one `+N finished` row per member, which
+  `z` (or space on it) opens and closes, kept in the saved state.
 - A STOWAWAYS frame for unlabelled sessions in fleet scope, on the tab of
   the fleet that holds them (a member's folder, else the fleet's own folder,
   else the fleet its `legacy` issue names; `unassigned` otherwise). A session of

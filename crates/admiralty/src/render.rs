@@ -269,6 +269,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
         ("m", "message"),
         ("c", "create"),
         ("/", "filter"),
+        ("z", "old crew"),
         ("f/F", "filters"),
         ("I", "stowaways"),
         ("w", "detail"),

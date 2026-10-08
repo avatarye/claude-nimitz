@@ -35,7 +35,7 @@ pub fn art_for(n: &Node) -> Art {
         Kind::ExtraRow => Art::StaleRow,
         Kind::Note => Art::Issue,
         Kind::Crew if n.kind_text == "teammate" => Art::Teammate,
-        Kind::Crew => Art::Crew,
+        Kind::Crew | Kind::CrewFold => Art::Crew,
         Kind::Task if n.status.0 == "completed" => Art::TaskDone,
         Kind::Task if n.status.0 == "in progress" => Art::TaskWip,
         Kind::Task => Art::TaskTodo,
@@ -121,6 +121,14 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             blank(),
             Line::styled("On a stowaway: d adopt it as a ship, x rm its job row,", st(mono::SOFT)),
             Line::styled("A attach to it. I hides this group.", st(mono::SOFT)),
+        ],
+        (Kind::CrewFold, _) => vec![
+            Line::styled(r.node.name.clone(), bold(mono::FG)),
+            blank(),
+            kv("last write", format!("{} ago", r.node.age)),
+            blank(),
+            Line::styled(format!("Crew of this conversation that finished over {} min ago.", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::SOFT)),
+            Line::styled("z (or space) shows or hides them; the choice is kept per member.", st(mono::SOFT)),
         ],
         (Kind::Crew, _) => vec![
             Line::styled(r.node.name.clone(), bold(mono::FG)),

@@ -185,6 +185,9 @@ pub enum Kind {
     StowBand,
     Member(Role),
     Crew,
+    /// a member's finished crew older than `CREW_RECENT_S`, folded into one
+    /// `+N finished` row (`z` opens and closes it)
+    CrewFold,
     Task,
     /// an extra job row of the identity (copy, stale row)
     ExtraRow,
@@ -353,7 +356,21 @@ fn crew_node(parent: &str, c: &Crew, kids: &HashMap<String, Vec<&Crew>>, now: f6
     n
 }
 
-fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons) -> Vec<Node> {
+/// Finished crew stay in view this long after their last write; older ones
+/// fold into the member's `+N finished` row. A conversation that lives for
+/// days keeps every crew it ever ran: the list only grows.
+pub const CREW_RECENT_S: f64 = 30.0 * 60.0;
+
+/// The id of member `parent`'s `+N finished` row.
+pub fn crew_fold_id(parent: &str) -> String {
+    format!("CF:{parent}")
+}
+
+/// A member's crew as a tree: (children by parent id, the roots), each root
+/// with whether it shows (`true`) or folds into `+N finished`: it shows while
+/// it runs, for `CREW_RECENT_S` after it finished, while any of its nested
+/// crew runs, or while the name filter `q` matches it or a nested crew.
+fn crew_roots<'a>(crew: &'a [Crew], now: f64, q: &str) -> (HashMap<String, Vec<&'a Crew>>, Vec<(&'a Crew, bool)>) {
     let ids: std::collections::HashSet<&str> = crew.iter().map(|c| c.agent_id.as_str()).collect();
     let mut kids: HashMap<String, Vec<&Crew>> = HashMap::new();
     let mut roots: Vec<&Crew> = vec![];
@@ -363,9 +380,63 @@ fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons) -> Vec<Node>
             None => roots.push(c),
         }
     }
-    let mut out: Vec<Node> = roots.iter().map(|c| crew_node(parent, c, &kids, now, icons, 0)).collect();
-    out.sort_by(|a, b| a.kind_text.cmp(&b.kind_text).then(a.name.cmp(&b.name)));
-    out
+    fn subtree<'a>(c: &'a Crew, kids: &HashMap<String, Vec<&'a Crew>>, depth: usize, out: &mut Vec<&'a Crew>) {
+        out.push(c);
+        if depth < 32 {
+            for k in kids.get(&c.agent_id).into_iter().flatten() {
+                subtree(k, kids, depth + 1, out);
+            }
+        }
+    }
+    let judged = roots
+        .into_iter()
+        .map(|c| {
+            let mut all = vec![];
+            subtree(c, &kids, 0, &mut all);
+            let visible = c.running || now - c.last_write < CREW_RECENT_S || all.iter().any(|x| x.running) || (!q.is_empty() && all.iter().any(|x| x.label.to_lowercase().contains(q)));
+            (c, visible)
+        })
+        .collect();
+    (kids, judged)
+}
+
+/// How many top-level crew of `crew` fold into `+N finished` under the
+/// name filter `q` (lowercase; empty for none).
+pub fn folded_crew(crew: &[Crew], now: f64, q: &str) -> usize {
+    crew_roots(crew, now, q).1.iter().filter(|(_, v)| !v).count()
+}
+
+fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons, q: &str) -> Vec<Node> {
+    let (kids, roots) = crew_roots(crew, now, q);
+    let (mut shown, mut old): (Vec<Node>, Vec<Node>) = (vec![], vec![]);
+    let mut youngest = 0.0f64;
+    for (c, visible) in roots {
+        let node = crew_node(parent, c, &kids, now, icons, 0);
+        if visible {
+            shown.push(node);
+        } else {
+            youngest = youngest.max(c.last_write);
+            old.push(node);
+        }
+    }
+    let by = |a: &Node, b: &Node| a.kind_text.cmp(&b.kind_text).then(a.name.cmp(&b.name));
+    shown.sort_by(by);
+    if !old.is_empty() {
+        old.sort_by(by);
+        let style = st(mono::COMMENT);
+        let mut n = Node::new(crew_fold_id(parent), Kind::CrewFold);
+        n.icon = icons.crew;
+        n.icon_style = style;
+        n.name = format!("+{} finished", old.len());
+        n.name_style = style;
+        n.status = (". finished".into(), style);
+        n.age = if youngest > 0.0 { age_or_unknown(now - youngest) } else { "?".into() };
+        n.kind_text = "crew".into();
+        n.detail = vec![Span::styled(format!("finished over {} min ago; z shows them", (CREW_RECENT_S / 60.0) as u64), style)];
+        n.children = old;
+        shown.push(n);
+    }
+    shown
 }
 
 fn task_node(parent: &str, t: &Task, icons: &Icons) -> Node {
@@ -477,7 +548,7 @@ fn member_node(m: &Member, v: &View) -> Node {
         }
     }
     let key = m.id.0.clone();
-    n.children = crew_nodes(&key, &m.crew, v.now, v.icons);
+    n.children = crew_nodes(&key, &m.crew, v.now, v.icons, &v.filter.trim().to_lowercase());
     n.children.extend(m.tasks.iter().map(|t| task_node(&key, t, v.icons)));
     n.children.extend(m.extra_rows.iter().map(|s| extra_row_node(&key, s, v.now, v.icons)));
     n.default_expand = m.crew.iter().any(|c| c.running) || m.extra_rows.iter().any(|s| s.pid.is_some());

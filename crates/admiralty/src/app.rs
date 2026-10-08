@@ -131,6 +131,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("ctrl-d / ctrl-u", "half page down / up"),
     ("ctrl-e / ctrl-y", "scroll the detail panel (when open)"),
     ("space", "fold / unfold"),
+    ("z", "show / hide the member's crew that finished over 30 min ago (+N finished)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane (else fold / unfold)"),
     ("J / K", "next / previous row with a pane"),
@@ -452,6 +453,46 @@ impl App {
             self.set_expanded(&r.node.id, true);
         } else if self.cursor + 1 < self.rows.len() {
             self.cursor += 1;
+        }
+    }
+
+    /// `z`: open or close the `+N finished` row of the member the cursor is
+    /// in (its own row, a crew row, or the fold); kept in the saved state.
+    fn toggle_crew_fold(&mut self) {
+        let Some(id) = self.current().map(|r| r.node.id.clone()) else { return };
+        // member ids never hold a `:` (config: [A-Z0-9_] parts joined by `/`)
+        let member = if let Some(m) = id.strip_prefix("M:").or_else(|| id.strip_prefix("CF:")) {
+            m.to_string()
+        } else if let Some((m, _)) = id.strip_prefix("C:").and_then(|r| r.split_once(':')) {
+            m.to_string()
+        } else {
+            self.notify("z: put the cursor on a member or its crew", st(mono::WARN));
+            return;
+        };
+        let now = self.now();
+        let q = self.filter.trim().to_lowercase();
+        let count = |q: &str| self.bundle.as_ref().and_then(|b| b.snap.fleets.iter().flat_map(crate::view::fleet_members).find(|m| m.id.0 == member).map(|m| crate::view::folded_crew(&m.crew, now, q))).unwrap_or(0);
+        if count(&q) == 0 && count("") > 0 {
+            self.notify(format!("the filter shows every old crew of {member}; esc clears it"), st(mono::COMMENT));
+            return;
+        }
+        if count("") == 0 {
+            self.notify(format!("{member} has no crew that finished over {} min ago", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::COMMENT));
+            return;
+        }
+        let fold = crate::view::crew_fold_id(&member);
+        let mrow = format!("M:{member}");
+        let member_open = self.rows.iter().find(|r| r.node.id == mrow).map(|r| r.expanded).unwrap_or(false);
+        // a collapsed member opens with its fold, so the fold is in view
+        let open = !member_open || !self.expanded.get(&fold).copied().unwrap_or(false);
+        if open {
+            self.expanded.insert(mrow, true);
+        }
+        self.expanded.insert(fold.clone(), open);
+        self.rebuild();
+        // closed with the cursor inside it: the cursor goes to the fold row
+        if !open && !self.rows.iter().any(|r| r.node.id == id) {
+            self.goto_id(&fold);
         }
     }
 
@@ -850,6 +891,7 @@ impl App {
                 }
                 self.toggle();
             }
+            (KeyCode::Char('z'), false) => self.toggle_crew_fold(),
             (KeyCode::Char('/'), _) => self.editing_filter = true,
             (KeyCode::Esc, _) => {
                 if self.detail_open {
