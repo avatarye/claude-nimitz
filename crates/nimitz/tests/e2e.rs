@@ -47,19 +47,24 @@ fn gated() -> bool {
     false
 }
 
-/// The cheapest model the user's own settings let a session pick: Claude
-/// Code swaps a `--model` outside `availableModels` for the default (Opus)
-/// without failing, which made every e2e session an Opus one. `haiku` when
-/// the list allows it (or there is none), else `sonnet`, else its first
-/// entry; `NIMITZ_E2E_MODEL` overrides.
+/// The cheapest model the settings let a session pick: Claude Code swaps a
+/// `--model` outside `availableModels` for the account default (Opus here)
+/// without failing, which made every e2e session an Opus one. The list is
+/// the managed one when there is one (it replaces the rest), else the
+/// user's; `haiku` when it allows that (or there is no list), else
+/// `sonnet`, else its first entry (not necessarily cheap). `NIMITZ_E2E_MODEL`
+/// overrides (a family name or a model id; `e2e_00` checks the transcript).
 fn cheap_model() -> String {
     if let Some(m) = std::env::var("NIMITZ_E2E_MODEL").ok().filter(|m| !m.is_empty()) {
         return m;
     }
-    let list: Vec<String> = std::fs::read(home().join(".claude/settings.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|v| v["availableModels"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_lowercase)).collect()))
+    let read = |p: PathBuf| -> Option<Vec<String>> {
+        std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v["availableModels"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_lowercase)).collect()))
+    };
+    let list = ["/etc/claude-code/managed-settings.json", "/Library/Application Support/ClaudeCode/managed-settings.json"]
+        .into_iter()
+        .find_map(|p| read(PathBuf::from(p)))
+        .or_else(|| read(home().join(".claude/settings.json")))
         .unwrap_or_default();
     let allows = |fam: &str| list.is_empty() || list.iter().any(|m| m == fam || m.contains(&format!("-{fam}")) || m.starts_with(fam));
     for fam in ["haiku", "sonnet"] {
@@ -140,7 +145,7 @@ impl E2e {
         // call to `nimitz-calls.log` first); `claude-cheap` adds the model to a
         // cold launch (the native binary stays flag-free for wakes)
         executable(&base.join("bin/nimitz"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{EXE}' \"$@\"\n", base.join("nimitz-calls.log").display()));
-        executable(&base.join("bin/claude-cheap"), &format!("#!/bin/sh\nexec '{native}' --model {} \"$@\"\n", cheap_model()));
+        executable(&base.join("bin/claude-cheap"), &format!("#!/bin/sh\nexec '{native}' --model '{}' \"$@\"\n", cheap_model()));
         let b = |x: &str| base.join(x).to_string_lossy().into_owned();
         let vars: HashMap<String, String> = [
             ("HOME", home().to_string_lossy().into_owned()),
@@ -1263,7 +1268,7 @@ fn e2e_15_accept_cli18_a_held_member_gives_held_only() {
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
     w.ok(&["stop", &w.ship(), "--yes"]);
     w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
-    w.tmux_run(&w.ship_dir(), &format!("'{}' --model {} --resume {sid}", w.native, cheap_model()), "\u{276f}");
+    w.tmux_run(&w.ship_dir(), &format!("'{}' --model '{}' --resume {sid}", w.native, cheap_model()), "\u{276f}");
     let held = w.wait(45, || Some(w.member_issues(&w.ship())).filter(|v| v.iter().any(|(c, _)| c == "held")));
     let codes = held.expect("held").into_iter().map(|(c, _)| c).collect::<Vec<_>>();
     println!("cli-18 issues: {codes:?}");
@@ -1293,7 +1298,7 @@ fn e2e_16_accept_clil8_an_interactive_namesake_is_the_leads_intruder_only() {
     w.fleet_with_ship(OK_PROMPT, "default");
     let adm = w.fleet.clone();
     let name = nimitz_core::Id(adm.clone()).name();
-    w.tmux_run(&w.fleet_dir().join("admiral"), &format!("'{}' --model {} --name '{name}'", w.native, cheap_model()), "\u{276f}");
+    w.tmux_run(&w.fleet_dir().join("admiral"), &format!("'{}' --model '{}' --name '{name}'", w.native, cheap_model()), "\u{276f}");
     let got = w.wait(45, || Some(w.member_issues(&adm)).filter(|v| v.iter().any(|(c, _)| c == "lead.intruder"))).expect("lead.intruder");
     println!("cli-L8 issues: {got:?}");
     assert!(!got.iter().any(|(c, _)| c == "name.taken" || c == "dup.live"), "{got:?}");
@@ -1436,7 +1441,7 @@ fn e2e_21_accept_3_8_a_fork_of_a_lead_is_its_intruder() {
 }
 
 /// The e2e sessions run on the cheap model they ask for: a `--model` the
-/// user's `availableModels` does not allow is swapped for the default (Opus)
+/// user's `availableModels` does not allow is swapped for the account default (Opus here)
 /// without an error, so the suite checks what the transcript says.
 #[test]
 fn e2e_00_sessions_run_on_the_cheap_model() {
@@ -1454,8 +1459,11 @@ fn e2e_00_sessions_run_on_the_cheap_model() {
     let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();
     let t = std::fs::read_to_string(w.transcript(&dir, &sid).expect("transcript")).unwrap();
-    let models: Vec<String> = t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["type"] == "assistant").filter_map(|v| v["message"]["model"].as_str().map(String::from)).collect();
-    println!("[OK] asked for {}, ran on {models:?}", cheap_model());
-    assert!(!models.is_empty() && models.iter().all(|m| m.contains(&cheap_model())), "asked for {}, ran on {models:?}", cheap_model());
+    // (`<synthetic>` lines are Claude Code's own, for an API error or an interrupt)
+    let models: Vec<String> = t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["type"] == "assistant").filter_map(|v| v["message"]["model"].as_str().map(str::to_lowercase)).filter(|m| m != "<synthetic>").collect();
+    let want = cheap_model().to_lowercase();
+    let want = want.split('[').next().unwrap_or("").to_string();
+    println!("[OK] asked for {want}, ran on {models:?}");
+    assert!(!models.is_empty() && models.iter().all(|m| m.contains(&want)), "asked for {want}, ran on {models:?} (NIMITZ_E2E_MODEL must be a family name or a model id)");
     w.finish();
 }
