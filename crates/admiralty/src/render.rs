@@ -28,8 +28,10 @@ pub fn detail_area(body: Rect) -> Rect {
 }
 
 pub fn draw(app: &mut App, f: &mut Frame) {
-    let area = f.area();
-    f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), area);
+    let full = f.area();
+    f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), full);
+    // the part the user sees: Herdr's overlay hides its last rows and columns
+    let area = Rect { width: full.width.saturating_sub(app.inset.1), height: full.height.saturating_sub(app.inset.0), ..full };
     // fleet tabs on top; the ADMIRALTY status bar sits right above the key bar
     let [tabs, body, top, bottom] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
@@ -284,11 +286,12 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
         ("j/k", "move"),
         ("h/l", "fold"),
         ("\u{23ce}", "pane"),
+        // the two ways to reach a lead: jump to its pane, or message it
+        ("m", "message"),
         ("!", "needs you"),
         ("i", "issues"),
         ("a", "start"),
         ("x", "actions"),
-        ("m", "message"),
         ("c", "create"),
         ("/", "filter"),
         ("z", "old crew"),

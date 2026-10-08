@@ -101,6 +101,10 @@ fn main() -> ExitCode {
         }
     };
     let mut app = App::new(ctx, state_path, ascii);
+    // rows,cols the terminal never shows (Herdr's overlay: watch.sh sets 2,2)
+    if let Some((r, c)) = vars.get("ADMIRALTY_INSET").and_then(|v| v.split_once(',')) {
+        app.inset = (r.trim().parse().unwrap_or(0), c.trim().parse().unwrap_or(0));
+    }
     app.fixed_now = fixed_now;
     if dump {
         let mut src = make();

@@ -90,6 +90,11 @@ pub struct Saved {
 }
 
 pub struct App {
+    /// rows and columns at the bottom and the right that the terminal never
+    /// shows: Herdr's plugin overlay sizes the terminal to the whole tab and
+    /// draws its border inside it (`ADMIRALTY_INSET`, set by the plugin's
+    /// watch.sh); nothing is drawn there
+    pub inset: (u16, u16),
     pub ctx: Ctx,
     pub bundle: Option<Bundle>,
     pub rows: Vec<Row>,
@@ -157,6 +162,7 @@ impl App {
         let mut app = App {
             ctx,
             bundle: None,
+            inset: (0, 0),
             rows: vec![],
             cursor: 0,
             scroll: 0,

@@ -5,6 +5,7 @@
 #   ADMIRALTY_ARGS              extra arguments, word-split (e.g. "--sandbox /tmp/aw-sb");
 #                               when unset, read from $HERDR_PLUGIN_CONFIG_DIR/args
 #   ADMIRALTY_EXIT_AFTER_JUMP   1 (default here): close the overlay once enter jumps to a pane
+#   ADMIRALTY_INSET             rows,cols the overlay hides at its bottom and right (default here: 2,2)
 # The ADMIRALTY_WATCH_* names of nimitz 0.3.0 still work when the new ones are unset.
 
 bin=${ADMIRALTY_BIN:-${ADMIRALTY_WATCH_BIN:-}}
@@ -31,6 +32,12 @@ fi
 
 ADMIRALTY_EXIT_AFTER_JUMP=${ADMIRALTY_EXIT_AFTER_JUMP:-${ADMIRALTY_WATCH_EXIT_AFTER_JUMP:-1}}
 export ADMIRALTY_EXIT_AFTER_JUMP
+# Herdr (0.9.3) sizes an overlay's terminal to the whole tab and draws the
+# overlay's border inside it: the last 2 rows and 2 columns never show. Admiralty
+# draws nothing there (its status and key bars stay in view). 0,0 once Herdr
+# shrinks the terminal itself.
+ADMIRALTY_INSET=${ADMIRALTY_INSET:-2,2}
+export ADMIRALTY_INSET
 unset ADMIRALTY_WATCH_EXIT_AFTER_JUMP
 # shellcheck disable=SC2086 # ADMIRALTY_ARGS is a word list on purpose
 exec "$bin" ${ADMIRALTY_ARGS:-}
