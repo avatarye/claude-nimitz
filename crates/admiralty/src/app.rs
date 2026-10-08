@@ -131,6 +131,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("ctrl-d / ctrl-u", "half page down / up"),
     ("ctrl-e / ctrl-y", "scroll the detail panel (when open)"),
     ("space", "fold / unfold"),
+    ("z", "show / hide the member's crew that finished over 30 min ago (+N finished)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane (else fold / unfold)"),
     ("J / K", "next / previous row with a pane"),
@@ -452,6 +453,37 @@ impl App {
             self.set_expanded(&r.node.id, true);
         } else if self.cursor + 1 < self.rows.len() {
             self.cursor += 1;
+        }
+    }
+
+    /// `z`: open or close the `+N finished` row of the member the cursor is
+    /// in (its own row, a crew row, or the fold); kept in the saved state.
+    fn toggle_crew_fold(&mut self) {
+        let Some(id) = self.current().map(|r| r.node.id.clone()) else { return };
+        let member = if let Some(m) = id.strip_prefix("M:").or_else(|| id.strip_prefix("CF:")) {
+            m.to_string()
+        } else if let Some((m, _)) = id.strip_prefix("C:").and_then(|r| r.rsplit_once(':')) {
+            m.to_string()
+        } else {
+            self.notify("z: put the cursor on a member or its crew", st(mono::WARN));
+            return;
+        };
+        let fold = crate::view::crew_fold_id(&member);
+        let open = !self.expanded.get(&fold).copied().unwrap_or(false);
+        // the member's own row opens with it, so the fold is in view
+        if open {
+            self.expanded.insert(format!("M:{member}"), true);
+        }
+        self.expanded.insert(fold.clone(), open);
+        self.rebuild();
+        if !self.rows.iter().any(|r| r.node.id == fold) {
+            self.expanded.remove(&fold);
+            self.notify(format!("{member} has no crew that finished over {} min ago", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::COMMENT));
+            return;
+        }
+        // closed with the cursor inside it: the cursor goes to the fold row
+        if !open && !self.rows.iter().any(|r| r.node.id == id) {
+            self.goto_id(&fold);
         }
     }
 
@@ -850,6 +882,7 @@ impl App {
                 }
                 self.toggle();
             }
+            (KeyCode::Char('z'), _) => self.toggle_crew_fold(),
             (KeyCode::Char('/'), _) => self.editing_filter = true,
             (KeyCode::Esc, _) => {
                 if self.detail_open {

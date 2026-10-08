@@ -958,3 +958,88 @@ fn the_state_filter_hides_squadrons_on_a_fleet_tab() {
     assert!(t.app.rows.iter().any(|r| r.node.id == "F:MAIN"), "the fleet itself stays on its tab");
     assert!(t.app.rows.iter().any(|r| r.node.name.contains("hidden by the state filter")), "a note says what is hidden");
 }
+
+// ------------------------------------------------------------------ crew window
+
+fn crew_of(id: &str, parent: Option<&str>, label: &str, running: bool, age_s: f64) -> nimitz_core::Crew {
+    nimitz_core::Crew { agent_id: id.into(), parent_id: parent.map(String::from), label: label.into(), agent_type: Some("general-purpose".into()), teammate: false, running, last_write: fixtures::NOW - age_s }
+}
+
+/// The demo's BOLT, with crew of every age: running (sa-1, its child sa-2),
+/// finished 10 min ago, finished 40 min ago (sa-3), finished 3 h ago, and a
+/// 5 h old crew whose nested child still runs.
+fn crew_world() -> (admiralty::data::Bundle, String) {
+    let mut b = fixtures::demo();
+    let mut id = String::new();
+    for f in &mut b.snap.fleets {
+        for sq in &mut f.squadrons {
+            for m in &mut sq.ships {
+                if m.crew.iter().any(|c| c.agent_id == "sa-1") {
+                    m.crew.push(crew_of("recent", None, "recent review", false, 600.0));
+                    m.crew.push(crew_of("old-a", None, "old audit", false, 3.0 * 3600.0));
+                    m.crew.push(crew_of("old-b", None, "old parent", false, 5.0 * 3600.0));
+                    m.crew.push(crew_of("old-b-kid", Some("old-b"), "kid still running", true, 10.0));
+                    id = m.id.0.clone();
+                }
+            }
+        }
+    }
+    assert!(!id.is_empty());
+    (b, id)
+}
+
+fn crew_rows(app: &admiralty::app::App, id: &str) -> Vec<String> {
+    app.rows.iter().filter(|r| r.node.id.starts_with(&format!("C:{id}:")) || r.node.id == format!("CF:{id}")).map(|r| r.node.name.clone()).collect()
+}
+
+/// Running crew and crew finished within 30 min show; older finished crew
+/// fold into one `+N finished` row; a running child keeps its old parent in
+/// view; the member's "N crew running" counts every running crew.
+#[test]
+fn old_finished_crew_fold_into_one_row_and_running_children_keep_their_parent() {
+    let (b, id) = crew_world();
+    let mut t = fixture_app(b, false);
+    goto(&mut t.app, &format!("M:{id}"));
+    let rows = crew_rows(&t.app, &id);
+    assert_eq!(rows, ["fix layout bug", "old parent", "recent review", "+2 finished"], "{rows:?}");
+    let parent = t.app.rows.iter().find(|r| r.node.id == format!("C:{id}:old-b")).unwrap();
+    assert_eq!(parent.node.children.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["kid still running"], "nested crew follow their parent");
+    let member = t.app.rows.iter().find(|r| r.node.id == format!("M:{id}")).unwrap();
+    assert!(member.node.detail.iter().any(|s| s.content.contains("3 crew running")), "{:?}", member.node.detail);
+    // z on the member opens the fold; z on a crew row inside it closes it again
+    press(&mut t.app, KeyCode::Char('z'));
+    let rows = crew_rows(&t.app, &id);
+    assert!(rows.contains(&"old audit".to_string()) && rows.contains(&"summarize probe logs".to_string()), "{rows:?}");
+    goto(&mut t.app, &format!("C:{id}:old-a"));
+    press(&mut t.app, KeyCode::Char('z'));
+    assert!(!crew_rows(&t.app, &id).contains(&"old audit".to_string()));
+    assert_eq!(t.app.current().unwrap().node.id, format!("CF:{id}"), "the cursor moves to the fold row");
+    // space on the fold row works too
+    press(&mut t.app, KeyCode::Char(' '));
+    assert!(crew_rows(&t.app, &id).contains(&"old audit".to_string()));
+}
+
+/// The fold's state is kept per member in the saved UI state.
+#[test]
+fn an_open_crew_fold_is_saved_and_loads_again() {
+    let (b, id) = crew_world();
+    let mut t = fixture_app(b.clone(), false);
+    goto(&mut t.app, &format!("M:{id}"));
+    press(&mut t.app, KeyCode::Char('z'));
+    t.app.persist();
+    let ctx = admiralty::actions::Ctx { env: fixtures::demo_env(), mux: Box::new(TestMux::default()), live: false, exit_after_jump: false };
+    let mut again = admiralty::app::App::new(ctx, Some(t.dir.path().join("ui.json")), true);
+    again.fixed_now = Some(fixtures::NOW);
+    again.apply(b);
+    assert!(crew_rows(&again, &id).contains(&"old audit".to_string()), "{:?}", crew_rows(&again, &id));
+}
+
+/// A member with no crew older than the window has no fold, and `z` says so.
+#[test]
+fn z_on_a_member_with_no_old_crew_says_so() {
+    let mut t = demo();
+    let id = t.app.rows.iter().find(|r| r.node.id.starts_with("M:") && !t.app.rows.iter().any(|x| x.node.id == format!("CF:{}", &r.node.id[2..]))).map(|r| r.node.id.clone()).unwrap();
+    goto(&mut t.app, &id);
+    press(&mut t.app, KeyCode::Char('z'));
+    assert!(toast(&t.app).contains("no crew that finished over 30 min ago"), "{}", toast(&t.app));
+}

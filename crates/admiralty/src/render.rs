@@ -261,6 +261,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
         ("?", "help"),
         ("j/k", "move"),
         ("h/l", "fold"),
+        ("z", "old crew"),
         ("\u{23ce}", "pane"),
         ("!", "needs you"),
         ("i", "issues"),
