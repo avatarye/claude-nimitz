@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Status: in testing (Claude Code 2.1.288 - 2.1.289).
+Status: in testing (Claude Code 2.1.288 - 2.1.294).
 
 ## Install for testing
 
