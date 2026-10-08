@@ -11,9 +11,9 @@
 //! `<XDG_RUNTIME_DIR or /run/user/<uid>>/cc-socks/<pid>.sock` or
 //! `/tmp/cc-socks-<uid>/<pid>.sock`. Either way the listener must be the
 //! session's own process: after connecting, its peer credentials
-//! (`SO_PEERCRED`) must name this uid and the session's pid; anything else
-//! (another session under a reused or namespaced pid, a planted socket, a
-//! forged record) is not used.
+//! (`SO_PEERCRED`; on macOS `getpeereid` and `LOCAL_PEERPID`) must name
+//! this uid and the session's pid; anything else (another session under a
+//! reused or namespaced pid, a planted socket, a forged record) is not used.
 //!
 //! The line: the docs give only the optional auth line. The message line is
 //! the inject example Claude Code itself logs (`[uds-messaging] Inject
@@ -176,17 +176,35 @@ fn connect(socket: &Path, pid: i64) -> Result<UnixStream, String> {
         Ok(r) => r.map_err(|e| format!("cannot connect to {}: {e}", socket.display()))?,
         Err(_) => return Err(format!("connecting to {} took over {} s", socket.display(), TIMEOUT.as_secs())),
     };
-    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    let rc = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
-    if rc != 0 {
-        return Err(format!("cannot read who listens on {}", socket.display()));
-    }
+    let (peer_uid, peer_pid) = peer_cred(s.as_raw_fd()).ok_or_else(|| format!("cannot read who listens on {}", socket.display()))?;
     let uid = unsafe { libc::getuid() };
-    if cred.uid != uid || cred.pid as i64 != pid {
-        return Err(format!("{} is not the session's own socket (process {} listens there)", socket.display(), cred.pid));
+    if peer_uid != uid || peer_pid as i64 != pid {
+        return Err(format!("{} is not the session's own socket (process {} listens there)", socket.display(), peer_pid));
     }
     Ok(s)
+}
+
+/// The uid and pid of the process at the other end of `fd`: `SO_PEERCRED`.
+#[cfg(target_os = "linux")]
+fn peer_cred(fd: libc::c_int) -> Option<(libc::uid_t, libc::pid_t)> {
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
+    (rc == 0).then_some((cred.uid, cred.pid))
+}
+
+/// The uid and pid of the process at the other end of `fd`: `getpeereid`
+/// for the uid, `LOCAL_PEERPID` for the pid (no `SO_PEERCRED` on Darwin).
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn peer_cred(fd: libc::c_int) -> Option<(libc::uid_t, libc::pid_t)> {
+    let (mut uid, mut gid): (libc::uid_t, libc::gid_t) = (0, 0);
+    if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0 {
+        return None;
+    }
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let rc = unsafe { libc::getsockopt(fd, libc::SOL_LOCAL, libc::LOCAL_PEERPID, &mut pid as *mut _ as *mut libc::c_void, &mut len) };
+    (rc == 0).then_some((uid, pid))
 }
 
 /// Post `body` (framed) to session `pid` through the first of `sockets` its
