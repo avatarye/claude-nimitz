@@ -27,7 +27,7 @@ and jump), never to starting.
 | `NIMITZ_CLAUDE_HOME` | `~/.claude` | Claude Code's home (sessions/, jobs/, projects/) |
 | `NIMITZ_CLAUDE_BIN` | `claude` on PATH | cold launches (on ACME the wrapper, which adds Bedrock settings) |
 | `NIMITZ_NATIVE_CLAUDE_BIN` | newest `~/.localtools/tools/claude-code/*/claude`, else `claude` on PATH | resume, stop, rm, agents |
-| `NIMITZ_HERDR_BIN` | `herdr` on PATH (only when `HERDR_ENV=1`) | Herdr adapter |
+| `NIMITZ_HERDR_BIN` | `herdr` on PATH (when `HERDR_ENV=1`, or `NIMITZ_MUX=herdr`, which outside Herdr the recorded server sets) | Herdr adapter |
 | `NIMITZ_HERDR_SESSION` | unset (Herdr's own resolution: `HERDR_SESSION`, else the pane's socket) | the named Herdr session every herdr call gets as `--session`; with `NIMITZ_MUX=herdr` it drives a test server from a plain terminal (the checklist), and it is the Herdr identity `active.json` records |
 | `NIMITZ_HERDR_SOCKET` | unset | set by nimitz only (`active::member_mux_vars`): the recorded default Herdr server's socket, passed as `HERDR_SOCKET_PATH` to every herdr call of a member's command; the inherited `HERDR_SOCKET_PATH` never counts there |
 | `NIMITZ_HOSTNAME` | `gethostname()` | machine matching |
@@ -570,7 +570,7 @@ pub trait Mux {
     fn shape(&self, foregrounds: bool) -> Result<Shape, MuxError>; // the whole shape: herdr api snapshot (+ pane process-info per pane)
     fn rename_tab(&self, tab_id: &str, label: &str) -> Result<(), MuxError>; // herdr tab rename
 }
-pub fn detect() -> Box<dyn Mux>;                       // HERDR_ENV=1 -> Herdr, else None
+pub fn detect() -> Box<dyn Mux>;                       // NIMITZ_MUX, else HERDR_ENV=1 -> Herdr, else None (callers pass active::user_mux_vars / member_mux_vars)
 pub fn tab_state(mux, cmd, place, session_id) -> Result<TabState, MuxError>;   // Shown | Shell | Taken { pane, running } | Missing
 pub fn attach(mux, cmd, cwd, place, session_id) -> Result<Attached, AttachError>; // Focused | Claimed | Opened; Err Taken: nothing typed
 ```
@@ -618,9 +618,22 @@ claim alone can put a ship in its commodore's pane. An unbacked claim leaves
 the pane with no session (`ShapePane.claimed` keeps it for the agent-view
 test, R-24; a claim that names another member's session is that member's
 hook, not the agent view); the pane then shows the session its foreground
-pid's session file names, if any. A pane whose foreground cannot be read
+pid's session file names, if any. A pane Herdr shows an agent in but
+claims no session for shows what its foreground runs
+(`evidence::session_of_unclaimed`): the job a `claude attach <job>`
+attaches to (the job row's `resumeSessionId`, else `sessionId`), else the
+conversation a held `claude --resume <sid>` runs, else a foreground pid's
+session file. A session read from the attach alone is `Pane.inferred`
+(`ShapePane.inferred`): shown and focused, never typed into, since the
+agent view (R-24) looks the same (`tab.unverified` on a delivery,
+`nimitz signal` or Admiralty `m`). An attach client never runs Herdr's
+SessionStart hook, so Herdr never names the session of a lead's own attach
+pane (seen live after the 0.4.0 migration: `agent` claude, no
+`agent_session`). A pane whose foreground cannot be read
 (`pane process-info` fails) shows no session at all. The cost: one `pane
-process-info` per claimed pane on `status` and on every `panes()` read.
+process-info` per agent pane on `status` and on every `panes()` read. The
+adapter reads job rows and session files under the Claude home of the env
+it was built from (`Herdr.claude_home`), not the process env.
 
 `NIMITZ_STATE/active.json` (`nimitz_core::active`, version 1): the members
 live at the last write, by id: `{job, session, status (busy|idle|needs-you|
@@ -667,7 +680,10 @@ the recorded default server's socket (`NIMITZ_HERDR_SOCKET`), else no
 multiplexer. The herdr child of such a call gets that server only: its
 inherited `HERDR_SESSION`, `HERDR_SOCKET_PATH` and `HERDR_CLIENT_SOCKET_PATH`
 are removed, and only the recorded socket is set. Only the user's own command detects
-Herdr from its env.
+Herdr from its env; outside Herdr (no `HERDR_ENV`, no explicit
+`NIMITZ_MUX`/`NIMITZ_HERDR_SESSION`: a terminal, a launcher) the user's own
+`nimitz` and Admiralty take the server the user's commands recorded
+(`active::user_mux_vars`), else no multiplexer.
 The E22 hazard (the CLI may resolve a named session's socket regardless of
 the env) is accepted: the shape nimitz reads comes from the same `herdr`
 invocation in the same env as the identity it records, so the two name the

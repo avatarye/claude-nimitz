@@ -683,6 +683,11 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     }
     let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into", via_m.expected_name))?;
     let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone"))?;
+    // read from its `claude attach` alone: the agent view looks the same
+    // (R-24), and typed text would dispatch a new session there
+    if panes.iter().any(|p| p.pane.pane_id == pane_id && p.inferred) {
+        return Err(format!("{}'s pane {pane_id} runs its attach, but Herdr names no session there, so nimitz cannot tell it from the agent view (R-24); nothing is typed (jump there with enter and type it yourself)", via_m.expected_name));
+    }
     if relay && !live(m) {
         return Err(format!("{} is not running", m.expected_name));
     }

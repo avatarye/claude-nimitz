@@ -112,7 +112,9 @@ pub fn run_shape(ctx: &Ctx, fleet: Option<&str>, opts: rs::RestoreOpts, confirme
             Ok((s, r)) => (s, Some(r)),
             Err(e) => {
                 let verb = if opts.shape_only { "layout herdr" } else { "restore" };
-                let plan = Plan { summary: format!("{verb} {}", fleet.unwrap_or("(every fleet here)")), refusals: vec![refusal("mux.failed", format!("cannot read the Herdr shape ({e}); nothing is typed into panes nimitz cannot see"), None, None)], ..Default::default() };
+                // a server taken from the record (outside Herdr) says which, and what works
+                let fix = active::recorded_server_fix(&ctx.env, &ctx.vars).map(|f| format!("{f}; or nimitz restore{} --jobs-only", fleet.map(|f| format!(" {f}")).unwrap_or_default()));
+                let plan = Plan { summary: format!("{verb} {}", fleet.unwrap_or("(every fleet here)")), refusals: vec![refusal("mux.failed", format!("cannot read the Herdr shape ({e}); nothing is typed into panes nimitz cannot see"), fix, None)], ..Default::default() };
                 return finish(ctx, &plan);
             }
         }

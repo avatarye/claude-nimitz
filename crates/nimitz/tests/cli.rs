@@ -1929,6 +1929,34 @@ fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
     }
 }
 
+/// The user's own nimitz outside Herdr (no HERDR_ENV, no NIMITZ_MUX: a plain
+/// terminal) reads the Herdr server the user's commands recorded, named on
+/// every call; a recorded server that is not reachable fails a restore with a
+/// fix that names it (and the --jobs-only way), never a bare error.
+#[test]
+fn the_users_nimitz_outside_herdr_uses_the_recorded_server() {
+    let sb = Sb::new(true);
+    let active = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("active.json");
+    std::fs::write(&active, r#"{"version": 1, "at": 1.0, "herdr": {"session": "rec"}, "members": {}}"#).unwrap();
+    let mut outside = sb.vars.clone();
+    outside.remove("NIMITZ_MUX");
+    outside.remove("HERDR_ENV");
+    let from = sb.calls().lines().count();
+    let r = raw(&outside, &["status"], &[], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let calls: Vec<String> = sb.calls().lines().skip(from).map(String::from).collect();
+    assert!(!calls.is_empty() && calls.iter().all(|c| c.contains("\"--session\",\"rec\"")), "the recorded server, named: {calls:?}");
+    // the recorded server gone: a restore says which, and what works
+    let dead = sb.base.join("dead-herdr");
+    std::fs::write(&dead, "#!/bin/sh\necho '{\"error\":{\"code\":\"no_server\",\"message\":\"herdr server not running\"}}' >&2\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&dead, std::fs::Permissions::from_mode(0o755)).unwrap();
+    outside.insert("NIMITZ_HERDR_BIN".into(), dead.to_string_lossy().into_owned());
+    let r = raw(&outside, &["restore", "MAIN", "--plan"], &[], None);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("herdr --session rec") && r.out.contains("nimitz restore MAIN --jobs-only"), "{}", r.out);
+}
+
 /// A hook always exits 0, even when Claude Code has closed its pipe before
 /// the hook writes its context (no SIGPIPE death, no panic).
 #[test]
@@ -2249,4 +2277,33 @@ fn a_job_labelled_for_another_home_never_binds_the_member() {
     // a read never writes: the record is still in the file until the next update
     let raw = std::fs::read_to_string(PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json")).unwrap();
     assert!(raw.contains(&job));
+}
+
+/// The commodore's attach pane with no Herdr claim (the live shape: an
+/// attach client runs no Herdr hook) shows the commodore, but the agent view
+/// (`/exit` inside the attach, R-24) looks the same, and text typed there
+/// would dispatch a new session: a needs-you delivery and `nimitz signal`
+/// type nothing, and say why.
+#[test]
+fn an_unclaimed_attach_pane_is_never_typed_into() {
+    let sb = Sb::new(true);
+    let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
+    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    sb.herdr_world(|w| {
+        let p = &mut w["panes"][1];
+        p.as_object_mut().unwrap().remove("agent_session");
+        p["agent"] = Value::from("claude");
+        p["agent_status"] = Value::from("idle");
+        p["foreground"] = serde_json::json!([bin, "attach", job]);
+    });
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "failed", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("cannot tell it from the agent view"), "{n}");
+    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(tab.unverified)") && r.out.contains("nimitz open MAIN/ARGOS"), "{}", r.out);
+    assert!(sb.prompts("w1:p2").is_empty(), "nothing typed");
+    // the pane itself is still the commodore's: status shows it there
+    assert_eq!(sb.member("MAIN/ARGOS")["pane"], Value::from("w1:p2"));
 }

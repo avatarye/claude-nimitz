@@ -284,6 +284,166 @@ fn bug39_sandbox_with_a_fake_herdr_uses_it() {
     assert!(src.mux_caps.open);
 }
 
+/// Admiralty started outside a Herdr pane (no HERDR_ENV, no NIMITZ_MUX: a
+/// terminal, a launcher) used to see no pane at all, while a member's
+/// `nimitz status` saw every one through the recorded server. Now it takes the
+/// Herdr server the user's own commands recorded in active.json, and sees the
+/// same panes as inside Herdr; with nothing recorded it stays monitor-only.
+#[test]
+fn admiralty_outside_herdr_uses_the_recorded_server_and_sees_the_panes() {
+    let dir = tempfile::tempdir().unwrap();
+    let sb = dir.path().join("sb");
+    let bin = env!("CARGO_BIN_EXE_admiralty");
+    let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    let env = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
+    let mut inside: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for l in env.lines() {
+        let (k, v) = l.trim_start_matches("export ").split_once('=').unwrap();
+        inside.insert(k.into(), v.into());
+    }
+    let seen_inside = CoreSource::detect(&inside).load().panes;
+    assert!(!seen_inside.is_empty(), "the sandbox's fake Herdr shows panes");
+    // outside Herdr: no NIMITZ_MUX, no HERDR_ENV
+    let mut outside = inside.clone();
+    outside.remove("NIMITZ_MUX");
+    outside.remove("HERDR_ENV");
+    assert_eq!(CoreSource::detect(&outside).load().mux_name, "none", "nothing recorded: monitor-only");
+    // the user's own command once recorded the server it ran in
+    let state = std::path::PathBuf::from(&outside["NIMITZ_STATE"]);
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("active.json"), r#"{"version": 1, "at": 1.0, "herdr": {"session": "sb"}, "members": {}}"#).unwrap();
+    let b = CoreSource::detect(&outside).load();
+    assert_eq!(b.mux_name, "herdr");
+    assert_eq!(b.panes.len(), seen_inside.len(), "the same panes as inside Herdr");
+}
+
+/// A lead's attach pane that Herdr never claimed (an attach client runs no
+/// Herdr hook: `agent` claude, no `agent_session`) still shows the lead: its
+/// `claude attach <job>` foreground names the job, so the row gets its pane
+/// (the dot, `j`, `A` focusing it) as `nimitz status` does.
+#[test]
+fn an_unclaimed_attach_pane_still_shows_its_lead() {
+    let dir = tempfile::tempdir().unwrap();
+    let sb = dir.path().join("sb");
+    let bin = env!("CARGO_BIN_EXE_admiralty");
+    let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    let env = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
+    let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for l in env.lines() {
+        let (k, v) = l.trim_start_matches("export ").split_once('=').unwrap();
+        vars.insert(k.into(), v.into());
+    }
+    let b = CoreSource::detect(&vars).load();
+    let lead = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find_map(|m| m.session.as_ref().and_then(|s| s.short_id.clone().map(|j| (m.id.clone(), j, s.session_id.clone())))).expect("a lead with a job");
+    let (id, job, sid) = lead;
+    let world = sb.join("herdr/world.json");
+    let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    let p = &mut w["panes"][0];
+    p.as_object_mut().unwrap().remove("agent_session");
+    p["agent"] = serde_json::json!("claude");
+    p["agent_status"] = serde_json::json!("working");
+    p["foreground"] = serde_json::json!(["/home/u/.local/bin/claude", "attach", job]);
+    let pane = p["pane_id"].as_str().unwrap().to_string();
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    let b = CoreSource::detect(&vars).load();
+    let shown = b.panes.iter().find(|p| p.pane.pane_id == pane).expect("the pane");
+    assert_eq!(shown.session_id.as_deref(), Some(sid.as_str()), "{id}'s attach pane shows its session");
+    // `A` finds that pane and only focuses it (nothing is typed, no new tab)
+    let ctx = Ctx { env: nimitz_core::env::Env::from_vars(&vars), mux: nimitz_mux::detect(&vars), live: false, exit_after_jump: false };
+    match actions::existing_open(&ctx, &b.snap, &Target::Member(id.clone())) {
+        Ok(nimitz_mux::TabState::Shown(p)) => assert_eq!(p.pane_id, pane),
+        other => panic!("{id}: {other:?}"),
+    }
+}
+
+/// The user's setup: Admiralty started outside Herdr while three Herdr
+/// servers run (the named NIMITZ the user works in, `default`, `nikitz`),
+/// each with a pane that looks like the lead's. It speaks only to the NIMITZ
+/// server recorded in active.json, the lead's row gets its unclaimed attach
+/// pane (the live shape: `agent` claude, no `agent_session`), `J` and `K`
+/// land on it and `enter` focuses it there.
+#[test]
+fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
+    let dir = tempfile::tempdir().unwrap();
+    let sb = dir.path().join("sb");
+    let bin = env!("CARGO_BIN_EXE_admiralty");
+    let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    let env = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
+    let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for l in env.lines() {
+        let (k, v) = l.trim_start_matches("export ").split_once('=').unwrap();
+        vars.insert(k.into(), v.into());
+    }
+    let b = CoreSource::detect(&vars).load();
+    let (id, job, cwd) = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find_map(|m| m.session.as_ref().and_then(|s| s.short_id.clone().map(|j| (m.id.clone(), j, s.cwd.clone())))).expect("a lead with a job");
+    let claude = "/home/u/.local/bin/claude";
+    let world = sb.join("herdr/world.json");
+    let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    let p = &mut w["panes"][0];
+    p.as_object_mut().unwrap().remove("agent_session");
+    p["agent"] = serde_json::json!("claude");
+    p["agent_status"] = serde_json::json!("working");
+    p["foreground"] = serde_json::json!([claude, "attach", job]);
+    let pane = p["pane_id"].as_str().unwrap().to_string();
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    for (name, ws) in [("default", "x8"), ("nikitz", "x9")] {
+        let d = sb.join(format!("herdr-{name}"));
+        std::fs::create_dir_all(&d).unwrap();
+        let decoy = serde_json::json!({
+            "workspaces": [{"workspace_id": ws, "label": "X", "focused": true, "active_tab_id": format!("{ws}:t1")}],
+            "tabs": [{"tab_id": format!("{ws}:t1"), "workspace_id": ws, "label": "X", "focused": true}],
+            "panes": [{"pane_id": format!("{ws}:p1"), "tab_id": format!("{ws}:t1"), "workspace_id": ws, "agent": "claude", "agent_status": "idle",
+                       "terminal_title_stripped": "x", "cwd": cwd, "foreground_cwd": cwd, "foreground": [claude, "attach", job]}],
+            "next_ws": 10
+        });
+        std::fs::write(d.join("world.json"), serde_json::to_vec(&decoy).unwrap()).unwrap();
+    }
+    let multi = sb.join("bin/herdr-multi");
+    std::fs::write(&multi, format!(
+        "#!/bin/sh\ncase \"$1\" in --session) s=$2; shift 2;; *) s=default;; esac\ncase \"$s\" in NIMITZ) b='{b}/herdr';; nikitz) b='{b}/herdr-nikitz';; *) b='{b}/herdr-default';; esac\nexec '{bin}' __fake-herdr \"$b\" \"$@\"\n",
+        b = sb.display()
+    )).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&multi, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let state = std::path::PathBuf::from(&vars["NIMITZ_STATE"]);
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::write(state.join("active.json"), r#"{"version": 1, "at": 1.0, "herdr": {"session": "NIMITZ"}, "members": {}}"#).unwrap();
+    let mut outside = vars.clone();
+    outside.remove("NIMITZ_MUX");
+    outside.remove("HERDR_ENV");
+    outside.insert("NIMITZ_HERDR_BIN".into(), multi.to_string_lossy().into_owned());
+    // as main.rs builds it
+    let e = nimitz_core::env::Env::from_vars(&outside);
+    let mux = nimitz_mux::detect(&nimitz_core::active::user_mux_vars(&e, &outside));
+    let mut app = App::new(Ctx { env: e, mux, live: true, exit_after_jump: false }, None, true);
+    app.apply(CoreSource::detect(&outside).load());
+    tab(&mut app, id.fleet());
+    goto(&mut app, &format!("M:{}", id.0));
+    assert_eq!(app.current().unwrap().node.pane_id.as_deref(), Some(pane.as_str()), "{id}'s row has its attach pane");
+    press(&mut app, KeyCode::Home);
+    press(&mut app, KeyCode::Char('J'));
+    assert_eq!(app.current().unwrap().node.pane_id.as_deref(), Some(pane.as_str()), "J lands on it: {}", toast(&app));
+    press(&mut app, KeyCode::Char('K'));
+    assert_eq!(app.current().unwrap().node.pane_id.as_deref(), Some(pane.as_str()), "K too: {}", toast(&app));
+    let from = std::fs::read_to_string(sb.join("herdr/calls.jsonl")).unwrap_or_default().lines().count();
+    press(&mut app, KeyCode::Enter);
+    assert!(toast(&app).contains(&format!("Focused {pane}")), "{}", toast(&app));
+    let calls: Vec<String> = std::fs::read_to_string(sb.join("herdr/calls.jsonl")).unwrap().lines().skip(from).map(String::from).collect();
+    // the wrapper routes `--session NIMITZ` alone to this world
+    assert!(calls.iter().any(|c| c.contains("\"agent\",\"focus\"") && c.contains(&pane)), "{calls:?}");
+    // `m` types nothing there: the agent view looks the same (R-24)
+    let b = app.bundle.as_ref().unwrap();
+    let why = actions::plan_message(b.mux_caps, &b.snap, &b.panes, &Target::Member(id.clone())).unwrap_err();
+    assert!(why.contains("nothing is typed"), "{why}");
+    for name in ["default", "nikitz"] {
+        let c = std::fs::read_to_string(sb.join(format!("herdr-{name}/calls.jsonl"))).unwrap_or_default();
+        assert!(c.is_empty(), "never a call to the {name} server: {c}");
+    }
+}
+
 #[test]
 fn bug40_the_first_look_is_quick_and_the_full_one_follows() {
     let w = world();

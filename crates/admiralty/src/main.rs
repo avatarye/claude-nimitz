@@ -90,7 +90,9 @@ fn main() -> ExitCode {
             let env = nimitz_core::env::Env::from_vars(&vars);
             let state = vars.get("ADMIRALTY_STATE").map(PathBuf::from).unwrap_or_else(|| env.state.join("admiralty-ui.json"));
             let v2 = vars.clone();
-            let ctx = Ctx { env, mux: nimitz_mux::detect(&vars), live: true, exit_after_jump };
+            // outside a Herdr pane, the Herdr server the user's commands recorded
+            let mux_vars = nimitz_core::active::user_mux_vars(&env, &vars);
+            let ctx = Ctx { env, mux: nimitz_mux::detect(&mux_vars), live: true, exit_after_jump };
             (ctx, Some(state), Box::new(move || Box::new(CoreSource { first: true, ..CoreSource::detect(&v2) }) as Box<dyn DataSource>), None)
         }
         Source::Fixture(b) => {

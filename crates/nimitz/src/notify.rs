@@ -92,6 +92,9 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
                 None => format!("{cid} is not live in a {} pane", mux.name()),
                 // a dialog of its own: typed text would answer it
                 Some(p) if p.state == "blocked" => format!("{cid}'s pane {} is blocked on a dialog of its own", p.pane.pane_id),
+                // its attach pane, read from the foreground alone: the agent
+                // view looks the same, and typed text would dispatch a session
+                Some(p) if p.inferred => format!("{cid}'s pane {} runs its attach, but Herdr names no session there, so nimitz cannot tell it from the agent view (R-24); nothing is typed", p.pane.pane_id),
                 Some(p) => match mux.type_text(&p.pane, &text) {
                     Ok(()) => return ("delivered", format!("typed into {cid}'s pane {}", p.pane.pane_id)),
                     Err(e) => format!("typing into {cid}'s pane {} failed: {e}", p.pane.pane_id),

@@ -84,6 +84,7 @@ impl From<FixturePane> for Pane {
             title: p.title,
             cwd: p.cwd,
             state: p.state,
+            inferred: false,
         }
     }
 }
@@ -113,12 +114,11 @@ pub struct CoreSource {
 
 impl CoreSource {
     pub fn detect(vars: &HashMap<String, String>) -> CoreSource {
-        CoreSource {
-            env: nimitz_core::env::Env::from_vars(vars),
-            cache: nimitz_core::snapshot::Cache::default(),
-            mux: nimitz_mux::detect(vars),
-            first: false,
-        }
+        let env = nimitz_core::env::Env::from_vars(vars);
+        // outside a Herdr pane, the Herdr server the user's commands recorded
+        // (`active::user_mux_vars`): Admiralty sees the leads' panes wherever it runs
+        let mux = nimitz_mux::detect(&nimitz_core::active::user_mux_vars(&env, vars));
+        CoreSource { env, cache: nimitz_core::snapshot::Cache::default(), mux, first: false }
     }
 }
 

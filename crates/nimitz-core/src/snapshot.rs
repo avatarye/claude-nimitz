@@ -852,7 +852,10 @@ fn build_member(
                 reasons.push(format!("no job row; its session's transcript is there ({})", t.display()));
                 Status::Stopped
             } else if rec.is_some() {
-                reasons.push("registry knows it, but no row and no transcript".into());
+                // Claude Code writes a transcript only at the first prompt: a
+                // job started and never prompted leaves none, and nothing is lost
+                let start = if id.role() == Role::Ship { format!("nimitz start {id} --fresh") } else { format!("nimitz start {id}") };
+                reasons.push(format!("registry knows it, but no row and no transcript: most likely started and never prompted (a transcript is written at the first prompt), so nothing to resume and nothing lost; `{start}` launches it fresh"));
                 Status::Stopped
             } else {
                 reasons.push("no session, no lineage".into());

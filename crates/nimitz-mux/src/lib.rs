@@ -25,6 +25,10 @@ pub struct Pane {
     pub cwd: String,
     /// the multiplexer's own state for the pane's agent (Herdr: working|blocked|done|idle|unknown)
     pub state: String,
+    /// the session is read from the pane's `claude attach <job>` alone, with
+    /// no claim of Herdr's: the agent view (`/exit` inside the attach, R-24)
+    /// looks the same, so nothing is ever typed into such a pane (focus only)
+    pub inferred: bool,
 }
 
 /// One workspace of the multiplexer's shape (Herdr WorkspaceInfo).
@@ -65,6 +69,8 @@ pub struct ShapePane {
     pub foreground: Option<Vec<String>>,
     /// the pid of what runs in the foreground (`pane process-info`), when read
     pub foreground_pid: Option<i64>,
+    /// `session_id` is read from the `claude attach <job>` alone (`Pane.inferred`)
+    pub inferred: bool,
 }
 
 /// The whole shape at once (`herdr api snapshot` + `pane process-info` per
@@ -349,19 +355,21 @@ pub fn missing_mux_fix(vars: &std::collections::HashMap<String, String>) -> Stri
         _ if herdr_env && resolve_herdr_bin(vars).is_none() => {
             "HERDR_ENV=1 is set but no herdr binary was found: put herdr on PATH, or set NIMITZ_HERDR_BIN".into()
         }
-        _ => "run nimitz inside Herdr (HERDR_ENV is not 1 here)".into(),
+        _ => "run nimitz inside Herdr (HERDR_ENV is not 1 here), or run nimitz status inside Herdr once so it records the server".into(),
     }
 }
 
 /// `NIMITZ_MUX` override, else Herdr when `HERDR_ENV=1` and a herdr binary
-/// resolves (`NIMITZ_HERDR_BIN`, else PATH), else NoMux. Pure in `vars`.
+/// resolves (`NIMITZ_HERDR_BIN`, else PATH), else NoMux. Pure in `vars`. (The
+/// user's own command outside Herdr passes `active::user_mux_vars`, which
+/// names the recorded server with `NIMITZ_MUX=herdr`.)
 pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> {
     match vars.get("NIMITZ_MUX").map(String::as_str) {
         Some("none") => return Box::new(none::NoMux),
         Some("herdr") => {
             // explicit override: take the configured binary even if it does not resolve yet
             let bin = resolve_herdr_bin(vars).unwrap_or_else(|| "herdr".into());
-            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned() });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned(), claude_home: nimitz_core::env::Env::from_vars(vars).claude_home });
         }
         // `auto` (the default) and unset: detect. An unknown name: safest is no mux
         // (the CLI refuses it first with `valid_mux_setting`).
@@ -370,7 +378,7 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
     }
     if vars.get("HERDR_ENV").map(String::as_str) == Some("1") {
         if let Some(bin) = resolve_herdr_bin(vars) {
-            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned() });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned(), claude_home: nimitz_core::env::Env::from_vars(vars).claude_home });
         }
     }
     Box::new(none::NoMux)
@@ -474,8 +482,8 @@ mod tests {
     fn a_named_herdr_session_goes_on_every_call() {
         assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "nimitz-e2e")])), Some("nimitz-e2e".into()));
         assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "")])), None);
-        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: Some("nimitz-e2e".into()), socket: None }.argv(&["api", "snapshot"]), ["--session", "nimitz-e2e", "api", "snapshot"]);
-        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: None, socket: None }.argv(&["api", "snapshot"]), ["api", "snapshot"]);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: Some("nimitz-e2e".into()), socket: None, claude_home: "/x".into() }.argv(&["api", "snapshot"]), ["--session", "nimitz-e2e", "api", "snapshot"]);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: None, socket: None, claude_home: "/x".into() }.argv(&["api", "snapshot"]), ["api", "snapshot"]);
     }
 
     #[test]

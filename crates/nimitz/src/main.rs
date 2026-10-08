@@ -42,7 +42,7 @@ impl Ctx {
     /// daemon's, with the user's live `HERDR_*`).
     pub fn mux(&self) -> Box<dyn nimitz_mux::Mux> {
         match self.caller {
-            nimitz_core::Caller::User => nimitz_mux::detect(&self.vars),
+            nimitz_core::Caller::User => nimitz_mux::detect(&nimitz_core::active::user_mux_vars(&self.env, &self.vars)),
             _ => nimitz_mux::detect(&nimitz_core::active::member_mux_vars(&self.env, &self.vars)),
         }
     }
