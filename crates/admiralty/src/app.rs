@@ -579,7 +579,7 @@ impl App {
         // member ids never hold a `:` (config: [A-Z0-9_] parts joined by `/`)
         let member = if let Some(m) = id.strip_prefix("M:").or_else(|| id.strip_prefix("CF:")) {
             m.to_string()
-        } else if let Some((m, _)) = id.strip_prefix("C:").and_then(|r| r.split_once(':')) {
+        } else if let Some((m, _)) = id.strip_prefix("C:").or_else(|| id.strip_prefix("WF:")).and_then(|r| r.split_once(':')) {
             m.to_string()
         } else {
             self.notify("z: put the cursor on a member or its crew", st(mono::WARN));

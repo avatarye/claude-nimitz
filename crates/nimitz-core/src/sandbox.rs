@@ -354,6 +354,27 @@ impl World {
         }
     }
 
+    /// An agent a Workflow run started: `subagents/workflows/<run>/agent-<id>`,
+    /// its log last written `ago` s ago; with `top_ago` its log goes on at the
+    /// top level too (`subagents/agent-<id>.jsonl`, no meta), as Claude Code
+    /// does while it runs.
+    #[allow(clippy::too_many_arguments)]
+    fn workflow_agent(&self, sid: &str, cwd: &str, run: &str, agent: &str, label: &str, phase: &str, ago: f64, top_ago: Option<f64>) {
+        let sd = claude_home(&self.base).join("projects").join(crate::evidence::project_dir_name(cwd)).join(sid).join("subagents");
+        let rd = sd.join("workflows").join(run);
+        write_json(&rd.join(format!("agent-{agent}.meta.json")), &json!({"agentType": "workflow-subagent", "description": label, "workflowPhase": phase, "spawnDepth": 1}));
+        let stamp = |log: &Path, ago: f64| {
+            let _ = fs::write(log, format!("{}\n", json!({"agentId": agent, "type": "user"})));
+            if let Ok(f) = fs::File::options().write(true).open(log) {
+                let _ = f.set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs_f64((self.now - ago).max(0.0)));
+            }
+        };
+        stamp(&rd.join(format!("agent-{agent}.jsonl")), ago);
+        if let Some(t) = top_ago {
+            stamp(&sd.join(format!("agent-{agent}.jsonl")), t);
+        }
+    }
+
     fn task(&self, team: &str, id: i64, subject: &str, status: &str) {
         write_json(
             &claude_home(&self.base).join("tasks").join(team).join(format!("{id}.json")),
@@ -518,6 +539,21 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let argos_dir_s = argos_dir.to_string_lossy().into_owned();
     let (_, argos_sid) = w.session(&argos.name(), &argos_dir_s, bg(true, Some(&argos)));
     w.bind(&argos, &argos_dir_s, &argos_sid, "launch");
+    // its crew: a plain subagent, a running Workflow run (named by its script,
+    // one agent's log going on at the top level) and a finished one (named by
+    // its summary). A second project holds a `<sid>` folder with only
+    // `workflows/scripts` (a run in another cwd): the crew is not read there.
+    w.subagent(&argos_sid, &argos_dir_s, "survey-1", "Survey the terrain", 30.0, false, "");
+    let wf_dir = claude_home(&base).join("projects").join(crate::evidence::project_dir_name(&argos_dir_s)).join(&argos_sid).join("workflows");
+    let _ = fs::create_dir_all(wf_dir.join("scripts"));
+    let _ = fs::write(wf_dir.join("scripts").join("sandbox-fanout-wf_sbx0001-aaa.js"), "export const meta = { name: 'sandbox-fanout' }\n");
+    w.workflow_agent(&argos_sid, &argos_dir_s, "wf_sbx0001-aaa", "wfa-1", "L0:lane zero", "Fan-out", 900.0, Some(5.0));
+    w.workflow_agent(&argos_sid, &argos_dir_s, "wf_sbx0001-aaa", "wfa-2", "L1:lane one", "Fan-out", 10.0, None);
+    w.workflow_agent(&argos_sid, &argos_dir_s, "wf_sbx0001-aaa", "wfa-3", "pilot:first", "Pilot", 1200.0, None);
+    write_json(&wf_dir.join("wf_sbx0002-bbb.json"), &json!({"runId": "wf_sbx0002-bbb", "workflowName": "sandbox-review", "status": "completed"}));
+    w.workflow_agent(&argos_sid, &argos_dir_s, "wf_sbx0002-bbb", "wfb-1", "map:s0", "Map", 7200.0, None);
+    w.workflow_agent(&argos_sid, &argos_dir_s, "wf_sbx0002-bbb", "wfb-2", "synthesize", "Synthesize", 6000.0, None);
+    let _ = fs::create_dir_all(claude_home(&base).join("projects").join(crate::evidence::project_dir_name(&format!("{argos_dir_s}-reviews"))).join(&argos_sid).join("workflows").join("scripts"));
 
     // BOREAL's commodore: a background job too, in a commodore-only squadron.
     let boreal = Id::commodore("MAIN", "BOREAL");

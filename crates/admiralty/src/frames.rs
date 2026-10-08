@@ -12,7 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::theme::{bold, mono, pane_color, pane_dot, severity_color, st, Icons};
+use crate::theme::{bold, mono, pane_color, pane_dot, st, Icons};
 use crate::view::{Row, Section};
 
 //                 NAME STATUS AGE DETAIL
@@ -151,16 +151,12 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
 }
 
-/// NAME cell: pane dot, issue mark, tree guides, fold marker, name.
-pub fn name_cell(r: &Row, width: usize, icons: &Icons) -> Vec<Span<'static>> {
+/// NAME cell: pane dot, tree guides, fold marker, kind icon, name. (The
+/// issue glyph, coloured by severity, is DETAIL's first word.)
+pub fn name_cell(r: &Row, width: usize, _icons: &Icons) -> Vec<Span<'static>> {
     let n = &r.node;
     let dot = match &n.pane_state {
         Some(state) => Span::styled(format!("{} ", pane_dot(state)), bold(pane_color(state))),
-        None => Span::raw("  "),
-    };
-    let mark = match n.worst {
-        _ if n.legacy => Span::styled(format!("{} ", icons.legacy), bold(mono::WARN)),
-        Some(sev) => Span::styled(format!("{} ", icons.issue), bold(severity_color(sev))),
         None => Span::raw("  "),
     };
     let marker = if n.children.is_empty() {
@@ -170,12 +166,12 @@ pub fn name_cell(r: &Row, width: usize, icons: &Icons) -> Vec<Span<'static>> {
     } else {
         "\u{25b8} "
     };
-    let room = width.saturating_sub(4 + r.prefix.width() + 2).max(3);
+    let room = width.saturating_sub(2 + r.prefix.width() + 2 + n.icon.width() + 1).max(3);
     vec![
         dot,
-        mark,
         Span::styled(r.prefix.clone(), st(mono::DIM)),
         Span::styled(marker, st(mono::COMMENT)),
+        Span::styled(format!("{} ", n.icon), n.icon_style),
         Span::styled(pad(&if n.cut_left { truncate_left(&n.name, room) } else { truncate(&n.name, room) }, room), n.name_style),
     ]
 }

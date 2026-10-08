@@ -908,6 +908,9 @@ fn build_member(
                 teammate: r.teammate,
                 running: now - r.last_write < ACTIVE_WINDOW_S,
                 last_write: r.last_write,
+                workflow: r.workflow.clone(),
+                workflow_name: r.workflow_name.clone(),
+                phase: r.phase.clone(),
             })
             .collect();
         let team = teams

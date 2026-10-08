@@ -89,8 +89,14 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   number. `?` has a legend for every icon.
 - Columns NAME / STATUS / AGE / DETAIL line up across all boxes (the kind is in
   the detail panel). NAME starts with the pane dot (green working, pink
-  blocked, grey done, plain idle, faint unknown), an issue mark coloured by
-  severity and the tree guides; no role icon. DETAIL lists the issue codes.
+  blocked, grey done, plain idle, faint unknown), the tree guides, the fold
+  marker and the kind icon (admiral, commodore, ship, crew, teammate, stowaway,
+  copy; a task's status); no issue mark there. DETAIL starts with the issue
+  glyph, coloured by severity, and the issue codes.
+- Crew: a member's subagents under it. The agents a Workflow run started sit
+  under one row per run (the workflow's name, else its `wf_` run id; live /
+  total; the newest agent's phase), open while one of them runs. A run, like a
+  crew, folds into `+N finished` once all its agents finished over 30 min ago.
 - Detail panel (`w` opens and closes it, `esc` closes it; closed at start, so
   the list takes the full width): it floats over the right of the list and
   follows the cursor row. A large

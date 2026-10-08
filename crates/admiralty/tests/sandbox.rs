@@ -651,3 +651,28 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
         assert_eq!(nimitz_mux::runs_exact_attach(&mux, &r, "f8eee8df"), *want, "{fg:?}");
     }
 }
+
+/// A Workflow run's agents sit under one row per run, under the member: the
+/// workflow's name, live / total, the newest agent's phase, open while one
+/// runs; a run that finished long ago folds into `+N finished` as one.
+#[test]
+fn workflow_agents_show_under_a_row_per_run() {
+    let w = world();
+    let mut app = app_on(&w, TestMux::default());
+    tab(&mut app, "MAIN");
+    let ids: Vec<String> = app.rows.iter().map(|r| r.node.id.clone()).collect();
+    let run = app.rows.iter().find(|r| r.node.id == "WF:MAIN/ARGOS:wf_sbx0001-aaa").unwrap_or_else(|| panic!("{ids:?}"));
+    assert_eq!(run.node.name, "sandbox-fanout");
+    assert!(run.expanded, "a run with a live agent is open");
+    let detail: String = run.node.detail.iter().map(|s| s.content.to_string()).collect();
+    assert!(detail.contains("2 live / 3 total") && detail.contains("Fan-out") && detail.contains("wf_sbx0001-aaa"), "{detail}");
+    for a in ["wfa-1", "wfa-2", "wfa-3", "survey-1"] {
+        assert!(ids.contains(&format!("C:MAIN/ARGOS:{a}")), "{a} in {ids:?}");
+    }
+    // the finished run is inside the fold, as one
+    assert!(!ids.iter().any(|i| i.contains("wf_sbx0002-bbb")), "{ids:?}");
+    let m = app.bundle.as_ref().unwrap().snap.fleets.iter().flat_map(admiralty::view::fleet_members).find(|m| m.id.0 == "MAIN/ARGOS").unwrap().clone();
+    assert_eq!(admiralty::view::folded_crew(&m.crew, nimitz_core::evidence::now(), ""), 1);
+    let s = screen(&mut app, 200, 80);
+    assert!(s.contains("sandbox-fanout") && s.contains("L0:lane zero") && s.contains("+1 finished"), "{s}");
+}

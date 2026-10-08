@@ -35,7 +35,7 @@ pub fn art_for(n: &Node) -> Art {
         Kind::ExtraRow => Art::StaleRow,
         Kind::Note => Art::Issue,
         Kind::Crew if n.kind_text == "teammate" => Art::Teammate,
-        Kind::Crew | Kind::CrewFold => Art::Crew,
+        Kind::Crew | Kind::CrewFold | Kind::Workflow => Art::Crew,
         Kind::Task if n.status.0 == "completed" => Art::TaskDone,
         Kind::Task if n.status.0 == "in progress" => Art::TaskWip,
         Kind::Task => Art::TaskTodo,
@@ -129,6 +129,16 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             blank(),
             Line::styled(format!("Crew of this conversation that finished over {} min ago.", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::SOFT)),
             Line::styled("z (or space) shows or hides them; the choice is kept per member.", st(mono::SOFT)),
+        ],
+        (Kind::Workflow, _) => vec![
+            Line::styled(r.node.name.clone(), bold(mono::FG)),
+            blank(),
+            kv("state", r.node.status.0.trim_start_matches(['>', '.', ' ']).to_string()),
+            kv("agents", r.node.detail.first().map(|s| s.content.to_string()).unwrap_or_default()),
+            kv("run", r.node.detail.get(1).map(|s| s.content.trim().to_string()).unwrap_or_default()),
+            kv("last write", format!("{} ago", r.node.age)),
+            blank(),
+            Line::styled("The agents a Workflow run started in this session; space opens or closes it.", st(mono::COMMENT)),
         ],
         (Kind::Crew, _) => vec![
             Line::styled(r.node.name.clone(), bold(mono::FG)),
@@ -348,7 +358,9 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
     if !m.crew.is_empty() {
         let run = m.crew.iter().filter(|c| c.running).count();
         v.push(blank());
-        v.push(heading(&format!("CREW  {run} running, {} finished", m.crew.len() - run)));
+        let runs: std::collections::BTreeSet<&str> = m.crew.iter().filter_map(|c| c.workflow.as_deref()).collect();
+        let wf = if runs.is_empty() { String::new() } else { format!(" ({} in {} workflow run{})", m.crew.iter().filter(|c| c.workflow.is_some()).count(), runs.len(), if runs.len() == 1 { "" } else { "s" }) };
+        v.push(heading(&format!("CREW  {run} running, {} finished{wf}", m.crew.len() - run)));
     }
     if !m.tasks.is_empty() {
         v.push(blank());

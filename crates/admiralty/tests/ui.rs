@@ -229,10 +229,17 @@ fn columns_line_up_across_fleet_squadron_and_stowaway_frames() {
     assert_eq!(admiral, ship);
     assert_eq!(ship, stow);
     assert_eq!(ship, forge_ship);
-    // no KIND column, and no icon before a member's name
+    // no KIND column; the kind icon sits right before the name, and no
+    // issue mark before it (ASCII: ship `S`, issue `^`)
     assert!(!ls.iter().any(|l| l.contains("KIND")), "{}", ls.join("\n"));
     let boom = ls.iter().find(|l| l.contains("BOOM") && l.contains("- idle")).unwrap();
-    assert!(!boom.contains("S BOOM") && !boom.contains("ship "), "{boom}");
+    assert!(boom.contains("S [MAIN.ARGOS]-BOOM") || boom.contains("S BOOM"), "{boom}");
+    assert!(!boom.contains("ship "), "{boom}");
+    for l in &ls {
+        if let Some(x) = l.find("S [") {
+            assert!(!l[..x].contains('^'), "no issue mark before the name: {l}");
+        }
+    }
 }
 
 /// The shown fleet's tab is one strip: its name on cyan, then its state and
@@ -585,8 +592,9 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
         let l = ls.iter().find(|l| l.contains(row)).unwrap_or_else(|| panic!("{row}"));
         assert!(l.contains(code), "{row} shows {code}: {l}");
         let y = ls.iter().position(|x| x == l).unwrap() as u16;
-        let x = col_of(&ls, row, "^ ") as u16; // the issue mark before the name
-        assert!(x < col_of(&ls, row, row.trim()) as u16);
+        // the issue mark is DETAIL's first word, after the name; nothing before it
+        let x = col_of(&ls, row, "^ ") as u16;
+        assert!(x > col_of(&ls, row, row.trim()) as u16, "{row}: no mark before the name: {l}");
         let c = buf[(x, y)].fg;
         assert!(c == mono::ERROR || c == mono::WARN, "{row} mark is coloured by severity");
     }
@@ -852,8 +860,8 @@ fn a_legacy_session_has_its_own_marker_and_adopt_is_prefilled() {
     let buf = draw(&mut t.app, 200, 70);
     let ls = lines(&buf);
     let y = ls.iter().position(|l| l.contains("[KITS]-LEAD")).unwrap();
-    let x = col_of(&ls, "[KITS]-LEAD", "L ");
-    assert!(x < col_of(&ls, "[KITS]-LEAD", "[KITS]-LEAD"), "marker before the name: {}", ls[y]);
+    let x = col_of(&ls, "[KITS]-LEAD", "L legacy");
+    assert!(x > col_of(&ls, "[KITS]-LEAD", "[KITS]-LEAD"), "the marker is in DETAIL, not before the name: {}", ls[y]);
     assert_eq!(buf[(x as u16, y as u16)].fg, mono::WARN);
     assert!(ls[y].contains("legacy"));
     goto(&mut t.app, "SW:ab99ab99-0000-4000-8000-000000000000");
@@ -1147,7 +1155,7 @@ fn the_state_filter_hides_squadrons_on_a_fleet_tab() {
 // ------------------------------------------------------------------ crew window
 
 fn crew_of(id: &str, parent: Option<&str>, label: &str, running: bool, age_s: f64) -> nimitz_core::Crew {
-    nimitz_core::Crew { agent_id: id.into(), parent_id: parent.map(String::from), label: label.into(), agent_type: Some("general-purpose".into()), teammate: false, running, last_write: fixtures::NOW - age_s }
+    nimitz_core::Crew { agent_id: id.into(), parent_id: parent.map(String::from), label: label.into(), agent_type: Some("general-purpose".into()), teammate: false, running, last_write: fixtures::NOW - age_s, workflow: None, workflow_name: None, phase: None }
 }
 
 /// The demo's BOLT, with crew of every age: running (sa-1, its child sa-2),

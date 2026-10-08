@@ -84,6 +84,9 @@ fn crew(agent_id: &str, parent: Option<&str>, label: &str, agent_type: &str, tea
         teammate,
         running,
         last_write: NOW - age_s,
+        workflow: None,
+        workflow_name: None,
+        phase: None,
     }
 }
 

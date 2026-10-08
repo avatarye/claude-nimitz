@@ -918,8 +918,17 @@ pub struct SubAgentRec {
     pub team: Option<String>,
     pub teammate: bool,
     pub last_write: f64,
+    /// the Workflow run that started it (`wf_<run>`), with the workflow's
+    /// name when known and the agent's phase
+    pub workflow: Option<String>,
+    pub workflow_name: Option<String>,
+    pub phase: Option<String>,
 }
 
+/// The session's own folder, `projects/<project>/<sid>`. More than one
+/// project can hold a `<sid>` folder (a Workflow run in another cwd leaves
+/// one with only `workflows/scripts`): the one beside the transcript
+/// (`<sid>.jsonl`) wins, then one with `subagents`, then any.
 fn find_session_dir(env: &Env, cache: &mut FileCache, sid: &str) -> Option<PathBuf> {
     if let Some(p) = cache.session_dirs.get(sid) {
         if p.is_dir() {
@@ -927,26 +936,62 @@ fn find_session_dir(env: &Env, cache: &mut FileCache, sid: &str) -> Option<PathB
         }
     }
     let rd = fs::read_dir(env.claude_home.join("projects")).ok()?;
-    for e in rd.filter_map(|e| e.ok()) {
-        let cand = e.path().join(sid);
-        if cand.is_dir() {
-            cache.session_dirs.insert(sid.to_string(), cand.clone());
-            return Some(cand);
-        }
+    let found: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path().join(sid)).filter(|c| c.is_dir()).collect();
+    let rank = |c: &PathBuf| if c.with_extension("jsonl").is_file() { 0 } else if c.join("subagents").is_dir() { 1 } else { 2 };
+    let best = found.into_iter().min_by_key(rank)?;
+    // only a sure pick is cached: a transcript may appear later
+    if rank(&best) == 0 {
+        cache.session_dirs.insert(sid.to_string(), best.clone());
     }
-    None
+    Some(best)
 }
 
+/// The session's crew: `subagents/agent-<id>.meta.json`, and the agents
+/// Workflow runs started, `subagents/workflows/wf_<run>/agent-<id>.meta.json`
+/// (the run's name from `workflows/wf_<run>.json`, written when it ends, or
+/// its script `workflows/scripts/<name>-wf_<run>.js`). A workflow agent's log
+/// can go on at the top level (`subagents/agent-<id>.jsonl`, no meta): its
+/// last write is the newer of the two.
 pub fn read_subagents(env: &Env, cache: &mut FileCache, sid: &str) -> Vec<SubAgentRec> {
     let Some(sdir) = find_session_dir(env, cache, sid) else { return vec![] };
-    let Ok(rd) = fs::read_dir(sdir.join("subagents")) else { return vec![] };
+    let top = sdir.join("subagents");
+    let mut out = vec![];
+    if let Ok(rd) = fs::read_dir(top.join("workflows")) {
+        let mut runs: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        runs.sort();
+        for run in runs {
+            let id = run.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = workflow_name(cache, &sdir, &id);
+            for mut r in read_agent_dir(cache, &run, Some(&top)) {
+                r.workflow = Some(id.clone());
+                r.workflow_name = name.clone();
+                out.push(r);
+            }
+        }
+    }
+    let in_runs: std::collections::HashSet<String> = out.iter().map(|r| r.agent_id.clone()).collect();
+    out.extend(read_agent_dir(cache, &top, None).into_iter().filter(|r| !in_runs.contains(&r.agent_id)));
+    out.sort_by(|a, b| b.last_write.partial_cmp(&a.last_write).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+/// The `agent-<id>.meta.json` records in `dir`; `also` is a second folder
+/// whose `agent-<id>.jsonl` may hold the newer log.
+fn read_agent_dir(cache: &mut FileCache, dir: &Path, also: Option<&Path>) -> Vec<SubAgentRec> {
+    let Ok(rd) = fs::read_dir(dir) else { return vec![] };
     let mut out = vec![];
     for e in rd.filter_map(|e| e.ok()) {
         let fname = e.file_name().to_string_lossy().into_owned();
         let Some(agent_id) = fname.strip_prefix("agent-").and_then(|r| r.strip_suffix(".meta.json")) else { continue };
         let m = cache.json(&e.path()).unwrap_or(Value::Null);
-        let log = e.path().with_file_name(format!("agent-{agent_id}.jsonl"));
-        let last = mtime_secs(&log).or_else(|| mtime_secs(&e.path())).unwrap_or(0.0);
+        let log = format!("agent-{agent_id}.jsonl");
+        let last = [Some(dir.join(&log)), also.map(|a| a.join(&log))]
+            .into_iter()
+            .flatten()
+            .filter_map(|p| mtime_secs(&p))
+            .reduce(f64::max)
+            .or_else(|| mtime_secs(&e.path()))
+            .unwrap_or(0.0);
         out.push(SubAgentRec {
             agent_id: agent_id.to_string(),
             parent_id: s(&m, "parentAgentId"),
@@ -955,10 +1000,26 @@ pub fn read_subagents(env: &Env, cache: &mut FileCache, sid: &str) -> Vec<SubAge
             team: s(&m, "teamName"),
             teammate: s(&m, "taskKind").as_deref() == Some("in_process_teammate"),
             last_write: last,
+            workflow: None,
+            workflow_name: None,
+            phase: s(&m, "workflowPhase"),
         });
     }
-    out.sort_by(|a, b| b.last_write.partial_cmp(&a.last_write).unwrap_or(std::cmp::Ordering::Equal));
     out
+}
+
+/// A Workflow run's name: `workflowName` in `workflows/<run>.json` (written
+/// when the run ends), else from its script `workflows/scripts/<name>-<run>.js`.
+fn workflow_name(cache: &mut FileCache, sdir: &Path, run: &str) -> Option<String> {
+    let wf = sdir.join("workflows");
+    if let Some(n) = cache.json(&wf.join(format!("{run}.json"))).and_then(|v| s(&v, "workflowName")) {
+        return Some(n);
+    }
+    let suffix = format!("-{run}.js");
+    fs::read_dir(wf.join("scripts"))
+        .ok()?
+        .filter_map(|e| e.ok())
+        .find_map(|e| e.file_name().to_string_lossy().strip_suffix(&suffix).map(String::from))
 }
 
 pub fn read_tasks(env: &Env, cache: &mut FileCache, team: &str) -> Vec<Task> {
@@ -1029,6 +1090,25 @@ fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A second project's `<sid>` folder (only `workflows/scripts`) is never
+    /// taken for the session's, whichever the directory lists first.
+    #[test]
+    fn the_session_dir_is_the_one_beside_the_transcript() {
+        for (real, decoy) in [("-a-real", "-b-decoy"), ("-b-real", "-a-decoy")] {
+            let td = tempfile::tempdir().unwrap();
+            let vars: HashMap<String, String> = [("NIMITZ_CLAUDE_HOME".to_string(), td.path().to_string_lossy().into_owned())].into();
+            let env = Env::from_vars(&vars);
+            let sid = "5e55e55e-0000-4000-8000-000000000000";
+            let projects = td.path().join("projects");
+            fs::create_dir_all(projects.join(decoy).join(sid).join("workflows/scripts")).unwrap();
+            fs::create_dir_all(projects.join(real).join(sid).join("subagents")).unwrap();
+            fs::write(projects.join(real).join(format!("{sid}.jsonl")), "{}\n").unwrap();
+            fs::write(projects.join(real).join(sid).join("subagents/agent-x1.meta.json"), r#"{"description":"x"}"#).unwrap();
+            let recs = read_subagents(&env, &mut FileCache::default(), sid);
+            assert_eq!(recs.iter().map(|r| r.agent_id.as_str()).collect::<Vec<_>>(), ["x1"], "{real} vs {decoy}");
+        }
+    }
 
     #[test]
     fn first_json_ignores_trailing_bytes() {

@@ -188,6 +188,8 @@ pub enum Kind {
     /// a member's finished crew older than `CREW_RECENT_S`, folded into one
     /// `+N finished` row (`z` opens and closes it)
     CrewFold,
+    /// a Workflow run's agents under one row: its name, live / total, phase
+    Workflow,
     Task,
     /// an extra job row of the identity (copy, stale row)
     ExtraRow,
@@ -374,7 +376,8 @@ fn crew_node(parent: &str, c: &Crew, kids: &HashMap<String, Vec<&Crew>>, now: f6
     }
     n.age = if c.last_write > 0.0 { age_or_unknown(now - c.last_write) } else { "?".into() };
     n.kind_text = if c.teammate { "teammate".into() } else { "crew".into() };
-    n.detail = vec![Span::styled(c.agent_type.clone().unwrap_or_default(), st(mono::COMMENT))];
+    let phase = c.phase.as_ref().map(|p| format!("{p}  ")).unwrap_or_default();
+    n.detail = vec![Span::styled(format!("{phase}{}", c.agent_type.clone().unwrap_or_default()), st(mono::COMMENT))];
     if depth < 32 {
         if let Some(ch) = kids.get(&c.agent_id) {
             n.children = ch.iter().map(|k| crew_node(parent, k, kids, now, icons, depth + 1)).collect();
@@ -427,14 +430,77 @@ fn crew_roots<'a>(crew: &'a [Crew], now: f64, q: &str) -> (HashMap<String, Vec<&
     (kids, judged)
 }
 
-/// How many top-level crew of `crew` fold into `+N finished` under the
-/// name filter `q` (lowercase; empty for none).
+/// A member's crew split: the plain subagents, and the agents of each
+/// Workflow run (by run id, in id order).
+fn split_runs(crew: &[Crew]) -> (Vec<Crew>, Vec<(String, Vec<&Crew>)>) {
+    let mut runs: std::collections::BTreeMap<String, Vec<&Crew>> = std::collections::BTreeMap::new();
+    let mut plain = vec![];
+    for c in crew {
+        match &c.workflow {
+            Some(w) => runs.entry(w.clone()).or_default().push(c),
+            None => plain.push(c.clone()),
+        }
+    }
+    (plain, runs.into_iter().collect())
+}
+
+/// A Workflow run is one root: it shows while any of its agents runs, for
+/// `CREW_RECENT_S` after its last write, or while the filter `q` matches one
+/// of its agents or the workflow's name; else it folds into `+N finished`.
+fn run_visible(agents: &[&Crew], now: f64, q: &str) -> bool {
+    let last = agents.iter().map(|c| c.last_write).fold(0.0, f64::max);
+    agents.iter().any(|c| c.running)
+        || now - last < CREW_RECENT_S
+        || (!q.is_empty() && agents.iter().any(|c| c.label.to_lowercase().contains(q) || c.workflow_name.as_deref().is_some_and(|n| n.to_lowercase().contains(q))))
+}
+
+/// The id of member `parent`'s row for Workflow run `run`.
+pub fn workflow_row_id(parent: &str, run: &str) -> String {
+    format!("WF:{parent}:{run}")
+}
+
+/// A Workflow run's row: the workflow's name (else the run id), live /
+/// total, the phase of its newest agent; its agents under it, open while
+/// one runs.
+fn workflow_node(parent: &str, run: &str, agents: &[&Crew], now: f64, icons: &Icons) -> Node {
+    let live = agents.iter().filter(|c| c.running).count();
+    let newest = agents.iter().max_by(|a, b| a.last_write.partial_cmp(&b.last_write).unwrap_or(std::cmp::Ordering::Equal));
+    let style = if live > 0 { st(mono::BUSY) } else { st(mono::COMMENT) };
+    let mut n = Node::new(workflow_row_id(parent, run), Kind::Workflow);
+    n.icon = icons.crew;
+    n.icon_style = style;
+    n.name = agents.iter().find_map(|c| c.workflow_name.clone()).unwrap_or_else(|| run.to_string());
+    n.name_style = style;
+    n.status = (if live > 0 { "> running".into() } else { ". finished".into() }, style);
+    if live > 0 {
+        n.anim = Anim::SpinDim;
+    }
+    n.age = newest.filter(|c| c.last_write > 0.0).map(|c| age_or_unknown(now - c.last_write)).unwrap_or_else(|| "?".into());
+    n.kind_text = "workflow".into();
+    let phase = newest.and_then(|c| c.phase.clone()).map(|p| format!("   {p}")).unwrap_or_default();
+    n.detail = vec![
+        Span::styled(format!("{live} live / {} total", agents.len()), style),
+        Span::styled(format!("{phase}   {run}"), st(mono::COMMENT)),
+    ];
+    let owned: Vec<Crew> = agents.iter().map(|c| (*c).clone()).collect();
+    let (kids, roots) = crew_roots(&owned, now, "");
+    let mut children: Vec<Node> = roots.into_iter().map(|(c, _)| crew_node(parent, c, &kids, now, icons, 0)).collect();
+    children.sort_by(|a, b| a.name.cmp(&b.name));
+    n.children = children;
+    n.default_expand = live > 0;
+    n
+}
+
+/// How many top-level crew of `crew` (a Workflow run counts as one) fold
+/// into `+N finished` under the name filter `q` (lowercase; empty for none).
 pub fn folded_crew(crew: &[Crew], now: f64, q: &str) -> usize {
-    crew_roots(crew, now, q).1.iter().filter(|(_, v)| !v).count()
+    let (plain, runs) = split_runs(crew);
+    crew_roots(&plain, now, q).1.iter().filter(|(_, v)| !v).count() + runs.iter().filter(|(_, a)| !run_visible(a, now, q)).count()
 }
 
 fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons, q: &str) -> Vec<Node> {
-    let (kids, roots) = crew_roots(crew, now, q);
+    let (plain, runs) = split_runs(crew);
+    let (kids, roots) = crew_roots(&plain, now, q);
     let (mut shown, mut old): (Vec<Node>, Vec<Node>) = (vec![], vec![]);
     let mut youngest = 0.0f64;
     for (c, visible) in roots {
@@ -443,6 +509,15 @@ fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons, q: &str) -> 
             shown.push(node);
         } else {
             youngest = youngest.max(c.last_write);
+            old.push(node);
+        }
+    }
+    for (run, agents) in &runs {
+        let node = workflow_node(parent, run, agents, now, icons);
+        if run_visible(agents, now, q) {
+            shown.push(node);
+        } else {
+            youngest = youngest.max(agents.iter().map(|c| c.last_write).fold(0.0, f64::max));
             old.push(node);
         }
     }
@@ -779,6 +854,10 @@ fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
     n.detail = vec![];
     if n.legacy {
         n.detail.push(Span::styled(format!("{} legacy  ", v.icons.legacy), bold(mono::WARN)));
+    } else if let Some(w) = n.worst {
+        // the row's only severity mark (NAME has none)
+        let codes: Vec<&str> = issues.iter().map(|i| i.code.as_str()).collect();
+        n.detail.push(Span::styled(format!("{} {}  ", v.icons.issue, codes.join(", ")), bold(theme::severity_color(w))));
     }
     n.detail.push(Span::styled(format!("no labels  {}", s.cwd), st(mono::SOFT)));
     if let Some(fx) = fix {

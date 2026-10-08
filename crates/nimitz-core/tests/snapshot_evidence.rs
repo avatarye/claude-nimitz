@@ -406,3 +406,38 @@ fn a_live_session_with_remote_control_is_rc_exposed() {
     w.patch(&w.session_file(&short), |v| v["bridgeSessionId"] = json!(null));
     assert!(!w.ship(&w.snap(), "CLEAN").issues.iter().any(|i| i.code == "rc.exposed"));
 }
+
+/// Workflow agents are crew too: `subagents/workflows/wf_<run>/agent-*`, with
+/// the run, its name (the script's, or the summary's once it ends) and the
+/// phase; a log going on at the top level keeps its agent running. A second
+/// project's `<sid>` folder (only `workflows/scripts`) is not the session's.
+#[test]
+fn workflow_agents_are_crew_under_their_run() {
+    let w = world();
+    let snap = w.snap();
+    let argos = snap
+        .fleets
+        .iter()
+        .flat_map(|f| f.squadrons.iter())
+        .map(|s| s.commodore.clone())
+        .find(|m| m.id == Id::commodore("MAIN", "ARGOS"))
+        .expect("ARGOS's commodore");
+    let by = |id: &str| argos.crew.iter().find(|c| c.agent_id == id).unwrap_or_else(|| panic!("{id} in {:?}", argos.crew));
+    assert_eq!(argos.crew.len(), 6, "{:?}", argos.crew);
+    let plain = by("survey-1");
+    assert!(plain.workflow.is_none() && plain.running);
+    let a1 = by("wfa-1");
+    assert_eq!(a1.workflow.as_deref(), Some("wf_sbx0001-aaa"));
+    assert_eq!(a1.workflow_name.as_deref(), Some("sandbox-fanout"), "named by its script");
+    assert_eq!(a1.phase.as_deref(), Some("Fan-out"));
+    assert_eq!(a1.label, "L0:lane zero");
+    assert!(a1.running, "its top-level log is fresh");
+    assert!(by("wfa-2").running && !by("wfa-3").running);
+    let b = by("wfb-1");
+    assert_eq!(b.workflow_name.as_deref(), Some("sandbox-review"), "named by its summary");
+    assert!(!b.running);
+    // the status JSON carries them, a plain subagent without the fields
+    let j = serde_json::to_value(&argos.crew).unwrap();
+    assert!(j.as_array().unwrap().iter().any(|c| c["workflow"] == "wf_sbx0001-aaa"));
+    assert!(j.as_array().unwrap().iter().any(|c| c["agent_id"] == "survey-1" && c.get("workflow").is_none()));
+}

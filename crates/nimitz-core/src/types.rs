@@ -377,6 +377,15 @@ pub struct Crew {
     pub teammate: bool,
     pub running: bool,
     pub last_write: f64,
+    /// the Workflow run that started it (`wf_<run>`); none for a plain subagent
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<String>,
+    /// the workflow's name (`meta.name` of its script), when known
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_name: Option<String>,
+    /// the workflow phase it runs in
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
