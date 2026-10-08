@@ -454,14 +454,15 @@ impl Mux for Herdr {
         self.pane_in_tab(&ws_id, &tab_id).ok()
     }
 
-    /// `herdr pane process-info --pane <id>`: the foreground process group of
-    /// the pane's pty (`result.process_info.foreground_processes[].argv`). The
-    /// first process that is not a shell is what runs; none means an idle
-    /// shell; a reply with no list is an error (never "idle shell").
+    /// Every foreground process of the pane, with its pid (`pane process-info`).
     fn foreground_procs(&self, pane: &PaneRef) -> Result<Vec<(Vec<String>, Option<i64>)>, MuxError> {
         Herdr::foreground_procs(self, &pane.pane_id)
     }
 
+    /// `herdr pane process-info --pane <id>`: the foreground process group of
+    /// the pane's pty (`result.process_info.foreground_processes[].argv`). The
+    /// first process that is not a shell is what runs; none means an idle
+    /// shell; a reply with no list is an error (never "idle shell").
     fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError> {
         let v = self.run(&["pane", "process-info", "--pane", &pane.pane_id])?;
         let procs = parse_process_info(&v).map_err(MuxError::Failed)?;
