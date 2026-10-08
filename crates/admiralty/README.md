@@ -38,18 +38,27 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   error; yellow warning and legacy; green busy; cyan focus, key hints and fix
   commands) and four neutral steps (faint not started, muted ages and paths,
   body text and idle, bright live names). Bands sit on one raised background,
-  never tinted; frames are neutral unless they need you (pink) or do not load
-  (orange). On the cursor row and band, faint and muted text is lifted.
-- One double-line frame per fleet, its state word on the title band, with
-  `icon n / icon n` status and issue counts on the right (info issues are not
-  counted). The admiral is the first row inside.
-- A rounded frame per squadron inside its fleet, with its comms rule; ships
-  are rows; crew, tasks and extra job rows sit under their member with tree
+  never tinted. On the cursor row and band, faint and muted text is lifted.
+- A fleet is one band line (no frame: each fleet has its own tab), its state
+  word on it, with `icon n / icon n` status and issue counts on the right
+  (info issues are not counted).
+- The admiral sits in a heavy box (`┏━ ADMIRAL ━┓`, a brighter title) with its
+  crew.
+- A rounded box per squadron, its title and comms rule in the top border. The
+  top border takes the squadron's status, the worst of its commodore and
+  ships, in this order: pink needs you, orange error (an issue at Error, or a
+  config that does not load), yellow warning (an issue at Warn), green busy,
+  else neutral (idle, stopped, parked, not started; info issues do not
+  count). The sides stay neutral. Ships are rows; crew, tasks and extra job rows sit under their member with tree
   guides. Crew show while running and for 30 minutes after they
   finish (a nested crew follows its parent; a running one keeps its parent in
   view); older finished crew fold into one `+N finished` row per member, which
   `z` (or space on it) opens and closes, kept in the saved state.
-- A STOWAWAYS frame for unlabelled sessions in fleet scope, on the tab of
+- Spacing: a blank line between the boxes, a column of padding inside each,
+  two spaces between columns. It is the first thing to go: below the width
+  where it costs no column (about 100 columns) the padding and gaps go, and
+  the blank lines go whenever the list does not fit the height.
+- A STOWAWAYS box for unlabelled sessions in fleet scope, on the tab of
   the fleet that holds them (a member's folder, else the fleet's own folder,
   else the fleet its `legacy` issue names; `unassigned` otherwise). A session of
   the old fleet-skill fleets (issue `legacy`) has its own yellow history marker,
@@ -57,7 +66,7 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 - Band counts read `icon n` (`!2 / *3 / -1`: needs you, busy, idle ...; orange and yellow
   triangles are errors and warnings), right-aligned as a group; under 100 columns only
   needs-you and errors stay. `?` has a legend for every icon.
-- Columns NAME / STATUS / AGE / KIND / DETAIL line up across all frames. NAME
+- Columns NAME / STATUS / AGE / KIND / DETAIL line up across all boxes. NAME
   starts with the pane dot (green working, pink blocked, grey done, plain
   idle, faint unknown) and an issue mark coloured by severity; DETAIL lists the
   issue codes.
@@ -80,7 +89,9 @@ scoped to the row: member, squadron or fleet),
 `m` message (admiral and commodore: typed into their pane; ships: relayed by
 their commodore), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
 from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
-flagged only, `R` refresh, `?` help, `q` quit.
+flagged only, `R` refresh, `?` help, `q` quit. `esc` closes what is open, one
+thing at a time (a dialog or form, the detail panel, the filter), and with
+nothing open quits.
 
 Every action and form shows the exact `nimitz` command and core's plan steps
 (refusals with their fixes) and waits for `y`. Forms validate as you type
@@ -109,7 +120,7 @@ rm, adopt and config changes.
 A squadron (or fleet) whose config does not load stays on screen as a red frame
 with the error in full (file:line and the parser's words) above its members.
 
-At 80x24 the header keeps the mux state, the footer keeps `? help` and `q quit`,
+At 80x24 the header keeps the mux state, the footer keeps `? help` and `q/esc quit`,
 DETAIL keeps room for issue codes, the detail pane drops its picture to show the
 reasons first (ctrl-e / ctrl-y scroll it), and help and the issues view wrap and
 scroll. The first frame comes from the session files alone; `claude agents`

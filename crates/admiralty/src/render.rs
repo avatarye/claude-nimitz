@@ -16,7 +16,7 @@ use crate::actions::{shell, MessagePlan, Pending};
 use crate::app::{App, MenuItem, Modal, NeedItem, HELP};
 use crate::detail::{badge, detail_with_art};
 use crate::forms::{FieldKind, Form};
-use crate::frames::{frame_lines, header_line, pad, selectable, wrap};
+use crate::frames::{header_line_with, layout, pad, selectable, wrap};
 use crate::theme::{bold, mono, severity_color, severity_word, st};
 use crate::view::FleetState;
 
@@ -255,7 +255,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
     }
     let key = |k: &str, d: &str| vec![Span::styled(format!(" {k} "), bold(mono::ACCENT)), Span::styled(format!("{d} "), st(mono::SOFT))];
     // `? help` first and `q quit` at the right, at every width; the rest fills what is left
-    let right: Vec<Span<'static>> = key("q", "quit");
+    let right: Vec<Span<'static>> = key("q/esc", "quit");
     let right_w: usize = right.iter().map(|s| s.content.width()).sum();
     let keys = [
         ("?", "help"),
@@ -291,8 +291,8 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
 }
 
 fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
-    let lines = frame_lines(&app.rows, area.width, app.cursor, app.icons);
     let view = area.height.saturating_sub(1) as usize;
+    let (lines, sp) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons);
     app.page = view.max(2);
     if let Some(pos) = lines.iter().position(|(_, r)| *r == Some(app.cursor)) {
         if pos < app.scroll {
@@ -302,7 +302,7 @@ fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
         }
     }
     app.scroll = app.scroll.min(lines.len().saturating_sub(view));
-    let mut shown = vec![header_line(area.width)];
+    let mut shown = vec![header_line_with(area.width, sp)];
     if lines.is_empty() {
         shown.push(Line::raw(""));
         let msg = if app.bundle.as_ref().map(|b| b.snap.fleets.is_empty()).unwrap_or(false) {

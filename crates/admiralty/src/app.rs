@@ -148,6 +148,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("f / F", "filter squadrons by state / flagged rows only"),
     ("w", "detail: open or close the floating detail panel (esc closes it too)"),
     ("R", "refresh now"),
+    ("esc", "close what is open (a dialog, the detail panel, the filter); with nothing open, quit"),
     ("? / q", "help / quit"),
 ];
 
@@ -893,12 +894,15 @@ impl App {
             }
             (KeyCode::Char('z'), false) => self.toggle_crew_fold(),
             (KeyCode::Char('/'), _) => self.editing_filter = true,
+            // esc closes what is open, one thing at a time; with nothing open it quits
             (KeyCode::Esc, _) => {
                 if self.detail_open {
                     self.detail_open = false;
                 } else if !self.filter.is_empty() {
                     self.filter.clear();
                     self.rebuild();
+                } else {
+                    return Some(Effect::Quit);
                 }
             }
             (KeyCode::Char('n'), _) => {

@@ -596,6 +596,34 @@ fn comms_text(c: &Comms) -> String {
     }
 }
 
+/// The colour of a squadron's top border: the worst of its commodore and
+/// ships, in this order (theme A): needs you (pink) > error (orange: an issue
+/// at Error) > warning (yellow: an issue at Warn) > busy (green) > neutral.
+/// Idle, stopped, parked, not started and unknown are neutral; info issues
+/// do not count. A squadron whose config does not load is an error itself.
+pub fn squadron_status_color(members: &[&Member]) -> ratatui::style::Color {
+    let rank = |m: &Member| -> u8 {
+        if m.status == Status::NeedsYou {
+            4
+        } else if m.issues.iter().any(|i| i.severity == Severity::Error) {
+            3
+        } else if m.issues.iter().any(|i| i.severity == Severity::Warn) {
+            2
+        } else if m.status == Status::Busy {
+            1
+        } else {
+            0
+        }
+    };
+    match members.iter().map(|m| rank(m)).max().unwrap_or(0) {
+        4 => mono::NEEDS,
+        3 => mono::ERROR,
+        2 => mono::WARN,
+        1 => mono::BUSY,
+        _ => mono::LINE,
+    }
+}
+
 fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -> bool) -> Option<Node> {
     let members: Vec<&Member> = squadron_members(sq);
     let shown: Vec<&&Member> = members.iter().filter(|m| matches(m)).collect();
@@ -605,7 +633,8 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
     let own_issues: Vec<&Issue> = sq.issues.iter().chain(members.iter().flat_map(|m| m.issues.iter())).collect();
     let state = FleetState::of_squadron(f, sq);
     let load_errors: Vec<&Issue> = sq.issues.iter().filter(|i| is_load_error(i) && i.id.as_ref() == Some(&sq.id)).collect();
-    let (color, frame) = if load_errors.is_empty() { (state.color(), state.frame()) } else { (mono::ERROR, mono::ERROR) };
+    let color = if load_errors.is_empty() { state.color() } else { mono::ERROR };
+    let frame = if load_errors.is_empty() { squadron_status_color(&members) } else { mono::ERROR };
     let sq_name = sq.id.squadron().unwrap_or("?").to_string();
     let mut n = Node::new(format!("SQ:{}", sq.id.0), Kind::SquadronBand);
     n.member = Some(sq.id.clone());
@@ -881,9 +910,9 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
 /// Which frame a row lives in; the renderer draws borders from this.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Section {
-    /// a fleet's title band (opens the outer, double-line frame)
+    /// a fleet's title band (one tinted line; no frame)
     FleetBand,
-    /// a row directly inside the fleet frame (admiral, its crew)
+    /// a row under the fleet band (the admiral and its crew, in its heavy box)
     FleetBody,
     /// a squadron's title band (opens the inner frame)
     SquadronBand,

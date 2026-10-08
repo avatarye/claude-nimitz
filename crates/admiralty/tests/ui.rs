@@ -15,38 +15,80 @@ use ratatui::crossterm::event::KeyCode;
 
 // ------------------------------------------------------------------ frames
 
+/// A fleet is one band line (no frame: its tab frames it); its admiral sits
+/// in a heavy box with a bright title; each squadron is a rounded box whose
+/// top border carries its title in the squadron's status colour.
 #[test]
-fn each_fleet_is_a_gold_double_frame_with_squadron_frames_inside() {
+fn each_fleet_is_a_band_with_a_heavy_admiral_box_and_squadron_boxes() {
     let mut t = demo();
-    // one fleet per tab
     for fleet in ["MAIN", "FORGE", "LAB"] {
         tab(&mut t.app, fleet);
-        let buf = draw(&mut t.app, 200, 60);
-        let ls = lines(&buf);
+        let ls = lines(&draw(&mut t.app, 200, 60));
         let tag = format!("[{fleet}]");
-        let y = ls.iter().position(|l| l.contains(&tag) && l.starts_with('\u{2554}')).unwrap_or_else(|| panic!("{tag} band"));
-        // theme A: frames are neutral, except one that needs you or does not load
-        let frame = match fleet {
-            "MAIN" => mono::NEEDS,
-            "FORGE" => mono::ERROR,
-            _ => mono::LINE,
-        };
-        assert_eq!(buf[(0, y as u16)].fg, frame, "{tag} frame");
-        assert_eq!(ls.iter().filter(|l| l.starts_with('\u{2554}')).count(), 1, "only {tag} on its tab");
+        assert!(ls.iter().any(|l| l.contains(&tag) && l.starts_with(' ')), "{tag} band");
+        assert!(!ls.iter().any(|l| l.starts_with('\u{2554}') || l.starts_with('\u{2551}') || l.starts_with('\u{255a}')), "no double frame on {tag}");
     }
     tab(&mut t.app, "MAIN");
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
-    // squadron frames open one cell in, inside the fleet's double line
-    let argos = ls.iter().find(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
-    assert!(argos.starts_with("\u{2551}\u{256d}"), "{argos}");
-    // and close before the fleet does
-    assert!(ls.iter().any(|l| l.starts_with("\u{2551}\u{2570}")));
-    assert!(ls.iter().any(|l| l.starts_with('\u{255a}')));
-    // stowaways: their own frame at top level, neutral like the rest
-    let y = ls.iter().position(|l| l.contains("STOWAWAYS")).unwrap();
-    assert!(ls[y].starts_with('\u{256d}'));
-    assert_eq!(buf[(0, y as u16)].fg, mono::LINE);
+    let y = ls.iter().position(|l| l.starts_with("\u{250f}\u{2501} ADMIRAL ")).expect("the admiral's heavy box");
+    assert_eq!(buf[(0, y as u16)].fg, mono::FG, "a heavier border");
+    assert_eq!(buf[(3, y as u16)].fg, mono::STRONG, "a brighter title");
+    assert!(buf[(3, y as u16)].modifier.contains(ratatui::style::Modifier::BOLD));
+    let adm = ls.iter().position(|l| l.contains("[MAIN]-ADMIRAL")).unwrap();
+    assert!(adm > y && ls[adm].starts_with('\u{2503}'), "{}", ls[adm]);
+    assert!(ls[adm + 2].starts_with('\u{2517}'), "the box closes after its crew: {}", ls[adm + 2]);
+    // squadron boxes: the top border carries the title and the status colour
+    let argos = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
+    assert!(ls[argos].starts_with("\u{256d}\u{2500}"), "{}", ls[argos]);
+    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("comms")).unwrap();
+    assert_eq!(buf[(0, kits as u16)].fg, mono::NEEDS, "KITS needs you");
+    assert_eq!(buf[(0, (kits + 1) as u16)].fg, mono::LINE, "the sides stay neutral");
+    let b = t.app.bundle.clone().unwrap();
+    let argos_sq = b.snap.fleets.iter().flat_map(|f| f.squadrons.iter()).find(|q| q.id.0 == "MAIN/ARGOS").unwrap();
+    let members: Vec<&nimitz_core::Member> = std::iter::once(&argos_sq.commodore).chain(argos_sq.ships.iter()).collect();
+    assert_eq!(buf[(0, argos as u16)].fg, admiralty::view::squadron_status_color(&members));
+    // a blank line between the admiral's box and the squadrons, and between squadrons
+    assert!(ls[argos - 1].trim().is_empty() && ls[kits - 1].trim().is_empty());
+    // stowaways: their own rounded box
+    let s = ls.iter().position(|l| l.contains("STOWAWAYS")).unwrap();
+    assert!(ls[s].starts_with('\u{256d}'));
+}
+
+/// The order of a squadron's colour: needs you > error > warning > busy >
+/// neutral; parked, stopped and not started are neutral.
+#[test]
+fn a_squadrons_colour_is_its_worst_member_in_the_theme_order() {
+    use nimitz_core::{Issue, Severity};
+    let b = fixtures::demo();
+    let base = b.snap.fleets[0].squadrons[0].commodore.clone();
+    let with = |status: Status, sev: Option<Severity>| {
+        let mut m = base.clone();
+        m.status = status;
+        m.issues = sev.map(|s| vec![Issue { code: "x".into(), severity: s, message: "m".into(), fix: None, id: None }]).unwrap_or_default();
+        m
+    };
+    let c = |ms: &[nimitz_core::Member]| admiralty::view::squadron_status_color(&ms.iter().collect::<Vec<_>>());
+    assert_eq!(c(&[with(Status::Idle, None), with(Status::Parked, None), with(Status::Stopped, None), with(Status::NotStarted, None)]), mono::LINE);
+    assert_eq!(c(&[with(Status::Idle, Some(Severity::Info)), with(Status::Busy, None)]), mono::BUSY);
+    assert_eq!(c(&[with(Status::Busy, None), with(Status::Idle, Some(Severity::Warn))]), mono::WARN);
+    assert_eq!(c(&[with(Status::Busy, Some(Severity::Warn)), with(Status::Stopped, Some(Severity::Error))]), mono::ERROR);
+    assert_eq!(c(&[with(Status::Stopped, Some(Severity::Error)), with(Status::NeedsYou, None)]), mono::NEEDS);
+}
+
+/// Spacing goes first: at 80 columns no padding and single gaps; with too
+/// little height, no blank lines between boxes.
+#[test]
+fn spacing_collapses_before_content() {
+    use admiralty::frames::{spacing_for, ROOMY, TIGHT};
+    assert_eq!(spacing_for(200), ROOMY);
+    assert_eq!(spacing_for(80), TIGHT);
+    let mut t = demo();
+    let tall = lines(&draw(&mut t.app, 200, 80));
+    assert!(tall.iter().any(|l| l.trim().is_empty() && !l.is_empty()) || tall.iter().filter(|l| l.trim().is_empty()).count() > 2, "blank lines between boxes");
+    let short = lines(&draw(&mut t.app, 200, 24));
+    let body: Vec<&String> = short.iter().skip(2).take(20).collect();
+    assert!(body.iter().filter(|l| l.trim().is_empty()).count() <= 1, "no blank lines when it does not fit: {body:?}");
 }
 
 #[test]
@@ -79,8 +121,7 @@ fn band_counts_are_a_right_aligned_group_and_narrow_bands_keep_the_key_ones() {
     let end = |ls: &[String], has: &str| {
         let l = ls.iter().find(|l| l.contains(has)).unwrap();
         let c: Vec<char> = l.chars().collect();
-        let corner = c.iter().rposition(|ch| "\u{2557}\u{256e}".contains(*ch)).unwrap();
-        c[..corner].iter().rposition(|ch| *ch != ' ').unwrap()
+        c.iter().rposition(|ch| !" \u{2500}\u{256e}\u{2574}".contains(*ch)).unwrap()
     };
     assert_eq!(end(&main_ls, "[MAIN]   needs you"), end(&forge_ls, "[FORGE]   broken"));
     assert_eq!(end(&main_ls, "[MAIN]   needs you"), end(&main_ls, "ARGOS   busy"));
@@ -331,7 +372,7 @@ fn the_footer_keeps_help_first_at_every_width() {
         let ls = lines(&draw(&mut t.app, w, 24));
         let foot = &ls[23];
         assert!(foot.trim_start().starts_with("? help"), "{w}: {foot}");
-        assert!(foot.contains("q quit"), "{w}: {foot}");
+        assert!(foot.contains("q/esc quit"), "{w}: {foot}");
     }
 }
 
@@ -442,7 +483,7 @@ fn pane_dots_at_row_start_in_herdr_colours() {
     assert_eq!(buf[(2, y as u16)].fg, mono::NEEDS);
     assert!(ls[y].contains("needs you"));
     let boom = ls.iter().find(|l| l.contains("[MAIN.ARGOS]-BOOM")).unwrap();
-    assert!(boom.starts_with("\u{2551}\u{2502}  "), "no pane: no dot: {boom}");
+    assert!(boom.starts_with("\u{2502}   "), "no pane: no dot: {boom}");
 }
 
 #[test]
@@ -725,7 +766,7 @@ fn at_80x24_the_essentials_stay_on_screen() {
     let ls = lines(&draw(&mut t.app, 80, 24));
     let status = &ls[ls.len() - 2];
     assert!(status.contains("MONITOR-ONLY"), "the status bar, above the key bar, keeps the mux state: {status}");
-    assert!(ls[23].contains("? help") && ls[23].contains("q quit"), "footer keeps help and quit: {}", ls[23]);
+    assert!(ls[23].contains("? help") && ls[23].contains("q/esc quit"), "footer keeps help and quit: {}", ls[23]);
     let row = ls.iter().find(|l| l.contains("[FORGE.IRON]-AN") && l.contains("ship")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
     assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
     // the floating panel, opened on the same small screen
@@ -1094,4 +1135,24 @@ fn a_filter_shows_the_old_crew_it_matches_and_unknown_ages_fold() {
     goto(&mut t.app, &format!("M:{id}"));
     let rows = crew_rows(&t.app, &id);
     assert!(rows.contains(&"old audit".to_string()) && rows.contains(&"+1 finished".to_string()), "{rows:?}");
+}
+
+/// esc closes what is open, one thing at a time (a dialog, the detail
+/// panel, the filter), and quits only when nothing is.
+#[test]
+fn esc_closes_what_is_open_then_quits() {
+    let mut t = demo();
+    keys(&mut t.app, "?");
+    assert!(t.app.modal.is_some());
+    assert!(press(&mut t.app, KeyCode::Esc).is_none() && t.app.modal.is_none(), "esc closes help");
+    keys(&mut t.app, "w");
+    assert!(t.app.detail_open);
+    assert!(press(&mut t.app, KeyCode::Esc).is_none() && !t.app.detail_open, "esc closes the detail panel");
+    keys(&mut t.app, "/kits");
+    assert!(press(&mut t.app, KeyCode::Esc).is_none(), "esc while typing the filter ends it");
+    keys(&mut t.app, "/kits");
+    press(&mut t.app, KeyCode::Enter);
+    assert!(!t.app.filter.is_empty());
+    assert!(press(&mut t.app, KeyCode::Esc).is_none() && t.app.filter.is_empty(), "esc clears the filter");
+    assert!(matches!(press(&mut t.app, KeyCode::Esc), Some(Effect::Quit)), "with nothing open, esc quits");
 }

@@ -1,8 +1,12 @@
-//! The tree as a list of frames: one gold double-line frame per fleet (its
-//! admiral the first row inside), a rounded frame per squadron nested in it, and
-//! a pink frame for stowaways. Every frame's title is a full-width tinted band.
-//! Columns NAME / STATUS / AGE / KIND / DETAIL start at the same x in every
-//! frame, so they line up down the whole list. Pure: rows in, lines out.
+//! The tree as a list of boxes. A fleet is one tinted band line (its state
+//! and counts; the fleet's tab already frames it), then its admiral in a
+//! heavy box (`┏━ ADMIRAL ━┓`), then a rounded box per squadron whose top
+//! border carries its title in the squadron's status colour, and a box for
+//! stowaways. Columns NAME / STATUS / AGE / KIND / DETAIL start at the same x
+//! in every box, so they line up down the whole list. Spacing (blank lines
+//! between boxes, padding inside them, wider column gaps) is the first thing
+//! to go when the width or the height runs short (`Spacing`). Pure: rows in,
+//! lines out.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -18,12 +22,54 @@ pub const COL_MAX: [u16; 5] = [58, 14, 5, 10, 96];
 /// turns, so a narrow window still shows some DETAIL (column, up to width)
 /// DETAIL first gets enough for an issue code or two
 const GROW: [(usize, u16); 8] = [(4, 22), (1, 14), (2, 5), (3, 10), (0, 40), (4, 40), (0, 58), (4, 96)];
-/// columns a frame takes on each side of a row: outer border + inner border (or a space)
-pub const FRAME_SIDE: usize = 2;
+/// The room around the content: blank lines between boxes, padding inside a
+/// box (columns each side), the gap between columns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spacing {
+    pub blank: bool,
+    pub pad: usize,
+    pub gap: usize,
+}
+
+/// Nothing but the content.
+pub const TIGHT: Spacing = Spacing { blank: false, pad: 0, gap: 1 };
+/// Room to breathe, when it costs no content.
+pub const ROOMY: Spacing = Spacing { blank: true, pad: 1, gap: 2 };
+/// DETAIL keeps at least this much before the padding and gaps go.
+const DETAIL_KEEP: u16 = 40;
+
+impl Spacing {
+    /// Columns a box takes on each side of a row: its border and the padding.
+    pub fn side(self) -> usize {
+        1 + self.pad
+    }
+    /// The width the columns get in a list `width` columns wide.
+    pub fn inner(self, width: usize) -> usize {
+        width.saturating_sub(2 * self.side())
+    }
+}
+
+/// The spacing a list `width` columns wide affords: `ROOMY` while every
+/// column but DETAIL keeps its tight width and DETAIL keeps `DETAIL_KEEP`,
+/// else `TIGHT` (the blank lines are judged by height, in `layout`).
+pub fn spacing_for(width: usize) -> Spacing {
+    let tight = col_widths_gap(TIGHT.inner(width) as u16, TIGHT.gap as u16);
+    let roomy = col_widths_gap(ROOMY.inner(width) as u16, ROOMY.gap as u16);
+    if tight[..4] == roomy[..4] && roomy[4] >= DETAIL_KEEP.min(tight[4]) && roomy[4] > 0 {
+        ROOMY
+    } else {
+        TIGHT
+    }
+}
 
 /// Column widths for rows `w` columns wide (one space between columns).
 pub fn col_widths(w: u16) -> [u16; 5] {
-    let gaps = COL_MIN.len() as u16 - 1;
+    col_widths_gap(w, 1)
+}
+
+/// Column widths for rows `w` columns wide, `gap` spaces between columns.
+pub fn col_widths_gap(w: u16, gap: u16) -> [u16; 5] {
+    let gaps = (COL_MIN.len() as u16 - 1) * gap;
     let mut out = COL_MIN;
     let mut extra = w.saturating_sub(COL_MIN.iter().sum::<u16>() + gaps);
     for (i, upto) in GROW {
@@ -34,9 +80,10 @@ pub fn col_widths(w: u16) -> [u16; 5] {
     out
 }
 
-/// The widest list worth giving room to (all columns at their maximum, plus frames).
+/// The widest list worth giving room to (all columns at their maximum, plus
+/// the roomy gaps, padding and borders).
 pub fn list_max_width() -> u16 {
-    COL_MAX.iter().sum::<u16>() + (COL_MAX.len() as u16 - 1) + 2 * FRAME_SIDE as u16
+    COL_MAX.iter().sum::<u16>() + (COL_MAX.len() as u16 - 1) * ROOMY.gap as u16 + 2 * ROOMY.side() as u16
 }
 
 pub fn truncate(s: &str, w: usize) -> String {
@@ -117,9 +164,9 @@ pub fn name_cell(r: &Row, width: usize, icons: &Icons) -> Vec<Span<'static>> {
 
 /// A row's lines: one for a member, as many as it takes for a note (an error
 /// shown in full, wrapped with its indent).
-fn body_spans(r: &Row, w: &[u16; 5], inner: usize, icons: &Icons) -> Vec<Vec<Span<'static>>> {
+fn body_spans(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons) -> Vec<Vec<Span<'static>>> {
     if r.node.kind != crate::view::Kind::Note {
-        return vec![row_spans(r, w, inner, icons)];
+        return vec![row_spans_gap(r, w, inner, gap, icons)];
     }
     let lead = r.node.name.len() - r.node.name.trim_start().len();
     wrap(vec![Span::styled(format!("    {}", r.node.name), r.node.name_style)], inner, 4 + lead)
@@ -135,19 +182,25 @@ fn body_spans(r: &Row, w: &[u16; 5], inner: usize, icons: &Icons) -> Vec<Vec<Spa
 
 /// A row: NAME, STATUS, AGE, KIND, DETAIL, exactly `inner` columns wide.
 pub fn row_spans(r: &Row, w: &[u16; 5], inner: usize, icons: &Icons) -> Vec<Span<'static>> {
+    row_spans_gap(r, w, inner, 1, icons)
+}
+
+/// `row_spans` with `gap` spaces between the columns.
+pub fn row_spans_gap(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons) -> Vec<Span<'static>> {
+    let sep = " ".repeat(gap);
     let mut out: Vec<Span<'static>> = truncate_spans(name_cell(r, w[0] as usize, icons), w[0] as usize);
     let used_name = spans_width(&out);
     if used_name < w[0] as usize {
         out.push(Span::raw(" ".repeat(w[0] as usize - used_name)));
     }
     let n = &r.node;
-    out.push(Span::raw(" "));
+    out.push(Span::raw(sep.clone()));
     out.push(Span::styled(pad(&truncate(&n.status.0, w[1] as usize), w[1] as usize), n.status.1));
-    out.push(Span::raw(" "));
+    out.push(Span::raw(sep.clone()));
     out.push(Span::styled(format!("{:>width$}", truncate(&n.age, w[2] as usize), width = w[2] as usize), st(mono::COMMENT)));
-    out.push(Span::raw(" "));
+    out.push(Span::raw(sep.clone()));
     out.push(Span::styled(pad(&truncate(&n.kind_text, w[3] as usize), w[3] as usize), st(mono::COMMENT)));
-    out.push(Span::raw(" "));
+    out.push(Span::raw(sep));
     let used = spans_width(&out);
     let room = inner.saturating_sub(used);
     let detail = truncate_spans(n.detail.clone(), room);
@@ -159,16 +212,21 @@ pub fn row_spans(r: &Row, w: &[u16; 5], inner: usize, icons: &Icons) -> Vec<Span
     out
 }
 
-/// The column header, aligned with the rows inside the frames.
+/// The column header, aligned with the rows inside the boxes.
 pub fn header_line(width: u16) -> Line<'static> {
-    let inner = (width as usize).saturating_sub(2 * FRAME_SIDE);
-    let w = col_widths(inner as u16);
-    let mut spans = vec![Span::raw(" ".repeat(FRAME_SIDE))];
+    header_line_with(width, spacing_for(width as usize))
+}
+
+/// `header_line` for the spacing the list is drawn with.
+pub fn header_line_with(width: u16, sp: Spacing) -> Line<'static> {
+    let inner = sp.inner(width as usize);
+    let w = col_widths_gap(inner as u16, sp.gap as u16);
+    let mut spans = vec![Span::raw(" ".repeat(sp.side()))];
     for (k, (name, cw)) in ["    NAME", "STATUS", "AGE", "KIND", "DETAIL"].iter().zip(w.iter()).enumerate() {
         let text = if k == 2 { format!("{:>w$}", name, w = *cw as usize) } else { pad(name, *cw as usize) };
         spans.push(Span::styled(text, bold(mono::COMMENT)));
         if k < 4 {
-            spans.push(Span::raw(" "));
+            spans.push(Span::raw(" ".repeat(sp.gap)));
         }
     }
     Line::from(truncate_spans(spans, width as usize))
@@ -179,11 +237,14 @@ pub fn header_line(width: u16) -> Line<'static> {
 pub const NARROW_BAND: usize = 100;
 
 /// `pad` columns before the right corner keep top-level and nested bands' counts in one column.
-fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: bool, pad_right: usize) -> Vec<Span<'static>> {
+/// With `rule` the band is a box's top border instead: no tint, the gaps
+/// drawn as `─` in the edge colour, the title inside the line.
+fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: bool, pad_right: usize, rule: bool) -> Vec<Span<'static>> {
     let n = &r.node;
     let color = n.frame.unwrap_or(mono::SOFT);
-    let bg = if selected { mono::SEL } else { n.band_bg.unwrap_or(mono::BG_HI) };
+    let bg = if selected { mono::SEL } else if rule { mono::BG } else { n.band_bg.unwrap_or(mono::BG_HI) };
     let b = Style::new().bg(bg);
+    let fill = |k: usize| if rule { Span::styled("\u{2500}".repeat(k), edge.bg(bg)) } else { Span::styled(" ".repeat(k), b) };
     // on the cursor band, faint and muted text is lifted so it stays readable
     let lift = |s: Style| match s.fg {
         Some(c) if selected && (c == mono::FAINT || c == mono::MUTED) => s.fg(mono::FG),
@@ -196,7 +257,8 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
     } else {
         "\u{25b8}"
     };
-    let mut left = vec![Span::styled(format!(" {marker} "), lift(b.fg(if n.children.is_empty() { mono::FAINT } else { color })))];
+    let mut left = if rule { vec![fill(1)] } else { vec![] };
+    left.push(Span::styled(format!(" {marker} "), lift(b.fg(if n.children.is_empty() { mono::FAINT } else { color }))));
     if let Some(state) = &n.pane_state {
         left.push(Span::styled(format!("{} ", pane_dot(state)), b.fg(pane_color(state)).add_modifier(Modifier::BOLD)));
     }
@@ -205,6 +267,9 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
     if !n.detail.is_empty() {
         left.push(Span::styled("   ", b));
         left.extend(n.detail.iter().map(|s| Span::styled(s.content.clone(), lift(b.patch(s.style)))));
+    }
+    if rule {
+        left.push(Span::styled(" ", b));
     }
     let mut right: Vec<Span<'static>> = n.title_right.iter().map(|s| Span::styled(s.content.clone(), lift(b.patch(s.style)))).collect();
     // counts: `icon n`, slashes between them, right-aligned as a group; a narrow
@@ -217,14 +282,19 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
         }
         right.push(Span::styled(format!("{}{}", c.icon, c.n), lift(b.patch(c.style))));
     }
-    right.push(Span::styled(" ".repeat(pad_right), b));
+    // on a border line the counts sit in a gap of their own
+    if rule && !right.is_empty() {
+        right.insert(0, Span::styled(" ", b));
+        right.push(Span::styled(" ", b));
+    }
+    right.push(fill(pad_right));
     let room = width.saturating_sub(2);
     let right_w = spans_width(&right);
     let left = truncate_spans(left, room.saturating_sub(right_w + 1));
     let used = spans_width(&left);
     let mut out = vec![Span::styled(corners.0.to_string(), edge.bg(bg))];
     out.extend(left);
-    out.push(Span::styled(" ".repeat(room.saturating_sub(used + right_w)), b));
+    out.push(fill(room.saturating_sub(used + right_w)));
     out.extend(right);
     out.push(Span::styled(corners.1.to_string(), edge.bg(bg)));
     out
@@ -257,86 +327,143 @@ pub fn selectable(line: Line<'static>, selected: bool) -> Line<'static> {
 }
 
 /// One line per band, row or border; the `usize` is the row a line selects.
+/// The spacing is the width's (`spacing_for`), blank lines included.
 pub fn frame_lines(rows: &[Row], width: u16, cursor: usize, icons: &Icons) -> Vec<(Line<'static>, Option<usize>)> {
-    let width = width as usize;
-    let inner = width.saturating_sub(2 * FRAME_SIDE);
-    let w = col_widths(inner as u16);
+    layout(rows, width, None, cursor, icons).0
+}
+
+/// The list's lines and the spacing they use: the width's spacing, and the
+/// blank lines between boxes only while everything fits in `height` lines
+/// (spacing goes before any row does).
+pub fn layout(rows: &[Row], width: u16, height: Option<usize>, cursor: usize, icons: &Icons) -> (Vec<(Line<'static>, Option<usize>)>, Spacing) {
+    let mut sp = spacing_for(width as usize);
+    let mut lines = lines_with(rows, width as usize, cursor, icons, sp);
+    if sp.blank && height.is_some_and(|h| lines.len() > h) {
+        sp.blank = false;
+        lines = lines_with(rows, width as usize, cursor, icons, sp);
+    }
+    (lines, sp)
+}
+
+/// A box's edges: its side glyph and style, and its bottom.
+#[derive(Clone, Copy)]
+struct Edges {
+    v: &'static str,
+    bottom: (&'static str, &'static str, &'static str),
+    style: Style,
+}
+
+const ROUND: (&str, (&str, &str, &str)) = ("\u{2502}", ("\u{2570}", "\u{2500}", "\u{256f}"));
+const HEAVY: (&str, (&str, &str, &str)) = ("\u{2503}", ("\u{2517}", "\u{2501}", "\u{251b}"));
+
+fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spacing) -> Vec<(Line<'static>, Option<usize>)> {
+    let inner = sp.inner(width);
+    let w = col_widths_gap(inner as u16, sp.gap as u16);
+    let pad = " ".repeat(sp.pad);
     let mut out: Vec<(Line<'static>, Option<usize>)> = vec![];
+    // a row inside a box: border, padding, the row, padding, border
+    let boxed_row = |out: &mut Vec<(Line<'static>, Option<usize>)>, r: &Row, i: usize, e: Edges| {
+        for body in body_spans(r, &w, inner, sp.gap, icons) {
+            let mut spans = vec![Span::styled(e.v, e.style), Span::raw(pad.clone())];
+            spans.extend(body);
+            spans.push(Span::raw(pad.clone()));
+            spans.push(Span::styled(e.v, e.style));
+            out.push((selectable(Line::from(spans), i == cursor), Some(i)));
+        }
+    };
+    let close = |out: &mut Vec<(Line<'static>, Option<usize>)>, e: Edges| {
+        let (l, h, r) = e.bottom;
+        out.push((Line::styled(format!("{l}{}{r}", h.repeat(width.saturating_sub(2))), e.style), None));
+    };
+    let blank = |out: &mut Vec<(Line<'static>, Option<usize>)>| {
+        if sp.blank && out.last().is_some_and(|(l, _)| !l.spans.is_empty()) {
+            out.push((Line::raw(""), None));
+        }
+    };
     let mut i = 0;
     while i < rows.len() {
         let head = &rows[i];
-        let (corners, v, bottom, edge) = match head.section {
-            Section::FleetBand => (("\u{2554}", "\u{2557}"), "\u{2551}", ("\u{255a}", "\u{2550}", "\u{255d}"), fleet_edge(head)),
-            _ => {
-                let c = head.node.frame.unwrap_or(mono::LINE);
-                (("\u{256d}", "\u{256e}"), "\u{2502}", ("\u{2570}", "\u{2500}", "\u{256f}"), st(c))
-            }
-        };
         if !out.is_empty() {
             out.push((Line::raw(""), None));
         }
-        out.push((Line::from(band(head, width, corners, edge, i == cursor, 2)), Some(i)));
+        let stow = head.section == Section::StowBand;
+        if stow {
+            // the stowaways: a rounded box, its band the top border
+            let e = Edges { v: ROUND.0, bottom: ROUND.1, style: st(head.node.frame.unwrap_or(mono::LINE)) };
+            out.push((Line::from(band(head, width, ("\u{256d}", "\u{256e}"), e.style, i == cursor, 1, true)), Some(i)));
+            i += 1;
+            let mut any = false;
+            while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
+                boxed_row(&mut out, &rows[i], i, e);
+                any = true;
+                i += 1;
+            }
+            if any {
+                close(&mut out, e);
+            }
+            continue;
+        }
+        // the fleet: one tinted band line, no frame (its tab frames it)
+        // (its counts end in the column the squadrons' do, before their `─╮`)
+        out.push((Line::from(band(head, width, (" ", " "), fleet_edge(head), i == cursor, 2, false)), Some(i)));
         i += 1;
-        let mut sq_open: Option<Style> = None;
+        // what is open: the admiral's box, or a squadron's
+        let mut open: Option<Edges> = None;
         while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
             let r = &rows[i];
             match r.section {
                 Section::SquadronBand => {
-                    if let Some(e) = sq_open.take() {
-                        out.push((sq_bottom(v, edge, e, inner), None));
+                    if let Some(e) = open.take() {
+                        close(&mut out, e);
                     }
-                    let c = r.node.frame.unwrap_or(mono::SOFT);
-                    let e = st(c);
-                    let boxed = r.expanded;
-                    let corners = if boxed { ("\u{256d}", "\u{256e}") } else { (" ", " ") };
-                    let mut spans = vec![Span::styled(v, edge)];
-                    spans.extend(band(r, inner + 2, corners, e, i == cursor, 1));
-                    spans.push(Span::styled(v, edge));
-                    out.push((Line::from(spans), Some(i)));
-                    if boxed {
-                        sq_open = Some(e);
+                    blank(&mut out);
+                    let e = Edges { v: ROUND.0, bottom: ROUND.1, style: st(r.node.frame.unwrap_or(mono::LINE)) };
+                    let corners = if r.expanded { ("\u{256d}", "\u{256e}") } else { ("\u{2576}", "\u{2574}") };
+                    out.push((Line::from(band(r, width, corners, e.style, i == cursor, 1, true)), Some(i)));
+                    if r.expanded {
+                        // the sides stay neutral: the top border carries the status
+                        open = Some(Edges { style: st(mono::LINE), ..e });
                     }
                 }
-                Section::SquadronBody => {
-                    let e = sq_open.unwrap_or(edge);
-                    for body in body_spans(r, &w, inner, icons) {
-                        let mut spans = vec![Span::styled(v, edge), Span::styled("\u{2502}", e)];
+                Section::SquadronBody => match open {
+                    Some(e) => boxed_row(&mut out, r, i, e),
+                    None => boxed_row(&mut out, r, i, Edges { v: " ", bottom: (" ", " ", " "), style: Style::new() }),
+                },
+                _ if r.node.kind == crate::view::Kind::Note => {
+                    // a fleet's note (its config does not load), in full, under its band
+                    for body in body_spans(r, &w, inner, sp.gap, icons) {
+                        let mut spans = vec![Span::raw(" ".repeat(sp.side()))];
                         spans.extend(body);
-                        spans.push(Span::styled("\u{2502}", e));
-                        spans.push(Span::styled(v, edge));
                         out.push((selectable(Line::from(spans), i == cursor), Some(i)));
                     }
                 }
                 _ => {
-                    if let Some(e) = sq_open.take() {
-                        out.push((sq_bottom(v, edge, e, inner), None));
+                    // the admiral and its crew: a heavy box with a bright title
+                    if open.is_none() {
+                        blank(&mut out);
+                        let e = Edges { v: HEAVY.0, bottom: HEAVY.1, style: st(mono::FG) };
+                        let title = " ADMIRAL ";
+                        let rest = width.saturating_sub(4 + title.width());
+                        out.push((
+                            Line::from(vec![
+                                Span::styled("\u{250f}\u{2501}", e.style),
+                                Span::styled(title, bold(mono::STRONG)),
+                                Span::styled(format!("{}\u{2513}", "\u{2501}".repeat(rest)), e.style),
+                            ]),
+                            None,
+                        ));
+                        open = Some(e);
                     }
-                    for body in body_spans(r, &w, inner, icons) {
-                        let mut spans = vec![Span::styled(v, edge), Span::raw(" ")];
-                        spans.extend(body);
-                        spans.push(Span::raw(" "));
-                        spans.push(Span::styled(v, edge));
-                        out.push((selectable(Line::from(spans), i == cursor), Some(i)));
-                    }
+                    boxed_row(&mut out, r, i, open.unwrap());
                 }
             }
             i += 1;
         }
-        if let Some(e) = sq_open.take() {
-            out.push((sq_bottom(v, edge, e, inner), None));
+        if let Some(e) = open.take() {
+            close(&mut out, e);
         }
-        let (bl, hz, br) = bottom;
-        out.push((Line::styled(format!("{bl}{}{br}", hz.repeat(width.saturating_sub(2))), edge), None));
     }
     out
-}
-
-fn sq_bottom(v: &str, edge: Style, e: Style, inner: usize) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(v.to_string(), edge),
-        Span::styled(format!("\u{2570}{}\u{256f}", "\u{2500}".repeat(inner)), e),
-        Span::styled(v.to_string(), edge),
-    ])
 }
 
 /// Wrap styled text to `width` columns at spaces; continuation lines start
