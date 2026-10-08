@@ -161,6 +161,10 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
         }
         if let Some(id) = crate::registry::identity_of(env, &labels) {
             let sid = str_at(&input, "session_id").unwrap_or_default();
+            // where the member listens: nimitz posts notices and signals there
+            if let Some(sock) = vars.get("CLAUDE_CODE_MESSAGING_SOCKET") {
+                crate::inbox::record(env, &sid, pid, sock.strip_prefix("uds:").unwrap_or(sock));
+            }
             rules = Some(crate::rules::VERSION);
             crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
             out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();

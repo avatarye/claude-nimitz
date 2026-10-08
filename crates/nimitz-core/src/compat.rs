@@ -61,6 +61,11 @@ fn nums(v: &str) -> Vec<u64> {
     v.split('-').next().unwrap_or("").split('.').filter_map(|p| p.parse().ok()).collect()
 }
 
+/// Is `v` at or past `min` (dotted, componentwise)?
+pub fn at_least(v: &str, min: &str) -> bool {
+    cmp(v, min) != std::cmp::Ordering::Less
+}
+
 /// Compare dotted versions componentwise, missing components = 0.
 fn cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let (a, b) = (nums(a), nums(b));

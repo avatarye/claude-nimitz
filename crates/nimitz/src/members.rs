@@ -322,11 +322,45 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
             }
         }
     };
+    let why = if via.id == id { "type into its attached tab".to_string() } else { format!("you reach {id} through its commodore") };
     let mux = ctx.mux();
+    // its attached tab first: text typed there is the user's own input. A
+    // pane known only by its attach is never typed into (R-24)
+    let shown = via.session.as_ref().filter(|_| live(via) && mux.caps().type_text).and_then(|s| run::shown_in(mux.as_ref(), &s.session_id));
+    let mut no_inbox = None;
+    if !mux.caps().type_text || shown.as_ref().is_some_and(|p| p.inferred) {
+        // nothing can be typed: its inbox, a cross-session message from
+        // nimitz, a request and never the user's authority (Claude Code
+        // marks it as not the user's)
+        if let Some(s) = via.session.as_ref().filter(|_| live(via)) {
+            match crate::notify::inbox_target(&ctx.env, &via.id, s) {
+                Ok((socks, pid)) => {
+                    let body = format!("[nimitz signal] A message for {id}, relayed by nimitz from a `nimitz signal` run with no member labels. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {text}");
+                    let at = socks.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" or ");
+                    plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["inbox".into(), at, body.clone()], cwd: None, why: format!("{}'s tab cannot be typed into: post it into its inbox (the first socket its own process listens on), as a request, not your input", via.id) });
+                    return match ctx.gate(&plan) {
+                        out::Go::Exit(code) => Ok(code),
+                        out::Go::Run => match nimitz_core::inbox::send(&socks, pid, &body) {
+                            Ok(sock) => {
+                                out::ok(&format!("posted to {}'s inbox {} as a request from nimitz (not as your own input)", via.id, sock.display()));
+                                Ok(0)
+                            }
+                            Err(e) => {
+                                out::error(&format!("posting to {}'s inbox failed: {e}; nothing was typed. Run the signal again in a moment", via.id));
+                                Ok(1)
+                            }
+                        },
+                    };
+                }
+                Err(w) => no_inbox = Some(w),
+            }
+        }
+    }
+    let inbox_why = no_inbox.map(|w| format!("; its inbox cannot be used: {w}")).unwrap_or_default();
     if !mux.caps().type_text {
         plan.refusals.push(refusal(
             "mux.none",
-            format!("typing to {} needs a multiplexer that can type ({})", via.id, mux.name()),
+            format!("typing to {} needs a multiplexer that can type ({}){inbox_why}", via.id, mux.name()),
             Some(nimitz_mux::missing_mux_fix(&ctx.vars)),
             Some(via.id.clone()),
         ));
@@ -336,14 +370,14 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         plan.refusals.push(refusal("session.none", format!("{} is not live", via.id), Some(format!("nimitz start {}", via.id)), Some(via.id.clone())));
         return Ok(finish_plan(ctx, &plan));
     }
-    // its attached tab; with no tab, one is opened first (plan-v4 section 7)
-    let shown = via.session.as_ref().and_then(|s| run::shown_in(mux.as_ref(), &s.session_id));
+    // with no tab, one is opened first (plan-v4 section 7)
     if let Some(p) = shown.as_ref().filter(|p| p.inferred) {
-        plan.refusals.push(run::untypeable(&via.id, &p.pane));
+        let mut i = run::untypeable(&via.id, &p.pane);
+        i.message.push_str(&inbox_why);
+        plan.refusals.push(i);
         return Ok(finish_plan(ctx, &plan));
     }
     let pane = shown.map(|p| p.pane);
-    let why = if via.id == id { "type into its attached tab".to_string() } else { format!("you reach {id} through its commodore") };
     match &pane {
         Some(p) => plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), p.pane_id.clone(), text.clone()], cwd: None, why }),
         None => {
@@ -371,9 +405,24 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                         let sid = via.session.as_ref().map(|s| s.session_id.clone()).unwrap_or_default();
                         let wait: f64 = ctx.vars.get("NIMITZ_SIGNAL_WAIT").and_then(|v| v.parse().ok()).unwrap_or(SIGNAL_ATTACH_WAIT_S);
                         match run::wait_for_session(mux.as_ref(), &sid, wait) {
+                            // the new tab is known by its attach alone: its inbox instead
                             Some(p) if p.inferred => {
-                                out::issue(&run::untypeable(&via.id, &p.pane));
-                                return Ok(1);
+                                let posted = via.session.as_ref().ok_or_else(|| "no session".to_string()).and_then(|s| crate::notify::inbox_target(&ctx.env, &via.id, s)).and_then(|(socks, pid)| {
+                                    let body = format!("[nimitz signal] A message for {id}, relayed by nimitz from a `nimitz signal` run with no member labels. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {text}");
+                                    nimitz_core::inbox::send(&socks, pid, &body)
+                                });
+                                return Ok(match posted {
+                                    Ok(sock) => {
+                                        out::ok(&format!("posted to {}'s inbox {} as a request from nimitz (not as your own input): its new tab cannot be typed into", via.id, sock.display()));
+                                        0
+                                    }
+                                    Err(w) => {
+                                        let mut i = run::untypeable(&via.id, &p.pane);
+                                        i.message.push_str(&format!("; its inbox cannot be used: {w}"));
+                                        out::issue(&i);
+                                        1
+                                    }
+                                });
                             }
                             Some(p) => p.pane,
                             None => {

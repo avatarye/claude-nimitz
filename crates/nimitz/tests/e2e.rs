@@ -1467,3 +1467,169 @@ fn e2e_00_sessions_run_on_the_cheap_model() {
     assert!(!models.is_empty() && models.iter().all(|m| m.contains(&want)), "asked for {want}, ran on {models:?} (NIMITZ_E2E_MODEL must be a family name or a model id)");
     w.finish();
 }
+
+
+/// Probe (not a check; `NIMITZ_E2E=1 NIMITZ_E2E_PROBE=1`): what tells the
+/// agent view (`/exit` inside an attach, R-24) from a live `claude attach
+/// <job>`, outside Herdr: the terminal title (the OSC title Herdr reports as
+/// `terminal_title`), the attach client's process tree and session files,
+/// and the job row. Prints both states; asserts nothing about them.
+#[test]
+fn e2e_probe_agent_view_signals() {
+    if !gated() || std::env::var("NIMITZ_E2E_PROBE").ok().as_deref() != Some("1") {
+        return;
+    }
+    let w = E2e::new(90);
+    w.ok(&["fleet", "new", &w.fleet, "--machine", "e2e", "--yes"]);
+    let dir = w.fleet_dir().join("admiral");
+    w.settings(&dir);
+    let idv = nimitz_core::Id(w.fleet.clone());
+    let settings = w.no_mux(nimitz_core::claude::settings_json(&w.env, &idv, true));
+    let (code, out) = w.claude(&dir, &["--bg", "--model", &cheap_model(), "--name", &idv.name(), "--settings", &settings, OK_PROMPT]);
+    assert_eq!(code, 0, "{out}");
+    let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
+    let job = m["session"]["short_id"].as_str().unwrap().to_string();
+    let claude_home = home().join(".claude");
+    let collect = |label: &str| {
+        let (_, info) = w.tx(&["display-message", "-p", "-t", "e2e", "title=#{pane_title} | pid=#{pane_pid} | cmd=#{pane_current_command}"]);
+        println!("PROBE[{label}] tmux: {}", info.trim());
+        let pane_pid: i64 = info.split("pid=").nth(1).and_then(|s| s.split_whitespace().next()).and_then(|s| s.parse().ok()).unwrap_or(0);
+        let (_, ps) = E2e::run({
+            let mut c = Command::new("ps");
+            c.args(["-eo", "pid=,ppid=,stat=,args="]);
+            c
+        });
+        let rows: Vec<(i64, i64, String)> = ps
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                let pid = it.next()?.parse().ok()?;
+                let ppid = it.next()?.parse().ok()?;
+                Some((pid, ppid, it.collect::<Vec<_>>().join(" ")))
+            })
+            .collect();
+        let mut tree = vec![pane_pid];
+        let mut i = 0;
+        while i < tree.len() {
+            let p = tree[i];
+            tree.extend(rows.iter().filter(|r| r.1 == p).map(|r| r.0));
+            i += 1;
+        }
+        for (pid, ppid, args) in rows.iter().filter(|r| tree.contains(&r.0)) {
+            let sf = std::fs::read_to_string(claude_home.join("sessions").join(format!("{pid}.json"))).unwrap_or_default();
+            println!("PROBE[{label}] proc {pid} (ppid {ppid}): {args}{}", if sf.is_empty() { String::new() } else { format!("\n    session file: {sf}") });
+        }
+        let row = std::fs::read_to_string(claude_home.join("jobs").join(&job).join("state.json")).unwrap_or_default();
+        println!("PROBE[{label}] job row {job}: {row}");
+        let pane = w.pane();
+        let lines: Vec<&str> = pane.lines().filter(|l| !l.trim().is_empty()).collect();
+        println!("PROBE[{label}] screen (first 6, last 6):\n{}\n...\n{}", lines.iter().take(6).cloned().collect::<Vec<_>>().join("\n"), lines.iter().rev().take(6).rev().cloned().collect::<Vec<_>>().join("\n"));
+    };
+    w.attach(&dir, &job, &idv.name());
+    collect("attach");
+    w.type_line("/exit");
+    std::thread::sleep(secs(10));
+    collect("after /exit");
+    std::thread::sleep(secs(10));
+    collect("after /exit +10s");
+    w.finish();
+}
+
+/// Probe (`NIMITZ_E2E=1 NIMITZ_E2E_PROBE=1`): a notice delivered without
+/// typing, through the session's inbox socket (Claude Code's cross-session
+/// messaging; the line format Claude Code logs as its own inject example):
+/// does an idle background job take it as a turn, and what does it see?
+#[test]
+fn e2e_probe_inbox_delivery() {
+    if !gated() || std::env::var("NIMITZ_E2E_PROBE").ok().as_deref() != Some("1") {
+        return;
+    }
+    use std::io::Write;
+    let w = E2e::new(91);
+    w.ok(&["fleet", "new", &w.fleet, "--machine", "e2e", "--yes"]);
+    let dir = w.fleet_dir().join("admiral");
+    w.settings(&dir);
+    let idv = nimitz_core::Id(w.fleet.clone());
+    let settings = w.no_mux(nimitz_core::claude::settings_json(&w.env, &idv, true));
+    let (code, out) = w.claude(&dir, &["--bg", "--model", &cheap_model(), "--name", &idv.name(), "--settings", &settings, OK_PROMPT]);
+    assert_eq!(code, 0, "{out}");
+    let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
+    let pid = m["session"]["pid"].as_i64().unwrap();
+    let sid = m["session"]["session_id"].as_str().unwrap().to_string();
+    let rt = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", unsafe_uid()));
+    let sock = PathBuf::from(format!("{rt}/cc-socks/{pid}.sock"));
+    println!("PROBE inbox: pid {pid} socket {} exists {}", sock.display(), sock.exists());
+    let ups = w.events().iter().filter(|e| e["event"] == "UserPromptSubmit").count();
+    // NIMITZ_E2E_PROBE_FROM=1: the content wrapped as Claude Code wraps a peer
+    // message, with a sender name (and a reply address nobody listens on)
+    let body = "[nimitz notice, not the user] Reply with the single word PROBE.";
+    let content = if std::env::var("NIMITZ_E2E_PROBE_FROM").ok().as_deref() == Some("1") {
+        format!("<cross-session-message from=\"uds:{rt}/cc-socks/nimitz-none.sock\" from-name=\"nimitz\">\n{body}\n</cross-session-message>")
+    } else {
+        body.to_string()
+    };
+    let line = json!({"type": "user", "message": {"role": "user", "content": content}}).to_string();
+    match std::os::unix::net::UnixStream::connect(&sock) {
+        Ok(mut s) => {
+            let r = s.write_all(format!("{line}\n").as_bytes());
+            println!("PROBE inbox: wrote {} bytes: {r:?}", line.len() + 1);
+            let _ = s.shutdown(std::net::Shutdown::Write);
+            let mut back = String::new();
+            let _ = std::io::Read::read_to_string(&mut s, &mut back);
+            println!("PROBE inbox: reply {back:?}");
+        }
+        Err(e) => println!("PROBE inbox: connect failed: {e}"),
+    }
+    let got = w.wait(90, || Some(w.events()).filter(|ev| ev.iter().filter(|e| e["event"] == "UserPromptSubmit").count() > ups));
+    println!("PROBE inbox: a new UserPromptSubmit: {}", got.is_some());
+    w.wait(120, || w.member(&w.fleet).filter(|m| m["status"] == "Idle"));
+    if let Some(t) = w.transcript(&dir, &sid) {
+        let text = std::fs::read_to_string(&t).unwrap_or_default();
+        for l in text.lines().rev().filter(|l| l.contains("PROBE")).take(4) {
+            println!("PROBE inbox: transcript line: {}", &l[..l.len().min(1500)]);
+        }
+    }
+    let row = std::fs::read_to_string(home().join(".claude/jobs").join(m["session"]["short_id"].as_str().unwrap()).join("state.json")).unwrap_or_default();
+    println!("PROBE inbox: job row detail: {}", serde_json::from_str::<Value>(&row).map(|v| v["detail"].clone()).unwrap_or_default());
+    w.finish();
+}
+
+fn unsafe_uid() -> String {
+    String::from_utf8_lossy(&Command::new("id").arg("-u").output().unwrap().stdout).trim().to_string()
+}
+
+/// Socket delivery: a lead's SessionStart hook records its inbox socket
+/// (`CLAUDE_CODE_MESSAGING_SOCKET`), and `nimitz signal` posts into it with
+/// no multiplexer at all: the idle background job takes a new turn, and sees
+/// a cross-session message from nimitz.
+#[test]
+fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(92);
+    w.ok(&["fleet", "new", &w.fleet, "--machine", "e2e", "--yes"]);
+    let dir = w.fleet_dir().join("admiral");
+    w.settings(&dir);
+    let idv = nimitz_core::Id(w.fleet.clone());
+    let settings = w.no_mux(nimitz_core::claude::settings_json(&w.env, &idv, true));
+    let (code, out) = w.claude(&dir, &["--bg", "--model", &cheap_model(), "--name", &idv.name(), "--settings", &settings, OK_PROMPT]);
+    assert_eq!(code, 0, "{out}");
+    let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
+    let sid = m["session"]["session_id"].as_str().unwrap().to_string();
+    let rec = read_json(&w.base.join("state/inbox").join(format!("{sid}.json")));
+    let sock = rec["socket"].as_str().unwrap_or_else(|| panic!("no inbox recorded for {sid}: {rec}")).to_string();
+    assert!(Path::new(&sock).exists() && rec["pid"] == m["session"]["pid"], "{rec}");
+    let ups = w.events().iter().filter(|e| e["event"] == "UserPromptSubmit").count();
+    let out = w.ok(&["signal", &w.fleet, "Reply with the single word PONG.", "--yes"]);
+    assert!(out.contains("inbox"), "{out}");
+    w.wait(120, || Some(w.events()).filter(|ev| ev.iter().filter(|e| e["event"] == "UserPromptSubmit").count() > ups)).expect("the signal started a turn");
+    w.wait(180, || w.member(&w.fleet).filter(|m| m["status"] == "Idle")).expect("turn over");
+    let t = std::fs::read_to_string(w.transcript(&dir, &sid).expect("transcript")).unwrap();
+    let seen = t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| v["type"] == "user" && v["message"]["content"].as_str().is_some_and(|c| c.contains("[nimitz signal]"))).expect("the message in the transcript");
+    println!("[OK] seen as: origin {}", seen["origin"]);
+    assert_eq!(seen["origin"]["kind"], "peer");
+    assert_eq!(seen["origin"]["name"], "nimitz", "{}", seen["origin"]);
+    assert!(t.contains("PONG"), "the lead answered");
+    w.finish();
+}

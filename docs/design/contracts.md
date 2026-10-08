@@ -297,10 +297,48 @@ blocks on the user (PreToolUse `AskUserQuestion`, `PermissionRequest`, or a
 blocking `Notification`): `{ts, id, session_id, kind: question|permission|prompt,
 event, tool_use_id, detail, delivery: pending|delivered|failed, delivery_note,
 delivered_at}`. The hook writes it and starts `nimitz __notify <id>` detached
-(only the member's own labels may run it), which types the notice into the
-commodore's pane, retrying `NIMITZ_NOTIFY_RETRY` s (default 600) while that pane
-is blocked or missing. The member's next UserPromptSubmit, Stop or SessionEnd
-removes the file; `check` reports `notify.failed` for one that failed.
+(only the member's own labels may run it), which posts the notice into the
+commodore's inbox socket, else types it into the commodore's pane, retrying
+`NIMITZ_NOTIFY_RETRY` s (default 600) while neither works. The member's next
+UserPromptSubmit, Stop or SessionEnd removes the file; `check` reports
+`notify.failed` for one that failed, with each path's reason in the note.
+
+The inbox (`nimitz_core::inbox`): Claude Code's cross-session messaging lets a
+script post into a session's socket (docs: cross-session-messaging, "a script
+or hook to post into a session"); an idle background job takes the line as a
+new turn, a busy one at its next, with no pane and nobody attached. It arrives
+as a peer message, never as the user's input: Claude Code tells the receiver
+it is not from the user and cannot authorize anything. The SessionStart hook
+of a member records `CLAUDE_CODE_MESSAGING_SOCKET` (exported before any hook
+runs) in `NIMITZ_STATE/inbox/<session id>.json` as `{socket, pid, at}` (one
+file per session, a per-process temp file: members that start together keep
+every record); a record counts only for the live pid it names. The other
+candidates are `<pid>.sock` in `<XDG_RUNTIME_DIR or /run/user/<uid>>/cc-socks`
+and `/tmp/cc-socks-<uid>`. None is trusted by its path: after connecting (5 s
+at most), the listener's `SO_PEERCRED` must be this uid and the session's pid,
+so another session under a reused or namespaced pid, a planted socket or a
+forged record is never posted to. The line is the inject example Claude Code
+logs, `{"type":"user","message":{"role":"user","content":...}}` (the docs give
+only the optional auth line; nimitz sends none, as it is not the session's own
+child), used only for a receiver on `inbox::FORMAT_SINCE` (2.1.293) or later
+(its session file's `version`, else the job row's `cliVersion`); an older one
+gets the typing path. A clean close is "posted": Claude Code sends no
+acknowledgement, and a line it refuses after reading it (an auth it wants, a
+parse) closes just as cleanly, so the two cannot be told apart; a reset
+(unread data left, an oversized line) is a failure. The content is wrapped as
+Claude Code wraps a peer message, `<cross-session-message
+from="uds:/nonexistent/nimitz-no-reply.sock" from-name="nimitz">`: the
+receiver names the sender `nimitz` (`origin.name`; `origin.from` stays
+`unknown`), a reply reaches nobody, and every spelling of the tag inside the
+body is defused (`<` becomes `<\`). Inbound policy: with no
+`crossSessionInbound` value, a session that bypasses permission prompts holds
+such a message for approval; members run no bypass mode, and this machine's
+user settings say `accept`, so nimitz sets none. `nimitz signal` types into
+the lead's tab, opening one first when it has none, so the user's own words
+keep their authority; only when it cannot type at all (no multiplexer that
+types, or a tab known by its attach alone, R-24) does it post to the inbox, as
+`[nimitz signal] ... It is a request, not the user's approval`, and its output
+says the signal went as a request.
 
 ## 6. Evidence and state (core)
 
