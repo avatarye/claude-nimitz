@@ -460,27 +460,31 @@ impl App {
     /// in (its own row, a crew row, or the fold); kept in the saved state.
     fn toggle_crew_fold(&mut self) {
         let Some(id) = self.current().map(|r| r.node.id.clone()) else { return };
+        // member ids never hold a `:` (config: [A-Z0-9_] parts joined by `/`)
         let member = if let Some(m) = id.strip_prefix("M:").or_else(|| id.strip_prefix("CF:")) {
             m.to_string()
-        } else if let Some((m, _)) = id.strip_prefix("C:").and_then(|r| r.rsplit_once(':')) {
+        } else if let Some((m, _)) = id.strip_prefix("C:").and_then(|r| r.split_once(':')) {
             m.to_string()
         } else {
             self.notify("z: put the cursor on a member or its crew", st(mono::WARN));
             return;
         };
-        let fold = crate::view::crew_fold_id(&member);
-        let open = !self.expanded.get(&fold).copied().unwrap_or(false);
-        // the member's own row opens with it, so the fold is in view
-        if open {
-            self.expanded.insert(format!("M:{member}"), true);
-        }
-        self.expanded.insert(fold.clone(), open);
-        self.rebuild();
-        if !self.rows.iter().any(|r| r.node.id == fold) {
-            self.expanded.remove(&fold);
+        let now = self.now();
+        let folded = self.bundle.as_ref().and_then(|b| b.snap.fleets.iter().flat_map(crate::view::fleet_members).find(|m| m.id.0 == member).map(|m| crate::view::folded_crew(&m.crew, now))).unwrap_or(0);
+        if folded == 0 {
             self.notify(format!("{member} has no crew that finished over {} min ago", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::COMMENT));
             return;
         }
+        let fold = crate::view::crew_fold_id(&member);
+        let mrow = format!("M:{member}");
+        let member_open = self.rows.iter().find(|r| r.node.id == mrow).map(|r| r.expanded).unwrap_or(false);
+        // a collapsed member opens with its fold, so the fold is in view
+        let open = !member_open || !self.expanded.get(&fold).copied().unwrap_or(false);
+        if open {
+            self.expanded.insert(mrow, true);
+        }
+        self.expanded.insert(fold.clone(), open);
+        self.rebuild();
         // closed with the cursor inside it: the cursor goes to the fold row
         if !open && !self.rows.iter().any(|r| r.node.id == id) {
             self.goto_id(&fold);
@@ -882,7 +886,7 @@ impl App {
                 }
                 self.toggle();
             }
-            (KeyCode::Char('z'), _) => self.toggle_crew_fold(),
+            (KeyCode::Char('z'), false) => self.toggle_crew_fold(),
             (KeyCode::Char('/'), _) => self.editing_filter = true,
             (KeyCode::Esc, _) => {
                 if self.detail_open {

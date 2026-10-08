@@ -1034,12 +1034,64 @@ fn an_open_crew_fold_is_saved_and_loads_again() {
     assert!(crew_rows(&again, &id).contains(&"old audit".to_string()), "{:?}", crew_rows(&again, &id));
 }
 
-/// A member with no crew older than the window has no fold, and `z` says so.
+/// A member with no crew older than the window has no fold: `z` says so and
+/// changes nothing (the member stays as it was).
 #[test]
 fn z_on_a_member_with_no_old_crew_says_so() {
     let mut t = demo();
-    let id = t.app.rows.iter().find(|r| r.node.id.starts_with("M:") && !t.app.rows.iter().any(|x| x.node.id == format!("CF:{}", &r.node.id[2..]))).map(|r| r.node.id.clone()).unwrap();
-    goto(&mut t.app, &id);
+    let b = t.app.bundle.clone().unwrap();
+    let id = b.snap.fleets.iter().flat_map(admiralty::view::fleet_members).find(|m| !m.crew.is_empty() && admiralty::view::folded_crew(&m.crew, fixtures::NOW) == 0).map(|m| m.id.0.clone()).expect("a member with only recent crew");
+    goto(&mut t.app, &format!("M:{id}"));
+    let before = t.app.expanded.clone();
     press(&mut t.app, KeyCode::Char('z'));
     assert!(toast(&t.app).contains("no crew that finished over 30 min ago"), "{}", toast(&t.app));
+    assert_eq!(t.app.expanded, before, "nothing opened or saved");
+}
+
+/// `z` on a collapsed member whose fold was open opens both again (it never
+/// says the member has no old crew); ctrl-z is not `z`.
+#[test]
+fn z_on_a_collapsed_member_opens_it_with_its_fold() {
+    let (b, id) = crew_world();
+    let mut t = fixture_app(b, false);
+    goto(&mut t.app, &format!("M:{id}"));
+    press(&mut t.app, KeyCode::Char('z'));
+    assert!(crew_rows(&t.app, &id).contains(&"old audit".to_string()));
+    goto(&mut t.app, &format!("M:{id}"));
+    press(&mut t.app, KeyCode::Char('h'));
+    assert!(crew_rows(&t.app, &id).is_empty(), "collapsed");
+    press(&mut t.app, KeyCode::Char('z'));
+    assert!(!toast(&t.app).contains("no crew"), "{}", toast(&t.app));
+    assert!(crew_rows(&t.app, &id).contains(&"old audit".to_string()), "{:?}", crew_rows(&t.app, &id));
+    ctrl(&mut t.app, 'z');
+    assert!(crew_rows(&t.app, &id).contains(&"old audit".to_string()), "ctrl-z does not toggle the fold");
+}
+
+/// A name filter that matches an old crew shows that crew outside the fold;
+/// a crew whose last write is unknown folds, and the fold's age says `?`.
+#[test]
+fn a_filter_shows_the_old_crew_it_matches_and_unknown_ages_fold() {
+    let (mut b, id) = crew_world();
+    for f in &mut b.snap.fleets {
+        for sq in &mut f.squadrons {
+            for m in &mut sq.ships {
+                if m.id.0 == id {
+                    for c in &mut m.crew {
+                        if c.agent_id == "sa-3" || c.agent_id == "old-a" {
+                            c.last_write = 0.0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut t = fixture_app(b, false);
+    goto(&mut t.app, &format!("M:{id}"));
+    let fold = t.app.rows.iter().find(|r| r.node.id == format!("CF:{id}")).expect("the fold");
+    assert_eq!((fold.node.name.as_str(), fold.node.age.as_str()), ("+2 finished", "?"));
+    keys(&mut t.app, "/old audit");
+    press(&mut t.app, KeyCode::Enter);
+    goto(&mut t.app, &format!("M:{id}"));
+    let rows = crew_rows(&t.app, &id);
+    assert!(rows.contains(&"old audit".to_string()) && rows.contains(&"+1 finished".to_string()), "{rows:?}");
 }
