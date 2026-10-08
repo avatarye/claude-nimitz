@@ -16,7 +16,7 @@ use crate::actions::{shell, MessagePlan, Pending};
 use crate::app::{App, MenuItem, Modal, NeedItem, HELP};
 use crate::detail::{badge, detail_with_art};
 use crate::forms::{FieldKind, Form};
-use crate::frames::{frame_lines, header_line, pad, selectable, wrap};
+use crate::frames::{header_line_with, layout, pad, selectable, wrap};
 use crate::theme::{bold, mono, severity_color, severity_word, st};
 use crate::view::FleetState;
 
@@ -89,9 +89,30 @@ fn tab_line(app: &App, width: usize) -> Line<'static> {
         let key = if i < 9 { format!("{} ", i + 1) } else { String::new() };
         let style = if on { Style::new().fg(mono::BG).bg(mono::ACCENT).add_modifier(Modifier::BOLD) } else { st(mono::SOFT) };
         let mut sp = vec![Span::styled(format!(" {key}{} ", crate::view::tab_title(t)), style)];
-        let n = need(t);
-        if n > 0 {
-            sp.push(Span::styled(format!("!{n} "), bold(mono::NEEDS)));
+        // the shown fleet's state word and counts sit on its tab (the list
+        // has no fleet line); the others keep only how many need you
+        let band = app.rows.iter().find(|r| r.node.kind == crate::view::Kind::FleetBand && on);
+        if let Some(r) = band {
+            if let Some(state) = r.node.detail.first() {
+                sp.push(Span::styled(format!(" {}", state.content), state.style));
+            }
+            let narrow = width < crate::frames::NARROW_BAND;
+            let shown: Vec<&crate::view::Count> = r.node.counts.iter().filter(|c| !narrow || c.key).collect();
+            if !shown.is_empty() {
+                sp.push(Span::raw("  "));
+            }
+            for (k, c) in shown.iter().enumerate() {
+                if k > 0 {
+                    sp.push(Span::styled(" / ", st(mono::FAINT)));
+                }
+                sp.push(Span::styled(format!("{}{}", c.icon, c.n), c.style));
+            }
+            sp.push(Span::raw(" "));
+        } else {
+            let n = need(t);
+            if n > 0 {
+                sp.push(Span::styled(format!("!{n} "), bold(mono::NEEDS)));
+            }
         }
         sp.push(Span::raw(" "));
         parts.push((sp, on));
@@ -108,7 +129,8 @@ fn tab_line(app: &App, width: usize) -> Line<'static> {
             out.extend(sp);
         }
     }
-    Line::from(out)
+    // the shown tab is kept whole, cut cleanly when even it does not fit
+    Line::from(crate::frames::truncate_spans(out, width))
 }
 
 fn top_line(app: &App, width: usize) -> Line<'static> {
@@ -246,7 +268,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
         ]);
     }
     if let Some(b) = &app.busy {
-        return Line::styled(format!(" running: {b}"), bold(mono::BUSY));
+        return Line::styled(format!(" running (esc waits for it, q quits now): {b}"), bold(mono::BUSY));
     }
     if let Some(t) = &app.toast {
         if t.at.elapsed() < Duration::from_secs(8) {
@@ -255,7 +277,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
     }
     let key = |k: &str, d: &str| vec![Span::styled(format!(" {k} "), bold(mono::ACCENT)), Span::styled(format!("{d} "), st(mono::SOFT))];
     // `? help` first and `q quit` at the right, at every width; the rest fills what is left
-    let right: Vec<Span<'static>> = key("q", "quit");
+    let right: Vec<Span<'static>> = key("q/esc", "quit");
     let right_w: usize = right.iter().map(|s| s.content.width()).sum();
     let keys = [
         ("?", "help"),
@@ -291,8 +313,8 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
 }
 
 fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
-    let lines = frame_lines(&app.rows, area.width, app.cursor, app.icons);
     let view = area.height.saturating_sub(1) as usize;
+    let (lines, sp) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons);
     app.page = view.max(2);
     if let Some(pos) = lines.iter().position(|(_, r)| *r == Some(app.cursor)) {
         if pos < app.scroll {
@@ -302,7 +324,7 @@ fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
         }
     }
     app.scroll = app.scroll.min(lines.len().saturating_sub(view));
-    let mut shown = vec![header_line(area.width)];
+    let mut shown = vec![header_line_with(area.width, sp)];
     if lines.is_empty() {
         shown.push(Line::raw(""));
         let msg = if app.bundle.as_ref().map(|b| b.snap.fleets.is_empty()).unwrap_or(false) {
