@@ -48,15 +48,16 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   top border takes the squadron's status, the worst of its commodore and
   ships, in this order: pink needs you, orange error (an issue at Error, or a
   config that does not load), yellow warning (an issue at Warn), green busy,
-  else neutral (idle, stopped, parked, not started; info issues do not
-  count). The sides stay neutral. Ships are rows; crew, tasks and extra job rows sit under their member with tree
-  guides. Crew show while running and for 30 minutes after they
-  finish (a nested crew follows its parent; a running one keeps its parent in
-  view); older finished crew fold into one `+N finished` row per member, which
-  `z` (or space on it) opens and closes, kept in the saved state.
+  else neutral (idle, stopped, parked, not started; info issues do not count).
+  The sides stay neutral. Ships are rows; crew, tasks and extra job rows sit
+  under their member with tree guides. Crew show while running and for 30
+  minutes after they finish (a nested crew follows its parent; a running one
+  keeps its parent in view); older finished crew fold into one `+N finished`
+  row per member, which `z` (or space on it) opens and closes, kept in the
+  saved state.
 - Spacing: a blank line between the boxes, a column of padding inside each,
-  two spaces between columns. It is the first thing to go: below the width
-  where it costs no column (about 100 columns) the padding and gaps go, and
+  two spaces between columns. It is the first thing to go: below 103 columns
+  (where it would cost NAME or DETAIL their room) the padding and gaps go, and
   the blank lines go whenever the list does not fit the height.
 - A STOWAWAYS box for unlabelled sessions in fleet scope, on the tab of
   the fleet that holds them (a member's folder, else the fleet's own folder,
@@ -90,8 +91,8 @@ scoped to the row: member, squadron or fleet),
 their commodore), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
 from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
 flagged only, `R` refresh, `?` help, `q` quit. `esc` closes what is open, one
-thing at a time (a dialog or form, the detail panel, the filter), and with
-nothing open quits.
+thing at a time (a dialog or form, the detail panel, the `/` name filter), and
+with nothing open quits (not while an action runs: `q` quits then).
 
 Every action and form shows the exact `nimitz` command and core's plan steps
 (refusals with their fixes) and waits for `y`. Forms validate as you type
@@ -117,14 +118,15 @@ says why (starting an admiral or commodore, `up`, open, attach, jump, typing a
 message); ships start, relaunch and stop as usual, and so do sweep,
 rm, adopt and config changes.
 
-A squadron (or fleet) whose config does not load stays on screen as a red frame
-with the error in full (file:line and the parser's words) above its members.
+A squadron whose config does not load stays on screen with an orange top border
+and the error in full (file:line and the parser's words) above its members; a
+fleet's, in full under its band.
 
-At 80x24 the header keeps the mux state, the footer keeps `? help` and `q/esc quit`,
-DETAIL keeps room for issue codes, the detail pane drops its picture to show the
-reasons first (ctrl-e / ctrl-y scroll it), and help and the issues view wrap and
-scroll. The first frame comes from the session files alone; `claude agents`
-follows right after, and keys typed meanwhile are kept.
+At 80x24 the header keeps the mux state, the footer keeps `? help` and `q/esc
+quit`, DETAIL keeps room for issue codes, the detail pane drops its picture to
+show the reasons first (ctrl-e / ctrl-y scroll it), and help and the issues view
+wrap and scroll. The first frame comes from the session files alone; `claude
+agents` follows right after, and keys typed meanwhile are kept.
 
 ## Screens
 

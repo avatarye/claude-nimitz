@@ -148,7 +148,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("f / F", "filter squadrons by state / flagged rows only"),
     ("w", "detail: open or close the floating detail panel (esc closes it too)"),
     ("R", "refresh now"),
-    ("esc", "close what is open (a dialog, the detail panel, the filter); with nothing open, quit"),
+    ("esc", "close what is open (a dialog, the detail panel, the / name filter); with nothing open and nothing running, quit"),
     ("? / q", "help / quit"),
 ];
 
@@ -901,6 +901,9 @@ impl App {
                 } else if !self.filter.is_empty() {
                     self.filter.clear();
                     self.rebuild();
+                } else if let Some(b) = &self.busy {
+                    // a reflex esc never ends the program mid-action
+                    self.notify(format!("{b} is still running; esc quits once it is done (q quits now)"), st(mono::WARN));
                 } else {
                     return Some(Effect::Quit);
                 }

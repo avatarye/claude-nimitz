@@ -35,8 +35,10 @@ pub struct Spacing {
 pub const TIGHT: Spacing = Spacing { blank: false, pad: 0, gap: 1 };
 /// Room to breathe, when it costs no content.
 pub const ROOMY: Spacing = Spacing { blank: true, pad: 1, gap: 2 };
-/// DETAIL keeps at least this much before the padding and gaps go.
-const DETAIL_KEEP: u16 = 40;
+/// NAME keeps this much, and DETAIL the room for an issue code or two
+/// (its first step in `GROW`), before the padding and gaps go.
+const KEEP_NAME: u16 = 40;
+const KEEP_DETAIL: u16 = 22;
 
 impl Spacing {
     /// Columns a box takes on each side of a row: its border and the padding.
@@ -49,16 +51,18 @@ impl Spacing {
     }
 }
 
-/// The spacing a list `width` columns wide affords: `ROOMY` while every
-/// column but DETAIL keeps its tight width and DETAIL keeps `DETAIL_KEEP`,
-/// else `TIGHT` (the blank lines are judged by height, in `layout`).
+/// The spacing a list `width` columns wide affords: the padding and wider
+/// gaps while STATUS, AGE and KIND keep their tight widths, NAME keeps
+/// `KEEP_NAME` and DETAIL `KEEP_DETAIL` columns (or all they had tight):
+/// from 103 columns. The blank lines between boxes are on here: `layout` drops them
+/// only when the list does not fit the height.
 pub fn spacing_for(width: usize) -> Spacing {
     let tight = col_widths_gap(TIGHT.inner(width) as u16, TIGHT.gap as u16);
     let roomy = col_widths_gap(ROOMY.inner(width) as u16, ROOMY.gap as u16);
-    if tight[..4] == roomy[..4] && roomy[4] >= DETAIL_KEEP.min(tight[4]) && roomy[4] > 0 {
+    if tight[1..4] == roomy[1..4] && roomy[0] >= KEEP_NAME.min(tight[0]) && roomy[4] >= KEEP_DETAIL.min(tight[4]) {
         ROOMY
     } else {
-        TIGHT
+        Spacing { blank: true, ..TIGHT }
     }
 }
 
@@ -80,11 +84,6 @@ pub fn col_widths_gap(w: u16, gap: u16) -> [u16; 5] {
     out
 }
 
-/// The widest list worth giving room to (all columns at their maximum, plus
-/// the roomy gaps, padding and borders).
-pub fn list_max_width() -> u16 {
-    COL_MAX.iter().sum::<u16>() + (COL_MAX.len() as u16 - 1) * ROOMY.gap as u16 + 2 * ROOMY.side() as u16
-}
 
 pub fn truncate(s: &str, w: usize) -> String {
     if s.width() <= w {
@@ -383,14 +382,14 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
     let mut i = 0;
     while i < rows.len() {
         let head = &rows[i];
-        if !out.is_empty() {
-            out.push((Line::raw(""), None));
-        }
+        // a blank line between fleets and before the stowaways, as spacing
+        blank(&mut out);
         let stow = head.section == Section::StowBand;
         if stow {
             // the stowaways: a rounded box, its band the top border
             let e = Edges { v: ROUND.0, bottom: ROUND.1, style: st(head.node.frame.unwrap_or(mono::LINE)) };
-            out.push((Line::from(band(head, width, ("\u{256d}", "\u{256e}"), e.style, i == cursor, 1, true)), Some(i)));
+            let corners = if head.expanded { ("\u{256d}", "\u{256e}") } else { ("\u{2576}", "\u{2574}") };
+            out.push((Line::from(band(head, width, corners, e.style, i == cursor, 1, true)), Some(i)));
             i += 1;
             let mut any = false;
             while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
@@ -430,7 +429,12 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     None => boxed_row(&mut out, r, i, Edges { v: " ", bottom: (" ", " ", " "), style: Style::new() }),
                 },
                 _ if r.node.kind == crate::view::Kind::Note => {
-                    // a fleet's note (its config does not load), in full, under its band
+                    // a fleet's note (its config does not load, squadrons the state
+                    // filter hides), in full, outside any box
+                    if let Some(e) = open.take() {
+                        close(&mut out, e);
+                        blank(&mut out);
+                    }
                     for body in body_spans(r, &w, inner, sp.gap, icons) {
                         let mut spans = vec![Span::raw(" ".repeat(sp.side()))];
                         spans.extend(body);
@@ -443,7 +447,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                         blank(&mut out);
                         let e = Edges { v: HEAVY.0, bottom: HEAVY.1, style: st(mono::FG) };
                         let title = " ADMIRAL ";
-                        let rest = width.saturating_sub(4 + title.width());
+                        let rest = width.saturating_sub(3 + title.width());
                         out.push((
                             Line::from(vec![
                                 Span::styled("\u{250f}\u{2501}", e.style),

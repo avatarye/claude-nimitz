@@ -76,19 +76,74 @@ fn a_squadrons_colour_is_its_worst_member_in_the_theme_order() {
     assert_eq!(c(&[with(Status::Stopped, Some(Severity::Error)), with(Status::NeedsYou, None)]), mono::NEEDS);
 }
 
-/// Spacing goes first: at 80 columns no padding and single gaps; with too
-/// little height, no blank lines between boxes.
+/// Spacing goes first: below 103 columns no padding and single gaps; the
+/// blank lines between boxes stay at any width while the list fits the
+/// height, and go (all of them, the one before STOWAWAYS too) when it does not.
 #[test]
 fn spacing_collapses_before_content() {
     use admiralty::frames::{spacing_for, ROOMY, TIGHT};
     assert_eq!(spacing_for(200), ROOMY);
-    assert_eq!(spacing_for(80), TIGHT);
+    assert_eq!(spacing_for(103), ROOMY);
+    assert_eq!((spacing_for(102).pad, spacing_for(102).gap), (TIGHT.pad, TIGHT.gap));
+    assert_eq!((spacing_for(80).pad, spacing_for(80).gap), (TIGHT.pad, TIGHT.gap));
     let mut t = demo();
-    let tall = lines(&draw(&mut t.app, 200, 80));
-    assert!(tall.iter().any(|l| l.trim().is_empty() && !l.is_empty()) || tall.iter().filter(|l| l.trim().is_empty()).count() > 2, "blank lines between boxes");
-    let short = lines(&draw(&mut t.app, 200, 24));
-    let body: Vec<&String> = short.iter().skip(2).take(20).collect();
-    assert!(body.iter().filter(|l| l.trim().is_empty()).count() <= 1, "no blank lines when it does not fit: {body:?}");
+    let between = |ls: &[String], top: &str| -> bool {
+        let y = ls.iter().position(|l| l.contains(top)).unwrap();
+        ls[y - 1].trim().is_empty()
+    };
+    for w in [200u16, 90] {
+        let ls = lines(&draw(&mut t.app, w, 80));
+        for top in ["ADMIRAL ", "ARGOS", "KITS", "STOWAWAYS"] {
+            assert!(between(&ls, top), "{w}: a blank line above {top}");
+        }
+    }
+    let ls = lines(&draw(&mut t.app, 80, 24));
+    for top in ["ADMIRAL ", "ARGOS", "KITS"] {
+        assert!(!between(&ls, top), "80x24: no blank above {top}:\n{}", ls.join("\n"));
+    }
+    assert!(ls.iter().skip(2).take(20).all(|l| !l.trim().is_empty()), "80x24: no blank line at all:\n{}", ls.join("\n"));
+}
+
+/// The admiral's heavy box is square: its top corner in the last column, as
+/// its sides and bottom.
+#[test]
+fn the_admiral_box_corners_line_up() {
+    let mut t = demo();
+    for w in [200u16, 80] {
+        let ls = lines(&draw(&mut t.app, w, 60));
+        let top = ls.iter().find(|l| l.starts_with("\u{250f}")).unwrap();
+        let side = ls.iter().find(|l| l.starts_with('\u{2503}')).unwrap();
+        let bottom = ls.iter().find(|l| l.starts_with('\u{2517}')).unwrap();
+        let end = |l: &str, c: char| l.chars().position(|x| x == c).unwrap();
+        assert_eq!(end(top, '\u{2513}'), w as usize - 1, "{w}: {top}");
+        assert_eq!(side.chars().collect::<Vec<_>>().iter().rposition(|x| *x == '\u{2503}').unwrap(), w as usize - 1);
+        assert_eq!(end(bottom, '\u{251b}'), w as usize - 1);
+    }
+}
+
+/// A collapsed squadron or stowaway box is one open line (`╶ … ╴`); the
+/// state filter's note sits outside every box.
+#[test]
+fn collapsed_boxes_and_the_state_filter_note_sit_outside() {
+    let mut t = demo();
+    goto(&mut t.app, "STOW");
+    let id = t.app.current().unwrap().node.id.clone();
+    press(&mut t.app, KeyCode::Char(' '));
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    let s = ls.iter().position(|l| l.contains("STOWAWAYS")).unwrap();
+    assert!(ls[s].starts_with('\u{2576}') && ls[s].trim_end().ends_with('\u{2574}'), "{id}: {}", ls[s]);
+    // hide busy squadrons: the note says so, below the last box, not in it
+    t.app.fleet_states[admiralty::view::FleetState::Busy.index()] = false;
+    t.app.rebuild();
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    let n = ls.iter().position(|l| l.contains("hidden by the state filter")).unwrap_or_else(|| panic!("the note:\n{}", ls.join("\n")));
+    {
+
+        assert!(!ls[n].starts_with('\u{2502}') && !ls[n].starts_with('\u{2503}'), "{}", ls[n]);
+        let opened = ls[..n].iter().filter(|l| l.starts_with('\u{256d}') || l.starts_with('\u{250f}')).count();
+        let closed = ls[..n].iter().filter(|l| l.starts_with('\u{2570}') || l.starts_with('\u{2517}')).count();
+        assert_eq!(opened, closed, "every box closes before the note:\n{}", ls.join("\n"));
+    }
 }
 
 #[test]
@@ -1155,4 +1210,23 @@ fn esc_closes_what_is_open_then_quits() {
     assert!(!t.app.filter.is_empty());
     assert!(press(&mut t.app, KeyCode::Esc).is_none() && t.app.filter.is_empty(), "esc clears the filter");
     assert!(matches!(press(&mut t.app, KeyCode::Esc), Some(Effect::Quit)), "with nothing open, esc quits");
+}
+
+/// While an action runs, esc does not quit (q still does); in a dialog,
+/// menu, form or message, esc closes it and never quits.
+#[test]
+fn esc_never_quits_mid_action_or_from_a_dialog() {
+    let mut t = demo();
+    t.app.busy = Some("sweep FORGE".into());
+    assert!(press(&mut t.app, KeyCode::Esc).is_none(), "busy: no quit");
+    assert!(toast(&t.app).contains("still running"), "{}", toast(&t.app));
+    t.app.busy = None;
+    for k in ['x', 'c', 'm', '!', 'i'] {
+        goto(&mut t.app, "M:MAIN/ARGOS");
+        press(&mut t.app, KeyCode::Char(k));
+        if t.app.modal.is_some() {
+            assert!(press(&mut t.app, KeyCode::Esc).is_none(), "{k}: esc closes, never quits");
+            assert!(t.app.modal.is_none(), "{k}: closed");
+        }
+    }
 }
