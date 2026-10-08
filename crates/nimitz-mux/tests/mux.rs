@@ -233,6 +233,10 @@ fn type_text_keeps_spaces() {
     w.mux().type_text(&pane_ref("w1:p1", "w1:t1", "w1"), "a  b\u{1b}[31m ").expect("prompt");
     assert_eq!(w.calls(), vec![cmdv(&["agent", "prompt", "w1:p1", "a  b "])]);
     assert!(w.mux().type_text(&pane_ref("w1:p1", "w1:t1", "w1"), "   ").is_err(), "only spaces: nothing to type");
+    // a text that starts with `-` is never read as an option of `agent prompt`
+    let w = World::new(None);
+    w.mux().type_text(&pane_ref("w1:p1", "w1:t1", "w1"), "--wait now").expect("prompt");
+    assert_eq!(w.calls(), vec![cmdv(&["agent", "prompt", "w1:p1", " --wait now"])]);
 }
 
 fn type_text_blocked() {
