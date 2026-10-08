@@ -84,6 +84,7 @@ impl From<FixturePane> for Pane {
             title: p.title,
             cwd: p.cwd,
             state: p.state,
+            inferred: false,
         }
     }
 }

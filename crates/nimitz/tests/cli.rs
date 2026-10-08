@@ -2278,3 +2278,32 @@ fn a_job_labelled_for_another_home_never_binds_the_member() {
     let raw = std::fs::read_to_string(PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json")).unwrap();
     assert!(raw.contains(&job));
 }
+
+/// The commodore's attach pane with no Herdr claim (the live shape: an
+/// attach client runs no Herdr hook) shows the commodore, but the agent view
+/// (`/exit` inside the attach, R-24) looks the same, and text typed there
+/// would dispatch a new session: a needs-you delivery and `nimitz signal`
+/// type nothing, and say why.
+#[test]
+fn an_unclaimed_attach_pane_is_never_typed_into() {
+    let sb = Sb::new(true);
+    let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
+    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    sb.herdr_world(|w| {
+        let p = &mut w["panes"][1];
+        p.as_object_mut().unwrap().remove("agent_session");
+        p["agent"] = Value::from("claude");
+        p["agent_status"] = Value::from("idle");
+        p["foreground"] = serde_json::json!([bin, "attach", job]);
+    });
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "failed", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("cannot tell it from the agent view"), "{n}");
+    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(tab.unverified)") && r.out.contains("nimitz open MAIN/ARGOS"), "{}", r.out);
+    assert!(sb.prompts("w1:p2").is_empty(), "nothing typed");
+    // the pane itself is still the commodore's: status shows it there
+    assert_eq!(sb.member("MAIN/ARGOS")["pane"], Value::from("w1:p2"));
+}

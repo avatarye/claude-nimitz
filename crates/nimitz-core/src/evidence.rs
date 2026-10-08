@@ -1165,7 +1165,7 @@ pub fn session_of_attach(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)
 /// still jumps to it.
 pub fn session_of_unclaimed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
     session_of_attach(claude_home, procs)
-        .or_else(|| procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(argv, _)| argv.windows(2).find(|w| w[0] == "--resume" || w[0] == "-r").map(|w| w[1].clone())))
+        .or_else(|| procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(argv, _)| argv.windows(2).find(|w| w[0] == "--resume" || w[0] == "-r").map(|w| w[1].clone()).filter(|s| !s.starts_with('-'))))
         .or_else(|| session_of_foreground(claude_home, procs))
 }
 

@@ -337,7 +337,12 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         return Ok(finish_plan(ctx, &plan));
     }
     // its attached tab; with no tab, one is opened first (plan-v4 section 7)
-    let pane = via.session.as_ref().and_then(|s| run::pane_of(mux.as_ref(), &s.session_id));
+    let shown = via.session.as_ref().and_then(|s| run::shown_in(mux.as_ref(), &s.session_id));
+    if let Some(p) = shown.as_ref().filter(|p| p.inferred) {
+        plan.refusals.push(run::untypeable(&via.id, &p.pane));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    let pane = shown.map(|p| p.pane);
     let why = if via.id == id { "type into its attached tab".to_string() } else { format!("you reach {id} through its commodore") };
     match &pane {
         Some(p) => plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), p.pane_id.clone(), text.clone()], cwd: None, why }),
@@ -366,7 +371,11 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                         let sid = via.session.as_ref().map(|s| s.session_id.clone()).unwrap_or_default();
                         let wait: f64 = ctx.vars.get("NIMITZ_SIGNAL_WAIT").and_then(|v| v.parse().ok()).unwrap_or(SIGNAL_ATTACH_WAIT_S);
                         match run::wait_for_session(mux.as_ref(), &sid, wait) {
-                            Some(p) => p,
+                            Some(p) if p.inferred => {
+                                out::issue(&run::untypeable(&via.id, &p.pane));
+                                return Ok(1);
+                            }
+                            Some(p) => p.pane,
                             None => {
                                 out::error(&format!("pane {} does not show {}'s session after {wait} s; nothing was typed. Run the signal again once it is attached", p.pane_id, via.id));
                                 return Ok(1);

@@ -623,7 +623,10 @@ claims no session for shows what its foreground runs
 (`evidence::session_of_unclaimed`): the job a `claude attach <job>`
 attaches to (the job row's `resumeSessionId`, else `sessionId`), else the
 conversation a held `claude --resume <sid>` runs, else a foreground pid's
-session file. An attach client never runs Herdr's
+session file. A session read from the attach alone is `Pane.inferred`
+(`ShapePane.inferred`): shown and focused, never typed into, since the
+agent view (R-24) looks the same (`tab.unverified` on a delivery,
+`nimitz signal` or Admiralty `m`). An attach client never runs Herdr's
 SessionStart hook, so Herdr never names the session of a lead's own attach
 pane (seen live after the 0.4.0 migration: `agent` claude, no
 `agent_session`). A pane whose foreground cannot be read

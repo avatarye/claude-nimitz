@@ -434,6 +434,10 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     let calls: Vec<String> = std::fs::read_to_string(sb.join("herdr/calls.jsonl")).unwrap().lines().skip(from).map(String::from).collect();
     // the wrapper routes `--session NIMITZ` alone to this world
     assert!(calls.iter().any(|c| c.contains("\"agent\",\"focus\"") && c.contains(&pane)), "{calls:?}");
+    // `m` types nothing there: the agent view looks the same (R-24)
+    let b = app.bundle.as_ref().unwrap();
+    let why = actions::plan_message(b.mux_caps, &b.snap, &b.panes, &Target::Member(id.clone())).unwrap_err();
+    assert!(why.contains("nothing is typed"), "{why}");
     for name in ["default", "nikitz"] {
         let c = std::fs::read_to_string(sb.join(format!("herdr-{name}/calls.jsonl"))).unwrap_or_default();
         assert!(c.is_empty(), "never a call to the {name} server: {c}");

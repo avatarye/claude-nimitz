@@ -94,6 +94,7 @@ fn pane(pane_id: &str, session: Option<&str>, title: &str, state: &str) -> Pane 
         title: title.into(),
         cwd: String::new(),
         state: state.into(),
+        inferred: false,
     }
 }
 

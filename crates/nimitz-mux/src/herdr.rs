@@ -87,6 +87,7 @@ pub fn agents_in(list: &Value) -> Vec<Pane> {
                 let f = s(a, "foreground_cwd");
                 if f.is_empty() { s(a, "cwd") } else { f }
             },
+            inferred: false,
         })
         .collect()
 }
@@ -154,6 +155,7 @@ pub fn parse_snapshot(v: &Value) -> Result<Shape, String> {
                         state: agent.map(|a| a.state.clone()).unwrap_or_else(|| s(p, "agent_status")),
                         foreground: None,
                         foreground_pid: None,
+                        inferred: false,
                     }
                 })
                 .collect()
@@ -162,7 +164,7 @@ pub fn parse_snapshot(v: &Value) -> Result<Shape, String> {
     // an agent whose pane the panes list lacks (never seen; kept for safety)
     for a in agents {
         if !panes.iter().any(|p| p.pane.pane_id == a.pane.pane_id) {
-            panes.push(ShapePane { pane: a.pane, cwd: a.cwd, title: a.title, agent: Some("claude".into()), claimed: a.session_id.clone(), session_id: a.session_id, state: a.state, foreground: None, foreground_pid: None });
+            panes.push(ShapePane { pane: a.pane, cwd: a.cwd, title: a.title, agent: Some("claude".into()), claimed: a.session_id.clone(), session_id: a.session_id, state: a.state, foreground: None, foreground_pid: None, inferred: false });
         }
     }
     panes.sort_by(|a, b| a.pane.pane_id.cmp(&b.pane.pane_id));
@@ -284,7 +286,7 @@ impl Herdr {
     /// job a `claude attach <job>` attaches to (an attach client never runs
     /// Herdr's hook, so Herdr never names the session of the very pane
     /// nimitz opened for a lead), or a held `claude --resume <sid>`.
-    fn shown(&self, pane_id: &str, claim: Option<&str>, procs: Option<&[(Vec<String>, Option<i64>)]>) -> Option<String> {
+    fn shown(&self, pane_id: &str, claim: Option<&str>, procs: Option<&[(Vec<String>, Option<i64>)]>) -> (Option<String>, bool) {
         let home = &self.claude_home;
         let read;
         let procs = match procs {
@@ -295,12 +297,16 @@ impl Herdr {
             }
         };
         let Some(claim) = claim else {
-            return nimitz_core::evidence::session_of_unclaimed(home, procs);
+            // the attach alone: shown, never typed into (`Pane.inferred`)
+            if let Some(sid) = nimitz_core::evidence::session_of_attach(home, procs) {
+                return (Some(sid), true);
+            }
+            return (nimitz_core::evidence::session_of_unclaimed(home, procs), false);
         };
         if nimitz_core::evidence::claim_backed(home, procs, claim) {
-            return Some(claim.to_string());
+            return (Some(claim.to_string()), false);
         }
-        nimitz_core::evidence::session_of_foreground(home, procs)
+        (nimitz_core::evidence::session_of_foreground(home, procs), false)
     }
 
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
@@ -480,7 +486,7 @@ impl Mux for Herdr {
             let procs = self.foreground_procs(&p.pane.pane_id).ok();
             p.claimed = p.session_id.clone();
             if p.session_id.is_some() || p.agent.is_some() {
-                p.session_id = self.shown(&p.pane.pane_id, p.claimed.as_deref(), Some(procs.as_deref().unwrap_or(&[])));
+                (p.session_id, p.inferred) = self.shown(&p.pane.pane_id, p.claimed.as_deref(), Some(procs.as_deref().unwrap_or(&[])));
             }
             if foregrounds {
                 if let Some(procs) = procs {
@@ -506,7 +512,7 @@ impl Mux for Herdr {
         let mut panes = self.run(&["agent", "list"]).map(|v| parse_panes(&v)).unwrap_or_default();
         for p in panes.iter_mut() {
             let claim = p.session_id.clone();
-            p.session_id = self.shown(&p.pane.pane_id, claim.as_deref(), None);
+            (p.session_id, p.inferred) = self.shown(&p.pane.pane_id, claim.as_deref(), None);
         }
         panes
     }

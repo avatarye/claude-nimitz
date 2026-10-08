@@ -25,6 +25,10 @@ pub struct Pane {
     pub cwd: String,
     /// the multiplexer's own state for the pane's agent (Herdr: working|blocked|done|idle|unknown)
     pub state: String,
+    /// the session is read from the pane's `claude attach <job>` alone, with
+    /// no claim of Herdr's: the agent view (`/exit` inside the attach, R-24)
+    /// looks the same, so nothing is ever typed into such a pane (focus only)
+    pub inferred: bool,
 }
 
 /// One workspace of the multiplexer's shape (Herdr WorkspaceInfo).
@@ -65,6 +69,8 @@ pub struct ShapePane {
     pub foreground: Option<Vec<String>>,
     /// the pid of what runs in the foreground (`pane process-info`), when read
     pub foreground_pid: Option<i64>,
+    /// `session_id` is read from the `claude attach <job>` alone (`Pane.inferred`)
+    pub inferred: bool,
 }
 
 /// The whole shape at once (`herdr api snapshot` + `pane process-info` per
