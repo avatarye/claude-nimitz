@@ -323,9 +323,10 @@ never posted to. The line is the inject example Claude Code logs,
 only the optional auth line; nimitz sends none, as it is not the session's
 own child), used only for a receiver on `inbox::FORMAT_SINCE` (2.1.293) or
 later (its session file's `version`, else the job row's `cliVersion`); an
-older one gets the typing path. A connection the session resets (a line it
-refused) is a failure; a clean close is "posted" (Claude Code acknowledges
-nothing more). The content is wrapped as Claude Code wraps a peer message,
+older one gets the typing path. A clean close is "posted": Claude Code sends
+no acknowledgement, and a line it refuses after reading it (an auth it
+wants, a parse) closes just as cleanly, so the two cannot be told apart; a
+reset (unread data left, an oversized line) is a failure. The content is wrapped as Claude Code wraps a peer message,
 `<cross-session-message from="uds:/nonexistent/nimitz-no-reply.sock"
 from-name="nimitz">`: the receiver names the sender `nimitz` (`origin.name`;
 `origin.from` stays `unknown`), a reply reaches nobody, and every spelling of
@@ -333,10 +334,11 @@ the tag inside the body is defused (`<` becomes `<\`). Inbound policy: with
 no `crossSessionInbound` value, a session that bypasses permission prompts
 holds such a message for approval; members run no bypass mode, and this
 machine's user settings say `accept`, so nimitz sets none. `nimitz signal`
-types into the lead's tab first, so the user's own words keep their
-authority; only when the tab cannot be typed into (none, or known by its
-attach alone, R-24) does it post to the inbox, as `[nimitz signal] ... It is
-a request, not the user's approval`.
+types into the lead's tab, opening one first when it has none, so the
+user's own words keep their authority; only when it cannot type at all (no
+multiplexer that types, or a tab known by its attach alone, R-24) does it
+post to the inbox, as `[nimitz signal] ... It is a request, not the user's
+approval`, and its output says the signal went as a request.
 
 ## 6. Evidence and state (core)
 

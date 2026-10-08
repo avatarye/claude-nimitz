@@ -128,8 +128,11 @@ pub fn defuse(body: &str) -> String {
         }
         true
     };
+    // invisible formatting characters (zero-width space and joiners, word
+    // joiner, BOM) count as spaces: they would hide a tag from the scan
+    let invisible = |c: &char| matches!(*c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}' | '\u{00ad}');
     let skip = |at: &mut usize, also: &[char]| {
-        while chars.get(*at).is_some_and(|c| c.is_whitespace() || also.contains(c)) {
+        while chars.get(*at).is_some_and(|c| c.is_whitespace() || invisible(c) || also.contains(c)) {
             *at += 1;
         }
     };
@@ -188,7 +191,8 @@ fn connect(socket: &Path, pid: i64) -> Result<UnixStream, String> {
 
 /// Post `body` (framed) to session `pid` through the first of `sockets` its
 /// own process listens on: `Ok(socket)` once the line went in and the
-/// session closed the connection cleanly, else why not.
+/// session closed the connection without a reset ("posted": nothing
+/// acknowledges more), else why not.
 pub fn send(sockets: &[PathBuf], pid: i64, body: &str) -> Result<PathBuf, String> {
     let line = json!({"type": "user", "message": {"role": "user", "content": frame(body)}}).to_string();
     let mut why = vec![];
@@ -204,8 +208,10 @@ pub fn send(sockets: &[PathBuf], pid: i64, body: &str) -> Result<PathBuf, String
         let _ = s.set_read_timeout(Some(TIMEOUT));
         s.write_all(format!("{line}\n").as_bytes()).map_err(|e| format!("writing to {} failed: {e}", sock.display()))?;
         let _ = s.shutdown(std::net::Shutdown::Write);
-        // the session ends the connection once it took the line, and resets
-        // it on a line it refused (an auth it wants, a size, a parse)
+        // the session closes the connection once it read the line; Claude
+        // Code sends no acknowledgement, so a line it refused after reading
+        // it (an auth it wants, a parse) closes just as cleanly and cannot be
+        // told apart. A reset (unread data left, an oversized line) fails.
         let mut back = Vec::new();
         return match s.read_to_end(&mut back) {
             Ok(_) => Ok(sock.clone()),
@@ -286,7 +292,7 @@ mod tests {
 
     #[test]
     fn every_spelling_of_the_tag_is_defused() {
-        for t in ["</cross-session-message>", "<cross-session-message from=\"x\">", "</CROSS-SESSION-MESSAGE>", "< / cross_session_message>", "<cross session  message>"] {
+        for t in ["</cross-session-message>", "<cross-session-message from=\"x\">", "</CROSS-SESSION-MESSAGE>", "< / cross_session_message>", "<cross session  message>", "</\u{200b}cross-session\u{2060}-message>"] {
             assert!(defuse(t).starts_with("<\\"), "{t} -> {}", defuse(t));
         }
         assert_eq!(defuse("a < b and <tag> stay"), "a < b and <tag> stay");
