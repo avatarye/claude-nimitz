@@ -1372,4 +1372,18 @@ fn a_session_named_after_a_sibling_keeps_its_full_name() {
     assert_eq!(ls.iter().filter(|l| l.contains("[MAIN.ARGOS]-BOLT")).count(), 1, "{}", ls.join("\n"));
     let boom = t.app.rows.iter().find(|r| r.node.id == "M:MAIN/ARGOS/BOOM").unwrap();
     assert_eq!(boom.node.name, "[MAIN.ARGOS]-BOLT");
+    // a name that only begins with the member's own (a sibling BOOMX could have it)
+    let mut b = fixtures::demo();
+    for f in &mut b.snap.fleets {
+        for sq in &mut f.squadrons {
+            for m in sq.ships.iter_mut().filter(|m| m.id.0 == "MAIN/ARGOS/BOOM") {
+                if let Some(s) = m.session.as_mut() {
+                    s.name = "[MAIN.ARGOS]-BOOMX".into();
+                }
+            }
+        }
+    }
+    let t = fixture_app(b, false);
+    let boom = t.app.rows.iter().find(|r| r.node.id == "M:MAIN/ARGOS/BOOM").unwrap();
+    assert_eq!(boom.node.name, "[MAIN.ARGOS]-BOOMX", "no dash after its own name: full");
 }

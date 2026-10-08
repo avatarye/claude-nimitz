@@ -537,10 +537,11 @@ fn member_node(m: &Member, v: &View) -> Node {
         full
     } else if full == m.expected_name {
         short_name(&m.id)
-    } else if let Some(rest) = own_prefix.and_then(|p| full.strip_prefix(p)).filter(|rest| rest.starts_with(&short_name(&m.id))) {
-        // a drift of the member's own name (`ANVIL-2`): the drift shows; a
-        // sibling's name (`[F.SQ]-HAMMER` on ANVIL) stays in full, never a
-        // second HAMMER row
+    } else if let Some(rest) = own_prefix.and_then(|p| full.strip_prefix(p)).filter(|rest| rest.starts_with(&format!("{}-", short_name(&m.id)))) {
+        // a drift of the member's own name (`ANVIL-2`: its name, a dash, more):
+        // the drift shows. Names are [A-Z0-9_]+, so `<own>-...` is never a
+        // sibling's; a sibling's name (`HAMMER`, or `ANVIL2` on ANVIL) stays
+        // in full, never a second row that acts on this member
         rest.to_string()
     } else {
         full
