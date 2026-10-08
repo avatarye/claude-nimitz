@@ -231,8 +231,9 @@ pub const ASCII: Icons = Icons {
     s_parked: "z",
     s_off: "o",
     s_unknown: "?",
-    spin: &["|", "/", "-", "\\"],
-    wait: &[".", "o", "O", "o"],
+    // no other status's glyph (`-` idle, `o` not started, `.` finished)
+    spin: &["|", "/", "=", "\\"],
+    wait: &[",", ";", ":", ";"],
 };
 
 impl Icons {
@@ -346,9 +347,12 @@ pub mod anim {
     pub const TICK_MS: u64 = 100;
     /// the glyph frames are the icon set's (`Icons::spin`, `Icons::wait`):
     /// a Nerd Font has them where a braille block may be missing
-    /// the dim green of a crew's spinner (running crew: quieter than a member)
-    pub const BUSY_DIM: Color = Color::Rgb(0x6f, 0x9a, 0x1f);
-    /// the bright end of the needs-you pulse (dark text keeps 8.9:1 on it)
+    /// the dim green of a crew's spinner glyph (running crew, a shell wait:
+    /// quieter than a member's); only the glyph, the word keeps its colour.
+    /// A glyph needs 3:1: 5.45 on BG, 3.34 on the cursor row's SEL
+    pub const BUSY_DIM: Color = Color::Rgb(0x80, 0xaa, 0x2a);
+    /// the bright end of the needs-you pulse (the chip's dark text, mono::BG,
+    /// keeps 7.7:1 on it, 5.1:1 on NEEDS)
     pub const NEEDS_HI: Color = Color::Rgb(0xff, 0x9e, 0xc0);
 
     /// 0..=1..=0 over `period` frames (a triangle wave)

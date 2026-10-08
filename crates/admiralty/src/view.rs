@@ -679,6 +679,13 @@ pub fn squadron_status_color(members: &[&Member]) -> ratatui::style::Color {
     }
 }
 
+/// A squadron's rank, its own config error included (an error).
+pub fn squadron_rank_of(sq: &Squadron) -> u8 {
+    let members: Vec<&Member> = std::iter::once(&sq.commodore).chain(sq.ships.iter()).collect();
+    let broken = sq.issues.iter().any(|i| is_load_error(i) && i.id.as_ref() == Some(&sq.id));
+    squadron_rank(&members).max(if broken { 3 } else { 0 })
+}
+
 /// The squadron's status as a rank in that order (4 needs you .. 0 neutral).
 pub fn squadron_rank(members: &[&Member]) -> u8 {
     let rank = |m: &Member| -> u8 {

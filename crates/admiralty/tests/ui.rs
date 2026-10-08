@@ -439,8 +439,8 @@ fn y_yanks_and_q_quits() {
 fn help_has_a_legend_line_for_each_icon() {
     let mut t = demo();
     keys(&mut t.app, "?");
-    let s = screen(&mut t.app, 200, 80);
-    for what in ["errors (orange) and warnings (yellow)", "needs you: waiting", "busy", "stowaway: a session", "pane dot: idle", "Band counts read"] {
+    let s = screen(&mut t.app, 200, 120);
+    for what in ["errors (orange) and warnings (yellow)", "needs you: waiting", "busy", "parked (idle an hour", "stowaway: a session", "pane dot: idle", "Band counts read"] {
         assert!(s.contains(what), "legend has {what}");
     }
 }
@@ -1411,7 +1411,7 @@ fn status_motion_changes_only_the_status_cell() {
         let bolt = ls.iter().position(|l| l.contains("BOLT")).unwrap();
         let x = still[bolt].chars().position(|c| c == '*').unwrap();
         let glyph = ls[bolt].chars().nth(x).unwrap();
-        assert!("|/-\\".contains(glyph), "busy spins (the icon set's frames): {}", ls[bolt]);
+        assert!("|/=\\".contains(glyph), "busy spins (the icon set's frames): {}", ls[bolt]);
         seen_spin.insert(glyph);
         let kits = ls.iter().position(|l| l.contains("PIPELINE")).unwrap();
         let cx = ls[kits].find("needs you").unwrap();
@@ -1472,4 +1472,89 @@ fn a_squadron_that_gets_worse_pulses_its_bar_once() {
     assert_eq!(fill(&mut t, 111), mono::NEEDS, "then it holds");
     // KITS did not change: no pulse
     assert!(t.app.rows.iter().find(|r| r.node.id == "SQ:MAIN/KITS").is_some_and(|r| r.node.anim == admiralty::view::Anim::None));
+}
+
+/// The pulse only for a squadron that gets a warning, an error or needs you
+/// (idle to busy is just work), and never from the quick first look to the
+/// first full one.
+#[test]
+fn a_bar_pulses_only_for_a_real_worsening() {
+    let full = fixtures::demo();
+    let mut quick = full.clone();
+    quick.partial = true;
+    for f in &mut quick.snap.fleets {
+        for sq in &mut f.squadrons {
+            for m in std::iter::once(&mut sq.commodore).chain(sq.ships.iter_mut()) {
+                m.issues.clear();
+            }
+        }
+    }
+    let mut t = fixture_app(quick, false);
+    t.app.anim_live = true;
+    t.app.apply(full.clone());
+    tab(&mut t.app, "FORGE");
+    assert!(t.app.rows.iter().all(|r| !matches!(r.node.anim, admiralty::view::Anim::Flash(_))), "no pulse at start-up");
+    // idle to busy: no pulse
+    let mut busy = full.clone();
+    for f in &mut busy.snap.fleets {
+        for sq in &mut f.squadrons {
+            if sq.id.0 == "MAIN/KITS" {
+                sq.ships[0].status = Status::Busy;
+                sq.ships[0].issues.clear();
+            }
+        }
+    }
+    t.app.apply(busy);
+    tab(&mut t.app, "MAIN");
+    assert!(t.app.rows.iter().all(|r| !matches!(r.node.anim, admiralty::view::Anim::Flash(_))), "work is no pulse");
+}
+
+/// Motion pauses under a dialog; with only a shell wait on screen the loop
+/// redraws every fourth frame; `v` says so when the environment keeps it off.
+#[test]
+fn motion_steps_pause_and_the_env_switch() {
+    let mut t = demo();
+    t.app.anim_live = true;
+    assert_eq!(t.app.motion_step(), Some(1));
+    keys(&mut t.app, "?");
+    assert_eq!(t.app.motion_step(), None, "a dialog: still");
+    press(&mut t.app, KeyCode::Esc);
+    for r in t.app.rows.iter_mut() {
+        r.node.anim = if r.node.anim == admiralty::view::Anim::None { admiralty::view::Anim::None } else { admiralty::view::Anim::Dots };
+    }
+    assert_eq!(t.app.motion_step(), Some(4), "only a shell wait: every fourth frame");
+    t.app.anim_env_off = true;
+    t.app.anim = false;
+    keys(&mut t.app, "v");
+    assert!(toast(&t.app).contains("keeps it still"), "{}", toast(&t.app));
+}
+
+/// The dim glyph colour passes 3:1 (a non-text glyph) on the background and on
+/// the cursor row; the word next to it keeps its own colour.
+#[test]
+fn the_dim_glyph_passes_contrast_and_the_word_keeps_its_colour() {
+    use admiralty::theme::anim::BUSY_DIM;
+    let lum = |c: ratatui::style::Color| {
+        let ratatui::style::Color::Rgb(r, g, b) = c else { panic!() };
+        let f = |v: u8| {
+            let v = v as f64 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    };
+    let ratio = |a, b| {
+        let (x, y): (f64, f64) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    };
+    assert!(ratio(BUSY_DIM, mono::BG) >= 3.0 && ratio(BUSY_DIM, mono::SEL) >= 3.0);
+    let mut t = demo();
+    t.app.anim_live = true;
+    t.app.anim_frame = 2;
+    let buf = draw(&mut t.app, 200, 60);
+    let ls = lines(&buf);
+    let y = ls.iter().position(|l| l.contains("fix layout bug")).unwrap();
+    let x = ls[y].find("running").unwrap();
+    let x = ls[y][..x].chars().count() as u16;
+    assert_eq!(buf[(x, y as u16)].fg, mono::BUSY, "the word keeps its colour");
+    assert_eq!(buf[(x - 2, y as u16)].fg, BUSY_DIM, "the glyph is the dim one");
 }

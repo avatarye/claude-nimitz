@@ -111,12 +111,21 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
     let mut last_draw = Instant::now();
     // status motion: its own tick, never a refresh or a nimitz call; only the
     // cells that change are written (ratatui sends the diff)
-    app.anim_live = std::env::var("NIMITZ_NO_ANIM").map_or(true, |v| v != "1") && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    app.anim_env_off = std::env::var("NIMITZ_NO_ANIM").is_ok_and(|v| v == "1") || std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    app.anim_live = !app.anim_env_off;
     let started = Instant::now();
     let tick = Duration::from_millis(crate::theme::anim::TICK_MS);
     // keys typed before the first data lands, replayed once it does
     let mut early: Vec<KeyEvent> = vec![];
     let result = 'main: loop {
+        // the frame first: a refresh below stamps a bar's pulse with this frame
+        let frame = (started.elapsed().as_millis() / tick.as_millis()) as u64;
+        if let Some(step) = app.motion_step() {
+            if frame / step != app.anim_frame / step {
+                dirty = true;
+            }
+        }
+        app.anim_frame = frame;
         let mut latest = None;
         while let Ok(b) = data_rx.try_recv() {
             latest = Some(b);
@@ -137,15 +146,6 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
             let _ = cmd_tx.send(Cmd::Refresh);
             dirty = true;
         }
-        if app.moving() {
-            let frame = (started.elapsed().as_millis() / tick.as_millis()) as u64;
-            if frame != app.anim_frame {
-                app.anim_frame = frame;
-                dirty = true;
-            }
-        } else {
-            app.anim_frame = (started.elapsed().as_millis() / tick.as_millis()) as u64;
-        }
         if dirty || last_draw.elapsed() >= Duration::from_secs(1) {
             if let Err(e) = terminal.draw(|f| crate::render::draw(&mut app, f)) {
                 break Err(e);
@@ -154,7 +154,14 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
             last_draw = Instant::now();
         }
         // a frame's worth of waiting while something moves, else the usual
-        let wait = if app.moving() { tick.saturating_sub(Duration::from_millis((started.elapsed().as_millis() % tick.as_millis()) as u64)).max(Duration::from_millis(10)) } else { Duration::from_millis(250) };
+        // until the next frame that changes something, else the usual
+        let wait = match app.motion_step() {
+            Some(step) => {
+                let period = tick.as_millis() * step as u128;
+                Duration::from_millis((period - started.elapsed().as_millis() % period) as u64).max(Duration::from_millis(10))
+            }
+            None => Duration::from_millis(250),
+        };
         match event::poll(wait) {
             Ok(true) => {}
             Ok(false) => continue,

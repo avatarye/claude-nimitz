@@ -101,6 +101,8 @@ pub struct App {
     pub anim: bool,
     /// the live loop runs the motion (`run::run` sets it; tests and `dump` never do)
     pub anim_live: bool,
+    /// the environment keeps the motion off (`NIMITZ_NO_ANIM=1`, `NO_COLOR`)
+    pub anim_env_off: bool,
     /// the animation frame, advanced only by the live loop
     pub anim_frame: u64,
     /// each squadron's status rank (theme order), to see one get worse
@@ -187,6 +189,7 @@ impl App {
             bundle: None,
             anim: true,
             anim_live: false,
+            anim_env_off: false,
             anim_frame: 0,
             sq_rank: HashMap::new(),
             sq_flash: HashMap::new(),
@@ -247,7 +250,29 @@ impl App {
 
     /// Does anything on screen move? (The live loop ticks only then.)
     pub fn moving(&self) -> bool {
-        self.frame().is_some() && self.rows.iter().any(|r| r.node.anim != crate::view::Anim::None)
+        self.motion_step().is_some()
+    }
+
+    /// Every how many frames something on screen changes: 1 (a spinner, the
+    /// needs-you pulse, a bar's pulse while it lasts), 4 (only a shell wait's
+    /// slow glyph), or `None` (nothing moves, a dialog covers the list, or
+    /// the motion is off).
+    pub fn motion_step(&self) -> Option<u64> {
+        use crate::view::Anim;
+        let f = self.frame()?;
+        if self.modal.is_some() {
+            return None;
+        }
+        let mut step = None;
+        for r in &self.rows {
+            match r.node.anim {
+                Anim::Spin | Anim::SpinDim | Anim::Pulse => return Some(1),
+                Anim::Flash(from) if f.saturating_sub(from) < 10 => return Some(1),
+                Anim::Dots => step = Some(4),
+                _ => {}
+            }
+        }
+        step
     }
 
     fn restore(&mut self) {
@@ -302,18 +327,25 @@ impl App {
                 sq.ships.iter_mut().for_each(mark);
             }
         }
-        // a squadron whose status got worse since the last refresh: its bar
-        // pulses once (the first look only learns the ranks)
+        // a squadron that got worse since the last full look (a warning, an
+        // error or needs you; idle to busy is just work): its bar pulses once.
+        // The quick first look has no check issues: it is not compared, and
+        // the first full look only learns the ranks.
         self.sq_flash.retain(|_, from| self.anim_frame.saturating_sub(*from) < 10);
-        for f in &b.snap.fleets {
-            for sq in &f.squadrons {
-                let members: Vec<&Member> = std::iter::once(&sq.commodore).chain(sq.ships.iter()).collect();
-                let rank = crate::view::squadron_rank(&members);
-                let id = format!("SQ:{}", sq.id.0);
-                if self.sq_rank.insert(id.clone(), rank).is_some_and(|old| rank > old) {
-                    self.sq_flash.insert(id, self.anim_frame);
+        if !b.partial {
+            let mut now = HashMap::new();
+            for f in &b.snap.fleets {
+                for sq in &f.squadrons {
+                    let rank = crate::view::squadron_rank_of(sq);
+                    let id = format!("SQ:{}", sq.id.0);
+                    if rank >= 2 && self.sq_rank.get(&id).is_some_and(|old| rank > *old) {
+                        self.sq_flash.insert(id.clone(), self.anim_frame);
+                    }
+                    now.insert(id, rank);
                 }
             }
+            // (a squadron gone is forgotten: one made again starts fresh)
+            self.sq_rank = now;
         }
         self.bundle = Some(b);
         self.rebuild();
@@ -960,7 +992,12 @@ impl App {
             (KeyCode::Char('z'), false) => self.toggle_crew_fold(),
             (KeyCode::Char('v'), false) => {
                 self.anim = !self.anim;
-                self.notify(if self.anim { "Status motion on (v turns it off)" } else { "Status motion off (v turns it on)" }, st(mono::COMMENT));
+                let msg = match (self.anim, self.anim_env_off) {
+                    (true, true) => "Status motion on (saved), but NIMITZ_NO_ANIM or NO_COLOR keeps it still here",
+                    (true, false) => "Status motion on (v turns it off)",
+                    (false, _) => "Status motion off (v turns it on)",
+                };
+                self.notify(msg, st(mono::COMMENT));
             }
             (KeyCode::Char('/'), _) => self.editing_filter = true,
             // esc closes what is open, one thing at a time; with nothing open it quits

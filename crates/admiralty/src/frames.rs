@@ -209,27 +209,24 @@ pub fn row_spans_gap(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Ic
     row_spans_anim(r, w, inner, gap, icons, None)
 }
 
-/// The STATUS cell at animation frame `frame` (`None`: still). Only the
-/// glyph (one cell) or the chip's fill changes: the layout never moves.
-fn status_cell(r: &Row, frame: Option<u64>, icons: &Icons) -> (String, Style) {
+/// The STATUS cell at animation frame `frame` (`None`: still): the glyph's
+/// replacement and colour (one cell), and the cell's style. Only the glyph,
+/// or the needs-you chip's fill, moves: the word keeps its colour and the
+/// layout never moves.
+fn status_cell(r: &Row, frame: Option<u64>, icons: &Icons) -> (Option<(&'static str, Style)>, Style) {
     use crate::theme::anim::{mix, tri, BUSY_DIM, NEEDS_HI};
     use crate::view::Anim;
-    let (text, style) = r.node.status.clone();
-    let Some(f) = frame else { return (text, style) };
-    // the glyph is the first word; its replacement is one cell wide too
-    let swap = |g: &str| match text.split_once(' ') {
-        Some((_, rest)) => format!("{g} {rest}"),
-        None => text.clone(),
-    };
+    let style = r.node.status.1;
+    let Some(f) = frame else { return (None, style) };
     let at = |set: &[&'static str], k: u64| set[(k % set.len() as u64) as usize];
     match r.node.anim {
-        Anim::Spin => (swap(at(icons.spin, f)), style.fg(mono::BUSY)),
-        Anim::SpinDim => (swap(at(icons.spin, f)), style.fg(BUSY_DIM)),
+        Anim::Spin => (Some((at(icons.spin, f), style.fg(mono::BUSY))), style),
+        Anim::SpinDim => (Some((at(icons.spin, f), style.fg(BUSY_DIM))), style),
         // a quarter of the speed, and quieter
-        Anim::Dots => (swap(at(icons.wait, f / 4)), style.fg(BUSY_DIM)),
+        Anim::Dots => (Some((at(icons.wait, f / 4), style.fg(BUSY_DIM))), style),
         // the chip's fill breathes between pink and a lighter pink, once a second
-        Anim::Pulse if style.bg == Some(mono::NEEDS) => (text, style.bg(mix(mono::NEEDS, NEEDS_HI, tri(f, 10)))),
-        _ => (text, style),
+        Anim::Pulse if style.bg == Some(mono::NEEDS) => (None, style.bg(mix(mono::NEEDS, NEEDS_HI, tri(f, 10)))),
+        _ => (None, style),
     }
 }
 
@@ -243,8 +240,16 @@ fn row_spans_anim(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons
     }
     let n = &r.node;
     out.push(Span::raw(sep.clone()));
-    let (status, status_style) = status_cell(r, frame, icons);
-    out.push(Span::styled(pad(&truncate(&status, w[1] as usize), w[1] as usize), status_style));
+    let (glyph, status_style) = status_cell(r, frame, icons);
+    let cell = pad(&truncate(&n.status.0, w[1] as usize), w[1] as usize);
+    match (glyph, cell.split_once(' ')) {
+        // the glyph (the first word) swapped, one cell for one cell
+        (Some((g, gs)), Some((first, rest))) if first.width() == 1 => {
+            out.push(Span::styled(g, gs));
+            out.push(Span::styled(format!(" {rest}"), status_style));
+        }
+        _ => out.push(Span::styled(cell, status_style)),
+    }
     out.push(Span::raw(sep.clone()));
     out.push(Span::styled(format!("{:>width$}", truncate(&n.age, w[2] as usize), width = w[2] as usize), st(mono::COMMENT)));
     out.push(Span::raw(sep.clone()));

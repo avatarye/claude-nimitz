@@ -61,6 +61,17 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   parent in view); older finished crew fold into one `+N finished` row per
   member, which `z` (or space on it) opens and closes, kept in the saved
   state.
+- Status motion (in the live loop only): a busy member's status glyph spins (a
+  pie that fills; `| / = \` in ASCII), one waiting on a background shell turns
+  an hourglass at a quarter of the speed, a running crew's glyph spins dimmer,
+  the needs-you chip breathes once a second, and a squadron whose status gets
+  worse (a warning, an error, needs you) pulses its bar once; parked has its
+  own glyph. It runs on its own 100 ms tick only while something moves and no
+  dialog is open, never refreshes or calls nimitz, and never moves a column.
+  `v` turns it off (saved); `NIMITZ_NO_ANIM=1` or `NO_COLOR` keep it off;
+  `admiralty dump` and the tests are always still. `cargo run --example
+  anim_frames -- <dir> <cols> <rows> <frames>` writes the frames' cells as
+  JSON, for a preview GIF drawn with a fixed-grid font.
 - Spacing: a blank line between the boxes, a column of padding inside each,
   two spaces between columns. It is the first thing to go: below 103 columns
   (where it would cost NAME or DETAIL their room) the padding and gaps go, and

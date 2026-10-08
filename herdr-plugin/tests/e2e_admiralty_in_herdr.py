@@ -158,7 +158,7 @@ def main():
         h("tab", "create")
         pump(1)
         apane = [p["pane_id"] for p in hj("pane", "list")["panes"] if p["pane_id"] not in before][0]
-        h("pane", "run", apane, f"NIMITZ_MUX=herdr ADMIRALTY_NO_CLIPBOARD=1 '{BIN}' --sandbox '{SB}'")
+        h("pane", "run", apane, f"NIMITZ_NO_ANIM=1 NIMITZ_MUX=herdr ADMIRALTY_NO_CLIPBOARD=1 '{BIN}' --sandbox '{SB}'")
         pump(1)
         shown = screen_with(apane, "[MAIN] ADMIRAL")
         # the row names only its own part (ADMIRAL) inside the [MAIN] ADMIRAL box
