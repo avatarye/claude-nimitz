@@ -1647,3 +1647,62 @@ fn the_message_box_shows_and_sends_exactly_what_was_typed() {
     let calls = t.mux.calls.lock().unwrap().clone();
     assert!(calls.iter().any(|c| c.ends_with(" a  b ")), "sent as typed: {calls:?}");
 }
+
+// ------------------------------------------------------------------ review follow-ups
+
+/// A paste lands whole in the `m` box: its newlines become spaces (a newline
+/// would submit the prompt early), nothing is sent, and nothing leaks into
+/// the list as keys.
+#[test]
+fn a_multi_line_paste_stays_in_the_message_box() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    let cursor = t.app.cursor;
+    assert!(t.app.on_paste("first line\nsecond line\r\nthird axd").is_none());
+    let Some(Modal::Message { text, .. }) = &t.app.modal else { panic!("the box is still open: {:?}", t.app.modal.is_some()) };
+    assert_eq!(text, "first line second line third axd");
+    assert_eq!(t.app.cursor, cursor, "no key reached the list");
+    assert!(t.mux.calls.lock().unwrap().iter().all(|c| !c.starts_with("type ")), "nothing sent");
+    // in the list, with nothing open: a paste is no keystrokes either
+    press(&mut t.app, KeyCode::Esc);
+    let rows = t.app.rows.len();
+    assert!(t.app.on_paste("ax\nd").is_none());
+    assert!(t.app.modal.is_none() && t.app.rows.len() == rows && t.app.cursor == cursor);
+    // in the filter: one line of text
+    keys(&mut t.app, "/");
+    t.app.on_paste("bs\nim");
+    assert_eq!(t.app.filter, "bs im");
+}
+
+/// $EDITOR inside Herdr's overlay sees the terminal minus the inset, so its
+/// last lines (vim's command line, nano's help) are in view.
+#[test]
+fn the_editor_sees_the_terminal_minus_the_inset() {
+    use admiralty::run::editor_size;
+    assert_eq!(editor_size((44, 134), (2, 2)), (42, 132));
+    assert_eq!(editor_size((44, 134), (0, 0)), (44, 134));
+    assert_eq!(editor_size((2, 3), (2, 2)), (1, 1), "never below one cell");
+}
+
+/// The animation tick runs only while an animated cell is on screen: rows
+/// scrolled off, or a screen with no moving row in view, keep it idle.
+#[test]
+fn the_tick_runs_only_for_animated_cells_in_view() {
+    let mut t = demo();
+    t.app.anim_live = true;
+    draw(&mut t.app, 200, 60);
+    assert_eq!(t.app.motion_step(), Some(1), "spinners in view");
+    // a screen so short that only the admiral's box shows: its crew spins
+    // (in view); scroll to a quiet stretch with nothing moving
+    tab(&mut t.app, "MAIN");
+    keys(&mut t.app, "G");
+    draw(&mut t.app, 200, 7);
+    let shown: Vec<String> = lines(&draw(&mut t.app, 200, 7));
+    // the list's lines only (not the tab bar, the header, the status and key bars)
+    let list = &shown[2..shown.len() - 2];
+    let moving_in_view = list.iter().any(|l| l.contains("busy") || l.contains("running") || l.contains("needs you"));
+    assert_eq!(t.app.motion_step().is_some(), moving_in_view, "tick iff a moving cell shows:\n{}", shown.join("\n"));
+    assert!(!moving_in_view, "this view shows nothing moving (the stowaways):\n{}", shown.join("\n"));
+    assert_eq!(t.app.motion_step(), None, "spinners scrolled off: no tick");
+}

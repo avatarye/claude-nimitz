@@ -338,7 +338,14 @@ fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
         };
         shown.push(Line::styled(msg, st(mono::SOFT)));
     }
-    shown.extend(lines.into_iter().skip(app.scroll).take(view).map(|(l, _)| l));
+    let mut on_screen = vec![];
+    shown.extend(lines.into_iter().skip(app.scroll).take(view).map(|(l, r)| {
+        if let Some(r) = r {
+            on_screen.push(r);
+        }
+        l
+    }));
+    app.shown_rows = Some(on_screen);
     f.render_widget(Paragraph::new(shown), area);
 }
 
