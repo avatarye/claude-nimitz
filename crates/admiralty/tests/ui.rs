@@ -1387,3 +1387,89 @@ fn a_session_named_after_a_sibling_keeps_its_full_name() {
     let boom = t.app.rows.iter().find(|r| r.node.id == "M:MAIN/ARGOS/BOOM").unwrap();
     assert_eq!(boom.node.name, "[MAIN.ARGOS]-BOOMX", "no dash after its own name: full");
 }
+
+// ------------------------------------------------------------------ status motion
+
+/// In the live loop the busy glyph spins, a crew's spinner is dimmer, the
+/// needs-you chip breathes; nothing else on the screen moves, and no column
+/// shifts. With the motion off (or outside the live loop) every frame is the same.
+#[test]
+fn status_motion_changes_only_the_status_cell() {
+    let mut t = demo();
+    let still = lines(&draw(&mut t.app, 200, 60));
+    t.app.anim_live = true;
+    let mut seen_spin = std::collections::HashSet::new();
+    let mut fills = std::collections::HashSet::new();
+    for f in 0..12u64 {
+        t.app.anim_frame = f;
+        let buf = draw(&mut t.app, 200, 60);
+        let ls = lines(&buf);
+        assert_eq!(ls.len(), still.len());
+        for (a, b) in ls.iter().zip(still.iter()) {
+            assert_eq!(a.chars().count(), b.chars().count(), "no column moves:\n{a}\n{b}");
+        }
+        let bolt = ls.iter().position(|l| l.contains("BOLT")).unwrap();
+        let x = still[bolt].chars().position(|c| c == '*').unwrap();
+        let glyph = ls[bolt].chars().nth(x).unwrap();
+        assert!("|/-\\".contains(glyph), "busy spins (the icon set's frames): {}", ls[bolt]);
+        seen_spin.insert(glyph);
+        let kits = ls.iter().position(|l| l.contains("PIPELINE")).unwrap();
+        let cx = ls[kits].find("needs you").unwrap();
+        let cx = ls[kits][..cx].chars().count() as u16;
+        fills.insert(format!("{:?}", buf[(cx, kits as u16)].bg));
+        // everything but the status cells is the still picture
+        for (y, (a, b)) in ls.iter().zip(still.iter()).enumerate() {
+            if y != bolt && !a.contains("needs you") && !a.contains("busy") && !a.contains("running") {
+                assert_eq!(a, b, "line {y} moved");
+            }
+        }
+    }
+    assert_eq!(seen_spin.len(), 4, "a spinner: {seen_spin:?}");
+    assert!(fills.len() >= 3, "the needs-you chip breathes: {fills:?}");
+    // off: `v`, saved; every frame the still picture
+    keys(&mut t.app, "v");
+    assert!(!t.app.anim && t.app.frame().is_none());
+    t.app.anim_frame = 7;
+    let off = lines(&draw(&mut t.app, 200, 60));
+    assert_eq!(off[..off.len() - 1], still[..still.len() - 1], "(the footer has the toast)");
+    t.app.persist();
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(t.dir.path().join("ui.json")).unwrap()).unwrap();
+    assert_eq!(saved["anim"], false);
+    // outside the live loop (tests, dump) nothing moves even when on
+    keys(&mut t.app, "v");
+    t.app.anim_live = false;
+    t.app.anim_frame = 3;
+    let off = lines(&draw(&mut t.app, 200, 60));
+    assert_eq!(off[..off.len() - 1], still[..still.len() - 1]);
+}
+
+/// A squadron whose status gets worse pulses its bar once, then holds its colour.
+#[test]
+fn a_squadron_that_gets_worse_pulses_its_bar_once() {
+    let mut b = fixtures::demo();
+    let mut t = fixture_app(b.clone(), false);
+    t.app.anim_live = true;
+    t.app.anim_frame = 100;
+    // ARGOS: a member now needs you
+    for f in &mut b.snap.fleets {
+        for sq in &mut f.squadrons {
+            if sq.id.0 == "MAIN/ARGOS" {
+                sq.ships[0].status = Status::NeedsYou;
+            }
+        }
+    }
+    t.app.apply(b);
+    let row = t.app.rows.iter().find(|r| r.node.id == "SQ:MAIN/ARGOS").unwrap();
+    assert_eq!(row.node.anim, admiralty::view::Anim::Flash(100));
+    let fill = |t: &mut TestApp, f: u64| {
+        t.app.anim_frame = f;
+        let buf = draw(&mut t.app, 200, 60);
+        let ls = lines(&buf);
+        let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
+        buf[(2, y as u16)].bg
+    };
+    assert_ne!(fill(&mut t, 105), mono::NEEDS, "mid-pulse: lighter");
+    assert_eq!(fill(&mut t, 111), mono::NEEDS, "then it holds");
+    // KITS did not change: no pulse
+    assert!(t.app.rows.iter().find(|r| r.node.id == "SQ:MAIN/KITS").is_some_and(|r| r.node.anim == admiralty::view::Anim::None));
+}

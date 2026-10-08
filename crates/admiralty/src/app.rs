@@ -87,9 +87,26 @@ pub struct Saved {
     /// the fleet tab shown (a fleet id, or view::UNASSIGNED)
     #[serde(default)]
     pub tab: Option<String>,
+    /// status motion on (`v` turns it off; `NIMITZ_NO_ANIM=1` or `NO_COLOR` keep it off)
+    #[serde(default = "on")]
+    pub anim: bool,
+}
+
+fn on() -> bool {
+    true
 }
 
 pub struct App {
+    /// the user's choice: status motion on (`v`; saved)
+    pub anim: bool,
+    /// the live loop runs the motion (`run::run` sets it; tests and `dump` never do)
+    pub anim_live: bool,
+    /// the animation frame, advanced only by the live loop
+    pub anim_frame: u64,
+    /// each squadron's status rank (theme order), to see one get worse
+    sq_rank: HashMap<String, u8>,
+    /// squadrons whose status got worse, and the frame it happened
+    sq_flash: HashMap<String, u64>,
     pub ctx: Ctx,
     pub bundle: Option<Bundle>,
     pub rows: Vec<Row>,
@@ -142,6 +159,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("ctrl-e / ctrl-y", "scroll the detail panel (when open)"),
     ("space", "fold / unfold"),
     ("z", "show / hide the member's crew that finished over 30 min ago (+N finished)"),
+    ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane (else fold / unfold)"),
     ("J / K", "next / previous row with a pane"),
@@ -167,6 +185,11 @@ impl App {
         let mut app = App {
             ctx,
             bundle: None,
+            anim: true,
+            anim_live: false,
+            anim_frame: 0,
+            sq_rank: HashMap::new(),
+            sq_flash: HashMap::new(),
             rows: vec![],
             cursor: 0,
             scroll: 0,
@@ -212,7 +235,19 @@ impl App {
             flagged_only: self.flagged_only,
             show_stowaways: self.show_stowaways,
             tab: self.tab.clone(),
+            anim: self.anim,
         }
+    }
+
+    /// The animation frame to draw (`None`: still): the live loop runs it and
+    /// the user has not turned it off.
+    pub fn frame(&self) -> Option<u64> {
+        (self.anim_live && self.anim).then_some(self.anim_frame)
+    }
+
+    /// Does anything on screen move? (The live loop ticks only then.)
+    pub fn moving(&self) -> bool {
+        self.frame().is_some() && self.rows.iter().any(|r| r.node.anim != crate::view::Anim::None)
     }
 
     fn restore(&mut self) {
@@ -226,6 +261,7 @@ impl App {
         self.flagged_only = s.flagged_only;
         self.show_stowaways = s.show_stowaways;
         self.tab = s.tab.clone();
+        self.anim = s.anim;
         self.last_saved = Some(s);
     }
 
@@ -266,6 +302,19 @@ impl App {
                 sq.ships.iter_mut().for_each(mark);
             }
         }
+        // a squadron whose status got worse since the last refresh: its bar
+        // pulses once (the first look only learns the ranks)
+        self.sq_flash.retain(|_, from| self.anim_frame.saturating_sub(*from) < 10);
+        for f in &b.snap.fleets {
+            for sq in &f.squadrons {
+                let members: Vec<&Member> = std::iter::once(&sq.commodore).chain(sq.ships.iter()).collect();
+                let rank = crate::view::squadron_rank(&members);
+                let id = format!("SQ:{}", sq.id.0);
+                if self.sq_rank.insert(id.clone(), rank).is_some_and(|old| rank > old) {
+                    self.sq_flash.insert(id, self.anim_frame);
+                }
+            }
+        }
         self.bundle = Some(b);
         self.rebuild();
     }
@@ -291,6 +340,12 @@ impl App {
         };
         let nodes = build_nodes(&b.snap, &view);
         self.rows = flatten(&nodes, &self.expanded);
+        // a squadron whose status got worse pulses its bar once
+        for r in self.rows.iter_mut().filter(|r| r.section == Section::SquadronBand) {
+            if let Some(from) = self.sq_flash.get(&r.node.id) {
+                r.node.anim = crate::view::Anim::Flash(*from);
+            }
+        }
         if let Some(id) = keep {
             if let Some(i) = self.rows.iter().position(|r| r.node.id == id) {
                 self.cursor = i;
@@ -903,6 +958,10 @@ impl App {
                 self.toggle();
             }
             (KeyCode::Char('z'), false) => self.toggle_crew_fold(),
+            (KeyCode::Char('v'), false) => {
+                self.anim = !self.anim;
+                self.notify(if self.anim { "Status motion on (v turns it off)" } else { "Status motion off (v turns it on)" }, st(mono::COMMENT));
+            }
             (KeyCode::Char('/'), _) => self.editing_filter = true,
             // esc closes what is open, one thing at a time; with nothing open it quits
             (KeyCode::Esc, _) => {

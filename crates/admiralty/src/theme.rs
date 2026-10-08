@@ -168,8 +168,14 @@ pub struct Icons {
     pub s_busy: &'static str,
     pub s_idle: &'static str,
     pub s_stopped: &'static str,
+    /// parked: retired by the daemon after an idle hour, wakes on a prompt
+    pub s_parked: &'static str,
     pub s_off: &'static str,
     pub s_unknown: &'static str,
+    /// busy, frame by frame (the status motion)
+    pub spin: &'static [&'static str],
+    /// busy waiting on a background shell, frame by frame (slower)
+    pub wait: &'static [&'static str],
 }
 
 pub const NERD: Icons = Icons {
@@ -193,8 +199,12 @@ pub const NERD: Icons = Icons {
     s_busy: "\u{f0e7}",     // bolt
     s_idle: "\u{f186}",     // moon
     s_stopped: "\u{f28d}",  // stop circle
+    s_parked: "\u{f04b2}",  // nf-md-sleep
     s_off: "\u{f10c}",      // empty circle
     s_unknown: "\u{f059}",  // question circle
+    // nf-md-circle-slice-1..8: a pie that fills; nf-md-timer-sand-empty, -sand, -full
+    spin: &["\u{f0a9e}", "\u{f0a9f}", "\u{f0aa0}", "\u{f0aa1}", "\u{f0aa2}", "\u{f0aa3}", "\u{f0aa4}", "\u{f0aa5}"],
+    wait: &["\u{f06ad}", "\u{f051f}", "\u{f078c}", "\u{f051f}"],
 };
 
 pub const ASCII: Icons = Icons {
@@ -218,8 +228,11 @@ pub const ASCII: Icons = Icons {
     s_busy: "*",
     s_idle: "-",
     s_stopped: "x",
+    s_parked: "z",
     s_off: "o",
     s_unknown: "?",
+    spin: &["|", "/", "-", "\\"],
+    wait: &[".", "o", "O", "o"],
 };
 
 impl Icons {
@@ -228,8 +241,12 @@ impl Icons {
         vec![
             self.fleet, self.admiral, self.squadron, self.commodore, self.ship, self.crew, self.teammate, self.stowaway,
             self.issue, self.legacy, self.finished, self.row, self.completed, self.in_progress, self.pending, self.pane, self.s_needs,
-            self.s_busy, self.s_idle, self.s_stopped, self.s_off, self.s_unknown,
+            self.s_busy, self.s_idle, self.s_stopped, self.s_parked, self.s_off, self.s_unknown,
         ]
+        .into_iter()
+        .chain(self.spin.iter().copied())
+        .chain(self.wait.iter().copied())
+        .collect()
     }
 
     pub fn status(&self, s: Status) -> &'static str {
@@ -237,7 +254,8 @@ impl Icons {
             Status::NeedsYou => self.s_needs,
             Status::Busy => self.s_busy,
             Status::Idle => self.s_idle,
-            Status::Stopped | Status::Parked => self.s_stopped,
+            Status::Stopped => self.s_stopped,
+            Status::Parked => self.s_parked,
             Status::NotStarted => self.s_off,
             Status::Unknown => self.s_unknown,
         }
@@ -317,4 +335,36 @@ pub fn age(seconds: f64) -> String {
         }
     }
     format!("{s}s")
+}
+
+/// The motion a row's status cell (or a bar) takes in the live loop, one
+/// frame every `anim::TICK`. Static everywhere else (tests, `dump`).
+pub mod anim {
+    use ratatui::style::Color;
+
+    /// one animation frame
+    pub const TICK_MS: u64 = 100;
+    /// the glyph frames are the icon set's (`Icons::spin`, `Icons::wait`):
+    /// a Nerd Font has them where a braille block may be missing
+    /// the dim green of a crew's spinner (running crew: quieter than a member)
+    pub const BUSY_DIM: Color = Color::Rgb(0x6f, 0x9a, 0x1f);
+    /// the bright end of the needs-you pulse (dark text keeps 8.9:1 on it)
+    pub const NEEDS_HI: Color = Color::Rgb(0xff, 0x9e, 0xc0);
+
+    /// 0..=1..=0 over `period` frames (a triangle wave)
+    pub fn tri(frame: u64, period: u64) -> f64 {
+        let p = (frame % period) as f64 / period as f64;
+        1.0 - (2.0 * p - 1.0).abs()
+    }
+
+    /// `a` blended toward `b` by `t` (0..=1)
+    pub fn mix(a: Color, b: Color, t: f64) -> Color {
+        match (a, b) {
+            (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+                let m = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * t).round() as u8;
+                Color::Rgb(m(r1, r2), m(g1, g2), m(b1, b2))
+            }
+            _ => a,
+        }
+    }
 }

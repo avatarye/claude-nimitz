@@ -109,6 +109,11 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
     let mut terminal = init_terminal()?;
     let mut dirty = true;
     let mut last_draw = Instant::now();
+    // status motion: its own tick, never a refresh or a nimitz call; only the
+    // cells that change are written (ratatui sends the diff)
+    app.anim_live = std::env::var("NIMITZ_NO_ANIM").map_or(true, |v| v != "1") && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
+    let started = Instant::now();
+    let tick = Duration::from_millis(crate::theme::anim::TICK_MS);
     // keys typed before the first data lands, replayed once it does
     let mut early: Vec<KeyEvent> = vec![];
     let result = 'main: loop {
@@ -132,6 +137,15 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
             let _ = cmd_tx.send(Cmd::Refresh);
             dirty = true;
         }
+        if app.moving() {
+            let frame = (started.elapsed().as_millis() / tick.as_millis()) as u64;
+            if frame != app.anim_frame {
+                app.anim_frame = frame;
+                dirty = true;
+            }
+        } else {
+            app.anim_frame = (started.elapsed().as_millis() / tick.as_millis()) as u64;
+        }
         if dirty || last_draw.elapsed() >= Duration::from_secs(1) {
             if let Err(e) = terminal.draw(|f| crate::render::draw(&mut app, f)) {
                 break Err(e);
@@ -139,7 +153,9 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
             dirty = false;
             last_draw = Instant::now();
         }
-        match event::poll(Duration::from_millis(250)) {
+        // a frame's worth of waiting while something moves, else the usual
+        let wait = if app.moving() { tick.saturating_sub(Duration::from_millis((started.elapsed().as_millis() % tick.as_millis()) as u64)).max(Duration::from_millis(10)) } else { Duration::from_millis(250) };
+        match event::poll(wait) {
             Ok(true) => {}
             Ok(false) => continue,
             Err(e) => break Err(e),

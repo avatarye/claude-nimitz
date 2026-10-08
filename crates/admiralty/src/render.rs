@@ -314,7 +314,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
 
 fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
     let view = area.height.saturating_sub(1) as usize;
-    let (lines, sp) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons);
+    let (lines, sp) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons, app.frame());
     app.page = view.max(2);
     if let Some(pos) = lines.iter().position(|(_, r)| *r == Some(app.cursor)) {
         if pos < app.scroll {

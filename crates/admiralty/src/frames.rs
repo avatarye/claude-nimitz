@@ -183,9 +183,9 @@ pub fn name_cell(r: &Row, width: usize, icons: &Icons) -> Vec<Span<'static>> {
 
 /// A row's lines: one for a member, as many as it takes for a note (an error
 /// shown in full, wrapped with its indent).
-fn body_spans(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons) -> Vec<Vec<Span<'static>>> {
+fn body_spans(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons, frame: Option<u64>) -> Vec<Vec<Span<'static>>> {
     if r.node.kind != crate::view::Kind::Note {
-        return vec![row_spans_gap(r, w, inner, gap, icons)];
+        return vec![row_spans_anim(r, w, inner, gap, icons, frame)];
     }
     let lead = r.node.name.len() - r.node.name.trim_start().len();
     wrap(vec![Span::styled(format!("    {}", r.node.name), r.node.name_style)], inner, 4 + lead)
@@ -206,6 +206,35 @@ pub fn row_spans(r: &Row, w: &[u16; 5], inner: usize, icons: &Icons) -> Vec<Span
 
 /// `row_spans` with `gap` spaces between the columns.
 pub fn row_spans_gap(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons) -> Vec<Span<'static>> {
+    row_spans_anim(r, w, inner, gap, icons, None)
+}
+
+/// The STATUS cell at animation frame `frame` (`None`: still). Only the
+/// glyph (one cell) or the chip's fill changes: the layout never moves.
+fn status_cell(r: &Row, frame: Option<u64>, icons: &Icons) -> (String, Style) {
+    use crate::theme::anim::{mix, tri, BUSY_DIM, NEEDS_HI};
+    use crate::view::Anim;
+    let (text, style) = r.node.status.clone();
+    let Some(f) = frame else { return (text, style) };
+    // the glyph is the first word; its replacement is one cell wide too
+    let swap = |g: &str| match text.split_once(' ') {
+        Some((_, rest)) => format!("{g} {rest}"),
+        None => text.clone(),
+    };
+    let at = |set: &[&'static str], k: u64| set[(k % set.len() as u64) as usize];
+    match r.node.anim {
+        Anim::Spin => (swap(at(icons.spin, f)), style.fg(mono::BUSY)),
+        Anim::SpinDim => (swap(at(icons.spin, f)), style.fg(BUSY_DIM)),
+        // a quarter of the speed, and quieter
+        Anim::Dots => (swap(at(icons.wait, f / 4)), style.fg(BUSY_DIM)),
+        // the chip's fill breathes between pink and a lighter pink, once a second
+        Anim::Pulse if style.bg == Some(mono::NEEDS) => (text, style.bg(mix(mono::NEEDS, NEEDS_HI, tri(f, 10)))),
+        _ => (text, style),
+    }
+}
+
+/// `row_spans_gap` at animation frame `frame`.
+fn row_spans_anim(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Icons, frame: Option<u64>) -> Vec<Span<'static>> {
     let sep = " ".repeat(gap);
     let mut out: Vec<Span<'static>> = truncate_spans(name_cell(r, w[0] as usize, icons), w[0] as usize);
     let used_name = spans_width(&out);
@@ -214,7 +243,8 @@ pub fn row_spans_gap(r: &Row, w: &[u16; 5], inner: usize, gap: usize, icons: &Ic
     }
     let n = &r.node;
     out.push(Span::raw(sep.clone()));
-    out.push(Span::styled(pad(&truncate(&n.status.0, w[1] as usize), w[1] as usize), n.status.1));
+    let (status, status_style) = status_cell(r, frame, icons);
+    out.push(Span::styled(pad(&truncate(&status, w[1] as usize), w[1] as usize), status_style));
     out.push(Span::raw(sep.clone()));
     out.push(Span::styled(format!("{:>width$}", truncate(&n.age, w[2] as usize), width = w[2] as usize), st(mono::COMMENT)));
     out.push(Span::raw(sep.clone()));
@@ -324,11 +354,17 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
 /// (the counts by their icons' shapes). On the cursor the fill and the text
 /// stay, so the contrast does too: the text is underlined and the end cells
 /// take the selection colour.
-fn bar(r: &Row, width: usize, selected: bool) -> Line<'static> {
-    let fill = match r.node.frame.unwrap_or(mono::LINE) {
+fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>) -> Line<'static> {
+    let mut fill = match r.node.frame.unwrap_or(mono::LINE) {
         c if c == mono::LINE => mono::MUTED,
         c => c,
     };
+    // its status just got worse: one pulse toward white over a second, then it holds
+    if let (Some(f), crate::view::Anim::Flash(from)) = (frame, r.node.anim) {
+        if f >= from && f - from < 10 {
+            fill = crate::theme::anim::mix(fill, mono::STRONG, 0.45 * crate::theme::anim::tri(f - from, 10));
+        }
+    }
     let mut text = Style::new().fg(mono::INK).bg(fill).add_modifier(Modifier::BOLD);
     if selected {
         text = text.add_modifier(Modifier::UNDERLINED);
@@ -389,18 +425,19 @@ pub fn selectable(line: Line<'static>, selected: bool) -> Line<'static> {
 /// One line per band, row or border; the `usize` is the row a line selects.
 /// The spacing is the width's (`spacing_for`), blank lines included.
 pub fn frame_lines(rows: &[Row], width: u16, cursor: usize, icons: &Icons) -> Vec<(Line<'static>, Option<usize>)> {
-    layout(rows, width, None, cursor, icons).0
+    layout(rows, width, None, cursor, icons, None).0
 }
 
 /// The list's lines and the spacing they use: the width's spacing, and the
 /// blank lines between boxes only while everything fits in `height` lines
 /// (spacing goes before any row does).
-pub fn layout(rows: &[Row], width: u16, height: Option<usize>, cursor: usize, icons: &Icons) -> (Vec<(Line<'static>, Option<usize>)>, Spacing) {
+/// `frame`: the animation frame of the live loop (`None`: still).
+pub fn layout(rows: &[Row], width: u16, height: Option<usize>, cursor: usize, icons: &Icons, frame: Option<u64>) -> (Vec<(Line<'static>, Option<usize>)>, Spacing) {
     let mut sp = spacing_for(width as usize);
-    let mut lines = lines_with(rows, width as usize, cursor, icons, sp);
+    let mut lines = lines_with(rows, width as usize, cursor, icons, sp, frame);
     if sp.blank && height.is_some_and(|h| lines.len() > h) {
         sp.blank = false;
-        lines = lines_with(rows, width as usize, cursor, icons, sp);
+        lines = lines_with(rows, width as usize, cursor, icons, sp, frame);
     }
     (lines, sp)
 }
@@ -416,14 +453,14 @@ struct Edges {
 const ROUND: (&str, (&str, &str, &str)) = ("\u{2502}", ("\u{2570}", "\u{2500}", "\u{256f}"));
 const HEAVY: (&str, (&str, &str, &str)) = ("\u{2503}", ("\u{2517}", "\u{2501}", "\u{251b}"));
 
-fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spacing) -> Vec<(Line<'static>, Option<usize>)> {
+fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spacing, frame: Option<u64>) -> Vec<(Line<'static>, Option<usize>)> {
     let inner = sp.inner(width);
     let w = col_widths_gap(inner as u16, sp.gap as u16);
     let pad = " ".repeat(sp.pad);
     let mut out: Vec<(Line<'static>, Option<usize>)> = vec![];
     // a row inside a box: border, padding, the row, padding, border
     let boxed_row = |out: &mut Vec<(Line<'static>, Option<usize>)>, r: &Row, i: usize, e: Edges| {
-        for body in body_spans(r, &w, inner, sp.gap, icons) {
+        for body in body_spans(r, &w, inner, sp.gap, icons, frame) {
             let mut spans = vec![Span::styled(e.v, e.style), Span::raw(pad.clone())];
             spans.extend(body);
             spans.push(Span::raw(pad.clone()));
@@ -456,7 +493,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
             // the stowaways: a rounded box, its band the top border
             let e = Edges { v: ROUND.0, bottom: ROUND.1, style: st(head.node.frame.unwrap_or(mono::LINE)) };
             let e = Edges { style: st(mono::LINE), ..e };
-            out.push((bar(head, width, i == cursor), Some(i)));
+            out.push((bar(head, width, i == cursor, frame), Some(i)));
             i += 1;
             let mut any = false;
             while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
@@ -492,7 +529,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     blank(&mut out);
                     members_seen = true;
                     // the bar carries the status; the sides stay neutral
-                    out.push((bar(r, width, i == cursor), Some(i)));
+                    out.push((bar(r, width, i == cursor, frame), Some(i)));
                     if r.expanded {
                         open = Some(Edges { v: ROUND.0, bottom: ROUND.1, style: st(mono::LINE) });
                     }
@@ -525,7 +562,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     if after_box {
                         blank(&mut out);
                     }
-                    for body in body_spans(r, &w, inner, sp.gap, icons) {
+                    for body in body_spans(r, &w, inner, sp.gap, icons, frame) {
                         let mut spans = vec![Span::raw(" ".repeat(sp.side()))];
                         spans.extend(body);
                         out.push((selectable(Line::from(spans), i == cursor), Some(i)));
