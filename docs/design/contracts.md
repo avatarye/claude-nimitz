@@ -662,9 +662,13 @@ claims no session for shows what its foreground runs
 attaches to (the job row's `resumeSessionId`, else `sessionId`), else the
 conversation a held `claude --resume <sid>` runs, else a foreground pid's
 session file. A session read from the attach alone is `Pane.inferred`
-(`ShapePane.inferred`): shown and focused, never typed into, since the
-agent view (R-24) looks the same (`tab.unverified` on a delivery,
-`nimitz signal` or Admiralty `m`). An attach client never runs Herdr's
+(`ShapePane.inferred`): shown and focused, and typed into only while its
+foreground is exactly `claude attach <the job>`, read again just before
+typing (`nimitz_mux::runs_exact_attach`). On `/exit` the attach client
+re-execs in place as `claude agents`, the agent view (same pid; e2e
+`e2e_agent_view_re_execs_as_claude_agents`, Claude Code 2.1.293), so the
+argv tells the live attach from the view; anything else is `tab.unverified`
+on a delivery, `nimitz signal` or Admiralty `m`, and nothing is typed. An attach client never runs Herdr's
 SessionStart hook, so Herdr never names the session of a lead's own attach
 pane (seen live after the 0.4.0 migration: `agent` claude, no
 `agent_session`). A pane whose foreground cannot be read
@@ -744,11 +748,8 @@ process is matched by its session, its `--resume <session>` argv or its pid.
 
 The agent view (R-24): a pane whose foreground is the member's exact
 `claude attach <job>` and whose `agent_session` is another session is
-`tab.agentview`. The limit: when Herdr reports no session for such a pane
-(its detection did not run, or the spare session is not yet one), the pane
-reads as the member's own attach (Shown): no step, nothing typed, the
-member reported as shown. nimitz then does nothing wrong, but it cannot say
-"this is the agent view" either; the user sees it in the tab.
+`tab.agentview`. A view the attach client re-exec'd into runs `claude
+agents`, not the attach: the tab is taken by it, never the member's.
 
 `nimitz restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`
 (`restore::plan`, mux-free; the CLI runs the steps): authority as `layout`

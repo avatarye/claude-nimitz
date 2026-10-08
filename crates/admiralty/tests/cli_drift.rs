@@ -132,7 +132,7 @@ fn session_commands_match_the_cli() {
     if let Ok(m) = app.message_plan() {
         cli(&app, &actions::signal_command(&m, "hello there"));
     }
-    cli(&app, &actions::signal_command(&actions::MessagePlan { id: Id("MAIN".into()), to: "[MAIN]-ADMIRAL".into(), via: "[MAIN]-ADMIRAL".into(), pane: nimitz_mux::PaneRef { pane_id: "p".into(), tab_id: None, workspace_id: None }, relay: false }, "it's me"));
+    cli(&app, &actions::signal_command(&actions::MessagePlan { id: Id("MAIN".into()), to: "[MAIN]-ADMIRAL".into(), via: "[MAIN]-ADMIRAL".into(), pane: nimitz_mux::PaneRef { pane_id: "p".into(), tab_id: None, workspace_id: None }, relay: false, attach_job: None }, "it's me"));
 }
 
 #[test]

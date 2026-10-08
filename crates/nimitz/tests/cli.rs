@@ -2280,12 +2280,12 @@ fn a_job_labelled_for_another_home_never_binds_the_member() {
 }
 
 /// The commodore's attach pane with no Herdr claim (the live shape: an
-/// attach client runs no Herdr hook) shows the commodore, but the agent view
-/// (`/exit` inside the attach, R-24) looks the same, and text typed there
-/// would dispatch a new session: a needs-you delivery and `nimitz signal`
-/// type nothing, and say why.
+/// attach client runs no Herdr hook) shows the commodore, and takes typing
+/// while it runs exactly `claude attach <its job>`: the agent view (`/exit`
+/// inside the attach, R-24) re-execs as `claude agents`, and then the pane
+/// shows no member and nothing is typed (a signal finds the tab taken).
 #[test]
-fn an_unclaimed_attach_pane_is_never_typed_into() {
+fn an_unclaimed_attach_pane_takes_typing_only_while_it_runs_the_exact_attach() {
     let sb = Sb::new(true);
     let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
     let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
@@ -2296,16 +2296,25 @@ fn an_unclaimed_attach_pane_is_never_typed_into() {
         p["agent_status"] = Value::from("idle");
         p["foreground"] = serde_json::json!([bin, "attach", job]);
     });
+    assert_eq!(sb.member("MAIN/ARGOS")["pane"], Value::from("w1:p2"), "status shows it there");
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "delivered", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("typed into"), "{n}");
+    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("hello")), "{}", r.out);
+    // /exit: the client re-execs as the agent view
+    let before = sb.prompts("w1:p2").len();
+    sb.herdr_world(|w| w["panes"][1]["foreground"] = serde_json::json!([bin, "agents"]));
+    raw(&sb.vars, &["hook", "Stop"], &CLEAN, Some(r#"{"session_id":"s-clean"}"#));
     raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
     let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
     assert_eq!(n["delivery"], "failed", "{n}");
-    assert!(n["delivery_note"].as_str().unwrap().contains("cannot tell it from the agent view"), "{n}");
-    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
+    let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "again", "--yes"], &[("NIMITZ_SIGNAL_WAIT", "0")], None);
     assert_ne!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("(tab.unverified)") && r.out.contains("nimitz open MAIN/ARGOS"), "{}", r.out);
-    assert!(sb.prompts("w1:p2").is_empty(), "nothing typed");
-    // the pane itself is still the commodore's: status shows it there
-    assert_eq!(sb.member("MAIN/ARGOS")["pane"], Value::from("w1:p2"));
+    println!("{}", r.out);
+    assert_eq!(sb.prompts("w1:p2").len(), before, "nothing typed into the agent view: {}", r.out);
 }
 
 /// A Unix socket that stands for a session's inbox: every line it gets.
@@ -2355,8 +2364,7 @@ impl Sb {
 
 /// A needs-you notice goes into the lead's inbox socket as a cross-session
 /// message from nimitz, nothing typed. `nimitz signal` types while the lead's
-/// pane can take it (the user's own words keep their authority) and posts to
-/// the inbox only when it cannot, saying it is a request, not an approval.
+/// pane can take it (the user's own words keep their authority).
 #[test]
 fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
     let sb = Sb::new(true);
@@ -2370,25 +2378,11 @@ fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
     let c = line["message"]["content"].as_str().unwrap();
     assert!(c.starts_with("<cross-session-message from=\"uds:/nonexistent/nimitz-no-reply.sock\" from-name=\"nimitz\">") && c.contains("[nimitz needs-you]") && c.contains("Ship the fix to main?"), "{c}");
     // a signal is typed while the lead's pane can take it (the user's own
-    // words); its inbox only when the pane cannot (known by its attach alone)
+    // words); its inbox only when nothing can type (no multiplexer: tested apart)
     let r = sb.run(&["signal", "MAIN/ARGOS", "typed one", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("typed one")), "{}", r.out);
-    let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
-    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
-    sb.herdr_world(|w| {
-        let p = &mut w["panes"][1];
-        p.as_object_mut().unwrap().remove("agent_session");
-        p["foreground"] = serde_json::json!([bin, "attach", job]);
-    });
-    let typed = sb.prompts("w1:p2").len();
-    let r = sb.run(&["signal", "MAIN/ARGOS", "hello there", "--yes"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("posted to MAIN/ARGOS's inbox"), "{}", r.out);
-    let line: Value = serde_json::from_str(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().trim()).unwrap();
-    let c = line["message"]["content"].as_str().unwrap();
-    assert!(c.contains("[nimitz signal]") && c.contains("not the user's approval") && c.contains("hello there"), "{c}");
-    assert_eq!(sb.prompts("w1:p2").len(), typed, "nothing more typed");
+    assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "the signal did not go to the inbox");
 }
 
 /// A lead on a Claude Code older than the verified line format gets the

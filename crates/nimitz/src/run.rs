@@ -37,7 +37,7 @@ pub fn shown_in(mux: &dyn Mux, session_id: &str) -> Option<nimitz_mux::Pane> {
 pub fn untypeable(id: &Id, pane: &PaneRef) -> Issue {
     refusal(
         "tab.unverified",
-        format!("{id}'s tab (pane {}) runs its attach, but Herdr names no session there, so nimitz cannot tell it from the agent view (R-24); nothing is typed into it", pane.pane_id),
+        format!("{id}'s tab (pane {}) is known by its attach alone and does not run exactly `claude attach <its job>` now (the agent view after /exit re-execs as `claude agents`, R-24); nothing is typed into it", pane.pane_id),
         Some(format!("nimitz open {id}, and type it there yourself")),
         Some(id.clone()),
     )

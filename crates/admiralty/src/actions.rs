@@ -653,6 +653,10 @@ pub struct MessagePlan {
     pub pane: PaneRef,
     /// true: typed to the commodore, who relays it with SendMessage
     pub relay: bool,
+    /// the pane is known by its attach alone (`Pane.inferred`): typed into
+    /// only while it runs exactly `claude attach <this job>`, read just
+    /// before typing (the agent view re-execs as `claude agents`, R-24)
+    pub attach_job: Option<String>,
 }
 
 pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target) -> Result<MessagePlan, String> {
@@ -683,15 +687,17 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     }
     let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into", via_m.expected_name))?;
     let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone"))?;
-    // read from its `claude attach` alone: the agent view looks the same
-    // (R-24), and typed text would dispatch a new session there
-    if panes.iter().any(|p| p.pane.pane_id == pane_id && p.inferred) {
-        return Err(format!("{}'s pane {pane_id} runs its attach, but Herdr names no session there, so nimitz cannot tell it from the agent view (R-24); nothing is typed (jump there with enter and type it yourself)", via_m.expected_name));
-    }
+    // read from its `claude attach` alone: typed into only while it runs
+    // exactly that attach (checked when the message is sent)
+    let attach_job = if panes.iter().any(|p| p.pane.pane_id == pane_id && p.inferred) {
+        Some(via_m.session.as_ref().and_then(|s| s.short_id.clone()).ok_or_else(|| format!("{}'s pane {pane_id} is known by its attach alone and it has no job to check it against; nothing is typed", via_m.expected_name))?)
+    } else {
+        None
+    };
     if relay && !live(m) {
         return Err(format!("{} is not running", m.expected_name));
     }
-    Ok(MessagePlan { id: id.clone(), to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, relay })
+    Ok(MessagePlan { id: id.clone(), to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, relay, attach_job })
 }
 
 /// The CLI command that sends the same message (its text as it will be sent).

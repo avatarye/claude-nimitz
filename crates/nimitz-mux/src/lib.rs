@@ -227,6 +227,19 @@ pub fn tab_state(mux: &dyn Mux, cmd: &[String], place: &Place, session_id: Optio
     Ok(TabState::Taken { pane, running: fg.join(" ") })
 }
 
+/// Does `pane` run exactly `claude attach <job>` in its foreground right now?
+/// Read just before typing into a pane known by its attach alone
+/// (`Pane.inferred`): on `/exit` the attach client re-execs in place as
+/// `claude agents`, the agent view (R-24; e2e `e2e_probe_agent_view_signals`
+/// on Claude Code 2.1.293), so the argv tells the live attach from the view.
+/// The job is its short id; the argv may carry the full id it begins.
+pub fn runs_exact_attach(mux: &dyn Mux, pane: &PaneRef, job: &str) -> bool {
+    let Ok(fg) = mux.foreground(pane) else { return false };
+    let claude = fg.first().is_some_and(|a0| program_name(a0).starts_with("claude") || a0.contains("/claude/versions/"));
+    let names_job = |a: &str| !job.is_empty() && (a == job || a.strip_prefix(job).is_some_and(|rest| rest.starts_with('-')));
+    claude && fg.len() == 3 && fg[1] == "attach" && names_job(&fg[2])
+}
+
 fn program_name(p: &str) -> String {
     std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.to_string())
 }
