@@ -2405,3 +2405,16 @@ fn an_older_claude_code_gets_the_typing_path() {
     assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "nothing sent to the inbox");
     assert!(!sb.prompts("w1:p2").is_empty());
 }
+
+/// With no multiplexer that types, `nimitz signal` posts to the lead's inbox,
+/// as a request (the output says so).
+#[test]
+fn with_no_multiplexer_a_signal_goes_to_the_inbox_as_a_request() {
+    let sb = Sb::new(true);
+    let rx = sb.inbox_for("MAIN/ARGOS", "2.1.293");
+    let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "no mux here", "--yes"], &[("NIMITZ_MUX", "none")], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("posted to MAIN/ARGOS's inbox") && r.out.contains("not as your own input"), "{}", r.out);
+    let line: Value = serde_json::from_str(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().trim()).unwrap();
+    assert!(line["message"]["content"].as_str().unwrap().contains("no mux here"));
+}
