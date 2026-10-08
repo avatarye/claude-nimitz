@@ -239,12 +239,70 @@ pub fn tab_state(mux: &dyn Mux, cmd: &[String], place: &Place, session_id: Optio
 /// version unknown, an attach pane is never typed into.
 pub const ATTACH_EXEC_SINCE: &str = "2.1.293";
 
-/// The Claude Code version a foreground process runs: the
-/// `.../claude/versions/<v>` in its argv0, else in what `/proc/<pid>/exe`
-/// resolves to (the `~/.local/bin/claude` launcher is a link into it).
+/// The Claude Code version in an executable's path: the official
+/// installer's `.../claude/versions/<v>[/...]` or a localtools install's
+/// `.../claude-code/<v>/claude` (`<v>` may carry a fourth, build component:
+/// `2.1.294.1000`; `compat::at_least` compares it componentwise).
+pub fn claude_version_in(path: &str) -> Option<String> {
+    let first = |rest: &str| rest.split('/').next().filter(|v| v.starts_with(|c: char| c.is_ascii_digit())).map(String::from);
+    if let Some(v) = path.split("/claude/versions/").nth(1).and_then(first) {
+        return Some(v);
+    }
+    let (_, rest) = path.rsplit_once("/claude-code/")?;
+    let (v, bin) = rest.split_once('/')?;
+    (bin == "claude").then(|| first(v)).flatten()
+}
+
+/// The executable process `pid` runs: `/proc/<pid>/exe` on Linux,
+/// `proc_pidpath` on macOS.
+fn exe_of(pid: i64) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|e| e.to_string_lossy().into_owned())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let n = unsafe { libc::proc_pidpath(pid as libc::c_int, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
+        (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The Claude Code version a foreground process runs: from its argv0, else
+/// from the executable it runs (the `~/.local/bin/claude` launcher is a link
+/// into `versions/`).
 fn claude_version(argv0: &str, pid: Option<i64>) -> Option<String> {
-    let from = |p: &str| p.split("/claude/versions/").nth(1).and_then(|v| v.split('/').next()).filter(|v| !v.is_empty()).map(String::from);
-    from(argv0).or_else(|| pid.and_then(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok()).and_then(|e| from(&e.to_string_lossy())))
+    claude_version_in(argv0).or_else(|| pid.and_then(exe_of).and_then(|e| claude_version_in(&e)))
+}
+
+/// What a pane known by its attach runs, read just before typing into it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttachCheck {
+    /// exactly `claude attach <job>`, on a Claude Code at or past `ATTACH_EXEC_SINCE`
+    Exact,
+    /// that attach, on an older Claude Code: `/exit` there does not re-exec
+    Older(String),
+    /// that attach, on a Claude Code whose version cannot be read
+    Unknown,
+    /// something else (the agent view, a shell command, nothing)
+    Other,
+}
+
+impl AttachCheck {
+    /// Why nothing is typed into `pane`, for anything but `Exact`.
+    pub fn refusal(&self, pane: &str, job: &str) -> String {
+        match self {
+            AttachCheck::Exact => format!("its pane {pane} runs `claude attach {job}`"),
+            AttachCheck::Older(v) => format!("its pane {pane} runs `claude attach {job}` on Claude Code {v}, older than {ATTACH_EXEC_SINCE} that nimitz types into safely; reattach it (ctrl-z, then nimitz open <id>)"),
+            AttachCheck::Unknown => format!("its pane {pane} runs `claude attach {job}` on a Claude Code whose version nimitz cannot read, so it does not type there; reattach it on a Claude Code {ATTACH_EXEC_SINCE} or newer"),
+            AttachCheck::Other => format!("its pane {pane} no longer runs `claude attach {job}` (the agent view, or something else)"),
+        }
+    }
 }
 
 /// Does `pane` run exactly `claude attach <job>` right now: every non-shell
@@ -253,20 +311,36 @@ fn claude_version(argv0: &str, pid: Option<i64>) -> Option<String> {
 /// attach alone (`Pane.inferred`): on `/exit` the attach client re-execs in
 /// place as `claude agents` (R-24), so the argv tells the live attach from
 /// the view. A launcher that does not exec, an older or unknown version, or
-/// anything else in the foreground: no. The job is its short id; the argv
-/// may carry the full id it begins. A window stays: text typed while the
-/// user's `/exit` is on its way reaches the view (`typed_into_view` tells).
+/// anything else in the foreground: no (`attach_check` says which). The job
+/// is its short id; the argv may carry the full id it begins. A window
+/// stays: text typed while the user's `/exit` is on its way reaches the view
+/// (`typed_into_view` tells).
 pub fn runs_exact_attach(mux: &dyn Mux, pane: &PaneRef, job: &str) -> bool {
-    let Ok(procs) = mux.foreground_procs(pane) else { return false };
+    attach_check(mux, pane, job) == AttachCheck::Exact
+}
+
+/// `runs_exact_attach`, with why not: the worst of the foreground's
+/// non-shell processes (something else, then an unknown, then an older version).
+pub fn attach_check(mux: &dyn Mux, pane: &PaneRef, job: &str) -> AttachCheck {
+    let Ok(procs) = mux.foreground_procs(pane) else { return AttachCheck::Other };
     let names_job = |a: &str| !job.is_empty() && (a == job || a.strip_prefix(job).is_some_and(|rest| rest.starts_with('-')));
-    let exact = |(fg, pid): &(Vec<String>, Option<i64>)| {
-        fg.len() == 3
-            && fg[1] == "attach"
-            && names_job(&fg[2])
-            && claude_version(&fg[0], *pid).is_some_and(|v| nimitz_core::compat::at_least(&v, ATTACH_EXEC_SINCE))
+    let one = |(fg, pid): &(Vec<String>, Option<i64>)| {
+        if !(fg.len() == 3 && fg[1] == "attach" && names_job(&fg[2])) {
+            return AttachCheck::Other;
+        }
+        match claude_version(&fg[0], *pid) {
+            Some(v) if nimitz_core::compat::at_least(&v, ATTACH_EXEC_SINCE) => AttachCheck::Exact,
+            Some(v) => AttachCheck::Older(v),
+            None => AttachCheck::Unknown,
+        }
     };
-    let running: Vec<&(Vec<String>, Option<i64>)> = procs.iter().filter(|(a, _)| !is_shell(a)).collect();
-    !running.is_empty() && running.into_iter().all(exact)
+    let rank = |c: &AttachCheck| match c {
+        AttachCheck::Other => 0,
+        AttachCheck::Unknown => 1,
+        AttachCheck::Older(_) => 2,
+        AttachCheck::Exact => 3,
+    };
+    procs.iter().filter(|(a, _)| !is_shell(a)).map(one).min_by_key(rank).unwrap_or(AttachCheck::Other)
 }
 
 /// After typing into an attach pane: did the text reach the agent view
@@ -478,6 +552,30 @@ fn executable(p: &std::path::Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_claude_version_is_read_from_either_install_path() {
+        assert_eq!(claude_version_in("/home/u/.local/share/claude/versions/2.1.293").as_deref(), Some("2.1.293"));
+        assert_eq!(claude_version_in("/home/u/.local/share/claude/versions/2.1.293/claude").as_deref(), Some("2.1.293"));
+        assert_eq!(claude_version_in("/Users/u/.localtools/tools/claude-code/2.1.288.1000/claude").as_deref(), Some("2.1.288.1000"));
+        assert_eq!(claude_version_in("/Users/u/.localtools/tools/claude-code/2.1.288.1000/other"), None);
+        assert_eq!(claude_version_in("/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js"), None);
+        assert_eq!(claude_version_in("/home/u/.local/bin/claude"), None);
+        assert_eq!(claude_version_in("claude"), None);
+        // the build component compares componentwise
+        assert!(nimitz_core::compat::at_least("2.1.294.1000", ATTACH_EXEC_SINCE));
+        assert!(nimitz_core::compat::at_least("2.1.293.1", ATTACH_EXEC_SINCE));
+        assert!(!nimitz_core::compat::at_least("2.1.288.1000", ATTACH_EXEC_SINCE));
+    }
+
+    /// A process's executable: `/proc/<pid>/exe` on Linux, `proc_pidpath` on macOS.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn the_executable_of_a_pid_is_read_on_this_os() {
+        let me = std::env::current_exe().unwrap();
+        let got = exe_of(std::process::id() as i64).expect("this process's executable");
+        assert_eq!(std::fs::canonicalize(&got).unwrap(), std::fs::canonicalize(&me).unwrap());
+    }
+
     use super::*;
     use std::collections::HashMap;
 

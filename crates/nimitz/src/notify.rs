@@ -97,7 +97,11 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
                     // its attach pane, known by the foreground alone: typed into
                     // only while it runs exactly `claude attach <job>`, read just
                     // now (the agent view re-execs as `claude agents`, R-24)
-                    Some(p) if p.inferred && !c.short_id.as_deref().is_some_and(|j| nimitz_mux::runs_exact_attach(mux.as_ref(), &p.pane, j)) => format!("{no_inbox}; and {cid}'s pane {} no longer runs `claude attach {}` (the agent view, or something else): nothing is typed", p.pane.pane_id, c.short_id.as_deref().unwrap_or("?")),
+                    Some(p) if p.inferred && !c.short_id.as_deref().is_some_and(|j| nimitz_mux::runs_exact_attach(mux.as_ref(), &p.pane, j)) => {
+                        let job = c.short_id.as_deref().unwrap_or("?");
+                        let check = c.short_id.as_deref().map(|j| nimitz_mux::attach_check(mux.as_ref(), &p.pane, j)).unwrap_or(nimitz_mux::AttachCheck::Other);
+                        format!("{no_inbox}; and {cid}: {}: nothing is typed", check.refusal(&p.pane.pane_id, job))
+                    }
                     Some(p) => match mux.type_text(&p.pane, &text) {
                         Ok(()) if p.inferred && nimitz_mux::typed_into_view(mux.as_ref(), &p.pane) => return ("failed", format!("typed into {cid}'s pane {}, but the pane runs the agent view now (an /exit raced the typing): check it for a dispatched session ({no_inbox})", p.pane.pane_id)),
                         Ok(()) => return ("delivered", format!("typed into {cid}'s pane {} ({no_inbox})", p.pane.pane_id)),

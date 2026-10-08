@@ -642,6 +642,9 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
         (&["/v/claude/versions/2.1.293", "attach", "f8eee8dfx"], false),
         (&["/v/claude/versions/2.1.293", "attach", "0000aaaa"], false),
         (&["/v/claude/versions/2.1.293", "attach", "f8eee8df", "--x"], false),
+        // a localtools install, with its build component
+        (&["/Users/u/.localtools/tools/claude-code/2.1.294.1000/claude", "attach", "f8eee8df"], true),
+        (&["/Users/u/.localtools/tools/claude-code/2.1.288.1000/claude", "attach", "f8eee8df"], false),
         (&[], false),
     ];
     for (i, (fg, want)) in cases.iter().enumerate() {
@@ -650,6 +653,27 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
         let r = nimitz_mux::PaneRef { pane_id: pane, tab_id: None, workspace_id: None };
         assert_eq!(nimitz_mux::runs_exact_attach(&mux, &r, "f8eee8df"), *want, "{fg:?}");
     }
+    // and why not, in words
+    use nimitz_mux::AttachCheck;
+    let n = std::cell::Cell::new(0);
+    let check = |fg: &[&str]| {
+        n.set(n.get() + 1);
+        let pane = format!("pc{}", n.get());
+        mux.with_tab("W", &format!("TC{}", n.get()), &pane, fg);
+        nimitz_mux::attach_check(&mux, &nimitz_mux::PaneRef { pane_id: pane, tab_id: None, workspace_id: None }, "f8eee8df")
+    };
+    let old = check(&["/Users/u/.localtools/tools/claude-code/2.1.288.1000/claude", "attach", "f8eee8df"]);
+    assert_eq!(old, AttachCheck::Older("2.1.288.1000".into()));
+    assert_eq!(
+        old.refusal("pc1", "f8eee8df"),
+        "its pane pc1 runs `claude attach f8eee8df` on Claude Code 2.1.288.1000, older than 2.1.293 that nimitz types into safely; reattach it (ctrl-z, then nimitz open <id>)"
+    );
+    let unknown = check(&["/opt/somewhere/claude", "attach", "f8eee8df"]);
+    assert_eq!(unknown, AttachCheck::Unknown);
+    assert!(unknown.refusal("pc", "f8eee8df").contains("whose version nimitz cannot read"));
+    let view = check(&["/v/claude/versions/2.1.293", "agents"]);
+    assert_eq!(view, AttachCheck::Other);
+    assert!(view.refusal("pc", "f8eee8df").contains("no longer runs `claude attach f8eee8df`"));
 }
 
 /// A Workflow run's agents sit under one row per run, under the member: the

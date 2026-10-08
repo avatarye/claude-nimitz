@@ -8,6 +8,7 @@ description = "claude-nimitz multiplexer adapters (Herdr first)"
 [dependencies]
 # the one shell list (`is_shell`) is core's (contracts.md section 9.1)
 nimitz-core = { path = "../nimitz-core" }
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

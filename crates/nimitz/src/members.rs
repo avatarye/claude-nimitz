@@ -445,8 +445,9 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                     }
                 },
             };
-            if recheck && !nimitz_mux::runs_exact_attach(mux.as_ref(), &pane, &job) {
-                out::error(&format!("{}'s pane {} no longer runs `claude attach {job}` (the agent view, or something else); nothing was typed", via.id, pane.pane_id));
+            let check = if recheck { nimitz_mux::attach_check(mux.as_ref(), &pane, &job) } else { nimitz_mux::AttachCheck::Exact };
+            if check != nimitz_mux::AttachCheck::Exact {
+                out::error(&format!("{}: {}; nothing was typed", via.id, check.refusal(&pane.pane_id, &job)));
                 return Ok(1);
             }
             match mux.type_text(&pane, &text) {

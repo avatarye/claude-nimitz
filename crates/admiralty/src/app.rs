@@ -1309,8 +1309,9 @@ impl App {
         }
         let body = actions::message_text(plan, text);
         if let Some(job) = &plan.attach_job {
-            if !nimitz_mux::runs_exact_attach(self.ctx.mux.as_ref(), &plan.pane, job) {
-                self.notify(format!("Not sent to {}: its pane {} no longer runs `claude attach {job}` (the agent view, or something else); nothing was typed", plan.via, plan.pane.pane_id), st(mono::ERROR));
+            let check = nimitz_mux::attach_check(self.ctx.mux.as_ref(), &plan.pane, job);
+            if check != nimitz_mux::AttachCheck::Exact {
+                self.notify(format!("Not sent to {}: {}; nothing was typed", plan.via, check.refusal(&plan.pane.pane_id, job)), st(mono::ERROR));
                 return;
             }
         }
