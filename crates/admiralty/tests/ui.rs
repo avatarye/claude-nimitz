@@ -197,7 +197,7 @@ fn the_tab_carries_the_fleets_state_and_counts() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     let x = ls[0].find("broken").expect(&ls[0]) as u16;
-    assert_eq!(buf[(x, 0)].fg, mono::ERROR, "the state word carries the hue");
+    assert_eq!(buf[(x, 0)].fg, mono::ERROR, "the state word carries the hue (bold, 3.66:1 on dark cyan)");
     assert!(ls[0].contains("^9 / ^4 / *2 / -1 / x2 / o3 / ?1"), "{}", ls[0]);
     tab(&mut t.app, "MAIN");
     let ls = lines(&draw(&mut t.app, 200, 60));
@@ -233,6 +233,38 @@ fn columns_line_up_across_fleet_squadron_and_stowaway_frames() {
     assert!(!ls.iter().any(|l| l.contains("KIND")), "{}", ls.join("\n"));
     let boom = ls.iter().find(|l| l.contains("BOOM") && l.contains("- idle")).unwrap();
     assert!(!boom.contains("S BOOM") && !boom.contains("ship "), "{boom}");
+}
+
+/// The shown fleet's tab is one strip: its name on cyan, then its state and
+/// counts on dark cyan, every cell up to where the next tab starts, in text
+/// that reads there; the other tabs keep the plain background.
+#[test]
+fn the_shown_tab_counts_are_a_dark_cyan_strip_up_to_the_next_tab() {
+    use admiralty::theme::contrast;
+    for nerd in [false, true] {
+        let mut t = demo();
+        if nerd {
+            t.app.icons = &admiralty::theme::NERD;
+            t.app.rebuild();
+        }
+        for (fleet, next) in [("MAIN", " 2 FORGE"), ("FORGE", " 3 LAB")] {
+            tab(&mut t.app, fleet);
+            for w in [120u16, 200] {
+                let buf = draw(&mut t.app, w, 40);
+                let cells: Vec<_> = (0..w).map(|x| buf[(x, 0)].clone()).collect();
+                let line: String = cells.iter().map(|c| c.symbol().to_string()).collect();
+                let name_end = cells.iter().rposition(|c| c.bg == mono::ACCENT).expect(&line) + 1;
+                let next_at = cells.iter().map(|c| c.symbol().to_string()).collect::<Vec<_>>().windows(next.chars().count()).position(|win| win.concat() == next).expect(&line);
+                assert!(next_at > name_end + 2, "{fleet} {w}: counts sit between: {line:?}");
+                for (x, c) in cells.iter().enumerate().take(next_at).skip(name_end) {
+                    assert_eq!(c.bg, mono::ACCENT_DIM, "{fleet} {w} nerd={nerd}: cell {x} {:?} in {line:?}", c.symbol());
+                    let need = admiralty::theme::min_contrast(c.modifier.contains(ratatui::style::Modifier::BOLD));
+                    assert!(contrast(c.fg, mono::ACCENT_DIM).unwrap() >= need, "{fleet} {w}: cell {x} {:?} fg {:?}", c.symbol(), c.fg);
+                }
+                assert!(cells[next_at..].iter().all(|c| c.bg != mono::ACCENT_DIM && c.bg != mono::ACCENT), "{fleet} {w}: the next tabs stay plain: {line:?}");
+            }
+        }
+    }
 }
 
 /// A band's counts: a Nerd Font icon a terminal may draw two cells wide

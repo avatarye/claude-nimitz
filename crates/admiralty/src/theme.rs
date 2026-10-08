@@ -42,6 +42,9 @@ pub mod mono {
     pub const BUSY: Color = Color::Rgb(0xa6, 0xe2, 0x2e);
     /// focus: active tab, key hints, fix commands (9.0:1)
     pub const ACCENT: Color = Color::Rgb(0x66, 0xd9, 0xef);
+    /// the shown fleet's tab after its name (state word, counts): ACCENT's
+    /// hue at 40% brightness, so name and counts read as one strip
+    pub const ACCENT_DIM: Color = Color::Rgb(0x29, 0x57, 0x60);
     // older names, kept for the call sites that mean the same step
     pub const COMMENT: Color = MUTED;
     pub const SOFT: Color = MUTED;
@@ -99,6 +102,31 @@ pub fn status_style(s: Status) -> Style {
         Status::NeedsYou => chip(mono::NEEDS),
         other => st(status_color(other)),
     }
+}
+
+/// WCAG contrast ratio of two RGB colours (1 to 21); None for a non-RGB one.
+pub fn contrast(a: Color, b: Color) -> Option<f64> {
+    fn lum(c: Color) -> Option<f64> {
+        let Color::Rgb(r, g, b) = c else { return None };
+        let f = |v: u8| {
+            let c = v as f64 / 255.0;
+            if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        Some(0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b))
+    }
+    let (x, y) = (lum(a)?, lum(b)?);
+    Some((x.max(y) + 0.05) / (x.min(y) + 0.05))
+}
+
+/// The contrast text needs on its background: WCAG AA, 4.5:1, or 3:1 for
+/// bold text (AA's large-text step).
+pub fn min_contrast(bold: bool) -> f64 {
+    if bold { 3.0 } else { 4.5 }
+}
+
+/// `c` on `bg` when it reads there (`min_contrast`), else `FG`.
+pub fn readable_on(c: Color, bg: Color, bold: bool) -> Color {
+    if contrast(c, bg).is_some_and(|r| r >= min_contrast(bold)) { c } else { mono::FG }
 }
 
 /// Dark text on a filled background, bold.

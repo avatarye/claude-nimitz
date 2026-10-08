@@ -117,6 +117,16 @@ fn tab_line(app: &App, width: usize) -> Line<'static> {
             }
         }
         sp.push(Span::raw(" "));
+        if on {
+            // the name, then its state and counts on dark cyan up to the next
+            // tab: one strip. A chip's fill, or a word's colour, stays the
+            // text colour where it reads on dark cyan (`readable_on`), else FG
+            for s in sp.iter_mut().skip(1) {
+                let c = s.style.bg.or(s.style.fg).unwrap_or(mono::FG);
+                let bold = s.style.add_modifier.contains(Modifier::BOLD);
+                s.style = s.style.bg(mono::ACCENT_DIM).fg(crate::theme::readable_on(c, mono::ACCENT_DIM, bold));
+            }
+        }
         parts.push((sp, on));
     }
     let w = |v: &[Span]| v.iter().map(|s| s.content.width()).sum::<usize>();
