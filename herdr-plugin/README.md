@@ -90,6 +90,7 @@ can also go in a file, read when `ADMIRALTY_ARGS` is unset, with no restart:
 | `ADMIRALTY_BIN` | `admiralty` on PATH, then `~/.cargo/bin` | binary to run |
 | `ADMIRALTY_ARGS` | the `args` file, else none | extra arguments, e.g. `--sandbox /tmp/aw-sb` |
 | `ADMIRALTY_EXIT_AFTER_JUMP` | `1` | `0` keeps the watch up after a jump |
+| `ADMIRALTY_INSET` | `2,2` | rows,columns at the bottom and right that Admiralty leaves blank: with the sidebar shown, Herdr 0.9.3 hides the overlay terminal's last 2 rows and columns under its border (the status and key bars would vanish); `0,0` when the sidebar is hidden |
 
 The `ADMIRALTY_WATCH_*` names of 0.3.0 still work when the new ones are unset.
 

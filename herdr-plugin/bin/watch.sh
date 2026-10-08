@@ -32,10 +32,12 @@ fi
 
 ADMIRALTY_EXIT_AFTER_JUMP=${ADMIRALTY_EXIT_AFTER_JUMP:-${ADMIRALTY_WATCH_EXIT_AFTER_JUMP:-1}}
 export ADMIRALTY_EXIT_AFTER_JUMP
-# Herdr (0.9.3) sizes an overlay's terminal to the whole tab and draws the
-# overlay's border inside it: the last 2 rows and 2 columns never show. Admiralty
-# draws nothing there (its status and key bars stay in view). 0,0 once Herdr
-# shrinks the terminal itself.
+# Herdr (0.9.3), with its sidebar shown (expanded or compact), sizes an
+# overlay's terminal to the whole tab and draws the overlay's border inside it:
+# the last 2 rows and 2 columns never show. Admiralty draws nothing there (its
+# status and key bars stay in view). With the sidebar hidden, or in the mobile
+# layout, Herdr sizes it right and 2,2 leaves 2 blank rows and columns; the
+# sidebar can change while the overlay is open, so 2,2 stays. 0,0 turns it off.
 ADMIRALTY_INSET=${ADMIRALTY_INSET:-2,2}
 export ADMIRALTY_INSET
 unset ADMIRALTY_WATCH_EXIT_AFTER_JUMP

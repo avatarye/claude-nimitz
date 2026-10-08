@@ -31,6 +31,7 @@ fn main() {
         ("focus: partial ref skips missing levels", focus_partial),
         ("focus: unknown pane surfaces herdr's error", focus_unknown),
         ("type_text: prompts the pane", type_text_ok),
+        ("type_text: spaces as typed, controls gone", type_text_keeps_spaces),
         ("type_text: blocked pane is rejected with herdr's error", type_text_blocked),
         ("type_text: unknown pane errors", type_text_unknown),
         ("open: new workspace runs the command in its root pane", open_workspace),
@@ -225,6 +226,13 @@ fn type_text_ok() {
     w.mux().type_text(&pane_ref("w1:p1", "w1:t1", "w1"), "status please").expect("prompt");
     assert_eq!(w.calls(), vec![cmdv(&["agent", "prompt", "w1:p1", "status please"])]);
     assert_eq!(w.pane("w1:p1")["prompts"], json!(["status please"]));
+}
+
+fn type_text_keeps_spaces() {
+    let w = World::new(None);
+    w.mux().type_text(&pane_ref("w1:p1", "w1:t1", "w1"), "a  b\u{1b}[31m ").expect("prompt");
+    assert_eq!(w.calls(), vec![cmdv(&["agent", "prompt", "w1:p1", "a  b "])]);
+    assert!(w.mux().type_text(&pane_ref("w1:p1", "w1:t1", "w1"), "   ").is_err(), "only spaces: nothing to type");
 }
 
 fn type_text_blocked() {

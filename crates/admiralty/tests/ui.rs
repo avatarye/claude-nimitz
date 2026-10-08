@@ -1366,12 +1366,11 @@ fn m_refusals_name_the_fix() {
     // a stowaway
     t.app.show_stowaways = true;
     t.app.rebuild();
-    if let Some(i) = t.app.rows.iter().position(|r| r.node.kind == Kind::Stowaway) {
-        t.app.cursor = i;
-        press(&mut t.app, KeyCode::Char('m'));
-        let why = toast(&t.app);
-        assert!(why.contains("adopt") && why.contains("x then d"), "{why}");
-    }
+    let i = t.app.rows.iter().position(|r| r.node.kind == Kind::Stowaway).expect("a stowaway row");
+    t.app.cursor = i;
+    press(&mut t.app, KeyCode::Char('m'));
+    let why = toast(&t.app);
+    assert!(why.contains("adopt") && why.contains("x then d"), "{why}");
 }
 
 /// The message box shows exactly what was typed, trailing and repeated spaces

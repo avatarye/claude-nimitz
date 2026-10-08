@@ -685,7 +685,7 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
             format!("{} is not running: a starts it", via_m.expected_name)
         });
     }
-    let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into: A opens its tab, then m (or nimitz signal {} <text>, which posts to its inbox)", via_m.expected_name, via_m.id.0))?;
+    let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into: A opens its tab, then m (or nimitz signal {} <text>, which opens its tab and delivers it)", via_m.expected_name, via_m.id.0))?;
     let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone: R refreshes"))?;
     // typed only into the pane that shows its session (a pane matched by its
     // title and folder alone may be anything, the agent view included)

@@ -283,12 +283,13 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
     let right_w: usize = right.iter().map(|s| s.content.width()).sum();
     let keys = [
         ("?", "help"),
-        ("j/k", "move"),
-        ("h/l", "fold"),
+        // the two ways to reach a lead (jump to its pane, message it) and what
+        // waits on you, before the vim keys everyone knows
         ("\u{23ce}", "pane"),
-        // the two ways to reach a lead: jump to its pane, or message it
         ("m", "message"),
         ("!", "needs you"),
+        ("j/k", "move"),
+        ("h/l", "fold"),
         ("i", "issues"),
         ("a", "start"),
         ("x", "actions"),
