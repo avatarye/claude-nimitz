@@ -59,7 +59,9 @@ impl Spacing {
 pub fn spacing_for(width: usize) -> Spacing {
     let tight = col_widths_gap(TIGHT.inner(width) as u16, TIGHT.gap as u16);
     let roomy = col_widths_gap(ROOMY.inner(width) as u16, ROOMY.gap as u16);
-    if tight[1..4] == roomy[1..4] && roomy[0] >= KEEP_NAME.min(tight[0]) && roomy[4] >= KEEP_DETAIL.min(tight[4]) {
+    // (DETAIL must exist at all: at the minimum widths both spacings agree
+    // on nothing but cut columns)
+    if roomy[4] > 0 && tight[1..4] == roomy[1..4] && roomy[0] >= KEEP_NAME.min(tight[0]) && roomy[4] >= KEEP_DETAIL.min(tight[4]) {
         ROOMY
     } else {
         Spacing { blank: true, ..TIGHT }
@@ -433,6 +435,10 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     // filter hides), in full, outside any box
                     if let Some(e) = open.take() {
                         close(&mut out, e);
+                    }
+                    // a gap from the box above; a broken fleet's error stays
+                    // right under its band
+                    if rows.get(i.wrapping_sub(1)).is_some_and(|p| p.section != Section::FleetBand) {
                         blank(&mut out);
                     }
                     for body in body_spans(r, &w, inner, sp.gap, icons) {

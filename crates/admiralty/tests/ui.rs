@@ -86,6 +86,9 @@ fn spacing_collapses_before_content() {
     assert_eq!(spacing_for(103), ROOMY);
     assert_eq!((spacing_for(102).pad, spacing_for(102).gap), (TIGHT.pad, TIGHT.gap));
     assert_eq!((spacing_for(80).pad, spacing_for(80).gap), (TIGHT.pad, TIGHT.gap));
+    for w in [56, 55, 50, 30] {
+        assert_eq!((spacing_for(w).pad, spacing_for(w).gap), (TIGHT.pad, TIGHT.gap), "{w}: no spacing where columns are cut");
+    }
     let mut t = demo();
     let between = |ls: &[String], top: &str| -> bool {
         let y = ls.iter().position(|l| l.contains(top)).unwrap();
@@ -1212,21 +1215,31 @@ fn esc_closes_what_is_open_then_quits() {
     assert!(matches!(press(&mut t.app, KeyCode::Esc), Some(Effect::Quit)), "with nothing open, esc quits");
 }
 
-/// While an action runs, esc does not quit (q still does); in a dialog,
-/// menu, form or message, esc closes it and never quits.
+/// While an action runs, esc does not quit (q still does), and the running
+/// line says so; in a dialog, menu, form or message, esc closes it and
+/// never quits.
 #[test]
 fn esc_never_quits_mid_action_or_from_a_dialog() {
     let mut t = demo();
     t.app.busy = Some("sweep FORGE".into());
     assert!(press(&mut t.app, KeyCode::Esc).is_none(), "busy: no quit");
-    assert!(toast(&t.app).contains("still running"), "{}", toast(&t.app));
+    let foot = lines(&draw(&mut t.app, 120, 30)).pop().unwrap();
+    assert!(foot.contains("running: sweep FORGE") && foot.contains("esc waits"), "{foot}");
     t.app.busy = None;
-    for k in ['x', 'c', 'm', '!', 'i'] {
+    for (k, what) in [('x', "the actions menu"), ('c', "the create menu"), ('m', "a message"), ('!', "needs you"), ('i', "issues"), ('?', "help")] {
         goto(&mut t.app, "M:MAIN/ARGOS");
         press(&mut t.app, KeyCode::Char(k));
-        if t.app.modal.is_some() {
-            assert!(press(&mut t.app, KeyCode::Esc).is_none(), "{k}: esc closes, never quits");
-            assert!(t.app.modal.is_none(), "{k}: closed");
-        }
+        assert!(t.app.modal.is_some(), "{k} opens {what}");
+        assert!(press(&mut t.app, KeyCode::Esc).is_none(), "{k}: esc closes, never quits");
+        assert!(t.app.modal.is_none(), "{k}: closed");
     }
+    // a form (c, then s: a new ship) and a confirm (a: start, top-down)
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    keys(&mut t.app, "cs");
+    assert!(matches!(t.app.modal, Some(Modal::Form(_))), "a form: {:?}", t.app.modal.as_ref().map(std::mem::discriminant));
+    assert!(press(&mut t.app, KeyCode::Esc).is_none() && t.app.modal.is_none(), "esc cancels the form");
+    goto(&mut t.app, "M:MAIN/KITS/DOCS");
+    keys(&mut t.app, "a");
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "a confirm");
+    assert!(press(&mut t.app, KeyCode::Esc).is_none() && t.app.modal.is_none(), "esc cancels the confirm");
 }

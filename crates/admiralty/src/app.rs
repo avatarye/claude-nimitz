@@ -903,6 +903,7 @@ impl App {
                     self.rebuild();
                 } else if let Some(b) = &self.busy {
                     // a reflex esc never ends the program mid-action
+                    // (the running line says so; the toast is for the log of what happened)
                     self.notify(format!("{b} is still running; esc quits once it is done (q quits now)"), st(mono::WARN));
                 } else {
                     return Some(Effect::Quit);
