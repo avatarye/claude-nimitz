@@ -314,7 +314,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
 
 fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
     let view = area.height.saturating_sub(1) as usize;
-    let (lines, sp) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons);
+    let (lines, sp) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons, app.frame());
     app.page = view.max(2);
     if let Some(pos) = lines.iter().position(|(_, r)| *r == Some(app.cursor)) {
         if pos < app.scroll {
@@ -364,21 +364,22 @@ fn keys_line(pairs: &[(&str, &str)]) -> Line<'static> {
 }
 
 fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Icons) {
-    let r = centered(area, 90, HELP.len() as u16 + 32);
-    let width = r.width.saturating_sub(2) as usize;
+    // as wide as it may be, then as tall as its lines (the screen caps it; j scrolls)
+    let width = centered(area, 90, 1).width.saturating_sub(2) as usize;
     let mut lines = vec![Line::styled("Keys (vim style)   j/k scroll, esc closes", bold(mono::FG)), Line::raw("")];
     for (k, d) in HELP {
         lines.extend(wrap(vec![Span::styled(format!("  {k:<18}"), bold(mono::ACCENT)), Span::styled(d.to_string(), st(mono::FG))], width, 20));
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled("What the icons mean", bold(mono::FG)));
-    let legend: [(&str, Style, &str); 21] = [
+    let legend: [(&str, Style, &str); 22] = [
         (icons.issue, bold(mono::ERROR), "errors (orange) and warnings (yellow); `i` lists them with fixes"),
         (icons.legacy, bold(mono::WARN), "a session of an old fleet-skill fleet; `x` then `d` adopts it"),
         (icons.s_needs, bold(mono::NEEDS), "needs you: waiting at a prompt or a question"),
         (icons.s_busy, bold(mono::BUSY), "busy"),
         (icons.s_idle, bold(mono::FG), "idle"),
         (icons.s_stopped, st(mono::COMMENT), "stopped (has a job row)"),
+        (icons.s_parked, st(mono::COMMENT), "parked (idle an hour, the daemon retired it; wakes on a prompt)"),
         (icons.s_off, st(mono::DIM), "not started"),
         (icons.s_unknown, st(mono::MUTED), "unknown: the evidence does not say"),
         (icons.fleet, bold(mono::STRONG), "fleet"),
@@ -399,6 +400,7 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
         lines.extend(wrap(vec![Span::styled(format!("  {icon}  "), style), Span::styled(what.to_string(), st(mono::SOFT))], width, 5));
     }
     lines.extend(wrap(vec![Span::styled("  Band counts read `icon n`; under 100 columns only needs-you and errors stay.", st(mono::COMMENT))], width, 2));
+    let r = centered(area, 90, lines.len() as u16 + 2);
     let room = r.height.saturating_sub(2) as usize;
     let scroll = scroll.min(lines.len().saturating_sub(room));
     let more = lines.len() > room + scroll;

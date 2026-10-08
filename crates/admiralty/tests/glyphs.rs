@@ -28,7 +28,7 @@ fn rows_and_borders_line_up_in_tmux() {
     let bin = env!("CARGO_BIN_EXE_admiralty");
     for (w, h, keys) in [(200, 50, ""), (200, 50, "i"), (200, 50, "x"), (120, 40, "?"), (80, 24, "")] {
         t(&["kill-server"]);
-        let cmd = format!("ADMIRALTY_NO_CLIPBOARD=1 TERM=xterm-256color '{bin}' --demo");
+        let cmd = format!("NIMITZ_NO_ANIM=1 ADMIRALTY_NO_CLIPBOARD=1 TERM=xterm-256color '{bin}' --demo");
         let out = t(&["new-session", "-d", "-x", &w.to_string(), "-y", &h.to_string(), &cmd]);
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let cap = || String::from_utf8_lossy(&t(&["capture-pane", "-p", "-N"]).stdout).into_owned();
@@ -66,7 +66,7 @@ fn borders_stay_put_when_the_terminal_draws_icons_two_cells_wide() {
         let sock = format!("adm-wide-{}-{two}", std::process::id());
         let t = |args: &[&str]| std::process::Command::new("tmux").arg("-L").arg(&sock).args(args).output().unwrap();
         t(&["kill-server"]);
-        let cmd = format!("sleep 0.5; ADMIRALTY_NO_CLIPBOARD=1 TERM=xterm-256color exec '{bin}' --demo");
+        let cmd = format!("sleep 0.5; NIMITZ_NO_ANIM=1 ADMIRALTY_NO_CLIPBOARD=1 TERM=xterm-256color exec '{bin}' --demo");
         assert!(t(&["-f", "/dev/null", "new-session", "-d", "-x", "200", "-y", "50", &cmd]).status.success());
         if two {
             t(&["set", "-s", "codepoint-widths", "U+E000-U+F8FF=2,U+F0000-U+FFFFD=2"]);

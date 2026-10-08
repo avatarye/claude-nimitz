@@ -439,8 +439,8 @@ fn y_yanks_and_q_quits() {
 fn help_has_a_legend_line_for_each_icon() {
     let mut t = demo();
     keys(&mut t.app, "?");
-    let s = screen(&mut t.app, 200, 80);
-    for what in ["errors (orange) and warnings (yellow)", "needs you: waiting", "busy", "stowaway: a session", "pane dot: idle", "Band counts read"] {
+    let s = screen(&mut t.app, 200, 120);
+    for what in ["errors (orange) and warnings (yellow)", "needs you: waiting", "busy", "parked (idle an hour", "stowaway: a session", "pane dot: idle", "Band counts read"] {
         assert!(s.contains(what), "legend has {what}");
     }
 }
@@ -1386,4 +1386,176 @@ fn a_session_named_after_a_sibling_keeps_its_full_name() {
     let t = fixture_app(b, false);
     let boom = t.app.rows.iter().find(|r| r.node.id == "M:MAIN/ARGOS/BOOM").unwrap();
     assert_eq!(boom.node.name, "[MAIN.ARGOS]-BOOMX", "no dash after its own name: full");
+}
+
+// ------------------------------------------------------------------ status motion
+
+/// In the live loop the busy glyph spins, a crew's spinner is dimmer, the
+/// needs-you chip breathes; nothing else on the screen moves, and no column
+/// shifts. With the motion off (or outside the live loop) every frame is the same.
+#[test]
+fn status_motion_changes_only_the_status_cell() {
+    let mut t = demo();
+    let still = lines(&draw(&mut t.app, 200, 60));
+    t.app.anim_live = true;
+    let mut seen_spin = std::collections::HashSet::new();
+    let mut fills = std::collections::HashSet::new();
+    for f in 0..12u64 {
+        t.app.anim_frame = f;
+        let buf = draw(&mut t.app, 200, 60);
+        let ls = lines(&buf);
+        assert_eq!(ls.len(), still.len());
+        for (a, b) in ls.iter().zip(still.iter()) {
+            assert_eq!(a.chars().count(), b.chars().count(), "no column moves:\n{a}\n{b}");
+        }
+        let bolt = ls.iter().position(|l| l.contains("BOLT")).unwrap();
+        let x = still[bolt].chars().position(|c| c == '*').unwrap();
+        let glyph = ls[bolt].chars().nth(x).unwrap();
+        assert!("|/=\\".contains(glyph), "busy spins (the icon set's frames): {}", ls[bolt]);
+        seen_spin.insert(glyph);
+        let kits = ls.iter().position(|l| l.contains("PIPELINE")).unwrap();
+        let cx = ls[kits].find("needs you").unwrap();
+        let cx = ls[kits][..cx].chars().count() as u16;
+        fills.insert(format!("{:?}", buf[(cx, kits as u16)].bg));
+        // everything but the status cells is the still picture
+        for (y, (a, b)) in ls.iter().zip(still.iter()).enumerate() {
+            if y != bolt && !a.contains("needs you") && !a.contains("busy") && !a.contains("running") {
+                assert_eq!(a, b, "line {y} moved");
+            }
+        }
+    }
+    assert_eq!(seen_spin.len(), 4, "a spinner: {seen_spin:?}");
+    assert!(fills.len() >= 3, "the needs-you chip breathes: {fills:?}");
+    // off: `v`, saved; every frame the still picture
+    keys(&mut t.app, "v");
+    assert!(!t.app.anim && t.app.frame().is_none());
+    t.app.anim_frame = 7;
+    let off = lines(&draw(&mut t.app, 200, 60));
+    assert_eq!(off[..off.len() - 1], still[..still.len() - 1], "(the footer has the toast)");
+    t.app.persist();
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(t.dir.path().join("ui.json")).unwrap()).unwrap();
+    assert_eq!(saved["anim"], false);
+    // outside the live loop (tests, dump) nothing moves even when on
+    keys(&mut t.app, "v");
+    t.app.anim_live = false;
+    t.app.anim_frame = 3;
+    let off = lines(&draw(&mut t.app, 200, 60));
+    assert_eq!(off[..off.len() - 1], still[..still.len() - 1]);
+}
+
+/// A squadron whose status gets worse pulses its bar once, then holds its colour.
+#[test]
+fn a_squadron_that_gets_worse_pulses_its_bar_once() {
+    let mut b = fixtures::demo();
+    let mut t = fixture_app(b.clone(), false);
+    t.app.anim_live = true;
+    t.app.anim_frame = 100;
+    // ARGOS: a member now needs you
+    for f in &mut b.snap.fleets {
+        for sq in &mut f.squadrons {
+            if sq.id.0 == "MAIN/ARGOS" {
+                sq.ships[0].status = Status::NeedsYou;
+            }
+        }
+    }
+    t.app.apply(b);
+    let row = t.app.rows.iter().find(|r| r.node.id == "SQ:MAIN/ARGOS").unwrap();
+    assert_eq!(row.node.anim, admiralty::view::Anim::Flash(100));
+    let fill = |t: &mut TestApp, f: u64| {
+        t.app.anim_frame = f;
+        let buf = draw(&mut t.app, 200, 60);
+        let ls = lines(&buf);
+        let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
+        buf[(2, y as u16)].bg
+    };
+    assert_ne!(fill(&mut t, 105), mono::NEEDS, "mid-pulse: lighter");
+    assert_eq!(fill(&mut t, 111), mono::NEEDS, "then it holds");
+    // KITS did not change: no pulse
+    assert!(t.app.rows.iter().find(|r| r.node.id == "SQ:MAIN/KITS").is_some_and(|r| r.node.anim == admiralty::view::Anim::None));
+}
+
+/// The pulse only for a squadron that gets a warning, an error or needs you
+/// (idle to busy is just work), and never from the quick first look to the
+/// first full one.
+#[test]
+fn a_bar_pulses_only_for_a_real_worsening() {
+    let full = fixtures::demo();
+    let mut quick = full.clone();
+    quick.partial = true;
+    for f in &mut quick.snap.fleets {
+        for sq in &mut f.squadrons {
+            for m in std::iter::once(&mut sq.commodore).chain(sq.ships.iter_mut()) {
+                m.issues.clear();
+            }
+        }
+    }
+    let mut t = fixture_app(quick, false);
+    t.app.anim_live = true;
+    t.app.apply(full.clone());
+    tab(&mut t.app, "FORGE");
+    assert!(t.app.rows.iter().all(|r| !matches!(r.node.anim, admiralty::view::Anim::Flash(_))), "no pulse at start-up");
+    // idle to busy on a quiet squadron (LAB/OPTICS, rank 0): no pulse
+    let mut busy = full.clone();
+    for f in &mut busy.snap.fleets {
+        for sq in f.squadrons.iter_mut().filter(|q| q.id.0 == "LAB/OPTICS") {
+            assert_eq!(admiralty::view::squadron_rank_of(sq), 0, "a quiet squadron");
+            sq.ships[0].status = Status::Busy;
+            sq.ships[0].issues.clear();
+            assert_eq!(admiralty::view::squadron_rank_of(sq), 1, "now busy");
+        }
+    }
+    t.app.apply(busy);
+    tab(&mut t.app, "LAB");
+    keys(&mut t.app, "l");
+    assert!(t.app.rows.iter().all(|r| !matches!(r.node.anim, admiralty::view::Anim::Flash(_))), "work is no pulse");
+}
+
+/// Motion pauses under a dialog; with only a shell wait on screen the loop
+/// redraws every fourth frame; `v` says so when the environment keeps it off.
+#[test]
+fn motion_steps_pause_and_the_env_switch() {
+    let mut t = demo();
+    t.app.anim_live = true;
+    assert_eq!(t.app.motion_step(), Some(1));
+    keys(&mut t.app, "?");
+    assert_eq!(t.app.motion_step(), None, "a dialog: still");
+    press(&mut t.app, KeyCode::Esc);
+    for r in t.app.rows.iter_mut() {
+        r.node.anim = if r.node.anim == admiralty::view::Anim::None { admiralty::view::Anim::None } else { admiralty::view::Anim::Dots };
+    }
+    assert_eq!(t.app.motion_step(), Some(4), "only a shell wait: every fourth frame");
+    t.app.anim_env_off = true;
+    t.app.anim = false;
+    keys(&mut t.app, "v");
+    assert!(toast(&t.app).contains("keeps it still"), "{}", toast(&t.app));
+}
+
+/// The dim glyph colour passes 3:1 (a non-text glyph) on the background and on
+/// the cursor row; the word next to it keeps its own colour.
+#[test]
+fn the_dim_glyph_passes_contrast_and_the_word_keeps_its_colour() {
+    use admiralty::theme::anim::BUSY_DIM;
+    let lum = |c: ratatui::style::Color| {
+        let ratatui::style::Color::Rgb(r, g, b) = c else { panic!() };
+        let f = |v: u8| {
+            let v = v as f64 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    };
+    let ratio = |a, b| {
+        let (x, y): (f64, f64) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    };
+    assert!(ratio(BUSY_DIM, mono::BG) >= 3.0 && ratio(BUSY_DIM, mono::SEL) >= 3.0);
+    let mut t = demo();
+    t.app.anim_live = true;
+    t.app.anim_frame = 2;
+    let buf = draw(&mut t.app, 200, 60);
+    let ls = lines(&buf);
+    let y = ls.iter().position(|l| l.contains("fix layout bug")).unwrap();
+    let x = ls[y].find("running").unwrap();
+    let x = ls[y][..x].chars().count() as u16;
+    assert_eq!(buf[(x, y as u16)].fg, mono::BUSY, "the word keeps its colour");
+    assert_eq!(buf[(x - 2, y as u16)].fg, BUSY_DIM, "the glyph is the dim one");
 }

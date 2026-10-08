@@ -87,9 +87,28 @@ pub struct Saved {
     /// the fleet tab shown (a fleet id, or view::UNASSIGNED)
     #[serde(default)]
     pub tab: Option<String>,
+    /// status motion on (`v` turns it off; `NIMITZ_NO_ANIM=1` or `NO_COLOR` keep it off)
+    #[serde(default = "on")]
+    pub anim: bool,
+}
+
+fn on() -> bool {
+    true
 }
 
 pub struct App {
+    /// the user's choice: status motion on (`v`; saved)
+    pub anim: bool,
+    /// the live loop runs the motion (`run::run` sets it; tests and `dump` never do)
+    pub anim_live: bool,
+    /// the environment keeps the motion off (`NIMITZ_NO_ANIM=1`, `NO_COLOR`)
+    pub anim_env_off: bool,
+    /// the animation frame, advanced only by the live loop
+    pub anim_frame: u64,
+    /// each squadron's status rank (theme order), to see one get worse
+    sq_rank: HashMap<String, u8>,
+    /// squadrons whose status got worse, and the frame it happened
+    sq_flash: HashMap<String, u64>,
     pub ctx: Ctx,
     pub bundle: Option<Bundle>,
     pub rows: Vec<Row>,
@@ -142,6 +161,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("ctrl-e / ctrl-y", "scroll the detail panel (when open)"),
     ("space", "fold / unfold"),
     ("z", "show / hide the member's crew that finished over 30 min ago (+N finished)"),
+    ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane (else fold / unfold)"),
     ("J / K", "next / previous row with a pane"),
@@ -167,6 +187,12 @@ impl App {
         let mut app = App {
             ctx,
             bundle: None,
+            anim: true,
+            anim_live: false,
+            anim_env_off: false,
+            anim_frame: 0,
+            sq_rank: HashMap::new(),
+            sq_flash: HashMap::new(),
             rows: vec![],
             cursor: 0,
             scroll: 0,
@@ -212,7 +238,42 @@ impl App {
             flagged_only: self.flagged_only,
             show_stowaways: self.show_stowaways,
             tab: self.tab.clone(),
+            anim: self.anim,
         }
+    }
+
+    /// The animation frame to draw (`None`: still): the live loop runs it and
+    /// the user has not turned it off.
+    pub fn frame(&self) -> Option<u64> {
+        // still under a dialog (the spinners around it would jump once a second)
+        (self.anim_live && self.anim && self.modal.is_none()).then_some(self.anim_frame)
+    }
+
+    /// Does anything on screen move? (The live loop ticks only then.)
+    pub fn moving(&self) -> bool {
+        self.motion_step().is_some()
+    }
+
+    /// Every how many frames something on screen changes: 1 (a spinner, the
+    /// needs-you pulse, a bar's pulse while it lasts), 4 (only a shell wait's
+    /// slow glyph), or `None` (nothing moves, a dialog covers the list, or
+    /// the motion is off).
+    pub fn motion_step(&self) -> Option<u64> {
+        use crate::view::Anim;
+        let f = self.frame()?;
+        if self.modal.is_some() {
+            return None;
+        }
+        let mut step = None;
+        for r in &self.rows {
+            match r.node.anim {
+                Anim::Spin | Anim::SpinDim | Anim::Pulse => return Some(1),
+                Anim::Flash(from) if f.saturating_sub(from) < 10 => return Some(1),
+                Anim::Dots => step = Some(4),
+                _ => {}
+            }
+        }
+        step
     }
 
     fn restore(&mut self) {
@@ -226,6 +287,7 @@ impl App {
         self.flagged_only = s.flagged_only;
         self.show_stowaways = s.show_stowaways;
         self.tab = s.tab.clone();
+        self.anim = s.anim;
         self.last_saved = Some(s);
     }
 
@@ -266,6 +328,26 @@ impl App {
                 sq.ships.iter_mut().for_each(mark);
             }
         }
+        // a squadron that got worse since the last full look (a warning, an
+        // error or needs you; idle to busy is just work): its bar pulses once.
+        // The quick first look has no check issues: it is not compared, and
+        // the first full look only learns the ranks.
+        self.sq_flash.retain(|_, from| self.anim_frame.saturating_sub(*from) < 10);
+        if !b.partial {
+            let mut now = HashMap::new();
+            for f in &b.snap.fleets {
+                for sq in &f.squadrons {
+                    let rank = crate::view::squadron_rank_of(sq);
+                    let id = format!("SQ:{}", sq.id.0);
+                    if rank >= 2 && self.sq_rank.get(&id).is_some_and(|old| rank > *old) {
+                        self.sq_flash.insert(id.clone(), self.anim_frame);
+                    }
+                    now.insert(id, rank);
+                }
+            }
+            // (a squadron gone is forgotten: one made again starts fresh)
+            self.sq_rank = now;
+        }
         self.bundle = Some(b);
         self.rebuild();
     }
@@ -291,6 +373,12 @@ impl App {
         };
         let nodes = build_nodes(&b.snap, &view);
         self.rows = flatten(&nodes, &self.expanded);
+        // a squadron whose status got worse pulses its bar once
+        for r in self.rows.iter_mut().filter(|r| r.section == Section::SquadronBand) {
+            if let Some(from) = self.sq_flash.get(&r.node.id) {
+                r.node.anim = crate::view::Anim::Flash(*from);
+            }
+        }
         if let Some(id) = keep {
             if let Some(i) = self.rows.iter().position(|r| r.node.id == id) {
                 self.cursor = i;
@@ -903,6 +991,15 @@ impl App {
                 self.toggle();
             }
             (KeyCode::Char('z'), false) => self.toggle_crew_fold(),
+            (KeyCode::Char('v'), false) => {
+                self.anim = !self.anim;
+                let msg = match (self.anim, self.anim_env_off) {
+                    (true, true) => "Status motion on (saved), but NIMITZ_NO_ANIM or NO_COLOR keeps it still here",
+                    (true, false) => "Status motion on (v turns it off)",
+                    (false, _) => "Status motion off (v turns it on)",
+                };
+                self.notify(msg, st(mono::COMMENT));
+            }
             (KeyCode::Char('/'), _) => self.editing_filter = true,
             // esc closes what is open, one thing at a time; with nothing open it quits
             (KeyCode::Esc, _) => {

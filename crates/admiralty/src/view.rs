@@ -196,11 +196,30 @@ pub enum Kind {
     Note,
 }
 
+/// What moves on a row in the live loop (`theme::anim`).
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum Anim {
+    #[default]
+    None,
+    /// busy: the status glyph spins
+    Spin,
+    /// busy waiting on a background shell: slow dots
+    Dots,
+    /// a running crew: the spinner, dimmer
+    SpinDim,
+    /// needs you: the chip pulses, about once a second
+    Pulse,
+    /// a squadron bar whose status just got worse: one pulse from this frame
+    Flash(u64),
+}
+
 #[derive(Clone, Debug)]
 pub struct Node {
     /// the name is cut from the left when it does not fit (a full name in a
     /// search: its own part stays)
     pub cut_left: bool,
+    /// what moves on this row in the live loop
+    pub anim: Anim,
     pub id: String,
     pub kind: Kind,
     /// nimitz identity this row is about (member rows and bands)
@@ -242,6 +261,7 @@ impl Node {
             member: None,
             session_id: None,
             cut_left: false,
+            anim: Anim::None,
             default_expand: false,
             icon: "",
             icon_style: Style::new(),
@@ -349,6 +369,9 @@ fn crew_node(parent: &str, c: &Crew, kids: &HashMap<String, Vec<&Crew>>, now: f6
     n.name = c.label.clone();
     n.name_style = style;
     n.status = (if c.running { "> running".into() } else { ". finished".into() }, style);
+    if c.running {
+        n.anim = Anim::SpinDim;
+    }
     n.age = if c.last_write > 0.0 { age_or_unknown(now - c.last_write) } else { "?".into() };
     n.kind_text = if c.teammate { "teammate".into() } else { "crew".into() };
     n.detail = vec![Span::styled(c.agent_type.clone().unwrap_or_default(), st(mono::COMMENT))];
@@ -548,6 +571,12 @@ fn member_node(m: &Member, v: &View) -> Node {
     };
     n.name_style = name_style;
     n.status = (format!("{} {}", v.icons.status(m.status), status_word(m.status)), style);
+    n.anim = match m.status {
+        Status::NeedsYou => Anim::Pulse,
+        Status::Busy if m.session.as_ref().and_then(|s| s.status.as_deref()) == Some("shell") => Anim::Dots,
+        Status::Busy => Anim::Spin,
+        _ => Anim::None,
+    };
     n.age = member_age(m, v.now);
     n.kind_text = m.role.as_str().into();
     n.worst = worst_of(&m.issues);
@@ -641,6 +670,24 @@ pub fn short_name(id: &nimitz_core::Id) -> String {
 /// Idle, stopped, parked, not started and unknown are neutral; info issues
 /// do not count. A squadron whose config does not load is an error itself.
 pub fn squadron_status_color(members: &[&Member]) -> ratatui::style::Color {
+    match squadron_rank(members) {
+        4 => mono::NEEDS,
+        3 => mono::ERROR,
+        2 => mono::WARN,
+        1 => mono::BUSY,
+        _ => mono::LINE,
+    }
+}
+
+/// A squadron's rank, its own config error included (an error).
+pub fn squadron_rank_of(sq: &Squadron) -> u8 {
+    let members: Vec<&Member> = std::iter::once(&sq.commodore).chain(sq.ships.iter()).collect();
+    let broken = sq.issues.iter().any(|i| is_load_error(i) && i.id.as_ref() == Some(&sq.id));
+    squadron_rank(&members).max(if broken { 3 } else { 0 })
+}
+
+/// The squadron's status as a rank in that order (4 needs you .. 0 neutral).
+pub fn squadron_rank(members: &[&Member]) -> u8 {
     let rank = |m: &Member| -> u8 {
         if m.status == Status::NeedsYou {
             4
@@ -654,13 +701,7 @@ pub fn squadron_status_color(members: &[&Member]) -> ratatui::style::Color {
             0
         }
     };
-    match members.iter().map(|m| rank(m)).max().unwrap_or(0) {
-        4 => mono::NEEDS,
-        3 => mono::ERROR,
-        2 => mono::WARN,
-        1 => mono::BUSY,
-        _ => mono::LINE,
-    }
+    members.iter().map(|m| rank(m)).max().unwrap_or(0)
 }
 
 fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -> bool) -> Option<Node> {
