@@ -11,7 +11,9 @@
 //!   `~/.local/state/nimitz`;
 //! - each member folder's `.claude/settings.json` disables the live plugin
 //!   and points every hook event at THIS build's `nimitz hook <Event>`;
-//! - the model is `--model haiku` on the command line (a wrapper around the
+//! - the model is the cheapest one the user's `availableModels` allows
+//!   (`cheap_model`: haiku, else sonnet; `NIMITZ_E2E_MODEL` overrides), as
+//!   `--model` on the command line (a wrapper around the
 //!   native binary for cold launches; project settings `model` is not
 //!   honoured), prompts are one word;
 //! - never the Herdr CLI: attaching goes through `claude attach` in a private
@@ -43,6 +45,29 @@ fn gated() -> bool {
     }
     println!("[OK] skipped: set NIMITZ_E2E=1 to run against the real Claude Code");
     false
+}
+
+/// The cheapest model the user's own settings let a session pick: Claude
+/// Code swaps a `--model` outside `availableModels` for the default (Opus)
+/// without failing, which made every e2e session an Opus one. `haiku` when
+/// the list allows it (or there is none), else `sonnet`, else its first
+/// entry; `NIMITZ_E2E_MODEL` overrides.
+fn cheap_model() -> String {
+    if let Some(m) = std::env::var("NIMITZ_E2E_MODEL").ok().filter(|m| !m.is_empty()) {
+        return m;
+    }
+    let list: Vec<String> = std::fs::read(home().join(".claude/settings.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| v["availableModels"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_lowercase)).collect()))
+        .unwrap_or_default();
+    let allows = |fam: &str| list.is_empty() || list.iter().any(|m| m == fam || m.contains(&format!("-{fam}")) || m.starts_with(fam));
+    for fam in ["haiku", "sonnet"] {
+        if allows(fam) {
+            return fam.into();
+        }
+    }
+    list.first().cloned().unwrap_or_else(|| "sonnet".into())
 }
 
 fn home() -> PathBuf {
@@ -112,16 +137,16 @@ impl E2e {
         }
         let native = native();
         // `nimitz` on the members' PATH is THIS build (a wrapper that logs each
-        // call to `nimitz-calls.log` first); `claude-haiku` adds the model to a
+        // call to `nimitz-calls.log` first); `claude-cheap` adds the model to a
         // cold launch (the native binary stays flag-free for wakes)
         executable(&base.join("bin/nimitz"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{EXE}' \"$@\"\n", base.join("nimitz-calls.log").display()));
-        executable(&base.join("bin/claude-haiku"), &format!("#!/bin/sh\nexec '{native}' --model haiku \"$@\"\n"));
+        executable(&base.join("bin/claude-cheap"), &format!("#!/bin/sh\nexec '{native}' --model {} \"$@\"\n", cheap_model()));
         let b = |x: &str| base.join(x).to_string_lossy().into_owned();
         let vars: HashMap<String, String> = [
             ("HOME", home().to_string_lossy().into_owned()),
             ("NIMITZ_HOME", b("nimitz")),
             ("NIMITZ_STATE", b("state")),
-            ("NIMITZ_CLAUDE_BIN", b("bin/claude-haiku")),
+            ("NIMITZ_CLAUDE_BIN", b("bin/claude-cheap")),
             ("NIMITZ_NATIVE_CLAUDE_BIN", native.clone()),
             ("NIMITZ_MUX", "none".into()),
         ]
@@ -179,7 +204,7 @@ impl E2e {
         let b = |x: &str| self.base.join(x).to_string_lossy().into_owned();
         c.env("NIMITZ_HOME", b("nimitz"))
             .env("NIMITZ_STATE", b("state"))
-            .env("NIMITZ_CLAUDE_BIN", b("bin/claude-haiku"))
+            .env("NIMITZ_CLAUDE_BIN", b("bin/claude-cheap"))
             .env("NIMITZ_NATIVE_CLAUDE_BIN", &self.native)
             .env("NIMITZ_MUX", "none");
         c
@@ -269,7 +294,7 @@ impl E2e {
         for (id, dir) in &leads {
             let idv = nimitz_core::Id(id.clone());
             let settings = self.no_mux(nimitz_core::claude::settings_json(&self.env, &idv, true));
-            let (code, out) = self.claude(dir, &["--bg", "--model", "haiku", "--name", &idv.name(), "--settings", &settings, OK_PROMPT]);
+            let (code, out) = self.claude(dir, &["--bg", "--model", &cheap_model(), "--name", &idv.name(), "--settings", &settings, OK_PROMPT]);
             assert_eq!(code, 0, "lead launch by hand: {out}");
         }
         for (id, _) in &leads {
@@ -758,7 +783,7 @@ fn e2e_05_live_member_start_is_a_noop_and_a_hand_resume_is_a_swept_copy() {
     assert_eq!((still["session"]["short_id"].as_str(), still["session"]["pid"].as_i64()), (Some(job.as_str()), Some(pid)), "the live member was touched: {still}");
     assert_eq!(w.ship_rows(), vec![job.clone()]);
     // by hand: a resume of the live job starts a copy (2.1.292)
-    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &sid, "--model", "haiku"]);
+    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &sid, "--model", &cheap_model()]);
     println!("hand resume ({code}): {out}");
     let copy = nimitz_core::claude::copy_started(&out).or_else(|| nimitz_core::claude::job_started(&out)).expect("the hand resume named a job");
     assert_ne!(copy, job, "Claude Code resumed the live job in place?");
@@ -960,13 +985,13 @@ fn e2e_10_unlabelled_session_hidden_and_fork_shown_as_copy() {
     let m = w.start_ship_idle();
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
     // the user's own session in the ship folder: no labels, its own conversation
-    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--model", "haiku", "--name", "e2e10 own work", OK_PROMPT]);
+    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--model", &cheap_model(), "--name", "e2e10 own work", OK_PROMPT]);
     println!("own ({code}): {out}");
     let own = nimitz_core::claude::job_started(&out).expect("own job");
     // a fork of the ship's conversation (stopped first: a fork of a live job is a copy anyway)
     w.ok(&["stop", &w.ship(), "--yes"]);
     w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
-    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &sid, "--fork-session", "--model", "haiku"]);
+    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--resume", &sid, "--fork-session", "--model", &cheap_model()]);
     println!("fork ({code}): {out}");
     let fork = nimitz_core::claude::job_started(&out).expect("fork job");
     assert_ne!(fork, job);
@@ -1003,7 +1028,7 @@ fn e2e_11_another_homes_member_never_appears() {
         "NIMITZ_FLEET": w.fleet, "NIMITZ_SQUADRON": "SQ", "NIMITZ_ROLE": "ship", "NIMITZ_ID": w.ship(), "NIMITZ_HOME": other_home},
         "worktree": {"bgIsolation": "none"}}).to_string());
     let name = format!("[{}.SQ]-SHIP", w.fleet);
-    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--model", "haiku", "--name", &name, "--settings", &labels, OK_PROMPT]);
+    let (code, out) = w.claude(&w.ship_dir(), &["--bg", "--model", &cheap_model(), "--name", &name, "--settings", &labels, OK_PROMPT]);
     println!("other home ({code}): {out}");
     let job = nimitz_core::claude::job_started(&out).expect("job");
     let row = w.wait(45, || w.agents().into_iter().find(|r| r.short_id.as_deref() == Some(job.as_str()) && r.pid.is_some())).expect("live");
@@ -1238,7 +1263,7 @@ fn e2e_15_accept_cli18_a_held_member_gives_held_only() {
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
     w.ok(&["stop", &w.ship(), "--yes"]);
     w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
-    w.tmux_run(&w.ship_dir(), &format!("'{}' --model haiku --resume {sid}", w.native), "\u{276f}");
+    w.tmux_run(&w.ship_dir(), &format!("'{}' --model {} --resume {sid}", w.native, cheap_model()), "\u{276f}");
     let held = w.wait(45, || Some(w.member_issues(&w.ship())).filter(|v| v.iter().any(|(c, _)| c == "held")));
     let codes = held.expect("held").into_iter().map(|(c, _)| c).collect::<Vec<_>>();
     println!("cli-18 issues: {codes:?}");
@@ -1268,7 +1293,7 @@ fn e2e_16_accept_clil8_an_interactive_namesake_is_the_leads_intruder_only() {
     w.fleet_with_ship(OK_PROMPT, "default");
     let adm = w.fleet.clone();
     let name = nimitz_core::Id(adm.clone()).name();
-    w.tmux_run(&w.fleet_dir().join("admiral"), &format!("'{}' --model haiku --name '{name}'", w.native), "\u{276f}");
+    w.tmux_run(&w.fleet_dir().join("admiral"), &format!("'{}' --model {} --name '{name}'", w.native, cheap_model()), "\u{276f}");
     let got = w.wait(45, || Some(w.member_issues(&adm)).filter(|v| v.iter().any(|(c, _)| c == "lead.intruder"))).expect("lead.intruder");
     println!("cli-L8 issues: {got:?}");
     assert!(!got.iter().any(|(c, _)| c == "name.taken" || c == "dup.live"), "{got:?}");
@@ -1407,5 +1432,30 @@ fn e2e_21_accept_3_8_a_fork_of_a_lead_is_its_intruder() {
     assert_eq!(w.member(&adm).unwrap()["session"]["short_id"], job.as_str(), "the admiral keeps its job");
     let (code, out) = w.nz(&["start", &w.ship(), "--plan"]);
     assert_eq!(code, 0, "{out}");
+    w.finish();
+}
+
+/// The e2e sessions run on the cheap model they ask for: a `--model` the
+/// user's `availableModels` does not allow is swapped for the default (Opus)
+/// without an error, so the suite checks what the transcript says.
+#[test]
+fn e2e_00_sessions_run_on_the_cheap_model() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(93);
+    w.ok(&["fleet", "new", &w.fleet, "--machine", "e2e", "--yes"]);
+    let dir = w.fleet_dir().join("admiral");
+    w.settings(&dir);
+    let idv = nimitz_core::Id(w.fleet.clone());
+    let settings = w.no_mux(nimitz_core::claude::settings_json(&w.env, &idv, true));
+    let (code, out) = w.claude(&dir, &["--bg", "--model", &cheap_model(), "--name", &idv.name(), "--settings", &settings, OK_PROMPT]);
+    assert_eq!(code, 0, "{out}");
+    let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
+    let sid = m["session"]["session_id"].as_str().unwrap().to_string();
+    let t = std::fs::read_to_string(w.transcript(&dir, &sid).expect("transcript")).unwrap();
+    let models: Vec<String> = t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["type"] == "assistant").filter_map(|v| v["message"]["model"].as_str().map(String::from)).collect();
+    println!("[OK] asked for {}, ran on {models:?}", cheap_model());
+    assert!(!models.is_empty() && models.iter().all(|m| m.contains(&cheap_model())), "asked for {}, ran on {models:?}", cheap_model());
     w.finish();
 }
