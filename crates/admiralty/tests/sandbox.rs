@@ -318,6 +318,46 @@ fn admiralty_outside_herdr_uses_the_recorded_server_and_sees_the_panes() {
     assert_eq!(b.panes.len(), seen_inside.len(), "the same panes as inside Herdr");
 }
 
+/// A lead's attach pane that Herdr never claimed (an attach client runs no
+/// Herdr hook: `agent` claude, no `agent_session`) still shows the lead: its
+/// `claude attach <job>` foreground names the job, so the row gets its pane
+/// (the dot, `j`, `A` focusing it) as `nimitz status` does.
+#[test]
+fn an_unclaimed_attach_pane_still_shows_its_lead() {
+    let dir = tempfile::tempdir().unwrap();
+    let sb = dir.path().join("sb");
+    let bin = env!("CARGO_BIN_EXE_admiralty");
+    let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
+    assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+    let env = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
+    let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for l in env.lines() {
+        let (k, v) = l.trim_start_matches("export ").split_once('=').unwrap();
+        vars.insert(k.into(), v.into());
+    }
+    let b = CoreSource::detect(&vars).load();
+    let lead = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find_map(|m| m.session.as_ref().and_then(|s| s.short_id.clone().map(|j| (m.id.clone(), j, s.session_id.clone())))).expect("a lead with a job");
+    let (id, job, sid) = lead;
+    let world = sb.join("herdr/world.json");
+    let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    let p = &mut w["panes"][0];
+    p.as_object_mut().unwrap().remove("agent_session");
+    p["agent"] = serde_json::json!("claude");
+    p["agent_status"] = serde_json::json!("working");
+    p["foreground"] = serde_json::json!(["/home/u/.local/bin/claude", "attach", job]);
+    let pane = p["pane_id"].as_str().unwrap().to_string();
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    let b = CoreSource::detect(&vars).load();
+    let shown = b.panes.iter().find(|p| p.pane.pane_id == pane).expect("the pane");
+    assert_eq!(shown.session_id.as_deref(), Some(sid.as_str()), "{id}'s attach pane shows its session");
+    // `A` finds that pane and only focuses it (nothing is typed, no new tab)
+    let ctx = Ctx { env: nimitz_core::env::Env::from_vars(&vars), mux: nimitz_mux::detect(&vars), live: false, exit_after_jump: false };
+    match actions::existing_open(&ctx, &b.snap, &Target::Member(id.clone())) {
+        Ok(nimitz_mux::TabState::Shown(p)) => assert_eq!(p.pane_id, pane),
+        other => panic!("{id}: {other:?}"),
+    }
+}
+
 #[test]
 fn bug40_the_first_look_is_quick_and_the_full_one_follows() {
     let w = world();

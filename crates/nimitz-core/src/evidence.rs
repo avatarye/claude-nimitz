@@ -1133,6 +1133,30 @@ mod tests {
 
 }
 
+/// Only a Claude Code process (a stale session file whose pid another
+/// program reuses names nothing): `claude`, or the native binary under
+/// `.../claude/versions/<v>`, or an npm install's `node .../claude-code/cli.js`.
+fn is_claude(argv: &[String]) -> bool {
+    argv.first().is_some_and(|a0| Path::new(a0).file_name().is_some_and(|n| n.to_string_lossy().starts_with("claude")) || a0.contains("/claude/versions/"))
+        || argv.get(1).is_some_and(|a1| a1.contains("claude-code/cli"))
+}
+
+/// The session of the job a pane's foreground attaches to (`claude attach
+/// <job>`, a short or full job id): its job row's conversation now
+/// (`resumeSessionId`, which `/clear` moves; else `sessionId`). What a pane
+/// shows when Herdr claims no session for it: an attach client never runs
+/// Herdr's SessionStart hook, so Herdr sees claude there but not which
+/// session. Not used against a claim: a claim the attach does not back may be
+/// the agent view (R-24).
+pub fn session_of_attach(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
+    procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(argv, _)| {
+        let job = argv.windows(2).find(|w| w[0] == "attach").map(|w| w[1].as_str())?;
+        let row = |short: &str| std::fs::read(claude_home.join("jobs").join(short).join("state.json")).ok().and_then(|b| first_json(&b));
+        let v = row(job).or_else(|| job.get(..8).filter(|_| job.len() > 8).and_then(row))?;
+        ["resumeSessionId", "sessionId"].iter().find_map(|k| v.get(*k).and_then(|x| x.as_str()).filter(|x| !x.is_empty())).map(String::from)
+    })
+}
+
 /// Does what runs in a pane back its multiplexer's claim that the pane shows
 /// session `sid`? Herdr learns a pane's session from its own SessionStart
 /// hook, which names the pane by the process's inherited `HERDR_PANE_ID`: a
@@ -1168,14 +1192,6 @@ pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], si
 /// Not an attach client's job: an attach may show the agent view instead
 /// (R-24), which only Herdr's claim tells.
 pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
-    // only a Claude Code process (a stale session file whose pid another
-    // program reuses names nothing): `claude`, or the native binary under
-    // `.../claude/versions/<v>`
-    let is_claude = |argv: &Vec<String>| {
-        argv.first().is_some_and(|a0| Path::new(a0).file_name().is_some_and(|n| n.to_string_lossy().starts_with("claude")) || a0.contains("/claude/versions/"))
-            // an npm install runs `node .../@anthropic-ai/claude-code/cli.js`
-            || argv.get(1).is_some_and(|a1| a1.contains("claude-code/cli"))
-    };
     procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(_, pid)| {
         let v = std::fs::read(claude_home.join("sessions").join(format!("{}.json", (*pid)?))).ok().and_then(|b| first_json(&b))?;
         v.get("sessionId").and_then(|x| x.as_str()).map(String::from)
@@ -1212,6 +1228,11 @@ mod claim_tests {
         // what the pane runs, from the processes alone
         assert_eq!(super::session_of_foreground(ch, &p(&["claude"], Some(700))).as_deref(), Some("s-commodore"));
         assert_eq!(super::session_of_foreground(ch, &p(&["claude", "attach", "aaaa1111"], None)), None, "an attach may show the agent view");
+        assert_eq!(super::session_of_attach(ch, &p(&["/home/u/.local/bin/claude", "attach", "aaaa1111"], None)).as_deref(), Some("s-after-clear"), "the job's session now");
+        assert_eq!(super::session_of_attach(ch, &p(&["claude", "attach", "aaaa1111-0000-0000-0000-000000000000"], None)).as_deref(), Some("s-after-clear"), "a full job id");
+        assert_eq!(super::session_of_attach(ch, &p(&["claude", "attach", "bbbb2222"], None)), None, "no job row");
+        assert_eq!(super::session_of_attach(ch, &p(&["vim", "attach", "aaaa1111"], None)), None, "not claude");
+        assert_eq!(super::session_of_attach(ch, &p(&["zsh"], Some(1))), None);
         assert_eq!(super::session_of_foreground(ch, &p(&["zsh"], Some(1))), None);
         // a stale session file of a reused pid: the program is not claude
         assert_eq!(super::session_of_foreground(ch, &p(&["vim"], Some(700))), None);

@@ -333,6 +333,7 @@ Four sub-cases; all "before": leads attached, S1 attached, all names standard.
 - Must not: type `claude attach` into the view (it would land in the dispatch input and create a new session).
 - nimitz knows: Herdr `agent list` shows the pane with an agent whose session is the spare (`spare: true` in the session file) or no session; the title.
 - Priority: must (never type), should (the report).
+- Built (fix after 0.4.0): Herdr names no session for an attach pane at all (an attach client runs no Herdr hook: `agent` claude, no `agent_session`), so a lead's own attach pane is read from its foreground: `claude attach <job>` shows that job's session (`evidence::session_of_attach`) for `status`, Admiralty, `open`, `A` and a restore. The agent view with no claim then reads as the attach, the limit contracts.md names; a claim the attach does not back still never shows the attach's member (test `an_attach_pane_herdr_never_claimed_still_shows_its_lead`).
 
 ### R-25 A lead's job removed under a live tab
 

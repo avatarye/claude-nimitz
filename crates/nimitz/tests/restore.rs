@@ -1369,3 +1369,31 @@ fn r_a_branched_lead_with_a_shell_tab_is_woken_with_every_flag_then_opened() {
     assert!(sb.live("MAIN/ARGOS"), "{r}");
     assert_eq!(sb.member("MAIN/ARGOS")["session"]["session_id"], branch.as_str(), "the branch is what runs");
 }
+
+/// An attach client never runs Herdr's SessionStart hook, so Herdr knows the
+/// pane runs claude (`agent`, `agent_status`) but never which session: no
+/// `agent_session` (the live NIMITZ server after the 0.4.0 migration). The
+/// pane's foreground, `claude attach <job>`, is the pane nimitz made: status
+/// shows the lead there, a restore reuses the tab, open focuses it.
+#[test]
+fn an_attach_pane_herdr_never_claimed_still_shows_its_lead() {
+    let sb = Sb::new(true);
+    sb.ok(&["restore", "MAIN", "--yes"]);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    sb.set_pane(&pane, |p| {
+        p["agent"] = json!("claude");
+        p["agent_status"] = json!("working");
+        p["terminal_title_stripped"] = json!("[MAIN.ARGOS]-COMMODORE");
+        p.as_object_mut().unwrap().remove("agent_session");
+    });
+    assert_eq!(sb.member("MAIN/ARGOS")["pane"], json!(pane), "status shows the lead in its attach pane");
+    let before = sb.n_runs();
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert!(!r.contains("tab.agentview") && !r.contains("tab.taken"), "{r}");
+    assert_eq!(sb.n_runs(), before, "nothing typed into the working attach:\n{}", sb.calls());
+    assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1, "never a second tab");
+    sb.ok(&["open", "MAIN/ARGOS"]);
+    assert_eq!(sb.n_runs(), before, "open types nothing");
+    assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
+    assert!(sb.calls().lines().last().is_some_and(|l| l.contains("focus") && l.contains(&pane)), "open focuses the attach pane:\n{}", sb.calls());
+}

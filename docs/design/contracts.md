@@ -618,9 +618,17 @@ claim alone can put a ship in its commodore's pane. An unbacked claim leaves
 the pane with no session (`ShapePane.claimed` keeps it for the agent-view
 test, R-24; a claim that names another member's session is that member's
 hook, not the agent view); the pane then shows the session its foreground
-pid's session file names, if any. A pane whose foreground cannot be read
+pid's session file names, if any. A pane Herdr shows an agent in but
+claims no session for shows the job its foreground `claude attach <job>`
+attaches to (`evidence::session_of_attach`: the job row's
+`resumeSessionId`, else `sessionId`): an attach client never runs Herdr's
+SessionStart hook, so Herdr never names the session of a lead's own attach
+pane (seen live after the 0.4.0 migration: `agent` claude, no
+`agent_session`). A pane whose foreground cannot be read
 (`pane process-info` fails) shows no session at all. The cost: one `pane
-process-info` per claimed pane on `status` and on every `panes()` read.
+process-info` per agent pane on `status` and on every `panes()` read. The
+adapter reads job rows and session files under the Claude home of the env
+it was built from (`Herdr.claude_home`), not the process env.
 
 `NIMITZ_STATE/active.json` (`nimitz_core::active`, version 1): the members
 live at the last write, by id: `{job, session, status (busy|idle|needs-you|

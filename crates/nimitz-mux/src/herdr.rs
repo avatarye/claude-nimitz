@@ -18,6 +18,9 @@ pub struct Herdr {
     /// `HERDR_SOCKET_PATH` for every call (`NIMITZ_HERDR_SOCKET`): the
     /// default server a user's own command recorded with no session name
     pub socket: Option<String>,
+    /// the Claude home whose job rows and session files back a pane's claim
+    /// (the caller's env, as every other read of it)
+    pub claude_home: std::path::PathBuf,
 }
 
 /// Loose label matching, the herdr-fleet skill's rules in their order:
@@ -276,9 +279,12 @@ impl Herdr {
     /// from whoever launched it. An unreadable foreground drops the claim.
     /// The session a pane shows: Herdr's claim when the foreground backs it,
     /// else the session the foreground itself runs (a commodore's pane that a
-    /// ship's hook claimed still shows the commodore), else none.
-    fn shown(&self, pane_id: &str, claim: &str, procs: Option<&[(Vec<String>, Option<i64>)]>) -> Option<String> {
-        let home = nimitz_core::env::Env::from_vars(&std::env::vars().collect()).claude_home;
+    /// ship's hook claimed still shows the commodore), else none. A pane with
+    /// no claim shows the job its `claude attach <job>` foreground attaches
+    /// to: an attach client never runs Herdr's hook, so Herdr never names the
+    /// session of the very pane nimitz opened for a lead.
+    fn shown(&self, pane_id: &str, claim: Option<&str>, procs: Option<&[(Vec<String>, Option<i64>)]>) -> Option<String> {
+        let home = &self.claude_home;
         let read;
         let procs = match procs {
             Some(p) => p,
@@ -287,10 +293,13 @@ impl Herdr {
                 &read[..]
             }
         };
-        if nimitz_core::evidence::claim_backed(&home, procs, claim) {
+        let Some(claim) = claim else {
+            return nimitz_core::evidence::session_of_attach(home, procs);
+        };
+        if nimitz_core::evidence::claim_backed(home, procs, claim) {
             return Some(claim.to_string());
         }
-        nimitz_core::evidence::session_of_foreground(&home, procs)
+        nimitz_core::evidence::session_of_foreground(home, procs)
     }
 
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
@@ -459,16 +468,18 @@ impl Mux for Herdr {
         let v = self.run(&["api", "snapshot"])?;
         let mut shape = parse_snapshot(&v).map_err(MuxError::Failed)?;
         for p in shape.panes.iter_mut() {
-            // a pane that claims a session is read in any case (the claim
-            // must be backed); every pane when the foregrounds were asked for
-            if !foregrounds && p.session_id.is_none() {
+            // a pane that claims a session, or shows an agent Herdr names no
+            // session for (an attach), is read in any case (a claim must be
+            // backed; an attach names its job); every pane when the
+            // foregrounds were asked for
+            if !foregrounds && p.session_id.is_none() && p.agent.is_none() {
                 continue;
             }
             // one process-info per pane: what runs (the first non-shell) and its pid
             let procs = self.foreground_procs(&p.pane.pane_id).ok();
             p.claimed = p.session_id.clone();
-            if let Some(sid) = p.session_id.clone() {
-                p.session_id = self.shown(&p.pane.pane_id, &sid, Some(procs.as_deref().unwrap_or(&[])));
+            if p.session_id.is_some() || p.agent.is_some() {
+                p.session_id = self.shown(&p.pane.pane_id, p.claimed.as_deref(), Some(procs.as_deref().unwrap_or(&[])));
             }
             if foregrounds {
                 if let Some(procs) = procs {
@@ -493,9 +504,8 @@ impl Mux for Herdr {
     fn panes(&self) -> Vec<Pane> {
         let mut panes = self.run(&["agent", "list"]).map(|v| parse_panes(&v)).unwrap_or_default();
         for p in panes.iter_mut() {
-            if let Some(sid) = p.session_id.clone() {
-                p.session_id = self.shown(&p.pane.pane_id, &sid, None);
-            }
+            let claim = p.session_id.clone();
+            p.session_id = self.shown(&p.pane.pane_id, claim.as_deref(), None);
         }
         panes
     }

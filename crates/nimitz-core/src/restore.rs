@@ -548,7 +548,7 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     }
     // members with no job and no history, once per fleet: a restore never cold-launches
     if rep.not_started > before && !ctx.opts.shape_only {
-        rp.plan.warnings.push(issue("not.started", Severity::Info, format!("not started (no job, no history), so not restored: {}", never.join(", ")), Some(format!("nimitz up {fleet}  # starts them; or nimitz start <id>")), None));
+        rp.plan.warnings.push(issue("not.started", Severity::Info, format!("not restored, nothing to resume (no job row and no transcript: never started, or started and never prompted, so nothing is lost): {}", never.join(", ")), Some(format!("nimitz start <id>  # a cold launch; or nimitz up {fleet} for all of them")), None));
     }
     // tabs named for members this fleet does not have (R-13)
     let ws_of_fleet = |label: &str| {
