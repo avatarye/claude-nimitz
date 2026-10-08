@@ -1154,6 +1154,9 @@ impl App {
             }
         }
         match self.ctx.mux.type_text(&plan.pane, &body) {
+            Ok(()) if plan.attach_job.is_some() && nimitz_mux::typed_into_view(self.ctx.mux.as_ref(), &plan.pane) => {
+                self.notify(format!("Typed into {}'s pane {}, but it runs the agent view now (an /exit raced the typing): check it for a dispatched session", plan.via, plan.pane.pane_id), st(mono::ERROR));
+            }
             Ok(()) => {
                 actions::log(&self.ctx.env, "message", &format!("{} via {}: {}", plan.to, plan.via, nimitz_mux::sanitize_text(text)));
                 let how = if plan.relay { format!(" (relayed by {})", plan.via) } else { String::new() };

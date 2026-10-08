@@ -2288,7 +2288,8 @@ fn a_job_labelled_for_another_home_never_binds_the_member() {
 fn an_unclaimed_attach_pane_takes_typing_only_while_it_runs_the_exact_attach() {
     let sb = Sb::new(true);
     let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
-    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    // the native binary's own path carries its version
+    let bin = "/home/u/.local/share/claude/versions/2.1.293".to_string();
     sb.herdr_world(|w| {
         let p = &mut w["panes"][1];
         p.as_object_mut().unwrap().remove("agent_session");
@@ -2313,7 +2314,7 @@ fn an_unclaimed_attach_pane_takes_typing_only_while_it_runs_the_exact_attach() {
     assert_eq!(n["delivery"], "failed", "{n}");
     let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "again", "--yes"], &[("NIMITZ_SIGNAL_WAIT", "0")], None);
     assert_ne!(r.code, 0, "{}", r.out);
-    println!("{}", r.out);
+    assert!(r.out.contains("nothing was typed") || r.out.contains("tab.taken"), "{}", r.out);
     assert_eq!(sb.prompts("w1:p2").len(), before, "nothing typed into the agent view: {}", r.out);
 }
 
@@ -2411,4 +2412,23 @@ fn with_no_multiplexer_a_signal_goes_to_the_inbox_as_a_request() {
     assert!(r.out.contains("posted to MAIN/ARGOS's inbox") && r.out.contains("not as your own input"), "{}", r.out);
     let line: Value = serde_json::from_str(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().trim()).unwrap();
     assert!(line["message"]["content"].as_str().unwrap().contains("no mux here"));
+}
+
+/// An attach pane on a Claude Code older than the one measured to re-exec
+/// as the agent view is never typed into: the view might keep the attach's argv.
+#[test]
+fn an_attach_pane_on_an_older_claude_code_is_never_typed_into() {
+    let sb = Sb::new(true);
+    let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
+    sb.herdr_world(|w| {
+        let p = &mut w["panes"][1];
+        p.as_object_mut().unwrap().remove("agent_session");
+        p["agent"] = Value::from("claude");
+        p["agent_status"] = Value::from("idle");
+        p["foreground"] = serde_json::json!(["/home/u/.local/share/claude/versions/2.1.292", "attach", job]);
+    });
+    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(tab.unverified)"), "{}", r.out);
+    assert!(sb.prompts("w1:p2").is_empty(), "nothing typed");
 }

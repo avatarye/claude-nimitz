@@ -687,6 +687,12 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     }
     let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into", via_m.expected_name))?;
     let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone"))?;
+    // typed only into the pane that shows its session (a pane matched by its
+    // title and folder alone may be anything, the agent view included)
+    let via_sid = via_m.session.as_ref().map(|s| s.session_id.as_str());
+    if !panes.iter().any(|p| p.pane.pane_id == pane_id && p.session_id.as_deref().is_some() && p.session_id.as_deref() == via_sid) {
+        return Err(format!("{}'s pane {pane_id} matches it by title only, not by its session; nothing is typed (jump there with enter and type it yourself)", via_m.expected_name));
+    }
     // read from its `claude attach` alone: typed into only while it runs
     // exactly that attach (checked when the message is sent)
     let attach_job = if panes.iter().any(|p| p.pane.pane_id == pane_id && p.inferred) {

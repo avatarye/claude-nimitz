@@ -379,7 +379,7 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     }
     let b = CoreSource::detect(&vars).load();
     let (id, job, cwd) = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find_map(|m| m.session.as_ref().and_then(|s| s.short_id.clone().map(|j| (m.id.clone(), j, s.cwd.clone())))).expect("a lead with a job");
-    let claude = "/home/u/.local/bin/claude";
+    let claude = "/home/u/.local/share/claude/versions/2.1.293";
     let world = sb.join("herdr/world.json");
     let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
     let p = &mut w["panes"][0];
@@ -626,19 +626,22 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
 }
 
 /// What counts as the exact attach: `claude attach <job>` (by its short id,
-/// or the full id it begins), from any claude binary; never the agent view.
+/// or the full id it begins) from a Claude Code at or past the version that
+/// re-execs as the agent view (its versions/<v> path); never the view, an
+/// older or unknown version.
 #[test]
 fn the_exact_attach_is_only_claude_attach_of_that_job() {
     let mux = TestMux::default();
     let cases: &[(&[&str], bool)] = &[
-        (&["/home/u/.local/bin/claude", "attach", "f8eee8df"], true),
         (&["/home/u/.local/share/claude/versions/2.1.293", "attach", "f8eee8df"], true),
-        (&["claude", "attach", "f8eee8df-b691-4eac-a8a7-83004ac4653a"], true),
+        (&["/home/u/.local/share/claude/versions/2.1.300", "attach", "f8eee8df-b691-4eac-a8a7-83004ac4653a"], true),
+        (&["/home/u/.local/share/claude/versions/2.1.292", "attach", "f8eee8df"], false),
+        (&["/home/u/.local/bin/claude", "attach", "f8eee8df"], false),
         (&["/home/u/.local/bin/claude", "agents"], false),
-        (&["claude", "attach", "f8eee8dfx"], false),
-        (&["claude", "attach", "0000aaaa"], false),
-        (&["vim", "attach", "f8eee8df"], false),
-        (&["claude", "attach", "f8eee8df", "--x"], false),
+        (&["/v/claude/versions/2.1.293", "agents"], false),
+        (&["/v/claude/versions/2.1.293", "attach", "f8eee8dfx"], false),
+        (&["/v/claude/versions/2.1.293", "attach", "0000aaaa"], false),
+        (&["/v/claude/versions/2.1.293", "attach", "f8eee8df", "--x"], false),
         (&[], false),
     ];
     for (i, (fg, want)) in cases.iter().enumerate() {

@@ -324,8 +324,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     };
     let why = if via.id == id { "type into its attached tab".to_string() } else { format!("you reach {id} through its commodore") };
     let mux = ctx.mux();
-    // its attached tab first: text typed there is the user's own input. A
-    // pane known only by its attach is never typed into (R-24)
+    // its attached tab first: text typed there is the user's own input
     let shown = via.session.as_ref().filter(|_| live(via) && mux.caps().type_text).and_then(|s| run::shown_in(mux.as_ref(), &s.session_id));
     // a pane known by its attach alone takes typing only while it runs
     // exactly `claude attach <job>` (the agent view re-execs as `claude
@@ -412,9 +411,9 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                         let sid = via.session.as_ref().map(|s| s.session_id.clone()).unwrap_or_default();
                         let wait: f64 = ctx.vars.get("NIMITZ_SIGNAL_WAIT").and_then(|v| v.parse().ok()).unwrap_or(SIGNAL_ATTACH_WAIT_S);
                         match run::wait_for_session(mux.as_ref(), &sid, wait) {
-                            // the new tab is known by its attach alone: typed into
-                            // while it runs exactly the attach, else its inbox
-                            Some(p) if p.inferred && exact(&p) => p.pane,
+                            // the new tab is known by its attach alone, and a fresh
+                            // attach may not be connected yet (a failed one drops to
+                            // the shell, which would run the text): its inbox
                             Some(p) if p.inferred => {
                                 let posted = via.session.as_ref().ok_or_else(|| "no session".to_string()).and_then(|s| crate::notify::inbox_target(&ctx.env, &via.id, s)).and_then(|(socks, pid)| {
                                     let body = format!("[nimitz signal] A message for {id}, relayed by nimitz from a `nimitz signal` run with no member labels. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {text}");
@@ -451,6 +450,10 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                 return Ok(1);
             }
             match mux.type_text(&pane, &text) {
+                Ok(()) if recheck && nimitz_mux::typed_into_view(mux.as_ref(), &pane) => {
+                    out::warn(&format!("typed to {} in pane {}, but the pane runs the agent view now (an /exit raced the typing): check pane {} for a dispatched session", via.id, pane.pane_id, pane.pane_id));
+                    Ok(1)
+                }
                 Ok(()) => {
                     out::ok(&format!("typed to {} in pane {}", via.id, pane.pane_id));
                     Ok(0)

@@ -297,7 +297,7 @@ impl Herdr {
             }
         };
         let Some(claim) = claim else {
-            // the attach alone: shown, never typed into (`Pane.inferred`)
+            // the attach alone: shown, typed into only while it runs exactly the attach (`Pane.inferred`)
             if let Some(sid) = nimitz_core::evidence::session_of_attach(home, procs) {
                 return (Some(sid), true);
             }
@@ -458,6 +458,10 @@ impl Mux for Herdr {
     /// the pane's pty (`result.process_info.foreground_processes[].argv`). The
     /// first process that is not a shell is what runs; none means an idle
     /// shell; a reply with no list is an error (never "idle shell").
+    fn foreground_procs(&self, pane: &PaneRef) -> Result<Vec<(Vec<String>, Option<i64>)>, MuxError> {
+        Herdr::foreground_procs(self, &pane.pane_id)
+    }
+
     fn foreground(&self, pane: &PaneRef) -> Result<Vec<String>, MuxError> {
         let v = self.run(&["pane", "process-info", "--pane", &pane.pane_id])?;
         let procs = parse_process_info(&v).map_err(MuxError::Failed)?;

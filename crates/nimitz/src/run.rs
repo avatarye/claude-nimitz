@@ -32,8 +32,9 @@ pub fn shown_in(mux: &dyn Mux, session_id: &str) -> Option<nimitz_mux::Pane> {
 }
 
 /// Why nothing is typed into a pane whose session nimitz read from its
-/// `claude attach <job>` alone (`Pane.inferred`): the agent view looks the
-/// same (R-24), and text typed there would dispatch a new session.
+/// `claude attach <job>` alone (`Pane.inferred`) when it does not run
+/// exactly that attach now (`nimitz_mux::runs_exact_attach`): text typed
+/// into the agent view (R-24) would dispatch a new session.
 pub fn untypeable(id: &Id, pane: &PaneRef) -> Issue {
     refusal(
         "tab.unverified",
