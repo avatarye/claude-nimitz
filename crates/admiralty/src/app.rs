@@ -96,7 +96,16 @@ fn on() -> bool {
     true
 }
 
+/// Pasted text as one line: every line break a space (a newline typed into a
+/// pane would submit early; a one-line field has no place for it).
+pub fn one_line(text: &str) -> String {
+    text.replace("\r\n", " ").replace(['\n', '\r'], " ")
+}
+
 pub struct App {
+    /// the rows the last draw put on screen (`None` before the first draw):
+    /// the animation ticks only for an animated row among them
+    pub shown_rows: Option<Vec<usize>>,
     /// the user's choice: status motion on (`v`; saved)
     pub anim: bool,
     /// the live loop runs the motion (`run::run` sets it; tests and `dump` never do)
@@ -199,6 +208,7 @@ impl App {
             sq_rank: HashMap::new(),
             sq_flash: HashMap::new(),
             inset: (0, 0),
+            shown_rows: None,
             rows: vec![],
             cursor: 0,
             scroll: 0,
@@ -271,7 +281,8 @@ impl App {
             return None;
         }
         let mut step = None;
-        for r in &self.rows {
+        let in_view = |i: usize| self.shown_rows.as_ref().is_none_or(|s| s.contains(&i));
+        for (_, r) in self.rows.iter().enumerate().filter(|(i, _)| in_view(*i)) {
             match r.node.anim {
                 Anim::Spin | Anim::SpinDim | Anim::Pulse => return Some(1),
                 Anim::Flash(from) if f.saturating_sub(from) < 10 => return Some(1),
@@ -920,17 +931,46 @@ impl App {
 
     // ---------------------------------------------------------------- keys
 
+    /// A paste (the terminal's bracketed paste): it lands whole where text is
+    /// typed (the `m` box and the filter as one line, a form's field), and is
+    /// never read as keys anywhere else.
+    pub fn on_paste(&mut self, text: &str) -> Option<Effect> {
+        match self.modal.as_mut() {
+            Some(Modal::Message { text: box_text, .. }) => box_text.push_str(&one_line(text)),
+            Some(Modal::Form(form)) => {
+                form.paste(text);
+                if let Some(b) = &self.bundle {
+                    form.validate(&self.ctx.env, &b.snap);
+                }
+            }
+            Some(_) => {}
+            None if self.editing_filter => {
+                self.filter.push_str(&one_line(text));
+                self.rebuild();
+            }
+            None => self.notify("A paste goes into the message box (m), a form or the filter (/); here it is ignored", st(mono::COMMENT)),
+        }
+        self.after_input();
+        None
+    }
+
     /// Handle one key; returns work the run loop must do. Sticky state is
     /// saved after every key that changed it.
     pub fn on_key(&mut self, k: KeyEvent) -> Option<Effect> {
         let effect = self.handle_key(k);
+        self.after_input();
+        effect
+    }
+
+    /// After a key or a paste: save sticky state, and start the detail at
+    /// the top when the cursor's row changed.
+    fn after_input(&mut self) {
         self.persist();
         let now = self.current().map(|r| r.node.id.clone());
         if now != self.detail_for {
             self.detail_for = now;
             self.detail_scroll = 0;
         }
-        effect
     }
 
     fn handle_key(&mut self, k: KeyEvent) -> Option<Effect> {
