@@ -621,6 +621,15 @@ pub struct Count {
     pub key: bool,
 }
 
+impl Count {
+    /// `icon n`. A glyph a terminal may draw two cells wide gets a blank cell
+    /// to spill into, or it covers the number (an ASCII icon needs none).
+    pub fn text(&self) -> String {
+        let gap = if crate::backend::risky(self.icon) { " " } else { "" };
+        format!("{}{gap}{}", self.icon, self.n)
+    }
+}
+
 /// A band's counts: errors, other issues, then members by status, zero counts
 /// left out. `frames` lays them out (all of them, or the key ones when narrow).
 pub fn status_counts(members: &[&Member], issues: &[&Issue], icons: &Icons) -> Vec<Count> {

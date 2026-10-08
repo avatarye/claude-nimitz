@@ -115,15 +115,15 @@ fn a_squadrons_colour_is_its_worst_member_in_the_theme_order() {
     assert_eq!(c(&[with(Status::Stopped, Some(Severity::Error)), with(Status::NeedsYou, None)]), mono::NEEDS);
 }
 
-/// Spacing goes first: below 83 columns no padding and single gaps; the
+/// Spacing goes first: below 91 columns no padding and single gaps; the
 /// blank lines between boxes stay at any width while the list fits the
 /// height, and go (all of them, the one before STOWAWAYS too) when it does not.
 #[test]
 fn spacing_collapses_before_content() {
     use admiralty::frames::{spacing_for, ROOMY, TIGHT};
     assert_eq!(spacing_for(200), ROOMY);
-    assert_eq!(spacing_for(83), ROOMY);
-    assert_eq!((spacing_for(82).pad, spacing_for(82).gap), (TIGHT.pad, TIGHT.gap));
+    assert_eq!(spacing_for(91), ROOMY);
+    assert_eq!((spacing_for(90).pad, spacing_for(90).gap), (TIGHT.pad, TIGHT.gap));
     assert_eq!((spacing_for(80).pad, spacing_for(80).gap), (TIGHT.pad, TIGHT.gap));
     for w in [56, 55, 50, 30] {
         assert_eq!((spacing_for(w).pad, spacing_for(w).gap), (TIGHT.pad, TIGHT.gap), "{w}: no spacing where columns are cut");
@@ -229,16 +229,47 @@ fn columns_line_up_across_fleet_squadron_and_stowaway_frames() {
     assert_eq!(admiral, ship);
     assert_eq!(ship, stow);
     assert_eq!(ship, forge_ship);
-    let kind_admiral = col_of(&ls, "ADMIRAL   ", "admiral ");
-    let kind_ship = col_of(&ls, "BOOM", "ship ");
-    assert_eq!(kind_admiral, kind_ship);
+    // no KIND column, and no icon before a member's name
+    assert!(!ls.iter().any(|l| l.contains("KIND")), "{}", ls.join("\n"));
+    let boom = ls.iter().find(|l| l.contains("BOOM") && l.contains("- idle")).unwrap();
+    assert!(!boom.contains("S BOOM") && !boom.contains("ship "), "{boom}");
+}
+
+/// A band's counts: a Nerd Font icon a terminal may draw two cells wide
+/// has a blank cell after it, so it never covers its number, at any width
+/// (the squadron bars, the fleet band, the tabs).
+#[test]
+fn band_count_icons_never_touch_their_numbers() {
+    use admiralty::backend::risky;
+    let mut t = demo();
+    t.app.icons = &admiralty::theme::NERD;
+    t.app.rebuild();
+    let mut seen = 0;
+    for fleet in ["MAIN", "FORGE"] {
+        tab(&mut t.app, fleet);
+        for w in [60u16, 90, 91, 120, 200] {
+            let buf = draw(&mut t.app, w, 60);
+            for y in 0..buf.area.height {
+                let row: Vec<String> = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
+                for x in 0..row.len().saturating_sub(1) {
+                    if risky(&row[x]) && row[x + 1].chars().all(|c| c.is_ascii_digit()) && !row[x + 1].is_empty() {
+                        panic!("{fleet} {w} cols, line {y}: {:?} touches {:?}\n{}", row[x], row[x + 1], row.concat());
+                    }
+                    if risky(&row[x]) && row[x + 1] == " " && row.get(x + 2).is_some_and(|c| c.chars().all(|c| c.is_ascii_digit()) && !c.is_empty()) {
+                        seen += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(seen > 0, "some count was drawn with Nerd Font icons");
 }
 
 #[test]
 fn column_widths_grow_to_their_maxima_and_keep_detail_on_narrow_screens() {
     use admiralty::frames::{col_widths, COL_MAX, COL_MIN};
     let narrow = col_widths(96);
-    assert!(narrow[4] >= 20, "DETAIL keeps room at 100 columns: {narrow:?}");
+    assert!(narrow[3] >= 20, "DETAIL keeps room at 100 columns: {narrow:?}");
     let wide = col_widths(400);
     assert_eq!(wide, COL_MAX);
     let tiny = col_widths(10);
@@ -848,7 +879,7 @@ fn at_80x24_the_essentials_stay_on_screen() {
     let status = &ls[ls.len() - 2];
     assert!(status.contains("MONITOR-ONLY"), "the status bar, above the key bar, keeps the mux state: {status}");
     assert!(ls[23].contains("? help") && ls[23].contains("q/esc quit"), "footer keeps help and quit: {}", ls[23]);
-    let row = ls.iter().find(|l| l.contains("ANVIL-2") && l.contains("ship")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
+    let row = ls.iter().find(|l| l.contains("ANVIL-2")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
     assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
     // the floating panel, opened on the same small screen
     keys(&mut t.app, "w");

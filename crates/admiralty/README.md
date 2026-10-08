@@ -84,11 +84,13 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 - Counts read `icon n` (`!2 / *3 / -1`: needs you, busy, idle ...; triangles
   are errors and warnings, orange and yellow on the tab, told apart by their
   shape on a filled bar), right-aligned as a group; under 100 columns only
-  needs-you and errors stay. `?` has a legend for every icon.
-- Columns NAME / KIND / STATUS / AGE / DETAIL line up across all boxes. NAME
-  starts with the pane dot (green working, pink blocked, grey done, plain
-  idle, faint unknown) and an issue mark coloured by severity; DETAIL lists the
-  issue codes.
+  needs-you and errors stay. A Nerd Font icon has a blank cell before its
+  number, so a terminal that draws it two cells wide does not cover the
+  number. `?` has a legend for every icon.
+- Columns NAME / STATUS / AGE / DETAIL line up across all boxes (the kind is in
+  the detail panel). NAME starts with the pane dot (green working, pink
+  blocked, grey done, plain idle, faint unknown), an issue mark coloured by
+  severity and the tree guides; no role icon. DETAIL lists the issue codes.
 - Detail panel (`w` opens and closes it, `esc` closes it; closed at start, so
   the list takes the full width): it floats over the right of the list and
   follows the cursor row. A large

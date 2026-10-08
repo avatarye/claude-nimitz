@@ -107,7 +107,7 @@ fn tab_line(app: &App, width: usize) -> Line<'static> {
                 if k > 0 {
                     sp.push(Span::styled(" / ", st(mono::FAINT)));
                 }
-                sp.push(Span::styled(format!("{}{}", c.icon, c.n), c.style));
+                sp.push(Span::styled(c.text(), c.style));
             }
             sp.push(Span::raw(" "));
         } else {
