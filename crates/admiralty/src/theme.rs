@@ -21,6 +21,9 @@ pub mod mono {
     pub const SEL: Color = Color::Rgb(0x4a, 0x49, 0x39);
     /// frames and tree guides
     pub const LINE: Color = Color::Rgb(0x4e, 0x4d, 0x42);
+    /// text on a filled bar (a squadron's status): contrast against the fills
+    /// NEEDS 5.88, ERROR 7.85, WARN 10.02, BUSY 11.05, MUTED 6.93 (WCAG AA is 4.5)
+    pub const INK: Color = Color::Rgb(0x1b, 0x1c, 0x17);
     /// not started, kind, inert detail, separators (4.1:1)
     pub const FAINT: Color = Color::Rgb(0x8a, 0x86, 0x72);
     /// ages, headers, paths, info issues, key labels (6.0:1)

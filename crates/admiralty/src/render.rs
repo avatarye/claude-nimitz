@@ -89,9 +89,30 @@ fn tab_line(app: &App, width: usize) -> Line<'static> {
         let key = if i < 9 { format!("{} ", i + 1) } else { String::new() };
         let style = if on { Style::new().fg(mono::BG).bg(mono::ACCENT).add_modifier(Modifier::BOLD) } else { st(mono::SOFT) };
         let mut sp = vec![Span::styled(format!(" {key}{} ", crate::view::tab_title(t)), style)];
-        let n = need(t);
-        if n > 0 {
-            sp.push(Span::styled(format!("!{n} "), bold(mono::NEEDS)));
+        // the shown fleet's state word and counts sit on its tab (the list
+        // has no fleet line); the others keep only how many need you
+        let band = app.rows.iter().find(|r| r.node.kind == crate::view::Kind::FleetBand && on);
+        if let Some(r) = band {
+            if let Some(state) = r.node.detail.first() {
+                sp.push(Span::styled(format!(" {}", state.content), state.style));
+            }
+            let narrow = width < crate::frames::NARROW_BAND;
+            let shown: Vec<&crate::view::Count> = r.node.counts.iter().filter(|c| !narrow || c.key).collect();
+            if !shown.is_empty() {
+                sp.push(Span::raw("  "));
+            }
+            for (k, c) in shown.iter().enumerate() {
+                if k > 0 {
+                    sp.push(Span::styled(" / ", st(mono::FAINT)));
+                }
+                sp.push(Span::styled(format!("{}{}", c.icon, c.n), c.style));
+            }
+            sp.push(Span::raw(" "));
+        } else {
+            let n = need(t);
+            if n > 0 {
+                sp.push(Span::styled(format!("!{n} "), bold(mono::NEEDS)));
+            }
         }
         sp.push(Span::raw(" "));
         parts.push((sp, on));

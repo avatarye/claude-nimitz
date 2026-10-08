@@ -39,22 +39,26 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   commands) and four neutral steps (faint not started, muted ages and paths,
   body text and idle, bright live names). Bands sit on one raised background,
   never tinted. On the cursor row and band, faint and muted text is lifted.
-- A fleet is one band line (no frame: each fleet has its own tab), its state
-  word on it, with `icon n / icon n` status and issue counts on the right
-  (info issues are not counted).
-- The admiral sits in a heavy box (`┏━ ADMIRAL ━┓`, a brighter title) with its
-  crew.
-- A rounded box per squadron, its title and comms rule in the top border. The
-  top border takes the squadron's status, the worst of its commodore and
-  ships, in this order: pink needs you, orange error (an issue at Error, or a
-  config that does not load), yellow warning (an issue at Warn), green busy,
-  else neutral (idle, stopped, parked, not started; info issues do not count).
-  The sides stay neutral. Ships are rows; crew, tasks and extra job rows sit
-  under their member with tree guides. Crew show while running and for 30
-  minutes after they finish (a nested crew follows its parent; a running one
-  keeps its parent in view); older finished crew fold into one `+N finished`
-  row per member, which `z` (or space on it) opens and closes, kept in the
-  saved state.
+- A fleet has no line of its own: its tab carries its state word and its
+  `icon n / icon n` status and issue counts (info issues are not counted;
+  under 100 columns only needs-you and errors). The other tabs show how many
+  need you.
+- The admiral sits in a heavy box (`┏━ ▾ ADMIRAL ━┓`, a brighter title) with
+  its crew; that top line is the fleet's row (folding it folds the fleet, `x`
+  on it has the fleet's actions), and a fleet whose config does not load
+  shows its error in full under it.
+- A box per squadron under a title bar filled with the squadron's status, the
+  worst of its commodore and ships, in this order: pink needs you, orange
+  error (an issue at Error, or a config that does not load), yellow warning
+  (an issue at Warn), green busy, else neutral (idle, stopped, parked, not
+  started; info issues do not count), a muted grey that still reads as a bar.
+  The text on the bar is dark (`INK`, at least 5.9:1 on every fill). The sides
+  stay neutral. Ships are rows; crew, tasks and extra job rows sit under their
+  member with tree guides. Crew show while running and for 30 minutes after
+  they finish (a nested crew follows its parent; a running one keeps its
+  parent in view); older finished crew fold into one `+N finished` row per
+  member, which `z` (or space on it) opens and closes, kept in the saved
+  state.
 - Spacing: a blank line between the boxes, a column of padding inside each,
   two spaces between columns. It is the first thing to go: below 103 columns
   (where it would cost NAME or DETAIL their room) the padding and gaps go, and
@@ -118,9 +122,9 @@ says why (starting an admiral or commodore, `up`, open, attach, jump, typing a
 message); ships start, relaunch and stop as usual, and so do sweep,
 rm, adopt and config changes.
 
-A squadron whose config does not load stays on screen with an orange top border
+A squadron whose config does not load stays on screen with an orange bar
 and the error in full (file:line and the parser's words) above its members; a
-fleet's, in full under its band.
+fleet's, in full at the top of its admiral's box.
 
 At 80x24 the header keeps the mux state, the footer keeps `? help` and `q/esc
 quit`, DETAIL keeps room for issue codes, the detail pane drops its picture to

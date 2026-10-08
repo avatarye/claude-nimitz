@@ -495,9 +495,9 @@ fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
     tab(&mut app, "MAIN");
     let buf = draw(&mut app, 200, 60);
     let ls = lines(&buf);
-    assert!(ls.iter().any(|l| l.contains("[MAIN]")), "the fleet stays on screen");
+    assert!(ls[0].contains("MAIN") && ls.iter().any(|l| l.contains("ADMIRAL ")), "the fleet stays on screen");
     let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).expect("the squadron stays on screen");
-    assert_eq!(buf[(1, y as u16)].fg, admiralty::theme::mono::ERROR, "its frame takes the error hue");
+    assert_eq!(buf[(1, y as u16)].bg, admiralty::theme::mono::ERROR, "its bar takes the error hue");
     let all = ls.join("\n");
     assert!(all.contains("squadron.toml") && all.contains("164:13"), "the file and line, in full:\n{all}");
     assert!(all.contains("invalid basic string"), "the parse error's own words");
@@ -559,10 +559,10 @@ fn a_broken_fleet_toml_is_a_red_band_with_the_error_in_full_and_the_other_fleets
     tab(&mut app, "BAD");
     let buf = draw(&mut app, 200, 60);
     let ls = lines(&buf);
-    let y = ls.iter().position(|l| l.contains("[BAD]")).expect("the broken fleet is on screen");
-    assert_eq!(buf[(1, y as u16)].fg, admiralty::theme::mono::ERROR, "its frame takes the error hue");
+    assert!(ls[0].contains("BAD") && ls[0].contains("config does not load"), "the broken fleet's tab says so: {}", ls[0]);
+    let y = ls.iter().position(|l| l.starts_with('\u{250f}')).expect("its box is on screen");
+    assert_eq!(buf[(0, y as u16)].fg, admiralty::theme::mono::ERROR, "its box takes the error hue");
     let all = ls.join("\n");
-    assert!(all.contains("config does not load"), "{all}");
     assert!(all.contains("fleet.toml") && all.contains(":3:3") && all.contains("unclosed table"), "the file, line and the parse error's own words:\n{all}");
     assert!(all.contains("fix: fix") && all.contains("line 3"), "{all}");
     let parse: Vec<_> = all_issues(&snap).into_iter().filter(|i| i.message.contains("does not parse")).collect();

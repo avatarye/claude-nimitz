@@ -301,6 +301,33 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
     out
 }
 
+/// A squadron's (or the stowaways') title bar: filled with its status colour
+/// (neutral: the muted step, so it still reads as a bar), its text in `INK`;
+/// on the cursor the fill is the selection and the text takes the colour.
+fn bar(r: &Row, width: usize, selected: bool) -> Line<'static> {
+    let fill = match r.node.frame.unwrap_or(mono::LINE) {
+        c if c == mono::LINE => mono::MUTED,
+        c => c,
+    };
+    let (bg, fg) = if selected { (mono::SEL, fill) } else { (fill, mono::INK) };
+    let spans = band(r, width, (" ", " "), Style::new(), selected, 1, false)
+        .into_iter()
+        .map(|s| Span::styled(s.content, s.style.fg(fg).bg(bg).add_modifier(Modifier::BOLD)))
+        .collect::<Vec<_>>();
+    Line::from(spans)
+}
+
+/// The admiral's heavy box's top: its title, and the fleet row it is (the
+/// fleet's fold marker; the fleet's state and counts are on its tab).
+fn admiral_top(head: &Row, width: usize, selected: bool, e: Style) -> Line<'static> {
+    let marker = if head.expanded { "\u{25be}" } else { "\u{25b8}" };
+    let title = format!(" {marker} ADMIRAL ");
+    let (l, r) = if head.expanded { ("\u{250f}\u{2501}", "\u{2513}") } else { ("\u{257a}\u{2501}", "\u{2578}") };
+    let rest = width.saturating_sub(3 + title.width());
+    let line = Line::from(vec![Span::styled(l, e), Span::styled(title, bold(mono::STRONG)), Span::styled(format!("{}{r}", "\u{2501}".repeat(rest)), e)]);
+    selectable(line, selected)
+}
+
 /// A fleet's frame: neutral, or the hue of what it needs (its frame colour);
 /// error when its config does not load.
 fn fleet_edge(r: &Row) -> Style {
@@ -390,8 +417,8 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
         if stow {
             // the stowaways: a rounded box, its band the top border
             let e = Edges { v: ROUND.0, bottom: ROUND.1, style: st(head.node.frame.unwrap_or(mono::LINE)) };
-            let corners = if head.expanded { ("\u{256d}", "\u{256e}") } else { ("\u{2576}", "\u{2574}") };
-            out.push((Line::from(band(head, width, corners, e.style, i == cursor, 1, true)), Some(i)));
+            let e = Edges { style: st(mono::LINE), ..e };
+            out.push((bar(head, width, i == cursor), Some(i)));
             i += 1;
             let mut any = false;
             while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
@@ -399,17 +426,19 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                 any = true;
                 i += 1;
             }
-            if any {
+            if any && head.expanded {
                 close(&mut out, e);
             }
             continue;
         }
-        // the fleet: one tinted band line, no frame (its tab frames it)
-        // (its counts end in the column the squadrons' do, before their `─╮`)
-        out.push((Line::from(band(head, width, (" ", " "), fleet_edge(head), i == cursor, 2, false)), Some(i)));
+        // the fleet: no line of its own (its tab carries its state and counts);
+        // its row is the top of the admiral's heavy box
+        let heavy = Edges { v: HEAVY.0, bottom: HEAVY.1, style: if fleet_edge(head).fg == Some(mono::ERROR) { bold(mono::ERROR) } else { st(mono::FG) } };
+        out.push((admiral_top(head, width, i == cursor, heavy.style), Some(i)));
         i += 1;
         // what is open: the admiral's box, or a squadron's
-        let mut open: Option<Edges> = None;
+        let mut open: Option<Edges> = if head.expanded { Some(heavy) } else { None };
+        let mut members_seen = false;
         while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
             let r = &rows[i];
             match r.section {
@@ -418,12 +447,11 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                         close(&mut out, e);
                     }
                     blank(&mut out);
-                    let e = Edges { v: ROUND.0, bottom: ROUND.1, style: st(r.node.frame.unwrap_or(mono::LINE)) };
-                    let corners = if r.expanded { ("\u{256d}", "\u{256e}") } else { ("\u{2576}", "\u{2574}") };
-                    out.push((Line::from(band(r, width, corners, e.style, i == cursor, 1, true)), Some(i)));
+                    members_seen = true;
+                    // the bar carries the status; the sides stay neutral
+                    out.push((bar(r, width, i == cursor), Some(i)));
                     if r.expanded {
-                        // the sides stay neutral: the top border carries the status
-                        open = Some(Edges { style: st(mono::LINE), ..e });
+                        open = Some(Edges { v: ROUND.0, bottom: ROUND.1, style: st(mono::LINE) });
                     }
                 }
                 Section::SquadronBody => match open {
@@ -436,6 +464,16 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     // a gap from a box above (open, or a collapsed squadron's
                     // line); a broken fleet's error stays right under its band,
                     // its lines together
+                    // before any member (the fleet's config error): inside the
+                    // admiral's box, under its title; after (squadrons the state
+                    // filter hides): below the boxes
+                    if !members_seen {
+                        if let Some(e) = open {
+                            boxed_row(&mut out, r, i, e);
+                            i += 1;
+                            continue;
+                        }
+                    }
                     let after_box = open.take().map(|e| close(&mut out, e)).is_some() || rows.get(i.wrapping_sub(1)).is_some_and(|p| p.section == Section::SquadronBand);
                     if after_box {
                         blank(&mut out);
@@ -447,23 +485,11 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     }
                 }
                 _ => {
-                    // the admiral and its crew: a heavy box with a bright title
-                    if open.is_none() {
-                        blank(&mut out);
-                        let e = Edges { v: HEAVY.0, bottom: HEAVY.1, style: st(mono::FG) };
-                        let title = " ADMIRAL ";
-                        let rest = width.saturating_sub(3 + title.width());
-                        out.push((
-                            Line::from(vec![
-                                Span::styled("\u{250f}\u{2501}", e.style),
-                                Span::styled(title, bold(mono::STRONG)),
-                                Span::styled(format!("{}\u{2513}", "\u{2501}".repeat(rest)), e.style),
-                            ]),
-                            None,
-                        ));
-                        open = Some(e);
+                    // the admiral and its crew, in the heavy box the fleet row opened
+                    match open {
+                        Some(e) => boxed_row(&mut out, r, i, e),
+                        None => boxed_row(&mut out, r, i, heavy),
                     }
-                    boxed_row(&mut out, r, i, open.unwrap());
                 }
             }
             i += 1;
