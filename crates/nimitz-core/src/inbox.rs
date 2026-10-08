@@ -2,99 +2,101 @@
 //! Code's cross-session messaging, code.claude.com/docs/en/cross-session-messaging,
 //! "a script or hook to post into a session"). An idle background job takes
 //! it as a new turn; a busy one at its next. Independent of panes, tabs and
-//! the agent view, and it works with nobody attached.
+//! the agent view, and it works with nobody attached. It arrives as a peer
+//! message, never as the user's own input: a notice, not an authority.
 //!
 //! The socket: Claude Code exports `CLAUDE_CODE_MESSAGING_SOCKET` to hooks
-//! before SessionStart runs; the hook records it here per session
-//! (`NIMITZ_STATE/inbox.json`). With no record, `<runtime>/cc-socks/<pid>.sock`.
+//! before SessionStart runs; the hook records it per session
+//! (`NIMITZ_STATE/inbox/<session id>.json`). With no record,
+//! `<XDG_RUNTIME_DIR or /run/user/<uid>>/cc-socks/<pid>.sock` or
+//! `/tmp/cc-socks-<uid>/<pid>.sock`. Either way the listener must be the
+//! session's own process: after connecting, its peer credentials
+//! (`SO_PEERCRED`) must name this uid and the session's pid; anything else
+//! (another session under a reused or namespaced pid, a planted socket, a
+//! forged record) is not used.
 //!
 //! The line: the docs give only the optional auth line. The message line is
 //! the inject example Claude Code itself logs (`[uds-messaging] Inject
 //! messages`): `{"type":"user","message":{"role":"user","content":"..."}}`,
-//! verified on `FORMAT_SINCE` (e2e `e2e_probe_inbox_delivery`); an older
-//! Claude Code gets the typing path. The content is wrapped as Claude Code
-//! wraps a peer message, so the receiver sees the sender as `nimitz`
-//! (`origin.name`; the address is not trusted, `origin.from` stays unknown).
+//! verified on `FORMAT_SINCE` (e2e `e2e_inbox_signal_reaches_an_idle_lead_without_a_pane`);
+//! an older Claude Code gets the typing path. The content is wrapped as
+//! Claude Code wraps a peer message, so the receiver names the sender
+//! `nimitz` (`origin.name`; the address is not trusted, `origin.from` stays
+//! unknown). The address is one nothing listens on: a reply goes nowhere.
 use crate::env::Env;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The first Claude Code the message line was verified on.
 pub const FORMAT_SINCE: &str = "2.1.293";
 
-fn path(env: &Env) -> PathBuf {
-    env.state.join("inbox.json")
+/// The `from` of the frame: a socket address no process listens on, so a
+/// receiver that replies to it reaches nobody.
+pub const NO_REPLY: &str = "uds:/nonexistent/nimitz-no-reply.sock";
+
+const TIMEOUT: Duration = Duration::from_secs(5);
+
+fn dir(env: &Env) -> PathBuf {
+    env.state.join("inbox")
 }
 
-fn load(env: &Env) -> serde_json::Map<String, Value> {
-    std::fs::read(path(env)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v.as_object().cloned()).unwrap_or_default()
+fn file_of(env: &Env, sid: &str) -> Option<PathBuf> {
+    // a session id is a uuid; anything else names no file
+    (!sid.is_empty() && sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).then(|| dir(env).join(format!("{sid}.json")))
 }
 
-/// SessionStart: session `sid` (process `pid`) listens on `socket`. Records
-/// whose socket is gone are dropped on the way.
+/// SessionStart: session `sid` (process `pid`) listens on `socket`. One file
+/// per session, written through a per-process temp file: hooks of members
+/// that start together never lose each other's record.
 pub fn record(env: &Env, sid: &str, pid: i64, socket: &str) {
-    if sid.is_empty() || socket.is_empty() {
+    let Some(f) = file_of(env, sid) else { return };
+    if socket.is_empty() {
         return;
     }
-    let mut m = load(env);
-    m.retain(|_, v| v.get("socket").and_then(Value::as_str).is_some_and(|s| Path::new(s).exists()));
-    m.insert(sid.to_string(), json!({"socket": socket, "pid": pid, "at": crate::evidence::now()}));
-    let _ = std::fs::create_dir_all(&env.state);
-    let tmp = path(env).with_extension("json.tmp");
-    if std::fs::write(&tmp, serde_json::to_vec_pretty(&Value::Object(m)).unwrap_or_default()).is_ok() {
-        let _ = std::fs::rename(&tmp, path(env));
+    let _ = std::fs::create_dir_all(dir(env));
+    let tmp = f.with_extension(format!("json.tmp{}", std::process::id()));
+    if std::fs::write(&tmp, json!({"socket": socket, "pid": pid, "at": crate::evidence::now()}).to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, &f);
+    }
+    // records of sessions whose socket is gone
+    for e in std::fs::read_dir(dir(env)).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p == f || p.extension().and_then(|x| x.to_str()) != Some("json") {
+            continue;
+        }
+        let gone = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v.get("socket").and_then(Value::as_str).map(|s| !Path::new(s).exists())).unwrap_or(false);
+        if gone {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }
 
-/// Where session `sid` (live as `pid`) listens: its recorded socket, when
-/// recorded for that same process and still there; else `<pid>.sock` in
-/// Claude Code's socket directory.
-pub fn socket_of(env: &Env, sid: &str, pid: Option<i64>) -> Option<PathBuf> {
-    let rec = load(env).get(sid).cloned();
-    if let Some(r) = rec {
-        let same = pid.is_none() || r.get("pid").and_then(Value::as_i64) == pid;
-        if let Some(s) = r.get("socket").and_then(Value::as_str).filter(|s| same && Path::new(s).exists()) {
-            return Some(PathBuf::from(s));
+/// The sockets session `sid` (live as `pid`) may listen on, most likely
+/// first: its record, then `<pid>.sock` in Claude Code's socket directories.
+/// None is trusted yet: `send` checks who listens.
+pub fn candidates(env: &Env, sid: &str, pid: i64) -> Vec<PathBuf> {
+    let mut out = vec![];
+    if let Some(r) = file_of(env, sid).and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice::<Value>(&b).ok()) {
+        if r.get("pid").and_then(Value::as_i64) == Some(pid) {
+            if let Some(s) = r.get("socket").and_then(Value::as_str) {
+                out.push(PathBuf::from(s));
+            }
         }
-    }
-    let pid = pid?;
-    // the pid alone could be any process now (a sandbox's made-up pid is a
-    // live session of the user's): only the process the session file names,
-    // by its start time
-    if !same_process(env, pid) {
-        return None;
     }
     let uid = unsafe { libc::getuid() };
     let runtime = std::env::var("XDG_RUNTIME_DIR").ok().filter(|d| !d.is_empty()).unwrap_or_else(|| format!("/run/user/{uid}"));
-    [PathBuf::from(runtime).join("cc-socks"), PathBuf::from(format!("/tmp/cc-socks-{uid}")), PathBuf::from("/tmp/cc-socks")]
-        .into_iter()
-        .map(|d| d.join(format!("{pid}.sock")))
-        .find(|p| p.exists())
-}
-
-/// Is `pid` the very process whose session file (`sessions/<pid>.json`)
-/// this Claude home holds? It runs in the file's folder (`/proc/<pid>/cwd`)
-/// and started no later than the session (`startedAt`; a background job's
-/// process is a pre-warmed spare, started earlier).
-fn same_process(env: &Env, pid: i64) -> bool {
-    let Some(v) = std::fs::read(env.claude_home.join("sessions").join(format!("{pid}.json"))).ok().and_then(|b| crate::evidence::first_json(&b)) else { return false };
-    let (Some(ms), Some(cwd)) = (v.get("startedAt").and_then(Value::as_f64), v.get("cwd").and_then(Value::as_str)) else { return false };
-    let here = std::fs::read_link(format!("/proc/{pid}/cwd")).ok();
-    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    here.is_some_and(|h| canon(&h) == canon(Path::new(cwd))) && proc_start(pid).is_some_and(|at| at <= ms / 1000.0 + 10.0)
-}
-
-/// When process `pid` started (epoch seconds): `/proc/<pid>/stat` field 22
-/// (clock ticks after boot) plus `btime` from `/proc/stat`.
-fn proc_start(pid: i64) -> Option<f64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after = &stat[stat.rfind(')')? + 2..];
-    let ticks: f64 = after.split_whitespace().nth(19)?.parse().ok()?;
-    let btime: f64 = std::fs::read_to_string("/proc/stat").ok()?.lines().find_map(|l| l.strip_prefix("btime ")).and_then(|v| v.trim().parse().ok())?;
-    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    (hz > 0).then(|| btime + ticks / hz as f64)
+    for d in [PathBuf::from(runtime).join("cc-socks"), PathBuf::from(format!("/tmp/cc-socks-{uid}"))] {
+        let p = d.join(format!("{pid}.sock"));
+        if !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out.retain(|p| p.exists());
+    out
 }
 
 /// The Claude Code version session `pid` runs (its session file), else
@@ -110,34 +112,119 @@ pub fn format_ok(version: Option<&str>) -> bool {
     version.is_some_and(|v| crate::compat::at_least(v, FORMAT_SINCE))
 }
 
-/// The content of the line: `body` wrapped as Claude Code wraps a peer
-/// message, from `nimitz`. A closing tag inside the body is defused.
-pub fn frame(body: &str) -> String {
-    let body = body.replace("</cross-session-message", "</cross-session-message_");
-    format!("<cross-session-message from=\"nimitz\" from-name=\"nimitz\">\n{body}\n</cross-session-message>")
+/// Text that cannot open or close the frame, or pass for another frame: any
+/// `<` that starts a `cross-session-message` tag (any case, `-`/`_`/spaces
+/// between the words, a `/` or not) becomes `<\`, as Claude Code defuses
+/// its own.
+pub fn defuse(body: &str) -> String {
+    let chars: Vec<char> = body.chars().collect();
+    let at_ci = |at: usize| chars.get(at).map(|c| c.to_ascii_lowercase());
+    let word = |at: &mut usize, w: &str| -> bool {
+        for c in w.chars() {
+            if at_ci(*at) != Some(c) {
+                return false;
+            }
+            *at += 1;
+        }
+        true
+    };
+    let skip = |at: &mut usize, also: &[char]| {
+        while chars.get(*at).is_some_and(|c| c.is_whitespace() || also.contains(c)) {
+            *at += 1;
+        }
+    };
+    let mut out = String::with_capacity(body.len());
+    for (i, c) in chars.iter().enumerate() {
+        if *c == '<' {
+            let mut at = i + 1;
+            skip(&mut at, &['/']);
+            let tag = word(&mut at, "cross") && {
+                skip(&mut at, &['-', '_']);
+                word(&mut at, "session")
+            } && {
+                skip(&mut at, &['-', '_']);
+                word(&mut at, "message")
+            };
+            if tag {
+                out.push_str("<\\");
+                continue;
+            }
+        }
+        out.push(*c);
+    }
+    out
 }
 
-/// Post `body` (framed) into the session listening on `socket`.
-pub fn send(socket: &Path, body: &str) -> Result<(), String> {
+/// The content of the line: `body` (defused) wrapped as Claude Code wraps a
+/// peer message, from `nimitz`, with no reply address.
+pub fn frame(body: &str) -> String {
+    format!("<cross-session-message from=\"{NO_REPLY}\" from-name=\"nimitz\">\n{}\n</cross-session-message>", defuse(body))
+}
+
+/// Connect to `socket` within the timeout, and only to the session's own
+/// process: the listener's peer credentials must be this uid and `pid`.
+fn connect(socket: &Path, pid: i64) -> Result<UnixStream, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = socket.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(UnixStream::connect(&p));
+    });
+    let s = match rx.recv_timeout(TIMEOUT) {
+        Ok(r) => r.map_err(|e| format!("cannot connect to {}: {e}", socket.display()))?,
+        Err(_) => return Err(format!("connecting to {} took over {} s", socket.display(), TIMEOUT.as_secs())),
+    };
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, &mut cred as *mut _ as *mut libc::c_void, &mut len) };
+    if rc != 0 {
+        return Err(format!("cannot read who listens on {}", socket.display()));
+    }
+    let uid = unsafe { libc::getuid() };
+    if cred.uid != uid || cred.pid as i64 != pid {
+        return Err(format!("{} is not the session's own socket (process {} listens there)", socket.display(), cred.pid));
+    }
+    Ok(s)
+}
+
+/// Post `body` (framed) to session `pid` through the first of `sockets` its
+/// own process listens on: `Ok(socket)` once the line went in and the
+/// session closed the connection cleanly, else why not.
+pub fn send(sockets: &[PathBuf], pid: i64, body: &str) -> Result<PathBuf, String> {
     let line = json!({"type": "user", "message": {"role": "user", "content": frame(body)}}).to_string();
-    let mut s = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("cannot connect to {}: {e}", socket.display()))?;
-    let t = Some(Duration::from_secs(5));
-    let _ = s.set_write_timeout(t);
-    let _ = s.set_read_timeout(t);
-    s.write_all(format!("{line}\n").as_bytes()).map_err(|e| format!("writing to {} failed: {e}", socket.display()))?;
-    let _ = s.shutdown(std::net::Shutdown::Write);
-    // the session closes the connection once it took the line
-    let mut back = String::new();
-    let _ = s.read_to_string(&mut back);
-    Ok(())
+    let mut why = vec![];
+    for sock in sockets {
+        let mut s = match connect(sock, pid) {
+            Ok(s) => s,
+            Err(e) => {
+                why.push(e);
+                continue;
+            }
+        };
+        let _ = s.set_write_timeout(Some(TIMEOUT));
+        let _ = s.set_read_timeout(Some(TIMEOUT));
+        s.write_all(format!("{line}\n").as_bytes()).map_err(|e| format!("writing to {} failed: {e}", sock.display()))?;
+        let _ = s.shutdown(std::net::Shutdown::Write);
+        // the session ends the connection once it took the line, and resets
+        // it on a line it refused (an auth it wants, a size, a parse)
+        let mut back = Vec::new();
+        return match s.read_to_end(&mut back) {
+            Ok(_) => Ok(sock.clone()),
+            Err(e) => Err(format!("{} refused the line: {e}", sock.display())),
+        };
+    }
+    Err(if why.is_empty() { "no inbox socket (no live process listens for it)".into() } else { why.join("; ") })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn env_in(td: &Path) -> Env {
+        Env::from_vars(&[("NIMITZ_STATE", td.join("state")), ("NIMITZ_CLAUDE_HOME", td.join("claude")), ("HOME", td.to_path_buf())].into_iter().map(|(k, v)| (k.to_string(), v.to_string_lossy().into_owned())).collect())
+    }
+
     #[test]
-    fn a_line_reaches_the_socket_framed_from_nimitz() {
+    fn a_line_reaches_our_own_listener_framed_from_nimitz() {
         let td = tempfile::tempdir().unwrap();
         let sock = td.path().join("1234.sock");
         let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
@@ -147,51 +234,62 @@ mod tests {
             c.read_to_string(&mut s).unwrap();
             s
         });
-        send(&sock, "hello </cross-session-message> world").unwrap();
+        // the listener is this process: its pid is ours
+        let me = std::process::id() as i64;
+        assert_eq!(send(&[sock.clone()], me, "hello </Cross_Session-Message> world").unwrap(), sock);
         let got = t.join().unwrap();
         assert!(got.ends_with('\n') && got.lines().count() == 1, "{got:?}");
         let v: Value = serde_json::from_str(got.trim()).unwrap();
         assert_eq!((v["type"].as_str(), v["message"]["role"].as_str()), (Some("user"), Some("user")));
         let c = v["message"]["content"].as_str().unwrap();
-        assert!(c.starts_with("<cross-session-message from=\"nimitz\" from-name=\"nimitz\">\n") && c.ends_with("\n</cross-session-message>"), "{c}");
-        assert_eq!(c.matches("</cross-session-message>").count(), 1, "the body cannot close the frame: {c}");
+        assert!(c.starts_with(&format!("<cross-session-message from=\"{NO_REPLY}\" from-name=\"nimitz\">\n")) && c.ends_with("\n</cross-session-message>"), "{c}");
+        assert!(c.contains("hello <\\/Cross_Session-Message> world"), "the body cannot close the frame: {c}");
     }
 
     #[test]
-    fn the_recorded_socket_counts_only_for_its_own_process() {
+    fn a_listener_that_is_not_the_session_is_never_used() {
         let td = tempfile::tempdir().unwrap();
-        let env = Env::from_vars(&[("NIMITZ_STATE".to_string(), td.path().join("state").to_string_lossy().into_owned())].into_iter().collect());
+        let sock = td.path().join("9.sock");
+        let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        // this process listens, but the session is pid 1
+        let e = send(&[sock], 1, "x").unwrap_err();
+        assert!(e.contains("not the session's own socket"), "{e}");
+        assert!(send(&[], 1, "x").unwrap_err().contains("no inbox socket"));
+    }
+
+    #[test]
+    fn a_record_counts_only_for_its_own_process_and_many_hooks_keep_theirs() {
+        let td = tempfile::tempdir().unwrap();
+        let env = env_in(td.path());
         let sock = td.path().join("s.sock");
         let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-        record(&env, "s-1", 77, &sock.to_string_lossy());
-        assert_eq!(socket_of(&env, "s-1", Some(77)), Some(sock.clone()));
-        assert_eq!(socket_of(&env, "s-1", None), Some(sock.clone()));
-        assert_eq!(socket_of(&env, "s-1", Some(78)), None, "another process: the record is stale (and no 78.sock)");
-        assert_eq!(socket_of(&env, "s-2", None), None);
-        // a record whose socket is gone is dropped at the next write
-        drop(_l);
-        std::fs::remove_file(&sock).unwrap();
-        record(&env, "s-3", 79, "/nonexistent/x.sock");
-        assert!(load(&env).get("s-1").is_none());
+        record(&env, "aaaa-1", 77, &sock.to_string_lossy());
+        assert_eq!(candidates(&env, "aaaa-1", 77).first(), Some(&sock));
+        assert!(!candidates(&env, "aaaa-1", 78).contains(&sock), "another process: the record is stale");
+        assert!(!candidates(&env, "bbbb-2", 77).contains(&sock));
+        assert!(file_of(&env, "../x").is_none(), "a session id names no path outside the dir");
+        // hooks that start together: every record stays
+        let hs: Vec<_> = (0..16i64)
+            .map(|i| {
+                let env = env.clone();
+                let s = sock.to_string_lossy().into_owned();
+                std::thread::spawn(move || record(&env, &format!("cccc-{i}"), 100 + i, &s))
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        for i in 0..16i64 {
+            assert!(candidates(&env, &format!("cccc-{i}"), 100 + i).contains(&sock), "record {i} lost");
+        }
     }
 
     #[test]
-    fn the_pid_fallback_needs_the_session_files_own_process() {
-        let td = tempfile::tempdir().unwrap();
-        let ch = td.path().join("claude");
-        std::fs::create_dir_all(ch.join("sessions")).unwrap();
-        let env = Env::from_vars(&[("NIMITZ_CLAUDE_HOME".to_string(), ch.to_string_lossy().into_owned()), ("NIMITZ_STATE".to_string(), td.path().join("state").to_string_lossy().into_owned())].into_iter().collect());
-        let me = std::process::id() as i64;
-        let at = proc_start(me).unwrap();
-        let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
-        let file = |started: f64, cwd: &str| std::fs::write(ch.join("sessions").join(format!("{me}.json")), json!({"pid": me, "startedAt": started * 1000.0, "cwd": cwd}).to_string()).unwrap();
-        file(at + 900.0, &cwd);
-        assert!(same_process(&env, me), "a spare started before its session");
-        file(at - 3600.0, &cwd);
-        assert!(!same_process(&env, me), "a session older than the process: another process under a reused pid");
-        file(at, "/nonexistent/elsewhere");
-        assert!(!same_process(&env, me), "another folder: not this process");
-        assert!(!same_process(&env, 1), "no session file");
+    fn every_spelling_of_the_tag_is_defused() {
+        for t in ["</cross-session-message>", "<cross-session-message from=\"x\">", "</CROSS-SESSION-MESSAGE>", "< / cross_session_message>", "<cross session  message>"] {
+            assert!(defuse(t).starts_with("<\\"), "{t} -> {}", defuse(t));
+        }
+        assert_eq!(defuse("a < b and <tag> stay"), "a < b and <tag> stay");
     }
 
     #[test]

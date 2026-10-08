@@ -323,35 +323,37 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         }
     };
     let why = if via.id == id { "type into its attached tab".to_string() } else { format!("you reach {id} through its commodore") };
-    // its inbox first: a cross-session message from nimitz, no pane, no typing
-    let mut no_inbox = None;
-    if let Some(s) = via.session.as_ref().filter(|_| live(via)) {
-        let body = format!("[nimitz signal] (sent by the user's own `nimitz signal {id}`, through nimitz) {text}");
-        match crate::notify::inbox_target(&ctx.env, &via.id, s) {
-            Ok(sock) => {
-                plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["inbox".into(), sock.display().to_string(), body.clone()], cwd: None, why: why.replace("type into its attached tab", "post it into its inbox (a cross-session message from nimitz)") });
+    let mux = ctx.mux();
+    // its attached tab first: text typed there is the user's own input. A
+    // pane known only by its attach is never typed into (R-24)
+    let shown = via.session.as_ref().filter(|_| live(via) && mux.caps().type_text).and_then(|s| run::shown_in(mux.as_ref(), &s.session_id));
+    if shown.as_ref().is_none_or(|p| p.inferred) {
+        // else its inbox: a cross-session message from nimitz, a request and
+        // never the user's authority (Claude Code marks it as not the user's)
+        if let Some(s) = via.session.as_ref().filter(|_| live(via)) {
+            if let Ok((socks, pid)) = crate::notify::inbox_target(&ctx.env, &via.id, s) {
+                let body = format!("[nimitz signal] A message for {id}, relayed by nimitz from a `nimitz signal` run outside any member session. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {text}");
+                plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["inbox".into(), socks[0].display().to_string(), body.clone()], cwd: None, why: format!("{}: post it into its inbox (a cross-session message from nimitz; its tab cannot be typed into)", via.id) });
                 return match ctx.gate(&plan) {
                     out::Go::Exit(code) => Ok(code),
-                    out::Go::Run => match nimitz_core::inbox::send(&sock, &body) {
-                        Ok(()) => {
-                            out::ok(&format!("sent to {}'s inbox {}", via.id, sock.display()));
+                    out::Go::Run => match nimitz_core::inbox::send(&socks, pid, &body) {
+                        Ok(sock) => {
+                            out::ok(&format!("posted to {}'s inbox {}", via.id, sock.display()));
                             Ok(0)
                         }
                         Err(e) => {
-                            out::error(&format!("sending to {}'s inbox failed: {e}; nothing was typed. Run the signal again in a moment", via.id));
+                            out::error(&format!("posting to {}'s inbox failed: {e}; nothing was typed. Run the signal again in a moment", via.id));
                             Ok(1)
                         }
                     },
                 };
             }
-            Err(w) => no_inbox = Some(w),
         }
     }
-    let mux = ctx.mux();
     if !mux.caps().type_text {
         plan.refusals.push(refusal(
             "mux.none",
-            format!("typing to {} needs a multiplexer that can type ({}){}", via.id, mux.name(), no_inbox.map(|w| format!("; its inbox cannot be used: {w}")).unwrap_or_default()),
+            format!("typing to {} needs a multiplexer that can type ({})", via.id, mux.name()),
             Some(nimitz_mux::missing_mux_fix(&ctx.vars)),
             Some(via.id.clone()),
         ));
@@ -361,8 +363,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         plan.refusals.push(refusal("session.none", format!("{} is not live", via.id), Some(format!("nimitz start {}", via.id)), Some(via.id.clone())));
         return Ok(finish_plan(ctx, &plan));
     }
-    // its attached tab; with no tab, one is opened first (plan-v4 section 7)
-    let shown = via.session.as_ref().and_then(|s| run::shown_in(mux.as_ref(), &s.session_id));
+    // with no tab, one is opened first (plan-v4 section 7)
     if let Some(p) = shown.as_ref().filter(|p| p.inferred) {
         plan.refusals.push(run::untypeable(&via.id, &p.pane));
         return Ok(finish_plan(ctx, &plan));

@@ -76,7 +76,7 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   rm <id|session>                  remove job rows (never transcripts)
   sweep [<id>]                     drop stale rows and copies of members
   adopt <session> <id>             make a stowaway an identity's session
-  signal <id> <text>               type to a member (ships: through the commodore)
+  signal <id> <text>               type to a member in its tab, else post to its inbox (ships: through the commodore)
   open <id>                        attach to a member in a tab (detach: ctrl-z)
   restore [<F>] [--all]            bring a fleet back from the Herdr shape: leads always, ships from the
                                    last active set (--all: every ship with a job row); --jobs-only (no tabs)

@@ -1558,9 +1558,9 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
     assert_eq!(code, 0, "{out}");
     let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();
-    let rec = read_json(&w.base.join("state/inbox.json"));
-    let sock = rec[&sid]["socket"].as_str().unwrap_or_else(|| panic!("no inbox recorded for {sid}: {rec}")).to_string();
-    assert!(Path::new(&sock).exists() && rec[&sid]["pid"] == m["session"]["pid"], "{rec}");
+    let rec = read_json(&w.base.join("state/inbox").join(format!("{sid}.json")));
+    let sock = rec["socket"].as_str().unwrap_or_else(|| panic!("no inbox recorded for {sid}: {rec}")).to_string();
+    assert!(Path::new(&sock).exists() && rec["pid"] == m["session"]["pid"], "{rec}");
     let ups = w.events().iter().filter(|e| e["event"] == "UserPromptSubmit").count();
     let out = w.ok(&["signal", &w.fleet, "Reply with the single word PONG.", "--yes"]);
     assert!(out.contains("inbox"), "{out}");

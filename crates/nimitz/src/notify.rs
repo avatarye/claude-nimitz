@@ -120,12 +120,13 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
 /// (no socket: the job is stopped or retired, or its Claude Code predates
 /// the line nimitz knows).
 pub fn inbox_send(env: &Env, id: &Id, s: &nimitz_core::SessionInfo, text: &str) -> Result<String, String> {
-    let sock = inbox_target(env, id, s)?;
-    nimitz_core::inbox::send(&sock, text).map(|()| format!("sent to {id}'s inbox {} (a cross-session message from nimitz)", sock.display()))
+    let (socks, pid) = inbox_target(env, id, s)?;
+    nimitz_core::inbox::send(&socks, pid, text).map(|sock| format!("posted to {id}'s inbox {} (a cross-session message from nimitz)", sock.display()))
 }
 
-/// The inbox socket of `id`'s live session `s`, or why there is none to use.
-pub fn inbox_target(env: &Env, id: &Id, s: &nimitz_core::SessionInfo) -> Result<std::path::PathBuf, String> {
+/// The sockets `id`'s live session `s` may listen on, and its pid (`send`
+/// takes only the one its own process listens on), or why there is none.
+pub fn inbox_target(env: &Env, id: &Id, s: &nimitz_core::SessionInfo) -> Result<(Vec<std::path::PathBuf>, i64), String> {
     let version = nimitz_core::inbox::receiver_version(env, s.pid, s.short_id.as_deref());
     if !nimitz_core::inbox::format_ok(version.as_deref()) {
         return Err(format!(
@@ -134,5 +135,10 @@ pub fn inbox_target(env: &Env, id: &Id, s: &nimitz_core::SessionInfo) -> Result<
             nimitz_core::inbox::FORMAT_SINCE
         ));
     }
-    nimitz_core::inbox::socket_of(env, &s.session_id, s.pid).ok_or_else(|| format!("{id} has no inbox socket (no live process listens for it)"))
+    let pid = s.pid.ok_or_else(|| format!("{id} is not live"))?;
+    let socks = nimitz_core::inbox::candidates(env, &s.session_id, pid);
+    if socks.is_empty() {
+        return Err(format!("{id} has no inbox socket (no live process listens for it)"));
+    }
+    Ok((socks, pid))
 }
