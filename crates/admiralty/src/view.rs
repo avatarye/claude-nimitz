@@ -518,7 +518,12 @@ fn member_node(m: &Member, v: &View) -> Node {
     n.session_id = m.session.as_ref().map(|s| s.session_id.clone());
     n.icon = v.icons.role(m.role);
     n.icon_style = name_style;
-    n.name = m.session.as_ref().map(|s| s.name.clone()).filter(|s| !s.is_empty()).unwrap_or(m.expected_name.clone());
+    // inside its fleet's tab and its squadron's box a row names only its own
+    // part (`BRIM`, `COMMODORE`, `ADMIRAL`); the full name where that context
+    // is missing (a search across fleets), and a session that runs under
+    // another name (a drift, a copy) shows that name in full
+    let full = m.session.as_ref().map(|s| s.name.clone()).filter(|s| !s.is_empty()).unwrap_or(m.expected_name.clone());
+    n.name = if v.filter.trim().is_empty() && full == m.expected_name { short_name(&m.id) } else { full };
     n.name_style = name_style;
     n.status = (format!("{} {}", v.icons.status(m.status), status_word(m.status)), style);
     n.age = member_age(m, v.now);
@@ -593,6 +598,16 @@ fn comms_text(c: &Comms) -> String {
     match c {
         Comms::Mode(m) => m.clone(),
         Comms::Allow { allow } => format!("allow: {}", allow.join(", ")),
+    }
+}
+
+/// A member's own part of its name, for a row inside its fleet and
+/// squadron: `ADMIRAL`, `COMMODORE`, or the ship's name.
+pub fn short_name(id: &nimitz_core::Id) -> String {
+    match id.role() {
+        Role::Admiral => "ADMIRAL".into(),
+        Role::Commodore => "COMMODORE".into(),
+        _ => id.0.rsplit('/').next().unwrap_or(&id.0).to_string(),
     }
 }
 

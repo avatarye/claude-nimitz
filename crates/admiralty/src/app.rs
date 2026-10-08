@@ -798,7 +798,7 @@ impl App {
                 }
                 Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
             },
-            Err(why) => self.notify(format!("No pane to jump to for {}: {why}", r.node.name), st(mono::WARN)),
+            Err(why) => self.notify(format!("No pane to jump to for {}: {why}", r.node.member.as_ref().filter(|_| matches!(r.node.kind, Kind::Member(_))).map(|id| id.name()).unwrap_or(r.node.name.clone())), st(mono::WARN)),
         }
         None
     }
@@ -958,7 +958,7 @@ impl App {
             (KeyCode::Char('A'), _) => return self.start_act(Act::Open),
             (KeyCode::Char('D'), _) => return self.start_act(Act::ConfigRm),
             (KeyCode::Char('x'), _) => {
-                let title = self.current().map(|r| r.node.name.clone()).unwrap_or_default();
+                let title = self.current().map(|r| r.node.member.as_ref().filter(|_| matches!(r.node.kind, Kind::Member(_))).map(|id| id.name()).unwrap_or(r.node.name.clone())).unwrap_or_default();
                 self.modal = Some(Modal::Menu { title: format!("actions: {title}"), items: self.action_menu(), sel: 0 });
             }
             (KeyCode::Char('c'), _) => self.modal = Some(Modal::Menu { title: "create".into(), items: self.create_menu(), sel: 0 }),

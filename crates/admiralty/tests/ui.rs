@@ -35,7 +35,7 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     assert_eq!(buf[(0, y as u16)].fg, mono::FG, "a heavier border");
     assert_eq!(buf[(5, y as u16)].fg, mono::STRONG, "a brighter title");
     assert!(buf[(5, y as u16)].modifier.contains(ratatui::style::Modifier::BOLD));
-    let adm = ls.iter().position(|l| l.contains("[MAIN]-ADMIRAL")).unwrap();
+    let adm = ls.iter().position(|l| l.starts_with('\u{2503}') && l.contains("ADMIRAL   ")).unwrap();
     assert!(adm > y && ls[adm].starts_with('\u{2503}'), "{}", ls[adm]);
     assert!(ls[adm + 2].starts_with('\u{2517}'), "the box closes after its crew: {}", ls[adm + 2]);
     // the fleet row is that top line: fleet actions keep a row to stand on
@@ -218,18 +218,19 @@ fn columns_line_up_across_fleet_squadron_and_stowaway_frames() {
     let mut t = demo();
     let ls = lines(&draw(&mut t.app, 200, 60));
     let header = col_of(&ls, "STATUS", "STATUS");
-    let admiral = col_of(&ls, "[MAIN]-ADMIRAL", "- idle");
-    let ship = col_of(&ls, "[MAIN.ARGOS]-BOOM", "- idle");
+    let admiral = col_of(&ls, "ADMIRAL   ", "- idle");
+    let ship = col_of(&ls, "BOOM", "- idle");
     tab(&mut t.app, "FORGE");
     let forge = lines(&draw(&mut t.app, 200, 60));
     let stow = col_of(&forge, "scratch-run", "* live");
-    let forge_ship = col_of(&forge, "[FORGE.MOLD]-CAST", "- idle");
+    let cast = forge.iter().find(|l| l.contains("CAST") && l.contains("- idle")).unwrap();
+    let forge_ship = cast[..cast.find("- idle").unwrap()].chars().count();
     assert_eq!(header, admiral);
     assert_eq!(admiral, ship);
     assert_eq!(ship, stow);
     assert_eq!(ship, forge_ship);
-    let kind_admiral = col_of(&ls, "[MAIN]-ADMIRAL", "admiral ");
-    let kind_ship = col_of(&ls, "[MAIN.ARGOS]-BOOM", "ship ");
+    let kind_admiral = col_of(&ls, "ADMIRAL   ", "admiral ");
+    let kind_ship = col_of(&ls, "BOOM", "ship ");
     assert_eq!(kind_admiral, kind_ship);
 }
 
@@ -255,7 +256,7 @@ fn several_fleets_in_config_order_and_an_elsewhere_fleet_is_folded() {
     assert_eq!(bands(&t), ["[LAB]"]);
     let lab = t.app.rows.iter().find(|r| r.node.name == "[LAB]").unwrap();
     assert!(!lab.expanded, "a fleet that does not run here starts folded");
-    assert!(!t.app.rows.iter().any(|r| r.node.name == "[LAB.OPTICS]-LENS"));
+    assert!(!t.app.rows.iter().any(|r| r.node.id == "M:LAB/OPTICS/LENS"));
     let ls = lines(&draw(&mut t.app, 200, 60));
     assert!(ls[0].contains("elsewhere"), "its tab says where: {}", ls[0]);
     assert!(ls.iter().any(|l| l.starts_with("\u{257a}\u{2501} \u{25b8} [LAB] ADMIRAL ")), "folded: one line, named");
@@ -291,7 +292,7 @@ fn the_detail_panel_floats_over_the_list_on_w_and_follows_the_cursor() {
     assert!(ls.iter().any(|l| l.contains("ADMIRAL ")), "the list is still there");
     // it follows the cursor row
     goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
-    assert!(screen(&mut t.app, 200, 50).contains("[MAIN.ARGOS]-BOOM"));
+    assert!(screen(&mut t.app, 200, 50).contains("[MAIN.ARGOS]-BOOM"), "the detail panel names it in full");
     goto(&mut t.app, "M:MAIN/KITS/PIPELINE");
     let s = screen(&mut t.app, 200, 50);
     assert!(s.contains("NEEDS YOU") || s.contains("PIPELINE"), "{s}");
@@ -513,10 +514,10 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
     for (row, code) in [
         ("[FORGE.IRON]-ANVIL-2", "dup.live"),
         ("[FORGE.IRON]-ANVIL-2", "name.drift"),
-        ("[FORGE.IRON]-COMMODORE ", "labels.missing"),
-        ("[FORGE.IRON]-HAMMER", "copy.rows"),
-        ("[FORGE.IRON]-HAMMER", "lineage.broken"),
-        ("[FORGE]-ADMIRAL", "held"),
+        ("COMMODORE ", "labels.missing"),
+        ("HAMMER", "copy.rows"),
+        ("HAMMER", "lineage.broken"),
+        ("ADMIRAL   ", "held"),
     ] {
         let l = ls.iter().find(|l| l.contains(row)).unwrap_or_else(|| panic!("{row}"));
         assert!(l.contains(code), "{row} shows {code}: {l}");
@@ -542,9 +543,9 @@ fn pane_dots_at_row_start_in_herdr_colours() {
     let mut t = demo();
     for (fleet, row, dot, color) in [
         // the pane dot reuses the status hues: idle and done neutral, working busy
-        ("MAIN", "[MAIN]-ADMIRAL", "\u{25cb}", mono::FG),
-        ("MAIN", "[MAIN.ARGOS]-COMMODORE", "\u{25cf}", mono::BUSY),
-        ("FORGE", "[FORGE]-ADMIRAL", "\u{25cf}", mono::MUTED),
+        ("MAIN", "ADMIRAL   ", "\u{25cb}", mono::FG),
+        ("MAIN", "COMMODORE ", "\u{25cf}", mono::BUSY),
+        ("FORGE", "ADMIRAL   ", "\u{25cf}", mono::MUTED),
         ("FORGE", "scratch-run", "\u{00b7}", mono::FAINT),
     ] {
         tab(&mut t.app, fleet);
@@ -558,10 +559,11 @@ fn pane_dots_at_row_start_in_herdr_colours() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     // KITS commodore's pane is blocked: needs you, and the dot takes the needs-you hue
-    let y = ls.iter().position(|l| l.contains("[MAIN.KITS]-COMMODORE")).unwrap();
+    let kits_bar = ls.iter().position(|l| l.contains("KITS") && l.contains("comms")).unwrap();
+    let y = kits_bar + 1 + ls[kits_bar + 1..].iter().position(|l| l.contains("COMMODORE ")).unwrap();
     assert_eq!(buf[(2, y as u16)].fg, mono::NEEDS);
     assert!(ls[y].contains("needs you"));
-    let boom = ls.iter().find(|l| l.contains("[MAIN.ARGOS]-BOOM")).unwrap();
+    let boom = ls.iter().find(|l| l.contains("BOOM")).unwrap();
     assert!(boom.starts_with("\u{2502}   "), "no pane: no dot: {boom}");
 }
 
@@ -975,7 +977,7 @@ fn bug45_a_missing_or_absurd_age_shows_a_question_mark() {
     }
     let mut t = fixture_app(b, false);
     let ls = lines(&draw(&mut t.app, 200, 60));
-    for name in ["[MAIN]-ADMIRAL", "[MAIN.ARGOS]-COMMODORE"] {
+    for name in ["ADMIRAL   ", "COMMODORE "] {
         let l = ls.iter().find(|l| l.contains(name)).unwrap();
         let age = &l[l.find(name).unwrap()..];
         assert!(age.contains(" ? "), "{name}: AGE shows ?: {l}");
@@ -983,7 +985,7 @@ fn bug45_a_missing_or_absurd_age_shows_a_question_mark() {
     // no session at all: the cell stays empty
     tab(&mut t.app, "FORGE");
     let ls = lines(&draw(&mut t.app, 200, 60));
-    let l = ls.iter().find(|l| l.contains("[FORGE.IRON]-QUENCH")).unwrap();
+    let l = ls.iter().find(|l| l.contains("QUENCH")).unwrap();
     assert!(!l.contains(" ? "), "{l}");
 }
 
@@ -1278,7 +1280,7 @@ fn a_broken_fleets_error_stays_together_under_its_band() {
     let ls = lines(&draw(&mut t.app, 120, 60));
     let top = ls.iter().position(|l| l.contains("ADMIRAL ")).unwrap();
     let first = ls.iter().position(|l| l.contains("fleet.toml:3")).unwrap_or_else(|| panic!("the error:\n{}", ls.join("\n")));
-    let adm = ls.iter().position(|l| l.contains(&format!("[{}]-ADMIRAL", id.0))).unwrap();
+    let adm = ls.iter().position(|l| l.starts_with('\u{2503}') && l.contains("ADMIRAL   ")).unwrap();
     assert_eq!(first, top + 1, "right under the title:\n{}", ls.join("\n"));
     assert!(ls[first..adm].iter().all(|l| l.starts_with('\u{2503}') && l.chars().skip(1).any(|c| !c.is_whitespace() && c != '\u{2503}')), "the error's lines together, in the box:\n{}", ls[top..=adm].join("\n"));
 }
@@ -1301,7 +1303,38 @@ fn the_admirals_box_with_everything_or_the_admiral_filtered() {
     let mut t = demo();
     keys(&mut t.app, "F");
     let ls = lines(&draw(&mut t.app, 200, 60));
-    assert!(!ls.iter().any(|l| l.contains("[MAIN]-ADMIRAL")), "F hides MAIN's admiral:\n{}", ls.join("\n"));
+    assert!(!ls.iter().any(|l| l.starts_with('\u{2503}') && l.contains("ADMIRAL   ")), "F hides MAIN's admiral:\n{}", ls.join("\n"));
     let top = ls.iter().position(|l| l.contains("[MAIN] ADMIRAL")).unwrap();
     assert!(ls[top + 1].contains("the admiral is hidden by the filters"), "{}", ls[top + 1]);
+}
+
+/// Inside its fleet's tab and its squadron's box a row names only its own
+/// part; a search across fleets, the detail panel and a session running
+/// under another name keep the full name.
+#[test]
+fn rows_name_only_their_own_part_inside_their_fleet_and_squadron() {
+    let mut t = demo();
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    for full in ["[MAIN]-ADMIRAL", "[MAIN.ARGOS]-COMMODORE", "[MAIN.ARGOS]-BOOM", "[MAIN.KITS]-PIPELINE"] {
+        assert!(!ls.iter().any(|l| l.contains(full)), "no {full} in the rows:\n{}", ls.join("\n"));
+    }
+    for short in ["ADMIRAL   ", "COMMODORE ", "BOOM ", "PIPELINE "] {
+        assert!(ls.iter().any(|l| l.contains(short)), "{short}");
+    }
+    // at 80 columns the names fit (no ellipsis on a member name)
+    let ls = lines(&draw(&mut t.app, 80, 40));
+    for name in ["COMMODORE", "BOLT", "BOOM", "INGEST", "DOCS", "PIPELINE"] {
+        let l = ls.iter().find(|l| l.contains(name)).unwrap_or_else(|| panic!("{name}:\n{}", ls.join("\n")));
+        assert!(!l.contains(&format!("{name}\u{2026}")), "{l}");
+    }
+    // a search across fleets: full names
+    keys(&mut t.app, "/boom");
+    press(&mut t.app, KeyCode::Enter);
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    assert!(ls.iter().any(|l| l.contains("[MAIN.ARGOS]-BOOM")), "{}", ls.join("\n"));
+    // a drifted session keeps its own name in full
+    press(&mut t.app, KeyCode::Esc);
+    tab(&mut t.app, "FORGE");
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    assert!(ls.iter().any(|l| l.contains("[FORGE.IRON]-ANVIL-2")));
 }
