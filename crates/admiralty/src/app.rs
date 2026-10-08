@@ -470,8 +470,13 @@ impl App {
             return;
         };
         let now = self.now();
-        let folded = self.bundle.as_ref().and_then(|b| b.snap.fleets.iter().flat_map(crate::view::fleet_members).find(|m| m.id.0 == member).map(|m| crate::view::folded_crew(&m.crew, now))).unwrap_or(0);
-        if folded == 0 {
+        let q = self.filter.trim().to_lowercase();
+        let count = |q: &str| self.bundle.as_ref().and_then(|b| b.snap.fleets.iter().flat_map(crate::view::fleet_members).find(|m| m.id.0 == member).map(|m| crate::view::folded_crew(&m.crew, now, q))).unwrap_or(0);
+        if count(&q) == 0 && count("") > 0 {
+            self.notify(format!("the filter shows every old crew of {member}; esc clears it"), st(mono::COMMENT));
+            return;
+        }
+        if count("") == 0 {
             self.notify(format!("{member} has no crew that finished over {} min ago", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::COMMENT));
             return;
         }

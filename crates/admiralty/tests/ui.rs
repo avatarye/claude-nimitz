@@ -1040,7 +1040,7 @@ fn an_open_crew_fold_is_saved_and_loads_again() {
 fn z_on_a_member_with_no_old_crew_says_so() {
     let mut t = demo();
     let b = t.app.bundle.clone().unwrap();
-    let id = b.snap.fleets.iter().flat_map(admiralty::view::fleet_members).find(|m| !m.crew.is_empty() && admiralty::view::folded_crew(&m.crew, fixtures::NOW) == 0).map(|m| m.id.0.clone()).expect("a member with only recent crew");
+    let id = b.snap.fleets.iter().flat_map(admiralty::view::fleet_members).find(|m| !m.crew.is_empty() && admiralty::view::folded_crew(&m.crew, fixtures::NOW, "") == 0).map(|m| m.id.0.clone()).expect("a member with only recent crew");
     goto(&mut t.app, &format!("M:{id}"));
     let before = t.app.expanded.clone();
     press(&mut t.app, KeyCode::Char('z'));

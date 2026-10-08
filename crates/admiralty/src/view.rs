@@ -400,9 +400,10 @@ fn crew_roots<'a>(crew: &'a [Crew], now: f64, q: &str) -> (HashMap<String, Vec<&
     (kids, judged)
 }
 
-/// How many top-level crew of `crew` fold into `+N finished` (no filter).
-pub fn folded_crew(crew: &[Crew], now: f64) -> usize {
-    crew_roots(crew, now, "").1.iter().filter(|(_, v)| !v).count()
+/// How many top-level crew of `crew` fold into `+N finished` under the
+/// name filter `q` (lowercase; empty for none).
+pub fn folded_crew(crew: &[Crew], now: f64, q: &str) -> usize {
+    crew_roots(crew, now, q).1.iter().filter(|(_, v)| !v).count()
 }
 
 fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons, q: &str) -> Vec<Node> {
