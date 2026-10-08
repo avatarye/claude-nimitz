@@ -1501,7 +1501,15 @@ fn e2e_probe_inbox_delivery() {
     let sock = PathBuf::from(format!("{rt}/cc-socks/{pid}.sock"));
     println!("PROBE inbox: pid {pid} socket {} exists {}", sock.display(), sock.exists());
     let ups = w.events().iter().filter(|e| e["event"] == "UserPromptSubmit").count();
-    let line = json!({"type": "user", "message": {"role": "user", "content": "[nimitz notice, not the user] Reply with the single word PROBE."}}).to_string();
+    // NIMITZ_E2E_PROBE_FROM=1: the content wrapped as Claude Code wraps a peer
+    // message, with a sender name (and a reply address nobody listens on)
+    let body = "[nimitz notice, not the user] Reply with the single word PROBE.";
+    let content = if std::env::var("NIMITZ_E2E_PROBE_FROM").ok().as_deref() == Some("1") {
+        format!("<cross-session-message from=\"uds:{rt}/cc-socks/nimitz-none.sock\" from-name=\"nimitz\">\n{body}\n</cross-session-message>")
+    } else {
+        body.to_string()
+    };
+    let line = json!({"type": "user", "message": {"role": "user", "content": content}}).to_string();
     match std::os::unix::net::UnixStream::connect(&sock) {
         Ok(mut s) => {
             let r = s.write_all(format!("{line}\n").as_bytes());
@@ -1529,4 +1537,40 @@ fn e2e_probe_inbox_delivery() {
 
 fn unsafe_uid() -> String {
     String::from_utf8_lossy(&Command::new("id").arg("-u").output().unwrap().stdout).trim().to_string()
+}
+
+/// Socket delivery: a lead's SessionStart hook records its inbox socket
+/// (`CLAUDE_CODE_MESSAGING_SOCKET`), and `nimitz signal` posts into it with
+/// no multiplexer at all: the idle background job takes a new turn, and sees
+/// a cross-session message from nimitz.
+#[test]
+fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(92);
+    w.ok(&["fleet", "new", &w.fleet, "--machine", "e2e", "--yes"]);
+    let dir = w.fleet_dir().join("admiral");
+    w.settings(&dir);
+    let idv = nimitz_core::Id(w.fleet.clone());
+    let settings = w.no_mux(nimitz_core::claude::settings_json(&w.env, &idv, true));
+    let (code, out) = w.claude(&dir, &["--bg", "--model", "haiku", "--name", &idv.name(), "--settings", &settings, OK_PROMPT]);
+    assert_eq!(code, 0, "{out}");
+    let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
+    let sid = m["session"]["session_id"].as_str().unwrap().to_string();
+    let rec = read_json(&w.base.join("state/inbox.json"));
+    let sock = rec[&sid]["socket"].as_str().unwrap_or_else(|| panic!("no inbox recorded for {sid}: {rec}")).to_string();
+    assert!(Path::new(&sock).exists() && rec[&sid]["pid"] == m["session"]["pid"], "{rec}");
+    let ups = w.events().iter().filter(|e| e["event"] == "UserPromptSubmit").count();
+    let out = w.ok(&["signal", &w.fleet, "Reply with the single word PONG.", "--yes"]);
+    assert!(out.contains("inbox"), "{out}");
+    w.wait(120, || Some(w.events()).filter(|ev| ev.iter().filter(|e| e["event"] == "UserPromptSubmit").count() > ups)).expect("the signal started a turn");
+    w.wait(180, || w.member(&w.fleet).filter(|m| m["status"] == "Idle")).expect("turn over");
+    let t = std::fs::read_to_string(w.transcript(&dir, &sid).expect("transcript")).unwrap();
+    let seen = t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| v["type"] == "user" && v["message"]["content"].as_str().is_some_and(|c| c.contains("[nimitz signal]"))).expect("the message in the transcript");
+    println!("[OK] seen as: origin {}", seen["origin"]);
+    assert_eq!(seen["origin"]["kind"], "peer");
+    assert_eq!(seen["origin"]["name"], "nimitz", "{}", seen["origin"]);
+    assert!(t.contains("PONG"), "the lead answered");
+    w.finish();
 }

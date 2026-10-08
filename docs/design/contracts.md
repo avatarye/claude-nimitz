@@ -297,10 +297,35 @@ blocks on the user (PreToolUse `AskUserQuestion`, `PermissionRequest`, or a
 blocking `Notification`): `{ts, id, session_id, kind: question|permission|prompt,
 event, tool_use_id, detail, delivery: pending|delivered|failed, delivery_note,
 delivered_at}`. The hook writes it and starts `nimitz __notify <id>` detached
-(only the member's own labels may run it), which types the notice into the
-commodore's pane, retrying `NIMITZ_NOTIFY_RETRY` s (default 600) while that pane
-is blocked or missing. The member's next UserPromptSubmit, Stop or SessionEnd
-removes the file; `check` reports `notify.failed` for one that failed.
+(only the member's own labels may run it), which posts the notice into the
+commodore's inbox socket, else types it into the commodore's pane, retrying
+`NIMITZ_NOTIFY_RETRY` s (default 600) while neither works. The member's next
+UserPromptSubmit, Stop or SessionEnd removes the file; `check` reports
+`notify.failed` for one that failed, with each path's reason in the note.
+
+The inbox (`nimitz_core::inbox`): Claude Code's cross-session messaging lets a
+script post into a session's socket (docs: cross-session-messaging, "a
+script or hook to post into a session"); an idle background job takes the
+line as a new turn, a busy one at its next, with no pane and nobody attached.
+The SessionStart hook of a member records `CLAUDE_CODE_MESSAGING_SOCKET`
+(exported before any hook runs) in `NIMITZ_STATE/inbox.json` as `{<session id>:
+{socket, pid, at}}`; a record counts only for the live pid it names. With no
+record, `<XDG_RUNTIME_DIR or /run/user/<uid>>/cc-socks/<pid>.sock` (or
+`/tmp/cc-socks-<uid>`), only when `pid` is the session file's own process (it
+runs in the file's `cwd` and started no later than `startedAt`). The line is
+the inject example Claude Code logs, `{"type":"user","message":{"role":"user",
+"content":...}}` (the docs give only the optional auth line), used only for a
+receiver on `inbox::FORMAT_SINCE` (2.1.293) or later (its session file's
+`version`, else the job row's `cliVersion`); an older one gets the typing
+path. The content is wrapped as Claude Code wraps a peer message,
+`<cross-session-message from="nimitz" from-name="nimitz">`: the receiver
+shows the sender as `nimitz` (`origin.name`; `origin.from` stays `unknown`)
+and adds its own "not typed by your user" framing. Inbound policy: with no
+`crossSessionInbound` value, a session that bypasses permission prompts
+holds such a message for approval; members run no bypass mode, and this
+machine's user settings say `accept`, so nimitz sets none. `nimitz signal`
+posts the same way first (`[nimitz signal] (sent by the user's own ...)`),
+and types only when the lead has no usable inbox.
 
 ## 6. Evidence and state (core)
 

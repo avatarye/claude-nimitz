@@ -1,6 +1,7 @@
-//! Needs-you delivery: type a blocked ship's notice into its
-//! commodore's pane (the tab attached to the commodore's job), the way
-//! `nimitz signal` reaches a lead.
+//! Needs-you delivery: post a blocked ship's notice into its commodore's
+//! inbox socket (a cross-session message from nimitz, `nimitz_core::inbox`),
+//! else type it into the commodore's pane (the tab attached to its job), the
+//! way `nimitz signal` reaches a lead.
 //!
 //! The hook records the notice (`nimitz_core::notify`) and starts
 //! `nimitz __notify <id>` detached, in its own session, so the member never
@@ -58,10 +59,10 @@ pub fn deliver_cmd(id: &str) -> i32 {
 /// The commodore's live session id: its own row in the snapshot (the job
 /// the registry names, or the process that holds its conversation), never a
 /// copy and never a stray session that only carries its name.
-fn commodore_session(env: &Env, cid: &Id) -> Option<String> {
+fn commodore_session(env: &Env, cid: &Id) -> Option<nimitz_core::SessionInfo> {
     let snap = nimitz_core::snapshot::snapshot(env, &mut nimitz_core::snapshot::Cache::default());
     let m = snap.fleets.iter().flat_map(|f| f.squadrons.iter()).map(|sq| &sq.commodore).find(|m| &m.id == cid)?;
-    m.session.as_ref().filter(|s| s.pid.is_some() && s.copy.is_none()).map(|s| s.session_id.clone())
+    m.session.as_ref().filter(|s| s.pid.is_some() && s.copy.is_none()).cloned()
 }
 
 /// The multiplexer a delivery types into. An explicit setting (`NIMITZ_MUX`
@@ -80,24 +81,26 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
     let id = Id(n.id.clone());
     let cid = Id::commodore(id.fleet(), id.squadron().unwrap_or_default());
     let mux = delivery_mux(env, vars);
-    if !mux.caps().type_text {
-        return ("failed", format!("no multiplexer in the member's env can type into {cid}'s pane ({}); only an explicit NIMITZ_MUX, or the Herdr server a nimitz command of the user recorded in active.json (by its session name), is used; fix: run nimitz status inside Herdr once", mux.name()));
-    }
     let text = n.text();
     let deadline = Instant::now() + retry;
     loop {
         let why = match commodore_session(env, &cid) {
             None => format!("{cid} is not running"),
-            Some(sid) => match mux.panes().into_iter().find(|p| p.session_id.as_deref() == Some(sid.as_str())) {
-                None => format!("{cid} is not live in a {} pane", mux.name()),
-                // a dialog of its own: typed text would answer it
-                Some(p) if p.state == "blocked" => format!("{cid}'s pane {} is blocked on a dialog of its own", p.pane.pane_id),
-                // its attach pane, read from the foreground alone: the agent
-                // view looks the same, and typed text would dispatch a session
-                Some(p) if p.inferred => format!("{cid}'s pane {} runs its attach, but Herdr names no session there, so nimitz cannot tell it from the agent view (R-24); nothing is typed", p.pane.pane_id),
-                Some(p) => match mux.type_text(&p.pane, &text) {
-                    Ok(()) => return ("delivered", format!("typed into {cid}'s pane {}", p.pane.pane_id)),
-                    Err(e) => format!("typing into {cid}'s pane {} failed: {e}", p.pane.pane_id),
+            Some(c) => match inbox_send(env, &cid, &c, &text) {
+                // its inbox: no pane, no typing
+                Ok(note) => return ("delivered", note),
+                Err(no_inbox) if !mux.caps().type_text => format!("{no_inbox}; and no multiplexer in the member's env can type into {cid}'s pane ({}): only an explicit NIMITZ_MUX, or the Herdr server a nimitz command of the user recorded in active.json (by its session name), is used; fix: run nimitz status inside Herdr once", mux.name()),
+                Err(no_inbox) => match mux.panes().into_iter().find(|p| p.session_id.as_deref() == Some(c.session_id.as_str())) {
+                    None => format!("{no_inbox}; and {cid} is not live in a {} pane", mux.name()),
+                    // a dialog of its own: typed text would answer it
+                    Some(p) if p.state == "blocked" => format!("{no_inbox}; and {cid}'s pane {} is blocked on a dialog of its own", p.pane.pane_id),
+                    // its attach pane, read from the foreground alone: the agent
+                    // view looks the same, and typed text would dispatch a session
+                    Some(p) if p.inferred => format!("{no_inbox}; and {cid}'s pane {} runs its attach, but Herdr names no session there, so nimitz cannot tell it from the agent view (R-24); nothing is typed", p.pane.pane_id),
+                    Some(p) => match mux.type_text(&p.pane, &text) {
+                        Ok(()) => return ("delivered", format!("typed into {cid}'s pane {} ({no_inbox})", p.pane.pane_id)),
+                        Err(e) => format!("{no_inbox}; and typing into {cid}'s pane {} failed: {e}", p.pane.pane_id),
+                    },
                 },
             },
         };
@@ -110,4 +113,26 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
         }
         std::thread::sleep(POLL);
     }
+}
+
+/// Post `text` into the live session `s` of `id` through its inbox socket
+/// (`nimitz_core::inbox`): `Ok(note)` when the line went in, else why not
+/// (no socket: the job is stopped or retired, or its Claude Code predates
+/// the line nimitz knows).
+pub fn inbox_send(env: &Env, id: &Id, s: &nimitz_core::SessionInfo, text: &str) -> Result<String, String> {
+    let sock = inbox_target(env, id, s)?;
+    nimitz_core::inbox::send(&sock, text).map(|()| format!("sent to {id}'s inbox {} (a cross-session message from nimitz)", sock.display()))
+}
+
+/// The inbox socket of `id`'s live session `s`, or why there is none to use.
+pub fn inbox_target(env: &Env, id: &Id, s: &nimitz_core::SessionInfo) -> Result<std::path::PathBuf, String> {
+    let version = nimitz_core::inbox::receiver_version(env, s.pid, s.short_id.as_deref());
+    if !nimitz_core::inbox::format_ok(version.as_deref()) {
+        return Err(format!(
+            "{id} runs Claude Code {}, older than {} where nimitz verified the inbox line",
+            version.as_deref().unwrap_or("(version unknown)"),
+            nimitz_core::inbox::FORMAT_SINCE
+        ));
+    }
+    nimitz_core::inbox::socket_of(env, &s.session_id, s.pid).ok_or_else(|| format!("{id} has no inbox socket (no live process listens for it)"))
 }

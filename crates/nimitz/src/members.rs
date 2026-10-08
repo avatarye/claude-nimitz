@@ -322,11 +322,36 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
             }
         }
     };
+    let why = if via.id == id { "type into its attached tab".to_string() } else { format!("you reach {id} through its commodore") };
+    // its inbox first: a cross-session message from nimitz, no pane, no typing
+    let mut no_inbox = None;
+    if let Some(s) = via.session.as_ref().filter(|_| live(via)) {
+        let body = format!("[nimitz signal] (sent by the user's own `nimitz signal {id}`, through nimitz) {text}");
+        match crate::notify::inbox_target(&ctx.env, &via.id, s) {
+            Ok(sock) => {
+                plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["inbox".into(), sock.display().to_string(), body.clone()], cwd: None, why: why.replace("type into its attached tab", "post it into its inbox (a cross-session message from nimitz)") });
+                return match ctx.gate(&plan) {
+                    out::Go::Exit(code) => Ok(code),
+                    out::Go::Run => match nimitz_core::inbox::send(&sock, &body) {
+                        Ok(()) => {
+                            out::ok(&format!("sent to {}'s inbox {}", via.id, sock.display()));
+                            Ok(0)
+                        }
+                        Err(e) => {
+                            out::error(&format!("sending to {}'s inbox failed: {e}; nothing was typed. Run the signal again in a moment", via.id));
+                            Ok(1)
+                        }
+                    },
+                };
+            }
+            Err(w) => no_inbox = Some(w),
+        }
+    }
     let mux = ctx.mux();
     if !mux.caps().type_text {
         plan.refusals.push(refusal(
             "mux.none",
-            format!("typing to {} needs a multiplexer that can type ({})", via.id, mux.name()),
+            format!("typing to {} needs a multiplexer that can type ({}){}", via.id, mux.name(), no_inbox.map(|w| format!("; its inbox cannot be used: {w}")).unwrap_or_default()),
             Some(nimitz_mux::missing_mux_fix(&ctx.vars)),
             Some(via.id.clone()),
         ));
@@ -343,7 +368,6 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         return Ok(finish_plan(ctx, &plan));
     }
     let pane = shown.map(|p| p.pane);
-    let why = if via.id == id { "type into its attached tab".to_string() } else { format!("you reach {id} through its commodore") };
     match &pane {
         Some(p) => plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), p.pane_id.clone(), text.clone()], cwd: None, why }),
         None => {

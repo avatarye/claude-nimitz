@@ -2307,3 +2307,75 @@ fn an_unclaimed_attach_pane_is_never_typed_into() {
     // the pane itself is still the commodore's: status shows it there
     assert_eq!(sb.member("MAIN/ARGOS")["pane"], Value::from("w1:p2"));
 }
+
+/// A Unix socket that stands for a session's inbox: every line it gets.
+fn inbox_listener(path: &Path) -> std::sync::mpsc::Receiver<String> {
+    let l = std::os::unix::net::UnixListener::bind(path).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for c in l.incoming().flatten() {
+            let mut s = String::new();
+            let _ = std::io::Read::read_to_string(&mut { c }, &mut s);
+            let _ = tx.send(s);
+        }
+    });
+    rx
+}
+
+impl Sb {
+    /// `id`'s live session listens on a fresh inbox socket (recorded as its
+    /// SessionStart hook records it), and runs Claude Code `version`.
+    fn inbox_for(&self, id: &str, version: &str) -> std::sync::mpsc::Receiver<String> {
+        let m = self.member(id);
+        let (sid, pid) = (m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["pid"].as_i64().unwrap());
+        let sock = self.base.join(format!("inbox-{pid}.sock"));
+        let rx = inbox_listener(&sock);
+        let state = PathBuf::from(&self.vars["NIMITZ_STATE"]);
+        std::fs::write(state.join("inbox.json"), serde_json::json!({sid.clone(): {"socket": sock, "pid": pid, "at": 1.0}}).to_string()).unwrap();
+        // the sandbox's session files are not named by pid: the job row's cliVersion
+        let short = m["session"]["short_id"].as_str().unwrap().to_string();
+        let file = self.base.join("claude_home/jobs").join(short).join("state.json");
+        let mut v: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        v["cliVersion"] = Value::from(version);
+        std::fs::write(&file, v.to_string()).unwrap();
+        rx
+    }
+}
+
+/// A needs-you notice and `nimitz signal` go into the lead's inbox socket as a
+/// cross-session message from nimitz: no pane, nothing typed.
+#[test]
+fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
+    let sb = Sb::new(true);
+    sb.pane_for("MAIN/ARGOS");
+    let rx = sb.inbox_for("MAIN/ARGOS", "2.1.293");
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "delivered", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("inbox"), "{n}");
+    let line: Value = serde_json::from_str(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().trim()).unwrap();
+    let c = line["message"]["content"].as_str().unwrap();
+    assert!(c.starts_with("<cross-session-message from=\"nimitz\" from-name=\"nimitz\">") && c.contains("[nimitz needs-you]") && c.contains("Ship the fix to main?"), "{c}");
+    let r = sb.run(&["signal", "MAIN/ARGOS", "hello there", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("sent to MAIN/ARGOS's inbox"), "{}", r.out);
+    let line: Value = serde_json::from_str(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().trim()).unwrap();
+    let c = line["message"]["content"].as_str().unwrap();
+    assert!(c.contains("[nimitz signal]") && c.contains("hello there"), "{c}");
+    assert!(sb.prompts("w1:p2").is_empty(), "nothing typed");
+}
+
+/// A lead on a Claude Code older than the verified line format gets the
+/// typing path, and the note says why.
+#[test]
+fn an_older_claude_code_gets_the_typing_path() {
+    let sb = Sb::new(true);
+    sb.pane_for("MAIN/ARGOS");
+    let rx = sb.inbox_for("MAIN/ARGOS", "2.1.292");
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "delivered", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("typed into") && n["delivery_note"].as_str().unwrap().contains("older than 2.1.293"), "{n}");
+    assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "nothing sent to the inbox");
+    assert!(!sb.prompts("w1:p2").is_empty());
+}
