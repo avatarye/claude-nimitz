@@ -433,12 +433,11 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                 _ if r.node.kind == crate::view::Kind::Note => {
                     // a fleet's note (its config does not load, squadrons the state
                     // filter hides), in full, outside any box
-                    if let Some(e) = open.take() {
-                        close(&mut out, e);
-                    }
-                    // a gap from the box above; a broken fleet's error stays
-                    // right under its band
-                    if rows.get(i.wrapping_sub(1)).is_some_and(|p| p.section != Section::FleetBand) {
+                    // a gap from a box above (open, or a collapsed squadron's
+                    // line); a broken fleet's error stays right under its band,
+                    // its lines together
+                    let after_box = open.take().map(|e| close(&mut out, e)).is_some() || rows.get(i.wrapping_sub(1)).is_some_and(|p| p.section == Section::SquadronBand);
+                    if after_box {
                         blank(&mut out);
                     }
                     for body in body_spans(r, &w, inner, sp.gap, icons) {

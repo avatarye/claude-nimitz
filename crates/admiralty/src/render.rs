@@ -246,7 +246,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
         ]);
     }
     if let Some(b) = &app.busy {
-        return Line::styled(format!(" running: {b}   (esc waits for it; q quits now)"), bold(mono::BUSY));
+        return Line::styled(format!(" running (esc waits for it, q quits now): {b}"), bold(mono::BUSY));
     }
     if let Some(t) = &app.toast {
         if t.at.elapsed() < Duration::from_secs(8) {

@@ -1224,7 +1224,7 @@ fn esc_never_quits_mid_action_or_from_a_dialog() {
     t.app.busy = Some("sweep FORGE".into());
     assert!(press(&mut t.app, KeyCode::Esc).is_none(), "busy: no quit");
     let foot = lines(&draw(&mut t.app, 120, 30)).pop().unwrap();
-    assert!(foot.contains("running: sweep FORGE") && foot.contains("esc waits"), "{foot}");
+    assert!(foot.contains("esc waits") && foot.contains("sweep FORGE"), "{foot}");
     t.app.busy = None;
     for (k, what) in [('x', "the actions menu"), ('c', "the create menu"), ('m', "a message"), ('!', "needs you"), ('i', "issues"), ('?', "help")] {
         goto(&mut t.app, "M:MAIN/ARGOS");
@@ -1242,4 +1242,24 @@ fn esc_never_quits_mid_action_or_from_a_dialog() {
     keys(&mut t.app, "a");
     assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "a confirm");
     assert!(press(&mut t.app, KeyCode::Esc).is_none() && t.app.modal.is_none(), "esc cancels the confirm");
+}
+
+/// A fleet whose config does not load: its error, in full, right under its
+/// band, every line of it together (no blank between them).
+#[test]
+fn a_broken_fleets_error_stays_together_under_its_band() {
+    let mut b = fixtures::demo();
+    let f = &mut b.snap.fleets[0];
+    let id = f.id.clone();
+    f.issues.push(nimitz_core::Issue { code: "config.invalid".into(), severity: nimitz_core::Severity::Error, message: format!("{}/fleet.toml:3: expected `=`\nline two of the parser", id.0.to_lowercase()), fix: Some(format!("nimitz check {}", id.0)), id: Some(id.clone()) });
+    let mut t = fixture_app(b, false);
+    tab(&mut t.app, &id.0);
+    let ls = lines(&draw(&mut t.app, 120, 60));
+    let band = ls.iter().position(|l| l.contains(&format!("[{}]", id.0))).unwrap();
+    let first = ls.iter().position(|l| l.contains("fleet.toml:3")).unwrap_or_else(|| panic!("the error:\n{}", ls.join("\n")));
+    let adm = ls.iter().position(|l| l.contains("ADMIRAL ")).unwrap();
+    assert!(first > band && first < adm, "{}", ls.join("\n"));
+    assert!(ls[band + 1..first].iter().all(|l| !l.trim().is_empty()), "no blank between the band and its error:\n{}", ls.join("\n"));
+    let last = (first..adm).rev().find(|&y| !ls[y].trim().is_empty() && !ls[y].starts_with('\u{250f}')).unwrap();
+    assert!(ls[first..=last].iter().all(|l| !l.trim().is_empty()), "the error's lines together:\n{}", ls[first..adm].join("\n"));
 }
