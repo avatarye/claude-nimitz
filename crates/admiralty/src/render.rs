@@ -364,8 +364,8 @@ fn keys_line(pairs: &[(&str, &str)]) -> Line<'static> {
 }
 
 fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Icons) {
-    let r = centered(area, 90, HELP.len() as u16 + 32);
-    let width = r.width.saturating_sub(2) as usize;
+    // as wide as it may be, then as tall as its lines (the screen caps it; j scrolls)
+    let width = centered(area, 90, 1).width.saturating_sub(2) as usize;
     let mut lines = vec![Line::styled("Keys (vim style)   j/k scroll, esc closes", bold(mono::FG)), Line::raw("")];
     for (k, d) in HELP {
         lines.extend(wrap(vec![Span::styled(format!("  {k:<18}"), bold(mono::ACCENT)), Span::styled(d.to_string(), st(mono::FG))], width, 20));
@@ -400,6 +400,7 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
         lines.extend(wrap(vec![Span::styled(format!("  {icon}  "), style), Span::styled(what.to_string(), st(mono::SOFT))], width, 5));
     }
     lines.extend(wrap(vec![Span::styled("  Band counts read `icon n`; under 100 columns only needs-you and errors stay.", st(mono::COMMENT))], width, 2));
+    let r = centered(area, 90, lines.len() as u16 + 2);
     let room = r.height.saturating_sub(2) as usize;
     let scroll = scroll.min(lines.len().saturating_sub(room));
     let more = lines.len() > room + scroll;
