@@ -285,8 +285,9 @@ impl Ctx<'_> {
             return Some(false);
         }
         // the attach of the member's job, but Herdr says the pane shows
-        // another agent (its own hook ran in this pane): the agent view
-        // (`/exit` inside the attach, R-24) or a copy
+        // another agent (its own hook ran in this pane): a copy, or an agent
+        // view from a Claude Code that does not re-exec as `claude agents`
+        // (R-24; one that does is not the same argv, above)
         // A claim that names ANOTHER member's session is that member's hook
         // naming the pane by an inherited HERDR_PANE_ID (a ship launched from
         // here), not the agent view: the attach still runs, so the pane is

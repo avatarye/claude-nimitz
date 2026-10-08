@@ -1201,8 +1201,8 @@ pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], si
 /// The session a pane's foreground runs, read from the processes themselves
 /// (no multiplexer claim): a foreground pid's session file (an interactive
 /// session in the pane). What a pane shows when Herdr's claim is not backed.
-/// Not an attach client's job: an attach may show the agent view instead
-/// (R-24), which only Herdr's claim tells.
+/// Not an attach client's job: `session_of_attach` reads that, and the
+/// typing paths check the exact attach again (R-24).
 pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
     procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(_, pid)| {
         let v = std::fs::read(claude_home.join("sessions").join(format!("{}.json", (*pid)?))).ok().and_then(|b| first_json(&b))?;

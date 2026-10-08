@@ -26,8 +26,8 @@ pub struct Pane {
     /// the multiplexer's own state for the pane's agent (Herdr: working|blocked|done|idle|unknown)
     pub state: String,
     /// the session is read from the pane's `claude attach <job>` alone, with
-    /// no claim of Herdr's: the agent view (`/exit` inside the attach, R-24)
-    /// looks the same, so nothing is ever typed into such a pane (focus only)
+    /// no claim of Herdr's: typed into only while it runs exactly that attach
+    /// (`runs_exact_attach`, read just before typing; R-24)
     pub inferred: bool,
 }
 
@@ -160,6 +160,12 @@ pub trait Mux {
         Err(MuxError::Unsupported("reading a pane's foreground"))
     }
 
+    /// Every process of a pane's foreground: argv and pid, when known (the
+    /// default: what `foreground` reads, no pid).
+    fn foreground_procs(&self, pane: &PaneRef) -> Result<Vec<(Vec<String>, Option<i64>)>, MuxError> {
+        self.foreground(pane).map(|a| if a.is_empty() { vec![] } else { vec![(a, None)] })
+    }
+
     /// Run a command line in a pane's shell (`herdr pane run`). Only
     /// `attach` and a restore call it, and only into a pane whose foreground
     /// is a shell.
@@ -225,6 +231,50 @@ pub fn tab_state(mux: &dyn Mux, cmd: &[String], place: &Place, session_id: Optio
         return Ok(TabState::Shown(pane));
     }
     Ok(TabState::Taken { pane, running: fg.join(" ") })
+}
+
+/// The first Claude Code on which `/exit` inside `claude attach` re-execs
+/// the attach client in place as `claude agents`, the agent view (measured:
+/// e2e `e2e_agent_view_re_execs_as_claude_agents`). Below it, or with the
+/// version unknown, an attach pane is never typed into.
+pub const ATTACH_EXEC_SINCE: &str = "2.1.293";
+
+/// The Claude Code version a foreground process runs: the
+/// `.../claude/versions/<v>` in its argv0, else in what `/proc/<pid>/exe`
+/// resolves to (the `~/.local/bin/claude` launcher is a link into it).
+fn claude_version(argv0: &str, pid: Option<i64>) -> Option<String> {
+    let from = |p: &str| p.split("/claude/versions/").nth(1).and_then(|v| v.split('/').next()).filter(|v| !v.is_empty()).map(String::from);
+    from(argv0).or_else(|| pid.and_then(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok()).and_then(|e| from(&e.to_string_lossy())))
+}
+
+/// Does `pane` run exactly `claude attach <job>` right now: every non-shell
+/// process of its foreground is that attach, on a Claude Code at or past
+/// `ATTACH_EXEC_SINCE`? Read just before typing into a pane known by its
+/// attach alone (`Pane.inferred`): on `/exit` the attach client re-execs in
+/// place as `claude agents` (R-24), so the argv tells the live attach from
+/// the view. A launcher that does not exec, an older or unknown version, or
+/// anything else in the foreground: no. The job is its short id; the argv
+/// may carry the full id it begins. A window stays: text typed while the
+/// user's `/exit` is on its way reaches the view (`typed_into_view` tells).
+pub fn runs_exact_attach(mux: &dyn Mux, pane: &PaneRef, job: &str) -> bool {
+    let Ok(procs) = mux.foreground_procs(pane) else { return false };
+    let names_job = |a: &str| !job.is_empty() && (a == job || a.strip_prefix(job).is_some_and(|rest| rest.starts_with('-')));
+    let exact = |(fg, pid): &(Vec<String>, Option<i64>)| {
+        fg.len() == 3
+            && fg[1] == "attach"
+            && names_job(&fg[2])
+            && claude_version(&fg[0], *pid).is_some_and(|v| nimitz_core::compat::at_least(&v, ATTACH_EXEC_SINCE))
+    };
+    let running: Vec<&(Vec<String>, Option<i64>)> = procs.iter().filter(|(a, _)| !is_shell(a)).collect();
+    !running.is_empty() && running.into_iter().all(exact)
+}
+
+/// After typing into an attach pane: did the text reach the agent view
+/// instead (its foreground runs `claude agents` now)? Read after a moment,
+/// for the `/exit` that raced the typing.
+pub fn typed_into_view(mux: &dyn Mux, pane: &PaneRef) -> bool {
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    mux.foreground_procs(pane).is_ok_and(|ps| ps.iter().any(|(a, _)| a.get(1).map(String::as_str) == Some("agents")))
 }
 
 fn program_name(p: &str) -> String {

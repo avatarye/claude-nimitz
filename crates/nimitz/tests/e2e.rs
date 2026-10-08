@@ -1469,14 +1469,14 @@ fn e2e_00_sessions_run_on_the_cheap_model() {
 }
 
 
-/// Probe (not a check; `NIMITZ_E2E=1 NIMITZ_E2E_PROBE=1`): what tells the
-/// agent view (`/exit` inside an attach, R-24) from a live `claude attach
-/// <job>`, outside Herdr: the terminal title (the OSC title Herdr reports as
-/// `terminal_title`), the attach client's process tree and session files,
-/// and the job row. Prints both states; asserts nothing about them.
+/// What tells the agent view (`/exit` inside an attach, R-24) from a live
+/// `claude attach <job>`: the attach client re-execs in place as `claude
+/// agents` (same pid), so its argv says which it is. The typing guard
+/// (`nimitz_mux::runs_exact_attach`) rests on this. Also prints the terminal
+/// title, the process tree, session files and the job row of both states.
 #[test]
-fn e2e_probe_agent_view_signals() {
-    if !gated() || std::env::var("NIMITZ_E2E_PROBE").ok().as_deref() != Some("1") {
+fn e2e_agent_view_re_execs_as_claude_agents() {
+    if !gated() {
         return;
     }
     let w = E2e::new(90);
@@ -1490,6 +1490,7 @@ fn e2e_probe_agent_view_signals() {
     let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
     let job = m["session"]["short_id"].as_str().unwrap().to_string();
     let claude_home = home().join(".claude");
+    let client = std::cell::RefCell::new((0i64, String::new()));
     let collect = |label: &str| {
         let (_, info) = w.tx(&["display-message", "-p", "-t", "e2e", "title=#{pane_title} | pid=#{pane_pid} | cmd=#{pane_current_command}"]);
         println!("PROBE[{label}] tmux: {}", info.trim());
@@ -1515,6 +1516,7 @@ fn e2e_probe_agent_view_signals() {
             tree.extend(rows.iter().filter(|r| r.1 == p).map(|r| r.0));
             i += 1;
         }
+        *client.borrow_mut() = rows.iter().filter(|r| r.1 == pane_pid).map(|r| (r.0, r.2.clone())).next().unwrap_or_default();
         for (pid, ppid, args) in rows.iter().filter(|r| tree.contains(&r.0)) {
             let sf = std::fs::read_to_string(claude_home.join("sessions").join(format!("{pid}.json"))).unwrap_or_default();
             println!("PROBE[{label}] proc {pid} (ppid {ppid}): {args}{}", if sf.is_empty() { String::new() } else { format!("\n    session file: {sf}") });
@@ -1527,11 +1529,14 @@ fn e2e_probe_agent_view_signals() {
     };
     w.attach(&dir, &job, &idv.name());
     collect("attach");
+    let (attach_pid, attach) = client.borrow().clone();
+    assert!(attach.ends_with(&format!(" attach {job}")), "the attach client: {attach}");
     w.type_line("/exit");
     std::thread::sleep(secs(10));
     collect("after /exit");
-    std::thread::sleep(secs(10));
-    collect("after /exit +10s");
+    let (view_pid, view) = client.borrow().clone();
+    assert!(view.ends_with(" agents") && !view.contains(" attach "), "the agent view's client: {view}");
+    assert_eq!(view_pid, attach_pid, "the same process, re-exec'd in place");
     w.finish();
 }
 

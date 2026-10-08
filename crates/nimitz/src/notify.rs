@@ -94,10 +94,12 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
                     None => format!("{no_inbox}; and {cid} is not live in a {} pane", mux.name()),
                     // a dialog of its own: typed text would answer it
                     Some(p) if p.state == "blocked" => format!("{no_inbox}; and {cid}'s pane {} is blocked on a dialog of its own", p.pane.pane_id),
-                    // its attach pane, read from the foreground alone: the agent
-                    // view looks the same, and typed text would dispatch a session
-                    Some(p) if p.inferred => format!("{no_inbox}; and {cid}'s pane {} runs its attach, but Herdr names no session there, so nimitz cannot tell it from the agent view (R-24); nothing is typed", p.pane.pane_id),
+                    // its attach pane, known by the foreground alone: typed into
+                    // only while it runs exactly `claude attach <job>`, read just
+                    // now (the agent view re-execs as `claude agents`, R-24)
+                    Some(p) if p.inferred && !c.short_id.as_deref().is_some_and(|j| nimitz_mux::runs_exact_attach(mux.as_ref(), &p.pane, j)) => format!("{no_inbox}; and {cid}'s pane {} no longer runs `claude attach {}` (the agent view, or something else): nothing is typed", p.pane.pane_id, c.short_id.as_deref().unwrap_or("?")),
                     Some(p) => match mux.type_text(&p.pane, &text) {
+                        Ok(()) if p.inferred && nimitz_mux::typed_into_view(mux.as_ref(), &p.pane) => return ("failed", format!("typed into {cid}'s pane {}, but the pane runs the agent view now (an /exit raced the typing): check it for a dispatched session ({no_inbox})", p.pane.pane_id)),
                         Ok(()) => return ("delivered", format!("typed into {cid}'s pane {} ({no_inbox})", p.pane.pane_id)),
                         Err(e) => format!("{no_inbox}; and typing into {cid}'s pane {} failed: {e}", p.pane.pane_id),
                     },

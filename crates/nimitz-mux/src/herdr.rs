@@ -297,7 +297,7 @@ impl Herdr {
             }
         };
         let Some(claim) = claim else {
-            // the attach alone: shown, never typed into (`Pane.inferred`)
+            // the attach alone: shown, typed into only while it runs exactly the attach (`Pane.inferred`)
             if let Some(sid) = nimitz_core::evidence::session_of_attach(home, procs) {
                 return (Some(sid), true);
             }
@@ -452,6 +452,11 @@ impl Mux for Herdr {
         let Place::Tab { workspace, label } = place else { return None };
         let (ws_id, tab_id) = self.find_tab(workspace, label).ok()??;
         self.pane_in_tab(&ws_id, &tab_id).ok()
+    }
+
+    /// Every foreground process of the pane, with its pid (`pane process-info`).
+    fn foreground_procs(&self, pane: &PaneRef) -> Result<Vec<(Vec<String>, Option<i64>)>, MuxError> {
+        Herdr::foreground_procs(self, &pane.pane_id)
     }
 
     /// `herdr pane process-info --pane <id>`: the foreground process group of

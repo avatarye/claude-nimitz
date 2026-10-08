@@ -379,7 +379,7 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     }
     let b = CoreSource::detect(&vars).load();
     let (id, job, cwd) = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find_map(|m| m.session.as_ref().and_then(|s| s.short_id.clone().map(|j| (m.id.clone(), j, s.cwd.clone())))).expect("a lead with a job");
-    let claude = "/home/u/.local/bin/claude";
+    let claude = "/home/u/.local/share/claude/versions/2.1.293";
     let world = sb.join("herdr/world.json");
     let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
     let p = &mut w["panes"][0];
@@ -434,10 +434,30 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     let calls: Vec<String> = std::fs::read_to_string(sb.join("herdr/calls.jsonl")).unwrap().lines().skip(from).map(String::from).collect();
     // the wrapper routes `--session NIMITZ` alone to this world
     assert!(calls.iter().any(|c| c.contains("\"agent\",\"focus\"") && c.contains(&pane)), "{calls:?}");
-    // `m` types nothing there: the agent view looks the same (R-24)
+    // `m` types there while the pane runs exactly `claude attach <job>`,
+    // read again when the message goes; once the client re-execs as the
+    // agent view (`claude agents`, R-24) nothing is typed
     let b = app.bundle.as_ref().unwrap();
-    let why = actions::plan_message(b.mux_caps, &b.snap, &b.panes, &Target::Member(id.clone())).unwrap_err();
-    assert!(why.contains("nothing is typed"), "{why}");
+    let plan = actions::plan_message(b.mux_caps, &b.snap, &b.panes, &Target::Member(id.clone())).unwrap();
+    assert_eq!(plan.attach_job.as_deref(), Some(job.as_str()));
+    let prompts = |sb: &std::path::Path| -> Vec<String> {
+        let w: serde_json::Value = serde_json::from_slice(&std::fs::read(sb.join("herdr/world.json")).unwrap()).unwrap();
+        w["panes"][0]["prompts"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
+    };
+    goto(&mut app, &format!("M:{}", id.0));
+    press(&mut app, KeyCode::Char('m'));
+    keys(&mut app, "first");
+    press(&mut app, KeyCode::Enter);
+    assert!(toast(&app).starts_with("Sent to"), "{}", toast(&app));
+    assert!(prompts(&sb).iter().any(|p| p.contains("first")), "{:?}", prompts(&sb));
+    press(&mut app, KeyCode::Char('m'));
+    keys(&mut app, "second");
+    let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    w["panes"][0]["foreground"] = serde_json::json!([claude, "agents"]);
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    press(&mut app, KeyCode::Enter);
+    assert!(toast(&app).contains("no longer runs `claude attach"), "{}", toast(&app));
+    assert!(!prompts(&sb).iter().any(|p| p.contains("second")), "nothing typed into the agent view");
     for name in ["default", "nikitz"] {
         let c = std::fs::read_to_string(sb.join(format!("herdr-{name}/calls.jsonl"))).unwrap_or_default();
         assert!(c.is_empty(), "never a call to the {name} server: {c}");
@@ -603,4 +623,31 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
     assert!(app.available(Act::Restore).is_ok());
     goto(&mut app, "M:MAIN/ARGOS/CLEAN");
     assert!(app.available(Act::Restore).is_err());
+}
+
+/// What counts as the exact attach: `claude attach <job>` (by its short id,
+/// or the full id it begins) from a Claude Code at or past the version that
+/// re-execs as the agent view (its versions/<v> path); never the view, an
+/// older or unknown version.
+#[test]
+fn the_exact_attach_is_only_claude_attach_of_that_job() {
+    let mux = TestMux::default();
+    let cases: &[(&[&str], bool)] = &[
+        (&["/home/u/.local/share/claude/versions/2.1.293", "attach", "f8eee8df"], true),
+        (&["/home/u/.local/share/claude/versions/2.1.300", "attach", "f8eee8df-b691-4eac-a8a7-83004ac4653a"], true),
+        (&["/home/u/.local/share/claude/versions/2.1.292", "attach", "f8eee8df"], false),
+        (&["/home/u/.local/bin/claude", "attach", "f8eee8df"], false),
+        (&["/home/u/.local/bin/claude", "agents"], false),
+        (&["/v/claude/versions/2.1.293", "agents"], false),
+        (&["/v/claude/versions/2.1.293", "attach", "f8eee8dfx"], false),
+        (&["/v/claude/versions/2.1.293", "attach", "0000aaaa"], false),
+        (&["/v/claude/versions/2.1.293", "attach", "f8eee8df", "--x"], false),
+        (&[], false),
+    ];
+    for (i, (fg, want)) in cases.iter().enumerate() {
+        let pane = format!("p{i}");
+        mux.with_tab("W", &format!("T{i}"), &pane, fg);
+        let r = nimitz_mux::PaneRef { pane_id: pane, tab_id: None, workspace_id: None };
+        assert_eq!(nimitz_mux::runs_exact_attach(&mux, &r, "f8eee8df"), *want, "{fg:?}");
+    }
 }
