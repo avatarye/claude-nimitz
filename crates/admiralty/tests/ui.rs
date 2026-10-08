@@ -31,7 +31,7 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     assert!(ls[0].contains("MAIN") && ls[0].contains("needs you"), "the tab carries the state: {}", ls[0]);
-    let y = ls.iter().position(|l| l.starts_with("\u{250f}\u{2501} \u{25be} ADMIRAL ")).expect("the admiral's heavy box");
+    let y = ls.iter().position(|l| l.starts_with("\u{250f}\u{2501} \u{25be} [MAIN] ADMIRAL ")).expect("the admiral's heavy box, named for its fleet");
     assert_eq!(buf[(0, y as u16)].fg, mono::FG, "a heavier border");
     assert_eq!(buf[(5, y as u16)].fg, mono::STRONG, "a brighter title");
     assert!(buf[(5, y as u16)].modifier.contains(ratatui::style::Modifier::BOLD));
@@ -57,7 +57,17 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     assert_eq!(buf[(2, argos as u16)].bg, want);
     assert!(ls[argos - 1].trim().is_empty() && ls[kits - 1].trim().is_empty(), "blank lines between the boxes");
     let s = ls.iter().position(|l| l.contains("STOWAWAYS")).unwrap();
-    assert_eq!(buf[(2, s as u16)].bg, mono::MUTED, "the stowaways: a neutral bar");
+    assert_eq!(buf[(2, s as u16)].bg, mono::WARN, "the stowaways: yellow while one is live");
+    // the cursor on a bar keeps its fill and dark text (the contrast holds)
+    goto(&mut t.app, "SQ:MAIN/KITS");
+    let buf = draw(&mut t.app, 200, 60);
+    let ls = lines(&buf);
+    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("comms")).unwrap();
+    let x = ls[kits].find("KITS").unwrap() as u16;
+    let c = &buf[(x, kits as u16)];
+    assert_eq!((c.bg, c.fg), (mono::NEEDS, mono::INK), "selected: same fill, same text");
+    assert!(c.modifier.contains(ratatui::style::Modifier::UNDERLINED), "selected: underlined");
+    assert_eq!(buf[(0, kits as u16)].bg, mono::ACCENT, "selected: the bar's end in the cursor colour");
 }
 
 /// Dark text on every fill passes WCAG AA (4.5:1); the neutral fill is the
@@ -248,7 +258,7 @@ fn several_fleets_in_config_order_and_an_elsewhere_fleet_is_folded() {
     assert!(!t.app.rows.iter().any(|r| r.node.name == "[LAB.OPTICS]-LENS"));
     let ls = lines(&draw(&mut t.app, 200, 60));
     assert!(ls[0].contains("elsewhere"), "its tab says where: {}", ls[0]);
-    assert!(ls.iter().any(|l| l.starts_with("\u{257a}\u{2501} \u{25b8} ADMIRAL ")), "folded: one line");
+    assert!(ls.iter().any(|l| l.starts_with("\u{257a}\u{2501} \u{25b8} [LAB] ADMIRAL ")), "folded: one line, named");
 }
 
 #[test]
@@ -1271,4 +1281,27 @@ fn a_broken_fleets_error_stays_together_under_its_band() {
     let adm = ls.iter().position(|l| l.contains(&format!("[{}]-ADMIRAL", id.0))).unwrap();
     assert_eq!(first, top + 1, "right under the title:\n{}", ls.join("\n"));
     assert!(ls[first..adm].iter().all(|l| l.starts_with('\u{2503}') && l.chars().skip(1).any(|c| !c.is_whitespace() && c != '\u{2503}')), "the error's lines together, in the box:\n{}", ls[top..=adm].join("\n"));
+}
+
+/// With every squadron hidden by the state filter the note sits below the
+/// admiral's box, not in it; with the admiral filtered out its box says so.
+#[test]
+fn the_admirals_box_with_everything_or_the_admiral_filtered() {
+    let mut t = demo();
+    for i in 0..t.app.fleet_states.len() {
+        t.app.fleet_states[i] = false;
+    }
+    t.app.rebuild();
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    let n = ls.iter().position(|l| l.contains("hidden by the state filter")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
+    assert!(!ls[n].starts_with('\u{2503}'), "outside the box: {}", ls[n]);
+    let above = ls[..n].iter().rev().find(|l| !l.trim().is_empty()).unwrap();
+    assert!(above.starts_with('\u{2517}'), "the admiral's box closed above it:\n{}", ls.join("\n"));
+    // F: flagged only; MAIN's admiral has no issue and does not need you
+    let mut t = demo();
+    keys(&mut t.app, "F");
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    assert!(!ls.iter().any(|l| l.contains("[MAIN]-ADMIRAL")), "F hides MAIN's admiral:\n{}", ls.join("\n"));
+    let top = ls.iter().position(|l| l.contains("[MAIN] ADMIRAL")).unwrap();
+    assert!(ls[top + 1].contains("the admiral is hidden by the filters"), "{}", ls[top + 1]);
 }

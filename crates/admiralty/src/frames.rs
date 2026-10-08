@@ -302,18 +302,31 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
 }
 
 /// A squadron's (or the stowaways') title bar: filled with its status colour
-/// (neutral: the muted step, so it still reads as a bar), its text in `INK`;
-/// on the cursor the fill is the selection and the text takes the colour.
+/// (neutral: the muted step, so it still reads as a bar), its text in `INK`
+/// (the counts by their icons' shapes). On the cursor the fill and the text
+/// stay, so the contrast does too: the text is underlined and the end cells
+/// take the selection colour.
 fn bar(r: &Row, width: usize, selected: bool) -> Line<'static> {
     let fill = match r.node.frame.unwrap_or(mono::LINE) {
         c if c == mono::LINE => mono::MUTED,
         c => c,
     };
-    let (bg, fg) = if selected { (mono::SEL, fill) } else { (fill, mono::INK) };
-    let spans = band(r, width, (" ", " "), Style::new(), selected, 1, false)
+    let mut text = Style::new().fg(mono::INK).bg(fill).add_modifier(Modifier::BOLD);
+    if selected {
+        text = text.add_modifier(Modifier::UNDERLINED);
+    }
+    let mut spans = band(r, width, (" ", " "), Style::new(), false, 1, false)
         .into_iter()
-        .map(|s| Span::styled(s.content, s.style.fg(fg).bg(bg).add_modifier(Modifier::BOLD)))
+        .map(|s| Span::styled(s.content, text))
         .collect::<Vec<_>>();
+    if selected {
+        if let Some(first) = spans.first_mut() {
+            *first = Span::styled(first.content.clone(), Style::new().bg(mono::ACCENT));
+        }
+        if let Some(last) = spans.last_mut() {
+            *last = Span::styled(last.content.clone(), Style::new().bg(mono::ACCENT));
+        }
+    }
     Line::from(spans)
 }
 
@@ -321,7 +334,8 @@ fn bar(r: &Row, width: usize, selected: bool) -> Line<'static> {
 /// fleet's fold marker; the fleet's state and counts are on its tab).
 fn admiral_top(head: &Row, width: usize, selected: bool, e: Style) -> Line<'static> {
     let marker = if head.expanded { "\u{25be}" } else { "\u{25b8}" };
-    let title = format!(" {marker} ADMIRAL ");
+    // the fleet's name: in a search every fleet's box is on one screen
+    let title = truncate(&format!(" {marker} {} ADMIRAL ", head.node.name), width.saturating_sub(3));
     let (l, r) = if head.expanded { ("\u{250f}\u{2501}", "\u{2513}") } else { ("\u{257a}\u{2501}", "\u{2578}") };
     let rest = width.saturating_sub(3 + title.width());
     let line = Line::from(vec![Span::styled(l, e), Span::styled(title, bold(mono::STRONG)), Span::styled(format!("{}{r}", "\u{2501}".repeat(rest)), e)]);
@@ -399,6 +413,12 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
             out.push((selectable(Line::from(spans), i == cursor), Some(i)));
         }
     };
+    // the admiral's box with nothing in it (the filters hide the admiral)
+    let empty_heavy = |out: &mut Vec<(Line<'static>, Option<usize>)>, e: Edges| {
+        let text = truncate("  the admiral is hidden by the filters", inner + 2 * sp.pad);
+        let rest = (inner + 2 * sp.pad).saturating_sub(text.width());
+        out.push((Line::from(vec![Span::styled(e.v, e.style), Span::styled(format!("{text}{}", " ".repeat(rest)), st(mono::FAINT)), Span::styled(e.v, e.style)]), None));
+    };
     let close = |out: &mut Vec<(Line<'static>, Option<usize>)>, e: Edges| {
         let (l, h, r) = e.bottom;
         out.push((Line::styled(format!("{l}{}{r}", h.repeat(width.saturating_sub(2))), e.style), None));
@@ -439,11 +459,16 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
         // what is open: the admiral's box, or a squadron's
         let mut open: Option<Edges> = if head.expanded { Some(heavy) } else { None };
         let mut members_seen = false;
+        // rows in the admiral's box (a box with none says why)
+        let mut in_heavy = 0usize;
         while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
             let r = &rows[i];
             match r.section {
                 Section::SquadronBand => {
                     if let Some(e) = open.take() {
+                        if e.v == HEAVY.0 && in_heavy == 0 {
+                            empty_heavy(&mut out, e);
+                        }
                         close(&mut out, e);
                     }
                     blank(&mut out);
@@ -470,9 +495,13 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     if !members_seen {
                         if let Some(e) = open {
                             boxed_row(&mut out, r, i, e);
+                            in_heavy += 1;
                             i += 1;
                             continue;
                         }
+                    }
+                    if let Some(e) = open.filter(|e| e.v == HEAVY.0 && in_heavy == 0) {
+                        empty_heavy(&mut out, e);
                     }
                     let after_box = open.take().map(|e| close(&mut out, e)).is_some() || rows.get(i.wrapping_sub(1)).is_some_and(|p| p.section == Section::SquadronBand);
                     if after_box {
@@ -486,6 +515,8 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                 }
                 _ => {
                     // the admiral and its crew, in the heavy box the fleet row opened
+                    members_seen = true;
+                    in_heavy += 1;
                     match open {
                         Some(e) => boxed_row(&mut out, r, i, e),
                         None => boxed_row(&mut out, r, i, heavy),
@@ -495,6 +526,9 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
             i += 1;
         }
         if let Some(e) = open.take() {
+            if e.v == HEAVY.0 && in_heavy == 0 {
+                empty_heavy(&mut out, e);
+            }
             close(&mut out, e);
         }
     }

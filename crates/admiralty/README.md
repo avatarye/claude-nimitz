@@ -37,8 +37,10 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   hues with one meaning each (pink needs you, the only filled chip; orange
   error; yellow warning and legacy; green busy; cyan focus, key hints and fix
   commands) and four neutral steps (faint not started, muted ages and paths,
-  body text and idle, bright live names). Bands sit on one raised background,
-  never tinted. On the cursor row and band, faint and muted text is lifted.
+  body text and idle, bright live names). Squadron and stowaway title bars are
+  filled with their status colour, their text dark; on the cursor the text is
+  underlined and the bar's ends turn cyan. On the cursor row, faint and muted
+  text is lifted.
 - A fleet has no line of its own: its tab carries its state word and its
   `icon n / icon n` status and issue counts (info issues are not counted;
   under 100 columns only needs-you and errors). The other tabs show how many
@@ -68,8 +70,9 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   else the fleet its `legacy` issue names; `unassigned` otherwise). A session of
   the old fleet-skill fleets (issue `legacy`) has its own yellow history marker,
   and `x` then `d` adopts it as the identity its fix names.
-- Band counts read `icon n` (`!2 / *3 / -1`: needs you, busy, idle ...; orange and yellow
-  triangles are errors and warnings), right-aligned as a group; under 100 columns only
+- Counts read `icon n` (`!2 / *3 / -1`: needs you, busy, idle ...; triangles
+  are errors and warnings, orange and yellow on the tab, told apart by their
+  shape on a filled bar), right-aligned as a group; under 100 columns only
   needs-you and errors stay. `?` has a legend for every icon.
 - Columns NAME / STATUS / AGE / KIND / DETAIL line up across all boxes. NAME
   starts with the pane dot (green working, pink blocked, grey done, plain

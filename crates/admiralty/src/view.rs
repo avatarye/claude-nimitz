@@ -890,7 +890,8 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
         n.name = "STOWAWAYS".into();
         n.name_style = bold(hue);
         n.kind_text = "group".into();
-        n.frame = Some(mono::LINE);
+        // its bar: yellow while a stowaway is live, else neutral
+        n.frame = Some(if live > 0 { mono::WARN } else { mono::LINE });
         n.band_bg = Some(mono::BG_HI);
         let scope = match v.tab {
             Some(UNASSIGNED) => "sessions under the nimitz home, in no fleet's folders, with no labels — adopt or remove",

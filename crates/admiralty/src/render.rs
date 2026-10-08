@@ -129,7 +129,8 @@ fn tab_line(app: &App, width: usize) -> Line<'static> {
             out.extend(sp);
         }
     }
-    Line::from(out)
+    // the shown tab is kept whole, cut cleanly when even it does not fit
+    Line::from(crate::frames::truncate_spans(out, width))
 }
 
 fn top_line(app: &App, width: usize) -> Line<'static> {
