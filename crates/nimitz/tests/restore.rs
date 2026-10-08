@@ -1397,3 +1397,88 @@ fn an_attach_pane_herdr_never_claimed_still_shows_its_lead() {
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
     assert!(sb.calls().lines().last().is_some_and(|l| l.contains("focus") && l.contains(&pane)), "open focuses the attach pane:\n{}", sb.calls());
 }
+
+/// A lead whose conversation is held in a pane (`claude --resume <sid>` after
+/// a retire, typed by hand or Herdr's resume_agents_on_restore) shows that
+/// pane, with or without Herdr's claim: nimitz flags it as held, and the user
+/// still jumps to it.
+#[test]
+fn a_held_conversation_in_a_pane_shows_its_lead() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let sid = sb.sid("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    sb.set_pane(&pane, |p| {
+        p["foreground"] = json!([bin, "--resume", sid]);
+        p["agent"] = json!("claude");
+        p["agent_status"] = json!("idle");
+        p.as_object_mut().unwrap().remove("agent_session");
+    });
+    assert_eq!(sb.member("MAIN/ARGOS")["pane"], json!(pane), "no claim: the held conversation by its argv");
+    sb.set_pane(&pane, |p| p["agent_session"] = json!({"kind": "id", "source": "herdr:claude", "value": sid}));
+    assert_eq!(sb.member("MAIN/ARGOS")["pane"], json!(pane), "Herdr's claim, backed by the argv");
+}
+
+/// Several Herdr servers run (the user's named NIMITZ, a `default` one, a
+/// `nikitz` one), each with a pane that looks like the lead's. Outside Herdr
+/// the user's `nimitz status`, and a member's, speak only to the recorded
+/// NIMITZ server and take the lead's pane from there, the unclaimed attach
+/// shape of the live server.
+#[test]
+fn with_several_herdr_servers_status_reads_only_the_recorded_one() {
+    let sb = Sb::new(true);
+    sb.ok(&["restore", "MAIN", "--yes"]);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    let cwd = sb.cwd_of("MAIN/ARGOS").to_string_lossy().into_owned();
+    sb.set_pane(&pane, |p| {
+        p["agent"] = json!("claude");
+        p["agent_status"] = json!("working");
+        p.as_object_mut().unwrap().remove("agent_session");
+    });
+    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    for (name, ws) in [("default", "x8"), ("nikitz", "x9")] {
+        let dir = sb.base.join(format!("herdr-{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let decoy = json!({
+            "workspaces": [{"workspace_id": ws, "label": "MAIN", "focused": true, "active_tab_id": format!("{ws}:t1")}],
+            "tabs": [{"tab_id": format!("{ws}:t1"), "workspace_id": ws, "label": "MAIN.ARGOS.COMMODORE", "focused": true}],
+            "panes": [{"pane_id": format!("{ws}:p1"), "tab_id": format!("{ws}:t1"), "workspace_id": ws, "agent": "claude", "agent_status": "idle",
+                       "terminal_title_stripped": "[MAIN.ARGOS]-COMMODORE", "cwd": cwd, "foreground_cwd": cwd, "foreground": [bin, "attach", job]}],
+            "next_ws": 10
+        });
+        std::fs::write(dir.join("world.json"), serde_json::to_vec(&decoy).unwrap()).unwrap();
+    }
+    let multi = sb.base.join("bin/herdr-multi");
+    std::fs::write(
+        &multi,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in --session) s=$2; shift 2;; *) s=default;; esac\ncase \"$s\" in NIMITZ) b='{b}/herdr';; nikitz) b='{b}/herdr-nikitz';; *) b='{b}/herdr-default';; esac\nexec '{EXE}' __fake-herdr \"$b\" \"$@\"\n",
+            b = sb.base.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&multi, std::fs::Permissions::from_mode(0o755)).unwrap();
+    sb.write_active(|a| a["herdr"] = json!({"session": "NIMITZ"}));
+    let mut outside = sb.vars.clone();
+    outside.remove("NIMITZ_MUX");
+    outside.remove("HERDR_ENV");
+    outside.insert("NIMITZ_HERDR_BIN".into(), multi.to_string_lossy().into_owned());
+    let pane_of = |r: Run| -> Value {
+        assert_eq!(r.code, 0, "{}", r.out);
+        let v: Value = serde_json::Deserializer::from_str(&r.out[r.out.find('{').unwrap()..]).into_iter::<Value>().next().unwrap().unwrap();
+        v["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter()).find(|q| q["commodore"]["id"] == "MAIN/ARGOS").expect("MAIN/ARGOS")["commodore"]["pane"].clone()
+    };
+    assert_eq!(pane_of(raw(&outside, &["status", "--json"], &[])), json!(pane), "the user's status, outside Herdr");
+    // a member's status, with a stray pane env of another server
+    let r = raw(&outside, &["status", "--json"], &[("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_ROLE", "ship"), ("HERDR_ENV", "1"), ("HERDR_PANE_ID", "x9:p1"), ("HERDR_SESSION", "nikitz")]);
+    assert_eq!(pane_of(r), json!(pane), "a member's status");
+    for name in ["default", "nikitz"] {
+        let calls = std::fs::read_to_string(sb.base.join(format!("herdr-{name}/calls.jsonl"))).unwrap_or_default();
+        assert!(calls.is_empty(), "never a call to the {name} server: {calls}");
+    }
+}

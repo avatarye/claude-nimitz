@@ -1157,6 +1157,18 @@ pub fn session_of_attach(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)
     })
 }
 
+/// The session a pane Herdr claims none for shows, from its foreground alone:
+/// the job a `claude attach <job>` attaches to (`session_of_attach`), else
+/// the conversation a `claude --resume <sid>` holds, else the session a
+/// foreground pid's session file names (`claude -c`, a plain `claude`).
+/// The held case shows its member's pane too: nimitz flags it, and the user
+/// still jumps to it.
+pub fn session_of_unclaimed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
+    session_of_attach(claude_home, procs)
+        .or_else(|| procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(argv, _)| argv.windows(2).find(|w| w[0] == "--resume" || w[0] == "-r").map(|w| w[1].clone())))
+        .or_else(|| session_of_foreground(claude_home, procs))
+}
+
 /// Does what runs in a pane back its multiplexer's claim that the pane shows
 /// session `sid`? Herdr learns a pane's session from its own SessionStart
 /// hook, which names the pane by the process's inherited `HERDR_PANE_ID`: a
@@ -1233,6 +1245,10 @@ mod claim_tests {
         assert_eq!(super::session_of_attach(ch, &p(&["claude", "attach", "bbbb2222"], None)), None, "no job row");
         assert_eq!(super::session_of_attach(ch, &p(&["vim", "attach", "aaaa1111"], None)), None, "not claude");
         assert_eq!(super::session_of_attach(ch, &p(&["zsh"], Some(1))), None);
+        assert_eq!(super::session_of_unclaimed(ch, &p(&["claude", "attach", "aaaa1111"], None)).as_deref(), Some("s-after-clear"));
+        assert_eq!(super::session_of_unclaimed(ch, &p(&["claude", "--resume", "s-held"], None)).as_deref(), Some("s-held"), "a held conversation");
+        assert_eq!(super::session_of_unclaimed(ch, &p(&["claude", "-c"], Some(700))).as_deref(), Some("s-commodore"), "by its session file");
+        assert_eq!(super::session_of_unclaimed(ch, &p(&["vim", "--resume", "s-held"], None)), None);
         assert_eq!(super::session_of_foreground(ch, &p(&["zsh"], Some(1))), None);
         // a stale session file of a reused pid: the program is not claude
         assert_eq!(super::session_of_foreground(ch, &p(&["vim"], Some(700))), None);

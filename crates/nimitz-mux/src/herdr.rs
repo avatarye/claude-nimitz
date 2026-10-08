@@ -280,9 +280,10 @@ impl Herdr {
     /// The session a pane shows: Herdr's claim when the foreground backs it,
     /// else the session the foreground itself runs (a commodore's pane that a
     /// ship's hook claimed still shows the commodore), else none. A pane with
-    /// no claim shows the job its `claude attach <job>` foreground attaches
-    /// to: an attach client never runs Herdr's hook, so Herdr never names the
-    /// session of the very pane nimitz opened for a lead.
+    /// no claim shows what its foreground runs (`session_of_unclaimed`): the
+    /// job a `claude attach <job>` attaches to (an attach client never runs
+    /// Herdr's hook, so Herdr never names the session of the very pane
+    /// nimitz opened for a lead), or a held `claude --resume <sid>`.
     fn shown(&self, pane_id: &str, claim: Option<&str>, procs: Option<&[(Vec<String>, Option<i64>)]>) -> Option<String> {
         let home = &self.claude_home;
         let read;
@@ -294,7 +295,7 @@ impl Herdr {
             }
         };
         let Some(claim) = claim else {
-            return nimitz_core::evidence::session_of_attach(home, procs);
+            return nimitz_core::evidence::session_of_unclaimed(home, procs);
         };
         if nimitz_core::evidence::claim_backed(home, procs, claim) {
             return Some(claim.to_string());

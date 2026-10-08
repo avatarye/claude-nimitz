@@ -619,9 +619,11 @@ the pane with no session (`ShapePane.claimed` keeps it for the agent-view
 test, R-24; a claim that names another member's session is that member's
 hook, not the agent view); the pane then shows the session its foreground
 pid's session file names, if any. A pane Herdr shows an agent in but
-claims no session for shows the job its foreground `claude attach <job>`
-attaches to (`evidence::session_of_attach`: the job row's
-`resumeSessionId`, else `sessionId`): an attach client never runs Herdr's
+claims no session for shows what its foreground runs
+(`evidence::session_of_unclaimed`): the job a `claude attach <job>`
+attaches to (the job row's `resumeSessionId`, else `sessionId`), else the
+conversation a held `claude --resume <sid>` runs, else a foreground pid's
+session file. An attach client never runs Herdr's
 SessionStart hook, so Herdr never names the session of a lead's own attach
 pane (seen live after the 0.4.0 migration: `agent` claude, no
 `agent_session`). A pane whose foreground cannot be read
