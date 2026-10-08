@@ -1494,18 +1494,19 @@ fn a_bar_pulses_only_for_a_real_worsening() {
     t.app.apply(full.clone());
     tab(&mut t.app, "FORGE");
     assert!(t.app.rows.iter().all(|r| !matches!(r.node.anim, admiralty::view::Anim::Flash(_))), "no pulse at start-up");
-    // idle to busy: no pulse
+    // idle to busy on a quiet squadron (LAB/OPTICS, rank 0): no pulse
     let mut busy = full.clone();
     for f in &mut busy.snap.fleets {
-        for sq in &mut f.squadrons {
-            if sq.id.0 == "MAIN/KITS" {
-                sq.ships[0].status = Status::Busy;
-                sq.ships[0].issues.clear();
-            }
+        for sq in f.squadrons.iter_mut().filter(|q| q.id.0 == "LAB/OPTICS") {
+            assert_eq!(admiralty::view::squadron_rank_of(sq), 0, "a quiet squadron");
+            sq.ships[0].status = Status::Busy;
+            sq.ships[0].issues.clear();
+            assert_eq!(admiralty::view::squadron_rank_of(sq), 1, "now busy");
         }
     }
     t.app.apply(busy);
-    tab(&mut t.app, "MAIN");
+    tab(&mut t.app, "LAB");
+    keys(&mut t.app, "l");
     assert!(t.app.rows.iter().all(|r| !matches!(r.node.anim, admiralty::view::Anim::Flash(_))), "work is no pulse");
 }
 

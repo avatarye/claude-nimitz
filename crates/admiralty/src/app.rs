@@ -245,7 +245,8 @@ impl App {
     /// The animation frame to draw (`None`: still): the live loop runs it and
     /// the user has not turned it off.
     pub fn frame(&self) -> Option<u64> {
-        (self.anim_live && self.anim).then_some(self.anim_frame)
+        // still under a dialog (the spinners around it would jump once a second)
+        (self.anim_live && self.anim && self.modal.is_none()).then_some(self.anim_frame)
     }
 
     /// Does anything on screen move? (The live loop ticks only then.)
