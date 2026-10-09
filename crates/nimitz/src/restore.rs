@@ -252,17 +252,58 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
             failed.push(id.clone());
         }
     };
+    // members whose relaunch was skipped at run time (busy by then): their
+    // later steps are skipped too, with no failure
+    let mut held_back: Vec<Id> = vec![];
+    let mut installed: Option<Option<String>> = None;
     for (n, step) in rp.steps.iter().enumerate() {
         let id = step.id().clone();
-        if failed.contains(&id) {
+        if failed.contains(&id) || held_back.contains(&id) {
+            let why = if held_back.contains(&id) { "skipped: its relaunch was held back (busy)" } else { "skipped: an earlier step of this member failed" };
             for d in step.display() {
-                out.ran.push((d, 0, "skipped: an earlier step of this member failed".into()));
+                out.ran.push((d, 0, why.into()));
             }
             prog.done = n + 1;
             let _ = rs::progress_write(env, &prog);
             continue;
         }
         match step {
+            rs::RestoreStep::Relaunch { steps, job, .. } => {
+                // the plan may be minutes old: a member that turned busy or
+                // waits on you is not cut off now
+                let status = nimitz_core::sessions::find_row(env, job).filter(|r| r.live()).and_then(|r| r.status);
+                if matches!(status.as_deref(), Some("busy" | "waiting" | "shell")) {
+                    held_back.push(id.clone());
+                    for d in step.display() {
+                        out.ran.push((d, 0, format!("skipped: {id} is {} now", status.as_deref().unwrap_or_default())));
+                    }
+                    out.issues.push(Issue { code: "relaunch.busy".into(), severity: Severity::Info, message: format!("{id} turned busy after the plan: not relaunched now"), fix: Some(format!("nimitz restore {}  # again once it is idle", id.fleet())), id: Some(id.clone()) });
+                    prog.done = n + 1;
+                    let _ = rs::progress_write(env, &prog);
+                    continue;
+                }
+                let plan = Plan { summary: format!("restore {id}"), steps: steps.clone(), ..Default::default() };
+                let o = nimitz_core::sessions::apply(env, &plan);
+                out.ran.extend(o.ran);
+                if !o.verified || o.issues.iter().any(|i| i.severity == Severity::Error) {
+                    let issues = if o.issues.is_empty() { vec![refusal("step.failed", format!("{id}'s relaunch was not verified"), Some(format!("nimitz status {id}")), Some(id.clone()))] } else { o.issues };
+                    for i in issues {
+                        fail(&mut out, &mut failed, &id, i);
+                    }
+                } else {
+                    out.issues.extend(o.issues);
+                    // the new worker should run the installed Claude Code; one
+                    // that does not would be relaunched by every restore
+                    let now = installed.get_or_insert_with(|| nimitz_core::claude::version(env)).clone();
+                    let resumed = steps.last().and_then(|s| s.cmd.windows(2).find(|w| w[0] == "--resume").map(|w| w[1].clone()));
+                    let pid = resumed.and_then(|sid| nimitz_core::sessions::find_row_by_session(env, &sid)).and_then(|r| r.pid);
+                    if let (Some(v), Some(now)) = (pid.and_then(|p| nimitz_core::compat::process_version("", Some(p))), now) {
+                        if nimitz_core::compat::older(&v, &now) {
+                            out.issues.push(Issue { code: "relaunch.old".into(), severity: Severity::Warn, message: format!("{id} was relaunched but its worker still runs Claude Code {v}, not the installed {now}"), fix: Some("claude daemon status  # shows the daemon's version; report it (never `claude daemon stop`: it ends every background session)".into()), id: Some(id.clone()) });
+                        }
+                    }
+                }
+            }
             rs::RestoreStep::Wake { steps, .. } => {
                 let plan = Plan { summary: format!("restore {id}"), steps: steps.clone(), ..Default::default() };
                 let o = nimitz_core::sessions::apply(env, &plan);

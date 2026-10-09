@@ -30,7 +30,7 @@ the user wants it done.
    says per member what it found and does: workers on an older Claude Code
    relaunched, panes that are gone reattached, your commodores and the ships
    live at the last look woken. It never relaunches you: when the plan says
-   `restore.self`, tell the user to run `nimitz relaunch <your fleet>` from
+   `restore.self`, tell the user to run `nimitz restore <your fleet>` from
    their own shell once it is done. Never start or resume a member with
    `claude` yourself (a copy, a held conversation, a stowaway, the daemon's
    env).

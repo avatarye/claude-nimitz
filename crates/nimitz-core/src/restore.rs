@@ -140,6 +140,9 @@ pub enum RestoreStep {
     Pin { id: Id, job: String },
     /// give the tab that shows the member its full label (`--rename`, R-07a)
     Rename { id: Id, tab_id: String, label: String },
+    /// a live member's relaunch (`sessions::plan_relaunch`); the executor
+    /// reads `job`'s status again first and skips one that turned busy
+    Relaunch { id: Id, steps: Vec<Step>, job: String },
     /// after a relaunch: the old attach in `pane` ends with its job (measured
     /// on 2.1.295: "Session <job> has exited.") and the pane drops to its
     /// shell; the executor waits for that shell, then attaches the new job
@@ -149,14 +152,14 @@ pub enum RestoreStep {
 impl RestoreStep {
     pub fn id(&self) -> &Id {
         match self {
-            RestoreStep::Wake { id, .. } | RestoreStep::Claim { id, .. } | RestoreStep::Open { id, .. } | RestoreStep::Pin { id, .. } | RestoreStep::Rename { id, .. } | RestoreStep::Reattach { id, .. } => id,
+            RestoreStep::Wake { id, .. } | RestoreStep::Claim { id, .. } | RestoreStep::Open { id, .. } | RestoreStep::Pin { id, .. } | RestoreStep::Rename { id, .. } | RestoreStep::Reattach { id, .. } | RestoreStep::Relaunch { id, .. } => id,
         }
     }
     /// How the step reads in a plan (the `herdr` lines are what the mux runs).
     pub fn display(&self) -> Vec<Step> {
         let why_wake = |w: bool| if w { "; the attach wakes the parked job" } else { "" };
         match self {
-            RestoreStep::Wake { steps, .. } => steps.clone(),
+            RestoreStep::Wake { steps, .. } | RestoreStep::Relaunch { steps, .. } => steps.clone(),
             RestoreStep::Claim { id, pane, rename, cmd, cwd, wakes, .. } => {
                 let mut v = vec![];
                 if let Some((tab, label)) = rename {
@@ -333,6 +336,11 @@ impl Ctx<'_> {
         by_session.or_else(|| self.shape.panes.iter().find(|p| h.pid.is_some() && p.foreground_pid.is_some() && p.foreground_pid == h.pid && p.session_id.is_none()))
     }
 
+    /// Does `pane_id` run exactly `cmd` (the member's attach) in its foreground?
+    fn runs_attach(&self, pane_id: &str, cmd: &[String]) -> bool {
+        self.shape.panes.iter().find(|p| p.pane_id == pane_id).and_then(|p| p.foreground.as_deref()).is_some_and(|fg| cmd.len() > 1 && fg.len() == cmd.len() && fg[1..] == cmd[1..])
+    }
+
     /// The Claude Code version of the attach client in `pane_id` (its
     /// foreground `claude attach <job>`), when it can be read.
     fn attach_version(&self, pane_id: &str) -> Option<String> {
@@ -477,9 +485,14 @@ pub fn plan(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::ac
             return rp;
         }
     };
+    // the member that runs this restore: by its labels, else the member whose
+    // worker is an ancestor of this process (a session with no labels)
     let me = match caller {
         Caller::Member { id, .. } => Some(id.clone()),
-        Caller::User => None,
+        Caller::User => {
+            let up = crate::evidence::ancestors();
+            snap.fleets.iter().flat_map(fleet_members).find(|m| m.session.as_ref().and_then(|s| s.pid).is_some_and(|p| p > 1 && up.contains(&p))).map(|m| m.id.clone())
+        }
     };
     if let Some(sq) = &scope {
         rp.plan.summary = format!("{verb} {sq} (its ships)");
@@ -630,9 +643,16 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     let before = rep.not_started;
     let mut never: Vec<String> = vec![];
     for m in fleet_members(f) {
-        // a commodore's restore: its own ships only
-        if ctx.scope.as_ref().is_some_and(|sq| m.role != Role::Ship || m.id.parent().as_ref() != Some(sq)) {
-            continue;
+        // a commodore's restore: its own ships only (and its own line when its
+        // worker would be relaunched: it never is by its own restore)
+        if let Some(sq) = ctx.scope.as_ref() {
+            if &m.id == sq {
+                self_line(ctx, m, rp);
+                continue;
+            }
+            if m.role != Role::Ship || m.id.parent().as_ref() != Some(sq) {
+                continue;
+            }
         }
         let n = rep.not_started;
         plan_member(ctx, m, &mut rep, rp);
@@ -882,9 +902,41 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                     }
                     found(rp, id, "down; its job row is gone, its transcript is there", action);
                 }
+                // a conversation to resume, but not wanted (a ship out of the set)
+                (Some(_), Some(_)) => {
+                    rep.parked += 1;
+                    found(rp, id, "its job row is gone, its transcript is there; not active at the last look", "left (--all resumes it)");
+                }
                 _ => rep.not_started += 1, // reported once per fleet (`plan_fleet`)
             }
         }
+    }
+}
+
+/// The member that runs the restore, which the restore never relaunches:
+/// its line, and the command the user runs from a shell afterwards (a
+/// restore there relaunches it and reattaches its pane).
+fn self_skipped(ctx: &Ctx, m: &Member, why: String, rp: &mut RestorePlan) {
+    let id = &m.id;
+    let again = format!("nimitz restore {}{}", id.fleet(), if ctx.opts.restart { " --restart" } else { "" });
+    found(rp, id, format!("{why}; it runs this restore"), format!("not relaunched while it runs; afterwards you run: {again}"));
+    let whose = if m.role.lead() { format!("; {id} is a lead: you run the restore again from your own shell once this one is done") } else { String::new() };
+    rp.plan.warnings.push(issue("restore.self", Severity::Warn, format!("{id} runs this restore, so it is not relaunched now{whose}"), Some(format!("{again}  # yours, from a shell, once this one is done: it relaunches {id} and reattaches its pane")), Some(id.clone())));
+}
+
+/// A commodore's own line in its restore: only when its worker would be
+/// relaunched (older, or `--restart`), which its own restore never does.
+fn self_line(ctx: &Ctx, m: &Member, rp: &mut RestorePlan) {
+    let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some()) else { return };
+    let worker = worker_version(ctx.env, s);
+    let installed = ctx.snap.cc_version.as_deref();
+    let on = worker.as_deref().unwrap_or("an unreadable version");
+    let older = matches!((worker.as_deref(), installed), (Some(w), Some(i)) if crate::compat::older(w, i));
+    if older {
+        rp.updated += 1;
+        self_skipped(ctx, m, format!("worker on {on}, installed {}", installed.unwrap_or_default()), rp);
+    } else if ctx.opts.restart {
+        self_skipped(ctx, m, format!("live, worker on {on} (--restart)"), rp);
     }
 }
 
@@ -897,9 +949,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
 fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: bool, rep: &mut FleetReport, rp: &mut RestorePlan) {
     let (env, id, lead, fleet) = (ctx.env, &m.id, m.role.lead(), m.id.fleet());
     if ctx.me.as_ref() == Some(id) {
-        found(rp, id, format!("{why}; it runs this restore"), format!("not relaunched while it runs; afterwards you run: nimitz relaunch {id}"));
-        let whose = if lead { format!("; {id} is a lead: relaunch it from your own shell once this restore is done") } else { String::new() };
-        rp.plan.warnings.push(issue("restore.self", Severity::Warn, format!("{id} runs this restore, so it is not relaunched now{whose}"), Some(format!("nimitz relaunch {id}  # yours, from a shell, once this restore is done")), Some(id.clone())));
+        self_skipped(ctx, m, why, rp);
         return;
     }
     if matches!(m.status, Status::Busy | Status::NeedsYou) {
@@ -917,7 +967,7 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
     }
     count(rep, lead);
     rp.plan.warnings.extend(p.warnings);
-    let mut group = vec![RestoreStep::Wake { id: id.clone(), steps: p.steps }];
+    let mut group = vec![RestoreStep::Relaunch { id: id.clone(), steps: p.steps, job: s.short_id.clone().unwrap_or_default() }];
     let mut then = String::new();
     if !ctx.opts.jobs_only {
         let old = s.short_id.as_ref().map(|j| crate::claude::attach(env, j)).unwrap_or_default();
@@ -929,11 +979,17 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
         let cwd = m.cwd.clone().unwrap_or_default();
         let wanted = lead || had_tab;
         match tab {
-            TabMatch::Shown { pane, .. } => {
+            // the old attach ends with its job: the pane drops to its shell
+            TabMatch::Shown { pane, .. } if ctx.runs_attach(&pane.pane_id, &old) => {
                 then = format!(", then reattach in its pane {}", pane.pane_id);
                 group.push(RestoreStep::Reattach { id: id.clone(), pane, cmd, cwd, session });
             }
+            TabMatch::Shown { pane, .. } => {
+                then = format!(", no attach (pane {} shows it without its attach)", pane.pane_id);
+                rp.plan.warnings.push(issue("tab.taken", Severity::Warn, format!("{id} is relaunched, but pane {} shows it without running `claude attach`; nothing is typed into it", pane.pane_id), Some(format!("nimitz open {id}  # once the restore is done")), Some(id.clone())));
+            }
             TabMatch::Shell { pane, rename, .. } if wanted => {
+                rp.panes_gone += 1;
                 then = format!(", then attach in its tab's shell (pane {})", pane.pane_id);
                 group.push(RestoreStep::Claim { id: id.clone(), pane, rename, cmd, cwd, session, wakes: false });
             }

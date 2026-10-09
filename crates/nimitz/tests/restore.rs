@@ -868,8 +868,8 @@ fn r09b_an_update_never_cuts_a_turn_never_relaunches_the_caller_and_a_commodore_
     // the admiral runs it: every other member, never itself
     let r = sb.run_as("MAIN", &["restore", "MAIN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(lines_with(&r.out, "MAIN ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz relaunch MAIN")), "{}", r.out);
-    assert!(r.out.contains("(restore.self)") && r.out.contains("MAIN is a lead: relaunch it from your own shell"), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz restore MAIN")), "{}", r.out);
+    assert!(r.out.contains("(restore.self)") && r.out.contains("MAIN is a lead: you run the restore again from your own shell"), "{}", r.out);
     assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("-> relaunch")), "{}", r.out);
     let adm = sb.short("MAIN");
     let r = sb.run_as("MAIN", &["restore", "MAIN", "--yes"]);
@@ -885,7 +885,9 @@ fn r09b_an_update_never_cuts_a_turn_never_relaunches_the_caller_and_a_commodore_
     let r = sb.run_as("MAIN/ARGOS", &["restore", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
     let ids: Vec<&str> = r.out.lines().filter(|l| l.starts_with("    MAIN")).filter_map(|l| l.split_whitespace().next()).collect();
-    assert!(!ids.is_empty() && ids.iter().all(|id| id.starts_with("MAIN/ARGOS/")), "{ids:?}\n{}", r.out);
+    assert!(!ids.is_empty() && ids.iter().all(|id| id.starts_with("MAIN/ARGOS/") || *id == "MAIN/ARGOS"), "{ids:?}\n{}", r.out);
+    // its own worker is older too: its line, and the restore the user runs afterwards
+    assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz restore MAIN")), "{}", r.out);
     assert!(sb.run_as("MAIN/ARGOS", &["restore", "BETA", "--plan"]).out.contains("(authority)"));
     assert!(sb.run_as("MAIN/ARGOS/CLEAN", &["restore", "--plan"]).out.contains("(authority)"));
     let r = sb.run_as("MAIN/ARGOS", &["restore", "--yes"]);
@@ -941,6 +943,76 @@ fn r_no_fleet_named_restores_every_fleet_here() {
     assert_eq!(sb.sid("BETA"), beta.0);
     assert_eq!(sb.short("BETA"), beta.1);
     assert_eq!(worker(&sb, "BETA"), "2.1.289");
+}
+
+/// A relaunch types an attach only into a pane that runs the member's
+/// attach (it drops to its shell when the job stops); a pane that shows the
+/// member some other way gets nothing typed and a warning.
+#[test]
+fn r09c_a_pane_that_shows_a_member_without_its_attach_is_never_typed_into_after_a_relaunch() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    let pane = sb.pane_attaching("MAIN/BOREAL");
+    sb.set_pane(&pane, |p| p["foreground"] = json!(["claude", "agents"]));
+    update_claude(&sb, "2.1.289");
+    let r = sb.run(&["restore", "MAIN", "--plan"]);
+    assert!(lines_with(&r.out, "MAIN/BOREAL ").iter().any(|l| l.contains("-> relaunch (same id and history), no attach (")), "{}", r.out);
+    let before = sb.runs().len();
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert!(!sb.runs()[before..].iter().any(|(p, _)| p == &pane), "nothing typed into {pane}:\n{r}");
+    assert_eq!(worker(&sb, "MAIN/BOREAL"), "2.1.289", "{r}");
+}
+
+/// A member idle at the plan but busy by the time its relaunch comes (the
+/// plan can be minutes old): held back then, its later steps skipped, no failure.
+#[test]
+fn r09d_a_member_that_turns_busy_during_the_run_is_held_back() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    let (clean, adm) = (sb.short("MAIN/ARGOS/CLEAN"), sb.short("MAIN"));
+    let adm_pane = sb.pane_attaching("MAIN");
+    // the admiral starts a turn while the first ship is being relaunched
+    let p = sb.base.join("world.json");
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    w["busy_after_stop"] = json!({ clean: adm });
+    std::fs::write(&p, serde_json::to_vec(&w).unwrap()).unwrap();
+    update_claude(&sb, "2.1.289");
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert!(r.contains("MAIN turned busy after the plan: not relaunched now (relaunch.busy)"), "{r}");
+    assert!(!relaunched(&r).contains(&"MAIN".to_string()), "{r}");
+    assert_eq!(worker(&sb, "MAIN"), "2.1.288", "the admiral's turn was not cut");
+    assert_eq!(sb.pane_attaching("MAIN"), adm_pane, "its pane untouched");
+    assert_eq!(worker(&sb, "MAIN/ARGOS/CLEAN"), "2.1.289");
+}
+
+/// A relaunch that Claude Code answers with a copy (the old worker still
+/// exiting): the copy, which carries the member's name and labels, is
+/// stopped and removed, and the resume runs once more.
+#[test]
+fn r09e_a_relaunch_answered_with_a_copy_removes_it_and_resumes_once_more() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    let sid = sb.sid("MAIN/ARGOS/CLEAN");
+    let p = sb.base.join("world.json");
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    w["copy_once_relaunch"] = json!(true);
+    std::fs::write(&p, serde_json::to_vec(&w).unwrap()).unwrap();
+    update_claude(&sb, "2.1.289");
+    let r = sb.ok(&["restore", "MAIN", "--yes"]);
+    assert!(r.contains("so this started a copy as") && relaunched(&r).contains(&"MAIN/ARGOS/CLEAN".to_string()), "the copy removed, then the retry:\n{r}");
+    assert_eq!(sb.sid("MAIN/ARGOS/CLEAN"), sid, "{r}");
+    assert!(sb.member("MAIN/ARGOS/CLEAN")["extra_rows"].as_array().is_none_or(|a| a.is_empty()), "no copy left: {}", sb.member("MAIN/ARGOS/CLEAN"));
+    assert_eq!(worker(&sb, "MAIN/ARGOS/CLEAN"), "2.1.289");
+    assert!(!r.contains("[ERROR]"), "{r}");
 }
 
 /// A lead's attach client on an older Claude Code than the installed one

@@ -106,7 +106,8 @@ If one lead is still left out, `nimitz start <id> --plan`, then `--yes`.
   gone are reattached, members that are down are woken. Leads always come
   back; parked ships wake on demand, or all at once with `--all`. `--restart`
   relaunches every live member. A restore never relaunches the member that
-  runs it; it names the `nimitz relaunch <id>` you run afterwards.
+  runs it; it names the `nimitz restore <F>` you run afterwards from your own
+  shell (that one relaunches it and reattaches its pane).
 - Never start, resume or stop a member with `claude` yourself: a resume of a
   live job starts a copy; an interactive `claude --resume` holds the
   conversation with no job (nimitz cannot wake it until `/exit` there); a

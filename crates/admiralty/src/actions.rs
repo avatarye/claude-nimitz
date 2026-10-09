@@ -90,7 +90,7 @@ impl Act {
             Act::Save => "save the config change",
             Act::Layout => "layout herdr: workspaces and tabs for this fleet",
             Act::LayoutShips => "layout herdr --ships: and a tab attaching each live ship",
-            Act::Restore => "restore: bring this fleet back from the Herdr shape (leads always, ships from the last active set)",
+            Act::Restore => "restore: after a Claude Code update, a Herdr closure or a reboot (relaunch older workers, reattach panes, wake leads and active ships)",
         }
     }
 

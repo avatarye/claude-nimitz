@@ -71,7 +71,7 @@ reattach in a new tab`, `parked -> left parked`):
   and history, then its pane gets the new job's attach. Ships first, then
   commodores, then admirals, one at a time; never one mid-turn or waiting on
   you (run restore again once it is idle), and never the member that runs the
-  restore (an admiral's own restore names the `nimitz relaunch <F>` you run
+  restore (an admiral's own restore names the `nimitz restore <F>` you run
   afterwards). An attach client older than the installed version is
   reported (ctrl-z there, then restore again).
 - Herdr closed or crashed: the jobs are alive, only the panes are gone; their

@@ -41,6 +41,8 @@
 //!   restart: a copy is started with the "started a copy as X" note and the
 //!   job comes back live by itself, cli-31) and `resume_loses_history` (the
 //!   wake fires SessionStart `startup`: Claude Code found no transcript, E8);
+//!   `copy_once_relaunch` (one resume with flags of a session with no row
+//!   answers with a labelled copy: a relaunch racing the old worker's exit),
 //!   `copy_once` (one wake answers with a copy and the job stays stopped,
 //!   r3-e2e finding 12; the knob then clears).
 //!
@@ -1177,6 +1179,16 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             let state = if row.status.as_deref() == Some("busy") { "stopped" } else { "done" };
             end_job(&base, &row, state, "other", false);
             drop_attach_panes(&base, &short);
+            // test hook: world.json `busy_after_stop: {"<stopped>": "<other>"}`
+            // makes <other> busy once <stopped> stops (a turn that starts
+            // while a restore runs)
+            if let Some(other) = read_json(&base.join("world.json")).and_then(|w| w.pointer(&format!("/busy_after_stop/{short}")).and_then(|v| v.as_str().map(String::from))) {
+                let p = session_path(&base, &other);
+                if let Some(mut v) = read_json(&p) {
+                    v["status"] = json!("busy");
+                    write_json(&p, &v);
+                }
+            }
             println!("stopped {short}");
             return 0;
         }
@@ -1313,6 +1325,18 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 // check 1); with flags, those flags (BUG-12)
                 None if transcript_exists(&base, target) => {
                     let name = a.name.clone().unwrap_or_default();
+                    if knob(&base, "copy_once_relaunch") {
+                        // measured on 2.1.295: a resume with flags right after a
+                        // stop and rm, while the old worker still exits, starts
+                        // a copy with those flags (the member's name and
+                        // labels); the knob clears, the next resume is plain
+                        let mut w = read_json(&base.join("world.json")).unwrap_or(json!({}));
+                        w["copy_once_relaunch"] = json!(false);
+                        write_json(&base.join("world.json"), &w);
+                        let short = start(&base, &cwd, &name, &a.mode.clone().unwrap_or_default(), a.settings.as_ref(), "startup", a.settings.is_some());
+                        println!("note: session {target} is already running in the background, so this started a copy as {short}");
+                        return 0;
+                    }
                     let short = start_as(&base, &cwd, &name, &a.mode.clone().unwrap_or_default(), a.settings.as_ref(), "resume", a.settings.is_some(), Some(target));
                     println!("resumed {target} as {short}");
                     return 0;

@@ -7,7 +7,7 @@
   new|set|rm. Never another fleet. `up` and `layout herdr` are deprecated:
   use restore.
 - A restore you run never relaunches you: when its plan says so
-  (`restore.self`), tell the user to run `nimitz relaunch {FLEET}` from their
+  (`restore.self`), tell the user to run `nimitz restore {FLEET}` from their
   own shell once it is done.
 - `init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` are the
   user's alone.

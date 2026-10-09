@@ -2180,7 +2180,8 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     out.ran.push((Step { id: step.id.clone(), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of the wake; then wake once more") }, rc2, t));
                     extra_ran += 1;
                 }
-                copy_removed = Some(row_gone_within(env, &copy, 3.0));
+                let gone = row_gone_within(env, &copy, 3.0);
+                copy_removed = Some(gone);
                 // the daemon restarted the job itself meanwhile (cli-31): no
                 // second wake (it would be a copy); the failure below says so
                 let live = || find_row_by_session(env, session_id).is_some_and(|r| r.live());
@@ -2190,7 +2191,9 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     }
                     std::thread::sleep(std::time::Duration::from_secs_f64(WAKE_RETRY_PAUSE_S));
                 }
-                if !live() {
+                // only once the copy is gone: a relaunch's copy carries the
+                // member's name and labels, and is never left behind unsaid
+                if gone && !live() {
                     copy_removed = None;
                     (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
                     out.ran.push((step.clone(), rc, text.clone()));
@@ -2525,7 +2528,6 @@ fn claim_folder(env: &Env, id: &Id, cwd: Option<&str>, session_id: &str) {
     let _ = std::fs::write(ship_lock_path(cwd), line.to_string());
 }
 
-/// Release it on a stop, but never another machine's lock.
 /// How long a stop waits for the worker process to exit (seconds).
 const STOP_EXIT_S: f64 = 10.0;
 
@@ -2545,6 +2547,7 @@ fn worker_gone_within(pid: i64, limit: f64) -> bool {
     true
 }
 
+/// Release it on a stop, but never another machine's lock.
 fn release_folder(env: &Env, id: Option<&Id>, cwd: Option<&str>) {
     let Some(cwd) = cwd.filter(|_| id.map(|i| i.role() == Role::Ship).unwrap_or(false)) else { return };
     if lock_holder(cwd).map(|m| env.matches_hostname(&m)).unwrap_or(false) {
