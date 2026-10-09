@@ -14,7 +14,7 @@ an agent never does them itself.
 | Tenders | a role | removed: one-off work is a subagent or a ship |
 | Rules | at session start only | also at the next turn after a nimitz update (`nimitz rules updated vN→vM`) |
 | Authority | ships ran nothing | every member runs `nimitz` within its role (`nimitz rules`) |
-| Recovery | `nimitz up`, `layout herdr` | `nimitz restore <F>` rebuilds from the Herdr shape; `layout herdr` is an alias for one release |
+| Recovery | `nimitz up`, `layout herdr` | one command, `nimitz restore [<F>]`, after a Claude Code update, a Herdr closure or a reboot; `up` and `layout herdr` are deprecated aliases for one release |
 | Detach a lead | close the pane | **ctrl-z**; `/exit` inside an attach opens the agent view |
 
 Ships need no migration. Every 0.3.x lead does, once.
@@ -99,9 +99,19 @@ If one lead is still left out, `nimitz start <id> --plan`, then `--yes`.
 - Open a lead: `nimitz open <id>`, or its Herdr tab. **Detach with ctrl-z.**
   Never `/exit` an attached member: that opens the agent view, and the agent
   rules forbid asking the user to do it.
-- After a Herdr crash, a reboot or a night idle: `nimitz restore <F> --plan`,
-  then `--yes`. Leads always come back; parked ships wake on demand, or all
-  at once with `--all`.
+- After a Claude Code update, a Herdr closure or crash, or a reboot: `nimitz
+  restore [<F>] --plan`, then `--yes` (no `F`: every fleet here). The plan
+  says per member what it found and what it does: workers on an older Claude
+  Code are relaunched (same id and history) and reattached, panes that are
+  gone are reattached, members that are down are woken. Leads always come
+  back; parked ships wake on demand, or all at once with `--all`. `--restart`
+  relaunches every live member. A restore never relaunches the member that
+  runs it; it names the `nimitz relaunch <id>` you run afterwards.
+- Never start, resume or stop a member with `claude` yourself: a resume of a
+  live job starts a copy; an interactive `claude --resume` holds the
+  conversation with no job (nimitz cannot wake it until `/exit` there); a
+  session without nimitz's labels is a stowaway; a job started from your
+  shell takes the daemon's environment, not the member's labels.
 - When nimitz updates, every live member gets the new rules at its next turn.
   Run `/reload-plugins` in a session only when `nimitz doctor` says the plugin
   needs it.

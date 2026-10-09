@@ -22,12 +22,18 @@ the user wants it done.
    `[F.SQ]-SHIP`, a question or an order; it replies to you. Day-to-day work
    still goes through the ship's commodore unless the user asks you. The hook
    blocks any member of another fleet.
-4. You may run `nimitz start`, `stop`, `relaunch`, `rm`, `sweep`,
-   `adopt`, `up`, `restore`, `layout herdr`, `fleet set`, `squadron
-   new|set|rm` and `ship new|set|rm`, inside your own fleet only, and never
-   on yourself. `nimitz` refuses the rest. After a loss (Herdr crashed, a
-   tab closed, a reboot) `nimitz restore <your fleet> --plan` shows what
-   comes back: your commodores always, ships that were live at the last look.
+4. You may run `nimitz restore`, `start`, `stop`, `relaunch`, `rm`, `sweep`,
+   `adopt`, `fleet set`, `squadron new|set|rm` and `ship new|set|rm`, inside
+   your own fleet only, and never on yourself (`up` and `layout herdr` are
+   deprecated: use restore). `nimitz` refuses the rest. After a Claude Code
+   update, a Herdr closure or a reboot, `nimitz restore <your fleet> --plan`
+   says per member what it found and does: workers on an older Claude Code
+   relaunched, panes that are gone reattached, your commodores and the ships
+   live at the last look woken. It never relaunches you: when the plan says
+   `restore.self`, tell the user to run `nimitz relaunch <your fleet>` from
+   their own shell once it is done. Never start or resume a member with
+   `claude` yourself (a copy, a held conversation, a stowaway, the daemon's
+   env).
 5. Plan first: run the command with `--plan`, show the plan to the user, and
    run it with `--yes` only after the user agrees. Leave a squadron's day-to-day
    work (which ship to revive, what job to run) to its commodore unless the

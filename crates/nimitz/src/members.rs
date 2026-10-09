@@ -191,11 +191,15 @@ pub fn check(ctx: &Ctx) -> Result<i32, String> {
 
 // ------------------------------------------------------------------ starting and stopping
 
+/// `nimitz up F`: deprecated for one release, unchanged meanwhile (every
+/// member with a row wakes, the rest get their first launch, then the
+/// leads' tabs); it points at `nimitz restore`.
 pub fn up(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
     let fleet = ctx.args.need(0, "fleet")?;
     parse_id(fleet)?;
+    out::line(&format!("[INFO] `nimitz up` is deprecated and goes away in the next release: `nimitz restore {fleet} --all` brings back every member that has run; `nimitz start <id>` makes a first launch"));
     let snap = ctx.snap();
     // the jobs first (every member with a row wakes, the rest cold-launch:
     // `restore --all` plus the first launches), then the shape: the leads'
@@ -605,7 +609,7 @@ fn attached_pane(a: &nimitz_mux::Attached) -> nimitz_mux::PaneRef {
 /// makes it (plan-v4 section 13): a tab attaching each lead (a parked lead
 /// with a shell tab wakes by the attach; one with no tab needs `nimitz
 /// start` or `nimitz restore` first), `--ships` a tab for each live ship.
-/// Kept as an alias for one release.
+/// Deprecated: an alias for one release, pointing at `nimitz restore`.
 pub fn layout(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--ships"])?;
     ctx.args.at_most(2)?;
@@ -614,7 +618,7 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
         return Err(format!("no layout for {which:?}; only `herdr` is built"));
     }
     let only = ctx.args.pos.get(1).map(|s| parse_id(s)).transpose()?;
-    out::line("[INFO] `layout herdr` is an alias of `nimitz restore` (the shape only: tabs, no resume); it goes away in a later release");
+    out::line("[INFO] `nimitz layout herdr` is deprecated and goes away in the next release: `nimitz restore` makes the same tabs and brings back the jobs too (this alias makes tabs only, no resume)");
     let opts = nimitz_core::restore::RestoreOpts { shape_only: true, ships: ctx.args.flag("--ships"), force: ctx.force(), ..Default::default() };
     Ok(crate::restore::run_shape(ctx, only.as_ref().map(|i| i.fleet().to_string()).as_deref(), opts, false))
 }

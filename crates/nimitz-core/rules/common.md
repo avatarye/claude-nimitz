@@ -13,9 +13,19 @@ CLAUDE.md.
   opens the agent view, so never ask the user to `/exit` a member.
 - Every member may run `nimitz`: what your role may do is below, and nimitz
   refuses the rest. `nimitz status --json` is the picture; `nimitz check <id>`
-  finds problems; `nimitz rules` prints these rules. Do not edit fleet files
-  or run `claude --bg`, `claude stop` or `claude rm` for a fleet member
-  yourself.
+  finds problems; `nimitz rules` prints these rules. Do not edit fleet files.
+- Never start, resume or stop a fleet member with `claude` yourself
+  (`claude --resume`, `claude --bg`, `claude -c`, `claude stop`, `claude rm`):
+  a resume of a live job starts a copy under the member's name; an
+  interactive resume holds its conversation in a process with no job, which
+  nimitz cannot wake until `/exit` there; a session started without nimitz's
+  labels is a stowaway; and a job started from your shell takes the
+  daemon's environment, not the member's labels. `nimitz start`,
+  `relaunch` and `restore` do it right.
+- After a Claude Code update, a Herdr closure or a reboot, the one command is
+  `nimitz restore [<F>]` (`--plan` first): it relaunches the workers on an
+  older Claude Code, reattaches the panes that are gone and wakes what is
+  down. It never relaunches the member that runs it.
 - Every change is planned first: run the command with `--plan`, show the plan
   to the user, run it with `--yes` only after the user agrees. Never `--force`
   unless the user names it.

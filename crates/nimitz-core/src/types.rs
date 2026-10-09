@@ -458,6 +458,15 @@ pub struct Step {
     pub why: String,
 }
 
+/// One member's line in a restore plan: what restore found, and what it
+/// does about it (`worker on 2.1.294, installed 2.1.295` -> `relaunch`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Found {
+    pub id: Id,
+    pub found: String,
+    pub action: String,
+}
+
 /// What an action would do. `refusals` non-empty means it will not run.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
@@ -465,6 +474,9 @@ pub struct Plan {
     pub steps: Vec<Step>,
     pub refusals: Vec<Issue>,
     pub warnings: Vec<Issue>,
+    /// a restore's per-member findings, shown before the steps
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub found: Vec<Found>,
 }
 
 impl Plan {

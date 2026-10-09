@@ -299,6 +299,7 @@ runs every command of the dispatch table as every role, `--plan` and `--yes`):
 | `status`, `check [<id>]`, `rules [<id>]`, `doctor` (no `--fix`) | yes | yes | yes | read-only; the commands take any caller |
 | `doctor --fix`, `init`, `fleet new\|rm`, `machine add\|rm`, `migrate`, `open`, `sandbox` | no | no | no | `authority` refusal in the command (`crud::authority(None)`, `setup`, `members::open`, `sandbox_cmd`) |
 | `fleet set F`, `squadron new\|rm F/SQ`, `up F`, `layout herdr [F]` | its fleet | no | no | `may_config`, `plan_up`, `layout::plan` |
+| `restore [F]` | its fleet (never relaunching itself: `restore.self`) | its ships | no | `restore::plan` |
 | `squadron set F/SQ`, `ship new\|set\|rm F/SQ/S` | its fleet | its squadron | no | `may_config` |
 | `start`, `stop`, `relaunch`, `rm`, `adopt` | its fleet, not itself | its ships | no | `may_start` (every `plan_*`) |
 | `sweep [<id>]` | its fleet | its squadron | itself (its own stale rows; a live row is skipped) | `plan_sweep` |
@@ -359,19 +360,26 @@ snapshot) + the active set -> steps of five kinds (a wake by exact id through
 <job>`, a new tab, a pin, and with `--rename` a `tab rename` of a tab that
 shows a member under another name) plus reports. Three entry points:
 
-- `nimitz restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`
-  (`--plan`/`--yes`): leads always; ships from the active set (`--all`:
-  every ship with a job row, parked or stopped, plus their recorded tabs);
-  never a cold launch (a member with no job and no history is "not
-  started", fix `nimitz up F`). The user, or an admiral for its own fleet.
-- `nimitz up <F>` = `sessions::plan_up` (every member with a row wakes, the
-  rest cold-launch: restore `--all` plus the first launches) and then the
-  restore engine shape-only for the leads' tabs, with the yes already given.
-  `up` is the only one of the three that spends a first prompt.
+- `nimitz restore [<F>] [--all] [--restart] [--force] [--jobs-only] [--here]
+  [--rename]` (`--plan`/`--yes`), the one command after a Claude Code update,
+  a Herdr closure or crash, or a reboot (2026-10-09): live workers on an
+  older Claude Code than the installed one are relaunched (same id and
+  history) and reattached, ships first, then commodores, then admirals, never
+  one mid-turn and never the caller (`--restart`: every live member); live
+  members whose pane is gone are reattached; leads always come back; ships
+  from the active set (`--all`: every ship that has run). Never a first
+  launch (a member with no job and no history is "not started", fix
+  `nimitz start <id>`). The plan names, per member, what it found and what
+  it does (`Plan.found`). The user; an admiral its own fleet; a commodore
+  its own ships.
+- `nimitz up <F>`, deprecated (2026-10-09; gone in the next release, its
+  output says so) = `sessions::plan_up` (every member with a row wakes, the
+  rest cold-launch) and then the restore engine shape-only for the leads'
+  tabs, with the yes already given.
 - `nimitz layout herdr [<F>] [--ships]` = the engine shape-only (tabs for the
   leads, attach where a job is live or a parked lead has a shell tab to wake
-  it from, no resume; `--ships` a tab for every live ship). Kept as an alias
-  for one release; its output says so. The `TabKind::Start` path is gone: a
+  it from, no resume; `--ships` a tab for every live ship). Deprecated
+  (2026-10-09), gone in the next release; its output points at restore. The `TabKind::Start` path is gone: a
   tab only ever runs `claude attach`.
 
 ### 13.2 What P9 built

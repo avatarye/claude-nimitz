@@ -913,8 +913,40 @@ fn write_session_file(base: &Path, short: &str, sid: &str, cwd: &str, name: &str
         &session_path(base, short),
         &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "bg", "name": name,
                 "jobId": short, "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null,
-                "entrypoint": "cli", "version": CC_VERSION}),
+                "entrypoint": "cli", "version": installed_version(base)}),
     );
+}
+
+/// The version the fake `claude --version` reports (world.json `cc_version`):
+/// a process started now runs it; one started before an "update" keeps the
+/// version its session file says.
+fn installed_version(base: &Path) -> String {
+    read_json(&base.join("world.json")).and_then(|w| w.get("cc_version").and_then(|v| v.as_str().map(str::to_string))).unwrap_or(CC_VERSION.into())
+}
+
+/// A stopped job ends its attach clients: each fake Herdr pane that ran
+/// `claude attach <short>` drops to its shell (measured on Claude Code
+/// 2.1.295: the client prints "Session <job> has exited." and exits).
+fn drop_attach_panes(base: &Path, short: &str) {
+    let p = base.join("herdr/world.json");
+    let Some(mut w) = read_json(&p) else { return };
+    let Some(panes) = w.get_mut("panes").and_then(|x| x.as_array_mut()) else { return };
+    let mut changed = false;
+    for pane in panes.iter_mut() {
+        let attached = pane.get("foreground").and_then(|f| f.as_array()).is_some_and(|fg| fg.len() == 3 && fg[1] == "attach" && fg[2] == short);
+        if attached {
+            if let Some(o) = pane.as_object_mut() {
+                for k in ["agent_session", "agent_status", "agent", "pid"] {
+                    o.remove(k);
+                }
+                o.insert("foreground".into(), json!(["zsh"]));
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        write_json(&p, &w);
+    }
 }
 
 /// Make a live background session (a cold launch or a copy) and fire its hooks.
@@ -1144,6 +1176,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             // an idle job keeps `done`; a working one reads `stopped` (cli-01)
             let state = if row.status.as_deref() == Some("busy") { "stopped" } else { "done" };
             end_job(&base, &row, state, "other", false);
+            drop_attach_panes(&base, &short);
             println!("stopped {short}");
             return 0;
         }
@@ -1439,7 +1472,7 @@ fn interactive(base: &Path, cwd: &str, a: &Args) -> i32 {
         &p,
         &json!({"pid": LIVE_PID, "sessionId": sid, "cwd": cwd, "startedAt": ms(t), "kind": "interactive", "name": name,
                 "jobId": null, "status": "idle", "statusUpdatedAt": ms(t), "bridgeSessionId": null,
-                "entrypoint": if a.print { "sdk-cli" } else { "cli" }, "version": CC_VERSION}),
+                "entrypoint": if a.print { "sdk-cli" } else { "cli" }, "version": installed_version(base)}),
     );
     // the labels the process carries, for its SessionEnd (`__end`)
     write_json(&p.with_extension("labels"), &json!(labels));

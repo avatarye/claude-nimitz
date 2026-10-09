@@ -608,7 +608,7 @@ pub fn outcome_text(p: &Pending, o: &Outcome) -> (bool, String) {
         return (true, format!("layout: {} ({tabs} tab(s) in {} workspace(s); members bind at their SessionStart)", p.plan.summary, lp.workspaces.len()));
     }
     if p.act == Act::Restore && o.ran.is_empty() {
-        return (true, format!("restore: {}: nothing to restore", p.plan.summary.trim_start_matches("restore ")));
+        return (true, format!("restore: {}", p.plan.summary.trim_start_matches("restore ")));
     }
     let checked = if o.verified || p.config { "verified" } else { "done" };
     (true, format!("{}: {} ({} steps, {checked})", p.act.word(), p.plan.summary, o.ran.len()))

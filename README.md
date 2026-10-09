@@ -59,21 +59,46 @@ after an idle hour and `nimitz start` wakes it by its exact session id, never
 interactive is ended with `/exit` in its own terminal, then `nimitz start`
 brings the same conversation back as a job.
 
-Restore (0.4.0): `nimitz restore [<F>] [--all]` brings a fleet back from the
-Herdr shape after a Herdr crash, a closed tab or workspace, a daemon stop or
-a reboot. It reads what Herdr has (`herdr api snapshot`, each pane's
-foreground), reuses a tab found by the session it shows or by its full name
-(`F.ADMIRAL`, `F.SQ.COMMODORE`, `F.SQ.SHIP`), creates only what is missing,
-types `claude attach <job>` only into a pane that is a plain shell (an attach
-of a parked job wakes it), and resumes the rest by exact session id. Leads
-always come back; ships come back when they were live at the last look
-(`NIMITZ_STATE/active.json`, written by `status`, `open`, `restore` and the
-hooks) unless `--all` (every ship with a job row). It never cold-launches
-(`nimitz up <F>` = restore everything and start what never ran), never makes
-a second tab or a copy, and names every member it cannot restore with one
-fix. `--plan` shows the steps; run twice, the second run does nothing.
-`nimitz layout herdr` is now an alias of the shape-only part of restore (one
-release). Admiralty: `x R` on a fleet band.
+After a Claude Code update, a Herdr closure or crash, or a reboot, one
+command brings the fleets back: `nimitz restore [<F>]` (no `F`: every fleet
+on this machine), `--plan` first, then `--yes`. It tells the three apart per
+member, and the plan says, member by member, what it found and why it acts
+(`worker on 2.1.294, installed 2.1.295 -> relaunch`, `its pane is gone ->
+reattach in a new tab`, `parked -> left parked`):
+
+- Claude Code updated: every live member whose worker runs an older Claude
+  Code than the installed one (read from its process) is relaunched, same id
+  and history, then its pane gets the new job's attach. Ships first, then
+  commodores, then admirals, one at a time; never one mid-turn or waiting on
+  you (run restore again once it is idle), and never the member that runs the
+  restore (an admiral's own restore names the `nimitz relaunch <F>` you run
+  afterwards). An attach client older than the installed version is
+  reported (ctrl-z there, then restore again).
+- Herdr closed or crashed: the jobs are alive, only the panes are gone; their
+  tabs are made again (or their shell panes reused) and attached. Nothing is
+  relaunched.
+- Reboot: the leads (pinned) and the ships that were live at the last look
+  (`NIMITZ_STATE/active.json`) are woken by their exact session id, then
+  attached; `--all` wakes every ship that has run.
+- `--restart` relaunches every live member whatever its version (same order,
+  same rules).
+
+Restore reads what Herdr has (`herdr api snapshot`, each pane's foreground),
+reuses a tab found by the session it shows or by its full name (`F.ADMIRAL`,
+`F.SQ.COMMODORE`, `F.SQ.SHIP`), creates only what is missing, types `claude
+attach <job>` only into a pane that is a plain shell, never makes a second
+tab or a copy, and names every member it cannot restore with one fix. It
+never makes a first launch (`nimitz start <id>` does). Run twice, the second
+run does nothing. `nimitz up` and `nimitz layout herdr` are deprecated and go
+in the next release. Admiralty: `x R` on a fleet band.
+
+Never start, resume or stop a member with `claude` yourself (`claude
+--resume`, `claude --bg`, `claude -c`, `claude stop`, `claude rm`): a resume of
+a live job starts a copy under the member's name; an interactive resume holds
+the conversation in a process with no job, which nimitz cannot wake until you
+`/exit` there; a session started without nimitz's labels is a stowaway; and a
+job started from your shell takes the daemon's environment instead of the
+member's labels. `nimitz start`, `relaunch` and `restore` do it right.
 
 Identity (0.4.0): a member is anchored to its Claude Code **job** (the short
 id you see in `claude agents`), which is stable across stop, kill, respawn,
@@ -91,8 +116,8 @@ labels is you):
 | Caller | May run |
 | --- | --- |
 | you | everything |
-| admiral | every command inside its own fleet, on any member but itself: start, stop, relaunch, rm, sweep, adopt, up, restore, layout herdr, fleet set, squadron new/set/rm, ship new/set/rm |
-| commodore | inside its own squadron: start, stop, relaunch, rm, sweep, adopt for its ships; squadron set; ship new/set/rm |
+| admiral | every command inside its own fleet, on any member but itself: restore, start, stop, relaunch, rm, sweep, adopt, fleet set, squadron new/set/rm, ship new/set/rm (and the deprecated up, layout herdr) |
+| commodore | inside its own squadron: restore, start, stop, relaunch, rm, sweep, adopt for its ships; squadron set; ship new/set/rm |
 | ship | the read-only commands (`status`, `check`, `rules`, `doctor`); `signal` to a member the chain allows; `sweep` of itself (its own stale rows) |
 
 `init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` stay yours. More
