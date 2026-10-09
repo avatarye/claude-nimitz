@@ -870,6 +870,7 @@ fn r09b_an_update_never_cuts_a_turn_never_relaunches_the_caller_and_a_commodore_
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(lines_with(&r.out, "MAIN ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz restore MAIN")), "{}", r.out);
     assert!(r.out.contains("(restore.self)") && r.out.contains("MAIN is a lead: you run the restore again from your own shell"), "{}", r.out);
+    assert!(r.out.contains("fix: ask the user to run: nimitz restore MAIN  # yours, from a shell"), "{}", r.out);
     assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("-> relaunch")), "{}", r.out);
     let adm = sb.short("MAIN");
     let r = sb.run_as("MAIN", &["restore", "MAIN", "--yes"]);
@@ -915,6 +916,9 @@ fn r_restart_relaunches_every_live_member_whatever_its_version() {
     let order = relaunched(&r);
     assert_eq!(order.len(), 7, "{r}");
     assert_eq!(order.last().map(String::as_str), Some("MAIN"), "the admiral last: {order:?}");
+    // run by the admiral: its own relaunch is left to the user, with no second round for the rest
+    let own = sb.run_as("MAIN", &["restore", "MAIN", "--restart", "--plan"]);
+    assert!(own.out.contains("fix: ask the user to run: nimitz relaunch MAIN && nimitz restore MAIN  #"), "{}", own.out);
     for (id, sid, _) in &before {
         assert_eq!(&sb.sid(id), sid, "{id}");
     }

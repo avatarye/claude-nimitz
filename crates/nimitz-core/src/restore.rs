@@ -751,7 +751,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
             let live_on = format!("live on {on}");
             if !wants_tab {
                 // a live ship gets a tab only when it had one, or with `--ships`
-                found(rp, id, live_on, "nothing (no pane wanted: `nimitz open` shows it)");
+                found(rp, id, live_on, "nothing (no tab is made for it: `nimitz open` shows it)");
                 return;
             }
             let (seen, action) = tab_step(ctx, m, false, rep, rp);
@@ -918,7 +918,9 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
 /// restore there relaunches it and reattaches its pane).
 fn self_skipped(ctx: &Ctx, m: &Member, why: String, rp: &mut RestorePlan) {
     let id = &m.id;
-    let again = format!("nimitz restore {}{}", id.fleet(), if ctx.opts.restart { " --restart" } else { "" });
+    // after an update a plain restore relaunches only the workers still old;
+    // after --restart only this one is left: relaunch it, then reattach
+    let again = if ctx.opts.restart { format!("nimitz relaunch {id} && nimitz restore {}", id.fleet()) } else { format!("nimitz restore {}", id.fleet()) };
     found(rp, id, format!("{why}; it runs this restore"), format!("not relaunched while it runs; afterwards you run: {again}"));
     let whose = if m.role.lead() { format!("; {id} is a lead: you run the restore again from your own shell once this one is done") } else { String::new() };
     rp.plan.warnings.push(issue("restore.self", Severity::Warn, format!("{id} runs this restore, so it is not relaunched now{whose}"), Some(format!("{again}  # yours, from a shell, once this one is done: it relaunches {id} and reattaches its pane")), Some(id.clone())));
