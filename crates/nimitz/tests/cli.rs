@@ -395,55 +395,61 @@ fn a_ship_starts_nothing_and_an_admiral_only_in_its_own_fleet() {
 /// with `(authority)`. A command that is not in this table fails the test.
 #[test]
 fn every_command_goes_by_the_role_table() {
-    // (command, the rest of the argv, admiral MAIN, commodore MAIN/ARGOS, ship MAIN/ARGOS/CLEAN)
-    const TABLE: &[(&str, &[&str], [bool; 3])] = &[
-        ("init", &["--label", "box"], [false, false, false]),
-        ("doctor", &[], [true, true, true]),
-        ("doctor", &["--fix"], [false, false, false]),
-        ("rules", &[], [true, true, true]),
-        ("status", &[], [true, true, true]),
-        ("check", &["MAIN"], [true, true, true]),
-        ("fleet", &["new", "ZED"], [false, false, false]),
-        ("fleet", &["set", "MAIN", "--admiral-mode", "auto"], [true, false, false]),
-        ("fleet", &["rm", "BETA"], [false, false, false]),
-        ("squadron", &["new", "MAIN/EXTRA", "--brief", "x"], [true, false, false]),
-        ("squadron", &["set", "MAIN/ARGOS", "--comms", "open"], [true, true, false]),
-        ("squadron", &["rm", "MAIN/ARGOS"], [true, false, false]),
-        ("ship", &["new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "x"], [true, true, false]),
-        ("ship", &["set", "MAIN/ARGOS/CLEAN", "--mode", "auto"], [true, true, false]),
-        ("ship", &["rm", "MAIN/ARGOS/FRESH"], [true, true, false]),
-        ("machine", &["add", "MAIN", "box2", "--hostname", "box2"], [false, false, false]),
-        ("machine", &["rm", "MAIN", "box2"], [false, false, false]),
-        ("migrate", &["fleet-skill", "/nonexistent-nimitz", "--into", "MAIN"], [false, false, false]),
-        ("up", &["MAIN"], [true, false, false]),
-        ("start", &["MAIN/ARGOS/STOPPED"], [true, true, false]),
-        ("stop", &["MAIN/ARGOS/CLEAN"], [true, true, false]),
-        ("relaunch", &["MAIN/ARGOS/CLEAN"], [true, true, false]),
-        ("rm", &["MAIN/ARGOS/STOPPED"], [true, true, false]),
-        ("sweep", &["MAIN/ARGOS/CLEAN"], [true, true, true]),
-        ("sweep", &["MAIN/ARGOS"], [true, true, false]),
-        ("sweep", &["MAIN"], [true, false, false]),
-        ("adopt", &["00000000-0000", "MAIN/ARGOS/FRESH"], [true, true, false]),
+    // (command, the rest of the argv, admiral MAIN, commodore MAIN/ARGOS, ship MAIN/ARGOS/CLEAN, aide MAIN/@KB)
+    const TABLE: &[(&str, &[&str], [bool; 4])] = &[
+        ("init", &["--label", "box"], [false, false, false, false]),
+        ("doctor", &[], [true, true, true, true]),
+        ("doctor", &["--fix"], [false, false, false, false]),
+        ("rules", &[], [true, true, true, true]),
+        ("status", &[], [true, true, true, true]),
+        ("check", &["MAIN"], [true, true, true, true]),
+        ("fleet", &["new", "ZED"], [false, false, false, false]),
+        ("fleet", &["set", "MAIN", "--admiral-mode", "auto"], [true, false, false, false]),
+        ("fleet", &["rm", "BETA"], [false, false, false, false]),
+        ("squadron", &["new", "MAIN/EXTRA", "--brief", "x"], [true, false, false, false]),
+        ("squadron", &["set", "MAIN/ARGOS", "--comms", "open"], [true, true, false, false]),
+        ("squadron", &["rm", "MAIN/ARGOS"], [true, false, false, false]),
+        ("ship", &["new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "x"], [true, true, false, false]),
+        ("ship", &["set", "MAIN/ARGOS/CLEAN", "--mode", "auto"], [true, true, false, false]),
+        ("ship", &["rm", "MAIN/ARGOS/FRESH"], [true, true, false, false]),
+        ("machine", &["add", "MAIN", "box2", "--hostname", "box2"], [false, false, false, false]),
+        ("machine", &["rm", "MAIN", "box2"], [false, false, false, false]),
+        ("migrate", &["fleet-skill", "/nonexistent-nimitz", "--into", "MAIN"], [false, false, false, false]),
+        ("up", &["MAIN"], [true, false, false, false]),
+        ("start", &["MAIN/ARGOS/STOPPED"], [true, true, false, false]),
+        ("stop", &["MAIN/ARGOS/CLEAN"], [true, true, false, false]),
+        ("relaunch", &["MAIN/ARGOS/CLEAN"], [true, true, false, false]),
+        ("rm", &["MAIN/ARGOS/STOPPED"], [true, true, false, false]),
+        ("sweep", &["MAIN/ARGOS/CLEAN"], [true, true, true, false]),
+        ("sweep", &["MAIN/ARGOS"], [true, true, false, false]),
+        ("sweep", &["MAIN"], [true, false, false, false]),
+        ("sweep", &["MAIN/@KB"], [true, false, false, true]),
+        // an aide: its admiral (and you) start and stop it; it starts and stops nothing
+        ("start", &["MAIN/@KB"], [true, false, false, false]),
+        ("stop", &["MAIN/@KB"], [true, false, false, false]),
+        ("adopt", &["00000000-0000", "MAIN/ARGOS/FRESH"], [true, true, false, false]),
         // every member signals with SendMessage: no authority refusal, comms.denied instead
-        ("signal", &["MAIN/ARGOS", "hi"], [true, true, true]),
-        ("open", &["MAIN/ARGOS/CLEAN"], [false, false, false]),
-        ("layout", &["herdr", "MAIN"], [true, false, false]),
-        ("restore", &["MAIN"], [true, true, false]),
-        ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false]),
-        // aide inboxes (no aide in this world: an allowed row fails on "no aide", never on authority)
-        ("inbox", &["status"], [true, true, true]),
-        ("inbox", &["post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"body\": \"x\"}"], [true, true, true]),
-        ("inbox", &["claim", "MAIN/@KB"], [false, false, false]),
-        ("inbox", &["retry", "MAIN/@KB", "000000000001"], [true, false, false]),
-        ("ask", &["MAIN/@REF", "a question", "--no-wait"], [true, true, true]),
-        ("inbox", &["heartbeat", "MAIN/@KB", "1"], [false, false, false]),
-        ("inbox", &["done", "MAIN/@KB", "1"], [false, false, false]),
-        ("inbox", &["fail", "MAIN/@KB", "1", "--reason", "x"], [false, false, false]),
-        ("inbox", &["drop", "MAIN/@KB", "1"], [true, false, false]),
-        ("inbox", &["list", "MAIN/@KB"], [true, true, true]),
-        ("inbox", &["result", "MAIN/@REF", "1"], [true, true, true]),
+        ("signal", &["MAIN/ARGOS", "hi"], [true, true, true, true]),
+        ("open", &["MAIN/ARGOS/CLEAN"], [false, false, false, false]),
+        ("layout", &["herdr", "MAIN"], [true, false, false, false]),
+        ("restore", &["MAIN"], [true, true, false, false]),
+        ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false, false]),
+        // aide inboxes (KB is in this world, REF is not: an allowed row fails on
+        // "no aide" or "no item", never on authority); the aide works its own
+        // inbox and never posts to it
+        ("inbox", &["status"], [true, true, true, true]),
+        ("inbox", &["post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"body\": \"x\"}"], [true, true, true, false]),
+        ("inbox", &["claim", "MAIN/@KB"], [false, false, false, true]),
+        ("inbox", &["retry", "MAIN/@KB", "000000000001"], [true, false, false, false]),
+        ("ask", &["MAIN/@REF", "a question", "--no-wait"], [true, true, true, true]),
+        ("inbox", &["heartbeat", "MAIN/@KB", "1"], [false, false, false, true]),
+        ("inbox", &["done", "MAIN/@KB", "1"], [false, false, false, true]),
+        ("inbox", &["fail", "MAIN/@KB", "1", "--reason", "x"], [false, false, false, true]),
+        ("inbox", &["drop", "MAIN/@KB", "1"], [true, false, false, false]),
+        ("inbox", &["list", "MAIN/@KB"], [true, true, true, true]),
+        ("inbox", &["result", "MAIN/@REF", "1"], [true, true, true, true]),
     ];
-    let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];
+    let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN", "MAIN/@KB"];
     let listed = Sb::new(false).run(&["__commands"]);
     assert_eq!(listed.code, 0, "{}", listed.out);
     for cmd in listed.out.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -453,6 +459,7 @@ fn every_command_goes_by_the_role_table() {
         // one world per role and form, so a `--yes` run changes nothing for the next row
         for form in ["--plan", "--yes"] {
             let sb = Sb::new(false);
+            nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", true).unwrap();
             for (cmd, rest, may) in TABLE {
                 let mut args = vec![*cmd];
                 args.extend(rest.iter().copied());

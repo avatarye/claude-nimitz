@@ -28,5 +28,8 @@
   stops you until someone attaches: fail the item instead of asking.
 - Your `nimitz` commands: `status`, `check`, `rules` and `doctor`
   (read-only), `inbox claim|heartbeat|done|fail {ID}`, `inbox list|status`,
-  and `signal` to your parent. You never start or stop a member, yourself
-  included; nimitz refuses every other change.
+  `inbox post <another aide> --type ...` (by that inbox's policy: a reader
+  posts the gaps it finds to the notes keeper; never to your own inbox),
+  `sweep {ID}` (your own stale copy rows), and `signal` to your parent. You
+  never start or stop a member, yourself included; nimitz refuses every
+  other change.

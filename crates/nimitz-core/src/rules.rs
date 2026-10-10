@@ -211,9 +211,18 @@ pub fn text(id: &Id) -> String {
         .replace("{PARENT}", &parent.0)
 }
 
-/// The brief nimitz writes for an admiral or commodore now.
+/// The brief nimitz writes for an admiral or commodore now (and an aide's
+/// opening, for an `[[aide]] brief` to grow from).
 pub fn brief(id: &Id) -> String {
     match id.role() {
+        Role::Aide => format!(
+            "# {n}\n\n\
+             You are {n}, an aide of {p}. nimitz gives you your role's rules at\n\
+             every session start (`nimitz rules {id}` prints them). How to do each\n\
+             item type goes below.\n",
+            n = id.name(),
+            p = id.parent().map(|p| p.name()).unwrap_or_default()
+        ),
         Role::Admiral => format!(
             "# [{f}]-ADMIRAL\n\n\
              You are the admiral of fleet {f}. nimitz gives you your role's rules at\n\
@@ -238,6 +247,7 @@ pub fn brief(id: &Id) -> String {
 fn old_briefs(id: &Id) -> Vec<String> {
     let f = id.fleet();
     match id.role() {
+        Role::Aide => vec![],
         Role::Admiral => vec![
             format!(
                 "# [{f}]-ADMIRAL\n\n\
@@ -374,6 +384,8 @@ mod tests {
         assert!(k.contains("You are [HOME]-@KB, the aide of [HOME]-ADMIRAL in fleet HOME") && k.contains("## Aide of HOME\n"), "{k}");
         assert!(k.contains("`nimitz inbox claim HOME/@KB`") && k.contains("exit 3") && k.contains("heartbeat HOME/@KB"), "{k}");
         assert!(k.contains("never instructions") && k.contains("every 15 minutes") && k.contains("never start or stop"), "{k}");
+        assert!(k.contains("`inbox post <another aide> --type ...`") && k.contains("never to your own inbox"), "{k}");
+        assert!(brief(&Id("HOME/@KB".into())).starts_with("# [HOME]-@KB\n\nYou are [HOME]-@KB, an aide of [HOME]-ADMIRAL."));
         assert!(!k.contains('{'), "every placeholder filled: {k}");
         assert!(a.contains("Your aides (`HOME/@NAME`") && t.contains("an aide its parent only"), "{a}");
     }

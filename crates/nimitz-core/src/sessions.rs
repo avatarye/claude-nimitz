@@ -411,8 +411,10 @@ pub fn may_start(caller: &Caller, target: &Id, verb: &str) -> Result<(), String>
         Caller::User => Ok(()),
         Caller::Member { id, role: Role::Admiral } if target.fleet() == id.fleet() && target != id => Ok(()),
         Caller::Member { id, role: Role::Commodore } if target.parent().as_ref() == Some(id) => Ok(()),
+        // an aide works its inbox; it starts and stops nothing, itself included
+        Caller::Member { id, role: Role::Aide } => Err(format!("{} may not {verb} {target}: an aide starts and stops nothing, itself included; its parent does", caller_name(id))),
         Caller::Member { id, .. } => Err(format!(
-            "{} may not {verb} {target}: you {verb} anything; an admiral, the members of its own fleet; a commodore, its own ships",
+            "{} may not {verb} {target}: you {verb} anything; an admiral, the members of its own fleet (its aides too); a commodore, its own ships",
             caller_name(id)
         )),
     }
@@ -428,6 +430,7 @@ pub fn may_config(caller: &Caller, scope: &Id) -> Result<(), String> {
         Caller::User => Ok(()),
         Caller::Member { id, role: Role::Admiral } if scope.fleet() == id.fleet() => Ok(()),
         Caller::Member { id, role: Role::Commodore } if scope == id || scope.parent().as_ref() == Some(id) => Ok(()),
+        Caller::Member { id, role: Role::Aide } => Err(format!("{} may not change the config of {scope}: an aide changes no config", caller_name(id))),
         Caller::Member { id, .. } => Err(format!(
             "{} may not change the config of {scope}: you change any; an admiral, its own fleet; a commodore, its own squadron and its ships",
             caller_name(id)
@@ -491,9 +494,10 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
             }
         }
         Some("stop") | Some("relaunch") | Some("rm") => id_at(2).is_some_and(|t| may_start(caller, &t, "start").is_ok()),
+        // a ship or an aide sweeps its own stale copy rows only
         Some("sweep") => match id_at(2) {
             None => w.len() == 2 && matches!(role, Role::Admiral | Role::Commodore),
-            Some(t) => in_fleet(&t) || in_squadron(&t) || (*role == Role::Ship && t == *me),
+            Some(t) => in_fleet(&t) || in_squadron(&t) || (matches!(role, Role::Ship | Role::Aide) && t == *me),
         },
         Some("adopt") => id_at(3).is_some_and(|t| may_start(caller, &t, "adopt as").is_ok()),
         Some("up") => id_at(2).is_some_and(|t| in_fleet(&t)),
@@ -1669,8 +1673,8 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
             }
             Box::new(move |m: &Id| m.fleet() == fleet)
         }
-        // a ship: its own stale copy rows, nothing else
-        Caller::Member { id: me, role: Role::Ship } if id == Some(me) => {
+        // a ship or an aide: its own stale copy rows, nothing else
+        Caller::Member { id: me, role: Role::Ship | Role::Aide } if id == Some(me) => {
             let me = me.clone();
             Box::new(move |m: &Id| *m == me)
         }
@@ -2731,6 +2735,19 @@ mod tests {
         // ships: nothing
         let a_ship = Caller::Member { id: ship.clone(), role: Role::Ship };
         assert!(may_start(&a_ship, &Id::ship("F", "SQ", "T"), "start").is_err());
+        // an aide: its admiral (and you) start and stop it; it starts, stops and configures nothing, itself included
+        let kb = Id("F/@KB".into());
+        let aide = Caller::Member { id: kb.clone(), role: Role::Aide };
+        assert!(may_start(&admiral, &kb, "stop").is_ok() && may_start(&Caller::User, &kb, "start").is_ok());
+        assert!(may_start(&own, &kb, "start").is_err() && may_start(&a_ship, &kb, "start").is_err());
+        for t in [kb.clone(), ship.clone(), Id::admiral("F")] {
+            assert!(may_start(&aide, &t, "start").unwrap_err().contains("an aide starts and stops nothing"), "{t}");
+            assert!(may_config(&aide, &t).is_err());
+        }
+        assert!(may_run(&aide, "nimitz sweep F/@KB") && !may_run(&aide, "nimitz sweep F/SQ/S"));
+        assert!(!may_run(&aide, "nimitz start F/@KB") && !may_run(&aide, "nimitz stop F/@KB") && !may_run(&aide, "nimitz start F/@KB --only -f"));
+        assert!(may_run(&admiral, "nimitz start F/@KB") && may_run(&admiral, "nimitz stop F/@KB"));
+        assert!(may_run(&aide, "nimitz signal F hi") && !may_run(&aide, "nimitz signal F/SQ hi"));
     }
 
     #[test]

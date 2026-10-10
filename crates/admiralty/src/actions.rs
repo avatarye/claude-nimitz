@@ -385,7 +385,9 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
             let what = match id.role() {
                 Role::Admiral => "fleet",
                 Role::Commodore => "squadron",
-                _ => "ship",
+                Role::Ship => "ship",
+                // (no `aide rm` yet: core's retire refuses it too)
+                Role::Aide => return Err(format!("{id} is an aide: delete its [[aide]] from fleet.toml to retire it (no `nimitz aide rm` yet)")),
             };
             with_panes(act, format!("nimitz {what} rm {id}"), nimitz_core::sessions::plan_retire(env, snap, &user, &id))
         }
