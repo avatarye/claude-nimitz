@@ -152,7 +152,10 @@ pub fn folder_issue(env: &Env, id: &Id, cwd: &str) -> Option<Issue> {
             code: "folder.missing".into(),
             severity: Severity::Error,
             message: format!("{id}'s folder {cwd} does not exist"),
-            fix: Some(format!("mkdir -p {cwd}  # or point {id} elsewhere with nimitz ship set")),
+            fix: Some(match id.role() {
+                Role::Aide => format!("mkdir -p {cwd}  # or point {id} elsewhere in its [[aide]] dirs"),
+                _ => format!("mkdir -p {cwd}  # or point {id} elsewhere with nimitz ship set"),
+            }),
             id: Some(id.clone()),
         });
     }

@@ -589,7 +589,7 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
     };
     let cwd = m.cwd.clone().or_else(|| crate::config::member_dir(env, &fod, id).map(|p| p.to_string_lossy().into_owned()));
     let Some(cwd) = cwd else {
-        refuse(plan, "folder.missing", format!("{id} has no folder on this machine"), Some(format!("nimitz ship set {id} --dir <folder|managed>")), Some(id.clone()));
+        refuse(plan, "folder.missing", format!("{id} has no folder on this machine"), Some(dir_fix(id)), Some(id.clone()));
         return;
     };
     let mode = crate::config::permission_mode(&fod, id);
@@ -949,6 +949,10 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
     // and fixed, but it does not hold up the lead's own job)
     const TABLE_HANDLED: [&str; 10] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "history.lost", "lead.intruder", "aide.down", "aide.unpinned"];
     for i in crate::check::check(env, snap, id) {
+        // (an aide that is down or unpinned: the start is the fix)
+        if id.is_some() && i.id.as_ref() == id && ["aide.down", "aide.unpinned"].contains(&i.code.as_str()) {
+            continue;
+        }
         let forced_away = force && i.code == "cc.version";
         match i.severity {
             Severity::Error if !TABLE_HANDLED.contains(&i.code.as_str()) && !forced_away => plan.refusals.push(i),
@@ -1101,6 +1105,8 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
     }
     gate(env, &mut plan, snap, Some(&f.id), false);
     let mut ids = vec![f.admiral.id.clone()];
+    // its aides, top-down after it: those whose `dirs` names this machine
+    ids.extend(f.aides.iter().filter(|a| fod.as_ref().is_some_and(|fod| crate::config::member_dir(env, fod, &a.id).is_some())).map(|a| a.id.clone()));
     for sq in &f.squadrons {
         ids.push(sq.commodore.id.clone());
         // ships with a folder on this machine, in depends_on order
@@ -1231,10 +1237,19 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         refuse(&mut plan, "authority", why, None, Some(id.clone()));
         return plan;
     }
-    let Some((_, m)) = member(snap, id) else {
+    let Some((f, m)) = member(snap, id) else {
         refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
         return plan;
     };
+    // an admiral's live aides stop first: an aide never outlives its parent
+    // (docs/design/aide.md section 10; a claimed item comes back with its lease)
+    if m.role == Role::Admiral {
+        for a in &f.aides {
+            if let Some(short) = a.session.as_ref().filter(|p| p.pid.is_some()).and_then(|p| p.short_id.clone()) {
+                plan.steps.push(Step { id: Some(a.id.clone()), cmd: crate::claude::stop(env, &short), cwd: a.cwd.clone(), why: format!("its aide first: stop {} (a claimed item comes back with its lease)", a.id) });
+            }
+        }
+    }
     // its conversation runs in a process with no job (a `claude --resume`
     // by hand, an SDK host) while its own job is not live: nimitz cannot stop
     // it there (cli-18). A live job is stopped as ever, whatever else holds
@@ -1246,7 +1261,9 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         return plan;
     }
     let Some(p) = m.session.as_ref().filter(|p| p.pid.is_some()) else {
-        refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
+        if plan.steps.is_empty() {
+            refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
+        }
         return plan;
     };
     // a process with no job (an interactive 0.3.x lead, an SDK host): nimitz
@@ -1430,6 +1447,15 @@ fn relabel_to(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str, sid: &
         format!("resume {} with every flag: same id and history, new name and labels", &sid[..sid.len().min(8)]),
     ));
     v
+}
+
+/// How a member gets a folder on this machine: a ship's `ship set --dir`;
+/// an aide's `[[aide]]` dirs (no `aide set` yet).
+pub fn dir_fix(id: &Id) -> String {
+    match id.role() {
+        Role::Aide => format!("edit {id}'s [[aide]] in fleet.toml: dirs.<this machine's label> = \"<folder>\""),
+        _ => format!("nimitz ship set {id} --dir <folder|managed>"),
+    }
 }
 
 /// What retires a member for good: its config's `rm` (an aide leaves

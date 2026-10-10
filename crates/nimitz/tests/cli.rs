@@ -56,6 +56,7 @@ impl Sb {
     }
     fn run_as(&self, id: &str, args: &[&str]) -> Run {
         let role = match id.split('/').count() {
+            _ if id.contains("/@") => "aide",
             1 => "admiral",
             2 => "commodore",
             _ => "ship",
@@ -74,6 +75,9 @@ impl Sb {
         for f in s["fleets"].as_array().unwrap() {
             if f["admiral"]["id"] == id {
                 return f["admiral"].clone();
+            }
+            if let Some(a) = f["aides"].as_array().and_then(|v| v.iter().find(|m| m["id"] == id)) {
+                return a.clone();
             }
             for sq in f["squadrons"].as_array().unwrap() {
                 if sq["commodore"]["id"] == id {
@@ -2443,4 +2447,80 @@ fn an_attach_pane_on_an_older_claude_code_is_never_typed_into() {
     assert_ne!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("(tab.unverified)"), "{}", r.out);
     assert!(sb.prompts("w1:p2").is_empty(), "nothing typed");
+}
+
+// ------------------------------------------------------------------ aides
+
+/// An aide's whole life through the CLI: its parent's start launches it
+/// (Sonnet, pinned), status shows it with its inbox, its parent's stop stops
+/// it first, and check says when it is down or on a model the account
+/// does not allow.
+#[test]
+fn an_aide_comes_up_with_its_admiral_and_goes_down_before_it() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let r = sb.run(&["start", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let (adm, kb) = (r.out.find("ADMIRAL").expect("the admiral's line"), r.out.find("@KB").unwrap_or_else(|| panic!("the aide's line: {}", r.out)));
+    assert!(adm < kb && r.out[kb..].lines().next().unwrap().contains("launch"), "the aide after its admiral, a first launch: {}", r.out);
+    assert!(!r.out.contains("aide.down"), "its start is the fix: {}", r.out);
+    let r = sb.run(&["start", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let m = sb.member("MAIN/@KB");
+    assert!(live(&m), "{}", r.out);
+    let short = m["session"]["short_id"].as_str().unwrap().to_string();
+    assert_eq!(m["session"]["pinned"], true, "{}", r.out);
+    let state: Value = serde_json::from_slice(&std::fs::read(sb.base.join("claude_home/jobs").join(&short).join("state.json")).unwrap()).unwrap();
+    let flags: Vec<String> = serde_json::from_value(state["respawnFlags"].clone()).unwrap();
+    assert!(flags.windows(2).any(|w| w == ["--model", "sonnet"]), "{flags:?}");
+    // status: its row under the admiral, its inbox; the JSON says who it is
+    assert_eq!((m["role"].as_str(), m["parent"].as_str(), m["inbox"]["pending"].as_u64()), (Some("aide"), Some("MAIN"), Some(0)));
+    let r = sb.run(&["status"]);
+    let line = r.out.lines().position(|l| l.trim_start().starts_with("MAIN/@KB")).unwrap_or_else(|| panic!("{}", r.out));
+    assert!(r.out.lines().nth(line + 1).unwrap().contains("inbox: empty"), "{}", r.out);
+    assert!(r.out.lines().position(|l| l.trim_start().starts_with("MAIN ")).is_some_and(|a| a < line), "{}", r.out);
+    // its parent's stop: the aide first
+    let adm_job = sb.member("MAIN")["session"]["short_id"].as_str().unwrap().to_string();
+    let r = sb.run(&["stop", "MAIN", "--plan", "-v"]);
+    let (a, b) = (r.out.find(&format!("stop {short}")), r.out.find(&format!("stop {adm_job}")));
+    assert!(a.is_some() && a < b, "the aide first: {}", r.out);
+    let r = sb.run(&["stop", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!live(&sb.member("MAIN/@KB")) && !live(&sb.member("MAIN")));
+    // check: down; and a model the account leaves out
+    let r = sb.run(&["check", "MAIN/@KB"]);
+    assert!(r.out.contains("aide.down") && r.out.contains("fix: nimitz start MAIN/@KB"), "{}", r.out);
+    std::fs::write(sb.base.join("claude_home/settings.json"), r#"{"availableModels": ["opus"]}"#).unwrap();
+    let r = sb.run(&["check", "MAIN/@KB"]);
+    assert!(r.out.contains("aide.model") && r.out.contains("add sonnet to availableModels"), "{}", r.out);
+}
+
+/// An aide under a claim is relaunched after the item, not under it; a live
+/// unpinned one is pinned again by a start; one whose `dirs` names another
+/// machine is not this machine's to start.
+#[test]
+fn a_start_waits_for_an_aide_s_item_pins_it_and_skips_one_of_another_machine() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", true).unwrap();
+    let r = sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", r#"{"body": "x"}"#]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(sb.run_as("MAIN/@KB", &["inbox", "claim", "MAIN/@KB"]).code, 0);
+    let r = sb.run(&["start", "MAIN/@KB", "-f", "--plan"]);
+    assert!(r.out.contains("busy: after item 1") && r.out.contains("relaunch.busy"), "{}", r.out);
+    // unpinned while live: the fleet's start pins it again
+    let short = sb.member("MAIN/@KB")["session"]["short_id"].as_str().unwrap().to_string();
+    sb.claude(&sb.base, &["__unpin", &short]);
+    assert!(sb.run(&["check", "MAIN/@KB"]).out.contains("aide.unpinned"));
+    let r = sb.run(&["start", "MAIN", "--plan", "-v"]);
+    assert!(r.out.contains(&format!("pin {short}")), "{}", r.out);
+    assert_eq!(sb.run(&["start", "MAIN", "--yes"]).code, 0);
+    assert_eq!(sb.member("MAIN/@KB")["session"]["pinned"], true);
+    // an aide of another machine: not in this machine's start, nor down here
+    let f = PathBuf::from(&sb.vars["NIMITZ_HOME"]).join("main/fleet.toml");
+    let t = std::fs::read_to_string(&f).unwrap();
+    std::fs::write(&f, format!("{t}\n[[aide]]\nname = \"FAR\"\n[aide.dirs]\nfar = \"/nowhere\"\n\n[machines.far]\nhostname = \"far-host\"\n")).unwrap();
+    let r = sb.run(&["start", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("@FAR"), "{}", r.out);
+    assert!(!sb.run(&["check", "MAIN/@FAR"]).out.contains("aide.down"));
 }

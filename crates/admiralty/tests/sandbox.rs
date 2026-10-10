@@ -606,8 +606,10 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
     let o = actions::apply(&app.ctx.env, &p);
     app.finish(&p, &o);
     assert!(o.verified, "{:?}", o.issues);
-    assert_eq!(o.ran.len(), 3, "{:?}", o.ran);
-    assert!(toast(&app).starts_with("restore: start MAIN: panes missing (Herdr closed, restarted or never laid out) (3 steps"), "{}", toast(&app));
+    // a tab per live lead, and a pin for each (the sandbox's leads run unpinned)
+    assert_eq!(o.ran.len(), 6, "{:?}", o.ran);
+    assert_eq!(o.ran.iter().filter(|(s, _, _)| s.cmd.first().map(String::as_str) == Some("pin")).count(), 3, "{:?}", o.ran);
+    assert!(toast(&app).starts_with("restore: start MAIN: panes missing (Herdr closed, restarted or never laid out) (6 steps"), "{}", toast(&app));
     // again: nothing to restore
     app.apply(CoreSource::detect(&vars).load());
     goto(&mut app, "F:MAIN");

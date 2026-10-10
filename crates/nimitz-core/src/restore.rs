@@ -189,7 +189,7 @@ impl RestoreStep {
                 c.extend(cmd.iter().cloned());
                 vec![Step { id: Some(id.clone()), cmd: c, cwd: Some(cwd.clone()), why: format!("tab {label} in workspace {workspace}: attach{}; detaching (ctrl-z) leaves it running", why_wake(*wakes)) }]
             }
-            RestoreStep::Pin { id, job } => vec![Step { id: Some(id.clone()), cmd: vec!["pin".into(), job.clone()], cwd: None, why: "a lead stays up: pin its job".into() }],
+            RestoreStep::Pin { id, job } => vec![Step { id: Some(id.clone()), cmd: vec!["pin".into(), job.clone()], cwd: None, why: "a lead or an aide stays up: pin its job".into() }],
             RestoreStep::Rename { id, tab_id, label } => vec![Step { id: Some(id.clone()), cmd: vec!["herdr".into(), "tab".into(), "rename".into(), tab_id.clone(), label.clone()], cwd: None, why: format!("the tab shows {id} under another name; --rename gives it its full name") }],
             RestoreStep::Split { id, next_to, cmd, cwd, .. } => {
                 let mut c = vec!["herdr".into(), "pane".into(), "split".into(), next_to.pane_id.clone(), "--".into()];
@@ -696,6 +696,8 @@ fn verbs(rp: &mut RestorePlan) {
             "wake"
         } else if skipped {
             "skip"
+        } else if steps.iter().any(|s| matches!(s, RestoreStep::Pin { .. })) {
+            "pin"
         } else {
             "nothing"
         };
@@ -838,6 +840,7 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     }
     let before = rep.not_started;
     let mut never: Vec<String> = vec![];
+    let fod = crate::config::load_fleet(env, fleet).ok();
     for m in fleet_members(f) {
         // a commodore's restore: its own ships only (and its own line when its
         // worker would be relaunched: it never is by its own restore)
@@ -852,6 +855,10 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
         }
         // `start <target>`: a squadron is its commodore and ships; a ship itself
         if !in_target(ctx.target.as_ref(), &m.id) || (ctx.opts.only && ctx.named.as_ref() != Some(&m.id)) {
+            continue;
+        }
+        // an aide runs on the one machine its `dirs` names: elsewhere it is not ours
+        if m.role == Role::Aide && ctx.named.as_ref() != Some(&m.id) && !fod.as_ref().is_some_and(|f| crate::config::member_dir(env, f, &m.id).is_some()) {
             continue;
         }
         let n = rep.not_started;
@@ -929,9 +936,10 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
     }
     let cwd = m.cwd.clone();
     // the tab the member should have, and whether it should have one at all
+    // (an aide: only with `-p`, then remembered by `had_tab`)
     let wants_tab = match (lead, opts.shape_only, opts.ships) {
         (true, _, _) => true,
-        (false, true, ships) => ships && live(m),
+        (false, true, ships) => ships && m.role == Role::Ship && live(m),
         (false, false, _) => had_tab,
     };
     // which members come back without a tab's attach: leads always; ships in
@@ -961,13 +969,15 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 }
             }
             let live_on = format!("live on {on}");
+            // a live lead or aide the daemon could retire: pinned again
+            let pin = if !opts.shape_only && repin(env, m, rp) { "; pin its job" } else { "" };
             if !wants_tab {
                 // a live ship gets a tab only when it had one, or with `--ships`
-                found(rp, id, live_on, "nothing (`-p` gives it a pane)");
+                found(rp, id, live_on, format!("nothing{pin} (`-p` gives it a pane)"));
                 return;
             }
             let (seen, action) = tab_step(ctx, m, false, rep, rp);
-            found(rp, id, format!("{live_on}, {seen}"), action);
+            found(rp, id, format!("{live_on}, {seen}"), format!("{action}{pin}"));
         }
         // no process: a job row to wake, or nothing to wake
         Some(s) => {
@@ -1119,6 +1129,8 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                     rep.parked += 1;
                     found(rp, id, "its job row is gone, its transcript is there; not active at the last look", "left (--all resumes it)");
                 }
+                // an aide is always on: its parent's start gives it its first launch
+                _ if m.role == Role::Aide && cwd.is_some() => plan_named(ctx, m, had_tab, rep, rp),
                 _ => rep.not_started += 1, // reported once per fleet (`plan_fleet`)
             }
         }
@@ -1178,11 +1190,12 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
             return;
         }
         let live_on = format!("live on {on}");
+        let pin = if repin(env, m, rp) { "; pin its job" } else { "" };
         if (lead || opts.pane || had_tab) && !opts.jobs_only {
             let (seen, action) = tab_step(ctx, m, false, rep, rp);
-            found(rp, id, format!("{live_on}, {seen}"), action);
+            found(rp, id, format!("{live_on}, {seen}"), format!("{action}{pin}"));
         } else {
-            found(rp, id, live_on, "nothing");
+            found(rp, id, live_on, format!("nothing{pin}"));
         }
         return;
     }
@@ -1194,7 +1207,11 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
         None if crate::registry::load(env).identities.get(&id.0).and_then(|r| r.session.clone()).is_some() => "down; its job row is gone",
         None => "never run",
     };
-    let p = crate::sessions::plan_start_with(env, ctx.snap, id, ctx.caller, crate::sessions::StartOpts { force: opts.force, fresh: opts.fresh });
+    let mut p = crate::sessions::plan_start_with(env, ctx.snap, id, ctx.caller, crate::sessions::StartOpts { force: opts.force, fresh: opts.fresh });
+    // (an aide its parent's start launches: the parent has its own line)
+    if ctx.named.as_ref() != Some(id) {
+        p.steps.retain(|s| s.id.as_ref() == Some(id));
+    }
     if !p.ok() {
         found(rp, id, state, "not started; see the fix");
         rep.failed += 1;
@@ -1330,6 +1347,15 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
         rp.plan.warnings.push(issue("relaunch.busy", Severity::Info, format!("{id} is {what}: not relaunched now"), Some(format!("{again}  # once it is idle")), Some(id.clone())));
         return;
     }
+    // an aide between turns may still hold an item: relaunched between items,
+    // never under a claim (docs/design/aide.md section 10)
+    if let Some(c) = m.inbox.as_ref().and_then(|q| q.claimed.iter().find(|c| s.short_id.as_deref() == Some(c.by.as_str()) || c.by == s.session_id || c.by == id.0)) {
+        let again = crate::sessions::start_cmd(id, "-f");
+        let item = c.id.trim_start_matches('0');
+        found(rp, id, format!("{why}; busy: it holds item {item}"), format!("left running; {again} after item {item}"));
+        rp.plan.warnings.push(issue("relaunch.busy", Severity::Info, format!("{id} is busy: after item {item} ({}), not now", c.kind), Some(format!("{again}  # after item {item}")), Some(id.clone())));
+        return;
+    }
     let p = crate::sessions::plan_relaunch(env, ctx.snap, id, ctx.caller);
     if !p.ok() {
         found(rp, id, why, "not relaunched; see the fix");
@@ -1433,7 +1459,7 @@ fn wake_then_open(ctx: &Ctx, m: &Member, cwd: &Option<String>, wants_tab: bool, 
     let (env, id, lead) = (ctx.env, &m.id, m.role.lead());
     let Some(cwd) = cwd.as_deref() else {
         rep.failed += 1;
-        rp.plan.warnings.push(issue("folder.missing", Severity::Error, format!("{id} has no folder on this machine"), Some(format!("nimitz ship set {id} --dir <folder|managed>")), Some(id.clone())));
+        rp.plan.warnings.push(issue("folder.missing", Severity::Error, format!("{id} has no folder on this machine"), Some(crate::sessions::dir_fix(id)), Some(id.clone())));
         return "nothing; see the fix".into();
     };
     let fod = match crate::config::load_fleet(env, id.fleet()) {
@@ -1607,6 +1633,13 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
             (seen.into(), format!("attach in {what}{wake}{focused}"))
         }
     }
+}
+
+/// `pin_step` for a live member: true when it adds a pin.
+fn repin(env: &Env, m: &Member, rp: &mut RestorePlan) -> bool {
+    let n = rp.steps.len();
+    pin_step(env, m, rp);
+    rp.steps.len() > n
 }
 
 /// A lead's or an aide's job must be pinned (plan-v4 section 7): a missing
