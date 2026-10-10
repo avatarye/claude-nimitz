@@ -552,14 +552,75 @@ fn trust_entry(sb: &Sb, dir: &Path, accepted: bool) {
     }
 }
 
-/// Point FRESH at `dir` and return `nimitz check MAIN/ARGOS/FRESH`.
+/// Point FRESH at `dir` (as its commodore: the user's own `ship set` would
+/// trust the folder) and return `nimitz check MAIN/ARGOS/FRESH`.
 fn check_fresh_at(sb: &Sb, dir: &Path) -> Run {
-    assert_eq!(sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", dir.to_str().unwrap(), "--yes"]).code, 0);
+    let r = sb.run_env(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", dir.to_str().unwrap(), "--yes"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
+    assert_eq!(r.code, 0, "{}", r.out);
     sb.run(&["check", "MAIN/ARGOS/FRESH"])
+}
+
+#[test]
+fn trust_the_users_ship_set_trusts_a_new_folder_and_a_members_cannot() {
+    let sb = Sb::new(false);
+    let lone = sb.dir("elsewhere/lone");
+    std::fs::create_dir_all(&lone).unwrap();
+    // a commodore's: a warning, the fix the user's
+    let r = sb.run_env(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--plan"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
+    assert!(r.out.contains(&format!("ask the user to run: nimitz trust {}", lone.display())), "{}", r.out);
+    // the user's: a plan step that says what it lets run, then the folder is trusted
+    let p = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--plan", "-v"]);
+    assert!(p.out.contains(&format!("trust {}", lone.display())) && p.out.contains("hooks and MCP servers"), "{}", p.out);
+    assert_eq!(sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--yes"]).code, 0);
+    assert!(untrusted_line(&sb.run(&["check", "MAIN/ARGOS/FRESH"]).out).is_none());
+    // `nimitz trust` itself: the user's; a member is refused
+    let other = sb.dir("elsewhere/other");
+    std::fs::create_dir_all(&other).unwrap();
+    let m = sb.run_env(&["trust", other.to_str().unwrap(), "--yes"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
+    assert!(m.code != 0 && m.out.contains("(authority)") && m.out.contains("MCP servers"), "{}", m.out);
+    let u = sb.run(&["trust", other.to_str().unwrap(), "--yes"]);
+    assert_eq!(u.code, 0, "{}", u.out);
+    let again = sb.run(&["trust", other.to_str().unwrap(), "--plan"]);
+    assert!(again.code == 0 && !again.out.contains("writes"), "already trusted: no step\n{}", again.out);
 }
 
 fn untrusted_line(out: &str) -> Option<String> {
     out.lines().find(|l| l.contains("folder.untrusted")).map(str::to_string)
+}
+
+#[test]
+fn trust_the_users_start_trusts_the_folder_then_launches() {
+    let sb = Sb::new(false);
+    let lone = sb.dir("elsewhere/repo");
+    std::fs::create_dir_all(lone.join(".git")).unwrap();
+    assert!(untrusted_line(&check_fresh_at(&sb, &lone).out).is_some_and(|l| l.contains("[ERROR]")));
+    // a commodore's start is refused, the fix the user's
+    let m = sb.run_env(&["start", "MAIN/ARGOS/FRESH", "--plan"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
+    assert!(m.out.contains(&format!("ask the user to run: nimitz trust {}", lone.display())), "{}", m.out);
+    // the user's: the row says it, a note says what it lets run, and it runs
+    let p = sb.run(&["start", "MAIN/ARGOS/FRESH", "--plan"]);
+    assert!(p.out.contains(&format!("trust {}, then", lone.display())), "{}", p.out);
+    assert!(p.out.contains("hooks and MCP servers"), "{}", p.out);
+    // a wider start never trusts a folder the user did not name
+    let f = sb.run(&["start", "MAIN/ARGOS", "--plan", "-v"]);
+    assert!(!f.out.contains("hooks and MCP servers"), "{}", f.out);
+    let r = sb.run(&["start", "MAIN/ARGOS/FRESH", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(untrusted_line(&sb.run(&["check", "MAIN/ARGOS/FRESH"]).out).is_none());
+}
+
+#[test]
+fn trust_another_machines_folder_is_not_trusted_here_and_home_never_is() {
+    let sb = Sb::new(false);
+    let lone = sb.dir("elsewhere/lone");
+    std::fs::create_dir_all(&lone).unwrap();
+    let p = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--machine", "otherbox", "--plan", "-v"]);
+    assert!(!p.out.contains("hooks and MCP servers"), "another machine's folder:\n{}", p.out);
+    let home = sb.vars.get("HOME").cloned().unwrap_or_else(|| std::env::var("HOME").unwrap());
+    let t = sb.run(&["trust", &home, "--plan"]);
+    assert!(t.code != 0 && t.out.contains("(trust.broad)"), "{}", t.out);
+    let r = sb.run(&["trust", "/", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(trust.broad)"), "{}", r.out);
 }
 
 #[test]
@@ -574,7 +635,7 @@ fn bug50_a_git_worktree_under_a_trusted_home_warns() {
     let c = check_fresh_at(&sb, &wt);
     let line = untrusted_line(&c.out).unwrap_or_default();
     assert!(line.contains("[WARN]") && line.contains("may not be trusted (git worktree"), "{}", c.out);
-    assert!(c.out.contains(&format!("run `claude` once in {}", wt.display())), "the fix names the worktree root:\n{}", c.out);
+    assert!(c.out.contains(&format!("nimitz trust {}", wt.display())), "the fix names the worktree root:\n{}", c.out);
     let p = sb.run(&["start", "MAIN/ARGOS/FRESH", "--plan"]);
     assert!(!p.out.lines().any(|l| l.contains("[ERROR]") && l.contains("folder.untrusted")), "a warning, not a refusal:\n{}", p.out);
     trust_entry(&sb, &wt, true);
@@ -592,7 +653,7 @@ fn bug50_an_ordinary_repo_under_a_trusted_home_warns_like_a_worktree() {
     let c = check_fresh_at(&sb, &repo);
     let line = untrusted_line(&c.out).unwrap_or_default();
     assert!(line.contains("[WARN]") && line.contains("may not be trusted (git repository"), "{}", c.out);
-    assert!(c.out.contains(&format!("run `claude` once in {}", repo.display())), "{}", c.out);
+    assert!(c.out.contains(&format!("nimitz trust {}", repo.display())), "{}", c.out);
 }
 
 #[test]

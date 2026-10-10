@@ -435,7 +435,7 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
 pub fn step_lines(s: &Step, pane: bool, width: usize) -> Vec<Line<'static>> {
     let what = match s.cmd.first().map(String::as_str) {
         Some("write") => format!("write {}  ({} lines)", s.cmd.get(1).cloned().unwrap_or_default(), s.cmd.get(2).map(|c| c.lines().count()).unwrap_or(0)),
-        Some("mkdir" | "archive" | "bind") => s.cmd.join(" "),
+        Some("mkdir" | "archive" | "bind" | "trust") => s.cmd.join(" "),
         _ => format!("$ {}", shell(&s.cmd)),
     };
     let mut first = vec![Span::styled("  ", Style::new())];

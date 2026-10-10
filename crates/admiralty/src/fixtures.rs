@@ -298,7 +298,7 @@ fn fleet_forge() -> Fleet {
     cast.issues = vec![issue("name.taken", Severity::Error, "[FORGE.MOLD]-CAST is held by a live session of another identity (d077d077)", Some("nimitz stop d077d077"), Some(&cast_id))];
     let flask_id = Id::ship(f, "MOLD", "FLASK");
     let mut flask = member(flask_id.clone(), Status::NotStarted, &["no job row, no transcript"], None);
-    flask.issues = vec![issue("folder.untrusted", Severity::Error, "/home/u/work/flask is not trusted; run `claude` there once", None, Some(&flask_id))];
+    flask.issues = vec![issue("folder.untrusted", Severity::Error, "/home/u/work/flask is not trusted by Claude Code", Some("nimitz trust /home/u/work/flask"), Some(&flask_id))];
     let mold = Squadron {
         id: sq.clone(),
         commodore,

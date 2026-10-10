@@ -33,8 +33,8 @@ nimitz init --label <this-machine>       # data root and machine label
 nimitz doctor                            # run again until: [OK] doctor: ready
 ```
 
-`nimitz init` asks you to run `claude` once in `~/.claude-nimitz` to accept the
-trust prompt. In Herdr: `herdr plugin link <repo>/herdr-plugin` and bind a key
+`nimitz init` also trusts `~/.claude-nimitz` for Claude Code (no trust prompt to
+accept by hand). In Herdr: `herdr plugin link <repo>/herdr-plugin` and bind a key
 to `admiralty.toggle` to open Admiralty as an overlay. To try it all without
 touching your setup: `nimitz sandbox create /tmp/nz --herdr && eval "$(nimitz sandbox env /tmp/nz)"`.
 
@@ -108,6 +108,11 @@ create, edit, remove, `?` all keys, `q` quit.
 
 - `nimitz doctor`: the install (hooks, plugin, trust, Claude Code version).
 - `nimitz check [<id>]`: the fleet's problems, each with its one fix line.
+- A folder Claude Code does not trust (`folder.untrusted`): `nimitz trust <folder>`
+  writes Claude Code's trust for its git root (or the folder outside git), as
+  the trust prompt would. `ship new`, `ship set --dir` and `start` plan it as a
+  step for you. It is yours alone: it lets that folder's own `.claude` settings,
+  hooks and MCP servers run, so a member asks you.
 - Common fixes nimitz prints:
   - a drifted name or missing labels: `nimitz start <id> -f` (a lead: `--only -f`);
   - `history.lost` (its transcript is gone): `nimitz start <id> --fresh`;

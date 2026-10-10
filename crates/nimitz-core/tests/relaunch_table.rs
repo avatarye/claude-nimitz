@@ -446,9 +446,14 @@ fn row10_missing_or_untrusted_folder_refuses_with_the_fix() {
     assert!(i.fix.as_deref().unwrap_or("").contains("mkdir"));
     assert!(plan.steps.is_empty());
 
+    // the user's start trusts the folder first; a member's is refused, the fix the user's
     let plan = w.start(&snap, &w.ship("UNTRUSTED"), false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    assert_eq!(plan.steps[0].cmd[0], "trust", "{:?}", plan.steps);
+    assert!(plan.steps[0].why.contains("hooks and MCP servers"), "{}", plan.steps[0].why);
+    let plan = w.start_as(&snap, &w.ship("UNTRUSTED"), &Caller::Member { id: Id("MAIN/ARGOS".into()), role: Role::Commodore });
     let i = plan.refusals.iter().find(|i| i.code == "folder.untrusted").expect("folder.untrusted");
-    assert!(i.fix.as_deref().unwrap_or("").contains("accept the trust prompt"));
+    assert!(i.fix.as_deref().unwrap_or("").starts_with("nimitz trust "), "{i:?}");
 }
 
 #[test]
@@ -1479,14 +1484,21 @@ fn bug50_a_launch_in_an_untrusted_worktree_fails_with_the_trust_fix() {
     assert!(p.ok(), "{:?}", p.refusals);
     assert!(nimitz_core::config::apply_config_plan(&w.env, &p).verified);
     let id = w.ship("WT");
-    let plan = w.start(&w.snap(), &id, false);
+    // its commodore's start: a worktree is a warning, not a refusal, and the launch fails
+    let commodore = Caller::Member { id: Id("MAIN/ARGOS".into()), role: Role::Commodore };
+    let plan = w.start_as(&w.snap(), &id, &commodore);
     assert!(plan.ok(), "a worktree is a warning, not a refusal: {:?}", plan.refusals);
     let out = sessions::apply(&w.env, &plan);
     assert!(!out.verified);
     let i = out.issues.iter().find(|i| i.code == "step.failed").expect("the launch failed");
     assert!(i.message.contains("Workspace not trusted"), "{}", i.message);
     let fix = i.fix.clone().expect("a fix");
-    assert!(fix.contains("run `claude` once in") && (fix.contains("/wt") || fix.contains("\\wt")), "{fix}");
+    assert!(fix.starts_with("nimitz trust ") && (fix.contains("/wt") || fix.contains("\\wt")), "{fix}");
+    // the user's start trusts the worktree first, then launches
+    let plan = w.start(&w.snap(), &id, false);
+    assert_eq!(plan.steps[0].cmd, vec!["trust".to_string(), wt.to_string_lossy().into_owned()]);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
 }
 
 #[test]
@@ -1507,7 +1519,7 @@ fn an_interrupted_relaunch_is_recovered_with_the_same_id() {
     assert!(!out.verified);
     assert!(!w.rows().iter().any(|r| r.session_id == old.session_id), "the row is gone");
     let fix = out.issues.iter().find(|i| i.code == "step.failed").and_then(|i| i.fix.clone()).expect("a fix line");
-    assert!(fix.contains("run `claude` once in") && fix.contains(&format!("nimitz start {id}  # resumes from its transcript")), "{fix}");
+    assert!(fix.starts_with("nimitz trust ") && fix.contains(&format!("nimitz start {id}  # resumes from its transcript")), "{fix}");
     for (f, b) in trust.iter().zip(saved) {
         std::fs::write(f, b).unwrap();
     }

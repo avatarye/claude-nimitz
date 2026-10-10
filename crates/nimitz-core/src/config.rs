@@ -464,7 +464,7 @@ fn find_ship<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<(&'a PathBuf, &'a Squadr
 
 /// A folder as written, `~/` (on Windows also `~\`) under this process's
 /// home (`env::home`: `USERPROFILE` when cmd or PowerShell set no `HOME`).
-fn expand_dir(p: &str) -> PathBuf {
+pub fn expand_dir(p: &str) -> PathBuf {
     crate::env::expand(p, &crate::env::home())
 }
 
@@ -1187,14 +1187,14 @@ fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &s
 }
 
 /// Run a config plan: mkdir / atomic write / archive, then verify by re-reading.
-pub fn apply_config_plan(_env: &Env, plan: &Plan) -> Outcome {
+pub fn apply_config_plan(env: &Env, plan: &Plan) -> Outcome {
     let mut out = Outcome::default();
     if !plan.ok() {
         out.issues = plan.refusals.clone();
         return out;
     }
     for step in &plan.steps {
-        let (code, msg) = run_step(step);
+        let (code, msg) = run_step(env, step);
         let failed = code != 0;
         out.ran.push((step.clone(), code, msg.clone()));
         if failed {
@@ -1207,6 +1207,7 @@ pub fn apply_config_plan(_env: &Env, plan: &Plan) -> Outcome {
         Some("mkdir") => Path::new(&s.cmd[1]).is_dir(),
         Some("write") => std::fs::read_to_string(&s.cmd[1]).map(|got| got == s.cmd[2]).unwrap_or(false),
         Some("archive") => !Path::new(&s.cmd[1]).exists(),
+        Some("trust") => crate::trust::is_written(env, Path::new(&s.cmd[1])),
         _ => false,
     });
     if !out.verified {
@@ -1215,7 +1216,7 @@ pub fn apply_config_plan(_env: &Env, plan: &Plan) -> Outcome {
     out
 }
 
-fn run_step(step: &Step) -> (i32, String) {
+fn run_step(env: &Env, step: &Step) -> (i32, String) {
     match (step.cmd.first().map(|c| c.as_str()), step.cmd.get(1)) {
         (Some("mkdir"), Some(dir)) => match std::fs::create_dir_all(dir) {
             Ok(()) => (0, format!("[OK] mkdir {dir}")),
@@ -1237,6 +1238,11 @@ fn run_step(step: &Step) -> (i32, String) {
                 Err(e) => (1, format!("[ERROR] archive {path}: {e}")),
             }
         }
+        (Some("trust"), Some(dir)) => match crate::trust::write(env, Path::new(dir)) {
+            Ok(set) if set.is_empty() => (0, format!("[OK] trust {dir}: already trusted")),
+            Ok(set) => (0, format!("[OK] trust {dir}: {}", set.join(", "))),
+            Err(e) => (1, format!("[ERROR] trust {dir}: {e}")),
+        },
         _ => (1, format!("[ERROR] unknown step {:?}", step.cmd)),
     }
 }
