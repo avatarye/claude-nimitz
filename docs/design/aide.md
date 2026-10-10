@@ -316,7 +316,8 @@ FIFO, lease, tries and dead letters.
   the labels, else a Claude Code session among its ancestors, else
   `--from` (unverified); only a terminal process that is none of these is the
   user, and a detached one (`setsid`, `nohup ... &`: re-parented to init or a
-  subreaper) never is.
+  subreaper) never is. (Detection looks at the parent alone: a heuristic, enough for a
+  caller limited to `Bash(nimitz *)`, which cannot wrap the command.)
 
 **`nimitz ask`** posts, keeps the token in memory and polls the item file
 (every 500 ms; the queue lock is not held between polls) until it is done
@@ -693,6 +694,16 @@ From the port's commits (7dd6984 .. 0145dfc):
 | S4 | `HOME/@KB` live: the repo and `ingest-auto` (MYCC_DEV), the brief, the git-commit idempotency | real-CC e2e on a throwaway repo: post -> commit; kill mid-item -> one commit only; `/clear` -> drains again |
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
 | S5 | Other parents (`always_on`, ring-to-start) | sandbox |
+
+Carried from the S1 review into later phases:
+
+- S3: the piggyback also delivers a done request whose `waiting_until` has
+  passed undelivered (an `ask --wait` killed early: its answer still gets one
+  push, besides `inbox result`).
+- Windows (the windows-port rebase): `os::random` from the OS (the queue's
+  uid and reply tokens read `/dev/urandom` today, so every post would fail).
+- Housekeeping reads every claimed and pending file under the lock on each
+  operation; if Admiralty's polling makes that heavy, keep a scan mark.
 
 Each phase is its own branch and review; nothing merges into dev until the
 user says (branch policy, 2026-10-10).
