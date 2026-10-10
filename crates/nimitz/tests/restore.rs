@@ -51,7 +51,7 @@ impl Sb {
         assert_eq!(r.code, 0, "{}", r.out);
         let e = raw(&BTreeMap::new(), &["sandbox", "env", base.to_str().unwrap(), "--json"], &[]);
         let vars: BTreeMap<String, String> = serde_json::from_str(e.out.trim()).expect("sandbox env --json");
-        let base = base.canonicalize().unwrap();
+        let base = nimitz_core::os::canonical(&base).unwrap();
         Sb { _td: td, base, vars }
     }
     fn run(&self, args: &[&str]) -> Run {
@@ -106,7 +106,7 @@ impl Sb {
         self.member(id)["session"]["session_id"].as_str().expect("a session").to_string()
     }
     fn calls(&self) -> String {
-        std::fs::read_to_string(self.base.join("herdr/calls.jsonl")).unwrap_or_default()
+        std::fs::read_to_string(self.base.join("herdr").join("calls.jsonl")).unwrap_or_default()
     }
     /// `pane run` lines so far (the fake herdr's log), the pane id and the line.
     fn runs(&self) -> Vec<(String, String)> {
@@ -127,17 +127,17 @@ impl Sb {
     }
     /// Run the sandbox's fake `claude` (the native binary) in `cwd`.
     fn claude(&self, cwd: &Path, args: &[&str]) -> String {
-        let o = Command::new(self.base.join("bin/claude")).args(args).current_dir(cwd).env_clear().env("PATH", "/usr/bin:/bin").envs(&self.vars).output().expect("fake claude");
+        let o = Command::new(self.base.join("bin").join(nimitz_core::os::exe_name("claude"))).args(args).current_dir(cwd).env_clear().env("PATH", "/usr/bin:/bin").envs(&self.vars).output().expect("fake claude");
         format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
     }
     fn cwd_of(&self, id: &str) -> PathBuf {
         PathBuf::from(self.member(id)["cwd"].as_str().expect("a folder"))
     }
     fn world(&self) -> Value {
-        serde_json::from_slice(&std::fs::read(self.base.join("herdr/world.json")).unwrap()).unwrap()
+        serde_json::from_slice(&std::fs::read(self.base.join("herdr").join("world.json")).unwrap()).unwrap()
     }
     fn herdr_world(&self, f: impl FnOnce(&mut Value)) {
-        let p = self.base.join("herdr/world.json");
+        let p = self.base.join("herdr").join("world.json");
         let mut w: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         f(&mut w);
         std::fs::write(&p, serde_json::to_vec(&w).unwrap()).unwrap();
@@ -203,7 +203,7 @@ impl Sb {
     }
     /// Run the sandbox's fake `herdr` (its hidden verbs: `__restart`).
     fn herdr(&self, args: &[&str]) -> String {
-        let o = Command::new(self.base.join("bin/herdr")).args(args).env_clear().env("PATH", "/usr/bin:/bin").envs(&self.vars).output().expect("fake herdr");
+        let o = Command::new(self.base.join("bin").join("herdr")).args(args).env_clear().env("PATH", "/usr/bin:/bin").envs(&self.vars).output().expect("fake herdr");
         format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
     }
     /// A Herdr restart from its snapshot: names and folders come back, every
@@ -242,34 +242,34 @@ impl Sb {
         self.world()["workspaces"].as_array().unwrap().iter().filter(|w| w["label"] == label).cloned().collect()
     }
     fn active(&self) -> Option<Value> {
-        std::fs::read(self.base.join("state/active.json")).ok().and_then(|b| serde_json::from_slice(&b).ok())
+        std::fs::read(self.base.join("state").join("active.json")).ok().and_then(|b| serde_json::from_slice(&b).ok())
     }
     fn write_active(&self, f: impl FnOnce(&mut Value)) {
         let mut v = self.active().unwrap_or_else(|| json!({"version": 1, "at": 0.0, "members": {}}));
         f(&mut v);
-        std::fs::write(self.base.join("state/active.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+        std::fs::write(self.base.join("state").join("active.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
     }
     fn session_file(&self, id: &str, f: impl FnOnce(&mut Value)) {
-        let p = self.base.join("claude_home/sessions").join(format!("{}.json", self.short(id)));
+        let p = self.base.join("claude_home").join("sessions").join(format!("{}.json", self.short(id)));
         let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         f(&mut v);
         std::fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
     }
     fn job_row(&self, short: &str, f: impl FnOnce(&mut Value)) {
-        let p = self.base.join("claude_home/jobs").join(short).join("state.json");
+        let p = self.base.join("claude_home").join("jobs").join(short).join("state.json");
         let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         f(&mut v);
         std::fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
     }
     /// The machine went down: every process gone, no SessionEnd for any.
     fn reboot(&self) {
-        for e in std::fs::read_dir(self.base.join("claude_home/sessions")).unwrap().flatten() {
+        for e in std::fs::read_dir(self.base.join("claude_home").join("sessions")).unwrap().flatten() {
             let _ = std::fs::remove_file(e.path());
         }
         self.herdr_restart();
     }
     fn pins(&self) -> Vec<String> {
-        std::fs::read(self.base.join("claude_home/jobs/pins.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(self.base.join("claude_home").join("jobs").join("pins.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
     }
 }
 
@@ -723,11 +723,11 @@ fn a_held_process_is_matched_to_its_pane_by_pid_when_nothing_names_the_session()
     let pid = std::process::id() as i64;
     let now = (nimitz_core::evidence::now() * 1000.0) as i64;
     std::fs::write(
-        sb.base.join("claude_home/sessions/i-byhand.json"),
+        sb.base.join("claude_home").join("sessions").join("i-byhand.json"),
         json!({"pid": pid, "sessionId": sid, "cwd": dir.to_string_lossy(), "startedAt": now, "kind": "interactive", "name": "[MAIN.ARGOS]-COMMODORE",
                "jobId": null, "status": "idle", "statusUpdatedAt": now, "bridgeSessionId": null, "entrypoint": "cli", "version": "2.1.288"}).to_string(),
     ).unwrap();
-    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    let bin = sb.base.join("bin").join(nimitz_core::os::exe_name("claude")).to_string_lossy().into_owned();
     sb.set_pane(&pane, |p| {
         p["foreground"] = json!([bin, "-c"]);
         p["pid"] = json!(pid);
@@ -737,7 +737,7 @@ fn a_held_process_is_matched_to_its_pane_by_pid_when_nothing_names_the_session()
     assert!(r.out.contains("(tab.resumed)") && r.out.contains(&format!("is open in pane {pane}")), "{}", r.out);
     assert!(!r.out.contains(&format!("--bg --resume {sid}")) && !sb.runs().iter().any(|(p, l)| p == &pane && l.contains("attach") && l.contains(&job) && sb.runs().iter().filter(|(q, _)| q == p).count() > 1), "{}", r.out);
     // another pid in that pane: the held process is somewhere nimitz cannot see
-    let other = std::os::unix::process::parent_id() as i64;
+    let other = nimitz_core::os::parent_pid();
     sb.set_pane(&pane, |p| p["pid"] = json!(other));
     let r = sb.run(&["restore", "MAIN", "--yes"]);
     assert_eq!(r.code, 1, "{}", r.out);
@@ -784,7 +784,7 @@ fn relaunched(out: &str) -> Vec<String> {
 
 /// The Claude Code version a live member's worker runs (its session file).
 fn worker(sb: &Sb, id: &str) -> String {
-    let p = sb.base.join("claude_home/sessions").join(format!("{}.json", sb.short(id)));
+    let p = sb.base.join("claude_home").join("sessions").join(format!("{}.json", sb.short(id)));
     let v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
     v["version"].as_str().unwrap_or_default().to_string()
 }
@@ -922,7 +922,7 @@ fn r_restart_relaunches_every_live_member_whatever_its_version() {
     for (id, sid, _) in &before {
         assert_eq!(&sb.sid(id), sid, "{id}");
     }
-    assert_eq!(r.lines().filter(|l| l.starts_with("[OK]") && l.contains(": claude stop ")).count(), 7, "each live worker stopped and resumed:\n{r}");
+    assert_eq!(r.lines().filter(|l| l.starts_with("[OK]") && (l.contains(": claude stop ") || l.contains(": claude.exe stop "))).count(), 7, "each live worker stopped and resumed:\n{r}");
 }
 
 /// No fleet named: every fleet that runs on this machine, each told apart.
@@ -1052,7 +1052,7 @@ fn r10_an_interrupted_restore_converges_on_the_second_run() {
         w["tabs"].as_array_mut().unwrap().push(json!({"tab_id": "w3:t1", "workspace_id": ws, "label": "1", "focused": false}));
         w["panes"].as_array_mut().unwrap().push(json!({"pane_id": "w3:p1", "tab_id": "w3:t1", "workspace_id": ws, "cwd": argos_dir}));
     });
-    std::fs::write(sb.base.join("state/restore.json"), json!({"run": "ab12", "started": 1.0, "fleets": ["MAIN"], "total": 7, "done": 3, "steps": []}).to_string()).unwrap();
+    std::fs::write(sb.base.join("state").join("restore.json"), json!({"run": "ab12", "started": 1.0, "fleets": ["MAIN"], "total": 7, "done": 3, "steps": []}).to_string()).unwrap();
     let before = sb.creates("workspace");
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(r.contains("(restore.interrupted)") && r.contains("3 of 7 steps done"), "{r}");
@@ -1060,7 +1060,7 @@ fn r10_an_interrupted_restore_converges_on_the_second_run() {
     assert!(r.contains("herdr tab rename w3:t1 MAIN.ARGOS.COMMODORE") && r.contains("herdr pane run w3:p1"), "{r}");
     assert!(!r.contains("--bg --resume"), "the live commodore is not resumed again (that makes a copy)\n{r}");
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
-    assert!(!sb.base.join("state/restore.json").exists(), "a clean finish removes the progress file");
+    assert!(!sb.base.join("state").join("restore.json").exists(), "a clean finish removes the progress file");
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(r.contains("nothing to restore") && !r.contains("restore.interrupted"), "{r}");
     // a run that reaches the end with a failed member is finished, not interrupted
@@ -1070,7 +1070,7 @@ fn r10_an_interrupted_restore_converges_on_the_second_run() {
     let r = sb.run(&["restore", "MAIN", "--yes"]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(r.out.contains("(tab.taken)"), "{}", r.out);
-    assert!(!sb.base.join("state/restore.json").exists(), "the run reached its end");
+    assert!(!sb.base.join("state").join("restore.json").exists(), "the run reached its end");
     let r = sb.run(&["restore", "MAIN", "--yes"]);
     assert!(!r.out.contains("restore.interrupted"), "{}", r.out);
 }
@@ -1140,7 +1140,7 @@ fn r14_r15_a_tab_showing_another_job_is_foreign_and_the_users_own_session_is_ign
     let pane = sb.pane_attaching("MAIN/ARGOS");
     let clean_sid = sb.sid("MAIN/ARGOS/CLEAN");
     let clean_job = sb.short("MAIN/ARGOS/CLEAN");
-    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    let bin = sb.base.join("bin").join(nimitz_core::os::exe_name("claude")).to_string_lossy().into_owned();
     sb.set_pane(&pane, |p| {
         p["agent_session"]["value"] = json!(clean_sid);
         p["foreground"] = json!([bin, "attach", clean_job]);
@@ -1172,7 +1172,7 @@ fn r14_r15_a_tab_showing_another_job_is_foreign_and_the_users_own_session_is_ign
 #[test]
 fn r16_a_lead_still_interactive_from_0_3_x_is_refused_then_migrated() {
     let sb = Sb::new(true);
-    let dir = sb.base.join("nimitz/beta/admiral");
+    let dir = sb.base.join("nimitz").join("beta").join("admiral");
     let home = sb.vars["NIMITZ_HOME"].clone();
     let settings = json!({"env": {"NIMITZ_FLEET": "BETA", "NIMITZ_ROLE": "admiral", "NIMITZ_ID": "BETA", "NIMITZ_HOME": home}}).to_string();
     let out = sb.claude(&dir, &["-c", "--name", "[BETA]-ADMIRAL", "--settings", &settings]);
@@ -1194,7 +1194,7 @@ fn r16_a_lead_still_interactive_from_0_3_x_is_refused_then_migrated() {
     assert_eq!(m["session"]["session_id"], sid);
     assert_eq!(sb.tabs("BETA.ADMIRAL").len(), 1);
     assert!(sb.pins().contains(&sb.short("BETA")));
-    let reg: Value = serde_json::from_slice(&std::fs::read(sb.base.join("state/registry.json")).unwrap()).unwrap();
+    let reg: Value = serde_json::from_slice(&std::fs::read(sb.base.join("state").join("registry.json")).unwrap()).unwrap();
     assert_eq!(reg["identities"]["BETA"]["lineage"].as_array().unwrap().last().unwrap()["via"], "migrate");
 }
 
@@ -1207,7 +1207,7 @@ fn r17_a_lost_transcript_is_history_lost_and_blocks_only_that_member() {
     let sid = sb.sid("MAIN/ARGOS");
     sb.shell(&pane);
     sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
-    for e in walkdir(&sb.base.join("claude_home/projects")) {
+    for e in walkdir(&sb.base.join("claude_home").join("projects")) {
         if e.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&sid)) {
             std::fs::remove_file(&e).unwrap();
         }
@@ -1231,7 +1231,7 @@ fn r17_a_lost_transcript_is_history_lost_and_blocks_only_that_member() {
 #[test]
 fn r18_a_fleet_of_another_machine_is_refused_and_pointed_at_up() {
     let sb = Sb::new(true);
-    let toml = sb.base.join("nimitz/main/fleet.toml");
+    let toml = sb.base.join("nimitz").join("main").join("fleet.toml");
     let raw = std::fs::read_to_string(&toml).unwrap();
     std::fs::write(&toml, raw.replace("hostname = \"sandbox-host\"", "hostname = \"far-away-box\"")).unwrap();
     let r = sb.run(&["restore", "MAIN", "--yes"]);
@@ -1274,7 +1274,7 @@ fn r21_config_changed_on_another_machine_no_cold_launch_and_conflicts_reported()
     let sb = Sb::new(true);
     lay(&sb);
     sb.ok(&["ship", "new", "MAIN/ARGOS/S9", "--dir", "managed", "--prompt", "You are S9.", "--yes"]);
-    let sq = sb.base.join("nimitz/main/squadrons/argos");
+    let sq = sb.base.join("nimitz").join("main").join("squadrons").join("argos");
     std::fs::copy(sq.join("squadron.toml"), sq.join("squadron (laptop's conflicted copy 2026-10-07).toml")).unwrap();
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(r.contains("(config.conflict)"), "{r}");
@@ -1291,7 +1291,7 @@ fn r22_the_daemon_died_leads_wake_by_attach_and_active_ships_resume() {
     sb.ok(&["status"]);
     let clean_sid = sb.sid("MAIN/ARGOS/CLEAN");
     // every worker dead, rows kept; the attach clients exited: the tabs are shells
-    for e in std::fs::read_dir(sb.base.join("claude_home/sessions")).unwrap().flatten() {
+    for e in std::fs::read_dir(sb.base.join("claude_home").join("sessions")).unwrap().flatten() {
         let _ = std::fs::remove_file(e.path());
     }
     sb.herdr_restart();
@@ -1386,7 +1386,7 @@ fn r27_no_active_set_recorded_leads_only_and_it_says_so() {
     lay(&sb);
     let clean = sb.short("MAIN/ARGOS/CLEAN");
     sb.claude(&sb.cwd_of("MAIN/ARGOS/CLEAN"), &["__retire", &clean]);
-    std::fs::remove_file(sb.base.join("state/active.json")).unwrap();
+    std::fs::remove_file(sb.base.join("state").join("active.json")).unwrap();
     sb.herdr_restart();
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(r.contains("no active set recorded") && r.contains("--all"), "{r}");
@@ -1481,7 +1481,7 @@ fn r32_a_session_id_moved_under_the_job_still_matches_the_tab() {
     assert_eq!(sb.n_runs(), before);
     // and the other way: the pane reports the new id while the registry lags behind
     sb.set_pane(&pane, |p| p["agent_session"]["value"] = json!(new));
-    let reg_path = sb.base.join("state/registry.json");
+    let reg_path = sb.base.join("state").join("registry.json");
     let mut reg: Value = serde_json::from_slice(&std::fs::read(&reg_path).unwrap()).unwrap();
     reg["identities"]["MAIN/ARGOS"]["session"] = json!(old);
     std::fs::write(&reg_path, serde_json::to_vec(&reg).unwrap()).unwrap();
@@ -1679,7 +1679,7 @@ fn a_held_conversation_in_a_pane_shows_its_lead() {
     let sid = sb.sid("MAIN/ARGOS");
     let job = sb.short("MAIN/ARGOS");
     sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
-    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    let bin = sb.base.join("bin").join(nimitz_core::os::exe_name("claude")).to_string_lossy().into_owned();
     sb.set_pane(&pane, |p| {
         p["foreground"] = json!([bin, "--resume", sid]);
         p["agent"] = json!("claude");
@@ -1696,6 +1696,7 @@ fn a_held_conversation_in_a_pane_shows_its_lead() {
 /// the user's `nimitz status`, and a member's, speak only to the recorded
 /// NIMITZ server and take the lead's pane from there, the unclaimed attach
 /// shape of the live server.
+#[cfg(unix)]
 #[test]
 fn with_several_herdr_servers_status_reads_only_the_recorded_one() {
     let sb = Sb::new(true);
@@ -1708,7 +1709,7 @@ fn with_several_herdr_servers_status_reads_only_the_recorded_one() {
         p["agent_status"] = json!("working");
         p.as_object_mut().unwrap().remove("agent_session");
     });
-    let bin = sb.base.join("bin/claude").to_string_lossy().into_owned();
+    let bin = sb.base.join("bin").join(nimitz_core::os::exe_name("claude")).to_string_lossy().into_owned();
     for (name, ws) in [("default", "x8"), ("nikitz", "x9")] {
         let dir = sb.base.join(format!("herdr-{name}"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1721,7 +1722,7 @@ fn with_several_herdr_servers_status_reads_only_the_recorded_one() {
         });
         std::fs::write(dir.join("world.json"), serde_json::to_vec(&decoy).unwrap()).unwrap();
     }
-    let multi = sb.base.join("bin/herdr-multi");
+    let multi = sb.base.join("bin").join("herdr-multi");
     std::fs::write(
         &multi,
         format!(

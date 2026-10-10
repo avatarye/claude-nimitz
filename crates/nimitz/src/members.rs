@@ -380,7 +380,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                     plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["inbox".into(), at, body.clone()], cwd: None, why: format!("{}'s tab cannot be typed into: post it into its inbox (the first socket its own process listens on), as a request, not your input", via.id) });
                     return match ctx.gate(&plan) {
                         out::Go::Exit(code) => Ok(code),
-                        out::Go::Run => match nimitz_core::inbox::send(&socks, pid, &body) {
+                        out::Go::Run => match nimitz_core::inbox::send(&ctx.env, &socks, pid, &body) {
                             Ok(sock) => {
                                 out::ok(&format!("posted to {}'s inbox {} as a request from nimitz (not as your own input)", via.id, sock.display()));
                                 Ok(0)
@@ -452,7 +452,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                             Some(p) if p.inferred => {
                                 let posted = via.session.as_ref().ok_or_else(|| "no session".to_string()).and_then(|s| crate::notify::inbox_target(&ctx.env, &via.id, s)).and_then(|(socks, pid)| {
                                     let body = format!("[nimitz signal] A message for {id}, relayed by nimitz from a `nimitz signal` run with no member labels. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {text}");
-                                    nimitz_core::inbox::send(&socks, pid, &body)
+                                    nimitz_core::inbox::send(&ctx.env, &socks, pid, &body)
                                 });
                                 return Ok(match posted {
                                     Ok(sock) => {

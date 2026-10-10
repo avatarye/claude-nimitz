@@ -184,7 +184,7 @@ pub fn events_cached(env: &Env, cache: &mut FileCache) -> Vec<Event> {
         return vec![];
     };
     let size = f.seek(SeekFrom::End(0)).unwrap_or(0);
-    let ino = { use std::os::unix::fs::MetadataExt; f.metadata().map(|m| m.ino()).unwrap_or(0) };
+    let ino = crate::os::file_id(&f);
     if ino != t.ino {
         t.ino = ino;
         t.offset = 0;
@@ -478,30 +478,29 @@ impl SessionRow {
     }
 }
 
-/// The process ids above this one (its parent, its parent's parent, ...):
-/// `/proc/<pid>/stat` on Linux; empty elsewhere.
+/// The process ids above this one (its parent, its parent's parent, ...).
 pub fn ancestors() -> Vec<i64> {
-    let mut out = vec![];
-    let mut pid = std::process::id() as i64;
-    for _ in 0..64 {
-        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else { break };
-        // the field after the `(comm)`, which may hold spaces: state, then ppid
-        let Some(ppid) = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)).and_then(|p| p.parse::<i64>().ok()) else { break };
-        if ppid <= 0 {
-            break;
-        }
-        out.push(ppid);
-        pid = ppid;
-    }
-    out
+    crate::os::ancestors()
 }
 
 pub fn pid_alive(pid: i64) -> bool {
-    if pid <= 0 || pid > i32::MAX as i64 {
-        return false;
-    }
-    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    crate::os::pid_alive(pid)
+}
+
+/// When a session file says its process started (epoch ms), for
+/// `os::is_same_process`: `procStart` when it reads as a Windows FILETIME
+/// (100 ns since 1601), else unknown (the pid alone decides).
+pub fn proc_started_ms(d: &Value) -> Option<i64> {
+    const FT_1970: u64 = 116_444_736_000_000_000;
+    let ft = match d.get("procStart") {
+        Some(Value::String(x)) => x.trim().parse::<u64>().ok(),
+        Some(Value::Number(n)) => n.as_u64(),
+        _ => None,
+    };
+    // only a FILETIME `procStart`: `startedAt` may be carried over from an
+    // earlier process (a resume, a respawn), and a start older than the
+    // process would read a live member as dead; without it, pid alone
+    ft.filter(|t| *t > FT_1970 && *t < 2 * FT_1970).map(|t| ((t - FT_1970) / 10_000) as i64)
 }
 
 fn norm_kind(k: &str) -> String {
@@ -599,7 +598,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             continue;
         };
         let Some(pid) = d.get("pid").and_then(|v| v.as_i64()) else { continue };
-        if !pid_alive(pid) {
+        // a leftover file of a crashed session whose pid Windows gave another
+        // process is no live row
+        if !crate::os::is_same_process(pid, proc_started_ms(&d)) {
             continue;
         }
         let Some(sid) = s(&d, "sessionId") else { continue };
@@ -1078,7 +1079,9 @@ pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
     }
     // Claude Code records real paths (/private/tmp for /tmp): the keys come in both forms
     let keys = crate::env::trust_keys(Path::new(dir.trim_end_matches('/')));
-    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| keys.contains(root)))
+    // (in one form: Claude Code on Windows writes `C:\x` and `C:/x`)
+    let keys: Vec<String> = keys.iter().map(|k| crate::env::trust_key(&k.to_string_lossy())).collect();
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| keys.contains(&crate::env::trust_key(&root.to_string_lossy()))))
 }
 
 fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {
@@ -1111,7 +1114,7 @@ mod tests {
     #[test]
     fn the_ancestors_start_at_the_parent() {
         let up = super::ancestors();
-        assert_eq!(up.first().copied(), Some(unsafe { libc::getppid() } as i64), "{up:?}");
+        assert_eq!(up.first().copied(), Some(crate::os::parent_pid()), "{up:?}");
     }
 
     use super::*;
@@ -1133,6 +1136,35 @@ mod tests {
             let recs = read_subagents(&env, &mut FileCache::default(), sid);
             assert_eq!(recs.iter().map(|r| r.agent_id.as_str()).collect::<Vec<_>>(), ["x1"], "{real} vs {decoy}");
         }
+    }
+
+    /// Windows reuses pids: a crashed session's leftover `sessions/<pid>.json`
+    /// whose pid another process took (created after the file's start) is no
+    /// live row there; Unix keeps the bare pid check.
+    #[test]
+    fn a_session_file_whose_pid_a_later_process_took_is_no_live_row() {
+        use serde_json::json;
+        // its process's start: `procStart` when a FILETIME, never `startedAt`
+        // (a resume or respawn may carry it over: a live member read as dead)
+        assert_eq!(proc_started_ms(&json!({"procStart": "134041824000000000", "startedAt": 1})), Some(1_759_708_800_000));
+        assert_eq!(proc_started_ms(&json!({"procStart": 134041824000000000u64})), Some(1_759_708_800_000));
+        assert_eq!(proc_started_ms(&json!({"procStart": "123456", "startedAt": 1_759_708_800_000i64})), None);
+        assert_eq!(proc_started_ms(&json!({})), None);
+
+        let me = std::process::id() as i64;
+        let now_ms = (now() * 1000.0) as i64;
+        let live = |started: i64| {
+            let td = tempfile::tempdir().unwrap();
+            let vars: HashMap<String, String> = [("NIMITZ_CLAUDE_HOME".to_string(), td.path().to_string_lossy().into_owned())].into();
+            let env = Env::from_vars(&vars);
+            fs::create_dir_all(td.path().join("sessions")).unwrap();
+            const FT_1970: i64 = 116_444_736_000_000_000;
+            let d = json!({"pid": me, "sessionId": "5e55e55e-0000-4000-8000-000000000001", "cwd": "/x", "kind": "interactive", "startedAt": started, "procStart": (started * 10_000 + FT_1970).to_string()});
+            fs::write(td.path().join(format!("sessions/{me}.json")), d.to_string()).unwrap();
+            rows_from_files(&env, &mut FileCache::default()).unwrap().iter().any(|r| r.pid == Some(me))
+        };
+        assert!(live(now_ms), "this process started before its file says");
+        assert_eq!(live(1_000_000_000_000), !cfg!(windows), "a file from 2001: on Windows another process has the pid");
     }
 
     #[test]

@@ -14,7 +14,6 @@ use nimitz_core::notify::{self, Notice};
 use nimitz_core::sessions::caller_from_env;
 use nimitz_core::{Caller, Id, Role};
 use std::collections::HashMap;
-use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -30,12 +29,7 @@ pub fn spawn_delivery(env: &Env, n: &Notice) {
     let mut c = Command::new(exe);
     c.arg("__notify").arg(n.key()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // its own session: Claude Code may kill the hook's process group when the hook returns
-    unsafe {
-        c.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
+    nimitz_core::os::detach(&mut c);
     if let Err(e) = c.spawn() {
         notify::set_delivery(env, n, "failed", Some(format!("could not start the delivery: {e}")));
     }
@@ -45,7 +39,7 @@ pub fn spawn_delivery(env: &Env, n: &Notice) {
 /// notice; a dead letter's (`<aide>#dead-<item>`), whoever's command found
 /// it dead (the text is nimitz's own, from the queue, never the caller's).
 pub fn deliver_cmd(key: &str) -> i32 {
-    let vars: HashMap<String, String> = std::env::vars().collect();
+    let vars: HashMap<String, String> = nimitz_core::os::env_vars();
     let dead = key.contains("#dead-");
     match caller_from_env(&vars) {
         _ if dead => {}
@@ -134,7 +128,7 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
 /// the line nimitz knows).
 pub fn inbox_send(env: &Env, id: &Id, s: &nimitz_core::SessionInfo, text: &str) -> Result<String, String> {
     let (socks, pid) = inbox_target(env, id, s)?;
-    nimitz_core::inbox::send(&socks, pid, text).map(|sock| format!("posted to {id}'s inbox {} (a cross-session message from nimitz)", sock.display()))
+    nimitz_core::inbox::send(env, &socks, pid, text).map(|sock| format!("posted to {id}'s inbox {} (a cross-session message from nimitz)", sock.display()))
 }
 
 /// The sockets `id`'s live session `s` may listen on, and its pid (`send`

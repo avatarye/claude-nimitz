@@ -127,9 +127,9 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
 
 const SHIP_FLAGS: &[&str] = &["--dir", "--no-dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--edit"];
 
-/// `$VISUAL`, else `$EDITOR`, else vi.
+/// `$VISUAL`, else `$EDITOR`, else vi (notepad on Windows).
 fn editor(ctx: &Ctx) -> String {
-    ["VISUAL", "EDITOR"].iter().find_map(|k| ctx.vars.get(*k).filter(|v| !v.trim().is_empty()).cloned()).unwrap_or_else(|| "vi".into())
+    ["VISUAL", "EDITOR"].iter().find_map(|k| ctx.vars.get(*k).filter(|v| !v.trim().is_empty()).cloned()).unwrap_or_else(|| nimitz_core::os::DEFAULT_EDITOR.into())
 }
 
 /// Open `editor` on a temp file that holds `initial`; return the saved text, trimmed.
@@ -137,7 +137,7 @@ fn editor(ctx: &Ctx) -> String {
 pub fn edit_text(editor: &str, initial: &str) -> Result<String, String> {
     let path = std::env::temp_dir().join(format!("nimitz-prompt-{}.md", std::process::id()));
     std::fs::write(&path, initial).map_err(|e| e.to_string())?;
-    let status = std::process::Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("sh").arg(&path).status();
+    let status = nimitz_core::os::editor_command(editor, &path).status();
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string());
     let _ = std::fs::remove_file(&path);
     match status {
@@ -171,7 +171,7 @@ fn prompt_from_editor(ctx: &Ctx, current: Option<&str>, new: bool) -> Result<Opt
 /// `managed`, `~/...` and absolute folders stay as given; a relative one is made
 /// absolute against the current folder (and cleaned of `.` and `..`).
 fn absolute_dir(d: &str) -> String {
-    if d == "managed" || d.starts_with('/') || d.starts_with('~') {
+    if d == "managed" || nimitz_core::config::is_absolute_dir(d) || d.starts_with('~') {
         return d.to_string();
     }
     let joined = std::env::current_dir().unwrap_or_default().join(d);
@@ -369,6 +369,7 @@ pub fn migrate(ctx: &Ctx) -> Result<i32, String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)] // the stand-in editor is a shell line
     #[test]
     fn the_editor_returns_what_it_saved() {
         // a stand-in editor: append a line to the file it is given

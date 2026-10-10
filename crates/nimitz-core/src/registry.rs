@@ -3,7 +3,6 @@ use crate::env::Env;
 use crate::types::*;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 /// Current contents. A missing file is a fresh registry for this machine
@@ -378,8 +377,7 @@ pub fn health(env: &Env) -> Vec<Issue> {
 /// Why the registry cannot be written, when it cannot (the folder exists but is read-only).
 fn unwritable(env: &Env) -> Option<String> {
     let probe = |p: &Path| {
-        let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).ok()?;
-        (unsafe { libc::access(c.as_ptr(), libc::W_OK) } != 0).then(|| format!("{} is read-only", p.display()))
+        (!crate::os::writable(p)).then(|| format!("{} is read-only", p.display()))
     };
     if !env.state.is_dir() {
         return None; // created on first write
@@ -745,11 +743,8 @@ pub fn with_lock<T>(env: &Env, budget: Option<std::time::Duration>, f: impl FnOn
 /// `registry.lock`, held exclusively until the returned File drops.
 fn lock(env: &Env) -> std::io::Result<File> {
     let f = lock_file(env)?;
-    let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
-    if rc != 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(f) // dropping the fd releases the flock
+    f.lock()?;
+    Ok(f) // dropping the file releases the lock
 }
 
 /// `lock`, but give up after `budget` (polling with `LOCK_NB`): a hook never
@@ -758,10 +753,11 @@ fn lock_within(env: &Env, budget: std::time::Duration) -> std::io::Result<File> 
     let f = lock_file(env)?;
     let deadline = std::time::Instant::now() + budget;
     loop {
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(f);
-        }
-        let e = std::io::Error::last_os_error();
+        let e = match f.try_lock() {
+            Ok(()) => return Ok(f),
+            Err(std::fs::TryLockError::WouldBlock) => std::io::Error::from(std::io::ErrorKind::WouldBlock),
+            Err(std::fs::TryLockError::Error(e)) => e,
+        };
         if e.kind() != std::io::ErrorKind::WouldBlock || std::time::Instant::now() >= deadline {
             return Err(std::io::Error::new(e.kind(), format!("registry lock {}: {e}", env.registry_lock_path().display())));
         }
@@ -772,7 +768,8 @@ fn lock_within(env: &Env, budget: std::time::Duration) -> std::io::Result<File> 
 fn lock_file(env: &Env) -> std::io::Result<File> {
     let ctx = |e: std::io::Error| std::io::Error::new(e.kind(), format!("registry lock {}: {e}", env.registry_lock_path().display()));
     std::fs::create_dir_all(&env.state).map_err(ctx)?;
-    File::create(env.registry_lock_path()).map_err(ctx)
+    // never truncate: another process may hold the lock on this very file
+    std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(env.registry_lock_path()).map_err(ctx)
 }
 
 /// Temp file next to registry.json, then rename (same device, atomic).
@@ -842,6 +839,7 @@ mod tests {
         assert_eq!(load(&env), r, "a second load reads the rebuilt file (stamps round-trip exactly: serde_json float_roundtrip)");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_read_only_registry_is_a_clear_error() {
         use std::os::unix::fs::PermissionsExt;
@@ -1099,6 +1097,7 @@ mod tests {
         assert_eq!(load(&env).identities[&id.0].session.as_deref(), Some("s3"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_registry_that_cannot_be_read_is_an_error_for_update_and_fresh_for_a_read() {
         use std::os::unix::fs::PermissionsExt;

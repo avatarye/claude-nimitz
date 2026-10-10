@@ -244,7 +244,7 @@ pub fn write(env: &Env, n: &Notice) -> std::io::Result<()> {
     std::fs::create_dir_all(dir(env))?;
     let tmp = p.with_extension(format!("tmp{}", std::process::id()));
     std::fs::write(&tmp, serde_json::to_vec_pretty(n).unwrap_or_default())?;
-    std::fs::rename(&tmp, &p)
+    crate::os::replace(&tmp, &p)
 }
 
 /// Write `n`'s file only if there is none: the whole file under a temp name,

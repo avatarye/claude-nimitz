@@ -1,5 +1,5 @@
 #!/bin/sh
-# Stand-in for `herdr`, enough for bin/toggle.sh. Open panes live in $FAKE_DIR/panes
+# Stand-in for `herdr`, enough for `admiralty herdr toggle`. Open panes live in $FAKE_DIR/panes
 # as "<pane_id> <tab_id> [label]" lines (label defaults to the watch's); every call is appended to $FAKE_DIR/calls.
 # FAKE_OPEN_FAIL=1 makes `plugin pane open` fail.
 set -u

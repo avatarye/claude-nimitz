@@ -989,12 +989,11 @@ pub fn may_read(item: &Item, who: &Sender, token: Option<&str>) -> bool {
     }
 }
 
-/// 128 random bits as hex (`/dev/urandom`). No random source: an error,
+/// 128 random bits as hex (`os::random`). No random source: an error,
 /// never a guessable token.
 fn token() -> Result<String, String> {
-    use std::io::Read;
     let mut b = [0u8; 16];
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|e| format!("no random source for a reply token: {e}"))?;
+    crate::os::random(&mut b).map_err(|e| format!("no random source for a reply token: {e}"))?;
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
@@ -1026,7 +1025,7 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     f.write_all(text.as_bytes())?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&tmp, path)
+    crate::os::replace(&tmp, path)
 }
 
 // ------------------------------------------------------------------ delivery
@@ -1075,7 +1074,7 @@ pub fn deliver(env: &Env, q: &Queue, item: &Item, now: f64) -> Result<String, St
         } else {
             format!("[nimitz reply] {} answered your request {} ({}); it is long: run `nimitz inbox result {} {}`.", q.aide, item.id, item.kind, q.aide, item.id)
         };
-        crate::inbox::send(&socks, pid, &body).map(|s| format!("delivered to session {} through {}", &sid[..sid.len().min(8)], s.display()))
+        crate::inbox::send(env, &socks, pid, &body).map(|s| format!("delivered to session {} through {}", &sid[..sid.len().min(8)], s.display()))
     })();
     match &r {
         Ok(note) => q.mark_delivered(&item.id, note, true, now),
@@ -1448,6 +1447,7 @@ mod tests {
         assert_ne!(q0.get(&c.id).unwrap().1.reference, ref_a);
     }
 
+    #[cfg(unix)] // the asker's socket here is a Unix one (a named pipe on Windows)
     #[test]
     fn the_answer_reaches_the_live_asker_once_and_not_while_ask_waits() {
         use std::io::Read;

@@ -26,7 +26,7 @@ fn test_env(base: &std::path::Path) -> Env {
 
 /// The committed copies of the real old fleets, in name order.
 fn fixtures() -> Vec<PathBuf> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/old-fleets");
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("old-fleets");
     let mut out: Vec<_> = std::fs::read_dir(&dir)
         .expect("fixtures/old-fleets missing")
         .filter_map(|e| e.ok())

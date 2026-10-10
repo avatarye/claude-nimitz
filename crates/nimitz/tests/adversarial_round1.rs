@@ -53,7 +53,7 @@ impl Sb {
         assert_eq!(r.code, 0, "{}", r.out);
         let e = raw(&BTreeMap::new(), &["sandbox", "env", base.to_str().unwrap(), "--json"], &[], None, None);
         let vars: BTreeMap<String, String> = serde_json::from_str(e.out.trim()).expect("sandbox env --json");
-        let base = base.canonicalize().unwrap();
+        let base = nimitz_core::os::canonical(&base).unwrap();
         Sb { _td: td, base, vars }
     }
     fn run(&self, args: &[&str]) -> Run {
@@ -64,7 +64,7 @@ impl Sb {
     }
     /// The sandbox's fake (native) `claude`, run by hand in `cwd`, like a careless user.
     fn claude(&self, cwd: &Path, args: &[&str]) -> String {
-        let o = Command::new(self.base.join("bin/claude"))
+        let o = Command::new(self.base.join("bin").join(nimitz_core::os::exe_name("claude")))
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .envs(&self.vars)
@@ -75,7 +75,8 @@ impl Sb {
         format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
     }
     fn dir(&self, rel: &str) -> PathBuf {
-        self.base.join(rel)
+        // one part per `/`: the path reads as the system writes it (Windows: `\`)
+        rel.split('/').fold(self.base.clone(), |p, c| p.join(c))
     }
     fn squadron_toml(&self) -> PathBuf {
         self.dir("nimitz/main/squadrons/argos/squadron.toml")
@@ -187,7 +188,7 @@ fn bug03_concurrent_starts_of_a_stopped_ship_make_no_copies() {
 fn bug04_a_symlinked_path_to_a_trusted_folder_is_trusted() {
     let sb = Sb::new(false);
     let link = sb.dir("link-to-fresh");
-    std::os::unix::fs::symlink(sb.dir("dirs/main/fresh"), &link).unwrap();
+    nimitz_core::os::symlink(sb.dir("dirs/main/fresh"), &link).unwrap();
     let r = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", link.to_str().unwrap(), "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
@@ -453,7 +454,7 @@ fn bug31_a_row_in_another_folder_than_the_config_is_reported() {
 fn bug25_migration_reports_a_ship_rooted_at_the_home_folder() {
     // general-fleet's HOME agent lives in the home folder: every other ship nests in it.
     let sb = Sb::new(false);
-    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nimitz-core/tests/fixtures/old-fleets");
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("nimitz-core").join("tests").join("fixtures").join("old-fleets");
     let dirs: Vec<String> = ["general-fleet", "argos-fleet"].iter().map(|d| fx.join(d).to_string_lossy().into_owned()).collect();
     let mut args = vec!["migrate", "fleet-skill"];
     args.extend(dirs.iter().map(String::as_str));
@@ -521,7 +522,7 @@ fn bug47_a_second_start_does_not_start_a_second_admiral() {
 fn bug48_a_symlinked_nimitz_home_sees_the_same_world() {
     let sb = Sb::new(false);
     let link = sb.dir("home/nzlink");
-    std::os::unix::fs::symlink(sb.dir("nimitz"), &link).unwrap();
+    nimitz_core::os::symlink(sb.dir("nimitz"), &link).unwrap();
     let plain = sb.run(&["status"]).out;
     let linked = raw(&sb.vars, &["status"], &[("NIMITZ_HOME", link.to_str().unwrap())], None, None).out;
     let norm = |s: &str| s.replace(link.to_str().unwrap(), "X").replace(sb.dir("nimitz").to_str().unwrap(), "X");
@@ -566,7 +567,7 @@ fn bug50_a_git_worktree_under_a_trusted_home_warns() {
     // Real Claude Code refused a worktree (`.git` file) under a trusted home: a warning, with the fix.
     let sb = Sb::new(false);
     let home = sb.dir("home");
-    let wt = home.join("cache/wt");
+    let wt = home.join("cache").join("wt");
     std::fs::create_dir_all(&wt).unwrap();
     std::fs::write(wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
     trust_entry(&sb, &home, true);
@@ -585,7 +586,7 @@ fn bug50_an_ordinary_repo_under_a_trusted_home_warns_like_a_worktree() {
     // Real Claude Code refused `--bg` in a plain repo covered only by the home's trust.
     let sb = Sb::new(false);
     let home = sb.dir("home");
-    let repo = home.join("ws/Pkg");
+    let repo = home.join("ws").join("Pkg");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     trust_entry(&sb, &home, true);
     let c = check_fresh_at(&sb, &repo);
@@ -644,7 +645,7 @@ fn bug50_a_git_repo_under_a_trusted_parent_is_not_just_info() {
     let sb = Sb::new(false);
     let repo = sb.dir("dirs/main/fresh");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
-    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(repo.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
     // trust only the parent, not the repo
     for f in [sb.dir("claude_home/.claude.json"), sb.dir("claude_home.json")] {
         let mut v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();

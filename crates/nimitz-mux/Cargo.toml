@@ -16,3 +16,6 @@ serde_json.workspace = true
 [[test]]
 name = "mux"
 harness = false
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

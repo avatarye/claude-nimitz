@@ -489,13 +489,14 @@ pub fn herdr_session(vars: &std::collections::HashMap<String, String>) -> Option
 /// PATH under that name), else `herdr` on PATH.
 fn resolve_herdr_bin(vars: &std::collections::HashMap<String, String>) -> Option<String> {
     let name = vars.get("NIMITZ_HERDR_BIN").map(String::as_str).unwrap_or("herdr");
-    if name.contains('/') {
+    if name.contains('/') || name.contains(std::path::MAIN_SEPARATOR) {
         return executable(std::path::Path::new(name)).then(|| name.to_string());
     }
     let path = vars.get("PATH").map(String::as_str).unwrap_or("");
-    path.split(':')
-        .filter(|d| !d.is_empty())
-        .map(|d| std::path::Path::new(d).join(name))
+    let file = nimitz_core::os::exe_name(name);
+    std::env::split_paths(path)
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.join(&file))
         .find(|p| executable(p))
         .map(|p| p.to_string_lossy().into_owned())
 }
@@ -548,7 +549,7 @@ mod tests {
 
     fn fake_bin_dir() -> tempdir::TempDir {
         let d = tempdir::TempDir::new();
-        std::fs::write(d.path().join("herdr"), "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(d.path().join(nimitz_core::os::exe_name("herdr")), "#!/bin/sh\nexit 0\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -660,7 +661,7 @@ mod tests {
     #[test]
     fn detect_nimitz_herdr_bin_path_override() {
         let d = fake_bin_dir();
-        let bin = d.path().join("herdr");
+        let bin = d.path().join(nimitz_core::os::exe_name("herdr"));
         let v = vars(&[("HERDR_ENV", "1"), ("NIMITZ_HERDR_BIN", bin.to_str().unwrap()), ("PATH", "")]);
         assert_eq!(detect(&v).name(), "herdr");
         let v = vars(&[("HERDR_ENV", "1"), ("NIMITZ_HERDR_BIN", "/nonexistent/herdr"), ("PATH", "")]);

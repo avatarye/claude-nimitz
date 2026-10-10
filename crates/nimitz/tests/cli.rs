@@ -48,7 +48,7 @@ impl Sb {
         assert_eq!(r.code, 0, "{}", r.out);
         let e = raw(&BTreeMap::new(), &["sandbox", "env", base.to_str().unwrap(), "--json"], &[], None);
         let vars: BTreeMap<String, String> = serde_json::from_str(e.out.trim()).expect("sandbox env --json");
-        let base = base.canonicalize().unwrap();
+        let base = nimitz_core::os::canonical(&base).unwrap();
         Sb { _td: td, base, vars }
     }
     fn run(&self, args: &[&str]) -> Run {
@@ -93,15 +93,15 @@ impl Sb {
         panic!("no member {id}");
     }
     fn calls(&self) -> String {
-        std::fs::read_to_string(self.base.join("herdr/calls.jsonl")).unwrap_or_default()
+        std::fs::read_to_string(self.base.join("herdr").join("calls.jsonl")).unwrap_or_default()
     }
     /// Run the sandbox's fake `claude` in `cwd` (the native binary).
     fn claude(&self, cwd: &Path, args: &[&str]) -> String {
-        let o = Command::new(self.base.join("bin/claude")).args(args).current_dir(cwd).env_clear().env("PATH", "/usr/bin:/bin").envs(&self.vars).output().expect("fake claude");
+        let o = Command::new(self.base.join("bin").join(nimitz_core::os::exe_name("claude"))).args(args).current_dir(cwd).env_clear().env("PATH", "/usr/bin:/bin").envs(&self.vars).output().expect("fake claude");
         format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
     }
     fn herdr_world(&self, f: impl FnOnce(&mut Value)) {
-        let p = self.base.join("herdr/world.json");
+        let p = self.base.join("herdr").join("world.json");
         let mut w: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         f(&mut w);
         std::fs::write(&p, serde_json::to_vec(&w).unwrap()).unwrap();
@@ -559,8 +559,8 @@ fn start_is_top_down_admiral_commodore_ship() {
 fn crud_round_trip() {
     let sb = Sb::new(false);
     make_top(&sb);
-    let fleet_dir = sb.base.join("nimitz/top");
-    let sq_toml = || std::fs::read_to_string(fleet_dir.join("squadrons/sq/squadron.toml")).unwrap();
+    let fleet_dir = sb.base.join("nimitz").join("top");
+    let sq_toml = || std::fs::read_to_string(fleet_dir.join("squadrons").join("sq").join("squadron.toml")).unwrap();
     assert!(sq_toml().contains("S1"));
 
     assert_eq!(sb.run(&["fleet", "set", "TOP", "--admiral-mode", "auto", "--yes"]).code, 0);
@@ -568,7 +568,7 @@ fn crud_round_trip() {
     let r = sb.run(&["squadron", "set", "TOP/SQ", "--comms", "commodore-only", "--brief", "New brief.", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(sq_toml().contains("commodore-only"));
-    assert!(std::fs::read_to_string(fleet_dir.join("squadrons/sq/SQUADRON.md")).unwrap().contains("New brief."));
+    assert!(std::fs::read_to_string(fleet_dir.join("squadrons").join("sq").join("SQUADRON.md")).unwrap().contains("New brief."));
     let r = sb.run(&["ship", "set", "TOP/SQ/S1", "--mode", "plan", "--depends", "S2", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(sq_toml().contains("plan"));
@@ -580,7 +580,8 @@ fn crud_round_trip() {
     assert!(r.out.contains("use --dir managed --machine sandbox-host"), "{}", r.out);
     // a relative folder is stored absolute, and the stored path is printed
     let r = raw(&sb.vars, &["ship", "new", "TOP/SQ/S3", "--dir", "rel/./s3", "--prompt", "x", "--plan"], &[], None);
-    assert!(r.out.contains("folder for sandbox-host: /"), "{}", r.out);
+    let root = if cfg!(windows) { ":\\" } else { "folder for sandbox-host: /" };
+    assert!(r.out.contains("folder for sandbox-host: ") && r.out.contains(root), "{}", r.out);
     // an empty --dir is a usage error; removing a folder is explicit
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--dir", "", "--yes"]).code, 2);
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--no-dir", "nowhere", "--yes"]).code, 2);
@@ -588,12 +589,15 @@ fn crud_round_trip() {
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(!sq_toml().contains("sandbox-host ="), "{}", sq_toml());
     assert_eq!(sb.run(&["ship", "set", "TOP/SQ/S1", "--dir", "managed", "--yes"]).code, 0);
-    // --edit opens $EDITOR on the current prompt
-    let ed = "sh -c 'printf \" Be brief.\" >> \"$1\"' ed";
-    let r = raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--yes"], &[("EDITOR", ed)], None);
-    assert_eq!(r.code, 0, "{}", r.out);
-    assert!(sq_toml().contains("You are S1. Be brief."), "{}", sq_toml());
-    assert_eq!(raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--prompt", "x", "--yes"], &[("EDITOR", ed)], None).code, 2);
+    // (the stand-in editor is a shell line: Unix only)
+    if cfg!(unix) {
+        // --edit opens $EDITOR on the current prompt
+        let ed = "sh -c 'printf \" Be brief.\" >> \"$1\"' ed";
+        let r = raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--yes"], &[("EDITOR", ed)], None);
+        assert_eq!(r.code, 0, "{}", r.out);
+        assert!(sq_toml().contains("You are S1. Be brief."), "{}", sq_toml());
+        assert_eq!(raw(&sb.vars, &["ship", "set", "TOP/SQ/S1", "--edit", "--prompt", "x", "--yes"], &[("EDITOR", ed)], None).code, 2);
+    }
     assert_eq!(sb.run(&["ship", "new", "TOP/SQ/S2", "--yes"]).code, 2, "--dir is required");
 
     let r = sb.run(&["machine", "add", "TOP", "box2", "--hostname", "box2-host", "--dir", "TOP/SQ/S1=managed", "--yes"]);
@@ -667,7 +671,7 @@ fn open_attaches_a_ship_and_focuses_a_pane() {
     assert!(r.out.contains("has no job") && r.out.contains("nimitz start BETA"), "{}", r.out);
     // a parked job: the attach wakes it (cli-07)
     let short = sb.member("MAIN/ARGOS/CLEAN")["session"]["short_id"].as_str().unwrap().to_string();
-    sb.claude(&sb.base.join("dirs/main/clean"), &["__retire", &short]);
+    sb.claude(&sb.base.join("dirs").join("main").join("clean"), &["__retire", &short]);
     assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["status"], "Parked");
     // its attach client ended with the job: the tab's pane is a shell again
     let pane = sb.calls().lines().find(|l| l.contains("\"pane\",\"run\"") && l.contains(&format!("attach {short}"))).and_then(|l| l.split("\"pane\",\"run\",\"").nth(1)).map(|r| r.split('"').next().unwrap().to_string()).expect("the pane that ran the attach");
@@ -688,7 +692,7 @@ fn open_attaches_a_ship_and_focuses_a_pane() {
 fn open_reuses_the_tab_it_opened_before() {
     let sb = Sb::new(true);
     let tabs = |sb: &Sb| -> usize {
-        let w: Value = serde_json::from_slice(&std::fs::read(sb.base.join("herdr/world.json")).unwrap()).unwrap();
+        let w: Value = serde_json::from_slice(&std::fs::read(sb.base.join("herdr").join("world.json")).unwrap()).unwrap();
         w["tabs"].as_array().unwrap().iter().filter(|t| t["label"] == "MAIN.ARGOS.CLEAN").count()
     };
     let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
@@ -827,7 +831,11 @@ fn hook_always_exits_zero_even_on_garbage() {
         }
     }
     // a broken state dir does not fail it either
-    let r = raw(&sb.vars, &["hook", "SessionStart"], &[("NIMITZ_STATE", "/dev/null/x")], Some("{\"session_id\":\"s\"}"));
+    // (a folder under a plain file: `/dev/null/...` is a real folder on Windows)
+    let file = sb.base.join("a-file");
+    std::fs::write(&file, "").unwrap();
+    let bad = file.join("x").to_string_lossy().into_owned();
+    let r = raw(&sb.vars, &["hook", "SessionStart"], &[("NIMITZ_STATE", bad.as_str())], Some("{\"session_id\":\"s\"}"));
     assert_eq!(r.code, 0);
 }
 
@@ -837,7 +845,7 @@ fn hook_logs_session_start_with_labels() {
     let input = r#"{"session_id":"abc-123","source":"startup","hook_event_name":"SessionStart"}"#;
     let r = raw(&sb.vars, &["hook", "SessionStart"], &[("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_ROLE", "ship")], Some(input));
     assert_eq!(r.code, 0);
-    let ev = std::fs::read_to_string(sb.base.join("state/events.jsonl")).unwrap();
+    let ev = std::fs::read_to_string(sb.base.join("state").join("events.jsonl")).unwrap();
     let last: Value = serde_json::from_str(ev.lines().last().unwrap()).unwrap();
     assert_eq!(last["session_id"], "abc-123");
     assert_eq!(last["labels"]["NIMITZ_ID"], "MAIN/ARGOS/CLEAN");
@@ -875,7 +883,7 @@ const CLEAN: [(&str, &str); 3] = [("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_RO
 impl Sb {
     /// The notice on file for `id` once its delivery has finished (or None).
     fn notice(&self, id: &str) -> Option<Value> {
-        let p = self.base.join("state/needs").join(format!("{}.json", id.replace('/', "%2F")));
+        let p = self.base.join("state").join("needs").join(format!("{}.json", id.replace('/', "%2F")));
         let end = std::time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
             let v: Option<Value> = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -887,7 +895,7 @@ impl Sb {
         }
     }
     fn prompts(&self, pane: &str) -> Vec<String> {
-        let w: Value = serde_json::from_slice(&std::fs::read(self.base.join("herdr/world.json")).unwrap()).unwrap();
+        let w: Value = serde_json::from_slice(&std::fs::read(self.base.join("herdr").join("world.json")).unwrap()).unwrap();
         let p = w["panes"].as_array().unwrap().iter().find(|p| p["pane_id"] == pane).cloned().unwrap_or_default();
         p["prompts"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
     }
@@ -914,7 +922,7 @@ fn a_ship_that_asks_the_user_tells_its_commodore_with_the_question_in_full() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert_eq!(sb.prompts("w1:p2").len(), 1);
     // the event log says why
-    let ev = std::fs::read_to_string(sb.base.join("state/events.jsonl")).unwrap();
+    let ev = std::fs::read_to_string(sb.base.join("state").join("events.jsonl")).unwrap();
     assert!(ev.lines().any(|l| l.contains("\"needs-you: question\"") && l.contains("AskUserQuestion")), "{ev}");
     // answered: the next Stop closes the notice
     raw(&sb.vars, &["hook", "Stop"], &CLEAN, Some(r#"{"session_id":"s-clean"}"#));
@@ -1135,7 +1143,7 @@ fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
     // a live member whose session started before versioned rules (the sandbox's
     // SessionStart lines carry no `rules`): check names it (Info, nothing to
     // do: the hook hands it the update with its next prompt)
-    let delivered = sb.base.join("state/rules-delivered.json");
+    let delivered = sb.base.join("state").join("rules-delivered.json");
     let c = sb.run(&["check", "MAIN/ARGOS/CLEAN"]);
     assert!(c.out.contains("rules.old") && c.out.contains("next prompt") && !c.out.contains("/compact"), "{}", c.out);
     // its next prompt: the UserPromptSubmit hook hands over the changelog and the full text, once
@@ -1177,7 +1185,9 @@ fn hook_is_fast() {
         .collect();
     t.sort_by(|a, b| a.partial_cmp(b).unwrap());
     // the target is < 10 ms on a release build; a debug build under a loaded test run gets headroom
-    assert!(t[7] < 60.0, "median hook time {:.1} ms (all: {t:?})", t[7]);
+    // (Windows starts a process in tens of ms on its own)
+    let limit = if cfg!(windows) { 150.0 } else { 60.0 };
+    assert!(t[7] < limit, "median hook time {:.1} ms (all: {t:?})", t[7]);
 }
 
 // ------------------------------------------------------------------ migrate, init, doctor, sandbox
@@ -1185,7 +1195,7 @@ fn hook_is_fast() {
 #[test]
 fn migrate_plans_applies_and_is_idempotent() {
     let sb = Sb::new(false);
-    let fx = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nimitz-core/tests/fixtures/old-fleets");
+    let fx = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("nimitz-core").join("tests").join("fixtures").join("old-fleets");
     let mut dirs: Vec<String> = std::fs::read_dir(&fx).unwrap().flatten().map(|e| e.path().to_string_lossy().into_owned()).collect();
     dirs.sort();
     let mut args = vec!["migrate", "fleet-skill"];
@@ -1194,12 +1204,12 @@ fn migrate_plans_applies_and_is_idempotent() {
     let plan = sb.run(&args);
     assert_eq!(plan.code, 1, "no --yes off a terminal:\n{}", plan.out);
     assert!(plan.out.contains("[PLAN] import"), "{}", plan.out);
-    assert!(!sb.base.join("nimitz/old/fleet.toml").exists(), "a plan writes nothing");
+    assert!(!sb.base.join("nimitz").join("old").join("fleet.toml").exists(), "a plan writes nothing");
     let mut yes = args.clone();
     yes.push("--yes");
     let r = sb.run(&yes);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(sb.base.join("nimitz/old/fleet.toml").is_file());
+    assert!(sb.base.join("nimitz").join("old").join("fleet.toml").is_file());
     let r = sb.run(&yes);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("nothing to do"), "second run changes nothing:\n{}", r.out);
@@ -1231,24 +1241,24 @@ fn init_and_doctor_in_an_empty_world() {
     let r = raw(&vars, &["init", "--label", "box", "--yes"], &[], None);
     assert!(r.out.contains("run `claude` there once"), "asks for trust, does not launch:\n{}", r.out);
     assert!(b.join("nimitz").is_dir());
-    let reg: Value = serde_json::from_str(&std::fs::read_to_string(b.join("state/registry.json")).unwrap()).unwrap();
+    let reg: Value = serde_json::from_str(&std::fs::read_to_string(b.join("state").join("registry.json")).unwrap()).unwrap();
     assert_eq!(reg["machine"], "box");
     assert_eq!(reg["version"], nimitz_core::REGISTRY_VERSION, "init writes the format this nimitz writes, not a v1 file");
     assert_eq!(raw(&vars, &["init", "--label", "other", "--yes"], &[], None).code, 1, "a label is not changed silently");
 
     // trust it, enable the plugin; doctor still wants crossSessionInbound, and --fix sets it
     std::fs::create_dir_all(b.join("claude_home")).unwrap();
-    std::fs::write(b.join("claude_home/.claude.json"), format!(r#"{{"projects":{{"{}":{{"hasTrustDialogAccepted":true}}}}}}"#, p("nimitz"))).unwrap();
-    std::fs::write(b.join("claude_home/settings.json"), r#"{"enabledPlugins":{"nimitz@claude-nimitz":true},"model":"x"}"#).unwrap();
+    std::fs::write(b.join("claude_home").join(".claude.json"), format!(r#"{{"projects":{{"{}":{{"hasTrustDialogAccepted":true}}}}}}"#, p("nimitz").replace('\\', "\\\\"))).unwrap();
+    std::fs::write(b.join("claude_home").join("settings.json"), r#"{"enabledPlugins":{"nimitz@claude-nimitz":true},"model":"x"}"#).unwrap();
     // a fleet whose admiral brief an older nimitz wrote, and a squadron brief edited by hand
     for args in [vec!["fleet", "new", "TOP", "--yes"], vec!["squadron", "new", "TOP/SQ", "--brief", "x", "--yes"]] {
         let r = raw(&vars, &args, &[], None);
         assert_eq!(r.code, 0, "{args:?}: {}", r.out);
     }
-    let adm = b.join("nimitz/top/admiral/CLAUDE.md");
+    let adm = b.join("nimitz").join("top").join("admiral").join("CLAUDE.md");
     let old = "# [TOP]-ADMIRAL\n\nYou are the admiral of fleet TOP. You watch the fleet and talk to its\ncommodores (questions only). You never start, stop or edit anything:\n`nimitz status` for the picture, and the user for every change.\n";
     std::fs::write(&adm, old).unwrap();
-    let sq = b.join("nimitz/top/squadrons/sq/CLAUDE.md");
+    let sq = b.join("nimitz").join("top").join("squadrons").join("sq").join("CLAUDE.md");
     std::fs::write(&sq, "# mine\n").unwrap();
     let d = raw(&vars, &["doctor"], &[], None);
     assert_eq!(d.code, 1, "{}", d.out);
@@ -1258,13 +1268,13 @@ fn init_and_doctor_in_an_empty_world() {
     assert!(d.out.contains("[OK] native claude"), "{}", d.out);
     assert!(d.out.contains("[WARN] hooks: the nimitz plugin is enabled; its installed copy is not listed"), "no installed_plugins.json yet:\n{}", d.out);
     // the installed plugin's hooks.json: found through installed_plugins.json; every event present is OK
-    let repo_hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin/hooks/hooks.json");
-    let install = b.join("claude_home/plugins/cache/claude-nimitz/nimitz/0.4.0");
+    let repo_hooks = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("plugin").join("hooks").join("hooks.json");
+    let install = b.join("claude_home").join("plugins").join("cache").join("claude-nimitz").join("nimitz").join("0.4.0");
     std::fs::create_dir_all(install.join("hooks")).unwrap();
-    std::fs::copy(&repo_hooks, install.join("hooks/hooks.json")).unwrap();
+    std::fs::copy(&repo_hooks, install.join("hooks").join("hooks.json")).unwrap();
     std::fs::write(
-        b.join("claude_home/plugins/installed_plugins.json"),
-        format!(r#"{{"version": 2, "plugins": {{"nimitz@claude-nimitz": [{{"scope": "user", "installPath": "{}", "version": "0.4.0"}}]}}}}"#, install.display()),
+        b.join("claude_home").join("plugins").join("installed_plugins.json"),
+        format!(r#"{{"version": 2, "plugins": {{"nimitz@claude-nimitz": [{{"scope": "user", "installPath": "{}", "version": "0.4.0"}}]}}}}"#, install.display().to_string().replace('\\', "\\\\")),
     )
     .unwrap();
     let d = raw(&vars, &["doctor"], &[], None);
@@ -1286,7 +1296,7 @@ fn init_and_doctor_in_an_empty_world() {
     assert!(d.out.contains("registers every event nimitz needs"), "still registered: {}", d.out);
     let f = raw(&vars, &["doctor", "--fix", "--yes"], &[], None);
     assert_eq!(f.code, 0, "{}", f.out);
-    let s: Value = serde_json::from_str(&std::fs::read_to_string(b.join("claude_home/settings.json")).unwrap()).unwrap();
+    let s: Value = serde_json::from_str(&std::fs::read_to_string(b.join("claude_home").join("settings.json")).unwrap()).unwrap();
     assert_eq!(s["crossSessionInbound"], "accept");
     assert_eq!(s["model"], "x", "other settings kept");
     let brief = std::fs::read_to_string(&adm).unwrap();
@@ -1298,14 +1308,14 @@ fn init_and_doctor_in_an_empty_world() {
 #[test]
 fn doctor_flags_a_changed_format() {
     let sb = Sb::new(false);
-    let sess = sb.base.join("claude_home/sessions");
+    let sess = sb.base.join("claude_home").join("sessions");
     let one = std::fs::read_dir(&sess).unwrap().flatten().next().unwrap().path();
     std::fs::write(&one, r#"{"pid": 1, "sessionId": "x"}"#).unwrap();
     let d = sb.run(&["doctor"]);
     assert!(d.out.contains("lacks status, kind"), "{}", d.out);
     // a job row with no name (a copy of a running job): not a format problem (acceptance F5)
     std::fs::write(&one, r#"{"pid": 1, "sessionId": "x", "status": "idle", "kind": "bg"}"#).unwrap();
-    let jobs = sb.base.join("claude_home/jobs/0a0a0a0a");
+    let jobs = sb.base.join("claude_home").join("jobs").join("0a0a0a0a");
     std::fs::create_dir_all(&jobs).unwrap();
     std::fs::write(jobs.join("state.json"), r#"{"sessionId": "0a0a0a0a-0000-4000-8000-000000000000", "state": "done", "cwd": "/w"}"#).unwrap();
     let d = sb.run(&["doctor"]);
@@ -1340,7 +1350,7 @@ fn sandbox_env_tick_and_fakes() {
 #[test]
 fn a_broken_fleet_toml_blocks_its_own_fleet_only() {
     let sb = Sb::new(false);
-    let bad = sb.base.join("nimitz/bad");
+    let bad = sb.base.join("nimitz").join("bad");
     std::fs::create_dir_all(bad.join("admiral")).unwrap();
     let file = bad.join("fleet.toml");
     std::fs::write(&file, "fleet = \"BAD\"\n\n[m").unwrap();
@@ -1374,7 +1384,7 @@ fn a_broken_fleet_toml_blocks_its_own_fleet_only() {
 #[test]
 fn a_dropbox_conflicted_copy_of_a_config_is_a_warning_with_both_names() {
     let sb = Sb::new(false);
-    let sq_dir = sb.base.join("nimitz/main/squadrons/argos");
+    let sq_dir = sb.base.join("nimitz").join("main").join("squadrons").join("argos");
     let copy = sq_dir.join("squadron (box2's conflicted copy 2026-10-07).toml");
     std::fs::write(&copy, "squadron = \"ARGOS\"\n").unwrap();
     let c = sb.run(&["check", "MAIN/ARGOS"]);
@@ -1394,7 +1404,7 @@ fn a_dropbox_conflicted_copy_of_a_config_is_a_warning_with_both_names() {
 fn start_refuses_a_lost_history_and_fresh_cold_launches() {
     let sb = Sb::new(false);
     let sid = sb.member("MAIN/ARGOS/STOPPED")["session"]["session_id"].as_str().unwrap().to_string();
-    let log = walkdir(&sb.base.join("claude_home/projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
+    let log = walkdir(&sb.base.join("claude_home").join("projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
     std::fs::remove_file(log).unwrap();
     let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
     assert_eq!(r.code, 1, "{}", r.out);
@@ -1505,7 +1515,7 @@ fn squadron_new_takes_a_mode() {
     let sb = Sb::new(false);
     let r = sb.run(&["squadron", "new", "MAIN/MODED", "--brief", "x", "--mode", "default", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    let toml = std::fs::read_to_string(sb.base.join("nimitz/main/squadrons/moded/squadron.toml")).unwrap();
+    let toml = std::fs::read_to_string(sb.base.join("nimitz").join("main").join("squadrons").join("moded").join("squadron.toml")).unwrap();
     assert!(toml.contains("permission_mode = \"default\""), "{toml}");
     let r = sb.run(&["squadron", "new", "MAIN/MODED2", "--brief", "x", "--mode", "bogus", "--plan"]);
     assert_ne!(r.code, 0);
@@ -1573,7 +1583,7 @@ fn a_draft_spare_in_a_lead_folder_is_not_an_intruder() {
     let dir = adm["cwd"].as_str().unwrap().to_string();
     // pre-warmed an hour ago (startedAt), claimed now (the file's mtime)
     let old = (nimitz_core::evidence::now() - 3600.0) * 1000.0;
-    let f = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions/424242.json");
+    let f = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions").join("424242.json");
     // the shape cli-L3b saw: the view claims a pre-warmed `bg-spare` job (a `jobId`, its own id as the name)
     std::fs::write(&f, serde_json::json!({"pid": 1, "sessionId": "spare-draft-0000", "jobId": "spare-dr", "cwd": dir, "kind": "bg", "entrypoint": "cli", "spare": true, "name": "spare-dr", "status": "idle", "startedAt": old}).to_string()).unwrap();
     // the real draft fires a SessionStart `startup` the moment the view claims it (byhand 2c-live)
@@ -1848,6 +1858,7 @@ fn stop_of_a_copy_removes_its_row_too() {
 
 /// A closed pipe (`nimitz status --json | head`) ends nimitz quietly, never
 /// with a panic (acceptance B observation).
+#[cfg(unix)]
 #[test]
 fn a_closed_pipe_never_panics() {
     use std::os::unix::process::ExitStatusExt;
@@ -1895,13 +1906,13 @@ fn a_ship_is_never_shown_in_its_commodores_pane_on_herdrs_word_alone() {
         w["panes"][1]["pid"] = Value::from(424242);
         w["panes"][1]["agent_session"]["value"] = Value::from(ship.as_str());
     });
-    std::fs::write(sb.base.join("claude_home/sessions/424242.json"), serde_json::json!({"pid": 424242, "sessionId": commodore, "kind": "interactive"}).to_string()).unwrap();
+    std::fs::write(sb.base.join("claude_home").join("sessions").join("424242.json"), serde_json::json!({"pid": 424242, "sessionId": commodore, "kind": "interactive"}).to_string()).unwrap();
     let s = sb.status();
     let ships: Vec<&Value> = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter().flat_map(|q| q["ships"].as_array().unwrap().iter())).collect();
     assert!(ships.iter().find(|m| m["id"] == "MAIN/ARGOS/CLEAN").unwrap()["pane"].is_null());
     let cmd = s["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter()).find(|q| q["commodore"]["id"] == "MAIN/ARGOS").unwrap()["commodore"].clone();
     assert_eq!(cmd["pane"], "w1:p2", "the commodore, from its own process: {cmd}");
-    std::fs::remove_file(sb.base.join("claude_home/sessions/424242.json")).unwrap();
+    std::fs::remove_file(sb.base.join("claude_home").join("sessions").join("424242.json")).unwrap();
 }
 
 /// Every claude nimitz starts begins with none of the caller's session state:
@@ -1956,6 +1967,7 @@ fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
 /// terminal) reads the Herdr server the user's commands recorded, named on
 /// every call; a recorded server that is not reachable fails a restore with a
 /// fix that names it (and the --jobs-only way), never a bare error.
+#[cfg(unix)]
 #[test]
 fn the_users_nimitz_outside_herdr_uses_the_recorded_server() {
     let sb = Sb::new(true);
@@ -2018,7 +2030,7 @@ fn no_row_and_no_transcript_is_history_lost_with_the_fresh_fix() {
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
     let fake = |args: &[&str]| Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(args).output().unwrap();
     assert!(fake(&["rm", &job]).status.success());
-    for p in walkdir(&sb.base.join("claude_home/projects")).into_iter().filter(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)) {
+    for p in walkdir(&sb.base.join("claude_home").join("projects")).into_iter().filter(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)) {
         std::fs::remove_file(p).unwrap();
     }
     let m = sb.member("MAIN/ARGOS/STOPPED");
@@ -2067,7 +2079,7 @@ fn a_stub_transcript_is_history_lost_before_the_launch() {
     let sb = Sb::new(false);
     let m = sb.member("MAIN/ARGOS/STOPPED");
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();
-    let log = walkdir(&sb.base.join("claude_home/projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
+    let log = walkdir(&sb.base.join("claude_home").join("projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
     std::fs::write(&log, format!("{{\"type\":\"summary\",\"summary\":\"stub\",\"leafUuid\":\"x\"}}\n{{\"type\":\"system\",\"sessionId\":\"{sid}\",\"content\":\"stopped\"}}\n")).unwrap();
     let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan"]);
     assert_ne!(r.code, 0, "{}", r.out);
@@ -2181,7 +2193,7 @@ fn a_crashed_job_is_resumed_not_judged_history_lost() {
     let (short, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
     let o = Command::new(&sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"]).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).args(["__crash", &short]).output().unwrap();
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
-    let log = walkdir(&sb.base.join("claude_home/projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
+    let log = walkdir(&sb.base.join("claude_home").join("projects")).into_iter().find(|p| p.file_name().map(|n| n.to_string_lossy() == format!("{sid}.jsonl")).unwrap_or(false)).expect("the transcript");
     std::fs::remove_file(&log).unwrap();
     let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -2342,6 +2354,7 @@ fn an_unclaimed_attach_pane_takes_typing_only_while_it_runs_the_exact_attach() {
 }
 
 /// A Unix socket that stands for a session's inbox: every line it gets.
+#[cfg(unix)]
 fn inbox_listener(path: &Path) -> std::sync::mpsc::Receiver<String> {
     let l = std::os::unix::net::UnixListener::bind(path).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -2360,11 +2373,12 @@ impl Sb {
     /// SessionStart hook records it), and runs Claude Code `version`. The
     /// listener is this test process, so the session's pid becomes ours (the
     /// inbox posts only to a socket the session's own process listens on).
+    #[cfg(unix)]
     fn inbox_for(&self, id: &str, version: &str) -> std::sync::mpsc::Receiver<String> {
         let m = self.member(id);
         let (sid, short) = (m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["short_id"].as_str().unwrap().to_string());
         let me = std::process::id() as i64;
-        for e in std::fs::read_dir(self.base.join("claude_home/sessions")).unwrap().flatten() {
+        for e in std::fs::read_dir(self.base.join("claude_home").join("sessions")).unwrap().flatten() {
             let mut v: Value = serde_json::from_slice(&std::fs::read(e.path()).unwrap()).unwrap_or_default();
             if v["sessionId"] == sid.as_str() {
                 v["pid"] = Value::from(me);
@@ -2377,7 +2391,7 @@ impl Sb {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{sid}.json")), serde_json::json!({"socket": sock, "pid": me, "at": 1.0}).to_string()).unwrap();
         // the sandbox's session files are not named by pid: the job row's cliVersion
-        let file = self.base.join("claude_home/jobs").join(short).join("state.json");
+        let file = self.base.join("claude_home").join("jobs").join(short).join("state.json");
         let mut v: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         v["cliVersion"] = Value::from(version);
         std::fs::write(&file, v.to_string()).unwrap();
@@ -2389,6 +2403,7 @@ impl Sb {
 /// A needs-you notice goes into the lead's inbox socket as a cross-session
 /// message from nimitz, nothing typed. `nimitz signal` types while the lead's
 /// pane can take it (the user's own words keep their authority).
+#[cfg(unix)]
 #[test]
 fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
     let sb = Sb::new(true);
@@ -2411,6 +2426,7 @@ fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
 
 /// A lead on a Claude Code older than the verified line format gets the
 /// typing path, and the note says why.
+#[cfg(unix)]
 #[test]
 fn an_older_claude_code_gets_the_typing_path() {
     let sb = Sb::new(true);
@@ -2426,6 +2442,7 @@ fn an_older_claude_code_gets_the_typing_path() {
 
 /// With no multiplexer that types, `nimitz signal` posts to the lead's inbox,
 /// as a request (the output says so).
+#[cfg(unix)]
 #[test]
 fn with_no_multiplexer_a_signal_goes_to_the_inbox_as_a_request() {
     let sb = Sb::new(true);
