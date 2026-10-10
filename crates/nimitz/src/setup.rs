@@ -155,7 +155,10 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
     }
     // the data root holds every lead's folder: Claude Code must trust it
     if !trusted(ctx, &ctx.env.home) {
-        plan.steps.push(nimitz_core::trust::step(&ctx.env, None, &ctx.env.home));
+        match nimitz_core::trust::too_broad(&ctx.env, &ctx.env.home) {
+            None => plan.steps.push(nimitz_core::trust::step(&ctx.env, None, &ctx.env.home)),
+            Some(why) => plan.warnings.push(nimitz_core::Issue { code: "trust.broad".into(), severity: nimitz_core::Severity::Warn, message: why, fix: None, id: None }),
+        }
     }
     if !saved || reg.machine != label {
         plan.steps.push(Step {
@@ -204,9 +207,11 @@ pub fn trust(ctx: &Ctx) -> Result<i32, String> {
     let dir = ctx.args.need(0, "folder")?;
     ctx.args.at_most(1)?;
     let p = Path::new(dir);
-    let mut plan = Plan { summary: format!("trust {}", nimitz_core::trust::shown(p).display()), ..Default::default() };
+    let mut plan = Plan { summary: format!("trust {}", nimitz_core::trust::shown(&ctx.env, p).display()), ..Default::default() };
     if ctx.caller != nimitz_core::Caller::User {
         plan.refusals.push(refusal("authority", format!("`nimitz trust` is yours alone: {}", nimitz_core::trust::CONSEQUENCE), None, None));
+    } else if let Some(why) = nimitz_core::trust::too_broad(&ctx.env, p) {
+        plan.refusals.push(refusal("trust.broad", why, None, None));
     } else if !p.is_dir() {
         plan.refusals.push(refusal("folder.missing", format!("{dir} is not a folder"), Some(format!("mkdir -p {}", out::quote(dir))), None));
     } else if !nimitz_core::trust::is_written(&ctx.env, p) {
@@ -329,8 +334,13 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         if trusted(ctx, &env.home) {
             r.ok(&format!("Claude Code trusts {}", env.home.display()));
         } else {
-            r.err(&format!("Claude Code does not trust {}", env.home.display()), Some("nimitz doctor --fix"));
-            r.fixes.steps.push(nimitz_core::trust::step(env, None, &env.home));
+            match nimitz_core::trust::too_broad(env, &env.home) {
+                None => {
+                    r.err(&format!("Claude Code does not trust {}", env.home.display()), Some("nimitz doctor --fix"));
+                    r.fixes.steps.push(nimitz_core::trust::step(env, None, &env.home));
+                }
+                Some(why) => r.err(&format!("Claude Code does not trust {}; {why}", env.home.display()), None),
+            }
         }
     }
 

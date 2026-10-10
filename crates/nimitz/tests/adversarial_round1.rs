@@ -598,11 +598,28 @@ fn trust_the_users_start_trusts_the_folder_then_launches() {
     assert!(m.out.contains(&format!("ask the user to run: nimitz trust {}", lone.display())), "{}", m.out);
     // the user's: the row says it, a note says what it lets run, and it runs
     let p = sb.run(&["start", "MAIN/ARGOS/FRESH", "--plan"]);
-    assert!(p.out.contains("trust its folder, then"), "{}", p.out);
+    assert!(p.out.contains(&format!("trust {}, then", lone.display())), "{}", p.out);
     assert!(p.out.contains("hooks and MCP servers"), "{}", p.out);
+    // a wider start never trusts a folder the user did not name
+    let f = sb.run(&["start", "MAIN/ARGOS", "--plan", "-v"]);
+    assert!(!f.out.contains("hooks and MCP servers"), "{}", f.out);
     let r = sb.run(&["start", "MAIN/ARGOS/FRESH", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(untrusted_line(&sb.run(&["check", "MAIN/ARGOS/FRESH"]).out).is_none());
+}
+
+#[test]
+fn trust_another_machines_folder_is_not_trusted_here_and_home_never_is() {
+    let sb = Sb::new(false);
+    let lone = sb.dir("elsewhere/lone");
+    std::fs::create_dir_all(&lone).unwrap();
+    let p = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--machine", "otherbox", "--plan", "-v"]);
+    assert!(!p.out.contains("hooks and MCP servers"), "another machine's folder:\n{}", p.out);
+    let home = sb.vars.get("HOME").cloned().unwrap_or_else(|| std::env::var("HOME").unwrap());
+    let t = sb.run(&["trust", &home, "--plan"]);
+    assert!(t.code != 0 && t.out.contains("(trust.broad)"), "{}", t.out);
+    let r = sb.run(&["trust", "/", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(trust.broad)"), "{}", r.out);
 }
 
 #[test]

@@ -265,7 +265,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
             }
             let dir = def.dirs.get(&label).cloned();
             let mut p = config::plan_ship_new(&ctx.env, fleet, sq, def);
-            trust_step(ctx, &mut p, &id, dir.as_deref());
+            trust_step(ctx, &mut p, &id, Some(&label), dir.as_deref());
             p
         }
         "set" => {
@@ -289,7 +289,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                         p.steps.clear();
                     } else if p.ok() {
                         if def.dirs.get(&label) != before.dirs.get(&label) {
-                            trust_step(ctx, &mut p, &id, def.dirs.get(&label).map(String::as_str));
+                            trust_step(ctx, &mut p, &id, Some(&label), def.dirs.get(&label).map(String::as_str));
                         }
                         p.warnings.push(nimitz_core::Issue {
                             code: "config.pending".into(),
@@ -311,9 +311,14 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
 /// A ship folder Claude Code will not trust: the user's plan trusts it
 /// (after the config is written); anyone else's says so, the fix the user's.
 /// A managed folder is under the data root (`nimitz init` trusts that).
-fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, dir: Option<&str>) {
+fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, label: Option<&str>, dir: Option<&str>) {
     let Some(dir) = dir.filter(|d| *d != "managed") else { return };
     if !plan.ok() {
+        return;
+    }
+    // another machine's folder is that machine's trust, not this one's
+    let here = config::load_fleet(&ctx.env, id.fleet()).ok().and_then(|f| f.machine);
+    if label != here.as_deref() {
         return;
     }
     match nimitz_core::trust::for_plan(&ctx.env, &ctx.caller, Some(id), &config::expand_dir(dir)) {

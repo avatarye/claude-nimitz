@@ -83,7 +83,7 @@ pub fn issue(i: &Issue) {
 fn step_text(s: &Step) -> String {
     match s.cmd.first().map(String::as_str) {
         Some("write") => format!("write {}", s.cmd.get(1).map(String::as_str).unwrap_or("")),
-        Some("mkdir") | Some("archive") | Some("bind") => s.cmd.join(" "),
+        Some("mkdir") | Some("archive") | Some("bind") | Some("trust") => s.cmd.join(" "),
         _ => argv(&s.cmd),
     }
 }
@@ -93,7 +93,7 @@ fn step_text(s: &Step) -> String {
 /// `claude --bg`). The plan above already showed the full command.
 fn brief(s: &Step) -> String {
     match s.cmd.first().map(String::as_str) {
-        Some("write") | Some("mkdir") | Some("archive") | Some("bind") | None => step_text(s),
+        Some("write") | Some("mkdir") | Some("archive") | Some("bind") | Some("trust") | None => step_text(s),
         Some(prog) => {
             let name = std::path::Path::new(prog).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| prog.to_string());
             let mut words = vec![name];

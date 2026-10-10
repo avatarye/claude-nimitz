@@ -83,20 +83,28 @@ fn key(p: &Path) -> String {
     if t.is_empty() { "/".into() } else { t.to_string() }
 }
 
-/// The folder Claude Code asks about for `dir`, as given: the git root that
-/// holds it (found from the path as given, else from the real path), else
-/// the folder itself.
-pub fn target(dir: &Path) -> PathBuf {
+/// The folder Claude Code asks about for `dir`: the git root that holds its
+/// real path (Claude Code resolves links first), in the form as given when
+/// that form leads to the same root; outside git, inside the data root, the
+/// data root (`nimitz init` trusts it; a member folder under it needs no
+/// trust of its own); else the folder itself.
+pub fn target(env: &Env, dir: &Path) -> PathBuf {
     let given = abs(dir);
-    if let Some(root) = given.ancestors().find(|a| a.join(".git").exists()) {
-        return root.to_path_buf();
+    let real = crate::env::canon(&given);
+    if let Some(root) = crate::env::git_root(&real) {
+        // the form as given, when one of its parents is that root
+        return given.ancestors().find(|a| crate::env::canon(a) == root).map(Path::to_path_buf).unwrap_or(root);
     }
-    crate::env::git_root(&given).unwrap_or(given)
+    let data = crate::env::canon(&env.home);
+    if real.starts_with(&data) {
+        return data;
+    }
+    given
 }
 
 /// The keys written for `dir`: the target as given and its real path.
-pub fn keys(dir: &Path) -> Vec<String> {
-    let t = target(dir);
+pub fn keys(env: &Env, dir: &Path) -> Vec<String> {
+    let t = target(env, dir);
     let mut out = vec![key(&t)];
     let real = key(&crate::env::canon(&t));
     if !out.contains(&real) {
@@ -106,8 +114,29 @@ pub fn keys(dir: &Path) -> Vec<String> {
 }
 
 /// The target's real path (what messages and fixes name).
-pub fn shown(dir: &Path) -> PathBuf {
-    crate::env::canon(&target(dir))
+pub fn shown(env: &Env, dir: &Path) -> PathBuf {
+    crate::env::canon(&target(env, dir))
+}
+
+/// A target nimitz never trusts: `/`, the user's home or a parent of it, a
+/// parent of the data root. Claude Code itself never saves trust for the home
+/// folder, and its lookup outside git walks up the parents: trusting one of
+/// these would let every folder under it run its own hooks and MCP servers.
+pub fn too_broad(env: &Env, dir: &Path) -> Option<String> {
+    let t = shown(env, dir);
+    let user = std::env::var_os("HOME").map(PathBuf::from).map(|h| crate::env::canon(&h));
+    let data = crate::env::canon(&env.home);
+    let why = if t.parent().is_none() {
+        "the file system's root"
+    } else if user.as_ref().is_some_and(|h| h.starts_with(&t)) {
+        "your home folder or a parent of it"
+    } else if data != t && data.starts_with(&t) {
+        "a parent of the data root"
+    } else {
+        return None;
+    };
+    let repo = crate::env::git_root(&crate::env::canon(&abs(dir))).filter(|r| *r == t).map(|_| " (the git repository that holds it)").unwrap_or("");
+    Some(format!("nimitz does not trust {}{repo}: it is {why}, and trusting it lets every folder under it run its own .claude settings, hooks and MCP servers", t.display()))
 }
 
 fn quoted(p: &Path) -> String {
@@ -115,9 +144,9 @@ fn quoted(p: &Path) -> String {
     if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-~:+@".contains(c)) { s.into_owned() } else { format!("'{}'", s.replace('\'', r"'\''")) }
 }
 
-/// The fix for an untrusted folder.
-pub fn fix(dir: &Path) -> String {
-    format!("nimitz trust {}", quoted(&shown(dir)))
+/// The fix for an untrusted folder (`at`: the folder Claude Code asks about).
+pub fn fix(at: &Path) -> String {
+    format!("nimitz trust {}", quoted(&crate::env::canon(at)))
 }
 
 /// Will Claude Code refuse `dir` for want of trust? `Error`: nothing trusts
@@ -141,32 +170,36 @@ fn file_shown(env: &Env) -> String {
 pub fn step(env: &Env, id: Option<Id>, dir: &Path) -> Step {
     Step {
         id,
-        cmd: vec!["trust".into(), target(dir).to_string_lossy().into_owned()],
+        cmd: vec!["trust".into(), target(env, dir).to_string_lossy().into_owned()],
         cwd: None,
-        why: format!("trust {} (writes {}): {CONSEQUENCE}", shown(dir).display(), file_shown(env)),
+        why: format!("trust {} (writes {}): {CONSEQUENCE}", shown(env, dir).display(), file_shown(env)),
     }
 }
 
 /// What a plan gets for a member folder `dir` that Claude Code will not
 /// trust: the user, a trust step; anyone else, an issue whose fix is the
-/// user's (`nimitz trust` is never a member's). None when it is trusted.
+/// user's (`nimitz trust` is never a member's). None when it is trusted. A
+/// folder too broad to trust (`too_broad`) is a refusal for everyone.
 pub fn for_plan(env: &Env, caller: &Caller, id: Option<&Id>, dir: &Path) -> Option<Result<Step, Issue>> {
     let severity = untrusted(env, dir)?;
+    if let Some(why) = too_broad(env, dir) {
+        return Some(Err(Issue { code: "trust.broad".into(), severity: Severity::Error, message: why, fix: None, id: id.cloned() }));
+    }
     if *caller == Caller::User {
         return Some(Ok(step(env, id.cloned(), dir)));
     }
     Some(Err(Issue {
         code: "folder.untrusted".into(),
         severity,
-        message: format!("{} is not trusted by Claude Code; trusting it is the user's ({CONSEQUENCE})", shown(dir).display()),
-        fix: Some(fix(dir)),
+        message: format!("{} is not trusted by Claude Code; trusting it is the user's ({CONSEQUENCE})", shown(env, dir).display()),
+        fix: Some(fix(&target(env, dir))),
         id: id.cloned(),
     }))
 }
 
 /// Does every config file trust every key of `dir`?
 pub fn is_written(env: &Env, dir: &Path) -> bool {
-    let keys = keys(dir);
+    let keys = keys(env, dir);
     targets(env).iter().all(|f| {
         let Some(v) = std::fs::read(f).ok().and_then(|b| crate::evidence::first_json(&b)) else { return false };
         keys.iter().all(|k| v["projects"][k]["hasTrustDialogAccepted"].as_bool() == Some(true))
@@ -176,7 +209,10 @@ pub fn is_written(env: &Env, dir: &Path) -> bool {
 /// Trust `dir` (its target, both keys). Returns the keys it set (empty: all
 /// were set already).
 pub fn write(env: &Env, dir: &Path) -> Result<Vec<String>, String> {
-    let keys = keys(dir);
+    if let Some(why) = too_broad(env, dir) {
+        return Err(why);
+    }
+    let keys = keys(env, dir);
     let mut set: Vec<String> = vec![];
     for f in targets(env) {
         edit(env, &f, |projects| {
@@ -201,7 +237,7 @@ pub fn write(env: &Env, dir: &Path) -> Result<Vec<String>, String> {
 /// Undo `write` for `dir` (tests and e2e cleanup): the flag goes, and an
 /// entry left empty goes too.
 pub fn forget(env: &Env, dir: &Path) -> Result<(), String> {
-    let keys = keys(dir);
+    let keys = keys(env, dir);
     for f in files(env).into_iter().filter(|f| f.exists()) {
         edit(env, &f, |projects| {
             let mut changed = false;
@@ -209,7 +245,7 @@ pub fn forget(env: &Env, dir: &Path) -> Result<(), String> {
                 if let Some(o) = projects.get_mut(k).and_then(Value::as_object_mut) {
                     changed |= o.remove("hasTrustDialogAccepted").is_some();
                     if o.is_empty() {
-                        projects.remove(k);
+                        projects.shift_remove(k);
                     }
                 }
             }
@@ -276,26 +312,31 @@ fn edit(env: &Env, path: &Path, f: impl FnOnce(&mut Map<String, Value>) -> Resul
         return Ok(false);
     }
     if let Some(b) = &raw {
-        backup(env, b).map_err(|e| format!("backup of {}: {e}", real.display()))?;
+        backup(env, &real, b).map_err(|e| format!("backup of {}: {e}", real.display()))?;
     }
     let text = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
     write_like(&real, &text).map_err(|e| format!("{}: {e}", real.display()))?;
     Ok(true)
 }
 
-/// `NIMITZ_STATE/backups/claude.json.<ms>`, the newest `KEEP_BACKUPS` kept.
-fn backup(env: &Env, bytes: &[u8]) -> std::io::Result<PathBuf> {
+/// `NIMITZ_STATE/backups/<source, / as %>.<ms>`: per source file the newest
+/// `KEEP_BACKUPS`, and `<source>.first`, the file as it was before nimitz
+/// ever wrote it (never rotated out).
+fn backup(env: &Env, source: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
     let dir = env.state.join("backups");
     std::fs::create_dir_all(&dir)?;
+    let prefix = source.to_string_lossy().replace(['/', '\\', ':'], "%");
+    let save = |p: &Path| write_like(p, std::str::from_utf8(bytes).unwrap_or_default()).or_else(|_| std::fs::write(p, bytes));
+    let first = dir.join(format!("{prefix}.first"));
+    if !first.exists() {
+        save(&first)?;
+    }
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let p = dir.join(format!("claude.json.{ms}"));
-    write_like(&p, std::str::from_utf8(bytes).unwrap_or_default()).or_else(|_| std::fs::write(&p, bytes))?;
-    let mut old: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("claude.json.")))
-        .collect();
-    old.sort_by_key(|p| p.file_name().and_then(|n| n.to_str()).and_then(|n| n.rsplit('.').next()).and_then(|t| t.parse::<u128>().ok()).unwrap_or(0));
+    let p = dir.join(format!("{prefix}.{ms}"));
+    save(&p)?;
+    let stamp = |p: &PathBuf| p.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix(&format!("{prefix}."))).and_then(|t| t.parse::<u128>().ok());
+    let mut old: Vec<PathBuf> = std::fs::read_dir(&dir)?.flatten().map(|e| e.path()).filter(|p| stamp(p).is_some()).collect();
+    old.sort_by_key(|p| stamp(p).unwrap_or(0));
     while old.len() > KEEP_BACKUPS {
         let _ = std::fs::remove_file(old.remove(0));
     }
@@ -345,7 +386,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(real.parent().unwrap(), &link).unwrap();
         let given = link.join("proj");
-        assert_eq!(keys(&given), vec![key(&given), key(&real)]);
+        assert_eq!(keys(&env, &given), vec![key(&given), key(&real)]);
         std::fs::write(file(&env), r#"{"numStartups": 3, "projects": {"/x": {"allowedTools": []}}}"#).unwrap();
         assert!(untrusted(&env, &given).is_some());
         let set = write(&env, &given).unwrap();
@@ -369,12 +410,12 @@ mod tests {
         // a parent's trust does not cover the repository
         std::fs::write(file(&env), json!({"projects": {key(&crate::env::canon(td.path())): {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
         assert_eq!(untrusted(&env, &repo.join("src/deep")), Some(Severity::Warn));
-        assert_eq!(target(&repo.join("src/deep")), repo);
+        assert_eq!(target(&env, &repo.join("src/deep")), repo);
         write(&env, &repo.join("src/deep")).unwrap();
         assert_eq!(trust_json(&env)["projects"][key(&repo)]["hasTrustDialogAccepted"], true);
         assert!(trust_json(&env)["projects"].get(key(&repo.join("src/deep"))).is_none());
         assert!(untrusted(&env, &repo.join("src/deep")).is_none());
-        assert_eq!(fix(&repo.join("src")), format!("nimitz trust {}", repo.display()));
+        assert_eq!(fix(&target(&env, &repo.join("src"))), format!("nimitz trust {}", repo.display()));
     }
 
     #[test]
@@ -401,6 +442,7 @@ mod tests {
         std::fs::File::open(&lock).unwrap().set_modified(old).unwrap();
         forget(&env, &dir).unwrap();
         assert!(!is_written(&env, &dir));
+        assert!(!lock.exists(), "the dead holder's lock was taken over, then released");
     }
 
     #[test]
@@ -419,7 +461,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(3));
         }
         let backups: Vec<_> = std::fs::read_dir(env.state.join("backups")).unwrap().flatten().collect();
-        assert_eq!(backups.len(), KEEP_BACKUPS);
+        assert_eq!(backups.len(), KEEP_BACKUPS + 1, "the newest five and the first");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -443,6 +485,69 @@ mod tests {
         assert_eq!(format_check(&env), Ok(1));
         std::fs::write(file(&env), r#"{"projects": {"/a": {"hasTrustDialogAccepted": "yes"}}}"#).unwrap();
         assert!(format_check(&env).is_err());
+    }
+
+    #[test]
+    fn the_home_folder_the_root_and_a_parent_of_the_data_root_are_never_trusted() {
+        let (td, env) = test_env();
+        std::fs::write(file(&env), r#"{"projects": {}}"#).unwrap();
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        for d in [Path::new("/"), home.as_path(), home.parent().unwrap()] {
+            assert!(too_broad(&env, d).is_some(), "{}", d.display());
+            assert!(write(&env, d).is_err(), "{}", d.display());
+            let p = for_plan(&env, &Caller::User, None, d);
+            assert!(matches!(&p, Some(Err(i)) if i.code == "trust.broad") || p.is_none(), "{}: {p:?}", d.display());
+        }
+        // a parent of the data root; the data root itself is fine
+        assert!(too_broad(&env, env.home.parent().unwrap()).is_some());
+        std::fs::create_dir_all(&env.home).unwrap();
+        assert!(too_broad(&env, &env.home).is_none());
+        // a folder under a repository rooted at the parent of the data root: the repo is the target, refused
+        let top = crate::env::canon(td.path());
+        std::fs::create_dir_all(top.join(".git")).unwrap();
+        assert!(too_broad(&env, &top.join("elsewhere")).is_some_and(|w| w.contains("git repository")));
+        let _ = std::fs::remove_dir_all(top.join(".git"));
+    }
+
+    #[test]
+    fn a_link_into_another_repository_trusts_the_repository_it_resolves_to() {
+        let (td, env) = test_env();
+        let top = crate::env::canon(td.path());
+        let (mono, other) = (top.join("mono"), top.join("other"));
+        std::fs::create_dir_all(mono.join(".git")).unwrap();
+        std::fs::create_dir_all(mono.join("vendor")).unwrap();
+        std::fs::create_dir_all(other.join(".git")).unwrap();
+        std::fs::create_dir_all(other.join("pkg")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(other.join("pkg"), mono.join("vendor/x")).unwrap();
+        assert_eq!(target(&env, &mono.join("vendor/x")), other, "Claude Code resolves the link first");
+        // a link to the repository itself keeps its form as given too
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&other, top.join("o")).unwrap();
+        assert_eq!(target(&env, &top.join("o/pkg")), top.join("o"));
+        assert_eq!(keys(&env, &top.join("o/pkg")), vec![key(&top.join("o")), key(&other)]);
+    }
+
+    #[test]
+    fn inside_the_data_root_the_data_root_is_trusted_and_every_config_file_gets_it() {
+        let (_td, env) = test_env();
+        let lead = env.home.join("main/admiral");
+        std::fs::create_dir_all(&lead).unwrap();
+        assert_eq!(target(&env, &lead), crate::env::canon(&env.home));
+        // both config files exist: both are written
+        std::fs::create_dir_all(&env.claude_home).unwrap();
+        let both = files(&env);
+        for f in &both {
+            std::fs::write(f, r#"{"projects": {}}"#).unwrap();
+        }
+        write(&env, &lead).unwrap();
+        for f in &both {
+            let v: Value = serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap();
+            assert_eq!(v["projects"][key(&crate::env::canon(&env.home))]["hasTrustDialogAccepted"], true, "{}", f.display());
+        }
+        // a backup per source, and the file as it was before nimitz ever wrote it
+        let names: Vec<String> = std::fs::read_dir(env.state.join("backups")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names.iter().filter(|n| n.ends_with(".first")).count(), 2, "{names:?}");
     }
 
     #[test]

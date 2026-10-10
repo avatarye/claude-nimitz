@@ -1,6 +1,7 @@
-# `nimitz trust`: working notes (paused 2026-10-10)
+# `nimitz trust`: working notes
 
-Status: design settled, nothing built. Resume from here.
+Status: built on `feat/trust` (2026-10-10), Opus-reviewed; the "Built" section
+says what changed from the plan below. Not merged (branch policy).
 
 ## The request (the user, via the commodore)
 
@@ -74,3 +75,40 @@ Rewriting `~/.claude.json` through serde_json sorts its keys. serde_json's
 `preserve_order` keeps them; enabling it workspace-wide failed one test only
 (`setup::tests::a_command_string_hook_is_named`, an order assertion). Decide
 then.
+
+## Built (and what the review changed)
+
+- `trust::target` takes the git root of the **real** path (Claude Code
+  resolves links first) and keeps the typed form only when it leads to that
+  root; inside the data root, outside git, the target is the data root.
+- Never trusted (`trust.broad`, for everyone, also in `write`): `/`, the
+  user's home or a parent of it, a parent of the data root. Claude Code never
+  saves trust for the home folder, and its lookup outside git walks up.
+  `init` and `doctor` say so instead of planning it (a dotfiles repo at `~`).
+- `start`: only the user's, only the started member's own folder, only on its
+  first launch. A wake, a parent's folder and a fleet- or squadron-wide start
+  keep the refusal with the fix `nimitz trust <path>, then nimitz start <id>`.
+- `ship new|set --dir`: only for this machine's folder (`--machine` another
+  machine plans no trust).
+- Writes go to every config file nimitz reads trust from that exists
+  (`<claude home>/.claude.json`, `<claude home>.json`); with none, the one
+  Claude Code would make. Backups per source, the newest five plus `.first`.
+- serde_json `preserve_order` is on (the rewrite keeps Claude Code's order;
+  `forget` uses `shift_remove`).
+- e2e `e2e_trust_lets_a_background_job_start_in_an_untrusted_repo` (#96):
+  real Claude Code 2.1.296 refuses `--bg` in a fresh repo ("Workspace not
+  trusted"), `nimitz trust` writes it, the same `--bg` starts.
+
+## Left for later
+
+- Admiralty plans with `--plan --json` and runs `--yes`, which plans again: a
+  trust step that appears in between (a member's `ship set --dir` in that
+  window) is not in the confirm the user saw. Narrowed (only a named first
+  launch trusts); closing it needs `--yes` to carry the confirmed plan.
+- `nimitz up` (deprecated) still refuses an untrusted folder.
+- Windows, at the rebase onto windows-port: keys through `env::trust_key`
+  (`/` separators, case as on disk), `canonicalize`'s `\\?\` prefix,
+  PowerShell quoting in the fix, `case_exact_hint`.
+- NFC key forms (macOS) are not written.
+- Claude Code's gated "storage v5" config backend (a versioned update, not the
+  lock directory) is not verified to notice nimitz's rename.

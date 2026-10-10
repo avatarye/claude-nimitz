@@ -959,29 +959,30 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
     // nightly Claude Code update never stops a fleet (0.3.2).
 }
 
-/// For the user, a member folder Claude Code will not trust is no refusal:
-/// the plan trusts it first (`trust::step`, which says what that lets run).
-/// A member caller keeps the refusal (or the warning); its fix, `nimitz
-/// trust`, is the user's.
-fn trust_first(env: &Env, plan: &mut Plan, snap: &Snapshot, caller: &Caller) {
+/// The user's start of a member that never ran: a folder Claude Code will
+/// not trust is no refusal, the plan trusts it first (`trust::step`, which
+/// says what that lets run). Only the started member's own folder, only on
+/// its first launch, never one `trust::too_broad` names; a member caller,
+/// a wake and a parent's folder keep the refusal (or the warning), the fix
+/// `nimitz trust` (the user's).
+fn trust_first(env: &Env, plan: &mut Plan, snap: &Snapshot, caller: &Caller, id: &Id) {
     if *caller != Caller::User {
         return;
     }
-    let mut steps: Vec<Step> = vec![];
-    let mut take = |issues: &mut Vec<Issue>| {
-        issues.retain(|i| {
-            let dir = (i.code == "folder.untrusted").then(|| i.id.as_ref().and_then(|id| member(snap, id)).and_then(|(_, m)| m.cwd.clone())).flatten();
-            let Some(dir) = dir else { return true };
-            let s = crate::trust::step(env, i.id.clone(), std::path::Path::new(&dir));
-            if !steps.iter().any(|x| x.cmd == s.cmd) {
-                steps.push(s);
-            }
-            false
-        })
-    };
-    take(&mut plan.refusals);
-    take(&mut plan.warnings);
-    plan.steps.splice(0..0, steps);
+    let Some((_, m)) = member(snap, id) else { return };
+    let never_ran = m.session.is_none() && crate::registry::load(env).identities.get(&id.0).and_then(|r| r.session.clone()).is_none();
+    let Some(dir) = m.cwd.clone().filter(|_| never_ran) else { return };
+    let dir = std::path::Path::new(&dir);
+    if crate::trust::too_broad(env, dir).is_some() {
+        return;
+    }
+    let mine = |i: &Issue| i.code == "folder.untrusted" && i.id.as_ref() == Some(id);
+    if !plan.refusals.iter().chain(plan.warnings.iter()).any(mine) {
+        return;
+    }
+    plan.refusals.retain(|i| !mine(i));
+    plan.warnings.retain(|i| !mine(i));
+    plan.steps.insert(0, crate::trust::step(env, Some(id.clone()), dir));
 }
 
 /// The flags of `nimitz start`: `--force` (a cold launch over a broken
@@ -1009,7 +1010,7 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
         return plan;
     }
     gate(env, &mut plan, snap, Some(id), force);
-    trust_first(env, &mut plan, snap, caller);
+    trust_first(env, &mut plan, snap, caller, id);
     // `--fresh` starts over: not under a live job (that would make two)
     if opts.fresh && member(snap, id).map(|(_, m)| m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)).unwrap_or(false) {
         refuse(
