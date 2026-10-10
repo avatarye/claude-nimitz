@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Status: in testing (Claude Code 2.1.288 - 2.1.296).
+Version 0.5.0 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.296).
 
 ## User manual
 
@@ -240,6 +240,9 @@ authority and messaging.
 
 | Where | What |
 | --- | --- |
+| `CHANGELOG.md` | What each release changed; how to upgrade. |
+| `docs/design/aide.md` | Aides: the durable inbox, request and reply, the build plan. |
+| `docs/design/migrations.md` | Format versions and chained migrations. |
 | `docs/design/plan-v3.md` | The plan: decisions, vocabulary, setup and CRUD, adapters, compatibility, phases. |
 | `docs/design/cc-control-model.md` | How `nimitz` controls Claude Code sessions along the chain of command. |
 | `docs/design/migrations.md` | Format versions of every file nimitz owns, the chained migrations, the cross-machine guard. |

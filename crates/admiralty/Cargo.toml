@@ -1,6 +1,6 @@
 [package]
 name = "admiralty"
-version = "0.3.0"
+version.workspace = true
 edition = "2021"
 description = "The Admiralty TUI: watch and control every claude-nimitz fleet on this machine"
 publish = false
