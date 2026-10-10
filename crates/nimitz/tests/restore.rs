@@ -1341,6 +1341,41 @@ fn r24b_a_ships_claim_on_its_commodores_attach_pane_is_not_the_agent_view() {
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
 }
 
+/// The daemon was started from the admiral's attach pane, so a ship's
+/// worker inherited that pane's HERDR_PANE_ID and Herdr's own hook claims
+/// the pane for the ship. The claim is not backed (the pane runs the
+/// admiral's `claude attach <job>`), so it is ignored and the pane shows the
+/// admiral, read from the attach: status gives it the pane and the ship
+/// none; a restore and `start -p` leave it be, nothing typed; `start -f`
+/// relaunches the admiral and reattaches that very pane.
+#[test]
+fn an_unbacked_claim_on_a_leads_attach_pane_shows_the_lead_there() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    idle_all(&sb);
+    let pane = sb.pane_attaching("MAIN");
+    let ship = sb.sid("MAIN/ARGOS/CLEAN");
+    sb.set_pane(&pane, |p| p["agent_session"]["value"] = json!(ship));
+    assert_eq!(sb.member("MAIN")["pane"], json!(pane), "the admiral, by its attach");
+    assert!(sb.member("MAIN/ARGOS/CLEAN")["pane"].is_null(), "the ship's claim names a pane it does not run in");
+    let before = sb.n_runs();
+    let r = sb.run(&["restore", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("tab.agentview") && !r.out.contains("tab.taken"), "{}", r.out);
+    let r = sb.run(&["start", "MAIN", "--only", "-p", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("focus") && !l.contains("open pane")), "{}", r.out);
+    sb.ok(&["start", "MAIN", "--only", "-p", "--yes"]);
+    assert_eq!(sb.n_runs(), before, "nothing typed into the working attach:\n{}", sb.calls());
+    assert_eq!(sb.tabs("MAIN.ADMIRAL").len(), 1, "never a second tab");
+    assert!(sb.calls().lines().any(|l| l.contains("focus") && l.contains(&pane)), "focused:\n{}", sb.calls());
+    // a relaunch: its pane gets the new job's attach
+    let r = sb.run(&["start", "MAIN", "--only", "-f", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("relaunch") && l.contains("reattach") && l.contains(&pane)), "{}", r.out);
+    sb.ok(&["start", "MAIN", "--only", "-f", "--yes"]);
+    assert_eq!(sb.pane_attaching("MAIN"), pane, "the same pane reattached");
+}
+
 #[test]
 fn r25_a_leads_job_removed_under_its_tab_resumes_with_every_flag_and_repins() {
     let sb = Sb::new(true);

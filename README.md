@@ -169,6 +169,12 @@ that holds an aide as corrupt (it moves it aside). Update every machine to
   - copies or stale rows: `nimitz sweep <id>`;
   - a stowaway (a session in a fleet folder with no labels): `nimitz adopt <session> <id>`, or stop and `rm` it;
   - `tab.resumed` (Herdr reopened a conversation in a pane): `/exit` in that pane, then `nimitz start F`.
+- A lead shows no pane, or a member shows in another's pane (Herdr's hook
+  in a background worker claimed the pane the Claude Code daemon was started
+  from): after upgrading to 0.5.0, run `nimitz start <F> -f` (a lead:
+  `nimitz start <id> --only -f`) once for each live member. A job launched
+  before 0.5.0 keeps the daemon's `HERDR_PANE_ID` until a relaunch gives it
+  the new settings; a plain wake reuses its old ones.
 - `-v` on any plan shows the commands it runs.
 - `nimitz doctor` says Claude Code is above the tested range ("tested up to
   ..."): launches still go ahead. To validate the new version and raise the

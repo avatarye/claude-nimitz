@@ -58,6 +58,7 @@ fn main() {
         ("fixtures: create replies without root_pane resolve the pane through pane list", fixture_create_replies),
         ("shape: the snapshot fixture and the fake's api snapshot parse alike, field for field", fixture_snapshot_shape),
         ("shape: the adapter reads every pane's foreground; rename_tab renames; exec runs the line", shape_through_the_adapter),
+        ("panes: an unbacked claim is ignored; the pane shows what runs in it (the attach, inferred)", an_unbacked_claim_shows_what_runs_in_the_pane),
         ("errors: workspace create failure propagates", error_workspace_create),
         ("errors: pane run failure propagates", error_pane_run),
     ];
@@ -726,6 +727,65 @@ fn shape_through_the_adapter() {
     if cfg!(unix) {
         assert_eq!(text.trim(), nimitz_core::os::canonical(&w.dir).unwrap().to_string_lossy());
     }
+}
+
+/// Herdr's hook in a background job names the pane its daemon was started
+/// from (an inherited `HERDR_PANE_ID`): the pane claims member A's session
+/// while its foreground attaches to lead B's job. The claim is not backed,
+/// so it is ignored: the pane shows B, read from the attach (inferred); a
+/// held `--resume` or the foreground's session file the same way, never
+/// inferred; a backed claim stands.
+fn an_unbacked_claim_shows_what_runs_in_the_pane() {
+    let (a_sid, b_sid) = ("9aacf927-0000-4000-8000-00000000000a", "f29c13aa-0000-4000-8000-00000000000b");
+    let claim = json!({"kind": "id", "source": "herdr:claude", "value": a_sid});
+    let on = |id: &str, fg: Value, pid: i64, claim: &Value| json!({"pane_id": id, "tab_id": "w1:t1", "workspace_id": "w1", "agent": "claude", "agent_status": "working", "cwd": "/home", "agent_session": claim, "foreground": fg, "pid": pid});
+    let pane = |id: &str, fg: Value| on(id, fg, 777, &claim);
+    let w = World::new(Some(json!({
+        "next_ws": 2,
+        "workspaces": [{"workspace_id": "w1", "label": "HOME", "focused": true, "active_tab_id": "w1:t1"}],
+        "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "HOME.ADMIRAL", "focused": true}],
+        "panes": [
+            pane("w1:p1", json!(["/home/u/.local/bin/claude", "attach", "f29c13aa"])),
+            on("w1:p2", json!(["claude", "--resume", "s-held"]), 778, &claim),
+            pane("w1:p3", json!(["claude"])),
+            pane("w1:p4", json!(["claude", "--resume", a_sid])),
+            pane("w1:p5", json!(["yazi"])),
+            // an interactive resume a `/clear` moved on: its session file wins over the argv
+            pane("w1:p6", json!(["claude", "--resume", "s-held"])),
+            // B's own claim, backed by the attach alone: shown, inferred all the same
+            on("w1:p7", json!(["claude", "attach", "f29c13aa"]), 779, &json!({"kind": "id", "source": "herdr:claude", "value": b_sid})),
+        ]
+    })));
+    let home = w.dir.join("claude_home");
+    fs::create_dir_all(home.join("jobs").join("f29c13aa")).unwrap();
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::write(home.join("jobs/f29c13aa/state.json"), json!({"sessionId": b_sid}).to_string()).unwrap();
+    fs::write(home.join("sessions/777.json"), json!({"pid": 777, "sessionId": "s-own"}).to_string()).unwrap();
+    let m = Herdr { claude_home: home.clone(), ..w.mux() };
+    let want = [("w1:p1", Some(b_sid), true), ("w1:p2", Some("s-held"), false), ("w1:p3", Some("s-own"), false), ("w1:p4", Some(a_sid), false), ("w1:p5", None, false), ("w1:p6", Some("s-own"), false), ("w1:p7", Some(b_sid), true)];
+    let panes = m.panes();
+    for (id, sid, inferred) in want {
+        let p = panes.iter().find(|p| p.pane.pane_id == id).unwrap_or_else(|| panic!("no pane {id}"));
+        assert_eq!((p.session_id.as_deref(), p.inferred), (sid, inferred), "panes(): {id}");
+    }
+    for foregrounds in [false, true] {
+        let shape = m.shape(foregrounds).expect("shape");
+        for (id, sid, inferred) in want {
+            let p = shape.panes.iter().find(|p| p.pane.pane_id == id).unwrap();
+            assert_eq!((p.session_id.as_deref(), p.inferred), (sid, inferred), "shape({foregrounds}): {id}");
+            assert!(p.claimed.is_some(), "the claim is kept for the agent-view test: {id}");
+        }
+    }
+    // the job's conversation now: a `/clear` moves it
+    fs::write(home.join("jobs/f29c13aa/state.json"), json!({"sessionId": b_sid, "resumeSessionId": "s-after-clear"}).to_string()).unwrap();
+    let p1 = m.panes().into_iter().find(|p| p.pane.pane_id == "w1:p1").unwrap();
+    assert_eq!((p1.session_id.as_deref(), p1.inferred), (Some("s-after-clear"), true));
+    // a foreground that cannot be read backs no claim and shows nothing
+    let mut world = w.world();
+    world["fail"] = json!("pane process-info");
+    fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
+    let panes = m.panes();
+    assert!(!panes.is_empty() && panes.iter().all(|p| p.session_id.is_none() && !p.inferred), "{panes:?}");
 }
 
 // ---------- error paths ----------

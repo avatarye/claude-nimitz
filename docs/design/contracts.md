@@ -135,7 +135,9 @@ the version checks; a denylist): nimitz's identity and multiplexer names
 Claude Code copies a job's provider settings from the launching command),
 and nimitz's own config. A member's labels go only through `--settings`,
 which also carries nimitz's `NIMITZ_STATE`, `NIMITZ_CLAUDE_HOME` and `NIMITZ_HOSTNAME`, so the
-member's hook writes where this nimitz reads whatever env the daemon has. A daemon that such a call
+member's hook writes where this nimitz reads whatever env the daemon has, and blanks
+`HERDR_PANE_ID`, `HERDR_TAB_ID` and `HERDR_WORKSPACE_ID`, so Herdr's own hook in the worker
+never claims the pane of a daemon started by hand in a Herdr pane. A daemon that such a call
 happens to start keeps a clean environment, whoever ran nimitz. The `claude
 attach <job>` typed into a Herdr pane runs in that pane's shell, with the
 pane's own env.
@@ -663,16 +665,26 @@ job (`claude attach <job>`), or has a session file (`sessions/<pid>.json`)
 that names it. Herdr learns a pane's session from its own SessionStart hook,
 which names the pane by the process's inherited `HERDR_PANE_ID`; a background
 job inherits the pane id of whoever launched it (or the daemon's), so the
-claim alone can put a ship in its commodore's pane. An unbacked claim leaves
-the pane with no session (`ShapePane.claimed` keeps it for the agent-view
-test, R-24; a claim that names another member's session is that member's
-hook, not the agent view); the pane then shows the session its foreground
-pid's session file names, if any. A pane Herdr shows an agent in but
-claims no session for shows what its foreground runs
+claim alone can put a ship in its commodore's pane. An unbacked claim is
+ignored (`ShapePane.claimed` keeps it for the agent-view test, R-24; a
+claim that names another member's session is that member's hook, not the
+agent view), and the pane shows what its foreground runs, as a pane Herdr
+shows an agent in but claims no session for does
 (`evidence::session_of_unclaimed`): the job a `claude attach <job>`
-attaches to (the job row's `resumeSessionId`, else `sessionId`), else the
-conversation a held `claude --resume <sid>` runs, else a foreground pid's
-session file. A session read from the attach alone is `Pane.inferred`
+attaches to (the job row's `resumeSessionId`, else `sessionId`), else a
+foreground pid's session file (an interactive resume a `/clear` moved
+on), else the conversation a held `claude --resume <sid>` names. A claim
+backed by the attach alone (`evidence::Backing::Attach`: no process names
+the session in its argv or its session file) is inferred too: under that
+argv an older Claude Code may run the agent view. `status`, Admiralty's dots, enter and `J`/`K`, `start -p`
+and a restore's claim and reattach all read the pane so. The root cause
+is closed at launch: every member's `--settings` env blanks
+`HERDR_PANE_ID`, `HERDR_TAB_ID` and `HERDR_WORKSPACE_ID`
+(`claude::HERDR_PANE_VARS`), so a member's worker never claims the pane
+its daemon was started from (`HERDR_ENV` and the socket stay: a member's
+nimitz takes its server from the record). A job launched before keeps the
+daemon's values until `nimitz start <id> -f` relaunches it with the
+settings again. A session read from the attach alone is `Pane.inferred`
 (`ShapePane.inferred`): shown and focused, and typed into only while every
 non-shell process of its foreground is exactly `claude attach <the job>` on
 a Claude Code at or past `nimitz_mux::ATTACH_EXEC_SINCE` (2.1.293; the
@@ -768,8 +780,9 @@ carries each pane's `foreground_pid` (`pane process-info`) so a held
 process is matched by its session, its `--resume <session>` argv or its pid.
 
 The agent view (R-24): a pane whose foreground is the member's exact
-`claude attach <job>` and whose `agent_session` is another session is
-`tab.agentview`. On Claude Code 2.1.293 and later a view the attach client
+`claude attach <job>` and whose `agent_session` is another session that
+names no member is `tab.agentview` (the pane is inferred from the attach;
+restore reads the claim for this test alone). On Claude Code 2.1.293 and later a view the attach client
 re-exec'd into runs `claude agents`, not the attach: the tab is taken by it,
 never the member's. On an older version the view may keep the attach's
 argv; the limit then stands: with no session reported for the pane it reads
