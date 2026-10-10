@@ -1934,3 +1934,19 @@ fn s08_the_old_commands_point_at_start() {
         assert!(r.out.contains("is deprecated and goes away in the next release") && r.out.contains(new), "{args:?}:\n{}", r.out);
     }
 }
+
+/// A row skipped under `start -f` names start's flag, not restore's.
+#[test]
+fn s09_a_member_skipped_under_start_f_says_f() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    sb.session_file("MAIN/ARGOS/CLEAN", |v| v["status"] = json!("busy"));
+    let r = sb.run(&["start", "MAIN", "-f", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("on 2.1.288 (-f); mid-turn")), "{}", r.out);
+    assert!(!r.out.contains("(--restart)"), "{}", r.out);
+    let r = sb.run(&["restore", "MAIN", "--restart", "--plan"]);
+    assert!(r.out.contains("on 2.1.288 (--restart)"), "restore keeps its own flag:\n{}", r.out);
+}

@@ -3,4 +3,4 @@
 # refuse. `max` is the highest version tested: a newer one only warns ("tested
 # up to max") and launches go ahead. Raise `max` after the tier-2 tests pass.
 min = "2.1.288"
-max = "2.1.294"
+max = "2.1.296"
