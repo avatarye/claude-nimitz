@@ -211,7 +211,8 @@ impl E2e {
             .env("NIMITZ_STATE", b("state"))
             .env("NIMITZ_CLAUDE_BIN", b("bin/claude-cheap"))
             .env("NIMITZ_NATIVE_CLAUDE_BIN", &self.native)
-            .env("NIMITZ_MUX", "none");
+            .env("NIMITZ_MUX", "none")
+            .env("NIMITZ_VERBOSE", "1");
         c
     }
 
@@ -1405,7 +1406,7 @@ fn e2e_20_accept_n2_n15_mode_flag_and_empty_plans_say_why() {
     w.start_ship_idle();
     let (_, out) = w.nz(&["start", &w.ship(), "--plan"]);
     println!("N15 start: {out}");
-    assert!(out.contains("nothing to do"), "{out}");
+    assert!(out.contains("nothing to start"), "{out}");
     let (_, out) = w.nz(&["up", &w.fleet, "--plan"]);
     println!("N15 up: {out}");
     assert!(out.contains("nothing to do"), "{out}");
@@ -1671,9 +1672,9 @@ fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
     };
     let (code, plan) = restore("--plan");
     assert_eq!(code, 0, "{plan}");
-    assert!(plan.contains("Claude Code updated to 2.1.999 (3 live worker(s) on an older one)"), "{plan}");
+    assert!(plan.contains("Claude Code updated to 2.1.999  ·  3 to relaunch"), "{plan}");
     for id in &ids {
-        assert!(plan.lines().any(|l| l.trim_start().starts_with(&format!("{id} ")) && l.contains("installed 2.1.999 -> relaunch (same id and history)")), "{id}:\n{plan}");
+        assert!(plan.lines().any(|l| l.trim_start().starts_with(&format!("{id} ")) && l.contains("-> relaunch (same id and history)")), "{id}:\n{plan}");
     }
     let (code, out) = restore("--yes");
     println!("{out}");
@@ -1686,5 +1687,36 @@ fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
         assert_ne!(m["session"]["pid"].as_i64(), Some(*pid), "{id}: a new worker process");
         assert_eq!(m["session"]["labels"]["NIMITZ_ID"], id.as_str(), "{id}: its labels: {m}");
     }
+    w.finish();
+}
+
+/// `nimitz start` on real Claude Code (no multiplexer: the jobs only): `-f`
+/// relaunches a live, current ship (the same conversation, a new process,
+/// its labels); after a stop, a fleet-wide `start --all` wakes it by its id.
+#[test]
+fn e2e_start_f_relaunches_and_a_fleet_start_all_wakes_a_stopped_ship() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(95);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    w.start_ship_idle();
+    let ship = w.ship();
+    let m = w.member(&ship).unwrap();
+    let (sid, pid) = (m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["pid"].as_i64().unwrap());
+    let plan = w.ok(&["start", &ship, "-f", "--plan"]);
+    assert!(plan.lines().any(|l| l.trim_start().starts_with("SHIP") && l.contains("relaunch")), "{plan}");
+    let out = w.ok(&["start", &ship, "-f", "--yes"]);
+    println!("{out}");
+    let m = w.wait(60, || w.member(&ship).filter(|m| !m["session"]["pid"].is_null() && m["session"]["pid"].as_i64() != Some(pid))).unwrap_or_else(|| panic!("relaunched:\n{out}"));
+    assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "the same conversation");
+    assert_eq!(m["session"]["labels"]["NIMITZ_ID"], ship.as_str(), "{m}");
+    w.wait(120, || w.member(&ship).filter(|m| m["status"] == "Idle")).expect("idle after the relaunch");
+    w.ok(&["stop", &ship, "--yes"]);
+    w.wait(30, || w.member(&ship).filter(|m| m["session"]["pid"].is_null())).expect("stopped");
+    let out = w.ok(&["start", &w.fleet, "--all", "--yes"]);
+    println!("{out}");
+    let m = w.wait(60, || w.member(&ship).filter(|m| !m["session"]["pid"].is_null())).unwrap_or_else(|| panic!("woken:\n{out}"));
+    assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "woken by its id");
     w.finish();
 }

@@ -177,14 +177,14 @@ pub const HELP: &[(&str, &str)] = &[
     ("z", "show / hide the member's crew that finished over 30 min ago (+N finished)"),
     ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
-    ("enter", "jump to the row's pane (else fold / unfold)"),
+    ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz start <id> -p, confirms); else fold / unfold"),
     ("J / K", "next / previous row with a pane"),
     ("!", "everything waiting on you"),
     ("i", "every issue, with its fix command"),
-    ("a", "start the member, top-down (confirms)"),
-    ("u", "up: start everything the fleet runs here (confirms)"),
-    ("A", "open: attach to a background session in a new pane"),
-    ("x", "actions: stop, relaunch, sweep, rm, adopt, remove; on a fleet: layout, machines"),
+    ("a", "start it: nimitz start <id> (a lead alone: --only; confirms)"),
+    ("u", "up (deprecated): everything the fleet runs here, first launches too (confirms)"),
+    ("A", "a pane for it, focused: nimitz start <id> -p (one that shows it: jump there)"),
+    ("x", "actions: stop, relaunch (start -f), sweep, rm, adopt, remove; on a fleet: R start the fleet, layout, machines"),
     ("m", "message (ships: relayed by their commodore)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
@@ -836,10 +836,12 @@ impl App {
             }
         }
         let Some(b) = &self.bundle else { return None };
-        if let (Act::Restore, Target::Fleet(f)) = (act, self.target()) {
-            match actions::prepare_restore(&self.ctx, b.mux_caps, &b.snap, &f) {
+        // start, relaunch, a fleet's restore: `nimitz start` itself (the CLI plans and runs)
+        // (demo data has no CLI world behind it: there the plans are previews)
+        if matches!(act, Act::Restore | Act::Start | Act::Relaunch) && (self.ctx.live || act == Act::Restore) {
+            match actions::prepare_start(&self.ctx, b.mux_caps, &b.snap, &self.target(), act) {
                 Ok(p) => self.modal = Some(Modal::Confirm(p)),
-                Err(why) => self.notify(format!("restore: not available. {why}"), st(mono::WARN)),
+                Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),
             }
             return None;
         }
@@ -868,7 +870,10 @@ impl App {
                     }
                     return None;
                 }
-                Ok(nimitz_mux::TabState::Shell(pane)) => {
+                // anything else: `nimitz start <id> -p` (its tab, a split beside
+                // its commodore, a new tab; a parked job wakes)
+                // a stowaway is no member: its tab's shell takes the attach here
+                Ok(nimitz_mux::TabState::Shell(pane)) if !matches!(self.target(), Target::Member(_)) => {
                     match actions::claim_open(&self.ctx, &b.snap, &self.target(), &pane) {
                         Ok(()) => {
                             actions::log(&self.ctx.env, "attach", &pane.pane_id);
@@ -878,16 +883,19 @@ impl App {
                     }
                     return None;
                 }
-                Ok(nimitz_mux::TabState::Taken { pane, running }) => {
+                Ok(nimitz_mux::TabState::Taken { pane, running }) if !matches!(self.target(), Target::Member(_)) => {
                     self.notify(format!("tab.taken: its tab's pane {} runs `{running}`; ctrl-z or quit it there, then A again", pane.pane_id), st(mono::ERROR));
                     return None;
                 }
-                Ok(nimitz_mux::TabState::Missing) => {}
-                Err(i) => {
-                    let fix = i.fix.as_deref().map(|f| format!("  fix: {f}")).unwrap_or_default();
-                    self.notify(format!("{}: {}{fix}", i.code, i.message), st(mono::ERROR));
+                _ if self.ctx.live && matches!(self.target(), Target::Member(_)) => {
+                    match actions::prepare_start(&self.ctx, b.mux_caps, &b.snap, &self.target(), Act::Open) {
+                        Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                        Err(why) => self.notify(format!("open: not available. {why}"), st(mono::WARN)),
+                    }
                     return None;
                 }
+                // demo data: the in-process preview below
+                _ => {}
             }
         }
         match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {
@@ -913,6 +921,8 @@ impl App {
                 }
                 Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
             },
+            // a member with no pane: `nimitz start <id> -p` gives it one
+            Err(_) if self.ctx.live && matches!(self.target(), Target::Member(_)) && self.available(Act::Open).is_ok() => return self.start_act(Act::Open),
             Err(why) => self.notify(format!("No pane to jump to for {}: {why}", full_name(&r)), st(mono::WARN)),
         }
         None

@@ -366,7 +366,7 @@ fn inside_3_4b_rename_is_name_drift_with_a_relaunch_fix() {
     w.claude_ok(&["__inside", &job, "rename", "RENAMED"], None);
     let m = w.member(&id);
     let i = m.issues.iter().find(|i| i.code == "name.drift").expect("name.drift");
-    assert!(i.fix.as_deref().unwrap_or("").contains("relaunch"));
+    assert!(i.fix.as_deref().unwrap_or("").contains(" -f"), "a relaunch: {:?}", i.fix);
     assert_eq!(w.job_file(&job)["respawnFlags"][1], json!("RENAMED"), "/rename rewrites --name in respawnFlags (cli-19)");
     assert_eq!(w.rec(&id).job.as_deref(), Some(job.as_str()), "the job is kept");
 }

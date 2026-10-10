@@ -465,6 +465,15 @@ pub struct Found {
     pub id: Id,
     pub found: String,
     pub action: String,
+    /// the plan's verbs for it (`restore::verbs`): its job (relaunch, wake,
+    /// launch, fresh, skip, refuse, nothing) and its pane (reattach, open
+    /// pane, focus, or empty), and where that pane is
+    #[serde(default)]
+    pub job: String,
+    #[serde(default)]
+    pub pane: String,
+    #[serde(default)]
+    pub place: String,
 }
 
 /// What an action would do. `refusals` non-empty means it will not run.

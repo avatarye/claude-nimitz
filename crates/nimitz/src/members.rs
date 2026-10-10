@@ -199,7 +199,7 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.at_most(1)?;
     let fleet = ctx.args.need(0, "fleet")?;
     parse_id(fleet)?;
-    out::line(&format!("[INFO] `nimitz up` is deprecated and goes away in the next release: `nimitz restore {fleet} --all` brings back every member that has run; `nimitz start <id>` makes a first launch"));
+    deprecated(&format!("up {fleet}"), &format!("start {fleet} --all` (and `nimitz start <id>` for a first launch"));
     let snap = ctx.snap();
     // the jobs first (every member with a row wakes, the rest cold-launch:
     // `restore --all` plus the first launches), then the shape: the leads'
@@ -208,7 +208,7 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
     let mux = ctx.mux();
     if ctx.plan_only() {
         if mux.caps().open {
-            out::line(&format!("then: the leads' Herdr tabs (`nimitz restore {fleet} --plan` shows them once the jobs run)"));
+            out::line(&format!("then: the leads' Herdr tabs (`nimitz start {fleet} --plan` shows them once the jobs run)"));
         }
         return Ok(code);
     }
@@ -216,22 +216,65 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
         return Ok(code);
     }
     if code != 0 {
-        out::line(&format!("[INFO] the leads' tabs were not made; nimitz restore {fleet} makes them once the jobs run"));
+        out::line(&format!("[INFO] the leads' tabs were not made; nimitz start {fleet} makes them once the jobs run"));
         return Ok(code);
     }
     let opts = nimitz_core::restore::RestoreOpts { all: true, shape_only: true, ..Default::default() };
     Ok(crate::restore::run_shape(ctx, Some(fleet), opts, true))
 }
 
-/// `nimitz start <id> [--force] [--fresh]`: `--fresh` is a cold launch that
-/// starts a new lineage entry (the fix for `history.lost`).
+/// `nimitz start [<target>] [-f] [-p] [--fresh] [--all] [--force]`: one verb
+/// brings any member up and ready (`restore::plan_start`). The target is a
+/// ship, a squadron (its commodore and ships), a fleet, or nothing (every
+/// fleet here). `-f` (`--relaunch`) relaunches the live ones too; `-p`
+/// (`--pane`) gives the named member a pane and focuses it; `--fresh` starts
+/// its new conversation; `--all` wakes parked ships; `--force` keeps its old
+/// meaning (a cold launch over a broken lineage or an untested Claude Code).
+/// The short flags are start's own (read from the positionals, so no other
+/// command, `signal`'s text least of all, ever reads them). With no
+/// multiplexer it brings up the jobs only.
 pub fn start(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--fresh"])?;
-    ctx.args.at_most(1)?;
-    let id = parse_id(ctx.args.need(0, "id")?)?;
-    let snap = ctx.snap();
-    let opts = ses::StartOpts { force: ctx.force(), fresh: ctx.args.flag("--fresh") };
-    Ok(run::session_plan(ctx, ses::plan_start_with(&ctx.env, &snap, &id, &ctx.caller, opts)))
+    ctx.args.allow(&["--fresh", "--all", "--relaunch", "--pane", "--jobs-only", "--here", "--rename", "--only"])?;
+    let (mut relaunch, mut pane) = (ctx.args.flag("--relaunch"), ctx.args.flag("--pane"));
+    let mut pos: Vec<&str> = vec![];
+    for a in &ctx.args.pos {
+        let short = a.strip_prefix('-').filter(|r| !r.is_empty() && r.chars().all(|c| c == 'f' || c == 'p'));
+        match short {
+            Some(r) => {
+                relaunch |= r.contains('f');
+                pane |= r.contains('p');
+            }
+            None => pos.push(a),
+        }
+    }
+    if pos.len() > 1 {
+        return Err(format!("start takes one target (a fleet, a squadron or a ship), not {}", pos.len()));
+    }
+    let target = pos.first().map(|t| parse_id(t)).transpose()?;
+    let jobs_only = ctx.args.flag("--jobs-only") || (!ctx.mux().caps().open && !pane);
+    let opts = nimitz_core::restore::RestoreOpts {
+        all: ctx.args.flag("--all"),
+        force: ctx.force(),
+        jobs_only,
+        here: ctx.args.flag("--here"),
+        rename: ctx.args.flag("--rename"),
+        restart: relaunch,
+        pane,
+        fresh: ctx.args.flag("--fresh"),
+        only: ctx.args.flag("--only"),
+        ..Default::default()
+    };
+    Ok(crate::restore::run_start(ctx, target.as_ref(), opts))
+}
+
+/// A deprecated command's pointer to `start` (stderr under `--json`).
+pub fn deprecated(old: &str, new: &str) {
+    let line = format!("[INFO] `nimitz {old}` is deprecated and goes away in the next release: use `nimitz {new}`");
+    if out::json_mode() {
+        eprintln!("{line}");
+    } else {
+        out::line(&line);
+    }
 }
 
 pub fn stop(ctx: &Ctx) -> Result<i32, String> {
@@ -255,6 +298,7 @@ pub fn relaunch(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
     let id = parse_id(ctx.args.need(0, "id")?)?;
+    deprecated(&format!("relaunch {id}"), nimitz_core::sessions::start_cmd(&id, "-f").trim_start_matches("nimitz "));
     let snap = ctx.snap();
     Ok(run::session_plan(ctx, ses::plan_relaunch(&ctx.env, &snap, &id, &ctx.caller)))
 }
@@ -490,6 +534,7 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
     let id = parse_id(ctx.args.need(0, "id")?)?;
+    deprecated(&format!("open {id}"), nimitz_core::sessions::start_cmd(&id, "-p").trim_start_matches("nimitz "));
     let mut plan = Plan { summary: format!("open {id}"), ..Default::default() };
     // Panes and tabs are the user's terminal: no member opens one.
     if ctx.caller != Caller::User {
@@ -618,7 +663,7 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
         return Err(format!("no layout for {which:?}; only `herdr` is built"));
     }
     let only = ctx.args.pos.get(1).map(|s| parse_id(s)).transpose()?;
-    out::line("[INFO] `nimitz layout herdr` is deprecated and goes away in the next release: `nimitz restore` makes the same tabs and brings back the jobs too (this alias makes tabs only, no resume)");
+    deprecated("layout herdr", "start [<F>]` (it makes the same tabs and brings the jobs up too");
     let opts = nimitz_core::restore::RestoreOpts { shape_only: true, ships: ctx.args.flag("--ships"), force: ctx.force(), ..Default::default() };
     Ok(crate::restore::run_shape(ctx, only.as_ref().map(|i| i.fleet().to_string()).as_deref(), opts, false))
 }

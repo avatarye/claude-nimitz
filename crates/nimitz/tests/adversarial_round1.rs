@@ -25,7 +25,7 @@ struct Run {
 
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)], stdin: Option<&str>, cwd: Option<&Path>) -> Run {
     let mut c = Command::new(EXE);
-    c.env_clear().env("PATH", "/usr/bin:/bin").envs(vars).args(args);
+    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_VERBOSE", "1").envs(vars).args(args);
     for (k, v) in extra {
         c.env(k, v);
     }
@@ -511,7 +511,7 @@ fn bug47_a_second_start_does_not_start_a_second_admiral() {
     assert_eq!(r.code, 0, "{}", r.out);
     let r = sb.run(&["start", "MAIN", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("nothing to do"), "the second start finds it live:\n{}", r.out);
+    assert!(r.out.contains("nothing to start"), "the second start finds it live:\n{}", r.out);
     let calls = std::fs::read_to_string(sb.dir("calls.log")).unwrap_or_default();
     let wakes = calls.lines().filter(|l| l.contains("--resume") || l.contains("\"--bg\",\"--name\",\"[MAIN]-ADMIRAL\"")).count();
     assert_eq!(wakes, 1, "one wake, as itself, never a second job:\n{calls}");

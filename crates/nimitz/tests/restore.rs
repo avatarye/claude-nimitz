@@ -29,7 +29,7 @@ struct Run {
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)]) -> Run {
     let mut c = Command::new(EXE);
     // the crash window short: a `working` row is waited for 0.2 s, not 20
-    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_CRASH_WINDOW", "0.2").envs(vars).args(args);
+    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_CRASH_WINDOW", "0.2").env("NIMITZ_VERBOSE", "1").envs(vars).args(args);
     for (k, v) in extra {
         c.env(k, v);
     }
@@ -382,7 +382,7 @@ fn r03_herdr_crashed_sessions_alive_tabs_back_as_shells() {
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
     assert!(r.contains("[OK] MAIN: restored 3 lead(s), 1 ship(s)"), "{r}");
     // the plan said what happened, per member: no relaunch, only reattaches
-    assert!(r.contains("Herdr closed or restarted, or never laid out (4 live member(s) without their pane)"), "{r}");
+    assert!(r.contains("panes missing (Herdr closed, restarted or never laid out)") && r.contains("4 panes to reattach"), "{r}");
     assert!(lines_with(&r, "MAIN/ARGOS/CLEAN ").iter().any(|l| l.contains("its tab is a shell") && l.contains("-> reattach in pane")), "{r}");
     assert!(!r.contains("-> relaunch") && !r.contains("Claude Code updated"), "{r}");
     // the snapshot was not restored at all: an empty Herdr, one default workspace
@@ -617,8 +617,8 @@ fn r08_r19_reboot_resumes_leads_and_the_active_set_leaves_parked_ships() {
     let r = sb.run(&["restore", "MAIN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("(turn.interrupted)") && r.out.contains("MAIN/ARGOS/CLEAN was mid-turn"), "{}", r.out);
-    assert!(r.out.contains("a reboot, or jobs that ended"), "{}", r.out);
-    assert!(lines_with(&r.out, "STOPPED").iter().all(|l| l.contains("-> left parked")), "a ship parked before the loss stays parked:\n{}", r.out);
+    assert!(r.out.contains("members down (a reboot, or jobs that ended)"), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN/ARGOS/STOPPED").iter().all(|l| l.contains("-> left parked")), "a ship parked before the loss stays parked:\n{}", r.out);
     assert!(lines_with(&r.out, "MAIN/ARGOS/CLEAN ").iter().any(|l| l.contains("down, it was active")), "{}", r.out);
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     for (id, sid) in &sids {
@@ -656,7 +656,7 @@ fn r08_with_resume_agents_on_restore_herdr_holds_every_lead_and_nothing_is_woken
     assert_eq!(lines_with(&r, "(tab.resumed)").len(), 3, "{r}");
     for (id, _) in &sids {
         let pane = sb.world()["panes"].as_array().unwrap().iter().find(|p| p["agent_session"]["value"] == sb.sid(id).as_str()).map(|p| p["pane_id"].as_str().unwrap().to_string()).expect("the pane that holds it");
-        assert!(r.contains(&format!("is open in pane {pane} (Herdr's resume_agents_on_restore, or a claude --resume by hand)")) && r.contains(&format!("type /exit in pane {pane}, then nimitz restore MAIN")), "{id} in its own pane:\n{r}");
+        assert!(r.contains(&format!("is open in pane {pane} (Herdr's resume_agents_on_restore, or a claude --resume by hand)")) && r.contains(&format!("type /exit in pane {pane}, then nimitz start MAIN")), "{id} in its own pane:\n{r}");
     }
     for (id, sid) in &sids {
         assert!(!r.contains(&format!("--bg --resume {sid}")), "{id}: a wake would make a copy beside the held conversation:\n{r}");
@@ -816,9 +816,9 @@ fn r09_claude_code_updated_relaunches_older_workers_ships_first_then_leads_and_r
     update_claude(&sb, "2.1.289");
     let r = sb.run(&["restore", "MAIN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("[PLAN] restore MAIN: Claude Code updated to 2.1.289 (7 live worker(s) on an older one)"), "{}", r.out);
+    assert!(r.out.contains("restore MAIN  ·  Claude Code updated to 2.1.289  ·  7 to relaunch"), "{}", r.out);
     for id in LIVE {
-        assert!(lines_with(&r.out, &format!("{id} ")).iter().any(|l| l.contains("worker on 2.1.288, installed 2.1.289 -> relaunch (same id and history)")), "{id}:\n{}", r.out);
+        assert!(lines_with(&r.out, &format!("{id} ")).iter().any(|l| l.contains("on 2.1.288 -> relaunch (same id and history)")), "{id}:\n{}", r.out);
     }
     assert!(lines_with(&r.out, "MAIN/ARGOS/CLEAN ").iter().any(|l| l.contains(&format!("then reattach in its pane {clean_pane}"))), "{}", r.out);
     assert!(lines_with(&r.out, "MAIN/ARGOS/STOPPED").iter().all(|l| l.contains("-> left parked")), "{}", r.out);
@@ -847,7 +847,7 @@ fn r09_claude_code_updated_relaunches_older_workers_ships_first_then_leads_and_r
     // run again: every worker on the installed version, nothing to do
     sb.attach_all();
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
-    assert!(r.contains("restore MAIN: nothing to bring back") && relaunched(&r).is_empty(), "{r}");
+    assert!(r.contains("restore MAIN  ·  nothing to bring back") && relaunched(&r).is_empty(), "{r}");
 }
 
 /// After an update: a member mid-turn is left running (a relaunch would cut
@@ -864,13 +864,13 @@ fn r09b_an_update_never_cuts_a_turn_never_relaunches_the_caller_and_a_commodore_
     update_claude(&sb, "2.1.289");
     let r = sb.run(&["restore", "MAIN", "--plan"]);
     assert!(lines_with(&r.out, "MAIN/ARGOS/CLEAN ").iter().any(|l| l.contains("mid-turn -> left running")), "{}", r.out);
-    assert!(r.out.contains("(relaunch.busy)") && r.out.contains("nimitz restore MAIN  # again once it is idle"), "{}", r.out);
+    assert!(r.out.contains("(relaunch.busy)") && r.out.contains("nimitz start MAIN/ARGOS/CLEAN -f  # once it is idle"), "{}", r.out);
     // the admiral runs it: every other member, never itself
     let r = sb.run_as("MAIN", &["restore", "MAIN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(lines_with(&r.out, "MAIN ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz restore MAIN")), "{}", r.out);
-    assert!(r.out.contains("(restore.self)") && r.out.contains("MAIN is a lead: you run the restore again from your own shell"), "{}", r.out);
-    assert!(r.out.contains("fix: ask the user to run: nimitz restore MAIN  # yours, from a shell"), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz start MAIN")), "{}", r.out);
+    assert!(r.out.contains("(restore.self)") && r.out.contains("MAIN is a lead: you run it again from your own shell"), "{}", r.out);
+    assert!(r.out.contains("fix: ask the user to run: nimitz start MAIN --only -f  # yours, from a shell"), "{}", r.out);
     assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("-> relaunch")), "{}", r.out);
     let adm = sb.short("MAIN");
     let r = sb.run_as("MAIN", &["restore", "MAIN", "--yes"]);
@@ -888,7 +888,7 @@ fn r09b_an_update_never_cuts_a_turn_never_relaunches_the_caller_and_a_commodore_
     let ids: Vec<&str> = r.out.lines().filter(|l| l.starts_with("    MAIN")).filter_map(|l| l.split_whitespace().next()).collect();
     assert!(!ids.is_empty() && ids.iter().all(|id| id.starts_with("MAIN/ARGOS/") || *id == "MAIN/ARGOS"), "{ids:?}\n{}", r.out);
     // its own worker is older too: its line, and the restore the user runs afterwards
-    assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz restore MAIN")), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz start MAIN")), "{}", r.out);
     assert!(sb.run_as("MAIN/ARGOS", &["restore", "BETA", "--plan"]).out.contains("(authority)"));
     assert!(sb.run_as("MAIN/ARGOS/CLEAN", &["restore", "--plan"]).out.contains("(authority)"));
     let r = sb.run_as("MAIN/ARGOS", &["restore", "--yes"]);
@@ -907,10 +907,10 @@ fn r_restart_relaunches_every_live_member_whatever_its_version() {
     sb.attach_all();
     idle_all(&sb);
     let r = sb.run(&["restore", "MAIN", "--plan"]);
-    assert!(r.out.contains("restore MAIN: nothing to bring back"), "{}", r.out);
+    assert!(r.out.contains("restore MAIN  ·  nothing to bring back"), "{}", r.out);
     let r = sb.run(&["restore", "MAIN", "--restart", "--plan"]);
-    assert!(r.out.contains("--restart (every live member is relaunched)"), "{}", r.out);
-    assert!(lines_with(&r.out, "MAIN/BOREAL ").iter().any(|l| l.contains("live, worker on 2.1.288 (--restart) -> relaunch")), "{}", r.out);
+    assert!(r.out.contains("relaunch forced") && r.out.contains("7 to relaunch"), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN/BOREAL ").iter().any(|l| l.contains("on 2.1.288 (--restart) -> relaunch")), "{}", r.out);
     let before: Vec<(String, String, String)> = LIVE.iter().map(|id| (id.to_string(), sb.sid(id), sb.short(id))).collect();
     let r = sb.ok(&["restore", "MAIN", "--restart", "--yes"]);
     let order = relaunched(&r);
@@ -918,7 +918,7 @@ fn r_restart_relaunches_every_live_member_whatever_its_version() {
     assert_eq!(order.last().map(String::as_str), Some("MAIN"), "the admiral last: {order:?}");
     // run by the admiral: its own relaunch is left to the user, with no second round for the rest
     let own = sb.run_as("MAIN", &["restore", "MAIN", "--restart", "--plan"]);
-    assert!(own.out.contains("fix: ask the user to run: nimitz relaunch MAIN && nimitz restore MAIN  #"), "{}", own.out);
+    assert!(own.out.contains("fix: ask the user to run: nimitz start MAIN --only -f  #"), "{}", own.out);
     for (id, sid, _) in &before {
         assert_eq!(&sb.sid(id), sid, "{id}");
     }
@@ -940,7 +940,7 @@ fn r_no_fleet_named_restores_every_fleet_here() {
     update_claude(&sb, "2.1.289");
     let r = sb.run(&["restore", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("[PLAN] restore (every fleet here): Claude Code updated to 2.1.289 (8 live worker(s) on an older one)"), "{}", r.out);
+    assert!(r.out.contains("restore (every fleet here)  ·  Claude Code updated to 2.1.289  ·  8 to relaunch"), "{}", r.out);
     assert!(lines_with(&r.out, "BETA ").iter().any(|l| l.contains("-> relaunch")), "{}", r.out);
     let r = sb.ok(&["restore", "--yes"]);
     assert!(r.contains("[OK] BETA: restored 1 lead(s)") && r.contains("[OK] MAIN: restored 3 lead(s), 4 ship(s)"), "{r}");
@@ -988,7 +988,7 @@ fn r09d_a_member_that_turns_busy_during_the_run_is_held_back() {
     std::fs::write(&p, serde_json::to_vec(&w).unwrap()).unwrap();
     update_claude(&sb, "2.1.289");
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
-    assert!(r.contains("MAIN turned busy after the plan: not relaunched now (relaunch.busy)"), "{r}");
+    assert!(r.contains("MAIN  turned busy after the plan: not relaunched now (relaunch.busy)"), "{r}");
     assert!(!relaunched(&r).contains(&"MAIN".to_string()), "{r}");
     assert_eq!(worker(&sb, "MAIN"), "2.1.288", "the admiral's turn was not cut");
     assert_eq!(sb.pane_attaching("MAIN"), adm_pane, "its pane untouched");
@@ -1033,7 +1033,7 @@ fn r_an_attach_client_on_an_older_version_is_reported() {
     sb.set_pane(&pane, |p| p["foreground"] = json!(["/home/u/.local/share/claude/versions/2.1.280", "attach", short]));
     let before = sb.n_runs();
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
-    assert!(r.contains("(attach.old)") && r.contains(&format!("ctrl-z in pane {pane}, then nimitz restore MAIN")), "{r}");
+    assert!(r.contains("(attach.old)") && r.contains(&format!("ctrl-z in pane {pane}, then nimitz start MAIN")), "{r}");
     assert!(lines_with(&r, "MAIN ").iter().any(|l| l.contains("by an attach on 2.1.280 -> nothing typed there")), "{r}");
     assert_eq!(sb.n_runs(), before, "nothing typed");
 }
@@ -1078,7 +1078,7 @@ fn r10_an_interrupted_restore_converges_on_the_second_run() {
 #[test]
 fn r11_r35_only_the_fleet_asked_and_never_the_admiralty_workspace() {
     let sb = Sb::new(true);
-    sb.ok(&["start", "BETA", "--yes"]); // BETA's admiral: a job now, no tab yet
+    sb.ok(&["start", "BETA", "--jobs-only", "--yes"]); // BETA's admiral: a job now, no tab yet
     sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(sb.tabs("BETA.ADMIRAL").is_empty(), "restore MAIN touches only MAIN");
     assert_eq!(sb.tabs("MAIN.ADMIRAL").len(), 1);
@@ -1182,7 +1182,7 @@ fn r16_a_lead_still_interactive_from_0_3_x_is_refused_then_migrated() {
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();
     let r = sb.run(&["restore", "BETA", "--yes"]);
     assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("(lead.interactive)") && r.out.contains("/exit") && r.out.contains("nimitz restore BETA"), "{}", r.out);
+    assert!(r.out.contains("(lead.interactive)") && r.out.contains("/exit") && r.out.contains("nimitz start BETA"), "{}", r.out);
     assert!(r.out.contains("[ERROR] BETA: 1 member(s) not restored"), "{}", r.out);
     assert!(sb.tabs("BETA.ADMIRAL").is_empty() && !r.out.contains("--bg --resume"), "no step for it:\n{}", r.out);
     // the user ended it with /exit: the same conversation comes back as a job, attached, pinned
@@ -1260,7 +1260,7 @@ fn r19_r20_a_busy_ship_is_only_reattached_and_a_waiting_one_is_reported() {
     let r = sb.ok(&["restore", "MAIN", "--yes"]);
     assert!(!r.contains("--bg --resume"), "nothing resumed:\n{r}");
     assert!(sb.runs().iter().any(|(_, l)| l.contains(&format!("attach {}", sb.short("MAIN/ARGOS/CLEAN")))), "CLEAN reattached:\n{r}");
-    assert!(r.contains("(needs-you)") && r.contains("nimitz open MAIN/ARGOS/NOLABEL"), "{r}");
+    assert!(r.contains("(needs-you)") && r.contains("nimitz start MAIN/ARGOS/NOLABEL -p"), "{r}");
     assert!(!sb.calls().contains("\"agent\",\"prompt\""), "nimitz answers nothing");
     // the machine died instead: the prompt is gone with the process
     sb.reboot();
@@ -1506,7 +1506,7 @@ fn r_up_wakes_everything_and_makes_the_leads_tabs() {
 fn r_layout_is_the_shape_only_alias() {
     let sb = Sb::new(true);
     let r = sb.ok(&["layout", "herdr", "MAIN", "--yes"]);
-    assert!(r.contains("`nimitz layout herdr` is deprecated") && r.contains("`nimitz restore`"), "{r}");
+    assert!(r.contains("`nimitz layout herdr` is deprecated") && r.contains("`nimitz start"), "{r}");
     assert_eq!(sb.tabs("MAIN.ADMIRAL").len(), 1);
     // a parked lead with no tab: a layout never resumes
     let job = sb.short("MAIN/ARGOS");
@@ -1583,7 +1583,7 @@ fn r_an_unreadable_foreground_is_never_typed_into_and_has_its_fix() {
     let before = sb.n_runs();
     let r = sb.run(&["restore", "MAIN", "--yes"]);
     assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("(tab.unreadable)") && r.out.contains(&format!("herdr pane process-info --pane {pane} failed; retry nimitz restore MAIN, or rename the tab")), "{}", r.out);
+    assert!(r.out.contains("(tab.unreadable)") && r.out.contains(&format!("herdr pane process-info --pane {pane} failed; retry nimitz start MAIN, or rename the tab")), "{}", r.out);
     assert_eq!(sb.n_runs(), before, "nothing typed into a pane nimitz cannot see into");
     assert!(!sb.live("MAIN/ARGOS"));
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1);
@@ -1595,7 +1595,7 @@ fn r_up_that_fails_says_the_tabs_were_not_made() {
     // the LAYOUT fleet has a CLAUDE.md in its folder: its up refuses
     let r = sb.run(&["up", "LAYOUT", "--yes"]);
     assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("the leads' tabs were not made; nimitz restore LAYOUT makes them once the jobs run"), "{}", r.out);
+    assert!(r.out.contains("the leads' tabs were not made; nimitz start LAYOUT makes them once the jobs run"), "{}", r.out);
     assert!(sb.tabs("LAYOUT.ADMIRAL").is_empty());
 }
 
@@ -1749,5 +1749,188 @@ fn with_several_herdr_servers_status_reads_only_the_recorded_one() {
     for name in ["default", "nikitz"] {
         let calls = std::fs::read_to_string(sb.base.join(format!("herdr-{name}/calls.jsonl"))).unwrap_or_default();
         assert!(calls.is_empty(), "never a call to the {name} server: {calls}");
+    }
+}
+
+// ------------------------------------------------------------------ nimitz start (one verb)
+
+/// The pane ids of tab `label`.
+fn panes_of_tab(sb: &Sb, label: &str) -> Vec<String> {
+    let w = sb.world();
+    let tab = w["tabs"].as_array().unwrap().iter().find(|t| t["label"] == label).map(|t| t["tab_id"].clone()).unwrap_or(Value::Null);
+    w["panes"].as_array().unwrap().iter().filter(|p| p["tab_id"] == tab).map(|p| p["pane_id"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn s01_start_a_fleet_after_an_update_relaunches_and_reattaches() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    update_claude(&sb, "2.1.289");
+    let r = sb.run(&["start", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("start MAIN  ·  Claude Code updated to 2.1.289  ·  7 to relaunch  ·  3 panes to reattach"), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("relaunch") && l.contains("reattach")), "{}", r.out);
+    let r = sb.ok(&["start", "MAIN", "--yes"]);
+    for id in LIVE {
+        assert_eq!(worker(&sb, id), "2.1.289", "{id}:\n{r}");
+    }
+    assert!(r.contains("[OK] MAIN: 3 lead(s), 4 ship(s) up"), "{r}");
+    let r = sb.ok(&["start", "MAIN", "--yes"]);
+    assert!(r.contains("start MAIN  ·  nothing to bring back") && r.contains("[OK] MAIN: nothing to start"), "{r}");
+}
+
+#[test]
+fn s02_start_a_fleet_after_a_reboot_wakes_the_leads_and_the_active_ships() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    sb.ok(&["status"]);
+    sb.reboot();
+    let r = sb.run(&["start", "MAIN", "--plan"]);
+    assert!(r.out.contains("members down (a reboot, or jobs that ended)") && r.out.contains("to wake"), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("STOPPED") && l.contains("nothing")), "a ship parked before stays parked:\n{}", r.out);
+    sb.ok(&["start", "MAIN", "--yes"]);
+    for id in ["MAIN", "MAIN/ARGOS", "MAIN/BOREAL"] {
+        assert!(sb.live(id), "{id}");
+    }
+    assert!(!sb.live("MAIN/ARGOS/STOPPED"));
+}
+
+#[test]
+fn s03_a_fleet_wide_start_never_cold_launches_a_named_ship_gets_its_first_launch() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let r = sb.run(&["start", "MAIN", "--plan"]);
+    assert!(!r.out.lines().any(|l| l.trim_start().starts_with("FRESH ") && l.contains("launch")), "{}", r.out);
+    assert!(r.out.contains("(not.started)") && r.out.contains("MAIN/ARGOS/FRESH"), "{}", r.out);
+    let r = sb.run(&["start", "MAIN/ARGOS/FRESH", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("FRESH") && l.contains("launch") && l.contains("never run")), "{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/FRESH", "--yes"]);
+    assert!(sb.live("MAIN/ARGOS/FRESH"));
+}
+
+#[test]
+fn s04_p_places_a_ship_pane_in_order_and_focuses_it() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    let com = sb.pane_attaching("MAIN/ARGOS");
+    // (3) no pane, no tab of its own, its commodore's tab is there: a split beside it
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("open pane") && l.contains(&format!("beside its commodore (pane {com}), focused"))), "{}", r.out);
+    let before = panes_of_tab(&sb, "MAIN.ARGOS.COMMODORE").len();
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--yes"]);
+    let pane = sb.pane_attaching("MAIN/ARGOS/CLEAN");
+    assert_eq!(panes_of_tab(&sb, "MAIN.ARGOS.COMMODORE").len(), before + 1, "a split in the commodore's tab");
+    assert!(panes_of_tab(&sb, "MAIN.ARGOS.COMMODORE").contains(&pane));
+    assert!(sb.calls().contains(&format!("[\"agent\",\"focus\",\"{pane}\"")), "focused:\n{}", sb.calls());
+    // (1) a pane shows it now: focus only
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("focus") && !l.contains("open pane")), "{}", r.out);
+    // (2) its own tab F.SQ.SHIP with a shell: attach there
+    sb.herdr_world(|w| {
+        let ws = w["workspaces"].as_array().unwrap().iter().find(|x| x["label"] == "MAIN.ARGOS").unwrap()["workspace_id"].clone();
+        w["tabs"].as_array_mut().unwrap().push(json!({"tab_id": "w3:t7", "workspace_id": ws, "label": "MAIN.ARGOS.TWIN", "focused": false}));
+        w["panes"].as_array_mut().unwrap().push(json!({"pane_id": "w3:p7", "tab_id": "w3:t7", "workspace_id": ws, "cwd": "/tmp", "foreground": ["zsh"]}));
+    });
+    let r = sb.run(&["start", "MAIN/ARGOS/TWIN", "-p", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("TWIN") && l.contains("reattach") && l.contains("pane w3:p7")), "{}", r.out);
+    // (4) its commodore has no pane: a new tab in the squadron's workspace
+    sb.herdr_world(|w| {
+        let tab = w["tabs"].as_array().unwrap().iter().find(|t| t["label"] == "MAIN.ARGOS.COMMODORE").unwrap()["tab_id"].clone();
+        w["tabs"].as_array_mut().unwrap().retain(|t| t["tab_id"] != tab);
+        w["panes"].as_array_mut().unwrap().retain(|p| p["tab_id"] != tab);
+    });
+    let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "-p", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("STOPPED") && l.contains("wake") && l.contains("open pane") && l.contains("new tab MAIN.ARGOS.STOPPED in MAIN.ARGOS")), "{}", r.out);
+    // a lead: its own tab
+    let r = sb.run(&["start", "MAIN", "-p", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("focus")), "{}", r.out);
+}
+
+#[test]
+fn s05_f_relaunches_a_ship_with_a_pane_and_reattaches_that_pane() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--yes"]);
+    let pane = sb.pane_attaching("MAIN/ARGOS/CLEAN");
+    let sid = sb.sid("MAIN/ARGOS/CLEAN");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-f", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("relaunch") && l.contains("reattach") && l.contains(&pane)), "{}", r.out);
+    let r = sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-f", "--yes"]);
+    assert!(r.lines().any(|l| l.starts_with("[OK] MAIN/ARGOS/CLEAN: claude stop")), "relaunched:\n{r}");
+    assert_eq!(sb.sid("MAIN/ARGOS/CLEAN"), sid, "the same conversation");
+    assert_eq!(sb.pane_attaching("MAIN/ARGOS/CLEAN"), pane, "its pane gets the attach again");
+}
+
+#[test]
+fn s06_nothing_relaunches_itself_busy_is_skipped_and_p_is_yours() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    // its own relaunch alone is refused; a fleet-wide -f skips it
+    let r = sb.run_as("MAIN", &["start", "MAIN", "--only", "-f", "--plan"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(start.self)") && r.out.contains("nimitz start MAIN --only -f  # from your own shell"), "{}", r.out);
+    let r = sb.run_as("MAIN", &["start", "MAIN", "-f", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("skip")), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("relaunch")), "{}", r.out);
+    // a lead alone: --only
+    let r = sb.run(&["start", "MAIN/ARGOS", "--only", "-f", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("COMMODORE") && l.contains("relaunch")) && !r.out.lines().any(|l| l.trim_start().starts_with("CLEAN ")), "{}", r.out);
+    update_claude(&sb, "2.1.289");
+    sb.session_file("MAIN/ARGOS/CLEAN", |v| v["status"] = json!("busy"));
+    let r = sb.run_as("MAIN", &["start", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("skip") && l.contains("runs this start")), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("skip") && l.contains("mid-turn")), "{}", r.out);
+    assert!(r.out.contains("(start.self)") && r.out.contains("(relaunch.busy)"), "{}", r.out);
+    // -p opens a pane in your terminal: yours alone
+    assert!(sb.run_as("MAIN", &["start", "MAIN/ARGOS/CLEAN", "-p", "--plan"]).out.contains("(authority)"));
+    // a commodore starts its own ships, not another squadron's, never a ship
+    assert_eq!(sb.run_as("MAIN/ARGOS", &["start", "MAIN/ARGOS/TWIN", "--plan"]).code, 0);
+    assert!(sb.run_as("MAIN/ARGOS", &["start", "MAIN/BOREAL", "--plan"]).out.contains("(authority)"));
+    assert!(sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/NOLABEL", "--plan"]).out.contains("(authority)"));
+}
+
+#[test]
+fn s07_no_target_means_every_fleet_and_no_multiplexer_means_jobs_only() {
+    let sb = Sb::new(true);
+    sb.ok(&["start", "BETA", "--jobs-only", "--yes"]);
+    let r = sb.run(&["start", "--plan"]);
+    assert!(r.out.contains("start (every fleet here)") && r.out.lines().any(|l| l.trim() == "BETA"), "{}", r.out);
+    let none = [("NIMITZ_MUX", "none")];
+    let r = raw(&sb.vars, &["start", "MAIN/ARGOS/CLEAN", "-p", "--plan"], &none);
+    assert!(r.out.contains("(mux.none)") && r.code == 1, "{}", r.out);
+    let r = raw(&sb.vars, &["start", "MAIN", "--plan"], &none);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("herdr"), "jobs only, no tabs:\n{}", r.out);
+}
+
+#[test]
+fn s08_the_old_commands_point_at_start() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    for (args, new) in [
+        (vec!["restore", "MAIN", "--plan"], "nimitz start MAIN"),
+        (vec!["relaunch", "MAIN/ARGOS/CLEAN", "--plan"], "nimitz start MAIN/ARGOS/CLEAN -f"),
+        (vec!["open", "MAIN/ARGOS/CLEAN", "--plan"], "nimitz start MAIN/ARGOS/CLEAN -p"),
+        (vec!["layout", "herdr", "MAIN", "--plan"], "nimitz start [<F>]"),
+        (vec!["up", "MAIN", "--plan"], "nimitz start MAIN --all"),
+    ] {
+        let r = sb.run(&args);
+        assert!(r.out.contains("is deprecated and goes away in the next release") && r.out.contains(new), "{args:?}:\n{}", r.out);
     }
 }

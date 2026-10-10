@@ -5,6 +5,16 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static JSON: AtomicBool = AtomicBool::new(false);
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// `-v` (`--verbose`, `NIMITZ_VERBOSE=1`): plans and runs show their commands.
+pub fn set_verbose(on: bool) {
+    VERBOSE.store(on, Ordering::Relaxed);
+}
+
+pub fn verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
 
 /// In `--json` mode stdout carries only JSON; the human lines go to stderr.
 pub fn set_json(on: bool) {
@@ -101,31 +111,17 @@ fn brief(s: &Step) -> String {
     }
 }
 
+/// A plan, as the view prints it (`view::plan`).
 pub fn plan(p: &Plan) {
-    line(&format!("[PLAN] {}", p.summary));
-    found(p);
+    crate::view::plan(p);
+}
+
+/// The plan's raw steps, numbered, each with its why (`-v`).
+pub fn steps(p: &Plan) {
     for (n, s) in p.steps.iter().enumerate() {
         let cwd = s.cwd.as_ref().map(|c| format!("cd {} && ", quote(c))).unwrap_or_default();
         line(&format!("  {}. {cwd}{}", n + 1, step_text(s)));
         line(&format!("     why: {}", s.why));
-    }
-    for w in &p.warnings {
-        issue(w);
-    }
-    for r in &p.refusals {
-        issue(r);
-    }
-}
-
-/// A restore's per-member lines: the member, what was found, `->` what it does.
-pub fn found(p: &Plan) {
-    if p.found.is_empty() {
-        return;
-    }
-    let w = p.found.iter().map(|f| f.id.0.chars().count()).max().unwrap_or(0);
-    line("  found:");
-    for f in &p.found {
-        line(&format!("    {:<w$}  {} -> {}", f.id.0, f.found, f.action));
     }
 }
 
@@ -142,6 +138,9 @@ pub fn gate(p: &Plan, plan_only: bool, yes: bool) -> Go {
             json(p);
         } else {
             plan(p);
+            if p.ok() {
+                crate::view::plan_footer(p.steps.len());
+            }
         }
         return Go::Exit(if p.ok() { 0 } else { 1 });
     }
@@ -153,9 +152,7 @@ pub fn gate(p: &Plan, plan_only: bool, yes: bool) -> Go {
         return Go::Exit(1);
     }
     if p.steps.is_empty() {
-        for w in &p.warnings {
-            issue(w);
-        }
+        plan(p);
         ok(&format!("{}: nothing to do", p.summary));
         return Go::Exit(0);
     }
@@ -167,7 +164,7 @@ pub fn gate(p: &Plan, plan_only: bool, yes: bool) -> Go {
         error("not a terminal: pass --yes to run this plan, or --plan to only print it");
         return Go::Exit(1);
     }
-    eprint!("Run this plan? [y/N] ");
+    eprint!("{}", crate::view::prompt(p.steps.len()));
     let _ = std::io::stderr().flush();
     let mut answer = String::new();
     let _ = std::io::stdin().lock().read_line(&mut answer);
@@ -179,9 +176,8 @@ pub fn gate(p: &Plan, plan_only: bool, yes: bool) -> Go {
     }
 }
 
-/// Print what ran (one short line per step) and the issues, no verdict: a
-/// restore prints these per member and gives its own verdict at the end.
-pub fn ran(o: &Outcome) {
+/// What ran, one short line per step (`-v`), no issues and no verdict.
+pub fn ran_lines(o: &Outcome) {
     for (s, rc, text) in &o.ran {
         let text = text.trim();
         let detail = if text.is_empty() || text.starts_with("[OK]") { String::new() } else { format!(" -> {}", first_line(text)) };
@@ -191,36 +187,21 @@ pub fn ran(o: &Outcome) {
         } else {
             error(&format!("{who}{} (exit {rc}){detail}", brief(s)));
         }
-    }
-    for i in &o.issues {
-        issue(i);
     }
 }
 
-/// Print what ran and what the re-read found. Exit code 0 only when verified.
-pub fn outcome(o: &Outcome) -> i32 {
-    // The plan above already showed each full command; here one short line per step.
-    for (s, rc, text) in &o.ran {
-        let text = text.trim();
-        let detail = if text.is_empty() || text.starts_with("[OK]") { String::new() } else { format!(" -> {}", first_line(text)) };
-        let who = s.id.as_ref().map(|i| format!("{i}: ")).unwrap_or_default();
-        if *rc == 0 {
-            ok(&format!("{who}{}{detail}", brief(s)));
-        } else {
-            error(&format!("{who}{} (exit {rc}){detail}", brief(s)));
-        }
-    }
-    for i in &o.issues {
-        issue(i);
-    }
+/// The run of plan `p`: its member lines marked (`view::run`), then whether
+/// the re-read verified it. Exit code 0 only when verified.
+pub fn outcome(p: &Plan, o: &Outcome) -> i32 {
+    crate::view::run(p, o, &[]);
     if json_mode() {
         json(o);
     }
     if o.verified {
-        ok("verified by re-reading");
+        crate::view::verdict(true, "verified by re-reading");
         0
     } else {
-        error("not verified; see above");
+        crate::view::verdict(false, "not verified; see above");
         1
     }
 }

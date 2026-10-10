@@ -39,7 +39,7 @@ pub fn untypeable(id: &Id, pane: &PaneRef) -> Issue {
     refusal(
         "tab.unverified",
         format!("{id}'s tab (pane {}) is known by its attach alone and does not run exactly `claude attach <its job>` now (the agent view after /exit re-execs as `claude agents`, R-24); nothing is typed into it", pane.pane_id),
-        Some(format!("nimitz open {id}, and type it there yourself")),
+        Some(format!("nimitz start {id} -p, and type it there yourself")),
         Some(id.clone()),
     )
 }
@@ -74,7 +74,7 @@ pub fn fixes_for(env: &nimitz_core::env::Env, caller: &nimitz_core::Caller, plan
         if let Some(f) = i.fix.take() {
             // `restore.self`: the restore that relaunches the caller is the
             // user's, from a shell, whatever the caller may run itself
-            let mine = i.code != "restore.self" && nimitz_core::sessions::may_run_in(Some(env), caller, &f);
+            let mine = !matches!(i.code.as_str(), "restore.self" | "start.self") && nimitz_core::sessions::may_run_in(Some(env), caller, &f);
             i.fix = Some(if mine { f } else { format!("ask the user to run: {f}") });
         }
     }
@@ -84,7 +84,7 @@ pub fn fixes_for(env: &nimitz_core::env::Env, caller: &nimitz_core::Caller, plan
 pub fn session_plan(ctx: &Ctx, plan: Plan) -> i32 {
     match ctx.gate(&plan) {
         out::Go::Exit(code) => code,
-        out::Go::Run => out::outcome(&execute(ctx, &plan)),
+        out::Go::Run => out::outcome(&plan, &execute(ctx, &plan)),
     }
 }
 
@@ -110,7 +110,7 @@ pub fn attach_issue(id: &Id, e: AttachError) -> Issue {
         AttachError::Taken { pane, running } => refusal(
             "tab.taken",
             format!("{id}'s tab is open but its pane {} runs `{running}`, not a shell; nothing was typed into it", pane.pane_id),
-            Some(format!("in pane {}: ctrl-z (an attach) or quit `{running}`, then nimitz open {id}", pane.pane_id)),
+            Some(format!("in pane {}: ctrl-z (an attach) or quit `{running}`, then nimitz start {id} -p", pane.pane_id)),
             Some(id.clone()),
         ),
         AttachError::Mux(e) => refusal("mux.failed", format!("attaching {id} failed: {e}"), None, Some(id.clone())),

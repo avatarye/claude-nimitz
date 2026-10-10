@@ -9,7 +9,7 @@ CLAUDE.md.
   squadron) > ships (long work in one folder). One-off work is a subagent in
   the lead's own session, or a ship.
 - Every member is a Claude Code background job. The user attaches to a lead's
-  tab (`nimitz open <id>`) and detaches with ctrl-z; `/exit` inside an attach
+  tab (`nimitz start <id> -p`) and detaches with ctrl-z; `/exit` inside an attach
   opens the agent view, so never ask the user to `/exit` a member.
 - Every member may run `nimitz`: what your role may do is below, and nimitz
   refuses the rest. `nimitz status --json` is the picture; `nimitz check <id>`
@@ -20,12 +20,14 @@ CLAUDE.md.
   interactive resume holds its conversation in a process with no job, which
   nimitz cannot wake until `/exit` there; a session started without nimitz's
   labels is a stowaway; and a job started from your shell takes the
-  daemon's environment, not the member's labels. `nimitz start`,
-  `relaunch` and `restore` do it right.
-- After a Claude Code update, a Herdr closure or a reboot, the one command is
-  `nimitz restore [<F>]` (`--plan` first): it relaunches the workers on an
-  older Claude Code, reattaches the panes that are gone and wakes what is
-  down. It never relaunches the member that runs it.
+  daemon's environment, not the member's labels. `nimitz start` does it right.
+- One verb brings any member up and ready: `nimitz start [<target>]`
+  (`--plan` first; a ship, a squadron, a fleet, or every fleet here). It
+  wakes what is down by its exact id, relaunches workers on an older Claude
+  Code (also after a Herdr closure or a reboot), attaches the leads' tabs;
+  `-f` relaunches the live ones too; `nimitz stop` is its opposite. It never
+  relaunches the member that runs it. `restore`, `relaunch`, `open`, `up` and
+  `layout herdr` are deprecated: use `start`.
 - Every change is planned first: run the command with `--plan`, show the plan
   to the user, run it with `--yes` only after the user agrees. Never `--force`
   unless the user names it.

@@ -14,7 +14,7 @@ an agent never does them itself.
 | Tenders | a role | removed: one-off work is a subagent or a ship |
 | Rules | at session start only | also at the next turn after a nimitz update (`nimitz rules updated vN→vM`) |
 | Authority | ships ran nothing | every member runs `nimitz` within its role (`nimitz rules`) |
-| Recovery | `nimitz up`, `layout herdr` | one command, `nimitz restore [<F>]`, after a Claude Code update, a Herdr closure or a reboot; `up` and `layout herdr` are deprecated aliases for one release |
+| Recovery | `nimitz up`, `layout herdr` | one command, `nimitz start [<F>]`, after a Claude Code update, a Herdr closure or a reboot; `restore`, `relaunch`, `open`, `up` and `layout herdr` are deprecated aliases for one release |
 | Detach a lead | close the pane | **ctrl-z**; `/exit` inside an attach opens the agent view |
 
 Ships need no migration. Every 0.3.x lead does, once.
@@ -52,11 +52,11 @@ Ships need no migration. Every 0.3.x lead does, once.
 Each 0.3.x lead shows a `[WARN] … runs as a 0.3.x interactive lead (pid …,
 no job)`. Then, per fleet:
 
-    nimitz restore <F> --plan
+    nimitz start <F> --plan
 
 For each 0.3.x lead the plan prints `[ERROR] <id>: <id>'s conversation is open
 in pane <pane> … (tab.resumed)` with the fix `type /exit in pane <pane>, then
-nimitz restore <F>`. Write down the pane of each lead. Ships show as live or
+nimitz start <F>`. Write down the pane of each lead. Ships show as live or
 `parked`; members that never started show as `not.started` and are left out
 (that is correct).
 
@@ -64,15 +64,15 @@ nimitz restore <F>`. Write down the pane of each lead. Ships show as live or
 
 Do one fleet at a time. Do the fleet that holds the session guiding you
 **last**, and in that fleet, its own lead last: the `/exit` stops it until
-the restore brings it back.
+the start brings it back.
 
 1. **(user)** In each lead's pane from step 1, type `/exit`. Its commodores
    first, then its admiral. The conversation is kept on disk; nothing is lost.
-2. `nimitz restore <F> --plan`. Each lead now shows a wake by its exact
+2. `nimitz start <F> --plan`. Each lead now shows a wake by its exact
    session id, as a pinned background job, plus an attach in its tab
    `F.ADMIRAL` / `F.SQ.COMMODORE` (an old short-named tab is reused and
    renamed). No `[ERROR]` remains for the leads.
-3. `nimitz restore <F> --yes`. It ends with the members it woke and verified.
+3. `nimitz start <F> --yes`. It ends with the members it woke and verified.
 4. `nimitz status`: no `0.3.x interactive lead` warning in this fleet; each
    lead is `idle` or `busy` with a job.
 
@@ -96,18 +96,20 @@ If one lead is still left out, `nimitz start <id> --plan`, then `--yes`.
 
 ## 4. After the migration
 
-- Open a lead: `nimitz open <id>`, or its Herdr tab. **Detach with ctrl-z.**
+- Open a lead: `nimitz start <id> -p`, or its Herdr tab. **Detach with ctrl-z.**
   Never `/exit` an attached member: that opens the agent view, and the agent
   rules forbid asking the user to do it.
 - After a Claude Code update, a Herdr closure or crash, or a reboot: `nimitz
-  restore [<F>] --plan`, then `--yes` (no `F`: every fleet here). The plan
+  start [<F>] --plan`, then `--yes` (no `F`: every fleet here). The plan
   says per member what it found and what it does: workers on an older Claude
   Code are relaunched (same id and history) and reattached, panes that are
   gone are reattached, members that are down are woken. Leads always come
-  back; parked ships wake on demand, or all at once with `--all`. `--restart`
-  relaunches every live member. A restore never relaunches the member that
-  runs it; it names the `nimitz restore <F>` you run afterwards from your own
-  shell (that one relaunches it and reattaches its pane).
+  back; parked ships wake on demand, or all at once with `--all`. `-f`
+  relaunches every live member. A start never relaunches the member that
+  runs it; it prints a `start.self` line with the `nimitz start <F>` you run
+  afterwards from your own shell (that one relaunches it and reattaches its
+  pane). `restore`, `relaunch`, `open`, `up` and `layout herdr` still work
+  for one release and print a pointer to the `start` form.
 - Never start, resume or stop a member with `claude` yourself: a resume of a
   live job starts a copy; an interactive `claude --resume` holds the
   conversation with no job (nimitz cannot wake it until `/exit` there); a
@@ -116,7 +118,7 @@ If one lead is still left out, `nimitz start <id> --plan`, then `--yes`.
 - When nimitz updates, every live member gets the new rules at its next turn.
   Run `/reload-plugins` in a session only when `nimitz doctor` says the plugin
   needs it.
-- Real-Herdr check of restore, a few minutes: `docs/test/restore-checklist.md`.
+- Real-Herdr check of start (formerly restore), a few minutes: `docs/test/restore-checklist.md`.
 
 ## Rollback
 

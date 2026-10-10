@@ -488,10 +488,11 @@ fn enter_on_a_pane_row_focuses_it_and_exit_after_jump_quits() {
     t.app.ctx.exit_after_jump = true;
     let e = press(&mut t.app, KeyCode::Enter);
     assert!(matches!(e, Some(Effect::Quit)));
-    // a row with no pane: says why, does not quit
+    // a member row with no pane: `nimitz start <id> -p` plans one (confirm first)
     goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
     assert!(press(&mut t.app, KeyCode::Enter).is_none());
-    assert!(toast(&t.app).contains("no pane hosts this session"), "{}", toast(&t.app));
+    let Some(Modal::Confirm(p)) = t.app.modal.take() else { panic!("{}", toast(&t.app)) };
+    assert_eq!(p.command, "nimitz start MAIN/ARGOS/BOOM -p");
 }
 
 #[test]
@@ -720,21 +721,13 @@ fn message_goes_direct_to_leads_and_through_the_commodore_for_ships() {
 fn open_attaches_a_background_session_in_a_new_pane() {
     let mut t = fixture_app(fixtures::demo(), true);
     goto(&mut t.app, "M:MAIN/ARGOS/BOLT");
+    // `A` with no pane: `nimitz start <id> -p` plans it (its tab, a split
+    // beside its commodore, a new tab) and runs it; Admiralty opens nothing itself
     keys(&mut t.app, "A");
     let Some(Modal::Confirm(p)) = t.app.modal.take() else { panic!("{}", toast(&t.app)) };
-    assert_eq!(p.command, "nimitz open MAIN/ARGOS/BOLT");
-    assert_eq!(p.panes.len(), 1);
-    assert!(p.panes[0].0.cmd.contains(&"attach".to_string()));
-    t.app.begin(&p).unwrap();
-    let calls = t.mux.calls.lock().unwrap().clone();
-    assert!(calls[0].starts_with("open ") && calls[0].contains("attach") && calls[0].contains("workspace: \"MAIN.ARGOS\"") && calls[0].contains("label: \"MAIN.ARGOS.BOLT\""), "{calls:?}");
-    // `A` again: its tab MAIN.ARGOS.BOLT is open, so jump there and open nothing
-    keys(&mut t.app, "A");
-    assert!(t.app.modal.is_none(), "no confirm: nothing would be created");
-    let calls = t.mux.calls.lock().unwrap().clone();
-    assert_eq!(calls.iter().filter(|c| c.starts_with("open ")).count(), 1, "{calls:?}");
-    assert_eq!(calls.last().map(String::as_str), Some("focus new"), "{calls:?}");
-    assert!(toast(&t.app).contains("Open already"), "{}", toast(&t.app));
+    assert_eq!(p.command, "nimitz start MAIN/ARGOS/BOLT -p");
+    assert!(p.panes.is_empty(), "the CLI makes the pane");
+    assert!(t.mux.calls.lock().unwrap().is_empty(), "nothing opened by Admiralty");
     // a lead is a job too (0.4.0): `A` attaches to it in its own tab
     goto(&mut t.app, "M:MAIN/ARGOS");
     assert!(t.app.available(Act::Open).is_ok());

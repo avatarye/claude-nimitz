@@ -141,7 +141,7 @@ fn row2_live_name_drift_refuses_with_a_relaunch() {
     let plan = w.start(&snap, &id, false);
     assert!(!plan.ok());
     let i = plan.refusals.iter().find(|i| i.code == "name.drift").expect("name.drift");
-    assert_eq!(i.fix.as_deref(), Some("nimitz relaunch MAIN/ARGOS/DRIFT"));
+    assert_eq!(i.fix.as_deref(), Some("nimitz start MAIN/ARGOS/DRIFT -f"));
     assert!(plan.steps.is_empty());
 }
 
@@ -2077,7 +2077,7 @@ fn m19_a_stopped_renamed_job_is_name_drift_and_a_start_restores_the_name() {
     assert_eq!(m.status, Status::Stopped);
     let drift = m.issues.iter().find(|i| i.code == "name.drift").expect("stopped: name.drift too");
     assert!(drift.message.contains(&short) && drift.message.contains("\"sb1\"") && drift.message.contains("a wake would keep"), "{}", drift.message);
-    assert_eq!(drift.fix.as_deref(), Some(format!("nimitz relaunch {id}").as_str()));
+    assert_eq!(drift.fix.as_deref(), Some(format!("nimitz start {id} -f").as_str()));
     // start repairs it: rm the row, then resume with every flag (same id, history, right name)
     let plan = w.start(&snap, &id, false);
     assert!(plan.ok(), "{:?}", plan.refusals);
@@ -2169,7 +2169,7 @@ fn an_attach_never_wakes_a_job_the_start_would_relabel() {
     let m = w.member(&w.snap(), &id);
     let e = nimitz_core::layout::attach_tab(&w.env, &m).unwrap_err();
     assert_eq!((e.code.as_str(), e.severity), ("name.drift", Severity::Error));
-    assert_eq!(e.fix.as_deref(), Some(format!("nimitz start {id}  # relabels it, then nimitz open {id}").as_str()));
+    assert_eq!(e.fix.as_deref(), Some(format!("nimitz start {id}  # relabels it, then nimitz start {id} -p").as_str()));
     let bare = w.member(&w.snap(), &w.ship("BARE"));
     assert_eq!(nimitz_core::layout::attach_tab(&w.env, &bare).unwrap_err().code, "labels.missing");
     let parked = w.member(&w.snap(), &w.ship("STOPPED"));

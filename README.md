@@ -10,25 +10,115 @@ a Claude subscription login and with Bedrock.
 
 Status: in testing (Claude Code 2.1.288 - 2.1.294).
 
-## Install for testing
+## User manual
 
-Needs Rust (cargo) and Claude Code. Herdr is needed to run admirals and
-commodores; status, config and ships work without it.
+### What it is
+
+nimitz runs fleets of Claude Code sessions with a chain of command: a fleet
+has one **admiral**, squadrons each led by a **commodore**, and **ships** that do
+the long work in one folder. Every member is a Claude Code background job; you
+look at one in a Herdr pane and detach with ctrl-z.
+
+### Install and first setup
+
+Needs Rust (cargo) and Claude Code; Herdr for panes (status, config and ships
+work without it).
 
 ```sh
 git clone -b dev https://github.com/avatarye/claude-nimitz && cd claude-nimitz
-cargo build --release
 cargo install --path crates/nimitz       # nimitz: the CLI and the hook binary
 cargo install --path crates/admiralty    # admiralty: the TUI
 claude plugin marketplace add "$PWD" && claude plugin install nimitz@claude-nimitz
 nimitz init --label <this-machine>       # data root and machine label
-nimitz doctor                            # hooks, trust, Claude Code versions; --fix sets crossSessionInbound
+nimitz doctor                            # run again until: [OK] doctor: ready
 ```
 
-`nimitz init` asks you to run `claude` once in the data root
-(`~/.claude-nimitz`) to accept the trust prompt. Run `nimitz doctor` again until
-it says `[OK] doctor: ready`. To try nimitz without touching your setup, use a
-sandbox: `nimitz sandbox create /tmp/nz --herdr && eval "$(nimitz sandbox env /tmp/nz)"`.
+`nimitz init` asks you to run `claude` once in `~/.claude-nimitz` to accept the
+trust prompt. In Herdr: `herdr plugin link <repo>/herdr-plugin` and bind a key
+to `admiralty.toggle` to open Admiralty as an overlay. To try it all without
+touching your setup: `nimitz sandbox create /tmp/nz --herdr && eval "$(nimitz sandbox env /tmp/nz)"`.
+
+### Daily use
+
+Every command that changes something shows its plan first: add `--plan` to
+only look, `--yes` to run without the question.
+
+| You want to | Run |
+| --- | --- |
+| Bring a fleet (or a squadron, a ship, everything) up and ready | `nimitz start F` · `nimitz start F/SQ` · `nimitz start F/SQ/SHIP` · `nimitz start` |
+| Do the same after a Claude Code update, a Herdr closure or a reboot | `nimitz start [F]` (it tells the three apart, member by member) |
+| Also wake the ships that were parked | `nimitz start F --all` |
+| Restart a member (same conversation, a new process) | `nimitz start F/SQ/SHIP -f` |
+| Restart one lead alone (`F` and `F/SQ` mean the whole fleet or squadron) | `nimitz start F --only -f` · `nimitz start F/SQ --only -f` |
+| Open a member's pane and focus it | `nimitz start F/SQ/SHIP -p` (a lead: `nimitz start F --only -p`) |
+| Start a member's conversation over (drops its history) | `nimitz start F/SQ/SHIP --fresh` |
+| Stop a member | `nimitz stop F/SQ/SHIP` |
+| See everything | `nimitz status`, or `admiralty` (keys below) |
+| Message a member | `nimitz signal F/SQ/SHIP "text"`, or `m` in Admiralty |
+| Answer a member that waits on you (`[nimitz needs-you]`) | `nimitz start <id> -p`, then answer in its pane |
+| Detach from a member's pane | ctrl-z (never `/exit`: inside an attach it opens the agent view) |
+
+What a plan looks like (`nimitz start DEMO --plan` after a Claude Code update):
+
+```text
+start DEMO  ·  Claude Code updated to 2.1.289  ·  4 to relaunch  ·  3 panes to reattach  ·  1 skipped
+
+             job       pane       why
+DEMO
+  ADMIRAL    relaunch  reattach   on 2.1.288 · pane w2:p1
+DEMO · OPS
+  COMMODORE  relaunch  reattach   on 2.1.288 · pane w3:p1
+  BUILD      relaunch  reattach   on 2.1.288 · pane w3:p2
+  DOCS       skip      ·          on 2.1.288; mid-turn
+  TEST       relaunch  ·          on 2.1.288
+
+needs you
+  skip    DEMO/OPS/DOCS  is mid-turn: not relaunched now (relaunch.busy)
+          fix: nimitz start DEMO/OPS/DOCS -f  # once it is idle
+
+--yes runs these 15 steps; -v shows the commands
+```
+
+Admiralty keys: `j`/`k` move, `tab` next fleet, `enter` jump to a pane, `a`
+start, `A` a pane for it, `x` more actions (stop, relaunch, sweep, rm, adopt),
+`m` message, `!` what waits on you, `i` every issue with its fix, `c`/`e`/`D`
+create, edit, remove, `?` all keys, `q` quit.
+
+### Fleets, squadrons and ships
+
+| You want to | Run |
+| --- | --- |
+| A new fleet on this machine | `nimitz fleet new F --machine <label>` |
+| A new squadron | `nimitz squadron new F/SQ --brief "what it is for"` |
+| A new ship | `nimitz ship new F/SQ/SHIP --dir <folder>\|managed --prompt "what it does"` |
+| Change a ship | `nimitz ship set F/SQ/SHIP --prompt "..." --mode <permission mode>` |
+| Remove a ship, a squadron, a fleet | `nimitz ship rm F/SQ/SHIP` · `nimitz squadron rm F/SQ` · `nimitz fleet rm F` |
+| Run a fleet on another machine too | `nimitz machine add F <label> --hostname <host>` |
+
+### Two rules
+
+- Never start, resume or stop a member with `claude` yourself: a resume of a
+  live job makes a copy, `claude --resume` holds the conversation where nimitz
+  cannot wake it, a session without nimitz's labels is a stowaway, and a job
+  started from a shell takes the wrong environment. `nimitz start` does it right.
+- Plan first: read the plan (`--plan`), then run it (`--yes`). Never `--force`
+  unless you mean it.
+
+### When something is wrong
+
+- `nimitz doctor`: the install (hooks, plugin, trust, Claude Code version).
+- `nimitz check [<id>]`: the fleet's problems, each with its one fix line.
+- Common fixes nimitz prints:
+  - a drifted name or missing labels: `nimitz start <id> -f` (a lead: `--only -f`);
+  - `history.lost` (its transcript is gone): `nimitz start <id> --fresh`;
+  - `tab.taken` (its tab runs something else): ctrl-z or quit it there, then `nimitz start <id> -p`;
+  - copies or stale rows: `nimitz sweep <id>`;
+  - a stowaway (a session in a fleet folder with no labels): `nimitz adopt <session> <id>`, or stop and `rm` it;
+  - `tab.resumed` (Herdr reopened a conversation in a pane): `/exit` in that pane, then `nimitz start F`.
+- `-v` on any plan shows the commands it runs.
+
+The sections below are the reference: the restore details, identity,
+authority and messaging.
 
 ## Documents
 
@@ -48,8 +138,8 @@ role of 0.3.x, one job for a commodore, was removed in 0.4.0: one-off work is
 a subagent in the lead's session, or a ship.)
 
 Every member, leads too, is a Claude Code **background job** (`claude --bg`,
-0.4.0). You talk to a lead in its Herdr tab: `nimitz open <id>` (or `nimitz
-restore <F>`) runs `claude attach <job>` there; detach with ctrl-z. Do not
+0.4.0). You talk to a lead in its Herdr tab: `nimitz start <id> -p` (or
+`nimitz start <F>`) runs `claude attach <job>` there; detach with ctrl-z. Do not
 type `/exit` inside an attach: it opens the agent view of the whole machine
 (`nimitz stop <id>` is how a member stops). A lead's job is pinned
 (`~/.claude/jobs/pins.json`), so the daemon never idle-retires it; a ship parks
@@ -59,38 +149,89 @@ after an idle hour and `nimitz start` wakes it by its exact session id, never
 interactive is ended with `/exit` in its own terminal, then `nimitz start`
 brings the same conversation back as a job.
 
-After a Claude Code update, a Herdr closure or crash, or a reboot, one
-command brings the fleets back: `nimitz restore [<F>]` (no `F`: every fleet
-on this machine), `--plan` first, then `--yes`. It tells the three apart per
-member, and the plan says, member by member, what it found and why it acts
-(`worker on 2.1.294, installed 2.1.295 -> relaunch`, `its pane is gone ->
-reattach in a new tab`, `parked -> left parked`):
+After a Claude Code update, a Herdr closure or crash, or a reboot, the same
+verb brings the fleets back: `nimitz start [<F>]` (no `F`: every fleet on this
+machine), `--plan` first, then `--yes`. It tells the three apart per member,
+and the plan says, member by member, what it found and why it acts (`worker on
+2.1.294, installed 2.1.295 -> relaunch`, `its pane is gone -> reattach`,
+`parked -> wake`):
 
 - Claude Code updated: every live member whose worker runs an older Claude
   Code than the installed one (read from its process) is relaunched, same id
   and history, then its pane gets the new job's attach. Ships first, then
   commodores, then admirals, one at a time; never one mid-turn or waiting on
-  you (run restore again once it is idle), and never the member that runs the
-  restore (an admiral's own restore names the `nimitz restore <F>` you run
-  afterwards). An attach client older than the installed version is
-  reported (ctrl-z there, then restore again).
+  you (run start again once it is idle), and never the member that runs the
+  command (a fleet-wide start skips its caller with a `start.self` line that
+  names the command you run afterwards from your own shell). An attach client
+  older than the installed version is reported (ctrl-z there, then start
+  again).
 - Herdr closed or crashed: the jobs are alive, only the panes are gone; their
   tabs are made again (or their shell panes reused) and attached. Nothing is
   relaunched.
 - Reboot: the leads (pinned) and the ships that were live at the last look
   (`NIMITZ_STATE/active.json`) are woken by their exact session id, then
-  attached; `--all` wakes every ship that has run.
-- `--restart` relaunches every live member whatever its version (same order,
-  same rules).
+  attached; `--all` also wakes parked ships (never a first launch).
+- `-f` (`--relaunch`) relaunches every live member whatever its version (same
+  order, same rules). A member that had a pane, lead or ship, gets that pane
+  attached again after the relaunch.
 
-Restore reads what Herdr has (`herdr api snapshot`, each pane's foreground),
+`nimitz start [<target>] [-f] [-p] [--fresh] [--all] [--only] [--jobs-only]` is the one
+verb that brings a member up and ready. The target is a ship `F/SQ/SHIP`, a
+squadron `F/SQ` (its commodore and its ships), a fleet `F`, or nothing (every
+fleet on this machine). `nimitz stop` is its opposite. With no flags it is
+idempotent and does per member what is needed: a member that is down, parked
+or lost in a reboot wakes by its exact id; a live member on an older Claude
+Code is relaunched (same id and history); a live, current member is left as
+it is. A member that never ran gets a first launch only when it is the
+target's own member (`F` names the admiral, `F/SQ` the commodore, `F/SQ/SHIP`
+the ship), so a fleet- or squadron-wide start never cold-launches the others.
+The leads always get their tab attached. A member that is busy, waiting on
+you, or the one running the command is left alone, with a fix line.
+
+- `-p` (`--pane`) makes sure the target's member has a pane and focuses it. It
+  tries, in order: a pane already showing the member; its own tab
+  (`F.SQ.SHIP`); a split in its commodore's tab beside the commodore's pane;
+  a new tab in the squadron's workspace `F.SQ` (made if needed). A lead gets
+  its own tab: `F.ADMIRAL` in workspace `F`, `F.SQ.COMMODORE` in workspace
+  `F.SQ`. `-p` is yours alone, since it opens a pane in your terminal;
+  members get an authority refusal. With no multiplexer, `start` brings up
+  the jobs only and `-p` is refused.
+- `--only` acts on the target's own member alone: `F` and `F/SQ` name a whole
+  fleet or squadron, so `nimitz start F --only -f` relaunches the admiral and
+  nothing else. Every fix for a lead that nimitz prints uses it.
+- `--fresh` starts a new conversation and drops the history (after the
+  confirm).
+- `--force` is separate and unchanged: a cold launch over a broken lineage or
+  an untested Claude Code. Never use it unless you name it.
+
+Start reads what Herdr has (`herdr api snapshot`, each pane's foreground),
 reuses a tab found by the session it shows or by its full name (`F.ADMIRAL`,
 `F.SQ.COMMODORE`, `F.SQ.SHIP`), creates only what is missing, types `claude
 attach <job>` only into a pane that is a plain shell, never makes a second
-tab or a copy, and names every member it cannot restore with one fix. It
-never makes a first launch (`nimitz start <id>` does). Run twice, the second
-run does nothing. `nimitz up` and `nimitz layout herdr` are deprecated and go
-in the next release. Admiralty: `x R` on a fleet band.
+tab or a copy, and names every member it cannot bring up with one fix. Run
+twice, the second run does nothing. Admiralty: `R` on a fleet, and `a`, `r`,
+`A` or enter on a member row with no pane, run `nimitz start` (with `-f` or
+`-p` as fits).
+
+Every planning command prints the same plan (start, stop, sweep, rm, adopt,
+and the ship, squadron and fleet changes). First a headline: what happened,
+then the counts per action. Then one line per member, grouped by fleet and
+squadron, in columns: the name, the job verb (`wake`, `relaunch`, `launch`,
+`fresh`, `skip`, `refuse`, `nothing`), the pane verb (`reattach`, `open pane`,
+`focus`) and why. Then "needs you": the skips, refusals and warnings, each
+with one fix. It ends with the prompt `Run N steps? [y/N]`. The raw `claude`
+and `herdr` command lines are hidden; `-v` shows them, with each member's full
+detail. `--json` is unchanged. Colour shows only on a terminal and `NO_COLOR`
+turns it off; the plain text reads the same, because the verbs carry the
+meaning. The run prints the same lines with `✓`, `✗` or `–` and one result
+line.
+
+Deprecated for one release, each keeps its old behaviour and prints a
+one-line pointer: `restore [<F>]` (use `start [<F>]`; `--restart` is `-f`),
+`relaunch <id>` (`start <id> -f`), `open <id>` (`start <id> -p`; a lead adds
+`--only` to both), `up <F>`
+(`start <F> --all`, and `start <id>` for a first launch) and `layout herdr
+[<F>]` (`start [<F>]`).
 
 Never start, resume or stop a member with `claude` yourself (`claude
 --resume`, `claude --bg`, `claude -c`, `claude stop`, `claude rm`): a resume of
@@ -98,7 +239,7 @@ a live job starts a copy under the member's name; an interactive resume holds
 the conversation in a process with no job, which nimitz cannot wake until you
 `/exit` there; a session started without nimitz's labels is a stowaway; and a
 job started from your shell takes the daemon's environment instead of the
-member's labels. `nimitz start`, `relaunch` and `restore` do it right.
+member's labels. `nimitz start` does it right.
 
 Identity (0.4.0): a member is anchored to its Claude Code **job** (the short
 id you see in `claude agents`), which is stable across stop, kill, respawn,
@@ -116,11 +257,13 @@ labels is you):
 | Caller | May run |
 | --- | --- |
 | you | everything |
-| admiral | every command inside its own fleet, on any member but itself: restore, start, stop, relaunch, rm, sweep, adopt, fleet set, squadron new/set/rm, ship new/set/rm (and the deprecated up, layout herdr) |
-| commodore | inside its own squadron: restore, start, stop, relaunch, rm, sweep, adopt for its ships; squadron set; ship new/set/rm |
+| admiral | every command inside its own fleet, on any member but itself: start (`-f`, `--all`), stop, rm, sweep, adopt, fleet set, squadron new/set/rm, ship new/set/rm; not `start -p` (yours alone) |
+| commodore | inside its own squadron: start (`start F/SQ` covers its ships), stop, rm, sweep, adopt for its ships, not `start -p`; squadron set; ship new/set/rm |
 | ship | the read-only commands (`status`, `check`, `rules`, `doctor`); `signal` to a member the chain allows; `sweep` of itself (its own stale rows) |
 
-`init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` stay yours. More
+`init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` stay yours.
+Nobody relaunches itself: `start <self> --only -f` is refused with the fix; a
+wider start skips its caller. More
 authority skips nothing: every change is still `--plan` first, then `--yes`.
 Every launch allows `Bash(nimitz *)` in the member's settings; the table above
 is what nimitz then lets each role do.
