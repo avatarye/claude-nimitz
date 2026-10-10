@@ -705,6 +705,12 @@ From the port's commits (7dd6984 .. 0145dfc):
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
 | S5 | Other parents (`always_on`, ring-to-start); `aide new\|set\|rm` (moved from S2: until then `[[aide]]` is edited in fleet.toml) | sandbox, the role table |
 
+Carried from the S2 landing review: whether Claude Code lets an
+`acceptEdits` aide edit its repo's `.git/config` (`core.fsmonitor`,
+`core.pager`, a diff driver would make an allowed `git status|diff|log` run a
+program). Check it in S4's real-Claude Code e2e; if it does, deny
+`Edit`/`Write` of `.git/**` for a writer aide.
+
 Carried from the S1 review into later phases:
 
 - S3: the piggyback also delivers a done request whose `waiting_until` has
