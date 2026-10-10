@@ -308,7 +308,9 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         if trusted(ctx, &env.home) {
             r.ok(&format!("Claude Code trusts {}", env.home.display()));
         } else {
-            r.err(&format!("Claude Code does not trust {}", env.home.display()), Some(&format!("cd {} && claude   # accept the trust dialog, then exit", out::quote(&env.home.to_string_lossy()))));
+            // the real path: Claude Code resolves a linked data root, and (Windows) compares its case
+            let real = nimitz_core::env::canon(&env.home);
+            r.err(&format!("Claude Code does not trust {}", real.display()), Some(&format!("cd {} && claude   # accept the trust dialog, then exit", out::quote(&real.to_string_lossy()))));
         }
     }
 

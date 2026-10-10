@@ -76,7 +76,8 @@ fn ran_since_repo(env: &Env, dir: &Path) -> bool {
 }
 
 /// How Claude Code will treat `dir` (BUG-50; evidence over prediction):
-/// - trusted: inside NIMITZ_HOME (nimitz init trusts it); a trust entry on the
+/// - trusted: inside NIMITZ_HOME when the data root is trusted (nimitz init
+///   asks for it; checked on its real path); a trust entry on the
 ///   folder's repository itself (git root or below); Claude Code ran a session
 ///   in this exact folder (inside a repository: since the repository appeared,
 ///   M16); or, outside git, the folder or a parent accepted.
@@ -88,7 +89,11 @@ fn ran_since_repo(env: &Env, dir: &Path) -> bool {
 /// unreadable trust file is unknown, not untrusted: no issue.
 fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
     let real = crate::env::canon(dir);
-    if dir.starts_with(&env.home) || real.starts_with(crate::env::canon(&env.home)) {
+    let home = crate::env::canon(&env.home);
+    // inside NIMITZ_HOME: trusted when the data root is (nimitz init asks for
+    // it); when it is not, the fix names the data root, which covers them all
+    let in_home = dir.starts_with(&env.home) || real.starts_with(&home);
+    if in_home && crate::evidence::folder_trusted(env, &mut Default::default(), &home.to_string_lossy()) {
         return None;
     }
     let projects = trust_projects(env)?;
@@ -127,11 +132,28 @@ fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
         }
         (_, Some(_)) => None,
         (root, None) => {
-            let at = root.clone().unwrap_or_else(|| real.clone());
+            let at = if in_home && root.is_none() { home.clone() } else { root.clone().unwrap_or_else(|| real.clone()) };
             let why = root.map(|r| format!(" (git repository {})", r.display())).unwrap_or_default();
-            Some(mk(Severity::Error, format!("{id}'s folder {} is not trusted by Claude Code{why}", real.display()), &at))
+            let twin = case_twin(&projects, &crate::env::trust_ancestors(dir));
+            let note = twin.map(|k| format!("; it is trusted as `{k}`, but Claude Code compares the folder's case and looks it up as it is on disk")).unwrap_or_default();
+            Some(mk(Severity::Error, format!("{id}'s folder {} is not trusted by Claude Code{why}{note}", real.display()), &at))
         }
     }
+}
+
+/// An accepted trust key that names one of `keys` but for case (Windows:
+/// `c:/x` for `C:\x`), which Claude Code does not count.
+fn case_twin(projects: &serde_json::Map<String, serde_json::Value>, keys: &[PathBuf]) -> Option<String> {
+    let want: Vec<String> = keys.iter().map(|k| crate::env::trust_key(&k.to_string_lossy())).collect();
+    projects
+        .iter()
+        .filter(|(_, e)| e.get("hasTrustDialogAccepted").and_then(|b| b.as_bool()) == Some(true))
+        .map(|(k, _)| k)
+        .find(|k| {
+            let t = crate::env::trust_key(k);
+            want.iter().any(|w| *w != t && w.eq_ignore_ascii_case(&t))
+        })
+        .cloned()
 }
 
 /// The fix for an untrusted folder: Claude Code records the real path, and
@@ -615,17 +637,39 @@ pub(crate) mod tests {
         std::fs::write(&trust, r#"{"projects": {}}"#).unwrap();
         let issues = check(&env, &snap, None);
         assert!(issues.iter().any(|i| i.code == "folder.untrusted"), "{issues:?}");
-        // Folder (or a parent) accepted: trusted. Managed folders are always trusted.
-        std::fs::write(
-            &trust,
-            format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, outside.display().to_string().replace('\\', "\\\\")),
-        )
-        .unwrap();
+        // Folder (or a parent) accepted: trusted. Managed folders are trusted with the data root.
+        // (and the data root, as `nimitz init` has it: the leads' folders are under it)
+        let root = crate::env::canon(&env.home).display().to_string();
+        std::fs::write(&trust, serde_json::json!({"projects": {outside.display().to_string(): {"hasTrustDialogAccepted": true}, root: {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
         assert!(check(&env, &snap, None).is_empty());
         let f = crate::config::load_fleet(&env, "MAIN").unwrap();
         let managed = f.dir.join("ships/argos/argos");
         std::fs::write(&trust, r#"{"projects": {}}"#).unwrap();
+        // the data root untrusted: so is a managed folder, and the fix names the data root
+        let issues = check(&env, &snap_for(&env, managed.to_str()), None);
+        let i = issues.iter().find(|i| i.code == "folder.untrusted").expect("untrusted with the data root");
+        assert!(i.fix.as_deref().unwrap().contains(&crate::env::canon(&env.home).display().to_string()), "{i:?}");
+        let root = crate::env::canon(&env.home).display().to_string().replace('\\', "/");
+        std::fs::write(&trust, serde_json::json!({"projects": {root: {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
         assert!(check(&env, &snap_for(&env, managed.to_str()), None).is_empty());
+    }
+
+    /// Claude Code (Windows) compares trust keys with case and looks a folder
+    /// up as it is on disk: `c:/x` does not cover `C:\x`, and check says why.
+    #[cfg(windows)]
+    #[test]
+    fn a_trust_key_in_another_case_does_not_count_and_is_named() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let outside = crate::env::canon(td.path()).join("project");
+        std::fs::create_dir_all(&outside).unwrap();
+        let s = outside.display().to_string().replace('\\', "/");
+        let lower = format!("{}{}", s[..1].to_lowercase(), &s[1..]);
+        let root = crate::env::canon(&env.home).display().to_string();
+        std::fs::write(format!("{}.json", env.claude_home.display()), serde_json::json!({"projects": {lower.clone(): {"hasTrustDialogAccepted": true}, root: {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
+        let issues = check(&env, &snap_for(&env, outside.to_str()), None);
+        let i = issues.iter().find(|i| i.code == "folder.untrusted" && i.id == Some(Id::ship("MAIN", "ARGOS", "ARGOS"))).expect("another case is no trust");
+        assert!(i.message.contains(&lower), "{}", i.message);
     }
 
     #[test]

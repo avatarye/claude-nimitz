@@ -143,9 +143,12 @@ fn trust_files(base: &Path) -> Vec<PathBuf> {
     vec![claude_home(base).join(".claude.json"), base.join("claude_home.json")]
 }
 
+/// The data root is trusted too, as `nimitz init` has the user do (its
+/// members' folders are under it).
 fn trust(base: &Path, dirs: &[String]) {
+    let root = base.join("nimitz").to_string_lossy().into_owned();
     let projects: serde_json::Map<String, Value> =
-        dirs.iter().map(|d| (d.clone(), json!({"hasTrustDialogAccepted": true}))).collect();
+        dirs.iter().chain(std::iter::once(&root)).map(|d| (d.clone(), json!({"hasTrustDialogAccepted": true}))).collect();
     for f in trust_files(base) {
         write_json(&f, &json!({ "projects": projects }));
     }

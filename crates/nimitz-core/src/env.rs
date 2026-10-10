@@ -62,12 +62,14 @@ pub fn git_root(dir: &Path) -> Option<PathBuf> {
 }
 
 /// A trust-file key (or a folder) in the one form keys are compared in:
-/// without a trailing separator; on Windows also with `/` for `\` and in
-/// lower case (Claude Code writes `C:\x` and `C:/x` there, and the file
-/// system ignores case).
+/// without a trailing separator; on Windows also with `/` for `\` (Claude
+/// Code writes `C:\x` and `C:/x` there). Case is kept: Claude Code 2.1.296
+/// on Windows looks a folder up in its on-disk case and compares keys
+/// case-sensitively, so a trust accepted from a shell that typed `c:\...`
+/// (key `c:/...`) does not cover `C:\...` for a background launch.
 pub fn trust_key(k: &str) -> String {
     if cfg!(windows) {
-        let k = k.replace('\\', "/").to_lowercase();
+        let k = k.replace('\\', "/");
         let t = k.trim_end_matches('/');
         // a drive root keeps its separator
         if t.len() == 2 && t.ends_with(':') { format!("{t}/") } else { t.to_string() }
@@ -78,11 +80,15 @@ pub fn trust_key(k: &str) -> String {
 }
 
 /// `dir` and its parents, as given and as real paths, without duplicates: the
-/// trust-file keys that may cover `dir`.
+/// trust-file keys that may cover `dir`. A parent as given counts only when
+/// it holds the real folder too: Claude Code resolves links first, so a
+/// trusted home does not cover `~/.claude-nimitz` when that is a link into
+/// Dropbox.
 pub fn trust_ancestors(dir: &Path) -> Vec<PathBuf> {
     let real = canon(dir);
     let mut keys: Vec<PathBuf> = vec![];
-    for a in dir.ancestors().chain(real.ancestors()) {
+    let given = dir.ancestors().filter(|a| *a == dir || real.starts_with(canon(a)));
+    for a in given.chain(real.ancestors()) {
         if a.as_os_str().is_empty() {
             continue;
         }
