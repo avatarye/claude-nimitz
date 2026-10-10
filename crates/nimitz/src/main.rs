@@ -142,7 +142,7 @@ fn dispatch(argv: Vec<String>) -> i32 {
         Err(e) => return usage_error(&e),
     };
     out::set_json(args.flag("--json"));
-    let vars: HashMap<String, String> = std::env::vars().collect();
+    let vars: HashMap<String, String> = nimitz_core::os::env_vars();
     if let Err(e) = nimitz_mux::valid_mux_setting(&vars) {
         return usage_error(&e);
     }
@@ -206,7 +206,7 @@ fn usage_error(e: &str) -> i32 {
 fn hook(event: &str) -> i32 {
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
-    let vars: HashMap<String, String> = std::env::vars().collect();
+    let vars: HashMap<String, String> = nimitz_core::os::env_vars();
     let env = Env::from_vars(&vars);
     let (out, notice) = nimitz_core::hook::handle_full(&env, event, &stdin, &vars);
     if let Some(n) = notice {

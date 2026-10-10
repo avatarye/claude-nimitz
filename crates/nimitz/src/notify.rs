@@ -37,7 +37,7 @@ pub fn spawn_delivery(env: &Env, n: &Notice) {
 
 /// `nimitz __notify <id>`: only the member itself (its labels) delivers its notice.
 pub fn deliver_cmd(id: &str) -> i32 {
-    let vars: HashMap<String, String> = std::env::vars().collect();
+    let vars: HashMap<String, String> = nimitz_core::os::env_vars();
     match caller_from_env(&vars) {
         Caller::Member { id: me, role: Role::Ship } if me.0 == id => {}
         _ => return 2,

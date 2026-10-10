@@ -32,7 +32,7 @@ fn main() -> ExitCode {
     let mut args: Vec<String> = nimitz_core::os::args();
     // the Herdr plugin's commands (herdr-plugin/herdr-plugin.toml)
     if args.first().map(String::as_str) == Some("herdr") {
-        let vars: HashMap<String, String> = std::env::vars().collect();
+        let vars: HashMap<String, String> = nimitz_core::os::env_vars();
         match args.get(1).map(String::as_str) {
             Some("toggle") => return code(herdr_plugin::toggle(&vars)),
             Some("watch") => {
@@ -57,7 +57,7 @@ fn main() -> ExitCode {
         }
         _ => {}
     }
-    let mut vars: HashMap<String, String> = std::env::vars().collect();
+    let mut vars: HashMap<String, String> = nimitz_core::os::env_vars();
     let mut dump = false;
     let mut width = 160u16;
     let mut interval = 2.0f64;
@@ -143,7 +143,7 @@ fn hook(event: String) -> ExitCode {
     use std::io::Read;
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
-    let vars: HashMap<String, String> = std::env::vars().collect();
+    let vars: HashMap<String, String> = nimitz_core::os::env_vars();
     let env = nimitz_core::env::Env::from_vars(&vars);
     let out = nimitz_core::hook::handle(&env, &event, &stdin, &vars);
     if !out.is_empty() {

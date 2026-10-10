@@ -203,7 +203,7 @@ impl Env {
     }
 
     pub fn from_process() -> Env {
-        Env::from_vars(&std::env::vars().collect())
+        Env::from_vars(&crate::os::env_vars())
     }
 
     /// Does `hostname` (full or short, any case) name this machine?

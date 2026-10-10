@@ -9,6 +9,19 @@ use std::fs::File;
 use std::path::Path;
 use std::process::Command;
 
+/// The process environment as a map. Windows variable names are
+/// case-insensitive, and a process may get `Path` (cmd.exe does) where nimitz
+/// looks up `PATH`: there every name is upper-cased (the first of two that
+/// differ only in case wins, as in Windows' own lookup).
+pub fn env_vars() -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for (k, v) in std::env::vars() {
+        let k = if cfg!(windows) { k.to_uppercase() } else { k };
+        out.entry(k).or_insert(v);
+    }
+    out
+}
+
 /// The pid of this process's parent.
 pub fn parent_pid() -> i64 {
     #[cfg(unix)]
@@ -507,6 +520,19 @@ mod tests {
         assert_ne!(file_id(&File::open(&a).unwrap()), before);
         assert!(writable(&d) && writable(&a));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn env_names_are_upper_case_on_windows_only() {
+        std::env::set_var("Nimitz_Os_Probe", "1");
+        let v = env_vars();
+        if cfg!(windows) {
+            assert_eq!(v.get("NIMITZ_OS_PROBE").map(String::as_str), Some("1"), "cmd.exe passes `Path`; nimitz looks up `PATH`");
+            assert!(v.keys().all(|k| *k == k.to_uppercase()));
+        } else {
+            assert_eq!(v.get("Nimitz_Os_Probe").map(String::as_str), Some("1"));
+        }
+        std::env::remove_var("Nimitz_Os_Probe");
     }
 
     #[test]
