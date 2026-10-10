@@ -32,6 +32,7 @@ pub fn shape_of(mux: &dyn Mux, foregrounds: bool) -> Result<(rs::Shape, nimitz_m
                 cwd: p.cwd.clone(),
                 session_id: p.session_id.clone(),
                 claimed: p.claimed.clone(),
+                inferred: p.inferred,
                 foreground: p.foreground.clone(),
                 foreground_pid: p.foreground_pid,
             })

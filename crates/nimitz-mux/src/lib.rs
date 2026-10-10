@@ -25,8 +25,9 @@ pub struct Pane {
     pub cwd: String,
     /// the multiplexer's own state for the pane's agent (Herdr: working|blocked|done|idle|unknown)
     pub state: String,
-    /// the session is read from the pane's `claude attach <job>` alone, with
-    /// no claim of Herdr's: typed into only while it runs exactly that attach
+    /// the session is read from the pane's `claude attach <job>` alone (no
+    /// claim of Herdr's, one the foreground does not back, ignored, or one
+    /// only the attach backs): typed into only while it runs exactly that attach
     /// (`runs_exact_attach`, read just before typing; R-24)
     pub inferred: bool,
 }
@@ -57,12 +58,14 @@ pub struct ShapePane {
     pub cwd: String,
     pub title: String,
     pub agent: Option<String>,
-    /// the session the pane shows, when its foreground backs the claim
-    /// (`evidence::claim_backed`)
+    /// the session the pane shows: Herdr's claim when its foreground backs
+    /// it (`evidence::claim_backed`), else what the foreground runs
+    /// (`evidence::session_of_unclaimed`; an unbacked claim is ignored)
     pub session_id: Option<String>,
     /// the multiplexer's own claim, backed or not (Herdr's hook names a pane
     /// by an inherited `HERDR_PANE_ID`); read only to tell the agent view
-    /// from the attach it replaced (R-24)
+    /// from the attach it replaced (R-24): a claim no member owns on a
+    /// pane inferred from its attach
     pub claimed: Option<String>,
     /// the multiplexer's state for the pane's agent (idle|working|blocked|done|unknown)
     pub state: String,

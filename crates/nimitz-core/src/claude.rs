@@ -163,6 +163,10 @@ pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
 /// table in `sessions::may_run` decides what each role may do with it).
 pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 
+/// The Herdr env that names a pane (and its tab and workspace): blank in
+/// every member's `--settings`, so no member's worker claims a pane.
+pub const HERDR_PANE_VARS: [&str; 3] = ["HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"];
+
 /// The git subcommands a writer aide runs in its folder (`git -C <folder>
 /// <sub>`) with no prompt: what an ingest needs, nothing that leaves the machine.
 /// (No `grep`: `git grep -O<cmd>` runs a program; the Grep tool covers it.)
@@ -195,7 +199,8 @@ fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
     (allow, deny)
 }
 
-/// `--settings` JSON: the labels as env, `permissions.allow` for `nimitz`
+/// `--settings` JSON: the labels as env, the Herdr pane env blank
+/// (`HERDR_PANE_VARS`), `permissions.allow` for `nimitz`
 /// (an aide's own rules: `aide_permissions`), plus `worktree.bgIsolation
 /// none` for background sessions. It is per launch and lives in the job's
 /// `respawnFlags`, so a restart keeps it and a relaunch (every flag again)
@@ -209,6 +214,16 @@ pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
     vars.insert("NIMITZ_CLAUDE_HOME".to_string(), env.claude_home.to_string_lossy().into_owned());
     // (and the machine name it knows: an alias the caller set holds inside the job's hook)
     vars.insert("NIMITZ_HOSTNAME".to_string(), env.hostname.clone());
+    // no pane of the user's: the daemon that runs the job keeps the env of
+    // whichever `claude` started it, a Herdr pane's `HERDR_PANE_ID` included,
+    // and Herdr's own claude hook in the worker then claims that pane for
+    // the member (`scrub_child_env` cannot reach the daemon). `HERDR_ENV`
+    // and the server's socket stay: a member's nimitz takes its server from
+    // the record (`active::member_mux_vars`), and the session's own herdr
+    // calls still reach the user's server.
+    for k in HERDR_PANE_VARS {
+        vars.insert(k.to_string(), String::new());
+    }
     let mut v = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
     if id.role() == Role::Aide {
         let (allow, deny) = aide_permissions(env, id);
@@ -432,6 +447,11 @@ mod tests {
         assert_eq!(v["env"]["NIMITZ_ID"], "F/SQ/S");
         assert_eq!(v["worktree"]["bgIsolation"], "none");
         assert_eq!(v["permissions"]["allow"], serde_json::json!([NIMITZ_ALLOW]), "every member may run nimitz");
+        // no member's worker claims a Herdr pane by the daemon's inherited pane env
+        for k in ["HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"] {
+            assert_eq!(v["env"][k], "", "{k} blank");
+        }
+        assert!(v["env"].get("HERDR_ENV").is_none(), "HERDR_ENV is left as the daemon has it");
         assert_eq!(c.last().unwrap(), "go");
         // resume: native binary, no flags at all
         assert_eq!(resume_bg(&env, "sid"), vec!["/n/claude", "--bg", "--resume", "sid"]);
@@ -439,6 +459,10 @@ mod tests {
         let r = relaunch_bg(&env, &id, "", "sid");
         assert_eq!(&r[..4], &["claude", "--bg", "--resume", "sid"]);
         assert!(r.last().unwrap().contains("\"Bash(nimitz *)\""), "{r:?}");
+        let rv: serde_json::Value = serde_json::from_str(r.last().unwrap()).unwrap();
+        assert_eq!((&rv["env"]["HERDR_PANE_ID"], &rv["env"]["HERDR_TAB_ID"], &rv["env"]["HERDR_WORKSPACE_ID"]), (&serde_json::json!(""), &serde_json::json!(""), &serde_json::json!("")), "a relaunch clears them again");
+        let iv: serde_json::Value = serde_json::from_str(&settings_json(&env, &id, false)).unwrap();
+        assert_eq!(iv["env"]["HERDR_PANE_ID"], "", "an interactive launch too");
         // a lead launches the same way, with its own prompt (plan-v4 section 7)
         let adm = Id::admiral("F");
         let l = launch_bg(&env, &adm, "", Some(&lead_prompt(&adm)));

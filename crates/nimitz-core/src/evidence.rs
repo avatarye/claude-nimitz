@@ -1288,10 +1288,13 @@ fn is_claude(argv: &[String]) -> bool {
 /// The session of the job a pane's foreground attaches to (`claude attach
 /// <job>`, a short or full job id): its job row's conversation now
 /// (`resumeSessionId`, which `/clear` moves; else `sessionId`). What a pane
-/// shows when Herdr claims no session for it: an attach client never runs
-/// Herdr's SessionStart hook, so Herdr sees claude there but not which
-/// session. Not used against a claim: a claim the attach does not back may be
-/// the agent view (R-24).
+/// shows when Herdr claims no session for it, or one the pane's foreground
+/// does not back (`claim_backed`): an attach client never runs Herdr's
+/// SessionStart hook, so Herdr sees claude there but not which session, and
+/// a claim it does not back is another process's hook naming the pane by an
+/// inherited `HERDR_PANE_ID`. Such a pane is `inferred`: typed into only
+/// while it runs exactly the attach (R-24: the agent view re-execs as
+/// `claude agents`).
 pub fn session_of_attach(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
     procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(argv, _)| {
         let job = argv.windows(2).find(|w| w[0] == "attach").map(|w| w[1].as_str())?;
@@ -1301,16 +1304,31 @@ pub fn session_of_attach(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)
     })
 }
 
-/// The session a pane Herdr claims none for shows, from its foreground alone:
+/// The session a pane Herdr claims none for (or one its foreground does not
+/// back) shows, from its foreground alone:
 /// the job a `claude attach <job>` attaches to (`session_of_attach`), else
-/// the conversation a `claude --resume <sid>` holds, else the session a
-/// foreground pid's session file names (`claude -c`, a plain `claude`).
+/// the session a foreground pid's session file names (`claude -c`, a plain
+/// `claude`, and a `claude --resume <sid>` after a `/clear` moved it on),
+/// else the conversation a `claude --resume <sid>` holds by its argv.
 /// The held case shows its member's pane too: nimitz flags it, and the user
 /// still jumps to it.
 pub fn session_of_unclaimed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
     session_of_attach(claude_home, procs)
-        .or_else(|| procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(argv, _)| argv.windows(2).find(|w| w[0] == "--resume" || w[0] == "-r").map(|w| w[1].clone()).filter(|s| !s.starts_with('-'))))
         .or_else(|| session_of_foreground(claude_home, procs))
+        .or_else(|| procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(argv, _)| argv.windows(2).find(|w| w[0] == "--resume" || w[0] == "-r").map(|w| w[1].clone()).filter(|s| !s.starts_with('-'))))
+}
+
+/// What backs a pane's claim (`claim_backing`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backing {
+    /// a foreground process runs the session itself: its argv names it
+    /// (`--resume <sid>`), or its pid's session file does
+    Process,
+    /// only a `claude attach <job>` of the session's job: the pane may show
+    /// the agent view under the attach's argv (a Claude Code before
+    /// `ATTACH_EXEC_SINCE`, R-24), so it is typed into only while it runs
+    /// exactly the attach (`Pane.inferred`)
+    Attach,
 }
 
 /// Does what runs in a pane back its multiplexer's claim that the pane shows
@@ -1323,6 +1341,12 @@ pub fn session_of_unclaimed(claude_home: &Path, procs: &[(Vec<String>, Option<i6
 /// its job (`claude attach <job>`), or has a session file
 /// (`sessions/<pid>.json`) that names it.
 pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], sid: &str) -> bool {
+    claim_backing(claude_home, procs, sid).is_some()
+}
+
+/// `claim_backed`, with what backs it: a process that runs the session
+/// (`Backing::Process`) before an attach of its job alone (`Backing::Attach`).
+pub fn claim_backing(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], sid: &str) -> Option<Backing> {
     let job_of = |short: &str| -> bool {
         if sid.starts_with(short) {
             return true;
@@ -1333,18 +1357,20 @@ pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], si
         }
         std::fs::read_dir(claude_home.join("sessions")).into_iter().flatten().flatten().filter_map(|e| std::fs::read(e.path()).ok().and_then(|b| first_json(&b))).any(|v| v.get("jobId").and_then(|x| x.as_str()) == Some(short) && v.get("sessionId").and_then(|x| x.as_str()) == Some(sid))
     };
-    procs.iter().any(|(argv, pid)| {
-        argv.iter().any(|a| a == sid)
-            || argv.windows(2).any(|w| w[0] == "attach" && job_of(&w[1]))
-            || pid.is_some_and(|p| {
-                std::fs::read(claude_home.join("sessions").join(format!("{p}.json"))).ok().and_then(|b| first_json(&b)).and_then(|v| v.get("sessionId").and_then(|x| x.as_str()).map(|x| x == sid)).unwrap_or(false)
-            })
-    })
+    // the session in the argv, not as an attach's job (`attach <full id>`)
+    let named = |argv: &[String]| argv.iter().enumerate().any(|(i, a)| a == sid && !(i > 0 && argv[i - 1] == "attach"));
+    let by_file = |pid: &Option<i64>| {
+        pid.is_some_and(|p| std::fs::read(claude_home.join("sessions").join(format!("{p}.json"))).ok().and_then(|b| first_json(&b)).and_then(|v| v.get("sessionId").and_then(|x| x.as_str()).map(|x| x == sid)).unwrap_or(false))
+    };
+    if procs.iter().any(|(argv, pid)| named(argv) || by_file(pid)) {
+        return Some(Backing::Process);
+    }
+    procs.iter().any(|(argv, _)| argv.windows(2).any(|w| w[0] == "attach" && job_of(&w[1]))).then_some(Backing::Attach)
 }
 
 /// The session a pane's foreground runs, read from the processes themselves
 /// (no multiplexer claim): a foreground pid's session file (an interactive
-/// session in the pane). What a pane shows when Herdr's claim is not backed.
+/// session in the pane), `session_of_unclaimed`'s read after the attach.
 /// Not an attach client's job: `session_of_attach` reads that, and the
 /// typing paths check the exact attach again (R-24).
 pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
@@ -1381,6 +1407,13 @@ mod claim_tests {
         assert!(!claim_backed(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-ship"));
         assert!(!claim_backed(ch, &p(&["zsh"], Some(1)), "s-ship"));
         assert!(!claim_backed(ch, &[], "s-ship"), "an unreadable foreground backs nothing");
+        // what backs it: the attach alone (the view may run under its argv, R-24), or the session's own process
+        use super::{claim_backing, Backing};
+        assert_eq!(claim_backing(ch, &p(&["claude", "attach", "aaaa1111"], None), "s-after-clear"), Some(Backing::Attach));
+        assert_eq!(claim_backing(ch, &p(&["claude", "attach", "aaaa1111-birth"], None), "aaaa1111-birth"), Some(Backing::Attach), "a full id as the attach's job");
+        assert_eq!(claim_backing(ch, &p(&["claude", "--resume", "s-ship"], None), "s-ship"), Some(Backing::Process));
+        assert_eq!(claim_backing(ch, &p(&["claude"], Some(700)), "s-commodore"), Some(Backing::Process));
+        assert_eq!(claim_backing(ch, &p(&["claude"], Some(700)), "s-ship"), None);
         // what the pane runs, from the processes alone
         assert_eq!(super::session_of_foreground(ch, &p(&["claude"], Some(700))).as_deref(), Some("s-commodore"));
         assert_eq!(super::session_of_foreground(ch, &p(&["claude", "attach", "aaaa1111"], None)), None, "an attach may show the agent view");
@@ -1392,6 +1425,7 @@ mod claim_tests {
         assert_eq!(super::session_of_unclaimed(ch, &p(&["claude", "attach", "aaaa1111"], None)).as_deref(), Some("s-after-clear"));
         assert_eq!(super::session_of_unclaimed(ch, &p(&["claude", "--resume", "s-held"], None)).as_deref(), Some("s-held"), "a held conversation");
         assert_eq!(super::session_of_unclaimed(ch, &p(&["claude", "-c"], Some(700))).as_deref(), Some("s-commodore"), "by its session file");
+        assert_eq!(super::session_of_unclaimed(ch, &p(&["claude", "--resume", "s-held"], Some(700))).as_deref(), Some("s-commodore"), "the session file over the argv (a /clear moved it on)");
         assert_eq!(super::session_of_unclaimed(ch, &p(&["vim", "--resume", "s-held"], None)), None);
         assert_eq!(super::session_of_foreground(ch, &p(&["zsh"], Some(1))), None);
         // a stale session file of a reused pid: the program is not claude

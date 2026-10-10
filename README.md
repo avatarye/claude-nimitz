@@ -177,6 +177,12 @@ then refused with "update nimitz here" instead of misreading the file.
   itself (one `[OK] nimitz X: migrated ...` line; the old file kept as
   `<file>.pre-X`); `nimitz migrate --plan` lists what is due, a shared step
   included (it affects every machine: update them all first).
+- A lead shows no pane, or a member shows in another's pane (Herdr's hook
+  in a background worker claimed the pane the Claude Code daemon was started
+  from): after upgrading to 0.5.0, run `nimitz start <F> -f` (a lead:
+  `nimitz start <id> --only -f`) once for each live member. A job launched
+  before 0.5.0 keeps the daemon's `HERDR_PANE_ID` until a relaunch gives it
+  the new settings; a plain wake reuses its old ones.
 - `-v` on any plan shows the commands it runs.
 - `nimitz doctor` says Claude Code is above the tested range ("tested up to
   ..."): launches still go ahead. To validate the new version and raise the
