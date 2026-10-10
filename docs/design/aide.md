@@ -307,7 +307,16 @@ FIFO, lease, tries and dead letters.
   it;
 - and the user. Every other caller gets `inbox.not_yours` with no content,
   not even the question.
-- `inbox list` shows other senders' items without payloads or results.
+- `inbox list` shows other senders' items without payloads or results (the
+  aide itself sees its whole queue: it works the items).
+- **The threat model:** these checks govern nimitz's own commands. A process
+  of the same user can read the queue's files directly (0700, 0600); what the
+  checks hold is every well-behaved caller, an agent among them, whose
+  permissions allow `Bash(nimitz *)` and not a raw file read. So the caller is
+  the labels, else a Claude Code session among its ancestors, else
+  `--from` (unverified); only a terminal process that is none of these is the
+  user, and a detached one (`setsid`, `nohup ... &`: re-parented to init or a
+  subreaper) never is.
 
 **`nimitz ask`** posts, keeps the token in memory and polls the item file
 (every 500 ms; the queue lock is not held between polls) until it is done
@@ -435,14 +444,16 @@ answer and nimitz delivers it (4.6).
 
 ### 6.3 `wiki.note.v1`, idempotent
 
-1. `git log -E --grep '^inbox-item: <id>$'` (anchored: item 42 never matches
-   item 420). If a commit has it, `done` with that commit (an earlier pass did
-   the work and crashed before `done`).
+1. `git log -E --grep '^inbox-item: <ref>$'` (anchored: item 42 never
+   matches item 420). `<ref>` is the item's `ref`, `<queue uid>:<id>`: ids
+   restart when a queue is reset, refs never repeat. If a commit has it,
+   `done` with that commit (an earlier pass did the work and crashed before
+   `done`).
 2. Run the auto-ingest procedure on the payload: the capture file, then search
    existing pages, update or create, cross-link.
 3. Stage **the paths it wrote, by name** (never `git add -A`: the user may
    have other changes in the tree), then
-   `git commit -m "ingest(auto): <title>" -m "inbox-item: <id>" -m "from: <sender>"`.
+   `git commit -m "ingest(auto): <title>" -m "inbox-item: <ref>" -m "from: <sender>"`.
 4. `inbox done ... --result {"commit": "<sha>", "pages": [...]}`.
 
 Rollback is `git revert <sha>`; `inbox list --state done` maps items to commits.
@@ -555,9 +566,14 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
   HOME · GITHUB
     COMMODORE    ...
   ```
-- **`--json`:** a member with `role: "aide"`, `parent`, and
-  `inbox: {pending, claimed, dead, oldest_age_s, lease_until, undelivered}`
-  (and `snapshot` for a reader).
+- **`--json`:** a member with `role: "aide"`, `parent`, and `inbox`: the
+  shape of `nimitz inbox status <aide> --json` (S1), `{aide, pending,
+  claimed: [{id, type, by, until, tries}], done, dead: [{id, type, sender,
+  tries, reason}], oldest_age_s, lease_until, quarantined, undelivered,
+  depth_cap, senders: [{sender, used, limit, window_s, frees_in_s}], recent:
+  [{id, type, state, sender, age_s, result?}], error?}` (and `snapshot` for a
+  reader). `inbox status --json` with no aide named is a list of these, one
+  per aide; an aide whose queue cannot open is a row with `error`.
 - **`nimitz check`:**
   - `aide.down` (Error, fix `nimitz start HOME/@KB`);
   - `aide.unpinned`;
