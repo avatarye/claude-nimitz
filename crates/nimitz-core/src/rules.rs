@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 /// Bump when the rules text changes in a way members must pick up, and add
 /// the version's entry to `CHANGELOG`.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// What changed in each rules version, oldest first (one entry per version;
 /// a member on v{N} gets the entries after N with the new text).
@@ -43,6 +43,13 @@ pub const CHANGELOG: &[(u32, &str)] = &[
          a Herdr closure or crash (it reattaches) and a reboot (it wakes the leads and the active ships; `--all` every ship); \
          `--restart` relaunches every live member; it never relaunches the member that runs it; a commodore may restore its own ships; \
          `up` and `layout herdr` are deprecated; never start, resume or stop a member with `claude` yourself (a copy, a held conversation, a stowaway, the daemon's env)",
+    ),
+    (
+        4,
+        "one verb, `nimitz start [<target>]`, brings any member up and ready (a ship, a squadron, a fleet, or every fleet here; \
+         after a Claude Code update, a Herdr closure or a reboot too); `-f` relaunches the live ones; `-p` (a pane, focused) is the user's; \
+         `nimitz stop` is its opposite; `restore`, `relaunch`, `open`, `up` and `layout herdr` are deprecated; \
+         a start never relaunches the member that runs it (`start.self`)",
     ),
 ];
 

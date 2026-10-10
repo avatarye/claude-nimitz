@@ -93,7 +93,7 @@ pub fn attach_tab(env: &Env, m: &Member) -> Result<TabSpec, Issue> {
         // name or missing labels need the relabel (`nimitz start` does it),
         // and a lost transcript the cold launch
         if let Some(i) = crate::sessions::session_issues(env, m).into_iter().find(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing")) {
-            return Err(Issue { fix: Some(format!("nimitz start {id}  # relabels it, then nimitz open {id}")), ..i });
+            return Err(Issue { fix: Some(format!("nimitz start {id}  # relabels it, then nimitz start {id} -p")), ..i });
         }
         if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), m.cwd.as_deref(), &s.session_id).is_none() {
             return Err(Issue {
@@ -200,6 +200,6 @@ pub fn drop_shown(spec: &mut LayoutSpec, shown_sessions: &[String]) {
     spec.workspaces.retain(|w| !w.tabs.is_empty());
     for id in dropped {
         spec.plan.steps.retain(|s| !(s.id.as_ref() == Some(&id) && s.cmd.get(1).map(|c| c == "attach").unwrap_or(false)));
-        spec.plan.warnings.push(skip(&id, format!("{id} already has a pane; `nimitz open {id}` shows it")));
+        spec.plan.warnings.push(skip(&id, format!("{id} already has a pane; `nimitz start {id} -p` shows it")));
     }
 }

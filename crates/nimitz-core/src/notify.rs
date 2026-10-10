@@ -247,7 +247,7 @@ pub fn issues(env: &Env) -> Vec<Issue> {
             code: "notify.failed".into(),
             severity: Severity::Warn,
             message: format!("{} waits for the user and {commodore} was not told ({why}): {}", n.id, clip(&n.detail, 300)),
-            fix: Some(format!("nimitz open {}  # answer it there", n.id)),
+            fix: Some(format!("nimitz start {} -p  # answer it there", n.id)),
             id: Some(id),
         });
     }

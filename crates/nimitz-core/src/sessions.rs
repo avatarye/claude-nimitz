@@ -171,7 +171,7 @@ fn copy_how(r: &SessionInfo) -> &'static str {
 pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     let mut out = vec![];
     let id = Some(m.id.clone());
-    let relaunch = Some(format!("nimitz relaunch {}", m.id));
+    let relaunch = Some(start_cmd(&m.id, "-f"));
     let rows: Vec<&SessionInfo> = m.session.iter().chain(m.extra_rows.iter()).collect();
     // a lead's folder is exclusive: a live extra row there (a /fork, a hand
     // launch with its labels) is its `lead.intruder` (the snapshot names it,
@@ -263,7 +263,7 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
                         p.cwd,
                         if gone { "gone" } else { "not trusted" }
                     ),
-                    Some(format!("nimitz relaunch {}  # a labelled copy in the new folder", m.id)),
+                    Some(format!("{}  # a labelled copy in the new folder", start_cmd(&m.id, "-f"))),
                     id.clone(),
                 ));
             }
@@ -345,7 +345,7 @@ pub fn registry_issues(env: &Env, cache: &mut crate::evidence::FileCache, m: &Me
                 "lineage.stale",
                 Severity::Warn,
                 format!("{}'s registry names {} but its job would wake on {}; the job's conversation wins", m.id, &stale[..stale.len().min(8)], &p.session_id[..p.session_id.len().min(8)]),
-                Some(format!("nimitz relaunch {}", m.id)),
+                Some(start_cmd(&m.id, "-f")),
                 Some(m.id.clone()),
             ));
         }
@@ -394,6 +394,13 @@ pub fn name_taken_issue(m: &Member, others: &[SessionInfo]) -> Option<Issue> {
 /// authority table (plan-v3 section 5.5, widened in 0.3.1): you, anything; an
 /// admiral, every member of its own fleet but itself; a commodore, its own
 /// ships; ships nothing.
+/// The `nimitz start` that acts on `id` alone, with `flags` (`-f`, `-p`): a
+/// lead's id names its whole fleet or squadron, so a lead's adds `--only`.
+pub fn start_cmd(id: &Id, flags: &str) -> String {
+    let only = if id.role().lead() { " --only" } else { "" };
+    format!("nimitz start {id}{only} {flags}")
+}
+
 pub fn may_start(caller: &Caller, target: &Id, verb: &str) -> Result<(), String> {
     match caller {
         Caller::User => Ok(()),
@@ -460,7 +467,26 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
                 None => crate::hook::signal_table(me, &t, &strict).is_ok(),
             }
         }),
-        Some("start") | Some("stop") | Some("relaunch") | Some("rm") => id_at(2).is_some_and(|t| may_start(caller, &t, "start").is_ok()),
+        // `start`: a pane (-p) is the user's; nothing relaunches itself; a fleet
+        // or no target is a whole-fleet start (an admiral's own, a commodore's ships)
+        Some("start") if *role == Role::Ship => false,
+        // `start`: a pane (-p) is the user's; nothing relaunches itself alone
+        // (`--only -f`); a wider start of yours skips you; a fleet or no
+        // target is a whole-fleet start (an admiral's own, a commodore's ships)
+        Some("start") if w.iter().any(|x| x.starts_with('-') && !x.starts_with("--") && x.contains('p')) || w.contains(&"--pane") => false,
+        Some("start") => {
+            let only = w.contains(&"--only");
+            let relaunch = w.contains(&"--relaunch") || w.iter().any(|x| x.starts_with('-') && !x.starts_with("--") && x.contains('f'));
+            match id_at(2) {
+                None => matches!(role, Role::Admiral | Role::Commodore),
+                Some(t) if t == *me => !(only && relaunch),
+                Some(t) if only => may_start(caller, &t, "start").is_ok(),
+                Some(t) if t.parts().len() == 1 => t.fleet() == me.fleet() && matches!(role, Role::Admiral | Role::Commodore),
+                Some(t) if t.parts().len() == 2 => *role == Role::Admiral && t.fleet() == me.fleet(),
+                Some(t) => may_start(caller, &t, "start").is_ok(),
+            }
+        }
+        Some("stop") | Some("relaunch") | Some("rm") => id_at(2).is_some_and(|t| may_start(caller, &t, "start").is_ok()),
         Some("sweep") => match id_at(2) {
             None => w.len() == 2 && matches!(role, Role::Admiral | Role::Commodore),
             Some(t) => in_fleet(&t) || in_squadron(&t) || (*role == Role::Ship && t == *me),
@@ -530,7 +556,7 @@ fn member<'a>(snap: &'a Snapshot, id: &Id) -> Option<(&'a Fleet, &'a Member)> {
 }
 
 /// The chain of command above `id`, top-down, then `id` itself.
-fn chain(id: &Id) -> Vec<Id> {
+pub(crate) fn chain(id: &Id) -> Vec<Id> {
     let mut c = vec![id.clone()];
     let mut cur = id.clone();
     while let Some(p) = cur.parent() {
@@ -1349,7 +1375,7 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
     if let Some(h) = held_of(m) {
         let i = held_issue(m, h);
         let live = m.session.as_ref().is_some_and(|p| p.pid.is_some() && p.short_id.is_some());
-        let fix = i.fix.map(|f| if live { format!("{f}, then nimitz relaunch {id}") } else { f });
+        let fix = i.fix.map(|f| if live { format!("{f}, then {}", start_cmd(id, "-f")) } else { f });
         refuse(&mut plan, "session.interactive", i.message, fix, Some(id.clone()));
         return plan;
     }
@@ -1426,7 +1452,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
                 "copy.rows",
                 Severity::Info,
                 format!("{target} has no stale rows{own}"),
-                m.session.as_ref().map(|_| format!("nimitz relaunch {target}  # replaces the row (same conversation); nimitz {retire} {target} retires the member")),
+                m.session.as_ref().map(|_| format!("{}  # replaces the row (same conversation); nimitz {retire} {target} retires the member", start_cmd(&m.id, "-f"))),
                 Some(m.id.clone()),
             ));
         }
@@ -1493,7 +1519,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
             &mut plan,
             "lineage.current",
             format!("session {} is {member}'s current session; its row goes with the member, never alone", row.session_id),
-            Some(format!("nimitz relaunch {member}  # replaces the row (same conversation); nimitz {retire} {member} retires the member")),
+            Some(format!("{}  # replaces the row (same conversation); nimitz {retire} {member} retires the member", start_cmd(&member, "-f"))),
             Some(member.clone()),
         );
         return plan;
@@ -1689,7 +1715,7 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
         "labels.missing",
         Severity::Warn,
         format!("{} has no labels; they arrive at its next relaunch", row.session_id),
-        Some(format!("nimitz relaunch {id}")),
+        Some(start_cmd(id, "-f")),
         Some(id.clone()),
     ));
     plan.steps.push(Step {
@@ -1927,7 +1953,7 @@ fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
             "name.drift",
             Severity::Error,
             format!("{id} started as {:?}, expected {:?}", row.name, id.name()),
-            Some(format!("nimitz relaunch {id}")),
+            Some(start_cmd(id, "-f")),
             Some(id.clone()),
         ));
     }
@@ -1938,7 +1964,7 @@ fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
             "labels.missing",
             Severity::Error,
             format!("{id}'s new session {sid} carries no (or foreign) labels"),
-            Some(format!("nimitz relaunch {id}")),
+            Some(start_cmd(id, "-f")),
             Some(id.clone()),
         ));
     }
@@ -2131,7 +2157,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     "step.failed",
                     Severity::Error,
                     format!("the job row {} of {} still exists; a resume with flags would start an empty copy", r.short_id.unwrap_or_default(), r.session_id),
-                    step.id.as_ref().map(|i| format!("nimitz relaunch {i}")),
+                    step.id.as_ref().map(|i| start_cmd(i, "-f")),
                     step.id.clone(),
                 ));
                 return out;
@@ -2284,7 +2310,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                                 match crate::pins::pin(env, job) {
                                     Ok(true) => note(&mut out, "; pinned"),
                                     Ok(false) => {}
-                                    Err(e) => out.issues.push(issue("pin.failed", Severity::Warn, format!("{id}'s job {job} could not be pinned ({e}); the daemon may retire it when idle"), Some(format!("nimitz relaunch {id}  # pins it again")), Some(id.clone()))),
+                                    Err(e) => out.issues.push(issue("pin.failed", Severity::Warn, format!("{id}'s job {job} could not be pinned ({e}); the daemon may retire it when idle"), Some(format!("{}  # pins it again", start_cmd(id, "-f"))), Some(id.clone()))),
                                 }
                             }
                         }

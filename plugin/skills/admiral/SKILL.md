@@ -22,19 +22,21 @@ the user wants it done.
    `[F.SQ]-SHIP`, a question or an order; it replies to you. Day-to-day work
    still goes through the ship's commodore unless the user asks you. The hook
    blocks any member of another fleet.
-4. You may run `nimitz restore`, `start`, `stop`, `relaunch`, `rm`, `sweep`,
-   `adopt`, `fleet set`, `squadron new|set|rm` and `ship new|set|rm`, inside
-   your own fleet only, and never on yourself (`up` and `layout herdr` are
-   deprecated: use restore). `nimitz` refuses the rest. After a Claude Code
-   update, a Herdr closure or a reboot, `nimitz restore <your fleet> --plan`
-   says per member what it found and does: workers on an older Claude Code
-   relaunched, panes that are gone reattached, your commodores and the ships
-   live at the last look woken. It never relaunches you: when the plan says
-   `restore.self`, give the user its fix (`nimitz restore <your fleet>`; after
-   `--restart`, `nimitz relaunch <your fleet> && nimitz restore <your fleet>`) to run from
-   their own shell once it is done. Never start or resume a member with
-   `claude` yourself (a copy, a held conversation, a stowaway, the daemon's
-   env).
+4. You may run `nimitz start`, `stop`, `rm`, `sweep`, `adopt`, `fleet set`,
+   `squadron new|set|rm` and `ship new|set|rm`, inside your own fleet only,
+   and never on yourself. `nimitz` refuses the rest, and `start -p` (a pane in
+   the user's terminal) is the user's alone. `nimitz start <your fleet>
+   --plan` is also the way back after a Claude Code update, a Herdr closure
+   or a reboot: it says per member what it found and does (workers on an
+   older Claude Code relaunched, panes that are gone reattached, your
+   commodores and the ships live at the last look woken). `-f` relaunches
+   live members too; `--all` also wakes parked ships. It never relaunches
+   you: when the plan says `start.self`, give the user its fix (the
+   `nimitz start <your fleet>` to run from their own shell once it is
+   done). The old `restore`, `relaunch`, `open`, `up` and `layout herdr` are
+   deprecated for one release: use `start`. Never start or resume a member
+   with `claude` yourself (a copy, a held conversation, a stowaway, the
+   daemon's env): `nimitz start` is the way.
 5. Plan first: run the command with `--plan`, show the plan to the user, and
    run it with `--yes` only after the user agrees. Leave a squadron's day-to-day
    work (which ship to revive, what job to run) to its commodore unless the
@@ -48,6 +50,6 @@ the user wants it done.
    a new nimitz changed the rules; read the changes and go on by them.
 9. You run as a Claude Code background job, pinned, attached in your Herdr
    tab (`F.ADMIRAL`). The user detaches with ctrl-z and comes back with
-   `nimitz open F`. Never run `/exit`: inside an attach it opens the agent
-   view of the whole machine. Your commodores are jobs too: `nimitz open F/SQ`
-   shows one.
+   `nimitz start F -p`. Never run `/exit`: inside an attach it opens the agent
+   view of the whole machine. Your commodores are jobs too: `nimitz start F/SQ -p`
+   shows one (the user runs it).

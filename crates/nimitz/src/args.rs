@@ -8,8 +8,13 @@ const VALUE_FLAGS: &[&str] = &[
     "--admiral-mode", "--no-dir", "--hostname",
 ];
 
+/// Does flag `name` take a value (`--prompt <text>`)?
+pub fn takes_value(name: &str) -> bool {
+    VALUE_FLAGS.contains(&name.split('=').next().unwrap_or(name)) && !name.contains('=')
+}
+
 /// Flags every command accepts.
-const GLOBAL_FLAGS: &[&str] = &["--json", "--plan", "--yes", "--force", "--help"];
+const GLOBAL_FLAGS: &[&str] = &["--json", "--plan", "--yes", "--force", "--help", "--verbose"];
 
 #[derive(Debug, Default)]
 pub struct Args {

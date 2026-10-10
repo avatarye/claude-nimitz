@@ -22,7 +22,7 @@ struct Run {
 
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)], stdin: Option<&str>) -> Run {
     let mut c = Command::new(EXE);
-    c.env_clear().env("PATH", "/usr/bin:/bin").envs(vars).args(args);
+    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_VERBOSE", "1").envs(vars).args(args);
     for (k, v) in extra {
         c.env(k, v);
     }
@@ -245,7 +245,7 @@ fn refusals_exit_nonzero_with_a_fix() {
     let sb = Sb::new(false);
     let r = sb.run(&["start", "MAIN/ARGOS/DRIFT", "--yes"]);
     assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("fix: nimitz relaunch MAIN/ARGOS/DRIFT"), "{}", r.out);
+    assert!(r.out.contains("fix: nimitz start MAIN/ARGOS/DRIFT -f"), "{}", r.out);
     let r = sb.run(&["start", "MAIN/ARGOS/TWIN", "--yes"]);
     assert_eq!(r.code, 1);
     assert!(r.out.contains("dup.live"), "{}", r.out);
@@ -271,7 +271,7 @@ fn start_resumes_a_stopped_ship_and_keeps_its_id() {
     // again: nothing to do
     let r = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--yes"]);
     assert_eq!(r.code, 0);
-    assert!(r.out.contains("nothing to do"), "{}", r.out);
+    assert!(r.out.contains("nothing to start"), "{}", r.out);
 }
 
 #[test]
@@ -486,7 +486,7 @@ fn config_changes_go_by_the_same_scopes_and_whole_fleets_stay_yours() {
     no("MAIN/ARGOS/CLEAN", &["ship", "set", "MAIN/ARGOS/CLEAN", "--mode", "auto", "--plan"]);
     // a refusal's fix is shown only when the caller may run it
     let r = sb.run_as("MAIN/ARGOS", &["start", "MAIN/ARGOS/DRIFT", "--plan"]);
-    assert!(r.out.contains("fix: nimitz relaunch MAIN/ARGOS/DRIFT"), "its own ship's fix is its own:\n{}", r.out);
+    assert!(r.out.contains("fix: nimitz start MAIN/ARGOS/DRIFT -f"), "its own ship's fix is its own:\n{}", r.out);
 }
 
 // ------------------------------------------------------------------ CRUD and top-down
@@ -520,7 +520,7 @@ fn start_is_top_down_admiral_commodore_ship() {
     let c = calls.find("[TOP.SQ]-COMMODORE").expect("commodore launched");
     let s = calls.find("[TOP.SQ]-S1").expect("ship launched");
     assert!(a < c && c < s, "top-down:\n{calls}");
-    assert!(!calls.contains("\"-c\"") && !sb.calls().contains("pane"), "never `-c`, never a pane:\n{calls}\n{}", sb.calls());
+    assert!(!calls.contains("\"-c\"") && !sb.calls().contains("[\"pane\",\"run\"") && !sb.calls().contains("[\"tab\",\"create\""), "never `-c`, never a pane:\n{calls}\n{}", sb.calls());
     for id in ["TOP", "TOP/SQ", "TOP/SQ/S1"] {
         let m = sb.member(id);
         assert!(live(&m), "{id}: {m}");
@@ -528,8 +528,8 @@ fn start_is_top_down_admiral_commodore_ship() {
     }
     assert_eq!(r.out.matches("--name [TOP]-ADMIRAL").count(), 1, "the launch line is printed once (in the plan):\n{}", r.out);
     // a second start finds everything live and does nothing
-    let r = sb.run(&["start", "TOP", "--yes"]);
-    assert!(r.out.contains("nothing to do"), "{}", r.out);
+    let r = raw(&sb.vars, &["start", "TOP", "--yes"], &[("NIMITZ_MUX", "none")], None);
+    assert!(r.out.contains("nothing to start"), "{}", r.out);
 }
 
 #[test]
@@ -774,7 +774,7 @@ fn layout_herdr() {
     assert!(r.out.contains("tab MAIN.ADMIRAL in workspace MAIN") && r.out.contains("tab MAIN.ARGOS.COMMODORE in workspace MAIN.ARGOS"), "{}", r.out);
     assert!(sb.calls().contains(" attach ") && sb.calls().contains("MAIN.ADMIRAL") && !sb.calls().contains("\"-c\""), "{}", sb.calls());
     let r = sb.run(&["layout", "herdr", "BETA", "--plan"]);
-    assert!(r.out.contains("BETA has no job") && r.out.contains("nimitz start BETA"), "{}", r.out);
+    assert!(r.out.contains("BETA  has no job") && r.out.contains("nimitz start BETA"), "{}", r.out);
     // again: the tabs are there already (by label), so nothing is attached twice
     let r = sb.run(&["layout", "herdr", "MAIN", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -785,7 +785,7 @@ fn layout_herdr() {
     let r = sb.run(&["layout", "herdr", "MAIN", "--ships", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("tab MAIN.ARGOS.CLEAN in workspace MAIN.ARGOS"), "{}", r.out);
-    assert!(r.out.contains("MAIN/ARGOS/STOPPED is not live; no tab"), "{}", r.out);
+    assert!(r.out.contains("MAIN/ARGOS/STOPPED  is not live; no tab"), "{}", r.out);
     assert!(sb.calls().contains(" attach "), "{}", sb.calls());
 }
 
@@ -1497,7 +1497,7 @@ fn empty_plans_say_why() {
     for flag in ["--plan", "--yes"] {
         let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", flag]);
         assert_eq!(r.code, 0, "{}", r.out);
-        assert!(r.out.contains("nothing to do: MAIN/ARGOS/CLEAN is live"), "{flag}: {}", r.out);
+        assert!(r.out.contains("live on 2.1.288 -> nothing") && r.out.contains("nothing to start"), "{flag}: {}", r.out);
     }
     assert_eq!(sb.run(&["up", "BETA", "--yes"]).code, 0);
     for flag in ["--plan", "--yes"] {
@@ -1748,7 +1748,7 @@ fn stop_of_a_live_lead_beside_an_interactive_older_conversation_stops_its_job() 
     // conversation of the lineage, and names that process (not a 0.3.x lead)
     let r = sb.run(&["relaunch", "MAIN", "--plan"]);
     assert_ne!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("session.interactive") && r.out.contains(&mid) && !r.out.contains("0.3.x") && r.out.contains("then nimitz relaunch MAIN"), "{}", r.out);
+    assert!(r.out.contains("session.interactive") && r.out.contains(&mid) && !r.out.contains("0.3.x") && r.out.contains("then nimitz start MAIN --only -f"), "{}", r.out);
     // and status says only to end that process (the live job needs nothing more)
     let st = sb.member("MAIN");
     let held = st["issues"].as_array().unwrap().iter().find(|i| i["code"] == "held").expect("held");
@@ -1954,7 +1954,7 @@ fn the_users_nimitz_outside_herdr_uses_the_recorded_server() {
     outside.insert("NIMITZ_HERDR_BIN".into(), dead.to_string_lossy().into_owned());
     let r = raw(&outside, &["restore", "MAIN", "--plan"], &[], None);
     assert_ne!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("herdr --session rec") && r.out.contains("nimitz restore MAIN --jobs-only"), "{}", r.out);
+    assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("herdr --session rec") && r.out.contains("nimitz start MAIN --jobs-only"), "{}", r.out);
 }
 
 /// A hook always exits 0, even when Claude Code has closed its pipe before
@@ -1980,7 +1980,7 @@ fn rm_of_a_lead_points_at_the_retire_command() {
     let sb = Sb::new(false);
     let r = sb.run(&["rm", "MAIN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("its own row") && r.out.contains("nimitz fleet rm MAIN retires the member") && r.out.contains("nimitz relaunch MAIN"), "{}", r.out);
+    assert!(r.out.contains("its own row") && r.out.contains("nimitz fleet rm MAIN retires the member") && r.out.contains("nimitz start MAIN --only -f"), "{}", r.out);
     let r = sb.run(&["rm", "MAIN/ARGOS", "--plan"]);
     assert!(r.out.contains("nimitz squadron rm MAIN/ARGOS"), "{}", r.out);
 }
@@ -2064,7 +2064,7 @@ fn rm_of_a_members_own_row_names_relaunch_and_retire() {
     let r = sb.run(&["rm", &job, "--plan"]);
     assert_ne!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("lineage.current") && r.out.contains("MAIN/ARGOS/STOPPED's current session"), "{}", r.out);
-    assert!(r.out.contains("nimitz relaunch MAIN/ARGOS/STOPPED") && r.out.contains("nimitz ship rm MAIN/ARGOS/STOPPED retires the member"), "{}", r.out);
+    assert!(r.out.contains("nimitz start MAIN/ARGOS/STOPPED -f") && r.out.contains("nimitz ship rm MAIN/ARGOS/STOPPED retires the member"), "{}", r.out);
     let adm = sb.member("MAIN");
     let r = sb.run(&["rm", adm["session"]["short_id"].as_str().unwrap(), "--plan"]);
     assert!(r.out.contains("session.live") || r.out.contains("nimitz fleet rm MAIN"), "{}", r.out);
@@ -2112,7 +2112,7 @@ fn a_stale_registry_session_wakes_the_row_and_warns() {
     let m = sb.member("MAIN/ARGOS/CLEAN");
     let stale = m["issues"].as_array().unwrap().iter().find(|i| i["code"] == "lineage.stale").expect("lineage.stale");
     assert_eq!(stale["severity"], "Warn");
-    assert_eq!(stale["fix"], "nimitz relaunch MAIN/ARGOS/CLEAN");
+    assert_eq!(stale["fix"], "nimitz start MAIN/ARGOS/CLEAN -f");
     let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains(&format!("--bg --resume {birth}")) && !r.out.contains("--name") && r.out.contains("lineage.stale"), "a native wake, warned: {}", r.out);

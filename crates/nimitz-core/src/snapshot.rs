@@ -949,7 +949,7 @@ fn build_member(
                 code: "rc.exposed".into(),
                 severity: Severity::Warn,
                 message: format!("{id}'s session {short} is connected to Remote Control (bridge {bridge}); a resume reconnects it"),
-                fix: Some(format!("run /remote-control in that session to turn it off (nimitz open {id}, then /remote-control), or archive it on claude.ai/code")),
+                fix: Some(format!("run /remote-control in that session to turn it off (nimitz start {id} -p, then /remote-control), or archive it on claude.ai/code")),
                 id: Some(id.clone()),
             });
         }

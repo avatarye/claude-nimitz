@@ -30,7 +30,7 @@ fn config_plan(ctx: &Ctx, mut plan: Plan, scope: Option<&Id>) -> i32 {
     authority(ctx, &mut plan, scope);
     match ctx.gate(&plan) {
         out::Go::Exit(c) => c,
-        out::Go::Run => out::outcome(&config::apply_config_plan(&ctx.env, &plan)),
+        out::Go::Run => out::outcome(&plan, &config::apply_config_plan(&ctx.env, &plan)),
     }
 }
 
@@ -289,7 +289,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                             code: "config.pending".into(),
                             severity: nimitz_core::Severity::Info,
                             message: "the change takes effect at the ship's next relaunch".into(),
-                            fix: Some(format!("nimitz relaunch {id}")),
+                            fix: Some(nimitz_core::sessions::start_cmd(&id, "-f")),
                             id: Some(id.clone()),
                         });
                     }
@@ -309,7 +309,7 @@ fn retire(ctx: &Ctx, id: &Id) -> i32 {
     let plan = nimitz_core::sessions::plan_retire(&ctx.env, &ctx.snap(), &ctx.caller, id);
     match ctx.gate(&plan) {
         out::Go::Exit(c) => c,
-        out::Go::Run => out::outcome(&nimitz_core::sessions::apply(&ctx.env, &plan)),
+        out::Go::Run => out::outcome(&plan, &nimitz_core::sessions::apply(&ctx.env, &plan)),
     }
 }
 

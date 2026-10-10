@@ -10,6 +10,7 @@ mod notify;
 mod out;
 mod restore;
 mod run;
+mod view;
 mod sandbox_cmd;
 mod setup;
 
@@ -58,9 +59,21 @@ impl Ctx {
 }
 
 const USAGE: &str = "\
-usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
+usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
        nimitz --version
 
+  start [<target>] [-f] [-p] [--fresh] [--all]
+                                   bring any member up and ready; the one command after a Claude Code
+                                   update, a Herdr closure or a reboot. <target>: a ship F/SQ/SHIP, a
+                                   squadron F/SQ (its commodore and ships), a fleet F, or none (every
+                                   fleet here). Wakes what is down by its exact id, relaunches workers on
+                                   an older Claude Code, attaches the leads' tabs; the target's own member
+                                   gets a first launch when it never ran. -f (--relaunch): relaunch the
+                                   live ones too (a pane they had is reattached); -p (--pane): a pane for
+                                   it, focused (its pane, its tab, a split beside its commodore, a new tab);
+                                   --fresh: a new conversation; --all: parked ships too; --jobs-only: no tabs;
+                                   --only: the target's own member alone (a lead without its fleet or squadron)
+  stop <id|session>                stop a member (or one session); start's opposite
   init [--label L]                 data root, machine label, trust check, doctor
   doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs
   rules [<id>]                     the role rules nimitz hands a member at session start
@@ -71,24 +84,22 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine
-  up <F>                           deprecated (next release: gone): every member up, first launches too;
-                                   use restore (and start <id> for a first launch)
-  start|stop|relaunch <id>         one member; start brings up missing parents first (--fresh: a cold launch, new lineage)
   rm <id|session>                  remove job rows (never transcripts)
   sweep [<id>]                     drop stale rows and copies of members
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member in its tab, else post to its inbox (ships: through the commodore)
-  open <id>                        attach to a member in a tab (detach: ctrl-z)
-  restore [<F>] [--all] [--restart]
-                                   the one command after a Claude Code update, a Herdr closure or a reboot
-                                   (no F: every fleet here): relaunches workers on an older Claude Code,
-                                   reattaches panes that are gone, wakes leads and the last active ships
-                                   (--all: every ship that has run); --restart relaunches every live member;
-                                   --jobs-only (no tabs); never relaunches the member that runs it
-  layout herdr [<F>] [--ships]     deprecated (next release: gone): the tabs only; use restore
   migrate fleet-skill <dir...> --into <F>
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
   sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)
+
+  deprecated, gone in the next release (each prints its start):
+  restore [<F>] [--restart]        start [<F>] [-f]
+  relaunch <id>                    start <id> -f (a lead: start <id> --only -f)
+  open <id>                        start <id> -p (a lead: start <id> --only -p)
+  up <F>                           start <F> --all, and start <id> for a first launch
+  layout herdr [<F>]               start [<F>]
+
+  -v shows a plan's details and commands; colour on a terminal only (NO_COLOR turns it off)
 
 ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship)";
 
@@ -135,11 +146,21 @@ fn dispatch(argv: Vec<String>) -> i32 {
         }
         _ => {}
     }
-    let args = match Args::parse(&argv[1..]) {
+    // `-v` is `--verbose` for every command but `signal` (whose text it may be)
+    // (never after `--`, never a flag's value: `--prompt -v` keeps its text)
+    let mut rest: Vec<String> = vec![];
+    let mut literal = false;
+    for (i, a) in argv[1..].iter().enumerate() {
+        let after_value_flag = i > 0 && args::takes_value(&argv[i]);
+        literal |= a == "--";
+        rest.push(if a == "-v" && cmd != "signal" && !literal && !after_value_flag { "--verbose".to_string() } else { a.clone() });
+    }
+    let args = match Args::parse(&rest) {
         Ok(a) => a,
         Err(e) => return usage_error(&e),
     };
     out::set_json(args.flag("--json"));
+    out::set_verbose(args.flag("--verbose") || std::env::var("NIMITZ_VERBOSE").is_ok_and(|v| v == "1"));
     let vars: HashMap<String, String> = std::env::vars().collect();
     if let Err(e) = nimitz_mux::valid_mux_setting(&vars) {
         return usage_error(&e);
