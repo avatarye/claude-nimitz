@@ -443,7 +443,11 @@ answer and nimitz delivers it (4.6).
     needs (status, add, commit, log, diff, show, rev-parse, ls-files, grep,
     `restore --staged`); push, remote, fetch, pull, clone, config and
     submodule denied in any form (`claude::AIDE_GIT_ALLOW`, `AIDE_GIT_DENY`:
-    a user's own `Bash(git *)` does not reach an aide);
+    a user's own `Bash(git *)` does not reach an aide). **A decision by
+    NIMITZ_DEV, pending the user's word (2026-10-10):** the KB is never
+    pushed by its aide; a push is the user's. (A commit message holding a
+    denied word, e.g. "config", can be refused by the deny patterns: the item
+    fails, safely);
   - Edit and Write within the repo (`acceptEdits` in its folder).
   - Nothing else is pre-allowed: a payload that talks it into `curl` or a write
     outside the repo hits a prompt, and the prompt becomes a needs-you, not an
@@ -695,7 +699,7 @@ From the port's commits (7dd6984 .. 0145dfc):
 | Phase | What | Tests |
 | --- | --- | --- |
 | S1 | `queue.rs` and the CLI: post, claim, heartbeat, done, fail, list, status, retry, drop; types registry with `wiki.note.v1` and `wiki.query.v1`; locks, leases, dead letters, depth and rate limits, sender detection; request and reply: the reply address, tokens, `inbox result`, `nimitz ask --wait`, delivery at `done`; `inbox status --json`, the structured summary Admiralty and `status` read | unit (FIFO under concurrency, lease expiry, at-least-once, caps, rate, who may read a result), sandbox CLI, the role table |
-| S2 | The aide: `@` ids, `Role::Aide`, `[[aide]]` config (edited by hand: `brief` is accepted but unused until S4; `snapshot = true` refused until S4b), labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (aide text and the loop); needs-you for an aide's prompts and its dead letters (from S3); **Admiralty aide rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the aide exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
+| S2 | The aide: `@` ids, `Role::Aide`, `[[aide]]` config (edited by hand: `brief` is accepted but unused until S4; `snapshot = true` refused until S4b: a decision by NIMITZ_DEV, pending the user's word, 2026-10-10), labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (aide text and the loop); needs-you for an aide's prompts and its dead letters (from S3); **Admiralty aide rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the aide exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
 | S3 | The doorbell (ring and coalesce), the SessionStart context (with the 15-minute cron request), the piggyback timer | sandbox (rings, coalescing, piggyback), notify tests, Admiralty snapshots |
 | S4 | `HOME/@KB` live: the repo and `ingest-auto` (MYCC_DEV), the brief, the git-commit idempotency | real-CC e2e on a throwaway repo: post -> commit; kill mid-item -> one commit only; `/clear` -> drains again |
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
