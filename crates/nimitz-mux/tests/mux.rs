@@ -17,7 +17,10 @@ use nimitz_mux::{AttachError, Attached, LayoutPlan, Mux, MuxError, PaneRef, Plac
 use serde_json::{json, Value};
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    // (on Windows the fake herdr is this binary under another name: its prefix comes from the shim)
+    let mut args: Vec<String> = std::env::args().take(1).collect();
+    args.extend(nimitz_core::os::shim_args());
+    args.extend(std::env::args().skip(1));
     if args.get(1).map(String::as_str) == Some("__fake-herdr") {
         let base = PathBuf::from(args.get(2).expect("__fake-herdr needs a world dir"));
         std::process::exit(nimitz_mux::fake::fake_herdr(&base, &args[3..]));
@@ -105,18 +108,12 @@ impl World {
         let _ = fs::remove_dir_all(&dir);
         write_world(&dir, world.as_ref()).expect("write world");
         let exe = std::env::current_exe().expect("current_exe");
-        let script = dir.join("herdr");
-        fs::write(
-            &script,
-            format!("#!/bin/sh\nexec \"{}\" __fake-herdr \"{}\" \"$@\"\n", exe.display(), dir.display()),
-        )
-        .expect("write wrapper");
-        set_exec(&script);
+        nimitz_core::os::write_shim(&dir.join("herdr"), &exe, &["__fake-herdr".into(), dir.to_string_lossy().into_owned()]).expect("write wrapper");
         World { dir }
     }
 
     fn mux(&self) -> Herdr {
-        Herdr { bin: self.dir.join("herdr").to_string_lossy().into_owned(), session: None, socket: None, claude_home: "/nonexistent/nimitz-claude-home".into() }
+        Herdr { bin: self.dir.join(nimitz_core::os::exe_name("herdr")).to_string_lossy().into_owned(), session: None, socket: None, claude_home: "/nonexistent/nimitz-claude-home".into() }
     }
 
     fn world(&self) -> Value {
@@ -168,7 +165,7 @@ fn cmdv(parts: &[&str]) -> Vec<String> {
 
 fn fake_unknown_command() {
     let w = World::new(None);
-    let out = Command::new(w.dir.join("herdr")).args(["bogus", "thing"]).output().expect("run fake");
+    let out = Command::new(w.dir.join(nimitz_core::os::exe_name("herdr"))).args(["bogus", "thing"]).output().expect("run fake");
     assert_eq!(out.status.code(), Some(2), "unknown commands must not look like herdr errors");
 }
 
@@ -674,7 +671,7 @@ fn fixture_snapshot_shape() {
     assert!(parse_snapshot(&json!({"result": {"type": "ok"}})).is_err(), "no snapshot: an error");
     // the fake answers with the same field set, row for row
     let w = World::new(None);
-    let out = Command::new(w.dir.join("herdr")).args(["api", "snapshot"]).output().expect("fake");
+    let out = Command::new(w.dir.join(nimitz_core::os::exe_name("herdr"))).args(["api", "snapshot"]).output().expect("fake");
     let fv: Value = serde_json::from_slice(&out.stdout).expect("json");
     let real = v.pointer("/result/snapshot").unwrap();
     let fake = fv.pointer("/result/snapshot").expect("result.snapshot");
@@ -711,7 +708,7 @@ fn shape_through_the_adapter() {
     assert_eq!(w.mux().shape(false).unwrap().tab("w1:t2").map(|t| t.label.clone()), Some("HOME.GITHUB.S".into()));
     assert!(w.mux().rename_tab("w9:t9", "X").is_err());
     // a named session: `--session <name>` before every call, which the fake logs and strips
-    let named = Herdr { bin: w.dir.join("herdr").to_string_lossy().into_owned(), session: Some("nimitz-e2e".into()), socket: None, claude_home: "/nonexistent/nimitz-claude-home".into() };
+    let named = Herdr { bin: w.dir.join(nimitz_core::os::exe_name("herdr")).to_string_lossy().into_owned(), session: Some("nimitz-e2e".into()), socket: None, claude_home: "/nonexistent/nimitz-claude-home".into() };
     assert_eq!(named.shape(false).unwrap().workspaces.len(), 1);
     assert!(w.calls().last().unwrap().starts_with(&["--session".to_string(), "nimitz-e2e".to_string(), "api".to_string()]), "{:?}", w.calls().last());
     // the exec knob: `pane run` really runs the line in the pane's folder

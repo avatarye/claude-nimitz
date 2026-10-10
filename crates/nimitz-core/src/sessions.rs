@@ -2464,19 +2464,18 @@ pub fn pending_relaunch(env: &Env, id: &Id) -> Option<String> {
     v.get("session_id").and_then(|s| s.as_str()).map(str::to_string)
 }
 
-/// An identity's start lock (flock on `NIMITZ_STATE/locks/<id>.lock`); released on drop.
+/// An identity's start lock (a file lock on `NIMITZ_STATE/locks/<id>.lock`); released on drop.
 pub struct IdLock(#[allow(dead_code)] std::fs::File);
 
 /// Take `id`'s start lock; the flag says whether another nimitz held it first.
 pub fn lock_identity(env: &Env, id: &Id) -> std::io::Result<(IdLock, bool)> {
-    use std::os::unix::io::AsRawFd;
     let dir = env.state.join("locks");
     std::fs::create_dir_all(&dir)?;
     let name: String = id.0.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(format!("{name}.lock")))?;
-    let waited = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0;
-    if waited && unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error());
+    let waited = f.try_lock().is_err();
+    if waited {
+        f.lock()?;
     }
     Ok((IdLock(f), waited))
 }

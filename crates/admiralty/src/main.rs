@@ -28,7 +28,7 @@ enum Source {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = nimitz_core::os::args();
     match args.first().map(String::as_str) {
         Some("__fake-claude") if args.len() >= 2 => return code(nimitz_core::sandbox::fake_claude(&PathBuf::from(&args[1]), &args[2..])),
         Some("__fake-herdr") if args.len() >= 2 => return code(nimitz_mux::fake::fake_herdr(&PathBuf::from(&args[1]), &args[2..])),
@@ -145,7 +145,7 @@ fn sandbox_cmd(args: &[String]) -> ExitCode {
             let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("admiralty"));
             match nimitz_core::sandbox::create(&dir, &exe).and_then(|()| if herdr { add_fake_herdr(&dir, &exe) } else { Ok(()) }) {
                 Ok(()) => {
-                    let d = dir.canonicalize().unwrap_or(dir);
+                    let d = nimitz_core::os::canonical(&dir).unwrap_or(dir);
                     println!("[OK] sandbox at {}", d.display());
                     println!("     watch it: admiralty --sandbox {}", d.display());
                     ExitCode::SUCCESS
@@ -167,7 +167,7 @@ fn sandbox_cmd(args: &[String]) -> ExitCode {
 /// one (the same rule as `nimitz sandbox env`).
 fn sandbox_env(dir: &std::path::Path) -> Vec<(String, String)> {
     let mut v: Vec<(String, String)> = nimitz_core::sandbox::env_for(dir).into_iter().collect();
-    let herdr = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).join("bin").join("herdr");
+    let herdr = nimitz_core::os::canonical(&dir).unwrap_or_else(|_| dir.to_path_buf()).join("bin").join(nimitz_core::os::exe_name("herdr"));
     if herdr.is_file() {
         v.retain(|(k, _)| k != "NIMITZ_MUX");
         v.push(("NIMITZ_MUX".into(), "herdr".into()));
@@ -180,13 +180,10 @@ fn sandbox_env(dir: &std::path::Path) -> Vec<(String, String)> {
 
 /// `sandbox create --herdr`: a fake herdr in the sandbox, with a small world.
 fn add_fake_herdr(dir: &std::path::Path, exe: &std::path::Path) -> Result<(), String> {
-    let base = dir.canonicalize().map_err(|e| e.to_string())?;
+    let base = nimitz_core::os::canonical(&dir).map_err(|e| e.to_string())?;
     let hb = base.join("herdr");
     nimitz_mux::fake::write_world(&hb, None).map_err(|e| e.to_string())?;
-    let script = base.join("bin").join("herdr");
-    std::fs::write(&script, format!("#!/bin/sh\nexec '{}' __fake-herdr '{}' \"$@\"\n", exe.display(), hb.display())).map_err(|e| e.to_string())?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())
+    nimitz_core::os::write_shim(&base.join("bin").join("herdr"), exe, &["__fake-herdr".into(), hb.to_string_lossy().into_owned()]).map(|_| ()).map_err(|e| e.to_string())
 }
 
 fn code(rc: i32) -> ExitCode {

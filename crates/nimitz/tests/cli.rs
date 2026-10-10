@@ -804,7 +804,11 @@ fn hook_always_exits_zero_even_on_garbage() {
         }
     }
     // a broken state dir does not fail it either
-    let r = raw(&sb.vars, &["hook", "SessionStart"], &[("NIMITZ_STATE", "/dev/null/x")], Some("{\"session_id\":\"s\"}"));
+    // (a folder under a plain file: `/dev/null/...` is a real folder on Windows)
+    let file = sb.base.join("a-file");
+    std::fs::write(&file, "").unwrap();
+    let bad = file.join("x").to_string_lossy().into_owned();
+    let r = raw(&sb.vars, &["hook", "SessionStart"], &[("NIMITZ_STATE", bad.as_str())], Some("{\"session_id\":\"s\"}"));
     assert_eq!(r.code, 0);
 }
 
@@ -1825,6 +1829,7 @@ fn stop_of_a_copy_removes_its_row_too() {
 
 /// A closed pipe (`nimitz status --json | head`) ends nimitz quietly, never
 /// with a panic (acceptance B observation).
+#[cfg(unix)]
 #[test]
 fn a_closed_pipe_never_panics() {
     use std::os::unix::process::ExitStatusExt;
@@ -1933,6 +1938,7 @@ fn a_claude_nimitz_starts_inherits_no_labels_pane_or_messaging_state() {
 /// terminal) reads the Herdr server the user's commands recorded, named on
 /// every call; a recorded server that is not reachable fails a restore with a
 /// fix that names it (and the --jobs-only way), never a bare error.
+#[cfg(unix)]
 #[test]
 fn the_users_nimitz_outside_herdr_uses_the_recorded_server() {
     let sb = Sb::new(true);
@@ -2319,6 +2325,7 @@ fn an_unclaimed_attach_pane_takes_typing_only_while_it_runs_the_exact_attach() {
 }
 
 /// A Unix socket that stands for a session's inbox: every line it gets.
+#[cfg(unix)]
 fn inbox_listener(path: &Path) -> std::sync::mpsc::Receiver<String> {
     let l = std::os::unix::net::UnixListener::bind(path).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -2337,6 +2344,7 @@ impl Sb {
     /// SessionStart hook records it), and runs Claude Code `version`. The
     /// listener is this test process, so the session's pid becomes ours (the
     /// inbox posts only to a socket the session's own process listens on).
+    #[cfg(unix)]
     fn inbox_for(&self, id: &str, version: &str) -> std::sync::mpsc::Receiver<String> {
         let m = self.member(id);
         let (sid, short) = (m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["short_id"].as_str().unwrap().to_string());
@@ -2366,6 +2374,7 @@ impl Sb {
 /// A needs-you notice goes into the lead's inbox socket as a cross-session
 /// message from nimitz, nothing typed. `nimitz signal` types while the lead's
 /// pane can take it (the user's own words keep their authority).
+#[cfg(unix)]
 #[test]
 fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
     let sb = Sb::new(true);
@@ -2388,6 +2397,7 @@ fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
 
 /// A lead on a Claude Code older than the verified line format gets the
 /// typing path, and the note says why.
+#[cfg(unix)]
 #[test]
 fn an_older_claude_code_gets_the_typing_path() {
     let sb = Sb::new(true);
@@ -2403,6 +2413,7 @@ fn an_older_claude_code_gets_the_typing_path() {
 
 /// With no multiplexer that types, `nimitz signal` posts to the lead's inbox,
 /// as a request (the output says so).
+#[cfg(unix)]
 #[test]
 fn with_no_multiplexer_a_signal_goes_to_the_inbox_as_a_request() {
     let sb = Sb::new(true);

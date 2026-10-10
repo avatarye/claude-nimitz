@@ -93,12 +93,14 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
 ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship)";
 
 fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let argv: Vec<String> = nimitz_core::os::args();
     // a closed pipe (`nimitz status --json | head`) ends a command quietly, as
     // every command-line tool does (SIGPIPE, exit 141), never with a panic.
     // Not a hook (it always exits 0, whatever Claude Code does with its
     // pipe) nor the internal fakes: there the write error is ignored instead
+    #[cfg(unix)]
     let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__fake-claude" | "__fake-herdr"));
+    #[cfg(unix)]
     if quiet_pipe {
         unsafe {
             libc::signal(libc::SIGPIPE, libc::SIG_DFL);

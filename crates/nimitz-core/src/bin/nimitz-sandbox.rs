@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::Path;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = nimitz_core::os::args();
     let code = match args.first().map(String::as_str) {
         Some("create") => match args.get(1) {
             Some(base) => {

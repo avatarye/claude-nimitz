@@ -227,6 +227,7 @@ fn e1_an_old_retire_line_does_not_name_a_later_crash() {
     assert!(!m.reasons.iter().any(|r| r.contains("daemon retired it")), "{:?}", m.reasons);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_registry_that_cannot_be_read_is_never_written_over_by_the_hook() {
     use std::os::unix::fs::PermissionsExt;

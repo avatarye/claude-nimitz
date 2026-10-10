@@ -1304,7 +1304,7 @@ fn a_symlinked_nimitz_home_starts_checks_finds_stowaways_and_trusts() {
     let base = link.parent().unwrap().to_path_buf();
     let real = base.join("dropbox-nimitz");
     std::fs::rename(&link, &real).unwrap();
-    std::os::unix::fs::symlink(&real, &link).unwrap();
+    nimitz_core::os::symlink(&real, &link).unwrap();
     assert_eq!(w.env.home, link, "the env keeps the path as written");
 
     // a managed ship: its folder is under the link
@@ -1345,7 +1345,7 @@ fn a_symlinked_nimitz_home_starts_checks_finds_stowaways_and_trusts() {
     let t = base.join("trusted-real");
     std::fs::create_dir_all(&t).unwrap();
     let tl = base.join("trusted-link");
-    std::os::unix::fs::symlink(&t, &tl).unwrap();
+    nimitz_core::os::symlink(&t, &tl).unwrap();
     let f = base.join("claude_home/.claude.json");
     let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
     v["projects"][t.canonicalize().unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});

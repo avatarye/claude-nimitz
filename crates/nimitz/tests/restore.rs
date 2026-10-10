@@ -737,7 +737,7 @@ fn a_held_process_is_matched_to_its_pane_by_pid_when_nothing_names_the_session()
     assert!(r.out.contains("(tab.resumed)") && r.out.contains(&format!("is open in pane {pane}")), "{}", r.out);
     assert!(!r.out.contains(&format!("--bg --resume {sid}")) && !sb.runs().iter().any(|(p, l)| p == &pane && l.contains("attach") && l.contains(&job) && sb.runs().iter().filter(|(q, _)| q == p).count() > 1), "{}", r.out);
     // another pid in that pane: the held process is somewhere nimitz cannot see
-    let other = std::os::unix::process::parent_id() as i64;
+    let other = nimitz_core::os::parent_pid();
     sb.set_pane(&pane, |p| p["pid"] = json!(other));
     let r = sb.run(&["restore", "MAIN", "--yes"]);
     assert_eq!(r.code, 1, "{}", r.out);
@@ -1696,6 +1696,7 @@ fn a_held_conversation_in_a_pane_shows_its_lead() {
 /// the user's `nimitz status`, and a member's, speak only to the recorded
 /// NIMITZ server and take the lead's pane from there, the unclaimed attach
 /// shape of the live server.
+#[cfg(unix)]
 #[test]
 fn with_several_herdr_servers_status_reads_only_the_recorded_one() {
     let sb = Sb::new(true);

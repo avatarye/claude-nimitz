@@ -61,11 +61,17 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     // The Claude Code process (the hook's parent); a sandbox names it. A hook
     // written as one command string runs under `sh -c`: then the parent is a
     // shell and the Claude Code process is its parent (r3-e2e.md finding 7).
-    let given: i64 = vars.get("NIMITZ_HOOK_PID").and_then(|p| p.parse().ok()).unwrap_or_else(|| unsafe { libc::getppid() } as i64);
+    let given: i64 = vars.get("NIMITZ_HOOK_PID").and_then(|p| p.parse().ok()).unwrap_or_else(crate::os::parent_pid);
     let pid = if vars.get("NIMITZ_HOOK_SESSION_FILE").is_some_and(|p| !p.is_empty()) {
         given // the sandbox names the session file; the pid is its own
     } else {
-        claude_pid(given, |p| env.claude_home.join("sessions").join(format!("{p}.json")).is_file(), parent_of)
+        let has_file = |p: i64| env.claude_home.join("sessions").join(format!("{p}.json")).is_file();
+        if cfg!(windows) {
+            // Git Bash runs a command string as bash under bash (r3-e2e.md finding 7, Windows)
+            claude_pid_through(given, has_file, parent_of, |p| crate::os::exe_of(p).is_some_and(|e| crate::restore::is_shell(&[e])))
+        } else {
+            claude_pid(given, has_file, parent_of)
+        }
     };
     // A background job's labels count only when its own launch saved them: the
     // daemon passes its environment on, so a daemon started from a labelled
@@ -232,21 +238,37 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
 /// the shell is the parent), else `ppid` as before. `has_file` says whether a
 /// pid's session file exists; `parent_of` reads a pid's parent.
 pub fn claude_pid(ppid: i64, has_file: impl Fn(i64) -> bool, parent_of: impl Fn(i64) -> Option<i64>) -> i64 {
+    claude_pid_through(ppid, has_file, parent_of, |_| false)
+}
+
+/// The most shells between a hook and its Claude Code process
+/// (`claude_pid_through`).
+pub const SHELL_HOPS: usize = 4;
+
+/// `claude_pid`, but a parent that is a shell (`is_shell`) is walked
+/// through, up to `SHELL_HOPS` shells: a command string on Windows runs
+/// under Git Bash's `bash.exe`, which starts another `bash.exe`. Only shells
+/// are walked through, so a session started from another session's Bash
+/// tool never binds to that outer session.
+pub fn claude_pid_through(ppid: i64, has_file: impl Fn(i64) -> bool, parent_of: impl Fn(i64) -> Option<i64>, is_shell: impl Fn(i64) -> bool) -> i64 {
     if has_file(ppid) {
         return ppid;
     }
-    match parent_of(ppid) {
-        Some(gp) if gp > 1 && has_file(gp) => gp,
-        _ => ppid,
+    let mut cur = ppid;
+    for hop in 0..=SHELL_HOPS {
+        match parent_of(cur) {
+            Some(up) if up > 1 && has_file(up) => return up,
+            Some(up) if up > 1 && hop < SHELL_HOPS && is_shell(cur) => cur = up,
+            _ => break,
+        }
     }
+    ppid
 }
 
-/// A process's parent pid: `/proc/<pid>/stat` field 4 (after the `(comm)`,
-/// which may hold spaces and parentheses). None off Linux or for a dead pid.
+/// A process's parent pid (`os::parent_of`). None for a dead pid and where
+/// the system gives no answer.
 pub fn parent_of(pid: i64) -> Option<i64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let rest = &stat[stat.rfind(')')? + 1..];
-    rest.split_whitespace().nth(1)?.parse().ok()
+    crate::os::parent_of(pid)
 }
 
 /// The session file of the Claude Code process (`sessions/<pid>.json`, the
@@ -292,12 +314,6 @@ pub const EVENTS_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// What a compaction keeps besides every session's newest SessionStart.
 pub const EVENTS_KEEP_RECENT: usize = 2000;
 
-fn flock(f: &std::fs::File, op: i32) {
-    use std::os::unix::io::AsRawFd;
-    unsafe {
-        libc::flock(f.as_raw_fd(), op);
-    }
-}
 
 fn append_line(env: &Env, line: &str) {
     let path = env.events_path();
@@ -307,7 +323,7 @@ fn append_line(env: &Env, line: &str) {
     // appends share the lock; a compaction takes it alone
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")).ok();
     if let Some(l) = &lock {
-        flock(l, libc::LOCK_SH);
+        let _ = l.lock_shared();
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).read(true).open(&path) {
         // a line left half-written (full disk) must not swallow this one (BUG-49)
@@ -324,8 +340,8 @@ fn append_line(env: &Env, line: &str) {
         let big = f.metadata().map(|m| m.len() > EVENTS_MAX_BYTES).unwrap_or(false);
         drop(f);
         if let (true, Some(l)) = (big, &lock) {
-            flock(l, libc::LOCK_UN);
-            flock(l, libc::LOCK_EX);
+            let _ = l.unlock();
+            let _ = l.lock();
             compact_events(&path);
         }
     }
@@ -598,7 +614,7 @@ mod tests {
     fn a_delivery_is_keyed_by_the_job_when_there_is_one() {
         let (_td, env) = world();
         let id = Id::ship("MAIN", "ARGOS", "ARGOS");
-        let ppid = unsafe { libc::getppid() } as i64;
+        let ppid = crate::os::parent_pid();
         let sessions = env.claude_home.join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join(format!("{ppid}.json")), r#"{"pid": 1, "sessionId": "s-a", "jobId": "9cdceb2d", "kind": "bg"}"#).unwrap();
@@ -982,8 +998,7 @@ mod tests {
         // another nimitz holds the lock for longer than the hook's budget
         std::fs::create_dir_all(&env.state).unwrap();
         let held = std::fs::File::create(env.registry_lock_path()).unwrap();
-        use std::os::unix::io::AsRawFd;
-        assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX) }, 0);
+        held.lock().unwrap();
         let budget = std::time::Duration::from_millis(100);
         let err = crate::registry::try_update(&env, budget, |_| ()).unwrap_err();
         assert!(err.to_string().contains("registry lock"), "{err}");
@@ -1092,7 +1107,7 @@ mod tests {
 
     #[test]
     fn a_hook_never_fails_the_session() {
-        let (_td, env) = world();
+        let (td, env) = world();
         let id = Id::ship("MAIN", "ARGOS", "ARGOS");
         // malformed stdin, unknown event, missing fields: no panic, no output
         for stdin in ["", "not json", "[]", r#"{"tool_name": 7, "tool_input": {"to": 3}}"#] {
@@ -1100,7 +1115,10 @@ mod tests {
         }
         assert!(handle(&env, "SomeNewEventInANewVersion", "{}", &labels_of(&env, &id)).is_empty());
         // an unwritable state dir loses the line but still returns
-        let bad = Env { state: std::path::PathBuf::from("/dev/null/nope"), ..env.clone() };
+        // (a folder under a plain file: `/dev/null/...` is a real folder on Windows)
+        let file = td.path().join("a-file");
+        std::fs::write(&file, "").unwrap();
+        let bad = Env { state: file.join("nope"), ..env.clone() };
         assert!(handle(&bad, "SessionStart", "{}", &labels_of(&env, &id)).contains("additionalContext"), "the rules still go out");
     }
 
@@ -1145,6 +1163,11 @@ mod tests {
         assert_eq!(claude_pid(999, files, chain), 999, "an unknown pid stays");
         assert_eq!(claude_pid(200, |_| false, chain), 200, "no file anywhere: as given");
         assert_eq!(claude_pid(5, |p| p == 1, |_| Some(1)), 5, "never pid 1");
+        // Windows: nimitz <- bash 100 <- bash 200 <- claude 300; only shells are walked through
+        let shells = |p: i64| p == 100 || p == 200;
+        assert_eq!(claude_pid_through(100, files, chain, shells), 300, "two shells deep");
+        assert_eq!(claude_pid_through(100, files, chain, |p| p == 200), 100, "a parent that is no shell stops the walk");
+        assert_eq!(claude_pid_through(100, |p| p == 1, chain, |_| true), 100, "never pid 1");
         // the real chain through /proc
         let me = std::process::id() as i64;
         let runner = parent_of(me).expect("/proc gives the parent");

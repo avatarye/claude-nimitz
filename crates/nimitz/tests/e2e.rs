@@ -29,6 +29,8 @@
 //! Run: `NIMITZ_E2E=1 NIMITZ_E2E_LIVE_FLEETS=HOME,MAIN,ADMIRALTY cargo test -p nimitz --test e2e -- --test-threads=3`
 //! (the fleets the guard watches; unset, every fleet that is not `NIMITZ_E2E*`).
 //! The slow cases (#6 crash window, #7 lead attach) are marked.
+// Unix only for now: the real-Claude wrappers here are `#!/bin/sh` scripts.
+#![cfg(unix)]
 use serde_json::{json, Value};
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
@@ -810,6 +812,7 @@ fn e2e_05_live_member_start_is_a_noop_and_a_hand_resume_is_a_swept_copy() {
 
 /// 6. (slow: the crash window) kill -9 of a working member: afterwards the
 /// member is live again under the same job, or parked; never a duplicate.
+#[cfg(unix)]
 #[test]
 fn e2e_06_slow_kill_9_of_a_working_member_never_makes_a_duplicate() {
     if !gated() {
@@ -1544,6 +1547,7 @@ fn e2e_agent_view_re_execs_as_claude_agents() {
 /// typing, through the session's inbox socket (Claude Code's cross-session
 /// messaging; the line format Claude Code logs as its own inject example):
 /// does an idle background job take it as a turn, and what does it see?
+#[cfg(unix)]
 #[test]
 fn e2e_probe_inbox_delivery() {
     if !gated() || std::env::var("NIMITZ_E2E_PROBE").ok().as_deref() != Some("1") {
@@ -1646,6 +1650,7 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
 /// the commodore, then the admiral: the same session id, a new process on
 /// the binary the worker runs, its labels intact. The test's own members
 /// only; no multiplexer (`--jobs-only`).
+#[cfg(unix)]
 #[test]
 fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
     if !gated() {

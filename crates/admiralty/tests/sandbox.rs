@@ -364,6 +364,7 @@ fn an_unclaimed_attach_pane_still_shows_its_lead() {
 /// server recorded in active.json, the lead's row gets its unclaimed attach
 /// pane (the live shape: `agent` claude, no `agent_session`), `J` and `K`
 /// land on it and `enter` focuses it there.
+#[cfg(unix)]
 #[test]
 fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     let dir = tempfile::tempdir().unwrap();
@@ -464,6 +465,7 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn bug40_the_first_look_is_quick_and_the_full_one_follows() {
     let w = world();

@@ -17,17 +17,19 @@ pub struct Env {
     pub crash_window_s: f64,
 }
 
-/// `$HOME` from the given vars first (tests), then the process env.
+/// `$HOME` from the given vars first (tests), then the process env; on
+/// Windows `USERPROFILE` when there is no `HOME` (Claude Code's hooks there
+/// may run without one).
 fn home_dir(v: &HashMap<String, String>) -> PathBuf {
-    v.get("HOME")
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+    let keys: &[&str] = if cfg!(windows) { &["HOME", "USERPROFILE"] } else { &["HOME"] };
+    keys.iter()
+        .find_map(|k| v.get(*k).filter(|s| !s.is_empty()).map(PathBuf::from))
+        .or_else(|| keys.iter().find_map(|k| std::env::var_os(k).filter(|s| !s.is_empty()).map(PathBuf::from)))
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn expand(p: &str, home: &Path) -> PathBuf {
-    match p.strip_prefix("~/") {
+    match p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\").filter(|_| cfg!(windows))) {
         Some(rest) => home.join(rest),
         None if p == "~" => home.to_path_buf(),
         None => PathBuf::from(p),
@@ -40,7 +42,7 @@ pub fn canon(p: &Path) -> PathBuf {
     let mut rest = vec![];
     let mut cur = p;
     loop {
-        if let Ok(real) = cur.canonicalize() {
+        if let Ok(real) = crate::os::canonical(&cur) {
             return rest.iter().rev().fold(real, |acc: PathBuf, c| acc.join(c));
         }
         match (cur.parent(), cur.file_name()) {
@@ -98,13 +100,39 @@ pub fn git_birth(root: &Path) -> Option<f64> {
     std::fs::metadata(root.join(".git")).ok()?.created().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs_f64())
 }
 
-/// First `name` on PATH that is a file.
+/// First `name` on PATH that is a file. On Windows only a file Windows can
+/// start counts: `name` with one of `PATHEXT`'s extensions (an npm install
+/// puts a POSIX `claude` script beside `claude.cmd`), and an npm shim is
+/// followed to the program it starts (`claude.cmd` -> its `claude.exe`).
 pub fn which(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join(name))
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
+    let found = std::env::split_paths(&path).find_map(|d| candidates(&d, name).into_iter().find(|p| p.is_file()))?;
+    Some(npm_target(&found).unwrap_or(found).to_string_lossy().into_owned())
+}
+
+#[cfg(not(windows))]
+fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
+    vec![dir.join(name)]
+}
+
+#[cfg(windows)]
+fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
+    if Path::new(name).extension().is_some() {
+        return vec![dir.join(name)];
+    }
+    let exts = std::env::var("PATHEXT").ok().filter(|e| !e.is_empty()).unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+    exts.split(';').filter(|e| !e.is_empty()).map(|e| dir.join(format!("{name}{}", e.to_lowercase()))).collect()
+}
+
+/// The `claude.exe` an npm `claude.cmd` shim starts, when it is there.
+fn npm_target(found: &Path) -> Option<PathBuf> {
+    let ext = found.extension()?.to_string_lossy().to_lowercase();
+    if ext != "cmd" && ext != "bat" {
+        return None;
+    }
+    let stem = found.file_stem()?.to_string_lossy().into_owned();
+    let exe = found.parent()?.join("node_modules/@anthropic-ai/claude-code/bin").join(format!("{stem}.exe"));
+    (stem == "claude" && exe.is_file()).then_some(exe)
 }
 
 /// Newest `~/.localtools/tools/claude-code/<version>/claude`, else None (ACME).
@@ -127,18 +155,9 @@ fn localtools_claude(home: &Path) -> Option<String> {
     vs.pop().map(|(_, p)| p.to_string_lossy().into_owned())
 }
 
-/// `gethostname()`, lowercased, without the domain part.
+/// The system host name (`os::hostname`), lowercased, without the domain part.
 fn local_hostname() -> String {
-    let mut buf = [0u8; 256];
-    let name = unsafe {
-        if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
-            let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-            String::from_utf8_lossy(&buf[..end]).into_owned()
-        } else {
-            String::new()
-        }
-    };
-    name.to_lowercase().split('.').next().unwrap_or("").to_string()
+    crate::os::hostname().to_lowercase().split('.').next().unwrap_or("").to_string()
 }
 
 impl Env {
@@ -276,10 +295,10 @@ mod tests {
     #[test]
     fn canon_resolves_symlinks_and_keeps_missing_tails() {
         let td = tempfile::tempdir().unwrap();
-        let real = td.path().canonicalize().unwrap().join("real");
+        let real = crate::os::canonical(&td.path()).unwrap().join("real");
         std::fs::create_dir_all(&real).unwrap();
         let link = td.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
+        crate::os::symlink(&real, &link).unwrap();
         assert_eq!(canon(&link), real);
         assert_eq!(canon(&link.join("not/yet")), real.join("not/yet"));
     }
@@ -287,7 +306,7 @@ mod tests {
     #[test]
     fn trust_inside_a_git_repo_stops_at_its_root() {
         let td = tempfile::tempdir().unwrap();
-        let base = td.path().canonicalize().unwrap();
+        let base = crate::os::canonical(&td.path()).unwrap();
         let repo = base.join("home/repo");
         let wt = base.join("home/.cache/wt");
         std::fs::create_dir_all(repo.join(".git")).unwrap();

@@ -480,8 +480,8 @@ pub(crate) mod tests {
     fn a_git_repo_under_a_trusted_home_needs_its_own_trust() {
         let (td, env) = test_env();
         make_fleet(&env);
-        let home = td.path().canonicalize().unwrap().join("home");
-        let wt = home.join(".cache/wt");
+        let home = crate::os::canonical(&td.path()).unwrap().join("home");
+        let wt = home.join(".cache").join("wt");
         std::fs::create_dir_all(wt.join("src")).unwrap();
         std::fs::write(wt.join(".git"), "gitdir: /elsewhere/.git/worktrees/wt\n").unwrap();
         let trust = format!("{}.json", env.claude_home.display());
@@ -509,7 +509,7 @@ pub(crate) mod tests {
     fn a_folder_that_became_a_git_root_after_its_sessions_is_asked_again() {
         let (td, env) = test_env();
         make_fleet(&env);
-        let home = td.path().canonicalize().unwrap().join("home");
+        let home = crate::os::canonical(&td.path()).unwrap().join("home");
         let ship = home.join("ship3");
         std::fs::create_dir_all(&ship).unwrap();
         let trust = format!("{}.json", env.claude_home.display());
@@ -554,10 +554,10 @@ pub(crate) mod tests {
         // tick share an mtime)
         let cfg = env.claude_home.join(".claude.json");
         let trusted = |dir: &Path| crate::evidence::folder_trusted(&env, &mut Default::default(), dir.to_str().unwrap());
-        std::fs::write(&cfg, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, home.display())).unwrap();
+        std::fs::write(&cfg, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, home.display().to_string().replace('\\', "\\\\"))).unwrap();
         assert!(trusted(&home.join("plain")));
         assert!(!trusted(&ship));
-        std::fs::write(&cfg, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, ship.display())).unwrap();
+        std::fs::write(&cfg, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, ship.display().to_string().replace('\\', "\\\\"))).unwrap();
         assert!(trusted(&ship.join("src")));
     }
 
@@ -565,12 +565,12 @@ pub(crate) mod tests {
     fn a_symlink_to_a_trusted_folder_is_trusted() {
         let (td, env) = test_env();
         make_fleet(&env);
-        let real = td.path().canonicalize().unwrap().join("project");
+        let real = crate::os::canonical(&td.path()).unwrap().join("project");
         std::fs::create_dir_all(&real).unwrap();
         let link = td.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
+        crate::os::symlink(&real, &link).unwrap();
         let trust = format!("{}.json", env.claude_home.display());
-        std::fs::write(&trust, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, real.display())).unwrap();
+        std::fs::write(&trust, format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, real.display().to_string().replace('\\', "\\\\"))).unwrap();
         assert!(folder_issue(&env, &Id::admiral("MAIN"), link.to_str().unwrap()).is_none());
         // untrusted: the fix names the real path, the one Claude Code records
         std::fs::write(&trust, r#"{"projects": {}}"#).unwrap();
@@ -620,7 +620,7 @@ pub(crate) mod tests {
         // Folder (or a parent) accepted: trusted. Managed folders are always trusted.
         std::fs::write(
             &trust,
-            format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, outside.display()),
+            format!(r#"{{"projects": {{"{}": {{"hasTrustDialogAccepted": true}}}}}}"#, outside.display().to_string().replace('\\', "\\\\")),
         )
         .unwrap();
         assert!(check(&env, &snap, None).is_empty());

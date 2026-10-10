@@ -404,7 +404,7 @@ impl Form {
                     errs.insert("machine", e);
                 }
                 let dir = self.get("dir").trim();
-                if !dir.is_empty() && dir != "managed" && !dir.starts_with('/') && !dir.starts_with("~/") {
+                if !dir.is_empty() && dir != "managed" && !nimitz_core::config::is_absolute_dir(dir) {
                     errs.insert("dir", "an absolute folder, ~/..., or `managed`".into());
                 }
                 if matches!(self.kind, FormKind::NewShip) && self.get("prompt").trim().is_empty() {

@@ -518,7 +518,7 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
 /// The marketplace to add: this build's repo when it is still on disk, else GitHub.
 pub fn plugin_install_fix() -> String {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let source = match repo.canonicalize() {
+    let source = match nimitz_core::os::canonical(&repo) {
         Ok(r) if r.join(".claude-plugin/marketplace.json").is_file() => out::quote(&r.to_string_lossy()),
         _ => "avatarye/claude-nimitz".to_string(),
     };
@@ -530,7 +530,7 @@ fn resolved(bin: &str) -> String {
     let Some(p) = (if bin.contains('/') { Some(PathBuf::from(bin)) } else { nimitz_core::env::which(bin).map(PathBuf::from) }) else {
         return bin.to_string();
     };
-    match p.canonicalize() {
+    match nimitz_core::os::canonical(&p) {
         Ok(real) if real != p => format!("{} -> {}", p.display(), real.display()),
         _ => p.to_string_lossy().into_owned(),
     }

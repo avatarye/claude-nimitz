@@ -187,7 +187,7 @@ fn bug03_concurrent_starts_of_a_stopped_ship_make_no_copies() {
 fn bug04_a_symlinked_path_to_a_trusted_folder_is_trusted() {
     let sb = Sb::new(false);
     let link = sb.dir("link-to-fresh");
-    std::os::unix::fs::symlink(sb.dir("dirs/main/fresh"), &link).unwrap();
+    nimitz_core::os::symlink(sb.dir("dirs/main/fresh"), &link).unwrap();
     let r = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", link.to_str().unwrap(), "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     let c = sb.run(&["check", "MAIN/ARGOS/FRESH"]);
@@ -521,7 +521,7 @@ fn bug47_a_second_start_does_not_start_a_second_admiral() {
 fn bug48_a_symlinked_nimitz_home_sees_the_same_world() {
     let sb = Sb::new(false);
     let link = sb.dir("home/nzlink");
-    std::os::unix::fs::symlink(sb.dir("nimitz"), &link).unwrap();
+    nimitz_core::os::symlink(sb.dir("nimitz"), &link).unwrap();
     let plain = sb.run(&["status"]).out;
     let linked = raw(&sb.vars, &["status"], &[("NIMITZ_HOME", link.to_str().unwrap())], None, None).out;
     let norm = |s: &str| s.replace(link.to_str().unwrap(), "X").replace(sb.dir("nimitz").to_str().unwrap(), "X");
