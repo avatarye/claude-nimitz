@@ -48,19 +48,21 @@ pub fn file(env: &Env) -> PathBuf {
 
 /// Every config file nimitz reads trust from: `<claude home>/.claude.json`
 /// (a `CLAUDE_CONFIG_DIR` layout) and `<claude home>.json` (`~/.claude.json`).
-/// A write goes to each that exists (`file` when none does), so what nimitz
-/// writes is what `check` and `evidence` read.
+/// `check` and `evidence` both read every one that exists (a key is accepted
+/// when any file accepts it), and a write goes to each that exists (`targets`),
+/// so what nimitz writes is what they read.
 pub fn files(env: &Env) -> Vec<PathBuf> {
     let mut out = vec![env.claude_home.join(".claude.json"), file(env)];
     out.dedup();
     out
 }
 
-/// The files a write goes to: each that exists; with none, the one Claude
-/// Code itself would make (`~/.claude.json` for the default `~/.claude`, else
-/// `<claude home>/.claude.json`, the `CLAUDE_CONFIG_DIR` layout).
+/// The files a write goes to: each that exists (a link to nothing too: `edit`
+/// refuses it); with none, the one Claude Code itself would make
+/// (`~/.claude.json` for the default `~/.claude`, else `<claude
+/// home>/.claude.json`, the `CLAUDE_CONFIG_DIR` layout).
 fn targets(env: &Env) -> Vec<PathBuf> {
-    let have: Vec<PathBuf> = files(env).into_iter().filter(|f| f.exists()).collect();
+    let have: Vec<PathBuf> = files(env).into_iter().filter(|f| std::fs::symlink_metadata(f).is_ok()).collect();
     if !have.is_empty() {
         return have;
     }
@@ -141,11 +143,11 @@ pub fn shown(env: &Env, dir: &Path) -> PathBuf {
 /// these would let every folder under it run its own hooks and MCP servers.
 pub fn too_broad(env: &Env, dir: &Path) -> Option<String> {
     let t = shown(env, dir);
-    let user = std::env::var_os("HOME").map(PathBuf::from).map(|h| crate::env::canon(&h));
+    let user = crate::env::canon(&crate::env::home());
     let data = crate::env::canon(&env.home);
     let why = if t.parent().is_none() {
         "the file system's root"
-    } else if user.as_ref().is_some_and(|h| h.starts_with(&t)) {
+    } else if user.starts_with(&t) {
         "your home folder or a parent of it"
     } else if data != t && data.starts_with(&t) {
         "a parent of the data root"
@@ -157,26 +159,43 @@ pub fn too_broad(env: &Env, dir: &Path) -> Option<String> {
 }
 
 /// A path as a shell word: POSIX quoting, or on Windows double quotes (cmd and
-/// PowerShell both take them for a plain argument).
-fn quoted(p: &Path) -> String {
+/// PowerShell both take them for a plain argument). None on Windows for a
+/// path with `%`, `$` or a backtick: inside double quotes cmd expands `%`
+/// and PowerShell `$` and the backtick, and one word does not fit both.
+fn quoted(p: &Path) -> Option<String> {
     let s = p.to_string_lossy();
     if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-~:+@".contains(c) || (cfg!(windows) && c == '\\')) {
-        return s.into_owned();
+        return Some(s.into_owned());
     }
-    if cfg!(windows) { format!("\"{}\"", s.replace('"', "\"\"")) } else { format!("'{}'", s.replace('\'', r"'\''")) }
+    if cfg!(windows) {
+        if s.contains(['%', '$', '`']) {
+            return None;
+        }
+        return Some(format!("\"{}\"", s.replace('"', "\"\"")));
+    }
+    Some(format!("'{}'", s.replace('\'', r"'\''")))
 }
 
 /// The fix for an untrusted folder (`at`: the folder Claude Code asks about).
 /// Never a `nimitz trust` that nimitz would refuse (`/`, the home folder or a
 /// parent of it): there the trust prompt, which Claude Code keeps for that
-/// session only.
+/// session only. A path no one shell word can carry on Windows (`quoted`):
+/// the trust prompt too, spelled as on disk (`check::case_exact_hint`).
 pub fn fix(at: &Path) -> String {
     let at = crate::env::canon(at);
-    let home = std::env::var_os("HOME").map(PathBuf::from).map(|h| crate::env::canon(&h));
-    if at.parent().is_none() || home.is_some_and(|h| h.starts_with(&at)) {
-        return format!("run `claude` in {} and accept the trust prompt (nimitz never trusts the home folder or a parent of it)", quoted(&at));
+    let home = crate::env::canon(&crate::env::home());
+    let by_hand = |why: &str| format!("run `claude` once in {} and accept the trust prompt{why}{}", at.display(), crate::check::case_exact_hint(&at));
+    if at.parent().is_none() || home.starts_with(&at) {
+        let why = " (nimitz never trusts the home folder or a parent of it)";
+        return match quoted(&at) {
+            Some(q) => format!("run `claude` in {q} and accept the trust prompt{why}"),
+            None => by_hand(why),
+        };
     }
-    format!("nimitz trust {}", quoted(&at))
+    match quoted(&at) {
+        Some(q) => format!("nimitz trust {q}"),
+        None => by_hand(""),
+    }
 }
 
 /// Will Claude Code refuse `dir` for want of trust? `Error`: nothing trusts
@@ -189,7 +208,8 @@ pub fn untrusted(env: &Env, dir: &Path) -> Option<Severity> {
 /// `~/.claude.json` for the plan line.
 fn file_shown(env: &Env) -> String {
     let f = file(env);
-    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    // (no home at all reads as `/`: then the path in full)
+    let home = Some(crate::env::home()).filter(|h| h.parent().is_some());
     match home.as_deref().and_then(|h| f.strip_prefix(h).ok()) {
         Some(rest) => format!("~/{}", rest.display()),
         None => f.display().to_string(),
@@ -273,7 +293,7 @@ pub fn forget(env: &Env, dir: &Path) -> Result<(), String> {
             let mut changed = false;
             for k in &keys {
                 if let Some(o) = projects.get_mut(k).and_then(Value::as_object_mut) {
-                    changed |= o.remove("hasTrustDialogAccepted").is_some();
+                    changed |= o.shift_remove("hasTrustDialogAccepted").is_some();
                     if o.is_empty() {
                         projects.shift_remove(k);
                     }
@@ -325,8 +345,17 @@ fn edit(env: &Env, path: &Path, f: impl FnOnce(&mut Map<String, Value>) -> Resul
     let lock = PathBuf::from(format!("{}.lock", path.display()));
     let _held = crate::pins::dir_lock(&lock, STALE_S, WAIT).map_err(|e| format!("{e} (Claude Code is writing {}; try again)", path.display()))?;
     // a linked config file is written where it points (Claude Code's own
-    // write follows the link too)
-    let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+    // write follows the link too); a link to nothing is refused, never
+    // replaced by a file of its own
+    let linked = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+    let real = match crate::os::canonical(&path) {
+        Ok(r) => r,
+        Err(_) if linked => {
+            let to = std::fs::read_link(&path).map(|t| t.display().to_string()).unwrap_or_else(|_| "?".into());
+            return Err(format!("{} is a link to {to}, which does not exist; nimitz leaves the link alone (point it at Claude Code's config file, or remove it)", path.display()));
+        }
+        Err(_) => path.clone(),
+    };
     let raw = match std::fs::read(&real) {
         Ok(b) => Some(b),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -407,20 +436,31 @@ mod tests {
         serde_json::from_slice(&std::fs::read(file(env)).unwrap()).unwrap()
     }
 
+    /// Keys in the one form they are compared in (`env::trust_key`): on
+    /// Windows each path is written in two forms.
+    fn forms(keys: &[String]) -> Vec<String> {
+        let mut out: Vec<String> = vec![];
+        for k in keys.iter().map(|k| crate::env::trust_key(k)) {
+            if !out.contains(&k) {
+                out.push(k);
+            }
+        }
+        out
+    }
+
     #[test]
     fn a_folder_outside_git_is_trusted_as_itself_and_by_its_real_path() {
         let (td, env) = test_env();
         let real = crate::env::canon(td.path()).join("work/proj");
         std::fs::create_dir_all(&real).unwrap();
         let link = td.path().join("link");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(real.parent().unwrap(), &link).unwrap();
+        crate::os::symlink(real.parent().unwrap(), &link).unwrap();
         let given = link.join("proj");
-        assert_eq!(keys(&env, &given), vec![key(&given), key(&real)]);
+        assert_eq!(forms(&keys(&env, &given)), vec![key(&given), key(&real)]);
         std::fs::write(file(&env), r#"{"numStartups": 3, "projects": {"/x": {"allowedTools": []}}}"#).unwrap();
         assert!(untrusted(&env, &given).is_some());
         let set = write(&env, &given).unwrap();
-        assert_eq!(set.len(), 2);
+        assert_eq!(set, keys(&env, &given));
         let v = trust_json(&env);
         assert_eq!(v["numStartups"], 3, "other fields stay");
         assert_eq!(v["projects"]["/x"], json!({"allowedTools": []}), "other projects stay");
@@ -469,7 +509,7 @@ mod tests {
         // a lock whose holder died long ago is taken over
         std::fs::create_dir(&lock).unwrap();
         let old = std::time::SystemTime::now() - Duration::from_secs(60);
-        std::fs::File::open(&lock).unwrap().set_modified(old).unwrap();
+        crate::pins::tests::dir_handle(&lock).set_modified(old).unwrap();
         forget(&env, &dir).unwrap();
         assert!(!is_written(&env, &dir));
         assert!(!lock.exists(), "the dead holder's lock was taken over, then released");
@@ -521,12 +561,14 @@ mod tests {
     fn the_home_folder_the_root_and_a_parent_of_the_data_root_are_never_trusted() {
         let (td, env) = test_env();
         std::fs::write(file(&env), r#"{"projects": {}}"#).unwrap();
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        // (`env::home`: on Windows `USERPROFILE`, as cmd and PowerShell set no `HOME`)
+        let home = crate::env::home();
         for d in [Path::new("/"), home.as_path(), home.parent().unwrap()] {
             assert!(too_broad(&env, d).is_some(), "{}", d.display());
             assert!(write(&env, d).is_err(), "{}", d.display());
             let p = for_plan(&env, &Caller::User, None, d);
             assert!(matches!(&p, Some(Err(i)) if i.code == "trust.broad") || p.is_none(), "{}: {p:?}", d.display());
+            assert!(fix(d).starts_with("run `claude`"), "{}", fix(d));
         }
         // a parent of the data root; the data root itself is fine
         assert!(too_broad(&env, env.home.parent().unwrap()).is_some());
@@ -548,14 +590,12 @@ mod tests {
         std::fs::create_dir_all(mono.join("vendor")).unwrap();
         std::fs::create_dir_all(other.join(".git")).unwrap();
         std::fs::create_dir_all(other.join("pkg")).unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(other.join("pkg"), mono.join("vendor/x")).unwrap();
+        crate::os::symlink(other.join("pkg"), mono.join("vendor/x")).unwrap();
         assert_eq!(target(&env, &mono.join("vendor/x")), other, "Claude Code resolves the link first");
         // a link to the repository itself keeps its form as given too
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&other, top.join("o")).unwrap();
+        crate::os::symlink(&other, top.join("o")).unwrap();
         assert_eq!(target(&env, &top.join("o/pkg")), top.join("o"));
-        assert_eq!(keys(&env, &top.join("o/pkg")), vec![key(&top.join("o")), key(&other)]);
+        assert_eq!(forms(&keys(&env, &top.join("o/pkg"))), vec![key(&top.join("o")), key(&other)]);
     }
 
     #[test]
@@ -593,5 +633,69 @@ mod tests {
         let member = Caller::Member { id: Id("MAIN/ARGOS".into()), role: crate::types::Role::Commodore };
         let i = for_plan(&env, &member, Some(&id), &dir).unwrap().unwrap_err();
         assert_eq!(i.fix.as_deref(), Some(format!("nimitz trust {}", dir.display()).as_str()));
+    }
+
+    /// `forget` takes the flag out of an entry without reordering the rest
+    /// (preserve_order: `remove` would swap the last field into its place).
+    #[test]
+    fn forget_keeps_the_order_of_what_it_leaves() {
+        let (td, env) = test_env();
+        let dir = crate::env::canon(td.path()).join("p");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(file(&env), r#"{"projects": {}}"#).unwrap();
+        write(&env, &dir).unwrap();
+        let k = keys(&env, &dir).remove(0);
+        let mut v = trust_json(&env);
+        v["projects"][&k] = json!({"a": 1, "hasTrustDialogAccepted": true, "b": 2, "c": 3});
+        std::fs::write(file(&env), v.to_string()).unwrap();
+        forget(&env, &dir).unwrap();
+        let order: Vec<String> = trust_json(&env)["projects"][&k].as_object().unwrap().keys().cloned().collect();
+        assert_eq!(order, ["a", "b", "c"]);
+    }
+
+    /// A linked config file is written where it points; a link to nothing is
+    /// refused and stays a link (never replaced by a file of nimitz's).
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_config_is_written_through_and_a_dangling_one_is_refused() {
+        let (td, env) = test_env();
+        let dir = crate::env::canon(td.path()).join("p");
+        std::fs::create_dir_all(&dir).unwrap();
+        let elsewhere = td.path().join("dotfiles/claude.json");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, r#"{"projects": {}}"#).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, file(&env)).unwrap();
+        write(&env, &dir).unwrap();
+        assert!(std::fs::symlink_metadata(file(&env)).unwrap().file_type().is_symlink(), "still a link");
+        assert!(is_written(&env, &dir));
+        std::fs::remove_file(&elsewhere).unwrap();
+        let e = write(&env, &dir).unwrap_err();
+        assert!(e.contains("does not exist") && e.contains(&elsewhere.display().to_string()), "{e}");
+        assert!(std::fs::symlink_metadata(file(&env)).unwrap().file_type().is_symlink(), "the link stays");
+        assert!(!elsewhere.exists());
+    }
+
+    /// Windows: each key in its trimmed form and `/` form (case kept), and a
+    /// fix line only for a path one double-quoted word carries in cmd and
+    /// PowerShell alike; else the trust prompt by hand, spelled as on disk.
+    #[cfg(windows)]
+    #[test]
+    fn windows_keys_come_in_two_forms_and_the_fix_quotes_only_what_both_shells_take() {
+        assert_eq!(key_forms(Path::new(r"C:\Users\Me\proj\")), vec![r"C:\Users\Me\proj".to_string(), "C:/Users/Me/proj".into()]);
+        assert_eq!(key_forms(Path::new(r"C:\")), vec![r"C:\".to_string(), "C:/".into()]);
+        assert_eq!(key_forms(Path::new("D:/x")), vec!["D:/x".to_string()]);
+        assert_eq!(quoted(Path::new(r"C:\work\proj")).as_deref(), Some(r"C:\work\proj"));
+        assert_eq!(quoted(Path::new(r"C:\my work\proj")).as_deref(), Some(r#""C:\my work\proj""#));
+        assert_eq!(quoted(Path::new(r#"C:\a"b"#)).as_deref(), Some(r#""C:\a""b""#));
+        for odd in [r"C:\100%\x", r"C:\$x\y", r"C:\a`b"] {
+            assert_eq!(quoted(Path::new(odd)), None, "{odd}");
+            let f = fix(Path::new(odd));
+            assert!(f.starts_with("run `claude` once in ") && f.contains("Set-Location -LiteralPath"), "{f}");
+        }
+        // the home folder is `USERPROFILE` when there is no `HOME` (cmd, PowerShell)
+        let (_td, env) = test_env();
+        let profile = PathBuf::from(std::env::var_os("USERPROFILE").expect("USERPROFILE"));
+        assert!(too_broad(&env, &profile).is_some());
+        assert!(fix(&profile).starts_with("run `claude`"), "{}", fix(&profile));
     }
 }

@@ -157,7 +157,7 @@ pub fn unpin(env: &Env, short: &str) -> std::io::Result<bool> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::tests::test_env;
 
@@ -188,7 +188,7 @@ mod tests {
 
     /// A folder opened to set its times (Windows opens a folder only with
     /// `FILE_FLAG_BACKUP_SEMANTICS`, and needs write access for the times).
-    fn dir_handle(p: &std::path::Path) -> std::fs::File {
+    pub(crate) fn dir_handle(p: &std::path::Path) -> std::fs::File {
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
