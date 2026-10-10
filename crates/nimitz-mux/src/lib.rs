@@ -239,46 +239,8 @@ pub fn tab_state(mux: &dyn Mux, cmd: &[String], place: &Place, session_id: Optio
 /// version unknown, an attach pane is never typed into.
 pub const ATTACH_EXEC_SINCE: &str = "2.1.293";
 
-/// The Claude Code version in an executable's path: the official
-/// installer's `.../claude/versions/<v>[/...]` or a localtools install's
-/// `.../claude-code/<v>/claude` (`<v>` may carry a fourth, build component:
-/// `2.1.294.1000`; `compat::at_least` compares it componentwise).
-pub fn claude_version_in(path: &str) -> Option<String> {
-    let first = |rest: &str| rest.split('/').next().filter(|v| v.starts_with(|c: char| c.is_ascii_digit())).map(String::from);
-    if let Some(v) = path.split("/claude/versions/").nth(1).and_then(first) {
-        return Some(v);
-    }
-    let (_, rest) = path.rsplit_once("/claude-code/")?;
-    let (v, bin) = rest.split_once('/')?;
-    (bin == "claude").then(|| first(v)).flatten()
-}
-
-/// The executable process `pid` runs: `/proc/<pid>/exe` on Linux,
-/// `proc_pidpath` on macOS.
-fn exe_of(pid: i64) -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|e| e.to_string_lossy().into_owned())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-        let n = unsafe { libc::proc_pidpath(pid as libc::c_int, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
-        (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = pid;
-        None
-    }
-}
-
-/// The Claude Code version a foreground process runs: from its argv0, else
-/// from the executable it runs (the `~/.local/bin/claude` launcher is a link
-/// into `versions/`).
-fn claude_version(argv0: &str, pid: Option<i64>) -> Option<String> {
-    claude_version_in(argv0).or_else(|| pid.and_then(exe_of).and_then(|e| claude_version_in(&e)))
-}
+pub use nimitz_core::compat::claude_version_in;
+use nimitz_core::compat::process_version as claude_version;
 
 /// What a pane known by its attach runs, read just before typing into it.
 #[derive(Clone, Debug, PartialEq)]
@@ -571,6 +533,7 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn the_executable_of_a_pid_is_read_on_this_os() {
+        use nimitz_core::compat::exe_of;
         let me = std::env::current_exe().unwrap();
         let got = exe_of(std::process::id() as i64).expect("this process's executable");
         assert_eq!(std::fs::canonicalize(&got).unwrap(), std::fs::canonicalize(&me).unwrap());

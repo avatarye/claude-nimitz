@@ -23,11 +23,13 @@ config.
    `nimitz start F/SQ/SHIP --plan`, read the plan, then run it with `--yes`.
    Start only a ship that you need now. Never walk the squadron starting ships.
 4. Inside your own squadron you may run `nimitz start`, `stop`, `relaunch`,
-   `rm`, `sweep` and `adopt` for your ships, `squadron set` for your
+   `rm`, `sweep` and `adopt` for your ships, `restore` (your ships only: after a
+   Claude Code update, a Herdr closure or a reboot), `squadron set` for your
    squadron, and `ship new|set|rm` for your ships.
    Plan first (`--plan`), show the plan to the user, then `--yes` once the user
    agrees. `nimitz` refuses anything else: never your admiral, yourself, another
-   squadron, `up`, `restore`, `layout`, a new or removed squadron or fleet, or machines.
+   squadron, `up`, `layout`, a new or removed squadron or fleet, or machines.
+   Never start or resume a ship with `claude` yourself.
 5. A one-off job is a subagent of your own (the Agent tool, in your session),
    or a ship when it needs its own folder and a long life.
 6. When `nimitz` refuses with a `fix:` that is not yours to run (for example

@@ -1,8 +1,10 @@
-//! `nimitz restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`
-//! (plan-v4 section 13): bring a fleet back from the Herdr shape. Core plans
-//! it (`nimitz_core::restore::plan`); this runs the steps: a wake through
-//! `sessions::apply`, a claim or an open through the mux, a pin. The same
-//! engine, shape only, is `layout herdr` and the tab pass of `up`.
+//! `nimitz restore [<F>] [--all] [--restart] [--force] [--jobs-only] [--here]
+//! [--rename]` (plan-v4 section 13): the one command after a Claude Code
+//! update, a Herdr closure or crash, or a reboot. Core plans it
+//! (`nimitz_core::restore::plan`, which tells the three apart per member);
+//! this runs the steps: a wake or a relaunch through `sessions::apply`, a
+//! claim, an open or a reattach through the mux, a pin. `up` and `layout
+//! herdr` are deprecated for one release and point here.
 //!
 //! Every run also records the active set (`active.json`), as `status`,
 //! `open` and `layout` do (`record_active`).
@@ -89,15 +91,15 @@ pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&n
     let _ = active::write(&ctx.env, set);
 }
 
-/// `nimitz restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`.
+/// `nimitz restore [<F>] [--all] [--restart] [--force] [--jobs-only] [--here] [--rename]`.
 pub fn restore(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--all", "--jobs-only", "--here", "--rename"])?;
+    ctx.args.allow(&["--all", "--restart", "--jobs-only", "--here", "--rename"])?;
     ctx.args.at_most(1)?;
     let fleet = ctx.args.pos.first().map(|s| crate::members::parse_id(s)).transpose()?;
     if fleet.as_ref().is_some_and(|f| f.parts().len() != 1) {
         return Err("restore takes a fleet (F), not a member".into());
     }
-    let opts = rs::RestoreOpts { all: ctx.args.flag("--all"), force: ctx.force(), jobs_only: ctx.args.flag("--jobs-only"), here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), ..Default::default() };
+    let opts = rs::RestoreOpts { all: ctx.args.flag("--all"), force: ctx.force(), jobs_only: ctx.args.flag("--jobs-only"), here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), restart: ctx.args.flag("--restart"), ..Default::default() };
     Ok(run_shape(ctx, fleet.as_ref().map(|f| f.fleet().to_string()).as_deref(), opts, false))
 }
 
@@ -134,6 +136,8 @@ pub fn run_shape(ctx: &Ctx, fleet: Option<&str>, opts: rs::RestoreOpts, confirme
         if ctx.plan_only() && out::json_mode() {
             out::json(&rp.plan);
         } else {
+            out::line(&format!("[INFO] {}", rp.plan.summary));
+            out::found(&rp.plan);
             let mut shown = rp.plan.clone();
             crate::run::fixes_for(&ctx.env, &ctx.caller, &mut shown);
             for w in &shown.warnings {
@@ -248,17 +252,58 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
             failed.push(id.clone());
         }
     };
+    // members whose relaunch was skipped at run time (busy by then): their
+    // later steps are skipped too, with no failure
+    let mut held_back: Vec<Id> = vec![];
+    let mut installed: Option<Option<String>> = None;
     for (n, step) in rp.steps.iter().enumerate() {
         let id = step.id().clone();
-        if failed.contains(&id) {
+        if failed.contains(&id) || held_back.contains(&id) {
+            let why = if held_back.contains(&id) { "skipped: its relaunch was held back (busy)" } else { "skipped: an earlier step of this member failed" };
             for d in step.display() {
-                out.ran.push((d, 0, "skipped: an earlier step of this member failed".into()));
+                out.ran.push((d, 0, why.into()));
             }
             prog.done = n + 1;
             let _ = rs::progress_write(env, &prog);
             continue;
         }
         match step {
+            rs::RestoreStep::Relaunch { steps, job, .. } => {
+                // the plan may be minutes old: a member that turned busy or
+                // waits on you is not cut off now
+                let status = nimitz_core::sessions::find_row(env, job).filter(|r| r.live()).and_then(|r| r.status);
+                if matches!(status.as_deref(), Some("busy" | "waiting" | "shell")) {
+                    held_back.push(id.clone());
+                    for d in step.display() {
+                        out.ran.push((d, 0, format!("skipped: {id} is {} now", status.as_deref().unwrap_or_default())));
+                    }
+                    out.issues.push(Issue { code: "relaunch.busy".into(), severity: Severity::Info, message: format!("{id} turned busy after the plan: not relaunched now"), fix: Some(format!("nimitz restore {}  # again once it is idle", id.fleet())), id: Some(id.clone()) });
+                    prog.done = n + 1;
+                    let _ = rs::progress_write(env, &prog);
+                    continue;
+                }
+                let plan = Plan { summary: format!("restore {id}"), steps: steps.clone(), ..Default::default() };
+                let o = nimitz_core::sessions::apply(env, &plan);
+                out.ran.extend(o.ran);
+                if !o.verified || o.issues.iter().any(|i| i.severity == Severity::Error) {
+                    let issues = if o.issues.is_empty() { vec![refusal("step.failed", format!("{id}'s relaunch was not verified"), Some(format!("nimitz status {id}")), Some(id.clone()))] } else { o.issues };
+                    for i in issues {
+                        fail(&mut out, &mut failed, &id, i);
+                    }
+                } else {
+                    out.issues.extend(o.issues);
+                    // the new worker should run the installed Claude Code; one
+                    // that does not would be relaunched by every restore
+                    let now = installed.get_or_insert_with(|| nimitz_core::claude::version(env)).clone();
+                    let resumed = steps.last().and_then(|s| s.cmd.windows(2).find(|w| w[0] == "--resume").map(|w| w[1].clone()));
+                    let pid = resumed.and_then(|sid| nimitz_core::sessions::find_row_by_session(env, &sid)).and_then(|r| r.pid);
+                    if let (Some(v), Some(now)) = (pid.and_then(|p| nimitz_core::compat::process_version("", Some(p))), now) {
+                        if nimitz_core::compat::older(&v, &now) {
+                            out.issues.push(Issue { code: "relaunch.old".into(), severity: Severity::Warn, message: format!("{id} was relaunched but its worker still runs Claude Code {v}, not the installed {now}"), fix: Some("claude daemon status  # shows the daemon's version; report it (never `claude daemon stop`: it ends every background session)".into()), id: Some(id.clone()) });
+                        }
+                    }
+                }
+            }
             rs::RestoreStep::Wake { steps, .. } => {
                 let plan = Plan { summary: format!("restore {id}"), steps: steps.clone(), ..Default::default() };
                 let o = nimitz_core::sessions::apply(env, &plan);
@@ -304,6 +349,7 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
                     let _ = rs::progress_write(env, &prog);
                     continue;
                 };
+                let last = resolved(last, &cmd);
                 match mux.run_in(&pref, &cmd) {
                     Ok(()) => {
                         out.ran.push((last, 0, format!("typed into pane {}", pane.pane_id)));
@@ -324,7 +370,7 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
                     let _ = rs::progress_write(env, &prog);
                     continue;
                 };
-                let display = step.display().remove(0);
+                let display = resolved(step.display().remove(0), &cmd);
                 let since = nimitz_core::evidence::now() - 0.001;
                 match mux.open(&cmd, Path::new(cwd), Place::Tab { workspace: workspace.clone(), label: label.clone() }) {
                     Ok(p) => {
@@ -336,6 +382,34 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
                     Err(e) => {
                         out.ran.push((display, 1, e.to_string()));
                         fail(&mut out, &mut failed, &id, refusal("mux.failed", format!("opening tab {label} for {id} failed: {e}"), None, Some(id.clone())));
+                    }
+                }
+            }
+            rs::RestoreStep::Reattach { pane, cmd, cwd, session, .. } => {
+                let display = step.display().remove(0);
+                let pref = PaneRef { pane_id: pane.pane_id.clone(), tab_id: Some(pane.tab_id.clone()).filter(|x| !x.is_empty()), workspace_id: Some(pane.workspace_id.clone()).filter(|x| !x.is_empty()) };
+                // the relaunch ended the old attach: its pane drops to the shell
+                // within a second or so; nothing is typed until it has
+                if !wait_for_shell(mux, &pref) {
+                    out.ran.push((display, 1, "the old attach did not end".into()));
+                    fail(&mut out, &mut failed, &id, refusal("tab.taken", format!("{id} is relaunched, but pane {} still runs something other than a shell; nothing is typed into it", pane.pane_id), Some(format!("ctrl-z in pane {}, then nimitz restore {}", pane.pane_id, id.fleet())), Some(id.clone())));
+                    prog.done = n + 1;
+                    let _ = rs::progress_write(env, &prog);
+                    continue;
+                }
+                let Some(cmd) = name_the_job(env, cmd, session) else {
+                    fail(&mut out, &mut failed, &id, refusal("session.none", format!("{id}'s job is not there after its relaunch; no attach"), Some(format!("nimitz status {id}")), Some(id.clone())));
+                    prog.done = n + 1;
+                    let _ = rs::progress_write(env, &prog);
+                    continue;
+                };
+                let _ = cwd;
+                let display = resolved(display, &cmd);
+                match mux.run_in(&pref, &cmd) {
+                    Ok(()) => out.ran.push((display, 0, format!("typed into pane {}", pane.pane_id))),
+                    Err(e) => {
+                        out.ran.push((display, 1, e.to_string()));
+                        fail(&mut out, &mut failed, &id, refusal("mux.failed", format!("attaching {id} in pane {} failed: {e}", pane.pane_id), None, Some(id.clone())));
                     }
                 }
             }
@@ -373,15 +447,41 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
     (out, failed)
 }
 
-/// A wake that made a new job (its row was gone) leaves the attach naming
-/// `NEW_JOB`: the row running the conversation now names it. None when no
-/// row runs it (the wake did not land).
+/// A wake that made a new job (its row was gone, or a relaunch) leaves the
+/// attach naming `NEW_JOB`: the row running the conversation now names it.
+/// None when no row runs it (the wake did not land).
 fn name_the_job(env: &nimitz_core::env::Env, cmd: &[String], session: &str) -> Option<Vec<String>> {
     if !cmd.iter().any(|a| a == rs::NEW_JOB) {
         return Some(cmd.to_vec());
     }
     let job = nimitz_core::sessions::find_row_by_session(env, session)?.short_id?;
     Some(nimitz_core::claude::attach(env, &job))
+}
+
+/// A step as it ran: the attach's `NEW_JOB` replaced by the job it named.
+fn resolved(mut step: nimitz_core::Step, cmd: &[String]) -> nimitz_core::Step {
+    if let Some(job) = cmd.last() {
+        for a in step.cmd.iter_mut().filter(|a| *a == rs::NEW_JOB) {
+            *a = job.clone();
+        }
+    }
+    step
+}
+
+/// Wait (up to `NIMITZ_REATTACH_WAIT` seconds, 15 by default) for `pane`'s
+/// foreground to be a shell at its prompt.
+fn wait_for_shell(mux: &dyn Mux, pane: &PaneRef) -> bool {
+    let limit = std::env::var("NIMITZ_REATTACH_WAIT").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(15.0);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(limit);
+    loop {
+        if mux.foreground(pane).is_ok_and(|fg| nimitz_mux::is_shell(&fg)) {
+            return true;
+        }
+        if std::time::Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
 }
 
 /// An attach that wakes a parked job: the SessionStart that follows must be

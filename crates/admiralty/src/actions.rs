@@ -90,7 +90,7 @@ impl Act {
             Act::Save => "save the config change",
             Act::Layout => "layout herdr: workspaces and tabs for this fleet",
             Act::LayoutShips => "layout herdr --ships: and a tab attaching each live ship",
-            Act::Restore => "restore: bring this fleet back from the Herdr shape (leads always, ships from the last active set)",
+            Act::Restore => "restore: after a Claude Code update, a Herdr closure or a reboot (relaunch older workers, reattach panes, wake leads and active ships)",
         }
     }
 
@@ -608,7 +608,7 @@ pub fn outcome_text(p: &Pending, o: &Outcome) -> (bool, String) {
         return (true, format!("layout: {} ({tabs} tab(s) in {} workspace(s); members bind at their SessionStart)", p.plan.summary, lp.workspaces.len()));
     }
     if p.act == Act::Restore && o.ran.is_empty() {
-        return (true, format!("restore: {}: nothing to restore", p.plan.summary.trim_start_matches("restore ")));
+        return (true, format!("restore: {}", p.plan.summary.trim_start_matches("restore ")));
     }
     let checked = if o.verified || p.config { "verified" } else { "done" };
     (true, format!("{}: {} ({} steps, {checked})", p.act.word(), p.plan.summary, o.ran.len()))

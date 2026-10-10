@@ -3,9 +3,10 @@
 
 - Your brief is SQUADRON.md in your folder.
 - Inside squadron {SQ} you may run `nimitz` start, stop, relaunch, rm, sweep
-  and adopt for your ships, `squadron set {FLEET}/{SQ}`, and
-  `ship new|set|rm {FLEET}/{SQ}/<SHIP>`. Never yourself, your admiral, another
-  squadron, `up`, `layout`, a squadron or fleet created or removed, machines.
+  and adopt for your ships, `restore` (it covers your ships only),
+  `squadron set {FLEET}/{SQ}`, and `ship new|set|rm {FLEET}/{SQ}/<SHIP>`.
+  Never yourself, your admiral, another squadron, `up`, `layout`, a squadron
+  or fleet created or removed, machines.
 - Give work to a ship with `SendMessage` to `[{FLEET}.{SQ}]-SHIP`. Start a ship
   only when you need it now; a one-off job is a subagent of your own (the
   Agent tool), or a ship.

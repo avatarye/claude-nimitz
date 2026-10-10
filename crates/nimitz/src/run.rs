@@ -72,7 +72,10 @@ pub fn fixes_for(env: &nimitz_core::env::Env, caller: &nimitz_core::Caller, plan
     }
     for i in plan.refusals.iter_mut().chain(plan.warnings.iter_mut()) {
         if let Some(f) = i.fix.take() {
-            i.fix = Some(if nimitz_core::sessions::may_run_in(Some(env), caller, &f) { f } else { format!("ask the user to run: {f}") });
+            // `restore.self`: the restore that relaunches the caller is the
+            // user's, from a shell, whatever the caller may run itself
+            let mine = i.code != "restore.self" && nimitz_core::sessions::may_run_in(Some(env), caller, &f);
+            i.fix = Some(if mine { f } else { format!("ask the user to run: {f}") });
         }
     }
 }

@@ -765,16 +765,26 @@ argv; the limit then stands: with no session reported for the pane it reads
 as the member's own attach (Shown), nothing is typed into it (below
 `ATTACH_EXEC_SINCE`), and nimitz cannot say "this is the agent view".
 
-`nimitz restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`
-(`restore::plan`, mux-free; the CLI runs the steps): authority as `layout`
-(you; an admiral its own fleet; `may_run_in` row `restore`). Per fleet of
-this machine (an explicit fleet of another machine is `machine.missing`,
-fix `machine add` then `up`; one of many is a warning), `check_tree` first
-(a `config.invalid` refuses the fleet; config findings ride along). Per
-member, in chain order:
+`nimitz restore [<F>] [--all] [--restart] [--force] [--jobs-only] [--here]
+[--rename]` (`restore::plan`, mux-free; the CLI runs the steps), the one
+command after a Claude Code update, a Herdr closure or crash, or a reboot:
+authority you; an admiral its own fleet; a commodore its own ships (no `F`,
+or its fleet: only `F/SQ/*` members are planned). Per fleet of this machine
+(an explicit fleet of another machine is `machine.missing`, fix `machine
+add` then `nimitz start <id>`; one of many is a warning), `check_tree` first
+(a `config.invalid` refuses the fleet; config findings ride along). The
+plan's first line says what happened (`restore F: Claude Code updated to V
+(N live worker(s) on an older one); Herdr closed or restarted, or never laid
+out (N live member(s) without their pane); a reboot, or jobs that ended (N
+member(s) down to wake)`, or `nothing to bring back`), and `Plan.found`
+holds one line per member in scope, `<id>  <what was found> -> <what it
+does>` (the never started share one `not.started` line). Per member, in
+chain order:
 
 | State | Restore |
 | --- | --- |
+| live, its worker on an older Claude Code than the installed one (`restore::worker_version`: `versions/<v>` in the process's executable, `(deleted)` stripped; else its session file's `version`), or any live member under `--restart` | `sessions::plan_relaunch` (stop, rm, `--bg --resume <id>` with every flag: same id, same job id, its first 8; `apply` pins a lead's job), then: the pane that runs its exact attach gets a `Reattach` (the old attach ends with its job; the executor waits up to `NIMITZ_REATTACH_WAIT` s, 15, for the shell, then types the new job's attach); a pane that shows it without the attach gets nothing typed (`tab.taken` Warn, fix `nimitz open`); else a lead (or a ship that had a pane) its tab's shell or a new tab. Relaunch groups (`RestoreStep::Relaunch`) run after every other step: ships, then commodores, then admirals. Busy or waiting on you: `relaunch.busy` Info, left running; the executor reads the job's status again just before its relaunch and holds back one that turned busy since the plan (its later steps skipped, not failed). A new worker still older than the installed version: `relaunch.old` Warn. The caller itself (by its labels, else the member whose worker is an ancestor of the restore's process): `restore.self` Warn, fix `nimitz restore F` from the user's own shell (it relaunches and reattaches); a commodore's own restore gives it that line too. A refused `plan_relaunch` (`dup.live`, `name.taken`, ...): its Error |
+| live, current worker, a pane shows it by an attach client on an older version (argv0 or the pane's foreground pid) | nothing typed; `attach.old` Info (fix: ctrl-z in pane P, then restore) |
 | live, a pane shows its job (any session of the job, or the exact `claude attach <job>` with no other agent in the pane) | nothing (`tab.renamed` / `tab.moved` Info when the label or workspace differ); with `--rename`, a `herdr tab rename <tab> <full label>` step for a tab under another name |
 | live, its full-label tab (loosely, `F.ADMIRAL` / `F.SQ.COMMODORE` / `F.SQ.SHIP`) has a shell pane, in its workspace first, else anywhere | `pane run claude attach <job>` there; a legacy short label (`COMMODORE`) or a default label (`1`) whose shell sits in the member's folder is renamed first; other tabs with the name: `tab.dup` Info |
 | live, its tab has no shell pane | `tab.taken` Error (fix: ctrl-z / quit X in pane P, then restore); the exact attach with another agent in the pane is `tab.agentview` (fix: close that pane); a foreground that could not be read is `tab.unreadable`; `--force` opens a second tab (`tab.dup` Warn), never for the agent view |
@@ -786,7 +796,8 @@ member, in chain order:
 | held (a process with no job) in a pane of this shape: the pane shows that session, runs `claude --resume <session>`, or runs the process's pid (Herdr's `[session] resume_agents_on_restore = true` after its restart, finding 10) | `tab.resumed` Error, no step: "its conversation is open in pane P (Herdr's resume_agents_on_restore, or a claude --resume by hand)", fix "type /exit in pane P, then nimitz restore F"; counted as not restored ("N held in a pane" in the verdict, exit 1). A wake meanwhile would start a copy, so a held member is never woken anywhere in a restore |
 | held elsewhere (a 0.3.x interactive lead, an SDK host) | `lead.interactive` (fix `/exit` then restore) / `held`; nothing runs |
 | no row, the registry's conversation has a transcript | `--bg --resume <sid>` with every flag (lineage `via migrate` for a lead that never had a job), then its tab (the attach names the new job) and the pin |
-| no row, no transcript | `not.started` Info, once per fleet (`nimitz up F`); never a cold launch |
+| no row, the registry's conversation has a transcript, a ship out of the set | counted parked, its line says `--all` resumes it |
+| no row, no transcript | `not.started` Info, once per fleet (fix `nimitz start <id>`); never a first launch |
 
 A lead's job that is not pinned gets a `pin` step. Tabs of a fleet's
 workspaces named `F.*` for no member are `tab.orphan` Info. The `ADMIRALTY`
@@ -798,7 +809,8 @@ ship(s); K parked` / `[OK] F: nothing to restore (...)` / `[ERROR] F: N
 member(s) not restored`; exit 1 only when a member could not be restored.
 After the run `rc.exposed` of the fleet's members is repeated, and the
 active set is recorded. `up` = `plan_up` then the shape-only engine;
-`layout herdr` = the shape-only engine (plan-v4 section 13.1).
+`layout herdr` = the shape-only engine (plan-v4 section 13.1); both are
+deprecated and print a pointer to restore.
 
 ## 10. CLI surface (`nimitz`)
 

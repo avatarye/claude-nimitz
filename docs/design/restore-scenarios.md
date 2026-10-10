@@ -197,10 +197,10 @@ Four sub-cases; all "before": leads attached, S1 attached, all names standard.
 - Story: "Claude Code auto-updated at 02:00. In the morning everything still runs."
 - Before: leads attached, ships live.
 - Left: daemon self-restarted, `bg adopt: adopted=N respawned=0`; idle workers moved to the new binary; attached/busy workers kept on the old binary (`state.json.cliVersion` older than the daemon); Herdr panes untouched; the attach clients stayed connected (E5 saw the user's attached leads survive).
-- Expected: `restore` plans nothing: `[OK] nothing to restore`. Info per member still on the old binary ("runs 2.1.290 under daemon 2.1.292; `nimitz relaunch` moves it when idle"). `compat` Warn if the new version is above the tested range; restores still go ahead (as status does today).
-- Must not: relaunch members because of the version difference; refuse to restore under an untested-but-newer version.
-- nimitz knows: `cliVersion` per row vs `claude --version`; daemon.log `bg adopt` line.
-- Priority: should.
+- Expected (changed 2026-10-09, the user's call: one command after an update): `restore` relaunches every live member whose worker runs an older Claude Code than the installed one (same id and history: stop, rm, `--bg --resume <id>` with every flag), then reattaches the panes that showed it (the old attach ends with its job, measured on 2.1.295: "Session <job> has exited.", the pane drops to its shell). Ships first, then commodores, then admirals, one at a time. The plan line per member: "worker on 2.1.294, installed 2.1.295 -> relaunch". `compat` Warn if the new version is above the tested range; restores still go ahead.
+- Must not: relaunch a member mid-turn or waiting on you (`relaunch.busy`: run restore again once it is idle); relaunch the member that runs the restore (`restore.self`, with the `nimitz relaunch <id>` the user runs afterwards); type into an attach client on an older version (`attach.old`, fix ctrl-z then restore); refuse to restore under an untested-but-newer version.
+- nimitz knows: the worker's version from its process (`versions/<v>` in `/proc/<pid>/exe`, a bare `claude` argv0 for a worker; `<v> (deleted)` once the old binary is removed), else its session file's `version`; the installed one from `claude --version`.
+- Priority: must.
 
 ### R-10 A partial restore interrupted halfway
 
@@ -429,7 +429,7 @@ Four sub-cases; all "before": leads attached, S1 attached, all names standard.
 | R-06 | workspace closed | live | ws missing | create ws, claim root tab, attach | must |
 | R-07a-d | renamed / moved / duplicate / split | live | odd | match by session/job; report | must/should |
 | R-08 | reboot | all dead, rows kept | shells | resume leads + active, attach; crash window; `history.lost` on `startup` | must |
-| R-09 | CC upgrade adopt | live | intact | nothing; Info on old binaries | should |
+| R-09 | CC upgrade adopt | live | intact | relaunch older workers (ships, then leads; never busy, never the caller), reattach | must |
 | R-10 | restore interrupted | mixed | half-made | converge; claim unlabelled root tab; remove own copies | must |
 | R-11 | two fleets | - | two shapes | scope to the fleet asked | must |
 | R-12 | run twice | - | - | zero steps | must |

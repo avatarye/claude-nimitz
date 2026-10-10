@@ -66,6 +66,55 @@ pub fn at_least(v: &str, min: &str) -> bool {
     cmp(v, min) != std::cmp::Ordering::Less
 }
 
+/// Is `v` older than `than` (dotted, componentwise)?
+pub fn older(v: &str, than: &str) -> bool {
+    cmp(v, than) == std::cmp::Ordering::Less
+}
+
+/// The Claude Code version in an executable's path: the official
+/// installer's `.../claude/versions/<v>[/...]` or a localtools install's
+/// `.../claude-code/<v>/claude` (`<v>` may carry a fourth, build component:
+/// `2.1.294.1000`; `at_least` compares it componentwise). A binary replaced
+/// since the process started reads `<path> (deleted)` on Linux; the version
+/// in its path is still the one it runs.
+pub fn claude_version_in(path: &str) -> Option<String> {
+    let path = path.strip_suffix(" (deleted)").unwrap_or(path);
+    let first = |rest: &str| rest.split('/').next().filter(|v| v.starts_with(|c: char| c.is_ascii_digit())).map(String::from);
+    if let Some(v) = path.split("/claude/versions/").nth(1).and_then(first) {
+        return Some(v);
+    }
+    let (_, rest) = path.rsplit_once("/claude-code/")?;
+    let (v, bin) = rest.split_once('/')?;
+    (bin == "claude").then(|| first(v)).flatten()
+}
+
+/// The executable process `pid` runs: `/proc/<pid>/exe` on Linux,
+/// `proc_pidpath` on macOS.
+pub fn exe_of(pid: i64) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|e| e.to_string_lossy().into_owned())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let n = unsafe { libc::proc_pidpath(pid as libc::c_int, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
+        (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The Claude Code version a process runs: from its argv0, else from the
+/// executable it runs (the `~/.local/bin/claude` launcher is a link into
+/// `versions/`, and a background worker's argv0 is a bare `claude`).
+pub fn process_version(argv0: &str, pid: Option<i64>) -> Option<String> {
+    claude_version_in(argv0).or_else(|| pid.and_then(exe_of).and_then(|e| claude_version_in(&e)))
+}
+
 /// Compare dotted versions componentwise, missing components = 0.
 fn cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let (a, b) = (nums(a), nums(b));
@@ -112,6 +161,12 @@ mod tests {
         let c = supported();
         assert_eq!(c.min, "2.1.288");
         assert_eq!(c.max, "2.1.294");
+    }
+
+    #[test]
+    fn a_replaced_binary_still_names_its_version() {
+        assert_eq!(claude_version_in("/home/u/.local/share/claude/versions/2.1.283 (deleted)").as_deref(), Some("2.1.283"));
+        assert!(older("2.1.294", "2.1.295") && older("2.1.294.1000", "2.1.295") && !older("2.1.295", "2.1.295") && !older("2.1.295.1", "2.1.295"));
     }
 
     #[test]

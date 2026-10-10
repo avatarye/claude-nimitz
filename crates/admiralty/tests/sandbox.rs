@@ -607,7 +607,7 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
     app.finish(&p, &o);
     assert!(o.verified, "{:?}", o.issues);
     assert_eq!(o.ran.len(), 3, "{:?}", o.ran);
-    assert!(toast(&app).starts_with("restore: restore MAIN (3 steps"), "{}", toast(&app));
+    assert!(toast(&app).starts_with("restore: restore MAIN: Herdr closed or restarted, or never laid out (3 live member(s) without their pane) (3 steps"), "{}", toast(&app));
     // again: nothing to restore
     app.apply(CoreSource::detect(&vars).load());
     goto(&mut app, "F:MAIN");
@@ -618,7 +618,7 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
     let o = actions::apply(&app.ctx.env, &p);
     app.finish(&p, &o);
     assert!(o.verified && o.ran.is_empty());
-    assert_eq!(toast(&app), "restore: MAIN: nothing to restore");
+    assert_eq!(toast(&app), "restore: MAIN: nothing to bring back");
     // the detail panel lists it on a fleet band, and no fleet selected means no restore
     assert!(app.available(Act::Restore).is_ok());
     goto(&mut app, "M:MAIN/ARGOS/CLEAN");

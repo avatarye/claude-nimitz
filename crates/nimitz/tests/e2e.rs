@@ -1638,3 +1638,53 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
     assert!(t.contains("PONG"), "the lead answered");
     w.finish();
 }
+
+/// One restore after a Claude Code update (real Claude Code): the installed
+/// version reads newer than every worker's (a wrapper as the native binary
+/// answers `--version` with 2.1.999 and runs the real one for the rest), so
+/// `restore --jobs-only` relaunches each live member, the ship first, then
+/// the commodore, then the admiral: the same session id, a new process on
+/// the binary the worker runs, its labels intact. The test's own members
+/// only; no multiplexer (`--jobs-only`).
+#[test]
+fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(94);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    w.start_ship_idle();
+    let ids = [w.ship(), format!("{}/SQ", w.fleet), w.fleet.clone()];
+    for id in &ids {
+        w.wait(180, || w.member(id).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).unwrap_or_else(|| panic!("{id} idle"));
+    }
+    let before: Vec<(String, String, i64)> = ids.iter().map(|id| {
+        let m = w.member(id).unwrap();
+        (id.clone(), m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["pid"].as_i64().unwrap())
+    }).collect();
+    let newer = w.base.join("bin/claude-newer");
+    executable(&newer, &format!("#!/bin/sh\nfor a; do [ \"$a\" = --version ] && {{ echo '2.1.999 (Claude Code)'; exit 0; }}; done\nexec '{}' \"$@\"\n", w.native));
+    let restore = |form: &str| {
+        let mut c = w.nz_cmd();
+        c.env("NIMITZ_NATIVE_CLAUDE_BIN", &newer).args(["restore", &w.fleet, "--jobs-only", form]);
+        E2e::run(c)
+    };
+    let (code, plan) = restore("--plan");
+    assert_eq!(code, 0, "{plan}");
+    assert!(plan.contains("Claude Code updated to 2.1.999 (3 live worker(s) on an older one)"), "{plan}");
+    for id in &ids {
+        assert!(plan.lines().any(|l| l.trim_start().starts_with(&format!("{id} ")) && l.contains("installed 2.1.999 -> relaunch (same id and history)")), "{id}:\n{plan}");
+    }
+    let (code, out) = restore("--yes");
+    println!("{out}");
+    assert_eq!(code, 0, "{out}");
+    let order: Vec<&str> = out.lines().filter(|l| l.starts_with("[OK] ") && l.contains(" -> stopped ")).filter_map(|l| l.strip_prefix("[OK] ")?.split(':').next()).collect();
+    assert_eq!(order, ids.iter().map(String::as_str).collect::<Vec<_>>(), "ship, then commodore, then admiral:\n{out}");
+    for (id, sid, pid) in &before {
+        let m = w.wait(60, || w.member(id).filter(|m| !m["session"]["pid"].is_null())).unwrap_or_else(|| panic!("{id} live again:\n{out}"));
+        assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "{id}: the same conversation");
+        assert_ne!(m["session"]["pid"].as_i64(), Some(*pid), "{id}: a new worker process");
+        assert_eq!(m["session"]["labels"]["NIMITZ_ID"], id.as_str(), "{id}: its labels: {m}");
+    }
+    w.finish();
+}

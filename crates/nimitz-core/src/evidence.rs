@@ -478,6 +478,24 @@ impl SessionRow {
     }
 }
 
+/// The process ids above this one (its parent, its parent's parent, ...):
+/// `/proc/<pid>/stat` on Linux; empty elsewhere.
+pub fn ancestors() -> Vec<i64> {
+    let mut out = vec![];
+    let mut pid = std::process::id() as i64;
+    for _ in 0..64 {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else { break };
+        // the field after the `(comm)`, which may hold spaces: state, then ppid
+        let Some(ppid) = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)).and_then(|p| p.parse::<i64>().ok()) else { break };
+        if ppid <= 0 {
+            break;
+        }
+        out.push(ppid);
+        pid = ppid;
+    }
+    out
+}
+
 pub fn pid_alive(pid: i64) -> bool {
     if pid <= 0 || pid > i32::MAX as i64 {
         return false;
@@ -1089,6 +1107,13 @@ fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_ancestors_start_at_the_parent() {
+        let up = super::ancestors();
+        assert_eq!(up.first().copied(), Some(unsafe { libc::getppid() } as i64), "{up:?}");
+    }
+
     use super::*;
 
     /// A second project's `<sid>` folder (only `workflows/scripts`) is never

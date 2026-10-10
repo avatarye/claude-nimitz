@@ -468,8 +468,9 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
         Some("adopt") => id_at(3).is_some_and(|t| may_start(caller, &t, "adopt as").is_ok()),
         Some("up") => id_at(2).is_some_and(|t| in_fleet(&t)),
         Some("layout") => *role == Role::Admiral && id_at(3).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
-        // a restore brings back whole fleets: an admiral its own (plan-v4 section 13)
-        Some("restore") => *role == Role::Admiral && id_at(2).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
+        // a restore brings back whole fleets: an admiral its own, a commodore
+        // its own ships (plan-v4 section 13)
+        Some("restore") => matches!(role, Role::Admiral | Role::Commodore) && id_at(2).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
         Some("ship") => id_at(3).is_some_and(|t| may_config(caller, &t).is_ok()),
         Some("squadron") => match (w.get(2).copied(), id_at(3)) {
             (Some("new"), Some(t)) => in_fleet(&t),
@@ -2146,22 +2147,41 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 }
             }
         }
+        // the worker a stop ends: its process, waited for below (its row
+        // goes before the process has exited)
+        let stopping = match &kind {
+            Kind::Stop { short } => find_row(env, short).and_then(|r| r.pid),
+            _ => None,
+        };
         let since = crate::evidence::now() - 0.001;
         let (mut rc, mut text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
         let mut copy_removed: Option<bool> = None;
+        // a resume of a conversation whose worker is still exiting is a copy
+        // (measured on 2.1.295: stop, rm, `--bg --resume <id>` with flags
+        // started a copy now and then); the next step waits for the process
+        if let (0, Some(pid)) = (rc, stopping) {
+            worker_gone_within(pid, STOP_EXIT_S);
+        }
         out.ran.push((step.clone(), rc, text.clone()));
         // a native wake that raced the daemon's bookkeeping (a stop a moment
         // before, under load: r3-e2e finding 12) answers with a copy: the copy
         // goes, the job is waited for (its row settled, then a breath), and the
         // wake runs once more; a second copy is the failure below
+        // (a resume with every flag after an rm, a relaunch, the same)
+        let wake_of = match &kind {
+            Kind::Resume { session_id } => Some(session_id.clone()),
+            Kind::Relaunch => resumed_id(step),
+            _ => None,
+        };
         if rc == 0 {
-            if let (Kind::Resume { session_id }, Some(copy)) = (&kind, crate::claude::copy_started(&text)) {
+            if let (Some(session_id), Some(copy)) = (wake_of.as_ref(), crate::claude::copy_started(&text)) {
                 for cmd in [crate::claude::stop(env, &copy), crate::claude::rm(env, &copy)] {
                     let (rc2, t) = crate::claude::run(&cmd, None);
                     out.ran.push((Step { id: step.id.clone(), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of the wake; then wake once more") }, rc2, t));
                     extra_ran += 1;
                 }
-                copy_removed = Some(row_gone_within(env, &copy, 3.0));
+                let gone = row_gone_within(env, &copy, 3.0);
+                copy_removed = Some(gone);
                 // the daemon restarted the job itself meanwhile (cli-31): no
                 // second wake (it would be a copy); the failure below says so
                 let live = || find_row_by_session(env, session_id).is_some_and(|r| r.live());
@@ -2171,7 +2191,9 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     }
                     std::thread::sleep(std::time::Duration::from_secs_f64(WAKE_RETRY_PAUSE_S));
                 }
-                if !live() {
+                // only once the copy is gone: a relaunch's copy carries the
+                // member's name and labels, and is never left behind unsaid
+                if gone && !live() {
                     copy_removed = None;
                     (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
                     out.ran.push((step.clone(), rc, text.clone()));
@@ -2504,6 +2526,25 @@ fn claim_folder(env: &Env, id: &Id, cwd: Option<&str>, session_id: &str) {
     let pid = crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.session_id == session_id).and_then(|r| r.pid);
     let line = serde_json::json!({"machine": env.hostname, "id": id.0, "session_id": session_id, "pid": pid, "at": crate::evidence::now()});
     let _ = std::fs::write(ship_lock_path(cwd), line.to_string());
+}
+
+/// How long a stop waits for the worker process to exit (seconds).
+const STOP_EXIT_S: f64 = 10.0;
+
+/// Wait up to `limit` seconds for process `pid` to exit; true once it has.
+/// Pid 1 is never a worker (the sandbox's sessions record it as "alive").
+fn worker_gone_within(pid: i64, limit: f64) -> bool {
+    if pid <= 1 {
+        return true;
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(limit);
+    while crate::evidence::pid_alive(pid) {
+        if std::time::Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    true
 }
 
 /// Release it on a stop, but never another machine's lock.

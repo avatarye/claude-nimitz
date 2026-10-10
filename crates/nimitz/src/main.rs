@@ -71,16 +71,21 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force]
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine
-  up <F>                           start every member of a fleet
+  up <F>                           deprecated (next release: gone): every member up, first launches too;
+                                   use restore (and start <id> for a first launch)
   start|stop|relaunch <id>         one member; start brings up missing parents first (--fresh: a cold launch, new lineage)
   rm <id|session>                  remove job rows (never transcripts)
   sweep [<id>]                     drop stale rows and copies of members
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member in its tab, else post to its inbox (ships: through the commodore)
   open <id>                        attach to a member in a tab (detach: ctrl-z)
-  restore [<F>] [--all]            bring a fleet back from the Herdr shape: leads always, ships from the
-                                   last active set (--all: every ship with a job row); --jobs-only (no tabs)
-  layout herdr [<F>] [--ships]     the shape only (an alias of restore for one release)
+  restore [<F>] [--all] [--restart]
+                                   the one command after a Claude Code update, a Herdr closure or a reboot
+                                   (no F: every fleet here): relaunches workers on an older Claude Code,
+                                   reattaches panes that are gone, wakes leads and the last active ships
+                                   (--all: every ship that has run); --restart relaunches every live member;
+                                   --jobs-only (no tabs); never relaunches the member that runs it
+  layout herdr [<F>] [--ships]     deprecated (next release: gone): the tabs only; use restore
   migrate fleet-skill <dir...> --into <F>
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
   sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)

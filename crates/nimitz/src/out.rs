@@ -103,6 +103,7 @@ fn brief(s: &Step) -> String {
 
 pub fn plan(p: &Plan) {
     line(&format!("[PLAN] {}", p.summary));
+    found(p);
     for (n, s) in p.steps.iter().enumerate() {
         let cwd = s.cwd.as_ref().map(|c| format!("cd {} && ", quote(c))).unwrap_or_default();
         line(&format!("  {}. {cwd}{}", n + 1, step_text(s)));
@@ -113,6 +114,18 @@ pub fn plan(p: &Plan) {
     }
     for r in &p.refusals {
         issue(r);
+    }
+}
+
+/// A restore's per-member lines: the member, what was found, `->` what it does.
+pub fn found(p: &Plan) {
+    if p.found.is_empty() {
+        return;
+    }
+    let w = p.found.iter().map(|f| f.id.0.chars().count()).max().unwrap_or(0);
+    line("  found:");
+    for f in &p.found {
+        line(&format!("    {:<w$}  {} -> {}", f.id.0, f.found, f.action));
     }
 }
 
