@@ -258,3 +258,51 @@ fn the_shared_step_waits_for_migrate_shared_yes() {
     assert_ne!(set.code, 0, "{}{}", set.out, set.err);
     assert_eq!(std::fs::read_to_string(&fleet_toml).unwrap(), future);
 }
+
+/// The manifest lost beside a registry a newer nimitz wrote: no command
+/// marks this machine migrated, every one stops (a registry too new is never
+/// read as an empty one: a start would launch fresh sessions), and that
+/// holds even with the mark in place by hand. doctor reports it.
+#[test]
+fn a_too_new_registry_stops_every_command_even_without_or_with_the_mark() {
+    let w = World::new(false);
+    let reg = w.state("registry.json");
+    let mut v = w.json(&reg);
+    v["version"] = Value::from(nimitz_core::REGISTRY_VERSION + 1);
+    std::fs::write(&reg, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    std::fs::remove_file(w.state("formats.json")).unwrap();
+    let raw_reg = std::fs::read(&reg).unwrap();
+    let jobs = || std::fs::read_dir(w.base.join("claude_home/jobs")).unwrap().count();
+    let before = jobs();
+    for _ in 0..2 {
+        let s = w.run(&["status"]);
+        assert_eq!(s.code, 1, "{}{}", s.out, s.err);
+        assert!(s.err.contains("is format 4, newer than this nimitz reads"), "{}", s.err);
+        assert!(w.json(&w.state("formats.json"))["nimitz"].as_str().unwrap_or("").is_empty(), "never marked migrated");
+    }
+    // the mark set by hand: the first read of the registry stops the command
+    std::fs::write(w.state("formats.json"), serde_json::json!({"nimitz": V, "artifacts": {}}).to_string()).unwrap();
+    for args in [&["status"][..], &["start", "MAIN/ARGOS/FRESH", "--yes"], &["start", "--plan"]] {
+        let r = w.run(args);
+        assert_eq!(r.code, 1, "{args:?}: {}{}", r.out, r.err);
+        assert!(r.err.contains("config.too_new") && r.err.contains("never reads this registry as an empty one"), "{args:?}: {}", r.err);
+    }
+    let d = w.run(&["doctor"]);
+    assert!(d.out.contains("is format 4, newer than this nimitz reads"), "{}{}", d.out, d.err);
+    assert_eq!(std::fs::read(&reg).unwrap(), raw_reg);
+    assert_eq!(jobs(), before, "nothing launched");
+}
+
+/// A manifest entry a newer nimitz recorded (a format this one does not
+/// know) stops every command but doctor too.
+#[test]
+fn a_too_new_manifest_entry_stops_every_command_but_doctor() {
+    let w = World::new(false);
+    std::fs::write(w.state("formats.json"), serde_json::json!({"nimitz": "9.0.0", "artifacts": {"needs": 9}}).to_string()).unwrap();
+    let s = w.run(&["status"]);
+    assert_eq!(s.code, 1, "{}{}", s.out, s.err);
+    assert!(s.err.contains("formats.json is format 9, newer than this nimitz reads"), "{}", s.err);
+    let d = w.run(&["doctor"]);
+    assert!(d.out.contains("formats.json is format 9"), "{}{}", d.out, d.err);
+    assert_eq!(w.json(&w.state("formats.json"))["artifacts"]["needs"], 9, "never lowered");
+}

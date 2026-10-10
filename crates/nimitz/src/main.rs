@@ -185,6 +185,9 @@ fn dispatch(argv: Vec<String>) -> i32 {
         return usage_error(&e);
     }
     let ctx = Ctx { env: Env::from_vars(&vars), caller: nimitz_core::sessions::caller_from_env(&vars), vars, args };
+    // a registry too new for this nimitz stops a command at its first read,
+    // never reads as an empty one (doctor reports it instead)
+    nimitz_core::registry::set_strict(cmd != "doctor");
     if migrates(&cmd) {
         if let Some(code) = auto_migrate(&ctx.env, &cmd) {
             return code;
@@ -256,20 +259,21 @@ fn migrates(cmd: &str) -> bool {
 /// wrote here stops every command but `doctor` (which reports it).
 fn auto_migrate(env: &Env, cmd: &str) -> Option<i32> {
     use nimitz_core::formats;
-    if !formats::up_to_date(env) {
-        let ran = formats::run(env, formats::ARTIFACTS, formats::Scope::Local);
-        if let Some(line) = ran.line() {
-            eprintln!("{line}");
-        }
-        if !ran.too_new.is_empty() && cmd != "doctor" {
-            for t in &ran.too_new {
-                eprintln!("[ERROR] {t}");
-            }
-            eprintln!("[ERROR] nimitz {} stops: a newer nimitz ran on this machine, and its files are not this one's to read or write (never downgrade after it ran); `nimitz doctor` lists them", formats::NIMITZ);
-            return Some(1);
-        }
+    let ran = formats::migrate_local(env);
+    if let Some(line) = ran.line() {
+        eprintln!("{line}");
     }
-    formats::record_machine(env);
+    if !ran.too_new.is_empty() && cmd != "doctor" {
+        for t in &ran.too_new {
+            eprintln!("[ERROR] {t}");
+        }
+        eprintln!("[ERROR] nimitz {} stops: a newer nimitz ran on this machine, and its files are not this one's to read or write (never downgrade after it ran); `nimitz doctor` lists them", formats::NIMITZ);
+        return Some(1);
+    }
+    // on record in the fleets only once this machine's files are this nimitz's
+    if ran.failed.is_empty() && ran.too_new.is_empty() && formats::up_to_date(env) {
+        formats::record_machine(env);
+    }
     None
 }
 

@@ -107,12 +107,18 @@ impl Artifact {
         match self.kept {
             Kept::Toml(k) => {
                 let t: toml::Table = toml::from_str(std::str::from_utf8(bytes).ok()?).ok()?;
-                Some(t.get(k).and_then(toml::Value::as_integer).map(|n| n as u32).unwrap_or(1))
+                match t.get(k) {
+                    None => Some(1),
+                    Some(n) => n.as_integer().and_then(|n| u32::try_from(n).ok()),
+                }
             }
             Kept::Json(k) => {
                 let v = crate::evidence::first_json(bytes)?;
                 v.is_object().then_some(())?;
-                Some(v.get(k).and_then(Value::as_u64).map(|n| n as u32).unwrap_or(1))
+                match v.get(k) {
+                    None => Some(1),
+                    Some(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+                }
             }
             Kept::Manifest | Kept::Own => None,
         }
@@ -398,14 +404,16 @@ pub fn up_to_date(env: &Env) -> bool {
 // ------------------------------------------------------------------ the guard
 
 /// A file this nimitz must not read: it needs a newer nimitz (`min_nimitz`),
-/// or holds a format above the one this nimitz knows.
+/// or holds a format above the one this nimitz knows (or one that is no
+/// version at all: below 1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TooNew {
     pub file: PathBuf,
     pub artifact: &'static str,
     /// the file's `min_nimitz`, when it is above this nimitz
     pub needs: Option<String>,
-    pub format: u32,
+    /// the file's format as written (a negative one is kept as it is)
+    pub format: i64,
     pub known: u32,
 }
 
@@ -414,6 +422,7 @@ impl TooNew {
     pub fn reason(&self) -> String {
         match &self.needs {
             Some(x) => format!("needs nimitz >= {x} (this machine runs {NIMITZ}): update nimitz here"),
+            None if self.format < 1 => format!("carries format {}, which is no format version (nimitz {NIMITZ} reads 1 to {}): fix the file by hand, or update nimitz here", self.format, self.known),
             None => format!("is format {}, newer than this nimitz reads (it runs {NIMITZ} and reads up to format {}): update nimitz here", self.format, self.known),
         }
     }
@@ -438,17 +447,56 @@ impl std::fmt::Display for TooNew {
     }
 }
 
-/// The guard on a stamp read leniently (`format`, `min_nimitz`): a
-/// `min_nimitz` above this nimitz, or a format above the artifact's current.
-pub fn guard(artifact: &str, file: &Path, format: Option<u32>, min_nimitz: Option<&str>) -> Result<(), TooNew> {
-    guard_known(artifact, current(artifact), file, format, min_nimitz)
+/// A file's stamp, read leniently: its version key (as written) and its
+/// `min_nimitz`. Nothing else of the file is read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Stamp {
+    pub format: Option<i64>,
+    pub min_nimitz: Option<String>,
+}
+
+/// The stamp of a TOML file: from the parsed table; when the file does not
+/// parse (a syntax a newer nimitz may write), from a scan of its lines above
+/// the first table (`format = N`, `min_nimitz = "X"`), so the reader is still
+/// told which nimitz it needs.
+pub fn toml_stamp(raw: &str, key: &str) -> Stamp {
+    if let Ok(t) = toml::from_str::<toml::Table>(raw) {
+        return Stamp { format: t.get(key).and_then(toml::Value::as_integer), min_nimitz: t.get("min_nimitz").and_then(toml::Value::as_str).map(str::to_string) };
+    }
+    let mut st = Stamp::default();
+    for line in raw.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            break;
+        }
+        let Some((k, v)) = t.split_once('=') else { continue };
+        let v = v.split('#').next().unwrap_or("").trim();
+        match k.trim() {
+            k2 if k2 == key => st.format = v.parse::<i64>().ok(),
+            "min_nimitz" => st.min_nimitz = v.strip_prefix('"').and_then(|x| x.strip_suffix('"')).map(str::to_string),
+            _ => {}
+        }
+    }
+    st
+}
+
+/// The stamp of a JSON value (a number too big for i64 reads as i64::MAX).
+pub fn json_stamp(v: &Value, key: &str) -> Stamp {
+    let format = v.get(key).and_then(|n| n.as_i64().or_else(|| n.as_u64().map(|_| i64::MAX)));
+    Stamp { format, min_nimitz: v.get("min_nimitz").and_then(Value::as_str).map(str::to_string) }
+}
+
+/// The guard on a stamp: a `min_nimitz` above this nimitz, a format above
+/// the artifact's current one, or a format below 1, is refused.
+pub fn guard(artifact: &str, file: &Path, stamp: &Stamp) -> Result<(), TooNew> {
+    guard_known(artifact, current(artifact), file, stamp)
 }
 
 /// `guard` with the version this nimitz knows given (`known`).
-fn guard_known(artifact: &str, known: u32, file: &Path, format: Option<u32>, min_nimitz: Option<&str>) -> Result<(), TooNew> {
-    let format = format.unwrap_or(1);
-    let needs = min_nimitz.filter(|m| crate::compat::older(NIMITZ, m)).map(str::to_string);
-    if needs.is_some() || format > known {
+fn guard_known(artifact: &str, known: u32, file: &Path, stamp: &Stamp) -> Result<(), TooNew> {
+    let format = stamp.format.unwrap_or(1);
+    let needs = stamp.min_nimitz.as_deref().filter(|m| crate::compat::older(NIMITZ, m)).map(str::to_string);
+    if needs.is_some() || format > i64::from(known) || format < 1 {
         let artifact = artifact_name(artifact);
         return Err(TooNew { file: file.to_path_buf(), artifact, needs, format, known });
     }
@@ -459,20 +507,17 @@ fn artifact_name(name: &str) -> &'static str {
     artifact(name).map(|a| a.name).unwrap_or("unknown")
 }
 
-/// The guard on a shared TOML, before its strict parse: only `format` (or,
-/// for a JSON-stamped artifact, its key) and `min_nimitz` are read. A file
-/// that does not parse as TOML at all passes (the strict parse says why).
+/// The guard on a shared TOML, before its strict parse: only `format` and
+/// `min_nimitz` are read (`toml_stamp`; lines above the first table when the
+/// file does not parse).
 pub fn guard_toml(artifact: &str, file: &Path, raw: &str) -> Result<(), TooNew> {
-    let Ok(t) = toml::from_str::<toml::Table>(raw) else { return Ok(()) };
-    let format = t.get("format").and_then(toml::Value::as_integer).map(|n| n as u32);
-    guard(artifact, file, format, t.get("min_nimitz").and_then(toml::Value::as_str))
+    guard(artifact, file, &toml_stamp(raw, "format"))
 }
 
 /// The guard on a JSON file whose version lives in `key` (`version` for the
 /// registry and the active set, `format` for the rest).
 pub fn guard_json(artifact: &str, file: &Path, v: &Value, key: &str) -> Result<(), TooNew> {
-    let format = v.get(key).and_then(Value::as_u64).map(|n| n as u32);
-    guard(artifact, file, format, v.get("min_nimitz").and_then(Value::as_str))
+    guard(artifact, file, &json_stamp(v, key))
 }
 
 /// The guard on the bytes of a JSON file (`guard_json`); a file that does not
@@ -489,16 +534,16 @@ impl Artifact {
     pub fn guard_file(&self, f: &Path, bytes: &[u8]) -> Result<(), TooNew> {
         let stamp = match self.kept {
             Kept::Toml(k) => {
-                let Some(t) = std::str::from_utf8(bytes).ok().and_then(|raw| toml::from_str::<toml::Table>(raw).ok()) else { return Ok(()) };
-                (t.get(k).and_then(toml::Value::as_integer).map(|n| n as u32), t.get("min_nimitz").and_then(toml::Value::as_str).map(str::to_string))
+                let Ok(raw) = std::str::from_utf8(bytes) else { return Ok(()) };
+                toml_stamp(raw, k)
             }
             Kept::Json(k) => {
                 let Some(v) = crate::evidence::first_json(bytes) else { return Ok(()) };
-                (v.get(k).and_then(Value::as_u64).map(|n| n as u32), v.get("min_nimitz").and_then(Value::as_str).map(str::to_string))
+                json_stamp(&v, k)
             }
             Kept::Manifest | Kept::Own => return Ok(()),
         };
-        guard_known(self.name, self.current, f, stamp.0, stamp.1.as_deref())
+        guard_known(self.name, self.current, f, &stamp)
     }
 }
 
@@ -517,11 +562,16 @@ pub fn too_new(env: &Env) -> Vec<TooNew> {
     if let Some(m) = Manifest::load(env) {
         for a in ARTIFACTS.iter().filter(|a| a.kept == Kept::Manifest) {
             if m.version(a.name) > a.current {
-                out.push(TooNew { file: manifest_path(env), artifact: a.name, needs: None, format: m.version(a.name), known: a.current });
+                out.push(manifest_too_new(env, a, &m));
             }
         }
     }
     out
+}
+
+/// A manifest entry above what this nimitz knows of `a`.
+fn manifest_too_new(env: &Env, a: &Artifact, m: &Manifest) -> TooNew {
+    TooNew { file: manifest_path(env), artifact: a.name, needs: None, format: i64::from(m.version(a.name)), known: a.current }
 }
 
 /// The issues of this machine's own files (`check`): a local file too new
@@ -717,19 +767,60 @@ pub fn backup_path(file: &Path, nimitz: &str) -> PathBuf {
 }
 
 /// Run every step due in `scope` (the local ones: automatic; the shared ones:
-/// `nimitz migrate --shared --yes`). Per file: a backup `<file>.pre-<this
-/// version>` once (a resumed run keeps the first), the step, an atomic write
-/// (the file carries its new version, so a crash between two steps resumes
-/// at the second), a line in `S/migrations.log`. A manifest artifact's
-/// version is saved after each of its steps. A local run that did every step
-/// sets the manifest's `nimitz` (never lowered: a newer nimitz that ran here
-/// keeps its mark).
+/// `nimitz migrate --shared --yes`), under `S/migrate.lock` (one migration
+/// at a time on this machine). Per file: a backup `<file>.pre-<this
+/// version>` of the bytes the step reads, never replaced (a resumed run keeps
+/// the first), the step, an atomic write (the file carries its new version,
+/// so a crash between two steps resumes at the second), a line in
+/// `S/migrations.log`. A manifest artifact's version is saved after each of
+/// its steps. A local run that did every step, with no file too new for this
+/// nimitz, sets the manifest's `nimitz` (never lowered: a newer nimitz that
+/// ran here keeps its mark).
 pub fn run(env: &Env, arts: &[Artifact], scope: Scope) -> Ran {
     run_as(env, arts, scope, NIMITZ)
 }
 
 /// `run`, as nimitz `nimitz` (tests).
 pub fn run_as(env: &Env, arts: &[Artifact], scope: Scope, nimitz: &str) -> Ran {
+    match locked(env) {
+        Ok(_lock) => run_unlocked(env, arts, scope, nimitz),
+        Err(e) => lock_failed(env, scope, e),
+    }
+}
+
+/// The automatic local migration: under `S/migrate.lock`, and only while
+/// the manifest names another nimitz once the lock is held (a command that
+/// waited for another's migration finds it done, and does nothing).
+pub fn migrate_local(env: &Env) -> Ran {
+    if up_to_date(env) {
+        return Ran::default();
+    }
+    match locked(env) {
+        Ok(_lock) if up_to_date(env) => Ran::default(),
+        Ok(_lock) => run_unlocked(env, ARTIFACTS, Scope::Local, NIMITZ),
+        Err(e) => lock_failed(env, Scope::Local, e),
+    }
+}
+
+/// `S/migrate.lock`, held exclusively until the returned file drops (None:
+/// no state folder here, so nothing local to guard).
+fn locked(env: &Env) -> std::io::Result<Option<std::fs::File>> {
+    if !env.state.is_dir() {
+        return Ok(None);
+    }
+    let p = env.state.join("migrate.lock");
+    // never truncate: another process may hold the lock on this very file
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&p).map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", p.display())))?;
+    f.lock()?;
+    Ok(Some(f))
+}
+
+fn lock_failed(env: &Env, scope: Scope, e: std::io::Error) -> Ran {
+    let d = Due { artifact: "migrate.lock", scope, file: env.state.join("migrate.lock"), from: 0, to: 0, summary: "", min_nimitz: None, silent: false };
+    Ran { failed: vec![(d, e.to_string())], ..Default::default() }
+}
+
+fn run_unlocked(env: &Env, arts: &[Artifact], scope: Scope, nimitz: &str) -> Ran {
     let mut ran = Ran::default();
     let mut man = Manifest::load(env).unwrap_or_default();
     for a in arts.iter().filter(|a| a.scope == scope) {
@@ -743,7 +834,9 @@ pub fn run_as(env: &Env, arts: &[Artifact], scope: Scope, nimitz: &str) -> Ran {
             Kept::Own => {}
         }
     }
-    if scope == Scope::Local && ran.failed.is_empty() {
+    // the mark says every local file is this nimitz's to read: never while a
+    // step failed, nor while a file is too new (the next run must stop again)
+    if scope == Scope::Local && ran.failed.is_empty() && ran.too_new.is_empty() {
         for a in arts.iter().filter(|a| a.kept == Kept::Manifest) {
             let v = man.version(a.name).max(a.current);
             man.artifacts.insert(a.name.to_string(), v);
@@ -761,9 +854,11 @@ pub fn run_as(env: &Env, arts: &[Artifact], scope: Scope, nimitz: &str) -> Ran {
     ran
 }
 
-/// One file's chain: lift, then each step, until it is at the version its content wants.
+/// One file's chain: lift, then each step, until it is at the version its
+/// content wants. Each pass re-reads the file: what the last step wrote is
+/// where the next starts, and a file another writer changed meanwhile is
+/// read again, never counted as a failure.
 fn run_file(env: &Env, a: &Artifact, f: &Path, nimitz: &str, ran: &mut Ran) {
-    // each pass re-reads the file: what the last step wrote is where the next starts
     for _ in 0..64 {
         let Ok(bytes) = std::fs::read(f) else { return };
         if let Err(t) = a.guard_file(f, &bytes) {
@@ -780,24 +875,25 @@ fn run_file(env: &Env, a: &Artifact, f: &Path, nimitz: &str, ran: &mut Ran) {
             fail(env, nimitz, ran, d, format!("no step from version {v}"));
             return;
         };
-        if let Err(e) = backup_once(f, nimitz, ran) {
+        if let Err(e) = backup_once(f, Some(&bytes), nimitz, ran) {
             fail(env, nimitz, ran, d, format!("backup: {e}"));
             return;
         }
         let res = if v < a.oldest {
             a.lift.ok_or_else(|| "no lift".to_string()).and_then(|(_, lift)| lift(env)).and_then(|_| {
                 let now = std::fs::read(f).map_err(|e| e.to_string())?;
-                (a.version_of(&now).unwrap_or(0) >= a.oldest).then_some(()).ok_or_else(|| format!("still below version {}", a.oldest))
+                (a.version_of(&now).unwrap_or(0) >= a.oldest).then_some(true).ok_or_else(|| format!("still below version {}", a.oldest))
             })
         } else {
             let step = a.step_from(v).expect("chain found it");
             step_file(env, a, step, f, &bytes)
         };
         match res {
-            Ok(()) => {
+            Ok(true) => {
                 log(env, nimitz, &d, None, Some(&backup_path(f, nimitz)));
                 ran.done.push(d);
             }
+            Ok(false) => {} // changed under the step: read it again
             Err(e) => {
                 fail(env, nimitz, ran, d, e);
                 return;
@@ -807,19 +903,20 @@ fn run_file(env: &Env, a: &Artifact, f: &Path, nimitz: &str, ran: &mut Ran) {
 }
 
 /// Apply `step` to `bytes` and write the result over `f` (atomic; under the
-/// registry lock for a local file: the one writer of the state folder).
-fn step_file(env: &Env, a: &Artifact, step: &Step, f: &Path, bytes: &[u8]) -> Result<(), String> {
+/// registry lock for a local file, as every writer of the state folder).
+/// Ok(false): the file is no longer `bytes` (another writer was first), and
+/// nothing was written.
+fn step_file(env: &Env, a: &Artifact, step: &Step, f: &Path, bytes: &[u8]) -> Result<bool, String> {
     let Apply::Bytes(apply) = step.apply else { return Err("a file step must rewrite bytes".into()) };
     let out = apply(bytes)?;
     if a.version_of(&out) != Some(step.to) {
         return Err(format!("the step wrote version {:?}, not {}", a.version_of(&out), step.to));
     }
-    let write = || -> Result<(), String> {
-        // the file must still be what the step read (another process may have written it)
+    let write = || -> Result<bool, String> {
         if std::fs::read(f).map_err(|e| e.to_string())? != bytes {
-            return Err("the file changed while it was migrated; the next run retries".into());
+            return Ok(false);
         }
-        write_bytes(f, &out).map_err(|e| e.to_string())
+        write_bytes(f, &out).map(|_| true).map_err(|e| e.to_string())
     };
     match a.scope {
         Scope::Local => crate::registry::with_lock(env, None, write).map_err(|e| e.to_string())?,
@@ -828,8 +925,13 @@ fn step_file(env: &Env, a: &Artifact, step: &Step, f: &Path, bytes: &[u8]) -> Re
 }
 
 /// A manifest artifact's chain: each step (on its folder or file, when it
-/// rewrites), then the manifest records the step's `to`.
+/// rewrites), then the manifest records the step's `to`. An entry above what
+/// this nimitz knows is too new: nothing runs.
 fn run_manifest(env: &Env, a: &Artifact, man: &mut Manifest, nimitz: &str, ran: &mut Ran) {
+    if man.version(a.name) > a.current {
+        ran.too_new.push(manifest_too_new(env, a, man));
+        return;
+    }
     let found = (a.find)(env);
     let file = found.first().cloned().unwrap_or_else(|| manifest_path(env));
     for d in chain(a, &file, man.version(a.name), a.current, found.is_empty()) {
@@ -838,12 +940,12 @@ fn run_manifest(env: &Env, a: &Artifact, man: &mut Manifest, nimitz: &str, ran: 
             None => Err(format!("no step from version {}", d.from)),
             Some(Apply::Nothing) => Ok(()),
             Some(Apply::Folder(apply)) => found.iter().try_for_each(|p| {
-                backup_once(p, nimitz, ran)?;
+                backup_once(p, None, nimitz, ran)?;
                 apply(p)
             }),
             Some(Apply::Bytes(apply)) => found.iter().filter(|p| p.is_file()).try_for_each(|p| {
-                backup_once(p, nimitz, ran)?;
                 let bytes = std::fs::read(p).map_err(|e| e.to_string())?;
+                backup_once(p, Some(&bytes), nimitz, ran)?;
                 let out = apply(&bytes)?;
                 crate::registry::with_lock(env, None, || write_bytes(p, &out)).map_err(|e| e.to_string())?.map_err(|e| e.to_string())
             }),
@@ -871,28 +973,65 @@ fn fail(env: &Env, nimitz: &str, ran: &mut Ran, d: Due, e: String) {
     ran.failed.push((d, e));
 }
 
-/// `<p>.pre-<nimitz>` from `p`, once: a resumed run keeps the first copy
-/// (the file as it was before this nimitz touched it). A folder is copied whole.
-fn backup_once(p: &Path, nimitz: &str, ran: &mut Ran) -> Result<(), String> {
+/// `<p>.pre-<nimitz>`, once: `bytes` (what the step reads), or the folder
+/// copied whole. An existing backup is never replaced (it is the file as it
+/// was before this nimitz first touched it): the file is linked into place
+/// from a temp file, which fails when the backup is there.
+fn backup_once(p: &Path, bytes: Option<&[u8]>, nimitz: &str, ran: &mut Ran) -> Result<(), String> {
     let b = backup_path(p, nimitz);
     if b.exists() {
         return Ok(());
     }
-    if p.is_dir() {
-        copy_dir(p, &b).map_err(|e| format!("{}: {e}", b.display()))?;
-    } else {
-        let bytes = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
-        write_bytes(&b, &bytes).map_err(|e| format!("{}: {e}", b.display()))?;
+    let made = match bytes {
+        None => copy_dir(p, &b).map(|_| true),
+        Some(bytes) => write_new(&b, bytes),
+    };
+    match made {
+        Ok(true) => {
+            ran.backups.push(b);
+            Ok(())
+        }
+        Ok(false) => Ok(()),
+        Err(e) => Err(format!("{}: {e}", b.display())),
     }
-    ran.backups.push(b);
-    Ok(())
+}
+
+/// Write `bytes` to `p` only when `p` is not there (complete or not at all):
+/// Ok(false) when it is.
+fn write_new(p: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    let tmp = temp_beside(p);
+    std::fs::write(&tmp, bytes)?;
+    let r = match std::fs::hard_link(&tmp, p) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        // no hard links here: create_new, which never replaces either
+        Err(_) => match std::fs::OpenOptions::new().write(true).create_new(true).open(p) {
+            Ok(mut f) => {
+                use std::io::Write;
+                f.write_all(bytes).map(|_| true)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(e),
+        },
+    };
+    let _ = std::fs::remove_file(&tmp);
+    r
+}
+
+/// A temp file name beside `p`, unique to this process and call.
+fn temp_beside(p: &Path) -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = p.parent().unwrap_or(Path::new("."));
+    dir.join(format!(".{}.tmp-{}-{n}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), std::process::id()))
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
-    let tmp = backup_path(to, "tmp");
-    let _ = std::fs::remove_dir_all(&tmp);
+    let tmp = temp_beside(to);
     copy_tree(from, &tmp)?;
-    crate::os::replace(&tmp, to)
+    let r = crate::os::replace(&tmp, to);
+    let _ = std::fs::remove_dir_all(&tmp);
+    r
 }
 
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -910,9 +1049,8 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// A temp file beside `p`, then a rename over it (`os::replace`).
 fn write_bytes(p: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let dir = p.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{}.tmp-{}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), std::process::id()));
+    std::fs::create_dir_all(p.parent().unwrap_or(Path::new(".")))?;
+    let tmp = temp_beside(p);
     std::fs::write(&tmp, bytes)?;
     crate::os::replace(&tmp, p)
 }
@@ -1271,6 +1409,127 @@ mod tests {
         f.config.aide.push(AideDef { name: "KB".into(), ..Default::default() });
         let msgs: Vec<String> = machine_issues(&f).into_iter().map(|i| i.message).collect();
         assert_eq!(msgs, ["machine far: no nimitz >= 0.5.0 seen; update it: it cannot load this fleet's [[aide]]", "machine old: no nimitz >= 0.5.0 seen (it last ran 0.4.9); update it: it cannot load this fleet's [[aide]]"]);
+    }
+
+    /// Two first commands at once (B used to pass the backup check before
+    /// A's backup landed, then back up the migrated file over it and report
+    /// a false failure): one migrates, the others wait on `S/migrate.lock`
+    /// and find the work done. One backup, the 0.4.0 bytes; no error.
+    #[test]
+    fn first_commands_at_once_migrate_once_with_one_backup_of_the_old_bytes() {
+        for _ in 0..5 {
+            let (_td, env) = test_env();
+            std::fs::create_dir_all(&env.state).unwrap();
+            let v2 = fixture("registry/v2.json");
+            std::fs::write(env.registry_path(), &v2).unwrap();
+            let runs: Vec<Ran> = std::thread::scope(|sc| {
+                let hs: Vec<_> = (0..6).map(|_| sc.spawn(|| migrate_local(&env))).collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            assert!(runs.iter().all(|r| r.failed.is_empty() && r.too_new.is_empty()), "{runs:?}");
+            assert_eq!(runs.iter().flat_map(|r| r.done.iter().filter(|d| !d.silent)).count(), 1, "{runs:?}");
+            assert_eq!(runs.iter().map(|r| r.backups.len()).sum::<usize>(), 1);
+            assert_eq!(std::fs::read(backup_path(&env.registry_path(), NIMITZ)).unwrap(), v2, "the backup holds the old bytes");
+            assert_eq!(artifact("registry").unwrap().version_of(&std::fs::read(env.registry_path()).unwrap()), Some(3));
+            assert!(up_to_date(&env));
+            assert!(failed(&env).is_empty());
+            assert!(no_tmp(&env.state));
+        }
+    }
+
+    #[test]
+    fn a_backup_is_never_replaced_and_a_file_changed_under_a_step_is_read_again() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let b = env.state.join("x.pre-1");
+        assert!(write_new(&b, b"first").unwrap());
+        assert!(!write_new(&b, b"second").unwrap());
+        assert_eq!(std::fs::read(&b).unwrap(), b"first");
+        // the step read v2 bytes, then another writer changed the file: nothing written, no error
+        let f = env.registry_path();
+        let v2 = fixture("registry/v2.json");
+        std::fs::write(&f, b"{\"version\": 2, \"machine\": \"other\"}").unwrap();
+        let a = artifact("registry").unwrap();
+        assert_eq!(step_file(&env, a, a.step_from(2).unwrap(), &f, &v2), Ok(false));
+        assert_eq!(std::fs::read(&f).unwrap(), b"{\"version\": 2, \"machine\": \"other\"}");
+        // the runner reads it again and migrates what is there now
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        assert!(ran.failed.is_empty(), "{ran:?}");
+        assert_eq!(serde_json::from_slice::<Value>(&std::fs::read(&f).unwrap()).unwrap()["machine"], "other");
+    }
+
+    /// A 0.3.x (v1) registry through the runner: the lift (the v1 load,
+    /// saved; registry.json.v1 kept), then 2 -> 3; the backup is the v1 file.
+    #[test]
+    fn a_0_3_registry_is_lifted_then_stepped() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let v1 = serde_json::json!({"version": 1, "machine": "test-mac", "identities": {
+            "MAIN/ARGOS/ARGOS": {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/w", "current": "sid-1",
+                "lineage": [{"session_id": "sid-1", "bound_at": 1.0, "via": "launch"}]},
+            "MAIN/ARGOS/~fixci": {"role": "tender", "name": "[MAIN.ARGOS]-COMMODORE/fixci", "cwd": "/sq", "current": "sid-t",
+                "lineage": [{"session_id": "sid-t", "bound_at": 2.0, "via": "launch"}]}}})
+        .to_string();
+        std::fs::write(env.registry_path(), &v1).unwrap();
+        assert_eq!(due(&env, ARTIFACTS, Some(Scope::Local)).iter().filter(|d| d.artifact == "registry").map(|d| (d.from, d.to)).collect::<Vec<_>>(), [(1, 2), (2, 3)]);
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        assert!(ran.failed.is_empty(), "{ran:?}");
+        assert_eq!(moved(&ran.done), ["registry 1->3"]);
+        assert_eq!(std::fs::read_to_string(backup_path(&env.registry_path(), NIMITZ)).unwrap(), v1);
+        assert_eq!(std::fs::read_to_string(crate::registry::v1_path(&env)).unwrap(), v1);
+        let r = crate::registry::parse(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        assert_eq!((r.version, r.min_nimitz.as_deref()), (3, Some("0.5.0")));
+        assert_eq!(r.identities["MAIN/ARGOS/ARGOS"].session.as_deref(), Some("sid-1"));
+        assert_eq!(r.identities["MAIN/ARGOS/ARGOS"].lineage[0].at, 1.0);
+        assert!(r.retired.contains_key("MAIN/ARGOS/~fixci"), "the tender is history");
+    }
+
+    /// The manifest gone, a registry too new beside it: the mark is never
+    /// set, so every later run stops again (no fast path to an empty registry).
+    #[test]
+    fn no_mark_while_a_file_is_too_new() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.registry_path(), serde_json::json!({"version": 4, "machine": "m", "identities": {}}).to_string()).unwrap();
+        for _ in 0..2 {
+            let ran = migrate_local(&env);
+            assert_eq!(ran.too_new.len(), 1, "{ran:?}");
+            assert!(!up_to_date(&env));
+            assert!(Manifest::load(&env).unwrap_or_default().nimitz.is_empty());
+        }
+        // a manifest entry above what this nimitz knows stops it the same way
+        let (_td2, env2) = test_env();
+        std::fs::create_dir_all(&env2.state).unwrap();
+        Manifest { artifacts: [("needs".to_string(), 9)].into(), ..Default::default() }.save(&env2).unwrap();
+        let ran = migrate_local(&env2);
+        assert_eq!(ran.too_new.iter().map(|t| (t.artifact, t.format)).collect::<Vec<_>>(), [("needs", 9)]);
+        assert!(!up_to_date(&env2));
+        assert_eq!(Manifest::load(&env2).unwrap().version("needs"), 9, "never lowered");
+    }
+
+    /// The lenient read: a TOML that does not parse is still read for its
+    /// stamp above the first table; a negative format is refused, never
+    /// wrapped into a huge one.
+    #[test]
+    fn the_stamp_reads_a_file_that_does_not_parse_and_refuses_a_negative_format() {
+        let p = Path::new("/h/main/fleet.toml");
+        let raw = "format = 3 # a comment\nmin_nimitz = \"9.1.0\"\nfleet = \"MAIN\"\nnew_syntax = <<\n[machines]\nmin_nimitz = \"99\"\n";
+        assert!(toml::from_str::<toml::Table>(raw).is_err());
+        assert_eq!(toml_stamp(raw, "format"), Stamp { format: Some(3), min_nimitz: Some("9.1.0".into()) });
+        assert!(guard_toml("fleet", p, raw).unwrap_err().to_string().contains("needs nimitz >= 9.1.0"));
+        assert!(guard_toml("fleet", p, "fleet = [broken").is_ok(), "no stamp: the strict parse says why");
+        let neg = guard_toml("fleet", p, "format = -1\nfleet = \"MAIN\"\n").unwrap_err();
+        assert_eq!(neg.format, -1);
+        assert!(neg.reason().contains("format -1, which is no format version"), "{}", neg.reason());
+        assert!(guard_json("registry", p, &serde_json::json!({"version": -2}), "version").is_err());
+        assert!(guard_json("registry", p, &serde_json::json!({"version": u64::MAX}), "version").is_err());
+        assert_eq!(artifact("fleet").unwrap().version_of(b"format = -1\n"), None, "no version: no step runs on it");
+    }
+
+    #[test]
+    fn the_version_constants_are_the_artifacts_current_ones() {
+        assert_eq!(current("registry"), REGISTRY_VERSION);
+        assert_eq!(current("active"), crate::active::VERSION);
     }
 
     #[test]

@@ -23,10 +23,33 @@ pub fn load(env: &Env) -> Registry {
 /// fresh registry for the read-only callers; `update` refuses to write over
 /// it (`read_registry`). What a reader gets is this home's view: the
 /// bindings of another home are stripped in memory (`drop_other_homes`).
+///
+/// A registry a newer nimitz wrote is never an empty one: under
+/// `set_strict` (every nimitz command that may launch or write) the process
+/// stops there with the `config.too_new` line; elsewhere (the hook, Admiralty,
+/// doctor) the reader gets an empty view and every write is refused.
 fn load_with(env: &Env, locked: bool) -> (Registry, bool) {
-    let Loaded { mut r, v1, .. } = load_checked(env, locked).unwrap_or_else(|_| Loaded { r: fresh(env), v1: false, dirty: false });
+    let Loaded { mut r, v1, .. } = load_checked(env, locked).unwrap_or_else(|_| {
+        if let Some(t) = std::fs::read_to_string(env.registry_path()).ok().and_then(|raw| too_new(env, &raw)) {
+            if STRICT.load(std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("[ERROR] {t} (config.too_new)");
+                eprintln!("[ERROR] nimitz {} stops: it never reads this registry as an empty one (a start would launch fresh sessions); `nimitz doctor` lists what a newer nimitz wrote here", crate::formats::NIMITZ);
+                std::process::exit(1);
+            }
+        }
+        Loaded { r: fresh(env), v1: false, dirty: false }
+    });
     drop_other_homes(env, &mut r);
     (r, v1)
+}
+
+static STRICT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Make a registry too new for this nimitz stop the process at its first
+/// read (`load`), never read as empty. Set by the nimitz command line for
+/// every command but the hook, its helpers and `doctor`.
+pub fn set_strict(on: bool) {
+    STRICT.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// What a load found. `v1`: the file is a 0.3.x one. `dirty`: the shape in
