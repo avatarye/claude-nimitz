@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 /// Flags that take a value (`--x v` or `--x=v`). All others are booleans.
 const VALUE_FLAGS: &[&str] = &[
     "--into", "--dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--brief", "--comms", "--label",
-    "--admiral-mode", "--no-dir", "--hostname",
+    "--admiral-mode", "--no-dir", "--hostname", "--type", "--payload", "--file", "--key", "--from", "--result", "--result-file",
+    "--reason", "--state", "--token", "--wait", "--scope", "--length",
 ];
 
 /// Does flag `name` take a value (`--prompt <text>`)?

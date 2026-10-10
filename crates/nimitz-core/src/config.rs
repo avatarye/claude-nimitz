@@ -590,6 +590,7 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
         )]
         .into(),
         admiral: AdmiralDef::default(),
+        aide: vec![],
     };
     plan.steps = vec![
         step_mkdir(Some(id.clone()), &dir, "fleet folder"),

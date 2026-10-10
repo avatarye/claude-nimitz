@@ -129,6 +129,84 @@ pub struct FleetConfig {
     pub machines: BTreeMap<String, MachineDef>,
     #[serde(default)]
     pub admiral: AdmiralDef,
+    /// the admiral's aide (`[[aide]]`, docs/design/aide.md section 3)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aide: Vec<AideDef>,
+}
+
+/// An aide (`[[aide]]`): an always-on member with a durable inbox.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AideDef {
+    /// `KB` for `HOME/@KB`
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// a reader that works in a detached worktree at the repo's last commit
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub snapshot: bool,
+    /// machine label -> folder (one machine runs it)
+    #[serde(default)]
+    pub dirs: BTreeMap<String, String>,
+    #[serde(default)]
+    pub inbox: InboxDef,
+}
+
+/// `[aide.inbox]`: the queue's limits (`queue::Limits` reads them).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InboxDef {
+    /// the allowed item types (`queue::TYPES`)
+    #[serde(default)]
+    pub types: Vec<String>,
+    /// open | fleet | parent
+    #[serde(default = "InboxDef::open")]
+    pub policy: String,
+    /// pending plus claimed; a post past it is refused
+    #[serde(default = "InboxDef::depth")]
+    pub depth_cap: usize,
+    /// a sender's posts per window: `60/h`, `10/m`
+    #[serde(default = "InboxDef::rate")]
+    pub per_sender: String,
+    /// a claim's lifetime: `15m`
+    #[serde(default = "InboxDef::lease")]
+    pub lease: String,
+    #[serde(default = "InboxDef::tries")]
+    pub max_tries: u32,
+    /// how long done items and their results stay: `7d`
+    #[serde(default = "InboxDef::keep")]
+    pub keep_done: String,
+}
+
+impl InboxDef {
+    fn open() -> String {
+        "open".into()
+    }
+    fn depth() -> usize {
+        500
+    }
+    fn rate() -> String {
+        "60/h".into()
+    }
+    fn lease() -> String {
+        "15m".into()
+    }
+    fn tries() -> u32 {
+        3
+    }
+    fn keep() -> String {
+        "7d".into()
+    }
+}
+
+impl Default for InboxDef {
+    fn default() -> Self {
+        InboxDef { types: vec![], policy: Self::open(), depth_cap: Self::depth(), per_sender: Self::rate(), lease: Self::lease(), max_tries: Self::tries(), keep_done: Self::keep() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

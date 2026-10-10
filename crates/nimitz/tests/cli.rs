@@ -426,6 +426,12 @@ fn every_command_goes_by_the_role_table() {
         ("layout", &["herdr", "MAIN"], [true, false, false]),
         ("restore", &["MAIN"], [true, true, false]),
         ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false]),
+        // aide inboxes (no aide in this world: an allowed row fails on "no aide", never on authority)
+        ("inbox", &["status"], [true, true, true]),
+        ("inbox", &["post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"body\": \"x\"}"], [true, true, true]),
+        ("inbox", &["claim", "MAIN/@KB"], [false, false, false]),
+        ("inbox", &["retry", "MAIN/@KB", "000000000001"], [true, false, false]),
+        ("ask", &["MAIN/@REF", "a question", "--no-wait"], [true, true, true]),
     ];
     let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];
     let listed = Sb::new(false).run(&["__commands"]);

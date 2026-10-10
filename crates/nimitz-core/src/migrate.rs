@@ -268,6 +268,7 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         fleet: into.into(),
         machines: merge.machines,
         admiral: existing.as_ref().map(|f| f.config.admiral.clone()).unwrap_or_default(),
+        aide: existing.as_ref().map(|f| f.config.aide.clone()).unwrap_or_default(),
     };
     if existing.as_ref().map(|f| f.config != fleet_config).unwrap_or(true) {
         plan.steps.push(step_write(Some(fid.clone()), &fleet_dir.join("fleet.toml"), toml_out(&fleet_config), "merged machine labels"));
