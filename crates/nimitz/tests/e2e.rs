@@ -635,7 +635,7 @@ fn e2e_01_launch_binds_job_and_session_and_delivers_rules() {
     assert_eq!(m["session"]["labels"]["NIMITZ_ID"], w.ship());
     // the registry: the job is the anchor, the session the conversation now
     let r = w.registry();
-    assert_eq!(r["version"], 2);
+    assert_eq!(r["version"], nimitz_core::REGISTRY_VERSION, "a fresh registry is at the current format");
     let me = &r["identities"][w.ship()];
     assert_eq!(me["job"], job.as_str(), "{me}");
     assert_eq!(me["session"], sid.as_str());

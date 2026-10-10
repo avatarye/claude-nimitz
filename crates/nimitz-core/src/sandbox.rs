@@ -741,6 +741,9 @@ pub fn add_aide(base: &Path, fleet: &str, name: &str, live: bool) -> Result<Id, 
         inbox: InboxDef { types: vec!["wiki.note.v1".into()], ..Default::default() },
         ..Default::default()
     });
+    // stamped as `nimitz migrate --shared --yes` stamps a fleet with an aide
+    fod.config.format = Some(2);
+    fod.config.min_nimitz = Some("0.5.0".into());
     fs::write(fod.dir.join("fleet.toml"), crate::config::toml_out(&fod.config)).map_err(|e| e.to_string())?;
     if live {
         let (short, _) = live_job(&base, &id, &dir_s, true);

@@ -77,6 +77,9 @@ pub struct Toast {
 /// What sticks between runs.
 #[derive(serde::Serialize, serde::Deserialize, Default, PartialEq, Clone, Debug)]
 pub struct Saved {
+    /// the file's format (`nimitz_core::formats`, `admiralty-ui`; absent = 1)
+    #[serde(default = "first_format")]
+    pub format: u32,
     pub expanded: HashMap<String, bool>,
     pub filter: String,
     pub fleet_states: Vec<bool>,
@@ -94,6 +97,10 @@ pub struct Saved {
 
 fn on() -> bool {
     true
+}
+
+fn first_format() -> u32 {
+    1
 }
 
 /// Pasted text as one line: every line break a space (a newline typed into a
@@ -248,6 +255,7 @@ impl App {
 
     fn saved(&self) -> Saved {
         Saved {
+            format: nimitz_core::formats::current("admiralty-ui"),
             expanded: self.expanded.clone(),
             filter: self.filter.clone(),
             fleet_states: self.fleet_states.to_vec(),
@@ -296,6 +304,10 @@ impl App {
     fn restore(&mut self) {
         let Some(path) = &self.state_path else { return };
         let Some(s) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) else { return };
+        // a newer Admiralty's state: not read (this one starts from its defaults)
+        if s.format > nimitz_core::formats::current("admiralty-ui") {
+            return;
+        }
         self.expanded = s.expanded.clone();
         self.filter = s.filter.clone();
         if s.fleet_states.len() == self.fleet_states.len() {

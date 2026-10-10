@@ -178,6 +178,7 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
                     "trust" => nimitz_core::trust::write(&ctx.env, Path::new(&s.cmd[1])).map(|_| ()),
                     _ => nimitz_core::registry::update(&ctx.env, |r| {
                         r.version = nimitz_core::REGISTRY_VERSION;
+                        r.min_nimitz = Some(nimitz_core::REGISTRY_MIN_NIMITZ.into());
                         r.machine = label.clone();
                     })
                     .map_err(|e| e.to_string()),

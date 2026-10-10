@@ -236,6 +236,7 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
             comms: Comms::default(),
             permission_mode: None,
             ships,
+            ..Default::default()
         };
         // Already migrated? Identical means nothing to plan; different refuses.
         if let Some(prev) = existing.as_ref().and_then(|f| f.squadrons.iter().find(|(_, s)| s.squadron == sq_name)) {
@@ -269,6 +270,9 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         machines: merge.machines,
         admiral: existing.as_ref().map(|f| f.config.admiral.clone()).unwrap_or_default(),
         aide: existing.as_ref().map(|f| f.config.aide.clone()).unwrap_or_default(),
+        // the stamp the fleet carries already (a merge never lowers it)
+        format: existing.as_ref().and_then(|f| f.config.format),
+        min_nimitz: existing.as_ref().and_then(|f| f.config.min_nimitz.clone()),
     };
     if existing.as_ref().map(|f| f.config != fleet_config).unwrap_or(true) {
         plan.steps.push(step_write(Some(fid.clone()), &fleet_dir.join("fleet.toml"), toml_out(&fleet_config), "merged machine labels"));
@@ -375,7 +379,7 @@ pub fn retire_tenders(r: &mut Registry) -> usize {
 /// is written); the next `update` saves the v2 shape and keeps the old file as
 /// `registry.json.v1`. Returns whether anything changed.
 pub fn registry_v2(env: &Env, r: &mut Registry) -> bool {
-    if r.version >= REGISTRY_VERSION {
+    if r.version >= 2 {
         return false;
     }
     let jobs = job_rows(env);
@@ -390,7 +394,9 @@ pub fn registry_v2(env: &Env, r: &mut Registry) -> bool {
             }
         }
     }
-    r.version = REGISTRY_VERSION;
+    // version 2: the chain's next step (`formats`, 2 -> 3) is the runner's,
+    // with its backup; a load never moves a file past the shape it read
+    r.version = 2;
     true
 }
 
