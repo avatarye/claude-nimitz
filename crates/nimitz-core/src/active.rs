@@ -216,7 +216,7 @@ fn status_word(s: Status) -> &'static str {
 /// Herdr, or a member's command): a look from outside Herdr forgets no tab.
 pub fn from_snapshot(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrIdentity>, prev: Option<&ActiveSet>) -> ActiveSet {
     let mut members = BTreeMap::new();
-    let all = snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter()))));
+    let all = snap.fleets.iter().flat_map(|f| f.members());
     for m in all {
         let Some(s) = m.session.as_ref() else { continue };
         if s.pid.is_none() {
@@ -428,7 +428,7 @@ mod tests {
             copy: None,
             terminal: None,
         };
-        Member { id: id.clone(), role: id.role(), expected_name: id.name(), cwd: Some("/f".into()), status, reasons: reasons.iter().map(|r| r.to_string()).collect(), session: Some(s), extra_rows: vec![], crew: vec![], tasks: vec![], issues: vec![], pane: None }
+        Member { id: id.clone(), role: id.role(), expected_name: id.name(), cwd: Some("/f".into()), status, reasons: reasons.iter().map(|r| r.to_string()).collect(), session: Some(s), extra_rows: vec![], crew: vec![], tasks: vec![], issues: vec![], pane: None, parent: None, inbox: None }
     }
 
     #[test]
@@ -446,6 +446,7 @@ mod tests {
             dir: "/f".into(),
             machine: Some("m1".into()),
             admiral: snap_member(&adm, Status::Idle, &["session file: status idle"], "j0", "x0", true),
+            aides: vec![],
             squadrons: vec![Squadron {
                 id: Id::commodore("F", "SQ"),
                 commodore: snap_member(&Id::commodore("F", "SQ"), Status::NotStarted, &[], "j9", "x9", false),

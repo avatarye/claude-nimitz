@@ -37,7 +37,8 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     assert!(buf[(5, y as u16)].modifier.contains(ratatui::style::Modifier::BOLD));
     let adm = ls.iter().position(|l| l.starts_with('\u{2503}') && l.contains("ADMIRAL   ")).unwrap();
     assert!(adm > y && ls[adm].starts_with('\u{2503}'), "{}", ls[adm]);
-    assert!(ls[adm + 2].starts_with('\u{2517}'), "the box closes after its crew: {}", ls[adm + 2]);
+    assert!(ls[adm + 2].contains("@KB"), "its aide in its box, after its crew: {}", ls[adm + 2]);
+    assert!(ls[adm + 3].starts_with('\u{2517}'), "the box closes after its crew and its aide: {}", ls[adm + 3]);
     // the fleet row is that top line: fleet actions keep a row to stand on
     goto(&mut t.app, "F:MAIN");
     assert_eq!(t.app.current().unwrap().node.kind, Kind::FleetBand);
@@ -201,13 +202,13 @@ fn the_tab_carries_the_fleets_state_and_counts() {
     assert!(ls[0].contains("^9 / ^4 / *2 / -1 / x2 / o3 / ?1"), "{}", ls[0]);
     tab(&mut t.app, "MAIN");
     let ls = lines(&draw(&mut t.app, 200, 60));
-    assert!(ls[0].contains("needs you") && ls[0].contains("!2 / *3 / -2 / x1"), "needs-you first: {}", ls[0]);
+    assert!(ls[0].contains("needs you") && ls[0].contains("!2 / *4 / -2 / x1"), "needs-you first: {}", ls[0]);
     let end = |l: &str| l.trim_end().chars().count();
     let argos = ls.iter().find(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
     let kits = ls.iter().find(|l| l.contains("KITS") && l.contains("comms")).unwrap();
     assert_eq!(end(argos), end(kits), "{argos}\n{kits}");
     let ls = lines(&draw(&mut t.app, 90, 40));
-    assert!(ls[0].contains("!2") && !ls[0].contains("*3"), "narrow: {}", ls[0]);
+    assert!(ls[0].contains("!2") && !ls[0].contains("*4"), "narrow: {}", ls[0]);
     tab(&mut t.app, "FORGE");
     let ls = lines(&draw(&mut t.app, 90, 40));
     assert!(ls[0].contains("^9") && !ls[0].contains("^4"), "narrow: errors only: {}", ls[0]);
@@ -1815,4 +1816,183 @@ fn the_tick_runs_only_for_animated_cells_in_view() {
     assert_eq!(t.app.motion_step().is_some(), moving_in_view, "tick iff a moving cell shows:\n{}", shown.join("\n"));
     assert!(!moving_in_view, "this view shows nothing moving (the stowaways):\n{}", shown.join("\n"));
     assert_eq!(t.app.motion_step(), None, "spinners scrolled off: no tick");
+}
+
+// ------------------------------------------------------------------ aides
+
+/// The demo with MAIN's aide `@KB` changed by `f`.
+fn with_kb(f: impl FnOnce(&mut nimitz_core::Member)) -> TestApp {
+    let mut b = fixtures::demo();
+    f(b.snap.fleets.iter_mut().flat_map(|fl| fl.aides.iter_mut()).find(|m| m.id.0 == "MAIN/@KB").expect("the demo aide"));
+    fixture_app(b, false)
+}
+
+/// An aide's row sits in its admiral's box, right after the admiral (and
+/// its crew): name, state word, then its queue; at 80 columns the queue
+/// keeps its dead count and its pending count, whole, before the rest.
+#[test]
+fn an_aide_row_sits_in_the_admirals_box_with_its_queue() {
+    let mut t = demo();
+    let ls = lines(&draw(&mut t.app, 120, 60));
+    let adm = ls.iter().position(|l| l.contains("ADMIRAL   ")).unwrap();
+    let kb = ls.iter().position(|l| l.contains("@KB")).expect("the aide's row");
+    assert!(kb > adm && ls[kb].starts_with('\u{2503}') && ls[kb + 1].starts_with('\u{2517}'), "in the admiral's heavy box, last:\n{}", ls[adm - 1..=kb + 1].join("\n"));
+    assert!(ls[kb].contains("A @KB") && ls[kb].contains("* busy"), "its own icon (A) and state: {}", ls[kb]);
+    assert!(ls[kb].contains("\u{b7} 3 pending \u{b7} 1 claimed \u{b7} 1 dead"), "at 120 the age goes first: {}", ls[kb]);
+    let wide = lines(&draw(&mut t.app, 200, 60));
+    assert!(wide.iter().any(|l| l.contains("@KB") && l.contains("\u{b7} 3 pending \u{b7} 1 claimed \u{b7} oldest 4m \u{b7} 1 dead")), "the whole queue, in `Status::line` order, when it fits");
+    let ls80 = lines(&draw(&mut t.app, 80, 60));
+    let row = ls80.iter().find(|l| l.contains("@KB")).unwrap();
+    assert!(row.contains("\u{b7} 3 pending \u{b7} 1 dead") && !row.contains("oldest") && !row.contains("claimed") && !row.contains('\u{2026}'), "dead and pending first, whole parts: {row}");
+    // a narrow cell that fits nothing whole still shows what it can
+    let r = admiralty::frames::drop_spans(&[ratatui::text::Span::raw("\u{b7} 1 dead "), ratatui::text::Span::raw("\u{b7} 3 pending ")], &[1, 2], 4);
+    assert_eq!(r.iter().map(|s| s.content.to_string()).collect::<String>().chars().count(), 4);
+}
+
+/// Its status colour follows its queue: a dead letter is the needs-you chip
+/// (pulsing), a backlog the warning yellow, an item claimed the busy green
+/// (spinning); else its own state's colour.
+#[test]
+fn an_aide_row_takes_its_colour_from_its_queue() {
+    use admiralty::view::{Anim, QueueMood, BACKLOG_AGE_S, BACKLOG_PENDING};
+    let cell = |t: &mut TestApp| {
+        let buf = draw(&mut t.app, 120, 60);
+        let ls = lines(&buf);
+        let y = ls.iter().position(|l| l.contains("@KB")).unwrap();
+        let node = &t.app.rows.iter().find(|r| r.node.id == "M:MAIN/@KB").unwrap().node;
+        let (word, anim) = (node.status.0.clone(), node.anim);
+        // the word's first letter (after the glyph and a space)
+        let x = (col_of(&ls, "@KB", &word) + 2) as u16;
+        (buf[(x, y as u16)].fg, buf[(x, y as u16)].bg, anim)
+    };
+    // the demo: a dead letter
+    let mut t = demo();
+    let (fg, bg, anim) = cell(&mut t);
+    assert_eq!((fg, bg, anim), (mono::BG, mono::NEEDS, Anim::Pulse), "dead: the pink chip, pulsing");
+    let mood = |t: &TestApp| t.app.bundle.as_ref().unwrap().snap.fleets[0].aides[0].inbox.as_ref().and_then(admiralty::view::queue_mood);
+    assert_eq!(mood(&t), Some(QueueMood::Dead));
+    // a backlog: past either threshold
+    for (pending, oldest) in [(BACKLOG_PENDING + 1, 60.0), (2, BACKLOG_AGE_S + 1.0)] {
+        let mut t = with_kb(|m| {
+            let q = m.inbox.as_mut().unwrap();
+            q.dead.clear();
+            q.pending = pending;
+            q.oldest_age_s = Some(oldest);
+        });
+        assert_eq!(mood(&t), Some(QueueMood::Backlog));
+        let (fg, _, anim) = cell(&mut t);
+        assert_eq!((fg, anim), (mono::WARN, Anim::None), "{pending} pending, oldest {oldest}s");
+    }
+    // working: an item claimed by it
+    let mut t = with_kb(|m| m.inbox.as_mut().unwrap().dead.clear());
+    assert_eq!(mood(&t), Some(QueueMood::Working));
+    assert_eq!(cell(&mut t).0, mono::BUSY);
+    assert_eq!(cell(&mut t).2, Anim::Spin);
+    // a claim or a backlog on an aide that is not running: its own state says it
+    for backlog in [false, true] {
+        let mut t = with_kb(|m| {
+            m.status = Status::Stopped;
+            if let Some(s) = m.session.as_mut() {
+                s.pid = None;
+            }
+            let q = m.inbox.as_mut().unwrap();
+            q.dead.clear();
+            if backlog {
+                q.pending = BACKLOG_PENDING + 5;
+            }
+        });
+        let (fg, _, anim) = cell(&mut t);
+        assert_eq!((fg, anim), (mono::MUTED, Anim::None), "stopped, backlog {backlog}");
+    }
+    // a dead letter shows even then
+    let mut t = with_kb(|m| {
+        m.status = Status::Stopped;
+        if let Some(s) = m.session.as_mut() {
+            s.pid = None;
+        }
+    });
+    assert_eq!(cell(&mut t).1, mono::NEEDS);
+    // nothing to say: its own state (idle)
+    let mut t = with_kb(|m| {
+        m.status = Status::Idle;
+        let q = m.inbox.as_mut().unwrap();
+        q.dead.clear();
+        q.claimed.clear();
+        q.pending = 0;
+        q.oldest_age_s = None;
+    });
+    assert_eq!(mood(&t), None);
+    let (fg, bg, anim) = cell(&mut t);
+    assert_eq!((fg, anim), (mono::FG, Anim::None));
+    assert_ne!(bg, mono::NEEDS);
+    assert!(screen(&mut t.app, 120, 60).contains("\u{b7} empty"));
+}
+
+/// `w` on an aide: its queue in full (pending, the claim and its lease,
+/// done, the dead letters with their reasons, the senders' limits, the
+/// newest items with a reply's result), and retry and drop offered only
+/// while there is a dead letter.
+#[test]
+fn an_aides_detail_shows_its_queue_and_offers_retry_and_drop_for_a_dead_letter() {
+    for w in [80u16, 120] {
+        let mut t = demo();
+        goto(&mut t.app, "M:MAIN/@KB");
+        keys(&mut t.app, "w");
+        let s = screen(&mut t.app, w, 120);
+        for want in ["INBOX", "pending     3", "ends in 7m", "done        12  kept 7d (keep_done)", "DEAD LETTERS (1)", "merge conflict", "SENDERS", "7/60 per 1h", "frees in 30m", "RECENT", "result  Leases are 15", "x T retry its oldest dead letter", "x X drop its oldest dead letter"] {
+            assert!(s.contains(want), "{w}: {want}\n{s}");
+        }
+        if w == 120 {
+            assert!(s.contains("|  inbox  |"), "its own picture:\n{s}");
+        }
+        // no dead letter: no retry, no drop
+        let mut t = with_kb(|m| m.inbox.as_mut().unwrap().dead.clear());
+        goto(&mut t.app, "M:MAIN/@KB");
+        keys(&mut t.app, "w");
+        let s = screen(&mut t.app, w, 120);
+        assert!(s.contains("INBOX") && !s.contains("DEAD LETTERS") && !s.contains("x T") && !s.contains("x X"), "{w}:\n{s}");
+    }
+    // the menu runs `nimitz inbox retry <aide> <id>` through the confirm step
+    let mut t = demo();
+    goto(&mut t.app, "M:MAIN/@KB");
+    keys(&mut t.app, "xT");
+    let Some(admiralty::app::Modal::Confirm(p)) = t.app.modal.take() else { panic!("a confirm: {}", toast(&t.app)) };
+    assert_eq!((p.act, p.command.as_str()), (Act::InboxRetry, "nimitz inbox retry MAIN/@KB 37"));
+    assert_eq!(p.plan.steps[0].cmd, ["nimitz", "inbox", "retry", "MAIN/@KB", "37"]);
+    keys(&mut t.app, "xX");
+    let Some(admiralty::app::Modal::Confirm(p)) = t.app.modal.take() else { panic!("a confirm: {}", toast(&t.app)) };
+    assert_eq!(p.command, "nimitz inbox drop MAIN/@KB 37");
+    // not on a ship
+    goto(&mut t.app, "M:MAIN/ARGOS/BOLT");
+    assert!(t.app.available(Act::InboxRetry).is_err());
+}
+
+/// The help legend has the aide's line.
+#[test]
+fn the_legend_names_the_aide() {
+    let mut t = demo();
+    keys(&mut t.app, "?");
+    assert!(screen(&mut t.app, 200, 120).contains("aide: always on, works its inbox"));
+}
+
+/// `admiralty dump`: the list, or (`--height`, `--detail`) the whole screen
+/// with a row selected and its detail panel open; `--ansi` with its colours.
+#[test]
+fn dump_renders_the_list_or_the_screen_plain_or_in_colour() {
+    let run = |args: &[&str]| {
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_admiralty")).args(args).env("ADMIRALTY_ICONS", "ascii").output().unwrap();
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    let list = run(&["dump", "--demo", "--width", "80"]);
+    assert!(list.contains("@KB") && !list.contains('\u{1b}'), "{list}");
+    let colour = run(&["dump", "--demo", "--width", "80", "--ansi"]);
+    assert!(colour.contains("\u{1b}[0;38;2;") && colour.contains("@KB"), "{colour}");
+    for w in ["80", "120"] {
+        let d = run(&["dump", "--demo", "--width", w, "--height", "70", "--select", "MAIN/@KB", "--detail"]);
+        assert_eq!(d.lines().count(), 70);
+        assert!(d.contains("detail") && d.contains("INBOX") && d.contains("DEAD LETTERS (1)"), "{w}:\n{d}");
+        let a = run(&["dump", "--demo", "--width", w, "--height", "70", "--select", "MAIN/@KB", "--detail", "--ansi"]);
+        assert!(a.contains("\u{1b}[") && a.contains("INBOX"));
+    }
 }

@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 /// Bump when the rules text changes in a way members must pick up, and add
 /// the version's entry to `CHANGELOG`.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// What changed in each rules version, oldest first (one entry per version;
 /// a member on v{N} gets the entries after N with the new text).
@@ -50,6 +50,13 @@ pub const CHANGELOG: &[(u32, &str)] = &[
          after a Claude Code update, a Herdr closure or a reboot too); `-f` relaunches the live ones; `-p` (a pane, focused) is the user's; \
          `nimitz stop` is its opposite; `restore`, `relaunch`, `open`, `up` and `layout herdr` are deprecated; \
          a start never relaunches the member that runs it (`start.self`)",
+    ),
+    (
+        5,
+        "aides: an always-on member `F/@NAME` (`[F]-@NAME`) attached to a parent, with a durable inbox \
+         (`nimitz inbox post|list|status <aide>`, `nimitz ask <aide>`); an aide works its inbox \
+         (`inbox claim`, then `done` or `fail`, until exit 3) and signals its parent only, and its parent it; \
+         the admiral starts and stops its aides and retries or drops their dead letters",
     ),
 ];
 
@@ -172,6 +179,7 @@ const COMMON: &str = include_str!("../rules/common.md");
 const ADMIRAL: &str = include_str!("../rules/admiral.md");
 const COMMODORE: &str = include_str!("../rules/commodore.md");
 const SHIP: &str = include_str!("../rules/ship.md");
+const AIDE: &str = include_str!("../rules/aide.md");
 
 /// The rules for `id`'s role, filled in for `id`.
 pub fn text(id: &Id) -> String {
@@ -180,12 +188,15 @@ pub fn text(id: &Id) -> String {
         Role::Admiral => ADMIRAL,
         Role::Commodore => COMMODORE,
         Role::Ship => SHIP,
+        Role::Aide => AIDE,
     };
     let sq = id.squadron().unwrap_or_default();
+    let parent = id.parent().unwrap_or_else(|| id.clone());
     let where_ = match role {
         Role::Admiral => format!("of fleet {}", id.fleet()),
         Role::Commodore => format!("of squadron {sq} in fleet {}", id.fleet()),
-        _ => format!("in squadron {sq} of fleet {}", id.fleet()),
+        Role::Ship => format!("in squadron {sq} of fleet {}", id.fleet()),
+        Role::Aide => format!("of {} in fleet {}", parent.name(), id.fleet()),
     };
     format!("{COMMON}{body}")
         .replace("{VERSION}", &VERSION.to_string())
@@ -195,11 +206,22 @@ pub fn text(id: &Id) -> String {
         .replace("{WHERE}", &where_)
         .replace("{FLEET}", id.fleet())
         .replace("{SQ}", sq)
+        .replace("{PARENT_NAME}", &parent.name())
+        .replace("{PARENT}", &parent.0)
 }
 
-/// The brief nimitz writes for an admiral or commodore now.
+/// The brief nimitz writes for an admiral or commodore now (and an aide's
+/// opening, for an `[[aide]] brief` to grow from).
 pub fn brief(id: &Id) -> String {
     match id.role() {
+        Role::Aide => format!(
+            "# {n}\n\n\
+             You are {n}, an aide of {p}. nimitz gives you your role's rules at\n\
+             every session start (`nimitz rules {id}` prints them). How to do each\n\
+             item type goes below.\n",
+            n = id.name(),
+            p = id.parent().map(|p| p.name()).unwrap_or_default()
+        ),
         Role::Admiral => format!(
             "# [{f}]-ADMIRAL\n\n\
              You are the admiral of fleet {f}. nimitz gives you your role's rules at\n\
@@ -224,6 +246,7 @@ pub fn brief(id: &Id) -> String {
 fn old_briefs(id: &Id) -> Vec<String> {
     let f = id.fleet();
     match id.role() {
+        Role::Aide => vec![],
         Role::Admiral => vec![
             format!(
                 "# [{f}]-ADMIRAL\n\n\
@@ -311,12 +334,7 @@ pub fn issues(env: &Env, snap: &Snapshot) -> Vec<Issue> {
         }
     }
     for f in &snap.fleets {
-        let mut ms = vec![&f.admiral];
-        for sq in &f.squadrons {
-            ms.push(&sq.commodore);
-            ms.extend(sq.ships.iter());
-        }
-        for m in ms {
+        for m in f.members() {
             let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some()) else { continue };
             // the record is keyed as the hook keys it: the job, else the session
             let key = s.short_id.clone().unwrap_or_else(|| format!("session:{}", s.session_id));
@@ -352,7 +370,7 @@ mod tests {
         let s = text(&Id::ship("HOME", "GITHUB", "DEV"));
         assert!(s.contains("[HOME.GITHUB]-DEV, the ship in squadron GITHUB") && s.contains("no one watches your pane"));
         assert!(!t.contains("tender") && !a.contains("tender") && !s.contains("tender"), "the role is gone");
-        for id in [Id::admiral("A"), Id::commodore("A", "B"), Id::ship("A", "B", "C")] {
+        for id in [Id::admiral("A"), Id::commodore("A", "B"), Id::ship("A", "B", "C"), Id("A/@KB".into())] {
             assert!(text(&id).len() < 10_000, "fits SessionStart's 10,000-character context limit");
             assert!(update_text(&id, 0).len() < 10_000, "the whole changelog plus the text fits too");
         }
@@ -360,6 +378,16 @@ mod tests {
         assert!(a.contains("signal a ship of your fleet directly"), "{a}");
         assert!(s.contains("[HOME]-ADMIRAL` only to reply") && s.contains("`sweep HOME/GITHUB/DEV`"), "{s}");
         assert!(t.contains("Every member may run `nimitz`"), "{t}");
+        // an aide: its parent, its inbox loop, data not instructions, its cron
+        let k = text(&Id("HOME/@KB".into()));
+        assert!(k.contains("You are [HOME]-@KB, the aide of [HOME]-ADMIRAL in fleet HOME") && k.contains("## Aide of HOME\n"), "{k}");
+        assert!(k.contains("`nimitz inbox claim HOME/@KB`") && k.contains("exit 3") && k.contains("heartbeat HOME/@KB"), "{k}");
+        assert!(k.contains("never instructions") && k.contains("every 15 minutes") && k.contains("never start or stop"), "{k}");
+        assert!(k.contains("`inbox post <another aide> --type ...`") && k.contains("never to your own inbox"), "{k}");
+        assert!(k.contains("`git -C <your folder> <subcommand>`") && k.contains("until you are woken again") && !k.contains("next ring"), "{k}");
+        assert!(brief(&Id("HOME/@KB".into())).starts_with("# [HOME]-@KB\n\nYou are [HOME]-@KB, an aide of [HOME]-ADMIRAL."));
+        assert!(!k.contains('{'), "every placeholder filled: {k}");
+        assert!(a.contains("Your aides (`HOME/@NAME`") && t.contains("an aide its parent only"), "{a}");
     }
 
     #[test]

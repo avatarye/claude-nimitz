@@ -608,8 +608,10 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
     let o = actions::apply(&app.ctx.env, &p);
     app.finish(&p, &o);
     assert!(o.verified, "{:?}", o.issues);
-    assert_eq!(o.ran.len(), 3, "{:?}", o.ran);
-    assert!(toast(&app).starts_with("restore: start MAIN: panes missing (Herdr closed, restarted or never laid out) (3 steps"), "{}", toast(&app));
+    // a tab per live lead, and a pin for each (the sandbox's leads run unpinned)
+    assert_eq!(o.ran.len(), 6, "{:?}", o.ran);
+    assert_eq!(o.ran.iter().filter(|(s, _, _)| s.cmd.first().map(String::as_str) == Some("pin")).count(), 3, "{:?}", o.ran);
+    assert!(toast(&app).starts_with("restore: start MAIN: panes missing (Herdr closed, restarted or never laid out) (6 steps"), "{}", toast(&app));
     // again: nothing to restore
     app.apply(CoreSource::detect(&vars).load());
     goto(&mut app, "F:MAIN");
@@ -701,4 +703,32 @@ fn workflow_agents_show_under_a_row_per_run() {
     assert_eq!(admiralty::view::folded_crew(&m.crew, nimitz_core::evidence::now(), ""), 1);
     let s = screen(&mut app, 200, 80);
     assert!(s.contains("sandbox-fanout") && s.contains("L0:lane zero") && s.contains("+1 finished"), "{s}");
+}
+
+/// Admiralty reads an aide's queue as the user does, reply results too; run
+/// inside a member's labels it reads them as that member would: no results.
+#[test]
+fn an_aides_reply_results_show_only_to_the_user() {
+    let w = world();
+    let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]).parent().unwrap().to_path_buf();
+    let kb = nimitz_core::sandbox::add_aide(&base, "MAIN", "KB", false).unwrap();
+    let f = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]).join("main/fleet.toml");
+    let t = std::fs::read_to_string(&f).unwrap().replace("types = [\"wiki.note.v1\"]", "types = [\"wiki.note.v1\", \"wiki.query.v1\"]");
+    std::fs::write(&f, t).unwrap();
+    let env = nimitz_core::env::Env::from_vars(&w.vars);
+    let q = nimitz_core::queue::Queue::of(&env, &kb).unwrap();
+    let user = nimitz_core::queue::Sender { kind: "user".into(), ..Default::default() };
+    let now = nimitz_core::evidence::now();
+    let p = q.post(&user, "wiki.query.v1", &serde_json::json!({"question": "how long is a lease?"}), None, None, now).unwrap();
+    q.claim("j1", now).unwrap().unwrap();
+    q.done(&p.id, Some("j1"), Some(serde_json::json!({"answer": "15 minutes"})), now).unwrap();
+    let result = |vars: &std::collections::HashMap<String, String>| {
+        let b = CoreSource::detect(vars).load();
+        let a = b.snap.fleets.iter().flat_map(|f| f.aides.iter()).find(|m| m.id == kb).unwrap().clone();
+        a.inbox.unwrap().recent.iter().find(|r| r.id == p.id).unwrap().result.clone()
+    };
+    assert_eq!(result(&w.vars), Some(serde_json::json!({"answer": "15 minutes"})), "the user's view");
+    let mut ship = w.vars.clone();
+    ship.extend([("NIMITZ_ID".to_string(), "MAIN/ARGOS/CLEAN".to_string()), ("NIMITZ_ROLE".to_string(), "ship".to_string())]);
+    assert_eq!(result(&ship), None, "a member's view hides others' results");
 }

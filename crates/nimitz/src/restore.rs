@@ -564,7 +564,7 @@ fn wait_for_shell(mux: &dyn Mux, pane: &PaneRef) -> bool {
 
 /// An attach that wakes a parked job: the SessionStart that follows must be
 /// a `resume` of the job's conversation (`bind_started`: a `startup` is
-/// `history.lost`, a copy is `lineage.broken`); then a lead is pinned.
+/// `history.lost`, a copy is `lineage.broken`); then a lead or an aide is pinned.
 fn after_wake(ctx: &Ctx, out: &mut Outcome, failed: &mut Vec<Id>, id: &Id, cwd: &str, since: f64, session: &str) {
     let env = &ctx.env;
     match nimitz_core::sessions::bind_started(env, id, Some(cwd), since, Some(session), "resume", nimitz_core::sessions::BIND_TIMEOUT_S) {
@@ -572,7 +572,7 @@ fn after_wake(ctx: &Ctx, out: &mut Outcome, failed: &mut Vec<Id>, id: &Id, cwd: 
             if out::verbose() {
                 out::ok(&format!("{id}: the attach woke it; SessionStart resume of {} verified", &sid[..sid.len().min(8)]));
             }
-            if id.role().lead() {
+            if id.role().always_on() {
                 if let Some(job) = nimitz_core::sessions::find_row_by_session(env, &sid).and_then(|r| r.short_id) {
                     match nimitz_core::pins::pin(env, &job) {
                         Ok(true) if out::verbose() => out::ok(&format!("{id}: pinned {job}")),

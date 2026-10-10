@@ -142,12 +142,16 @@ pub fn version(env: &Env) -> Option<String> {
 
 // ------------------------------------------------------------------ labels and argv
 
-/// The labels `nimitz` gives a member's session (contracts.md section 4).
+/// The labels `nimitz` gives a member's session (contracts.md section 4); an
+/// aide's carry its parent (`NIMITZ_PARENT`), an admiral's aide no squadron.
 pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     m.insert("NIMITZ_FLEET".to_string(), id.fleet().to_string());
     if let Some(sq) = id.squadron() {
         m.insert("NIMITZ_SQUADRON".to_string(), sq.to_string());
+    }
+    if let Some(p) = id.parent().filter(|_| id.role() == Role::Aide) {
+        m.insert("NIMITZ_PARENT".to_string(), p.0);
     }
     m.insert("NIMITZ_ROLE".to_string(), id.role().as_str().to_string());
     m.insert("NIMITZ_ID".to_string(), id.0.clone());
@@ -159,10 +163,43 @@ pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
 /// table in `sessions::may_run` decides what each role may do with it).
 pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 
-/// `--settings` JSON: the labels as env, `permissions.allow` for `nimitz`,
-/// plus `worktree.bgIsolation none` for background sessions. It is per
-/// launch and lives in the job's `respawnFlags`, so a restart keeps it and a
-/// relaunch (every flag again) re-adds it.
+/// The git subcommands a writer aide runs in its folder (`git -C <folder>
+/// <sub>`) with no prompt: what an ingest needs, nothing that leaves the machine.
+/// (No `grep`: `git grep -O<cmd>` runs a program; the Grep tool covers it.)
+pub const AIDE_GIT_ALLOW: [&str; 9] = ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "restore --staged"];
+/// Options of the allowed subcommands that write a file or run a program:
+/// denied wherever they appear (`show --output=<file>`, `grep -O<cmd>`).
+pub const AIDE_GIT_DENY_OPTS: [&str; 3] = ["--output", "-O", "--open-files-in-pager"];
+/// Git that reaches another machine or rewrites the repo's setup: denied in
+/// any form (a user's own `Bash(git *)` allow does not reach an aide).
+pub const AIDE_GIT_DENY: [&str; 7] = ["push", "remote", "fetch", "pull", "clone", "config", "submodule"];
+
+/// An aide's permissions (docs/design/aide.md 6.2, 6.4): (allow, deny).
+/// Every aide may run `nimitz`; a writer the `AIDE_GIT_ALLOW` subcommands as
+/// `git -C <its folder> ...` (its edits come from its permission mode), never
+/// the `AIDE_GIT_DENY` ones; a snapshot reader may not edit at all. Anything
+/// else prompts, and a prompt is a needs-you, not an action.
+fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
+    let mut allow = vec![NIMITZ_ALLOW.to_string()];
+    let mut deny: Vec<String> = AIDE_GIT_DENY.iter().flat_map(|s| [format!("Bash(git {s})"), format!("Bash(git {s} *)"), format!("Bash(git -C * {s})"), format!("Bash(git -C * {s} *)")]).collect();
+    deny.extend(AIDE_GIT_DENY_OPTS.iter().map(|o| format!("Bash(git * {o}*)")));
+    let Ok((f, def)) = crate::queue::find(env, id) else { return (allow, deny) };
+    if def.snapshot {
+        deny.extend(["Edit", "Write", "NotebookEdit"].map(String::from));
+        return (allow, deny);
+    }
+    if let Some(dir) = crate::config::member_dir(env, &f, id) {
+        let dir = dir.display();
+        allow.extend(AIDE_GIT_ALLOW.iter().flat_map(|s| [format!("Bash(git -C {dir} {s})"), format!("Bash(git -C {dir} {s} *)")]));
+    }
+    (allow, deny)
+}
+
+/// `--settings` JSON: the labels as env, `permissions.allow` for `nimitz`
+/// (an aide's own rules: `aide_permissions`), plus `worktree.bgIsolation
+/// none` for background sessions. It is per launch and lives in the job's
+/// `respawnFlags`, so a restart keeps it and a relaunch (every flag again)
+/// re-adds it.
 pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
     let mut vars = labels_for(env, id);
     // nimitz's own places: the member's hook writes where this nimitz reads,
@@ -173,10 +210,63 @@ pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
     // (and the machine name it knows: an alias the caller set holds inside the job's hook)
     vars.insert("NIMITZ_HOSTNAME".to_string(), env.hostname.clone());
     let mut v = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
+    if id.role() == Role::Aide {
+        let (allow, deny) = aide_permissions(env, id);
+        v["permissions"]["allow"] = serde_json::json!(allow);
+        if !deny.is_empty() {
+            v["permissions"]["deny"] = serde_json::json!(deny);
+        }
+    }
     if background {
         v["worktree"] = serde_json::json!({ "bgIsolation": "none" });
     }
     v.to_string()
+}
+
+/// The model an aide runs on (`[[aide]] model`, else Sonnet); None for every
+/// other member (Claude Code's own default).
+pub fn model_for(env: &Env, id: &Id) -> Option<String> {
+    if id.role() != Role::Aide {
+        return None;
+    }
+    Some(crate::queue::find(env, id).ok().and_then(|(_, d)| d.model).unwrap_or_else(|| "sonnet".into()))
+}
+
+fn model_args(env: &Env, id: &Id) -> Vec<String> {
+    model_for(env, id).map(|m| vec!["--model".into(), m]).unwrap_or_default()
+}
+
+/// The models the account may use (`availableModels`): managed settings
+/// when they say, else the user's `settings.json`. None when neither lists
+/// any (no limit). Claude Code silently swaps a model that is not allowed
+/// for the default, so an aide's model is checked against this first.
+pub fn available_models(env: &Env) -> Option<Vec<String>> {
+    let files: Vec<std::path::PathBuf> = MANAGED_SETTINGS.iter().map(std::path::PathBuf::from).chain([env.claude_home.join("settings.json")]).collect();
+    models_in(&files)
+}
+
+/// Where managed settings live on this OS (the first that exists wins).
+#[cfg(windows)]
+pub const MANAGED_SETTINGS: [&str; 1] = [r"C:\Program Files\ClaudeCode\managed-settings.json"];
+#[cfg(not(windows))]
+pub const MANAGED_SETTINGS: [&str; 2] = ["/etc/claude-code/managed-settings.json", "/Library/Application Support/ClaudeCode/managed-settings.json"];
+
+/// Does `allowed` (an `availableModels` list) let `model` run? An exact
+/// match (any case) always; a family name (`sonnet`, `opus`, `haiku`: no
+/// `-`) matches an entry that is that family or an id of it (`sonnet`,
+/// `claude-sonnet-4-5`, `sonnet[1m]`), and a family entry an id of it.
+pub fn model_allowed(model: &str, allowed: &[String]) -> bool {
+    let model = model.to_lowercase();
+    let of = |fam: &str, id: &str| id == fam || id.contains(&format!("-{fam}")) || id.starts_with(fam);
+    allowed.iter().map(|a| a.to_lowercase()).any(|a| a == model || (!model.contains('-') && of(&model, &a)) || (!a.contains('-') && of(&a, &model)))
+}
+
+/// The first `availableModels` among `files`, in order.
+fn models_in(files: &[std::path::PathBuf]) -> Option<Vec<String>> {
+    files.iter().find_map(|p| {
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
+        v.get("availableModels")?.as_array().map(|a| a.iter().filter_map(|m| m.as_str().map(str::to_string)).collect())
+    })
 }
 
 fn mode_args(mode: &str) -> Vec<String> {
@@ -193,6 +283,7 @@ fn mode_args(mode: &str) -> Vec<String> {
 /// hands it say the rest.
 pub fn lead_prompt(id: &Id) -> String {
     match id.role() {
+        Role::Aide => aide_prompt(id),
         Role::Admiral => format!(
             "You are {}, the admiral of fleet {}. Read CLAUDE.md in this folder, run `nimitz status`, report the fleet TLDR-first, then wait for the user.",
             id.name(),
@@ -207,10 +298,22 @@ pub fn lead_prompt(id: &Id) -> String {
     }
 }
 
-/// Cold launch of any member: `claude --bg --name N --permission-mode M --settings S [prompt]`
-/// (a ship's prompt comes from squadron.toml, a lead's from `lead_prompt`).
+/// An aide's cold-launch prompt: who it is, and its loop in one line; the
+/// SessionStart hook hands it the full rules.
+pub fn aide_prompt(id: &Id) -> String {
+    format!(
+        "You are {}, an aide of {}. Work your inbox: `nimitz inbox claim {id}`, do the item, then `nimitz inbox done` or `nimitz inbox fail`, until claim exits 3. `nimitz rules {id}` has the full text.",
+        id.name(),
+        id.parent().map(|p| p.name()).unwrap_or_default()
+    )
+}
+
+/// Cold launch of any member: `claude --bg --name N [--model X] --permission-mode M --settings S [prompt]`
+/// (a ship's prompt comes from squadron.toml, a lead's from `lead_prompt`,
+/// an aide's from `aide_prompt`; only an aide names a model).
 pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--name".into(), id.name()];
+    c.extend(model_args(env, id));
     c.extend(mode_args(mode));
     c.extend(["--settings".into(), settings_json(env, id, true)]);
     if let Some(p) = prompt.filter(|p| !p.is_empty()) {
@@ -223,6 +326,7 @@ pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<St
 /// (`source: fork`) that carries the labels. Through the PATH binary, as a cold launch.
 pub fn relaunch_bg(env: &Env, id: &Id, mode: &str, from_session: &str) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--resume".into(), from_session.into(), "--name".into(), id.name()];
+    c.extend(model_args(env, id));
     c.extend(mode_args(mode));
     c.extend(["--settings".into(), settings_json(env, id, true)]);
     c
@@ -342,6 +446,88 @@ mod tests {
         assert!(l[5].contains("\"bgIsolation\":\"none\"") && l[5].contains("\"Bash(nimitz *)\""), "{}", l[5]);
         assert!(l.last().unwrap().starts_with("You are [F]-ADMIRAL, the admiral of fleet F."));
         assert!(lead_prompt(&Id::commodore("F", "SQ")).contains("SQUADRON.md"));
+    }
+
+    #[test]
+    fn an_aide_launches_with_its_model_parent_label_and_permissions() {
+        let (td, env) = crate::config::tests::test_env();
+        crate::config::tests::make_fleet(&env);
+        let repo = td.path().join("kb");
+        std::fs::create_dir_all(&repo).unwrap();
+        let dirs: BTreeMap<String, String> = [("test-mac".to_string(), repo.to_string_lossy().into_owned())].into();
+        crate::config::tests::add_aide(&env, AideDef { name: "KB".into(), dirs: dirs.clone(), ..Default::default() });
+        crate::config::tests::add_aide(&env, AideDef { name: "REF".into(), model: Some("haiku".into()), snapshot: true, dirs, ..Default::default() });
+        let kb = Id("MAIN/@KB".into());
+        // labels: the parent, no squadron
+        let l = labels_for(&env, &kb);
+        assert_eq!((l["NIMITZ_ROLE"].as_str(), l["NIMITZ_PARENT"].as_str(), l.get("NIMITZ_SQUADRON")), ("aide", "MAIN", None));
+        assert!(!labels_for(&env, &Id::ship("MAIN", "ARGOS", "ARGOS")).contains_key("NIMITZ_PARENT"), "only an aide's");
+        // --model: the aide's own, else sonnet; on a launch and a relaunch, never a ship's
+        let c = launch_bg(&env, &kb, "acceptEdits", Some(&aide_prompt(&kb)));
+        assert_eq!(&c[1..8], &["--bg", "--name", "[MAIN]-@KB", "--model", "sonnet", "--permission-mode", "acceptEdits"]);
+        assert!(c.last().unwrap().starts_with("You are [MAIN]-@KB, an aide of [MAIN]-ADMIRAL. Work your inbox: `nimitz inbox claim MAIN/@KB`"), "{c:?}");
+        let r = relaunch_bg(&env, &Id("MAIN/@REF".into()), "", "sid");
+        assert_eq!(&r[4..8], &["--name", "[MAIN]-@REF", "--model", "haiku"]);
+        assert!(!launch_bg(&env, &Id::ship("MAIN", "ARGOS", "ARGOS"), "", Some("go")).contains(&"--model".to_string()));
+        assert_eq!(model_for(&env, &Id("MAIN/@NONE".into())).as_deref(), Some("sonnet"), "no config: still sonnet");
+        // permissions: a writer may run git in its folder; a snapshot reader may not edit
+        let perms = |id: &Id| serde_json::from_str::<serde_json::Value>(&settings_json(&env, id, true)).unwrap()["permissions"].clone();
+        let real = repo.canonicalize().unwrap();
+        let p = perms(&kb);
+        let list = |k: &str| p[k].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let (allow, deny) = (list("allow"), list("deny"));
+        assert_eq!(allow[0], NIMITZ_ALLOW);
+        for sub in ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "restore --staged"] {
+            assert!(allow.contains(&format!("Bash(git -C {} {sub})", real.display())) && allow.contains(&format!("Bash(git -C {} {sub} *)", real.display())), "{sub}: {allow:?}");
+        }
+        assert_eq!(allow.len(), 19, "nothing else: {allow:?}");
+        assert!(!allow.iter().any(|a| a.contains(" grep")), "no git grep (-O runs a program): {allow:?}");
+        for o in ["--output", "-O", "--open-files-in-pager"] {
+            assert!(deny.contains(&format!("Bash(git * {o}*)")), "{o}: {deny:?}");
+        }
+        assert!(!allow.iter().any(|a| a == "Bash(git *)" || a.contains("push")), "no git outside the list: {allow:?}");
+        for sub in ["push", "remote", "fetch", "pull", "clone", "config", "submodule"] {
+            for form in [format!("Bash(git {sub})"), format!("Bash(git {sub} *)"), format!("Bash(git -C * {sub})"), format!("Bash(git -C * {sub} *)")] {
+                assert!(deny.contains(&form), "{form}: {deny:?}");
+            }
+        }
+        let r = perms(&Id("MAIN/@REF".into()));
+        assert_eq!(r["allow"], serde_json::json!([NIMITZ_ALLOW]));
+        assert!(["Edit", "Write", "NotebookEdit", "Bash(git push *)"].iter().all(|d| r["deny"].as_array().unwrap().iter().any(|x| x == d)), "{r}");
+        assert_eq!(perms(&Id::admiral("MAIN")), serde_json::json!({"allow": [NIMITZ_ALLOW]}));
+    }
+
+    #[test]
+    fn a_model_is_allowed_by_its_name_or_its_family() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(model_allowed("sonnet", &l(&["opus", "sonnet"])));
+        assert!(model_allowed("sonnet", &l(&["claude-sonnet-4-5"])) && model_allowed("sonnet", &l(&["sonnet[1m]"])) && model_allowed("Sonnet", &l(&["SONNET"])));
+        assert!(model_allowed("claude-sonnet-4-5", &l(&["claude-sonnet-4-5"])), "an exact id");
+        assert!(model_allowed("claude-sonnet-4-5", &l(&["sonnet"])), "a family entry allows its ids");
+        assert!(model_allowed("haiku", &l(&["claude-haiku-4-5-20251001"])));
+        assert!(!model_allowed("sonnet", &l(&["opus", "claude-opus-4-1"])));
+        assert!(!model_allowed("claude-sonnet-4-5", &l(&["claude-sonnet-4-6"])), "another id of the family is not this one");
+        assert!(!model_allowed("sonnet", &[]));
+    }
+
+    #[test]
+    fn available_models_come_from_managed_settings_first() {
+        let td = tempfile::tempdir().unwrap();
+        let (managed, user, none) = (td.path().join("managed.json"), td.path().join("settings.json"), td.path().join("missing.json"));
+        std::fs::write(&user, r#"{"availableModels": ["opus", "sonnet"]}"#).unwrap();
+        assert_eq!(models_in(&[none.clone(), user.clone()]), Some(vec!["opus".to_string(), "sonnet".to_string()]));
+        // managed settings that say nothing about models leave the user's
+        std::fs::write(&managed, r#"{"permissions": {}}"#).unwrap();
+        assert_eq!(models_in(&[managed.clone(), user.clone()]).map(|v| v.len()), Some(2));
+        std::fs::write(&managed, r#"{"availableModels": ["haiku"]}"#).unwrap();
+        assert_eq!(models_in(&[managed, user]), Some(vec!["haiku".to_string()]));
+        assert_eq!(models_in(&[none]), None, "no list: no limit");
+        let (_td, env) = crate::config::tests::test_env();
+        std::fs::create_dir_all(&env.claude_home).unwrap();
+        std::fs::write(env.claude_home.join("settings.json"), r#"{"availableModels": ["fable"]}"#).unwrap();
+        if !std::path::Path::new("/etc/claude-code/managed-settings.json").exists() {
+            assert_eq!(available_models(&env), Some(vec!["fable".to_string()]));
+        }
     }
 
     #[test]

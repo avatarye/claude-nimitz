@@ -339,6 +339,36 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         }
     }
 
+    // Aides (`[[aide]]`): a name, an inbox nimitz can run, each once, known machines.
+    let mut aide_names: Vec<&str> = vec![];
+    for a in &c.aide {
+        let aid = Id::aide(&fid, &a.name);
+        if !valid_name(&a.name) {
+            out.push(inv(format!("aide name {:?} is not [A-Z0-9_]+ (the id adds the @)", a.name), Some(aid.clone())));
+        }
+        if aide_names.contains(&a.name.as_str()) {
+            out.push(inv(format!("aide {:?} is defined twice", a.name), Some(aid.clone())));
+        }
+        aide_names.push(&a.name);
+        if let Err(e) = crate::queue::Limits::from_def(&a.inbox) {
+            out.push(inv(format!("aide {aid}: [aide.inbox] {e}"), Some(aid.clone())));
+        }
+        // (no worktree yet: a reader would work in the writer's live folder)
+        if a.snapshot {
+            out.push(inv(format!("aide {aid}: the read-only snapshot aide comes in S4b; leave snapshot unset for now"), Some(aid.clone())));
+        }
+        // its allow and deny lists are what hold a hostile payload: a mode
+        // that skips the lists (or asks no one) is never an aide's
+        if let Some(m) = a.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
+            out.push(inv(format!("aide {aid}: permission_mode {m:?} skips the aide's allow and deny rules; use default, acceptEdits or plan"), Some(aid.clone())));
+        }
+        for label in a.dirs.keys() {
+            if !c.machines.contains_key(label) {
+                out.push(inv(format!("aide {aid}: machine label {label:?} is not in fleet.toml [machines]"), Some(aid.clone())));
+            }
+        }
+    }
+
     // Layout: a session folder inside another session folder (on this machine),
     // judged by `nesting` (contracts.md section 7).
     let mut folders: Vec<(Id, PathBuf, bool)> = vec![(fid.clone(), f.dir.join("admiral"), true)];
@@ -462,6 +492,20 @@ fn find_ship<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<(&'a PathBuf, &'a Squadr
     Some((sd, sq, ship))
 }
 
+/// Permission modes an aide never runs in: they skip its allow and deny rules
+/// (bypassPermissions, dontAsk) or decide without a prompt (auto).
+pub const AIDE_MODES_REFUSED: [&str; 3] = ["bypassPermissions", "dontAsk", "auto"];
+
+/// An aide's `[[aide]]` in its fleet (only an admiral's aide exists for now).
+pub fn find_aide<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<&'a AideDef> {
+    let parent = id.parent()?;
+    if id.role() != Role::Aide || parent.role() != Role::Admiral || parent.fleet() != f.config.fleet {
+        return None;
+    }
+    let name = id.parts().last()?.strip_prefix('@')?;
+    f.config.aide.iter().find(|a| a.name == name)
+}
+
 /// A folder as written, `~/` (on Windows also `~\`) under this process's
 /// home (`env::home`: `USERPROFILE` when cmd or PowerShell set no `HOME`).
 pub fn expand_dir(p: &str) -> PathBuf {
@@ -489,6 +533,12 @@ pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
                 // the real path when it exists: Claude Code records (and trusts) that one
                 d => Some(expand_dir(d)).map(|p| crate::os::canonical(&p).unwrap_or(p)),
             }
+        }
+        // one machine runs an aide: the one its `dirs` names
+        Role::Aide => {
+            let label = f.machine.as_ref()?;
+            let d = find_aide(f, id)?.dirs.get(label)?;
+            Some(expand_dir(d)).map(|p| crate::os::canonical(&p).unwrap_or(p))
         }
     }
 }
@@ -521,6 +571,8 @@ pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
             .and_then(|(_, _, ship)| f.machine.as_ref().and_then(|m| ship.permission_mode.get(m).cloned()))
             .or_else(squadron_mode)
             .unwrap_or(fallback),
+        // its own mode, else acceptEdits: never the user's default (which may skip the rules)
+        Role::Aide => find_aide(f, id).and_then(|a| a.permission_mode.clone()).filter(|m| !AIDE_MODES_REFUSED.contains(&m.as_str())).unwrap_or_else(|| "acceptEdits".into()),
     }
 }
 
@@ -590,6 +642,7 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
         )]
         .into(),
         admiral: AdmiralDef::default(),
+        aide: vec![],
     };
     plan.steps = vec![
         step_mkdir(Some(id.clone()), &dir, "fleet folder"),
@@ -896,6 +949,14 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
                 }
             }
         }
+        // (no `aide rm` yet: an aide leaves fleet.toml by hand)
+        Role::Aide => refuse(
+            &mut plan,
+            "config.aide",
+            format!("{id} is an aide; nimitz does not remove aides yet"),
+            Some(format!("delete its [[aide]] from {}", f.dir.join("fleet.toml").display())),
+            Some(id.clone()),
+        ),
     }
     plan
 }
@@ -1151,14 +1212,7 @@ fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &s
     if env.matches_hostname(&m.hostname) {
         let live: Vec<String> = snap
             .and_then(|s| s.fleets.iter().find(|fl| fl.id == fid))
-            .map(|fl| {
-                let mut v = vec![&fl.admiral];
-                for sq in &fl.squadrons {
-                    v.push(&sq.commodore);
-                    v.extend(sq.ships.iter());
-                }
-                v.into_iter().filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some())).map(|m| m.id.0.clone()).collect()
-            })
+            .map(|fl| fl.members().filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some())).map(|m| m.id.0.clone()).collect())
             .unwrap_or_default();
         let (code, message) = if live.is_empty() {
             ("config.pending", format!("{label} is this machine: {fleet}'s ships stop running here after their next stop"))
@@ -1319,6 +1373,54 @@ pub(crate) mod tests {
             ..Default::default()
         };
         apply_ok(env, &plan_ship_new(env, "MAIN", "ARGOS", ship));
+    }
+
+    /// MAIN's `[[aide]]` `def`, written into fleet.toml.
+    pub fn add_aide(env: &Env, def: AideDef) {
+        let mut f = load_fleet(env, "MAIN").unwrap();
+        f.config.aide.push(def);
+        std::fs::write(f.dir.join("fleet.toml"), toml_out(&f.config)).unwrap();
+    }
+
+    #[test]
+    fn an_aide_runs_in_its_dirs_folder_with_its_mode_and_is_validated() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let repo = td.path().join("kb");
+        std::fs::create_dir_all(&repo).unwrap();
+        let kb = Id("MAIN/@KB".into());
+        add_aide(&env, AideDef { name: "KB".into(), permission_mode: Some("acceptEdits".into()), dirs: [("test-mac".to_string(), repo.to_string_lossy().into_owned())].into(), ..Default::default() });
+        let f = load_fleet(&env, "MAIN").unwrap();
+        assert!(validate(&env, &f).is_empty(), "{:?}", validate(&env, &f));
+        assert_eq!(member_dir(&env, &f, &kb), Some(repo.canonicalize().unwrap()));
+        assert_eq!(permission_mode(&f, &kb), "acceptEdits");
+        assert_eq!(find_aide(&f, &kb).map(|a| a.name.as_str()), Some("KB"));
+        // not this machine's folder, no such aide, another fleet's: none
+        let mut other = f.clone();
+        other.machine = Some("elsewhere".into());
+        assert_eq!(member_dir(&env, &other, &kb), None);
+        assert_eq!(member_dir(&env, &f, &Id("MAIN/@REF".into())), None);
+        assert_eq!((member_dir(&env, &f, &Id("OTHER/@KB".into())), permission_mode(&f, &Id("MAIN/@REF".into()))), (None, "acceptEdits".to_string()), "an aide never inherits the default mode");
+        // a bad name, a twin, an inbox nimitz cannot run, an unknown machine
+        let mut bad = f.clone();
+        bad.config.aide.push(AideDef { name: "kb".into(), ..Default::default() });
+        bad.config.aide.push(AideDef { name: "KB".into(), ..Default::default() });
+        let mut inbox = InboxDef { types: vec!["no.such.v1".into()], ..Default::default() };
+        bad.config.aide.push(AideDef { name: "REF".into(), inbox: inbox.clone(), dirs: [("nowhere".to_string(), "/x".to_string())].into(), ..Default::default() });
+        inbox.types.clear();
+        inbox.per_sender = "lots".into();
+        bad.config.aide.push(AideDef { name: "RATE".into(), inbox, ..Default::default() });
+        let issues = validate(&env, &bad);
+        assert!(issues.iter().all(|i| i.code == "config.invalid" && i.severity == Severity::Error), "{issues:?}");
+        let msgs = issues.iter().map(|i| i.message.as_str()).collect::<Vec<_>>().join("\n");
+        let mut snap = f.clone();
+        snap.config.aide[0].snapshot = true;
+        let s = validate(&env, &snap);
+        assert!(s.iter().any(|i| i.code == "config.invalid" && i.severity == Severity::Error && i.message.contains("snapshot aide comes in S4b; leave snapshot unset")), "{s:?}");
+        for want in ["aide name \"kb\"", "aide \"KB\" is defined twice", "unknown inbox type \"no.such.v1\"", "\"nowhere\" is not in fleet.toml", "per_sender \"lots\""] {
+            assert!(msgs.contains(want), "missing {want:?} in {msgs}");
+        }
+        assert!(issues.iter().any(|i| i.id == Some(Id("MAIN/@REF".into()))), "{issues:?}");
     }
 
     #[test]
@@ -1661,6 +1763,17 @@ pub(crate) mod tests {
         assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "");
         f.config.admiral.permission_mode = Some("auto".into());
         assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "auto");
+        // an aide: its own mode, else acceptEdits, never a mode that skips its rules
+        let kb = Id("MAIN/@KB".into());
+        f.config.aide.push(AideDef { name: "KB".into(), ..Default::default() });
+        assert_eq!(permission_mode(&f, &kb), "acceptEdits", "not the user's default");
+        f.config.aide[0].permission_mode = Some("plan".into());
+        assert_eq!(permission_mode(&f, &kb), "plan");
+        for m in AIDE_MODES_REFUSED {
+            f.config.aide[0].permission_mode = Some(m.into());
+            assert_eq!(permission_mode(&f, &kb), "acceptEdits", "{m}");
+            assert!(validate(&env, &f).iter().any(|i| i.message.contains("skips the aide's allow and deny rules")), "{m}");
+        }
     }
 
     #[test]

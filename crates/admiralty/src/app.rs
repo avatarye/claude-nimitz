@@ -338,13 +338,7 @@ impl App {
                 m.reasons.insert(0, "pane: blocked at an approval or a question (multiplexer)".into());
             }
         };
-        for f in &mut b.snap.fleets {
-            mark(&mut f.admiral);
-            for sq in &mut f.squadrons {
-                mark(&mut sq.commodore);
-                sq.ships.iter_mut().for_each(mark);
-            }
-        }
+        b.snap.fleets.iter_mut().flat_map(|f| f.members_mut()).for_each(mark);
         // a squadron that got worse since the last full look (a warning, an
         // error or needs you; idle to busy is just work): its bar pulses once.
         // The quick first look has no check issues: it is not compared, and
@@ -706,6 +700,12 @@ impl App {
                 it.label = format!("adopt this legacy session as {id}");
                 it.enabled = Ok(());
                 it.action = MenuAction::AdoptAs(sid, id);
+            }
+        }
+        // an aide: its dead letters (the user's repair)
+        if matches!(self.target(), Target::Member(ref id) if id.role() == nimitz_core::Role::Aide) {
+            for a in [Act::InboxRetry, Act::InboxDrop] {
+                v.push(MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(a), action: MenuAction::Act(a) });
             }
         }
         if let Target::Fleet(id) = self.target() {

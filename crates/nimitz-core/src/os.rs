@@ -378,6 +378,49 @@ pub fn args() -> Vec<String> {
     a
 }
 
+/// Fill `buf` from the OS's random source (`/dev/urandom`; Windows:
+/// `BCryptGenRandom` with the system's preferred RNG). An error, never a
+/// guessable fallback.
+pub fn random(buf: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        File::open("/dev/urandom")?.read_exact(buf)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
+        let rc = unsafe { BCryptGenRandom(std::ptr::null_mut(), buf.as_mut_ptr(), buf.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+        if rc == 0 { Ok(()) } else { Err(std::io::Error::other(format!("BCryptGenRandom failed: {rc:#x}"))) }
+    }
+}
+
+/// Rename `from` over `to`. On Windows a rename fails while another process
+/// holds `to` open without delete sharing (a scanner, an indexer, a reader
+/// mid-read): retried briefly (5 x 50 ms) before it gives up.
+pub fn replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut last = None;
+        for _ in 0..5 {
+            match std::fs::rename(from, to) {
+                Ok(()) => return Ok(()),
+                // ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32)
+                Err(e) if matches!(e.raw_os_error(), Some(5) | Some(32)) => {
+                    last = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| std::io::Error::other("rename failed")))
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)
+    }
+}
+
 /// A symbolic link at `link` to `target` (tests; a Windows file link needs
 /// developer mode or the privilege, so callers there may skip on error).
 pub fn symlink(target: impl AsRef<Path>, link: impl AsRef<Path>) -> std::io::Result<()> {
