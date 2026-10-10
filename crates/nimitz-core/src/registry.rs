@@ -57,7 +57,7 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<Loaded> {
             None => fresh(env),
         },
         Err(e) => return Err(std::io::Error::new(e.kind(), format!("registry {}: {e}", env.registry_path().display()))),
-        Ok(raw) => match serde_json::from_str(&raw) {
+        Ok(raw) => match parse(&raw) {
             Ok(r) => r,
             Err(_) => {
                 rebuilt = true; // the file does not parse: memory holds the rebuild
@@ -166,7 +166,46 @@ fn fresh(env: &Env) -> Registry {
 }
 
 fn parse_file(p: &Path) -> Option<Registry> {
-    serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+    parse(&std::fs::read_to_string(p).ok()?).ok()
+}
+
+/// A registry from its text, tolerant of a role this nimitz does not know
+/// (a newer nimitz wrote it): such a record takes the role its id spells
+/// when the id is one nimitz can place (`Id::well_formed`), else it goes to
+/// `unparsed`, kept as it was (`registry.unknown` in check). One record never
+/// fails the whole load.
+pub fn parse(raw: &str) -> serde_json::Result<Registry> {
+    use serde_json::Value;
+    let mut v: Value = serde_json::from_str(raw)?;
+    let mut unparsed = serde_json::Map::new();
+    for map in ["identities", "retired"] {
+        let Some(ids) = v.get_mut(map).and_then(Value::as_object_mut) else { continue };
+        let keys: Vec<String> = ids.keys().cloned().collect();
+        for k in keys {
+            let known = ids[&k].get("role").is_some_and(|r| serde_json::from_value::<Role>(r.clone()).is_ok());
+            if known {
+                continue;
+            }
+            let id = Id(k.clone());
+            match ids[&k].as_object_mut() {
+                Some(rec) if id.well_formed() => {
+                    rec.insert("role".into(), Value::from(id.role().as_str()));
+                }
+                _ => {
+                    if let Some(rec) = ids.remove(&k) {
+                        unparsed.insert(k, rec);
+                    }
+                }
+            }
+        }
+    }
+    if !unparsed.is_empty() {
+        match v.get_mut("unparsed").and_then(Value::as_object_mut) {
+            Some(old) => old.extend(unparsed),
+            None => v["unparsed"] = Value::Object(unparsed),
+        }
+    }
+    serde_json::from_value(v)
 }
 
 fn bak_path(env: &Env) -> PathBuf {
@@ -281,7 +320,21 @@ pub fn health(env: &Env) -> Vec<Issue> {
             id: None,
         });
     }
-    if std::fs::read_to_string(&reg).is_ok_and(|raw| serde_json::from_str::<Registry>(&raw).is_err()) {
+    if let Some(r) = std::fs::read_to_string(&reg).ok().and_then(|raw| parse(&raw).ok()).filter(|r| !r.unparsed.is_empty()) {
+        out.push(Issue {
+            code: "registry.unknown".into(),
+            severity: Severity::Warn,
+            message: format!(
+                "{} holds {} record(s) this nimitz cannot read (a role it does not know, on an id it cannot place: a newer nimitz wrote them?): {}; kept as they are, never members",
+                reg.display(),
+                r.unparsed.len(),
+                r.unparsed.keys().cloned().collect::<Vec<_>>().join(", ")
+            ),
+            fix: Some("update nimitz to the version that wrote them".into()),
+            id: None,
+        });
+    }
+    if std::fs::read_to_string(&reg).is_ok_and(|raw| parse(&raw).is_err()) {
         out.push(Issue {
             code: "registry.corrupt".into(),
             severity: Severity::Error,
@@ -1092,6 +1145,38 @@ mod tests {
         assert_eq!(identity_of(&env, &other), None);
         assert!(other_home(&env, &other));
         assert!(!other_home(&env, &l(&[("NIMITZ_HOME", "/elsewhere")])), "a home alone is no label");
+    }
+
+    /// A role this nimitz does not know (a newer one wrote it) never fails
+    /// the load: the record takes the role its id spells, or (an id nimitz
+    /// cannot place) waits in `unparsed`, kept through a write, with a
+    /// `registry.unknown` warning.
+    #[test]
+    fn a_record_with_an_unknown_role_does_not_fail_the_registry() {
+        let (_td, env) = test_env();
+        let rec = |role: &str, sid: &str| serde_json::json!({"role": role, "name": "n", "cwd": "/w", "session": sid, "lineage": []});
+        let raw = serde_json::json!({"version": REGISTRY_VERSION, "machine": "m", "updated_at": 1.0, "identities": {
+            "MAIN": rec("admiral", "s-adm"),
+            "MAIN/ARGOS/X": rec("future", "s-x"),
+            "MAIN/@KB": rec("aide", "s-kb"),
+            "MAIN/ARGOS/X/Y/@Z": rec("future", "s-z"),
+        }});
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.registry_path(), raw.to_string()).unwrap();
+        let r = load(&env);
+        assert_eq!(r.identities["MAIN"].role, Role::Admiral, "the rest loads");
+        assert_eq!(r.identities["MAIN/ARGOS/X"].role, Role::Ship, "the role its id spells");
+        assert_eq!(r.identities["MAIN/@KB"].role, Role::Aide);
+        assert!(!r.identities.contains_key("MAIN/ARGOS/X/Y/@Z") && r.unparsed.contains_key("MAIN/ARGOS/X/Y/@Z"), "{:?}", r.unparsed);
+        let h = health(&env);
+        let w = h.iter().find(|i| i.code == "registry.unknown").expect("a warning");
+        assert!(w.severity == Severity::Warn && w.message.contains("MAIN/ARGOS/X/Y/@Z"), "{w:?}");
+        assert!(!h.iter().any(|i| i.code == "registry.corrupt"), "{h:?}");
+        // a write keeps it, as it was
+        update(&env, |r| bind(r, &Id::ship("MAIN", "ARGOS", "S"), Role::Ship, "[MAIN.ARGOS]-S", "/w", "s-s", "launch", 2.0)).unwrap();
+        let back: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
+        assert_eq!(back["unparsed"]["MAIN/ARGOS/X/Y/@Z"]["role"], "future", "{back}");
+        assert_eq!(load(&env).unparsed.len(), 1);
     }
 
     #[test]

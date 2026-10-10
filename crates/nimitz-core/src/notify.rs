@@ -1,6 +1,8 @@
-//! Needs-you notices: a ship that blocks on the user (an
+//! Needs-you notices: a ship or an aide that blocks on the user (an
 //! AskUserQuestion, a permission prompt) has no pane anyone watches, so its
-//! commodore is told at once, with the question in full. Owner: core-sessions.
+//! lead (a ship's commodore, an aide's parent) is told at once, with the
+//! question in full; so is an aide's parent of each dead letter in its inbox
+//! (docs/design/aide.md 5.3). Owner: core-sessions.
 //!
 //! The hook only records: it writes `NIMITZ_STATE/needs/<id>.json` and returns;
 //! the `nimitz` binary then hands delivery to a detached process (the hook must
@@ -43,6 +45,38 @@ pub struct Notice {
     pub delivery_note: Option<String>,
     #[serde(default)]
     pub delivered_at: Option<f64>,
+    /// a dead letter's item id (kind `dead`): its own file, never cleared by
+    /// the aide moving on; a retry or drop of the item clears it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+}
+
+/// Who a member's needs-you goes to: a ship's commodore, an aide's parent.
+pub fn lead_of(id: &Id) -> Id {
+    match id.role() {
+        Role::Aide => id.parent().unwrap_or_else(|| Id::admiral(id.fleet())),
+        _ => Id::commodore(id.fleet(), id.squadron().unwrap_or_default()),
+    }
+}
+
+/// The file key of a dead-letter notice: `<aide>#dead-<item>`.
+pub fn dead_key(aide: &str, item: &str) -> String {
+    format!("{aide}#dead-{item}")
+}
+
+/// The needs-you notice for a dead letter in `aide`'s inbox (aide.md 5.3).
+pub fn dead_letter(aide: &Id, d: &crate::queue::DeadRow) -> Notice {
+    let n = d.id.trim_start_matches('0');
+    Notice {
+        ts: crate::evidence::now(),
+        id: aide.0.clone(),
+        kind: "dead".into(),
+        event: "inbox".into(),
+        detail: format!("item {n} ({}, from {}) failed {} time{}: {}", d.kind, d.sender, d.tries, if d.tries == 1 { "" } else { "s" }, line(&d.reason)),
+        delivery: "pending".into(),
+        item: Some(d.id.clone()),
+        ..Default::default()
+    }
 }
 
 impl Notice {
@@ -50,6 +84,16 @@ impl Notice {
     /// notice, not the user's words: the member's question is quoted data.
     pub fn text(&self) -> String {
         let id = Id(self.id.clone());
+        if self.kind == "dead" {
+            let n = self.item.as_deref().unwrap_or("?").trim_start_matches('0');
+            return clip(
+                &format!(
+                    "[nimitz needs-you] (a notice from nimitz, not from the user) {}: {}. Tell the user; the fix, once they agree: nimitz inbox retry {} {n} (or nimitz inbox drop {} {n}).",
+                    id.0, self.detail, id.0, id.0
+                ),
+                MAX_TEXT,
+            );
+        }
         let what = match self.kind.as_str() {
             "question" => "asks the user",
             "permission" => "asks the user for permission",
@@ -120,11 +164,12 @@ fn questions(input: &Value) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" | "))
 }
 
-/// What this hook call says the member now waits on, if anything. Only ships:
-/// an admiral or commodore sits in a pane the user watches.
+/// What this hook call says the member now waits on, if anything. Only ships
+/// and aides (they run unattended): an admiral or commodore sits in a pane
+/// the user watches.
 pub fn from_hook(event: &str, input: &Value, labels: &BTreeMap<String, String>) -> Option<Notice> {
     let id = Id(labels.get("NIMITZ_ID")?.clone());
-    if id.role() != Role::Ship || labels.get("NIMITZ_ROLE").map(String::as_str) != Some(id.role().as_str()) {
+    if !matches!(id.role(), Role::Ship | Role::Aide) || !id.well_formed() || labels.get("NIMITZ_ROLE").map(String::as_str) != Some(id.role().as_str()) {
         return None;
     }
     let tool = str_at(input, "tool_name");
@@ -167,18 +212,34 @@ pub fn dir(env: &Env) -> PathBuf {
     env.state.join("needs")
 }
 
-/// `NIMITZ_STATE/needs/<id with / as %2F>.json`.
-pub fn path(env: &Env, id: &str) -> PathBuf {
-    dir(env).join(format!("{}.json", id.replace('/', "%2F")))
+/// `NIMITZ_STATE/needs/<key with / as %2F>.json`; a key is a member's id,
+/// or a dead letter's `dead_key`.
+pub fn path(env: &Env, key: &str) -> PathBuf {
+    dir(env).join(format!("{}.json", key.replace('/', "%2F")))
 }
 
-pub fn read(env: &Env, id: &str) -> Option<Notice> {
-    serde_json::from_slice(&std::fs::read(path(env, id)).ok()?).ok()
+pub fn read(env: &Env, key: &str) -> Option<Notice> {
+    serde_json::from_slice(&std::fs::read(path(env, key)).ok()?).ok()
+}
+
+impl Notice {
+    /// Its file: the member's, or its dead letter's own.
+    pub fn key(&self) -> String {
+        match &self.item {
+            Some(i) => dead_key(&self.id, i),
+            None => self.id.clone(),
+        }
+    }
+}
+
+/// A dead letter was retried or dropped: its notice is done.
+pub fn clear_dead(env: &Env, aide: &str, item: &str) {
+    let _ = std::fs::remove_file(path(env, &dead_key(aide, item)));
 }
 
 /// Atomic write (temp + rename): the delivery process and the hook share the file.
 pub fn write(env: &Env, n: &Notice) -> std::io::Result<()> {
-    let p = path(env, &n.id);
+    let p = path(env, &n.key());
     std::fs::create_dir_all(dir(env))?;
     let tmp = p.with_extension(format!("tmp{}", std::process::id()));
     std::fs::write(&tmp, serde_json::to_vec_pretty(n).unwrap_or_default())?;
@@ -187,6 +248,14 @@ pub fn write(env: &Env, n: &Notice) -> std::io::Result<()> {
 
 /// Record a notice unless it repeats the one on file. Returns the notice to deliver.
 pub fn record(env: &Env, n: Notice) -> Option<Notice> {
+    if n.item.is_some() {
+        // a dead letter is told once; its file stays until a retry or drop
+        if read(env, &n.key()).is_some() {
+            return None;
+        }
+        write(env, &n).ok()?;
+        return Some(n);
+    }
     if let Some(old) = read(env, &n.id).filter(|o| o.session_id == n.session_id && n.ts - o.ts < DUP_WINDOW_S) {
         let same_call = n.tool_use_id.is_some() && n.tool_use_id == old.tool_use_id;
         // a Notification (or a permission prompt for AskUserQuestion itself) right
@@ -214,7 +283,7 @@ pub fn is_same(on_file: &Notice, n: &Notice) -> bool {
 
 /// Write the outcome of a delivery, unless the notice on file has moved on.
 pub fn set_delivery(env: &Env, n: &Notice, delivery: &str, note: Option<String>) {
-    let Some(mut cur) = read(env, &n.id) else { return };
+    let Some(mut cur) = read(env, &n.key()) else { return };
     if !is_same(&cur, n) {
         return; // superseded or answered meanwhile
     }
@@ -242,12 +311,16 @@ pub fn issues(env: &Env) -> Vec<Issue> {
             _ => continue,
         };
         let id = Id(n.id.clone());
-        let commodore = Id::commodore(id.fleet(), id.squadron().unwrap_or_default());
+        let lead = lead_of(&id);
+        let (what, fix) = match &n.item {
+            Some(i) => ("has a dead letter", format!("nimitz inbox retry {} {}  # or nimitz inbox drop", n.id, i.trim_start_matches('0'))),
+            None => ("waits for the user", format!("nimitz start {} -p  # answer it there", n.id)),
+        };
         out.push(Issue {
             code: "notify.failed".into(),
             severity: Severity::Warn,
-            message: format!("{} waits for the user and {commodore} was not told ({why}): {}", n.id, clip(&n.detail, 300)),
-            fix: Some(format!("nimitz start {} -p  # answer it there", n.id)),
+            message: format!("{} {what} and {lead} was not told ({why}): {}", n.id, clip(&n.detail, 300)),
+            fix: Some(fix),
             id: Some(id),
         });
     }
@@ -289,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn only_ships_with_whole_labels_notify() {
+    fn only_ships_and_aides_with_whole_labels_notify() {
         assert!(from_hook("PreToolUse", &ask(), &labels("MAIN/ARGOS", "commodore")).is_none(), "a commodore has a pane");
         assert!(from_hook("PreToolUse", &ask(), &labels("MAIN/ARGOS/~fix", "tender")).is_none(), "a 0.3.x tender is no member");
         assert!(from_hook("PreToolUse", &ask(), &labels("MAIN", "admiral")).is_none());
@@ -303,6 +376,35 @@ mod tests {
             assert!(from_hook("Notification", &n, &labels("MAIN/ARGOS/CLEAN", "ship")).is_none(), "{t}");
         }
         assert!(from_hook("Notification", &json!({}), &labels("MAIN/ARGOS/CLEAN", "ship")).is_none());
+    }
+
+    /// An aide runs unattended too: its block goes to its parent; a dead
+    /// letter of its inbox is a notice of its own, told once, kept until a
+    /// retry or drop, never cleared by the aide moving on.
+    #[test]
+    fn an_aide_notifies_its_parent_of_a_block_and_of_a_dead_letter() {
+        let (_td, env) = test_env();
+        let n = from_hook("PreToolUse", &ask(), &labels("MAIN/@KB", "aide")).unwrap();
+        assert_eq!((n.id.as_str(), lead_of(&Id(n.id.clone())).0.as_str()), ("MAIN/@KB", "MAIN"));
+        assert!(n.text().contains("MAIN/@KB (aide, session s1) is blocked"), "{}", n.text());
+        assert!(from_hook("PreToolUse", &ask(), &labels("MAIN/@KB", "ship")).is_none(), "labels that disagree");
+        assert_eq!(lead_of(&Id::ship("MAIN", "ARGOS", "S")), Id::commodore("MAIN", "ARGOS"));
+        let d = crate::queue::DeadRow { id: "000000000017".into(), kind: "wiki.note.v1".into(), sender: "member MAIN/ARGOS/BOLT".into(), tries: 3, reason: "a merge\nconflict".into() };
+        let dead = dead_letter(&Id("MAIN/@KB".into()), &d);
+        assert_eq!(dead.text(), "[nimitz needs-you] (a notice from nimitz, not from the user) MAIN/@KB: item 17 (wiki.note.v1, from member MAIN/ARGOS/BOLT) failed 3 times: a merge conflict. Tell the user; the fix, once they agree: nimitz inbox retry MAIN/@KB 17 (or nimitz inbox drop MAIN/@KB 17).");
+        assert!(record(&env, dead.clone()).is_some());
+        assert!(record(&env, dead_letter(&Id("MAIN/@KB".into()), &d)).is_none(), "told once");
+        // the aide's own question does not replace it, and its next prompt does not clear it
+        record(&env, n).unwrap();
+        clear(&env, "MAIN/@KB", Some("s1"));
+        assert!(read(&env, &dead.key()).is_some() && read(&env, "MAIN/@KB").is_none());
+        set_delivery(&env, &dead, "failed", Some("[MAIN]-ADMIRAL is not running".into()));
+        let i = issues(&env);
+        assert_eq!(i.len(), 1);
+        assert!(i[0].message.starts_with("MAIN/@KB has a dead letter and MAIN was not told"), "{}", i[0].message);
+        assert_eq!(i[0].fix.as_deref(), Some("nimitz inbox retry MAIN/@KB 17  # or nimitz inbox drop"));
+        clear_dead(&env, "MAIN/@KB", "000000000017");
+        assert!(issues(&env).is_empty());
     }
 
     #[test]

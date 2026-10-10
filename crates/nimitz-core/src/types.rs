@@ -357,6 +357,11 @@ pub struct Registry {
     /// history by `migrate::retire_tenders`; never members, never started
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retired: BTreeMap<String, IdentityRecord>,
+    /// records this nimitz cannot read (a role it does not know on an id it
+    /// cannot place: a newer nimitz wrote them), kept as they were
+    /// (`registry::parse`); never members
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unparsed: BTreeMap<String, serde_json::Value>,
 }
 
 impl IdentityRecord {

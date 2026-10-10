@@ -230,6 +230,16 @@ pub fn available_models(env: &Env) -> Option<Vec<String>> {
     models_in(&files)
 }
 
+/// Does `allowed` (an `availableModels` list) let `model` run? An exact
+/// match (any case) always; a family name (`sonnet`, `opus`, `haiku`: no
+/// `-`) matches an entry that is that family or an id of it (`sonnet`,
+/// `claude-sonnet-4-5`, `sonnet[1m]`), and a family entry an id of it.
+pub fn model_allowed(model: &str, allowed: &[String]) -> bool {
+    let model = model.to_lowercase();
+    let of = |fam: &str, id: &str| id == fam || id.contains(&format!("-{fam}")) || id.starts_with(fam);
+    allowed.iter().map(|a| a.to_lowercase()).any(|a| a == model || (!model.contains('-') && of(&model, &a)) || (!a.contains('-') && of(&a, &model)))
+}
+
 /// The first `availableModels` among `files`, in order.
 fn models_in(files: &[std::path::PathBuf]) -> Option<Vec<String>> {
     files.iter().find_map(|p| {
@@ -445,6 +455,19 @@ mod tests {
         assert_eq!(perms(&kb), serde_json::json!({"allow": [NIMITZ_ALLOW, format!("Bash(git -C {} *)", real.display()), "Bash(git *)"]}));
         assert_eq!(perms(&Id("MAIN/@REF".into())), serde_json::json!({"allow": [NIMITZ_ALLOW], "deny": ["Edit", "Write", "NotebookEdit"]}));
         assert_eq!(perms(&Id::admiral("MAIN")), serde_json::json!({"allow": [NIMITZ_ALLOW]}));
+    }
+
+    #[test]
+    fn a_model_is_allowed_by_its_name_or_its_family() {
+        let l = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(model_allowed("sonnet", &l(&["opus", "sonnet"])));
+        assert!(model_allowed("sonnet", &l(&["claude-sonnet-4-5"])) && model_allowed("sonnet", &l(&["sonnet[1m]"])) && model_allowed("Sonnet", &l(&["SONNET"])));
+        assert!(model_allowed("claude-sonnet-4-5", &l(&["claude-sonnet-4-5"])), "an exact id");
+        assert!(model_allowed("claude-sonnet-4-5", &l(&["sonnet"])), "a family entry allows its ids");
+        assert!(model_allowed("haiku", &l(&["claude-haiku-4-5-20251001"])));
+        assert!(!model_allowed("sonnet", &l(&["opus", "claude-opus-4-1"])));
+        assert!(!model_allowed("claude-sonnet-4-5", &l(&["claude-sonnet-4-6"])), "another id of the family is not this one");
+        assert!(!model_allowed("sonnet", &[]));
     }
 
     #[test]

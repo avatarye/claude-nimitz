@@ -132,6 +132,8 @@ fn aide_kb(f: &str) -> Member {
         oldest_age_s: Some(240.0),
         lease_until: Some(NOW + 420.0),
         quarantined: 0,
+        unreadable: 0,
+        keep_done_s: 7.0 * 86400.0,
         error: None,
         undelivered: 0,
         depth_cap: 500,

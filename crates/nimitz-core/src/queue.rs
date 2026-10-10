@@ -439,9 +439,16 @@ pub struct Status {
     /// the earliest lease end of a claimed item
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_until: Option<f64>,
-    /// files that do not read as items, set aside under `quarantine/`
+    /// files that did not read as items, set aside under `quarantine/`
     #[serde(default)]
     pub quarantined: usize,
+    /// files in pending or claimed that do not read as items, not set aside
+    /// yet (a peek moves nothing; the next command that housekeeps does)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unreadable: usize,
+    /// how long done items (and their results) stay: the inbox's `keep_done`
+    #[serde(default)]
+    pub keep_done_s: f64,
     /// this aide's queue cannot be read (its config): the row says why
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -451,6 +458,10 @@ pub struct Status {
     pub senders: Vec<SenderRow>,
     /// the newest few items, newest first
     pub recent: Vec<RecentRow>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 impl Status {
@@ -476,6 +487,9 @@ impl Status {
         }
         if self.quarantined > 0 {
             parts.push(format!("{} unreadable (quarantine/)", self.quarantined));
+        }
+        if self.unreadable > 0 {
+            parts.push(format!("{} unreadable", self.unreadable));
         }
         if self.undelivered > 0 {
             parts.push(format!("{} answer{} to pick up", self.undelivered, if self.undelivered == 1 { "" } else { "s" }));
@@ -906,8 +920,16 @@ impl Queue {
 
     fn summarize(&self, all: Vec<(State, Item)>, now: f64, results: bool) -> Status {
         // (a file in pending or claimed that does not read as an item is set
-        // aside by housekeeping; a peek counts it where it lies)
-        let unread = [State::Pending, State::Claimed].into_iter().flat_map(|s| self.ids(s).into_iter().map(move |id| (s, id))).filter(|(s, id)| Self::read(&self.path(*s, id)).is_none()).count();
+        // aside by housekeeping; a peek counts it where it lies, if it is
+        // still there: one a command just moved on is no unreadable file)
+        let unread = [State::Pending, State::Claimed]
+            .into_iter()
+            .flat_map(|s| self.ids(s).into_iter().map(move |id| (s, id)))
+            .filter(|(s, id)| {
+                let p = self.path(*s, id);
+                Self::read(&p).is_none() && p.is_file()
+            })
+            .count();
         let of = |st: State| all.iter().filter(move |(s, _)| *s == st).map(|(_, i)| i);
         let (limit, window) = self.limits.per_sender;
         let senders = self
@@ -926,7 +948,9 @@ impl Queue {
             done: of(State::Done).count(),
             dead: of(State::Dead).map(|i| DeadRow { id: i.id.clone(), kind: i.kind.clone(), sender: i.sender.line(), tries: i.tries, reason: i.reason.clone().unwrap_or_default() }).collect(),
             lease_until: of(State::Claimed).filter_map(|i| i.claim.as_ref().map(|c| c.until)).fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.min(x)))),
-            quarantined: std::fs::read_dir(self.dir.join("quarantine")).map(|d| d.count()).unwrap_or(0) + unread,
+            quarantined: std::fs::read_dir(self.dir.join("quarantine")).map(|d| d.count()).unwrap_or(0),
+            unreadable: unread,
+            keep_done_s: self.limits.keep_done_s,
             error: None,
             oldest_age_s: of(State::Pending).map(|i| now - i.posted_at).fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.max(x)))),
             undelivered: of(State::Done).filter(|i| i.reply_to.as_ref().is_some_and(|r| r.delivered_at.is_none())).count(),
@@ -1200,10 +1224,15 @@ mod tests {
         q.write(State::Claimed, &i).unwrap();
         assert_eq!(q.peek_status(100.0, false).dead.len(), 1);
         std::fs::write(q.path(State::Pending, "000000000099"), "not json").unwrap();
-        assert_eq!(q.peek_status(100.0, false).quarantined, 1, "an unreadable file counts where it lies");
+        let p = q.peek_status(100.0, false);
+        assert_eq!((p.unreadable, p.quarantined), (1, 0), "an unreadable file counts where it lies");
+        assert!(p.line().ends_with("1 unreadable") && !p.line().contains("quarantine"), "{}", p.line());
+        assert_eq!(p.keep_done_s, 3600.0, "the inbox's keep_done");
         assert!(q.path(State::Pending, "000000000099").exists());
-        // `status` housekeeps for real
-        assert_eq!(q.status(100.0, false).dead.len(), 1);
+        // `status` housekeeps for real (and sets the file aside)
+        let st = q.status(100.0, false);
+        assert_eq!((st.dead.len(), st.unreadable, st.quarantined), (1, 0, 1));
+        assert!(st.line().contains("1 unreadable (quarantine/)"), "{}", st.line());
         assert!(!q.path(State::Claimed, &a.id).exists());
         assert_eq!(Status { error: Some("bad".into()), ..Default::default() }.line(), "cannot read its queue: bad");
         assert_eq!(Status::default().line(), "empty");

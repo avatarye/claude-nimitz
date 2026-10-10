@@ -130,7 +130,15 @@ pub fn inbox(ctx: &Ctx) -> Result<i32, String> {
         "result" => result(ctx),
         v => return Err(format!("inbox {v}: use post, claim, heartbeat, done, fail, list, status, retry, drop or result")),
     };
+    told(ctx, 1);
     Ok(r.unwrap_or_else(|e| refuse(&e)))
+}
+
+/// Its parent hears of each new dead letter (whatever command made it).
+fn told(ctx: &Ctx, at: usize) {
+    if let Some(q) = ctx.args.pos.get(at).and_then(|s| queue::aide_id(s).ok()).and_then(|id| Queue::of(&ctx.env, &id).ok()) {
+        crate::notify::dead_letters(&ctx.env, &q);
+    }
 }
 
 fn post(ctx: &Ctx) -> Result<i32, Refusal> {
@@ -260,6 +268,7 @@ fn retry_drop(ctx: &Ctx, verb: &str) -> Result<i32, Refusal> {
     }
     let q = open(ctx, &id)?;
     let i = if verb == "retry" { q.retry(&item, now())? } else { q.drop_item(&item, now())? };
+    nimitz_core::notify::clear_dead(&ctx.env, &id.0, &i.id);
     out::ok(&format!("item {} {}", i.id, if verb == "retry" { "back to pending" } else { "dropped (kept under dead/dropped/)" }));
     Ok(0)
 }
@@ -471,6 +480,7 @@ pub fn ask(ctx: &Ctx) -> Result<i32, String> {
         }
         show(&q, &posted.id, got, posted.token.as_deref())
     })();
+    told(ctx, 0);
     Ok(r.unwrap_or_else(|e| refuse(&e)))
 }
 

@@ -414,12 +414,15 @@ fn queue_block(q: &nimitz_core::queue::Status, now: f64, width: usize) -> Vec<Li
         ));
         v.push(kv("lease", format!("{lease}  (try {})", c.tries)));
     }
-    v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "done"), st(mono::COMMENT)), Span::styled(format!("{}", q.done), st(mono::FG)), Span::styled("  kept 7d (keep_done)", st(mono::SOFT))]));
+    v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "done"), st(mono::COMMENT)), Span::styled(format!("{}", q.done), st(mono::FG)), Span::styled(format!("  kept {} (keep_done)", human(q.keep_done_s)), st(mono::SOFT))]));
     if q.undelivered > 0 {
         v.push(kv("to pick up", format!("{} answer(s) the asker was gone for", q.undelivered)));
     }
     if q.quarantined > 0 {
         v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "unreadable"), st(mono::COMMENT)), Span::styled(format!("{} file(s) under quarantine/", q.quarantined), bold(mono::ERROR))]));
+    }
+    if q.unreadable > 0 {
+        v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "unreadable"), st(mono::COMMENT)), Span::styled(format!("{} file(s) in the queue that do not read as items", q.unreadable), bold(mono::ERROR))]));
     }
     if !q.dead.is_empty() {
         v.push(blank());

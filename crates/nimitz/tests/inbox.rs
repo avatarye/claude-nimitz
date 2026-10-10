@@ -19,7 +19,8 @@ struct Run {
 }
 
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)]) -> Run {
-    let o = Command::new(EXE).env_clear().env("PATH", "/usr/bin:/bin").envs(vars).envs(extra.iter().copied()).args(args).stdin(Stdio::null()).output().unwrap();
+    // (a needs-you delivery gives up at once: no process outlives the test by minutes)
+    let o = Command::new(EXE).env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_NOTIFY_RETRY", "0").envs(vars).envs(extra.iter().copied()).args(args).stdin(Stdio::null()).output().unwrap();
     Run { code: o.status.code().unwrap_or(-1), out: format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)) }
 }
 
@@ -240,6 +241,22 @@ fn a_crashed_aide_gives_the_item_back_and_a_poison_item_dead_letters() {
     assert_eq!(sb.run_as(KB, &["inbox", "claim", "MAIN/@KB"]).code, 3, "dead after two tries, the queue is empty");
     let st = sb.json(&[], &["inbox", "status", "MAIN/@KB"]);
     assert!(st["dead"][0]["reason"].as_str().unwrap().contains("lease ran out"), "{st}");
+    // its parent is told (aide.md 5.3): the needs-you notice of the dead letter,
+    // delivered (or, here, with no admiral running, failed and in check)
+    let id = st["dead"][0]["id"].as_str().unwrap().to_string();
+    let n: Value = serde_json::from_slice(&std::fs::read(PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("needs").join(format!("MAIN%2F@KB#dead-{id}.json"))).unwrap()).unwrap();
+    assert_eq!((n["kind"].as_str(), n["id"].as_str()), (Some("dead"), Some("MAIN/@KB")));
+    assert!(n["detail"].as_str().unwrap().starts_with(&format!("item {} (wiki.note.v1, from the user) failed 2 times: its lease ran out", id.trim_start_matches('0'))), "{n}");
+    let check = (0..50).find_map(|_| {
+        let c = sb.run(&["check"]);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        c.out.contains("notify.failed").then_some(c.out)
+    });
+    let check = check.expect("the delivery to an admiral that is not running fails, and check says so");
+    assert!(check.contains("MAIN/@KB has a dead letter and MAIN was not told") && check.contains(&format!("nimitz inbox retry MAIN/@KB {}", id.trim_start_matches('0'))), "{check}");
+    // a retry clears it
+    assert_eq!(sb.run(&["inbox", "retry", "MAIN/@KB", &id]).code, 0);
+    assert!(!sb.run(&["check"]).out.contains("notify.failed"));
     let _ = &sb.base;
 }
 

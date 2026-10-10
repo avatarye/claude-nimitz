@@ -687,6 +687,8 @@ pub const BACKLOG_AGE_S: f64 = 10.0 * 60.0;
 /// The colour an aide's queue gives its row, worst first: a dead letter
 /// (needs you: the pink chip, pulsing), a backlog (`BACKLOG_*`: warning
 /// yellow), an item claimed (busy green, spinning); None: its own status.
+/// (`aide_node` lets a dead letter show on an aide that is down; a backlog
+/// or a claim, never: the aide's own state says more then.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueueMood {
     Dead,
@@ -730,8 +732,8 @@ pub fn queue_spans(q: &nimitz_core::queue::Status) -> Vec<(Span<'static>, u8)> {
     if !q.dead.is_empty() {
         v.push(part(format!("{} dead", q.dead.len()), bold(mono::NEEDS), 1));
     }
-    if q.quarantined > 0 {
-        v.push(part(format!("{} unreadable", q.quarantined), c(mono::ERROR), 5));
+    if q.quarantined + q.unreadable > 0 {
+        v.push(part(format!("{} unreadable", q.quarantined + q.unreadable), c(mono::ERROR), 5));
     }
     if q.undelivered > 0 {
         v.push(part(format!("{} to pick up", q.undelivered), c(mono::COMMENT), 6));
@@ -746,7 +748,9 @@ fn aide_node(m: &Member, v: &View) -> Node {
     let Some(q) = &m.inbox else { return n };
     if m.status != Status::NeedsYou {
         let glyph = v.icons.status(m.status);
-        match queue_mood(q) {
+        // a backlog or a claim says nothing of an aide that is not running
+        let mood = queue_mood(q).filter(|md| *md == QueueMood::Dead || member_live(m));
+        match mood {
             Some(QueueMood::Dead) => {
                 n.status = (format!("{glyph} {}", status_word(m.status)), status_style(Status::NeedsYou));
                 n.anim = Anim::Pulse;

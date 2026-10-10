@@ -6,8 +6,8 @@
   keeps for {ID}: an item survives a crash, a reboot, a `/clear` and a
   relaunch, so your conversation is disposable. Your CLAUDE.md says how to
   do each item type.
-- Work the inbox whenever you are woken (a `[nimitz inbox]` line, a session
-  start, your cron), one item at a time, oldest first:
+- Work the inbox whenever you are woken (a session start, your cron, a
+  message), one item at a time, oldest first:
   1. `nimitz inbox claim {ID}` prints the next item as JSON; exit 3 means
      the inbox is empty: stop and wait for the next ring.
   2. Do the work. Past half the lease (`claim.until`), run

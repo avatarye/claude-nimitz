@@ -164,18 +164,24 @@ pub fn folder_issue(env: &Env, id: &Id, cwd: &str) -> Option<Issue> {
 
 /// An aide is always on (docs/design/aide.md section 9): `aide.down` when
 /// the machine that runs it (its `dirs` names this one) has no live job of
-/// it, `aide.unpinned` when its live job is not pinned (the daemon would
+/// it (an error while its parent runs; Info when the parent is down too: a
+/// `stop F` stops both on purpose), `aide.unpinned` when its live job is not pinned (the daemon would
 /// idle-retire it), `aide.model` when the account's `availableModels` leave
 /// its model out (Claude Code would silently run the default instead).
-pub fn aide_issues(env: &Env, m: &Member, here: bool) -> Vec<Issue> {
+pub fn aide_issues(env: &Env, m: &Member, here: bool, parent_live: bool) -> Vec<Issue> {
     let mut out = vec![];
     let id = &m.id;
     let live = m.session.as_ref().filter(|s| s.pid.is_some());
     if here && live.is_none() {
+        let why = m.reasons.first().map(String::as_str).unwrap_or("no live job");
         out.push(Issue {
             code: "aide.down".into(),
-            severity: Severity::Error,
-            message: format!("{id} is always on but not running ({})", m.reasons.first().map(String::as_str).unwrap_or("no live job")),
+            severity: if parent_live { Severity::Error } else { Severity::Info },
+            message: if parent_live {
+                format!("{id} is always on but not running ({why})")
+            } else {
+                format!("{id} is down with its parent ({why}); it comes back with the parent's start")
+            },
             fix: Some(format!("nimitz start {id}")),
             id: Some(id.clone()),
         });
@@ -190,7 +196,7 @@ pub fn aide_issues(env: &Env, m: &Member, here: bool) -> Vec<Issue> {
         });
     }
     if let (Some(model), Some(allowed)) = (crate::claude::model_for(env, id), crate::claude::available_models(env)) {
-        if !allowed.iter().any(|a| *a == model) {
+        if !crate::claude::model_allowed(&model, &allowed) {
             out.push(Issue {
                 code: "aide.model".into(),
                 severity: Severity::Error,
@@ -252,7 +258,8 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
             }
             if m.role == Role::Aide {
                 let here = fleets.iter().find(|f| f.config.fleet == m.id.fleet()).is_some_and(|f| crate::config::member_dir(env, f, &m.id).is_some());
-                out.extend(aide_issues(env, m, here));
+                let parent_live = m.id.parent().and_then(|p| fleet.members().find(|x| x.id == p)).is_some_and(|p| p.session.as_ref().is_some_and(|s| s.pid.is_some()));
+                out.extend(aide_issues(env, m, here, parent_live));
             }
             // Session rules (name.*, labels.*, dup.live, copy.rows, lineage.broken,
             // held, ship.elsewhere) arrive here too: snapshot puts

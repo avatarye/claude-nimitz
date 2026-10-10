@@ -22,7 +22,7 @@ struct Run {
 
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)], stdin: Option<&str>) -> Run {
     let mut c = Command::new(EXE);
-    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_VERBOSE", "1").envs(vars).args(args);
+    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_VERBOSE", "1").env("NIMITZ_NOTIFY_RETRY", "0").envs(vars).args(args);
     for (k, v) in extra {
         c.env(k, v);
     }
@@ -2494,9 +2494,16 @@ fn an_aide_comes_up_with_its_admiral_and_goes_down_before_it() {
     let r = sb.run(&["stop", "MAIN", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(!live(&sb.member("MAIN/@KB")) && !live(&sb.member("MAIN")));
-    // check: down; and a model the account leaves out
+    // check: down with its parent, on purpose (Info); down under a live parent (an error)
+    let r = sb.run(&["check", "MAIN/@KB", "--json"]);
+    let issues: Value = serde_json::from_str(r.out.trim()).unwrap_or_else(|e| panic!("{e}: {}", r.out));
+    let down = |v: &Value| v.as_array().unwrap().iter().find(|i| i["code"] == "aide.down").cloned().expect("aide.down");
+    assert_eq!(down(&issues)["severity"], "Info", "{issues}");
+    assert_eq!(sb.run(&["start", "MAIN", "--only", "--yes"]).code, 0);
+    assert!(live(&sb.member("MAIN")) && !live(&sb.member("MAIN/@KB")));
     let r = sb.run(&["check", "MAIN/@KB"]);
     assert!(r.out.contains("aide.down") && r.out.contains("fix: nimitz start MAIN/@KB"), "{}", r.out);
+    assert_eq!(down(&serde_json::from_str(sb.run(&["check", "MAIN/@KB", "--json"]).out.trim()).unwrap())["severity"], "Error");
     std::fs::write(sb.base.join("claude_home/settings.json"), r#"{"availableModels": ["opus"]}"#).unwrap();
     let r = sb.run(&["check", "MAIN/@KB"]);
     assert!(r.out.contains("aide.model") && r.out.contains("add sonnet to availableModels"), "{}", r.out);
@@ -2530,4 +2537,20 @@ fn a_start_waits_for_an_aide_s_item_pins_it_and_skips_one_of_another_machine() {
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(!r.out.contains("@FAR"), "{}", r.out);
     assert!(!sb.run(&["check", "MAIN/@FAR"]).out.contains("aide.down"));
+}
+
+/// `start F/@KB` is one member's start, as a ship's is: no fleet summary,
+/// no `active.none`.
+#[test]
+fn an_aides_start_is_a_members_start() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let r = sb.run(&["start", "MAIN/@KB", "--plan", "--json"]);
+    let start = r.out.find('{').unwrap_or_else(|| panic!("{}", r.out));
+    let plan: Value = serde_json::Deserializer::from_str(&r.out[start..]).into_iter::<Value>().next().unwrap().unwrap();
+    assert_eq!(plan["summary"], "start MAIN/@KB", "{plan}");
+    assert!(!plan["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "active.none"), "{plan}");
+    // a fleet's start still speaks for the fleet
+    let r = sb.run(&["start", "MAIN", "--plan", "--json"]);
+    assert!(r.out.contains("active.none") && r.out.contains("\"summary\": \"start MAIN: "), "{}", r.out);
 }

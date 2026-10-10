@@ -1888,6 +1888,30 @@ fn an_aide_row_takes_its_colour_from_its_queue() {
     assert_eq!(mood(&t), Some(QueueMood::Working));
     assert_eq!(cell(&mut t).0, mono::BUSY);
     assert_eq!(cell(&mut t).2, Anim::Spin);
+    // a claim or a backlog on an aide that is not running: its own state says it
+    for backlog in [false, true] {
+        let mut t = with_kb(|m| {
+            m.status = Status::Stopped;
+            if let Some(s) = m.session.as_mut() {
+                s.pid = None;
+            }
+            let q = m.inbox.as_mut().unwrap();
+            q.dead.clear();
+            if backlog {
+                q.pending = BACKLOG_PENDING + 5;
+            }
+        });
+        let (fg, _, anim) = cell(&mut t);
+        assert_eq!((fg, anim), (mono::MUTED, Anim::None), "stopped, backlog {backlog}");
+    }
+    // a dead letter shows even then
+    let mut t = with_kb(|m| {
+        m.status = Status::Stopped;
+        if let Some(s) = m.session.as_mut() {
+            s.pid = None;
+        }
+    });
+    assert_eq!(cell(&mut t).1, mono::NEEDS);
     // nothing to say: its own state (idle)
     let mut t = with_kb(|m| {
         m.status = Status::Idle;
@@ -1915,7 +1939,7 @@ fn an_aides_detail_shows_its_queue_and_offers_retry_and_drop_for_a_dead_letter()
         goto(&mut t.app, "M:MAIN/@KB");
         keys(&mut t.app, "w");
         let s = screen(&mut t.app, w, 120);
-        for want in ["INBOX", "pending     3", "ends in 7m", "done        12", "DEAD LETTERS (1)", "merge conflict", "SENDERS", "7/60 per 1h", "frees in 30m", "RECENT", "result  Leases are 15", "x T retry its oldest dead letter", "x X drop its oldest dead letter"] {
+        for want in ["INBOX", "pending     3", "ends in 7m", "done        12  kept 7d (keep_done)", "DEAD LETTERS (1)", "merge conflict", "SENDERS", "7/60 per 1h", "frees in 30m", "RECENT", "result  Leases are 15", "x T retry its oldest dead letter", "x X drop its oldest dead letter"] {
             assert!(s.contains(want), "{w}: {want}\n{s}");
         }
         if w == 120 {

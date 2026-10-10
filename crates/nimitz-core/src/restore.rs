@@ -650,7 +650,10 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
     if explicit && !snap.fleets.iter().any(|f| Some(f.id.fleet()) == fleet) {
         rp.plan.refusals.push(issue("member.unknown", Severity::Error, format!("no fleet {} in the config", fleet.unwrap_or_default()), None, None));
     }
-    if rp.no_active_set && !opts.shape_only && ctx.target.as_ref().is_none_or(|t| t.parts().len() < 3) {
+    // a fleet's or a squadron's start (by the target's role: a ship's or an
+    // aide's is one member's) speaks for the whole
+    let wide = ctx.target.as_ref().is_none_or(|t| t.role().lead());
+    if rp.no_active_set && !opts.shape_only && wide {
         rp.plan.warnings.push(issue("active.none", Severity::Info, "no active set recorded (first restore, or NIMITZ_STATE wiped): leads come back; ships stay parked (`--all` wakes every ship)".into(), None, None));
     }
     // the relaunches last: ships, then commodores, then admirals (a stable sort
@@ -661,7 +664,7 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
         rp.steps.extend(group);
     }
     // (a one-ship start says nothing about the fleet: its line says it all)
-    if !opts.shape_only && ctx.target.as_ref().is_none_or(|t| t.parts().len() < 3) {
+    if !opts.shape_only && wide {
         rp.plan.summary = format!("{}: {}", rp.plan.summary, happened(&rp, snap.cc_version.as_deref(), opts.restart));
     }
     rp.plan.steps = rp.steps.iter().flat_map(RestoreStep::display).collect();
