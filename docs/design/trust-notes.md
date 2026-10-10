@@ -98,8 +98,19 @@ then.
   Claude Code would make. Backups per source, the newest five plus `.first`
   (0600, in `NIMITZ_STATE/backups/`, never synced; it keeps the login token
   that file holds, for good: delete it once the trust is known good).
+  `check` and `evidence::folder_trusted` read the same set (`trust::files`),
+  a key accepted when any file accepts it; with no file readable, trust is
+  unknown (no issue). A linked file is written where it points; a link to
+  nothing is refused, never replaced by a file.
+- The data root's trust covers a folder only by its real path, and only
+  outside any repository but the data root's own: a managed folder that
+  became a repository wants its own trust (as `trust::target` says), and a
+  link out of the data root is judged where it leads.
+- The home guard (`too_broad`, `fix`) uses `env::home()`: `USERPROFILE` on
+  Windows, where cmd and PowerShell set no `HOME`.
 - serde_json `preserve_order` is on (the rewrite keeps Claude Code's order;
-  `forget` uses `shift_remove`).
+  every removal in `trust.rs` uses `shift_remove`; `evidence::terminal_of`
+  takes the first `herdr*` field by name, not by file order).
 - e2e `e2e_trust_lets_a_background_job_start_in_an_untrusted_repo` (#96):
   real Claude Code 2.1.296 refuses `--bg` in a fresh repo ("Workspace not
   trusted"), `nimitz trust` writes it, the same `--bg` starts.
@@ -114,8 +125,13 @@ then.
 - Windows (done at the merge with dev, which carries the windows port):
   each key is written in its trimmed form and `env::trust_key`'s `/` form,
   the case as on disk (`env::canon` strips `\\?\` through `os::canonical`);
-  the fix quotes with double quotes there. `case_exact_hint` stays for fixes
-  that still run `claude` by hand. Unverified on a Windows machine.
+  the fix quotes with double quotes there. Inside double quotes cmd still
+  expands `%` and PowerShell `$` and the backtick, and no one word is safe in
+  both, so a path with `%`, `$` or a backtick gets no `nimitz trust` fix line:
+  the fix is "run `claude` once in <path> and accept the trust prompt" with
+  `case_exact_hint` (PowerShell `-LiteralPath`, single quotes). `case_exact_hint`
+  stays for fixes that still run `claude` by hand. Unverified on a Windows
+  machine.
 - NFC key forms (macOS) are not written.
 - Claude Code's gated "storage v5" config backend (a versioned update, not the
   lock directory) is not verified to notice nimitz's rename.
