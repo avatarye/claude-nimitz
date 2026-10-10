@@ -515,7 +515,7 @@ fn row13_a_session_file_with_extra_bytes_is_read_not_flagged() {
     let w = world();
     let id = w.ship("CLEAN");
     let before = w.member(&w.snap(), &id).session.unwrap();
-    let f = w.base.join("claude_home/sessions").join(format!("{}.json", before.short_id.unwrap()));
+    let f = w.base.join("claude_home").join("sessions").join(format!("{}.json", before.short_id.unwrap()));
     let mut raw = std::fs::read(&f).unwrap();
     raw.extend_from_slice(br#"sionId": "an older, longer version"}"#);
     std::fs::write(&f, raw).unwrap();
@@ -535,7 +535,7 @@ fn issue_config_invalid_and_config_layout() {
     sandbox::break_a_config(&w.base, "BAD");
     // the broken fleet's commodore is live, known by its labels only
     let sq = Id::commodore("BAD", "SQ");
-    let sq_dir = w.env.fleet_dir("BAD").join("squadrons/sq");
+    let sq_dir = w.env.fleet_dir("BAD").join("squadrons").join("sq");
     std::fs::create_dir_all(&sq_dir).unwrap();
     let sid = sandbox::live_session(&w.base, &sq, sq_dir.to_str().unwrap(), false);
     let snap = w.snap();
@@ -657,7 +657,7 @@ fn issue_ship_elsewhere() {
 fn up_starts_ships_in_depends_on_order() {
     let w = world();
     // FRESH depends on STOPPED, so STOPPED comes first even though F sorts before S
-    let sq = w.env.fleet_dir("MAIN").join("squadrons/argos/squadron.toml");
+    let sq = w.env.fleet_dir("MAIN").join("squadrons").join("argos").join("squadron.toml");
     let raw = std::fs::read_to_string(&sq).unwrap();
     let at = raw.find("name = \"FRESH\"").expect("the FRESH ship");
     let (head, tail) = raw.split_at(at);
@@ -1154,7 +1154,7 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
         olds.push(short);
     }
     // the first one was used last: its job row has the newest updatedAt
-    let job = w.base.join("claude_home/jobs").join(&olds[0]).join("state.json");
+    let job = w.base.join("claude_home").join("jobs").join(&olds[0]).join("state.json");
     let mut j: serde_json::Value = serde_json::from_slice(&std::fs::read(&job).unwrap()).unwrap();
     j["updatedAt"] = serde_json::json!(((evidence::now() + 60.0) * 1000.0) as i64);
     std::fs::write(&job, serde_json::to_vec(&j).unwrap()).unwrap();
@@ -1304,7 +1304,7 @@ fn a_symlinked_nimitz_home_starts_checks_finds_stowaways_and_trusts() {
     let base = link.parent().unwrap().to_path_buf();
     let real = base.join("dropbox-nimitz");
     std::fs::rename(&link, &real).unwrap();
-    std::os::unix::fs::symlink(&real, &link).unwrap();
+    nimitz_core::os::symlink(&real, &link).unwrap();
     assert_eq!(w.env.home, link, "the env keeps the path as written");
 
     // a managed ship: its folder is under the link
@@ -1322,7 +1322,9 @@ fn a_symlinked_nimitz_home_starts_checks_finds_stowaways_and_trusts() {
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
     let row = w.rows().into_iter().find(|r| r.name == id.name()).unwrap();
-    assert!(row.cwd.starts_with(real.to_str().unwrap()), "real cwd recorded: {}", row.cwd);
+    // (Windows does not resolve a link in a process's folder: the link path is what is recorded there)
+    let recorded_ok = row.cwd.starts_with(real.to_str().unwrap()) || (cfg!(windows) && row.cwd.starts_with(link.to_str().unwrap()));
+    assert!(recorded_ok, "real cwd recorded: {}", row.cwd);
 
     // check: the live ship is its member's session, with nothing to say
     let snap = w.snap();
@@ -1336,7 +1338,7 @@ fn a_symlinked_nimitz_home_starts_checks_finds_stowaways_and_trusts() {
     assert!(w.start(&snap, &id, false).steps.iter().all(|s| s.id.as_ref() != Some(&id)));
 
     // a stowaway made by hand in the commodore's folder (real path) is found
-    let sq_real = real.join("main/squadrons/argos");
+    let sq_real = real.join("main").join("squadrons").join("argos");
     let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "by hand".into(), "x".into()], Some(sq_real.to_str().unwrap()));
     assert_eq!(rc, 0, "{out}");
     assert!(w.snap().stowaways.iter().any(|s| s.name == "by hand"), "a real-path session under the linked home is in fleet scope");
@@ -1345,10 +1347,10 @@ fn a_symlinked_nimitz_home_starts_checks_finds_stowaways_and_trusts() {
     let t = base.join("trusted-real");
     std::fs::create_dir_all(&t).unwrap();
     let tl = base.join("trusted-link");
-    std::os::unix::fs::symlink(&t, &tl).unwrap();
-    let f = base.join("claude_home/.claude.json");
+    nimitz_core::os::symlink(&t, &tl).unwrap();
+    let f = base.join("claude_home").join(".claude.json");
     let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
-    v["projects"][t.canonicalize().unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
+    v["projects"][nimitz_core::os::canonical(&t).unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
     std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
     assert!(evidence::folder_trusted(&w.env, &mut evidence::FileCache::default(), tl.to_str().unwrap()));
 }
@@ -1414,7 +1416,7 @@ fn strays_in_a_ship_folder_are_never_the_ship() {
     let m = w.member(&w.snap(), &id);
     assert!(m.extra_rows.iter().any(|r| r.short_id.as_deref() == Some(fork.as_str())), "named <name>-w-w: {:?}", m.extra_rows);
     // with no name at all, the job row's fork link alone ties it to the ship
-    for f in [w.base.join("claude_home/jobs").join(&fork).join("state.json"), w.base.join("claude_home/sessions").join(format!("{fork}.json"))] {
+    for f in [w.base.join("claude_home").join("jobs").join(&fork).join("state.json"), w.base.join("claude_home").join("sessions").join(format!("{fork}.json"))] {
         let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
         v["name"] = serde_json::json!("");
         std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
@@ -1484,7 +1486,7 @@ fn bug50_a_launch_in_an_untrusted_worktree_fails_with_the_trust_fix() {
     let i = out.issues.iter().find(|i| i.code == "step.failed").expect("the launch failed");
     assert!(i.message.contains("Workspace not trusted"), "{}", i.message);
     let fix = i.fix.clone().expect("a fix");
-    assert!(fix.contains("run `claude` once in") && fix.contains("/wt"), "{fix}");
+    assert!(fix.contains("run `claude` once in") && (fix.contains("/wt") || fix.contains("\\wt")), "{fix}");
 }
 
 #[test]
@@ -1568,7 +1570,7 @@ fn the_fake_refuses_a_plain_git_repo_covered_only_by_a_parent() {
     // an entry at the repo root trusts it
     for f in ["claude_home/.claude.json", "claude_home.json"].iter().map(|f| w.base.join(f)) {
         let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
-        v["projects"][repo.canonicalize().unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
+        v["projects"][nimitz_core::os::canonical(&repo).unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
         std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
     }
     let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "x".into()], repo.to_str());
@@ -1636,9 +1638,9 @@ fn a_copy_by_name_in_the_folder_is_swept_and_a_holder_elsewhere_is_name_taken() 
     // a holder elsewhere may be adopted
     let rand = w.base.join("elsewhere");
     std::fs::create_dir_all(&rand).unwrap();
-    let f = w.base.join("claude_home/.claude.json");
+    let f = w.base.join("claude_home").join(".claude.json");
     let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
-    v["projects"][rand.canonicalize().unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
+    v["projects"][nimitz_core::os::canonical(&rand).unwrap().to_str().unwrap()] = serde_json::json!({"hasTrustDialogAccepted": true});
     std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
     let id = w.ship("FRESH");
     let (rc, out) = claude::run(&[w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), id.name(), "x".into()], rand.to_str());

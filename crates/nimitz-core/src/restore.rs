@@ -73,7 +73,7 @@ pub fn norm_label(label: &str) -> String {
 
 /// The shells: a pane whose foreground is one of these alone is at its
 /// prompt. The one list; `nimitz_mux::is_shell` is this function.
-pub const SHELLS: [&str; 9] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"];
+pub const SHELLS: [&str; 12] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu", "pwsh", "powershell", "cmd"];
 
 /// A shell at its prompt: nothing in the foreground but the shell itself
 /// (by its program name, a login `-zsh` included).
@@ -87,8 +87,13 @@ pub fn is_shell(argv: &[String]) -> bool {
 /// What `shell_pane_of` says of a pane whose foreground could not be read.
 const UNREADABLE: &str = "a foreground nimitz cannot read";
 
-fn program_name(p: &str) -> &str {
-    p.rsplit('/').next().unwrap_or(p)
+/// A program's name: its path's last part, without a Windows `.exe`.
+pub fn program_name(p: &str) -> &str {
+    let name = p.rsplit(['/', '\\']).next().unwrap_or(p);
+    match name.len().checked_sub(4) {
+        Some(n) if name.is_char_boundary(n) && name[n..].eq_ignore_ascii_case(".exe") => &name[..n],
+        _ => name,
+    }
 }
 
 /// The Herdr workspace that is never a target (R-35).

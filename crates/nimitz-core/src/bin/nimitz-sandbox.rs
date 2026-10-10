@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::Path;
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = nimitz_core::os::args();
     let code = match args.first().map(String::as_str) {
         Some("create") => match args.get(1) {
             Some(base) => {
@@ -39,7 +39,7 @@ fn main() {
             let event = args.get(1).cloned().unwrap_or_default();
             let mut stdin = String::new();
             let _ = std::io::stdin().read_to_string(&mut stdin);
-            let vars: std::collections::HashMap<String, String> = std::env::vars().collect();
+            let vars: std::collections::HashMap<String, String> = nimitz_core::os::env_vars();
             let env = nimitz_core::env::Env::from_vars(&vars);
             let out = nimitz_core::hook::handle(&env, &event, &stdin, &vars);
             if !out.is_empty() {

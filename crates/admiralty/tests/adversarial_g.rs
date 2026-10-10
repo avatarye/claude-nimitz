@@ -21,7 +21,7 @@ fn world() -> World {
     let base = dir.path().join("sb");
     nimitz_core::sandbox::create(&base, std::path::Path::new(env!("CARGO_BIN_EXE_admiralty"))).unwrap();
     let vars = nimitz_core::sandbox::env_for(&base);
-    let base = base.canonicalize().unwrap();
+    let base = nimitz_core::os::canonical(&base).unwrap();
     World { _dir: dir, base, vars }
 }
 
@@ -65,7 +65,7 @@ fn bug34_monitor_only_still_starts_a_ship() {
 #[test]
 fn bug35_a_broken_squadron_toml_keeps_the_fleet_on_screen() {
     let w = world();
-    let t = w.base.join("nimitz/main/squadrons/argos/squadron.toml");
+    let t = w.base.join("nimitz").join("main").join("squadrons").join("argos").join("squadron.toml");
     let s = std::fs::read_to_string(&t).unwrap();
     std::fs::write(&t, s + "\nname = \"oops\n").unwrap();
     let mut app = app_on(&w, false);

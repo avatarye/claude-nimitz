@@ -9,7 +9,8 @@ sandbox (fake claude) with nimitz-mux's fake herdr as its multiplexer, so the
 jump lands in the fake's call log and never on a real pane. Presses real keys and checks
 pane state through the private server's API. Stops only that server, after
 checking its socket path. ADMIRALTY_BIN picks the binary (default:
-`admiralty` on PATH, e.g. target/debug/admiralty for an uninstalled build).
+`admiralty` on PATH, e.g. target/debug/admiralty for an uninstalled build; its
+folder goes first on the server's PATH, where the plugin's commands find it).
 """
 
 import fcntl, glob, json, os, pty, re, select, shutil, signal, struct, subprocess, sys, tempfile, termios, time
@@ -23,6 +24,10 @@ SANDBOX = os.path.join(TMP, "aw-sb")
 ISO = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
 FAKE = os.path.join(TMP, "fake-herdr")
 BIN = ISO.get("ADMIRALTY_BIN", "admiralty")
+# the plugin's commands are a bare `admiralty`: the chosen binary goes first on the server's PATH
+if os.path.dirname(BIN):
+    BIN = os.path.abspath(BIN)
+    ISO["PATH"] = os.path.dirname(BIN) + os.pathsep + ISO.get("PATH", "")
 ISO.update(XDG_CONFIG_HOME=os.path.join(TMP, "config"), XDG_STATE_HOME=os.path.join(TMP, "state"),
            TERM="xterm-256color", ADMIRALTY_ARGS=f"--sandbox {SANDBOX}",
            NIMITZ_MUX="herdr", NIMITZ_HERDR_BIN=os.path.join(TMP, "fake-herdr.sh"))
@@ -149,7 +154,7 @@ def main():
             pump(fd, 2)
         check("prefix+f opens the watch, focused", len(p) == 2 and state() == p[1], (p, state()))
         info = json.loads(h("pane", "get", p[1])[1])["result"]["pane"]
-        check("its pane label is the one toggle.sh checks", info.get("label") == "Admiralty", info)
+        check("its pane label is the one the toggle checks", info.get("label") == "Admiralty", info)
         check("the watch renders", any("admiralty" in l.lower() for l in SCR.display), "no header")
         toggle(); check("prefix+f again closes it", panes() == p[:1], panes())
         toggle(); key(fd, "q", wait=3); check("q closes it", len(panes()) == 1, panes())

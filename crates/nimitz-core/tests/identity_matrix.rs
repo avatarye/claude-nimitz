@@ -56,7 +56,7 @@ impl W {
         out
     }
     fn job_file(&self, short: &str) -> Value {
-        let p = self.base.join("claude_home/jobs").join(short).join("state.json");
+        let p = self.base.join("claude_home").join("jobs").join(short).join("state.json");
         serde_json::from_slice(&std::fs::read(&p).unwrap_or_else(|_| panic!("no job row {short}"))).unwrap()
     }
     fn events(&self) -> Vec<Event> {
@@ -227,6 +227,7 @@ fn e1_an_old_retire_line_does_not_name_a_later_crash() {
     assert!(!m.reasons.iter().any(|r| r.contains("daemon retired it")), "{:?}", m.reasons);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_registry_that_cannot_be_read_is_never_written_over_by_the_hook() {
     use std::os::unix::fs::PermissionsExt;
@@ -488,7 +489,7 @@ fn cli_09_a_resume_of_a_live_job_is_a_copy_under_an_auto_name_and_the_member_sta
     let w = world();
     let (id, job, sid, cwd) = clean(&w);
     // a `done` job whose process is alive is a live idle member, not parked, not stopped
-    let p = w.base.join("claude_home/jobs").join(&job).join("state.json");
+    let p = w.base.join("claude_home").join("jobs").join(&job).join("state.json");
     let mut j: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
     j["state"] = json!("done");
     std::fs::write(&p, j.to_string()).unwrap();

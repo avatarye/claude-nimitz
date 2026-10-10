@@ -50,6 +50,122 @@ pub fn shell_join(cmd: &[String]) -> String {
         .join(" ")
 }
 
+/// How a shell reads a typed line, by its program name (`-zsh`,
+/// `C:\...\PowerShell.exe` included). None for a shell nimitz does not quote
+/// for (nu) and for none known.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Quoting {
+    Posix,
+    Cmd,
+    Pwsh,
+}
+
+fn quoting(shell: Option<&str>) -> Option<Quoting> {
+    let name = nimitz_core::restore::program_name(shell?).trim_start_matches('-').to_ascii_lowercase();
+    match name.as_str() {
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh" | "tcsh" | "csh" => Some(Quoting::Posix),
+        "cmd" => Some(Quoting::Cmd),
+        "pwsh" | "powershell" => Some(Quoting::Pwsh),
+        _ => None,
+    }
+}
+
+/// Does nimitz know how `shell` quotes (`shell_line` quotes for it)?
+pub fn known_shell(shell: Option<&str>) -> bool {
+    quoting(shell).is_some()
+}
+
+/// cmd.exe: one word in double quotes, read back by the program's own
+/// command-line parser (the C runtime's rules): `"` doubled, a run of `\`
+/// doubled where a `"` follows it, and `%` (which cmd expands even inside
+/// quotes) typed outside the quotes as `^%`.
+fn cmd_quote(a: &str) -> String {
+    let mut out = String::from("\"");
+    let mut bs = 0;
+    for c in a.chars() {
+        match c {
+            '\\' => {
+                bs += 1;
+                out.push('\\');
+                continue;
+            }
+            '"' => {
+                out.push_str(&"\\".repeat(bs));
+                out.push_str("\"\"");
+            }
+            '%' => {
+                out.push_str(&"\\".repeat(bs));
+                out.push_str("\"^%\"");
+            }
+            c => out.push(c),
+        }
+        bs = 0;
+    }
+    out.push_str(&"\\".repeat(bs));
+    out.push('"');
+    out
+}
+
+/// PowerShell: one word in single quotes (literal), `'` doubled (and the
+/// typographic single quotes PowerShell also reads as quotes).
+fn pwsh_quote(a: &str) -> String {
+    let mut out = String::from("'");
+    for c in a.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
+}
+
+/// The line that runs `argv` in a pane whose shell is `shell` (its program
+/// name or path, from `pane process-info`):
+/// - sh, bash, zsh and the other POSIX shells (Git Bash too): `shell_join`;
+/// - cmd: `"C:\x\claude.exe" attach <job>`, the program always quoted, the
+///   rest where needed (`cmd_quote`);
+/// - pwsh, powershell: `& 'C:\x\claude.exe' attach <job>` (the call operator:
+///   a quoted first word is a string to PowerShell, not a command);
+/// - an unknown shell: cmd's quoting (`bare_claude` first makes the program
+///   a bare `claude` when PATH finds the same file, a word every shell runs).
+pub fn shell_line(shell: Option<&str>, argv: &[String]) -> String {
+    match quoting(shell) {
+        Some(Quoting::Posix) => shell_join(argv),
+        Some(Quoting::Pwsh) => {
+            let safe = |a: &str| !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "_-./:\\".contains(c));
+            let words = argv.iter().enumerate().map(|(i, a)| if i > 0 && safe(a) { a.clone() } else { pwsh_quote(a) });
+            std::iter::once("&".to_string()).chain(words).collect::<Vec<_>>().join(" ")
+        }
+        Some(Quoting::Cmd) | None => {
+            let safe = |a: &str| !a.is_empty() && a.chars().all(|c| c.is_ascii_alphanumeric() || "_-./:\\@+=,".contains(c));
+            argv.iter()
+                .enumerate()
+                // a bare `claude` (`bare_claude`) stays bare; any other program is quoted
+                .map(|(i, a)| if (i > 0 || a == "claude") && safe(a) { a.clone() } else { cmd_quote(a) })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    }
+}
+
+/// `argv` with its program as the bare word `claude` when that is the
+/// program PATH gives `claude` (`found`, `env::which("claude")`): the same
+/// file by path (case and separators aside) or by its real path. A line for
+/// a shell whose quoting is unknown then starts with a word every shell runs.
+pub fn bare_claude(argv: &[String], found: Option<&str>) -> Vec<String> {
+    let (Some(prog), Some(found)) = (argv.first(), found) else { return argv.to_vec() };
+    if !nimitz_core::restore::program_name(prog).eq_ignore_ascii_case("claude") {
+        return argv.to_vec();
+    }
+    let norm = |p: &str| p.replace('/', "\\").to_lowercase();
+    let same = norm(prog) == norm(found) || matches!((std::fs::canonicalize(prog), std::fs::canonicalize(found)), (Ok(a), Ok(b)) if a == b);
+    if !same {
+        return argv.to_vec();
+    }
+    std::iter::once("claude".to_string()).chain(argv[1..].iter().cloned()).collect()
+}
+
 fn s(v: &Value, k: &str) -> String {
     v.get(k).and_then(Value::as_str).unwrap_or("").to_string()
 }
@@ -420,9 +536,37 @@ impl Herdr {
     }
 
     /// `herdr pane run` joins its arguments with spaces and types the line
-    /// into the pane's shell, so the command goes over as one quoted line.
+    /// into the pane's shell, so the command goes over as one quoted line:
+    /// POSIX quoting on Unix; on Windows quoted for the shell the pane runs
+    /// (`shell_line`).
     fn pane_run(&self, pane_id: &str, cmd: &[String]) -> Result<(), MuxError> {
-        self.run(&["pane", "run", pane_id, &shell_join(cmd)]).map(|_| ())
+        #[cfg(windows)]
+        let line = {
+            let shell = self.pane_shell(pane_id);
+            if known_shell(shell.as_deref()) {
+                shell_line(shell.as_deref(), cmd)
+            } else {
+                shell_line(None, &bare_claude(cmd, nimitz_core::env::which("claude").as_deref()))
+            }
+        };
+        #[cfg(not(windows))]
+        let line = shell_join(cmd);
+        self.run(&["pane", "run", pane_id, &line]).map(|_| ())
+    }
+
+    /// The program of the shell in a pane's foreground (`pane process-info`).
+    /// A pane just made may not show its shell yet: asked for up to a second
+    /// (an unreadable foreground is not asked again).
+    #[cfg(windows)]
+    fn pane_shell(&self, pane_id: &str) -> Option<String> {
+        for _ in 0..10 {
+            let procs = self.foreground_procs(pane_id).ok()?;
+            if let Some(p) = procs.iter().find(|(argv, _)| !argv.is_empty() && crate::is_shell(argv)).and_then(|(argv, _)| argv.first()) {
+                return Some(p.clone());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        None
     }
 
     /// The workspace whose label loosely matches, else a new one; `fresh_tab`
@@ -633,7 +777,81 @@ impl Mux for Herdr {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_label, shell_join};
+    use super::{bare_claude, known_shell, normalize_label, shell_join, shell_line};
+
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn cmd_gets_double_quotes() {
+        let exe = r"C:\Program Files\Claude\claude.exe";
+        assert_eq!(shell_line(Some("cmd"), &v(&[exe, "attach", "9aacf927"])), r#""C:\Program Files\Claude\claude.exe" attach 9aacf927"#);
+        // the program is quoted even with no space; the path and case of the shell do not matter
+        assert_eq!(shell_line(Some(r"C:\Windows\System32\CMD.EXE"), &v(&[r"C:\x\claude.exe", "attach", "j"])), r#""C:\x\claude.exe" attach j"#);
+        // `"` doubled, `\` before a `"` doubled, `%` outside the quotes as `^%`, `'` as is
+        assert_eq!(
+            shell_line(Some("cmd"), &v(&[r"C:\it's here\claude.exe", "--name", r#"say "hi""#, r"C:\dir\", r"C:\my dir\", "50%", "[LUX]-LEAD", ""])),
+            r#""C:\it's here\claude.exe" --name "say ""hi""" C:\dir\ "C:\my dir\\" "50"^%"" "[LUX]-LEAD" """#
+        );
+        assert_eq!(shell_line(Some("cmd"), &v(&["x", r#"a\"b"#])), r#""x" "a\\""b""#);
+    }
+
+    #[test]
+    fn powershell_gets_the_call_operator_and_single_quotes() {
+        let exe = r"C:\Program Files\Claude\claude.exe";
+        for sh in ["pwsh", "powershell", r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.exe", "pwsh.exe"] {
+            assert_eq!(shell_line(Some(sh), &v(&[exe, "attach", "9aacf927"])), r"& 'C:\Program Files\Claude\claude.exe' attach 9aacf927", "{sh}");
+        }
+        assert_eq!(
+            shell_line(Some("pwsh"), &v(&[r"C:\it's\claude.exe", "--name", "[LUX]-LEAD", "say \"hi\" $x", "it\u{2019}s", ""])),
+            "& 'C:\\it''s\\claude.exe' --name '[LUX]-LEAD' 'say \"hi\" $x' 'it\u{2019}\u{2019}s' ''"
+        );
+    }
+
+    #[test]
+    fn posix_shells_keep_posix_quoting() {
+        let argv = v(&["/opt/my apps/claude", "attach", "it's"]);
+        for sh in ["bash", "-zsh", "sh", "/usr/bin/fish", r"C:\Program Files\Git\usr\bin\bash.exe", "dash", "ksh"] {
+            assert_eq!(shell_line(Some(sh), &argv), shell_join(&argv), "{sh}");
+            assert!(known_shell(Some(sh)), "{sh}");
+        }
+        assert_eq!(shell_line(Some("bash"), &argv), "'/opt/my apps/claude' attach 'it'\\''s'");
+        // Git Bash reads a Windows path in single quotes as it is
+        assert_eq!(shell_line(Some("bash"), &v(&[r"C:\Program Files\claude.exe", "attach", "j"])), r"'C:\Program Files\claude.exe' attach j");
+    }
+
+    #[test]
+    fn an_unknown_shell_gets_cmd_quoting_and_a_bare_claude_when_path_finds_it() {
+        for sh in [None, Some("nu"), Some("yazi")] {
+            assert!(!known_shell(sh));
+            assert_eq!(shell_line(sh, &v(&[r"C:\a b\claude.exe", "attach", "j"])), r#""C:\a b\claude.exe" attach j"#);
+            assert_eq!(shell_line(sh, &v(&["claude", "attach", "j"])), "claude attach j");
+        }
+        let argv = v(&[r"C:\Users\me\.local\bin\claude.exe", "attach", "j"]);
+        // the same file (case and separators aside): the bare word
+        assert_eq!(bare_claude(&argv, Some("c:/users/me/.local/bin/claude.exe")), v(&["claude", "attach", "j"]));
+        assert_eq!(shell_line(None, &bare_claude(&argv, Some(r"C:\Users\me\.local\bin\claude.exe"))), "claude attach j");
+        // another file, none on PATH, or not claude: as given
+        assert_eq!(bare_claude(&argv, Some(r"C:\other\claude.exe")), argv);
+        assert_eq!(bare_claude(&argv, None), argv);
+        let other = v(&[r"C:\x\yazi.exe", "C:\\"]);
+        assert_eq!(bare_claude(&other, Some(r"C:\x\yazi.exe")), other);
+        // the same file by its real path (a link)
+        #[cfg(unix)]
+        {
+            let td = std::env::temp_dir().join(format!("nimitz-bare-{}", std::process::id()));
+            std::fs::create_dir_all(&td).unwrap();
+            let real = td.join("claude");
+            std::fs::write(&real, "").unwrap();
+            let link = td.join("link-claude");
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            let got = bare_claude(&v(&[real.to_str().unwrap(), "attach", "j"]), link.to_str());
+            std::fs::remove_dir_all(&td).unwrap();
+            assert_eq!(got, v(&["claude", "attach", "j"]));
+        }
+    }
 
     #[test]
     fn shell_join_quotes_only_what_needs_it() {
