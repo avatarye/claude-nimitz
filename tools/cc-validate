@@ -482,8 +482,8 @@ class Run:
             return False, f"{failed_count(r.out)} failed, {len(failed)} named", "\n".join(r.out.splitlines()[-40:])
         if r.code == 124:
             return False, "timed out", "\n".join(r.out.splitlines()[-40:])
-        if r.code != 0 and not known:
-            return False, f"exit {r.code}, no failing test named", "\n".join(r.out.splitlines()[-40:])
+        if r.code != 0 and not (known and re.search(r"`-p \S+ --", r.out)):
+            return False, f"exit {r.code}, no failed target listed", "\n".join(r.out.splitlines()[-40:])
         if n == 0:
             return False, "no test ran", "\n".join(r.out.splitlines()[-40:])
         return True, f"{n} passed{note}"
@@ -503,8 +503,18 @@ class Run:
         its own test folders (`nimitz-e2e-<n>-<its pid>`), nothing else."""
         if not self.sh.killed:
             return
-        mine = re.compile(r"/nimitz-e2e-\d+-(" + "|".join(map(str, sorted(self.sh.killed))) + r")(/|$)")
+        pids = "|".join(map(str, sorted(self.sh.killed)))
+        mine = re.compile(r"/nimitz-e2e-\d+-(" + pids + r")(/|$)")
         self.stop_jobs(self.jobs_where(lambda cwd: str(self.cfg.e2e_base) in cwd and mine.search(cwd)), self.log("e2e"))
+        # its private tmux servers (they leave the process group) and transcripts
+        socks = Path(f"/tmp/tmux-{os.getuid()}")
+        for sock in socks.glob("nz-e2e-*") if socks.is_dir() else []:
+            if re.fullmatch(r"nz-e2e-(" + pids + r")-\d+", sock.name):
+                self.sh.run(["tmux", "-L", sock.name, "kill-server"], timeout=30, log=self.log("e2e"))
+        projects = self.cfg.claude_home / "projects"
+        for p in projects.glob("*nimitz-e2e-*") if projects.is_dir() else []:
+            if re.search(r"nimitz-e2e-\d+-(" + pids + r")(-|$)", p.name):
+                shutil.rmtree(p, ignore_errors=True)
 
     def jobs_where(self, pred):
         """The background jobs whose folder `pred` accepts (jobs/<id>/state.json)."""
@@ -735,7 +745,7 @@ class Run:
         """Where the installed nimitz lives (<root>/bin/nimitz): ~/.local or
         ~/.cargo; ~/.local when none is installed."""
         found = shutil.which("nimitz", path=getattr(self.sh, "env", {}).get("PATH"))
-        return Path(found).resolve().parent.parent if found else self.cfg.home / ".local"
+        return Path(found).parent.parent if found else self.cfg.home / ".local"
 
     def st_install(self):
         root = self.install_root()

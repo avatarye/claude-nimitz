@@ -251,11 +251,19 @@ class PassAndFail(Base):
         self.assertEqual(ccv.failed_count(log), 1)
         self.assertEqual(ccv.unexplained_targets(log.replace("--test glyphs", "--lib")), ["-p admiralty --lib"])
 
+    KNOWN = ("     Running tests/glyphs.rs (/t/debug/deps/glyphs-0123abcd)\n"
+             "test borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\ntest result: FAILED. 644 passed; 1 failed\n")
+
     def test_a_known_unit_failure_does_not_fail_the_run(self):
-        unit = RUN + "test glyphs::borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\ntest result: FAILED. 644 passed; 1 failed\n"
+        unit = self.KNOWN + "error: 1 target failed:\n    `-p admiralty --test glyphs`\n"
         code, out = self.run_it(FakeSh(self.rules(unit=unit)))
         self.assertEqual(code, 0, out)
         self.assertIn("1 known failure", out)
+
+    def test_a_failing_exit_with_no_target_listed_fails_beside_a_known_failure(self):
+        code, out = self.run_it(FakeSh(self.rules(unit=self.KNOWN)))
+        self.assertEqual(code, 1, out)
+        self.assertIn("no failed target listed", out)
 
     def test_an_unknown_unit_failure_fails(self):
         unit = RUN + "test x::new_bug ... FAILED\ntest result: FAILED. 644 passed; 1 failed\n"
