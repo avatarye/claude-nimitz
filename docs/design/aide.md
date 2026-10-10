@@ -174,7 +174,7 @@ queues/HOME%2F@KB/
 
 | Command | Who | What |
 | --- | --- | --- |
-| `inbox post <aide> --type T (--file F \| --json S \| stdin) [--key K] [--from TEXT]` | by the policy (4.5) | validate the type and schema, size cap, depth cap, rate; write `pending/<seq>`; ring the doorbell (4.4); print the id |
+| `inbox post <aide> --type T (--file F \| --payload JSON \| stdin) [--key K] [--from TEXT]` | by the policy (4.5) | validate the type and schema, size cap, depth cap, rate; write `pending/<seq>`; ring the doorbell (S3); print the id (`--json`: `{id, token, duplicate}`) |
 | `inbox claim <aide>` | the aide only | first expire stale leases; take the oldest pending, `tries += 1`, set the lease, rename it to `claimed/`; print the item JSON, or nothing (exit 3) when empty |
 | `inbox heartbeat <aide> <id>` | the aide | extend the lease (long items) |
 | `inbox done <aide> <id> [--result JSON]` | the aide | `claimed/` -> `done/` with the result (the commit; for a reply type, the answer, 4.6), then deliver it |
@@ -182,7 +182,7 @@ queues/HOME%2F@KB/
 | `inbox list <aide> [--state ...]` / `inbox status [<aide>]` | anyone (read-only) | depths, the oldest age, the claimed item and its lease, dead items with their reason |
 | `inbox retry <aide> <id>` / `inbox drop <aide> <id>` | the user, the parent | dead -> pending (tries reset) / dead or pending -> removed (kept in `dead/dropped/`) |
 | `inbox result <aide> <id> [--token T] [--wait D]` | **the requester only** (4.6), the user | the item's state and, once done, its result; `--wait` blocks until done or dead |
-| `ask <aide> "<question>" [--scope S] [--length short\|medium\|long] [--wait D]` | by the policy | posts a `wiki.query.v1` and, with `--wait`, blocks until the answer and prints it (exit 0), or exits 5 at the timeout with the id to fetch later |
+| `ask <aide> "<question>" [--scope S] [--length short\|medium\|long] [--wait D \| --no-wait]` | by the policy | posts a `wiki.query.v1` and waits (2 minutes unless `--wait`) for the answer and prints it (exit 0), or exits 5 at the timeout with the id and the token to fetch it later; `--no-wait` returns at once (exit 5) |
 
 - A **lease expiry** is applied by every queue operation and by `check`: a
   claimed item past `until` goes back to pending ("expired" in history). Its
