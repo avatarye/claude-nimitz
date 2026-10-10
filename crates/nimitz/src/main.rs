@@ -5,6 +5,7 @@
 //! tabs (core never depends on the mux).
 mod args;
 mod crud;
+mod inbox_cmd;
 mod members;
 mod notify;
 mod out;
@@ -90,6 +91,15 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   sweep [<id>]                     drop stale rows and copies of members
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member in its tab, else post to its inbox (ships: through the commodore)
+  inbox post <F/@S> --type T [--payload JSON|--file F|stdin] [--key K] [--from TEXT]
+                                   queue an item for an aide (by its inbox policy); a request prints its reply token
+  inbox claim|heartbeat|done|fail  the aide's own: take the oldest item (exit 3: empty), extend its lease,
+                                   finish it (--result JSON: the answer), or fail it (--reason R [--permanent])
+  inbox list|status [<F/@S>]       the queue (others' payloads hidden); status --json is what Admiralty reads
+  inbox retry|drop <F/@S> <item>   a dead letter back to pending, or removed (the user's, or the aide's parent's)
+  inbox result <F/@S> <item>       the answer to your request [--token T] [--wait D] (exit 5: not yet, 6: dead)
+  ask <F/@S> <question>            post a wiki.query.v1 and wait for the answer [--wait D: 100s by default, at most 10m] [--scope S] [--length L]
+                                   (its item and token go to stderr at once: `nimitz inbox result` picks the answer up later)
   migrate fleet-skill <dir...> --into <F>
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
   sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)
@@ -208,6 +218,8 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("restore", restore::restore),
     ("layout", members::layout),
     ("sandbox", sandbox_cmd::sandbox),
+    ("inbox", inbox_cmd::inbox),
+    ("ask", inbox_cmd::ask),
     ("__commands", |_| {
         for (name, _) in COMMANDS {
             if !name.starts_with("__") {

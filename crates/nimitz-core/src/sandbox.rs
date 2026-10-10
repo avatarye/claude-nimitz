@@ -11,7 +11,8 @@
 //!
 //! - a job is a folder `jobs/<short>/state.json` with `sessionId` (the birth
 //!   id), `resumeSessionId` (the conversation now), `respawnFlags` (`--name`,
-//!   `--permission-mode`, `--settings`: what every wake replays), `name`,
+//!   `--permission-mode`, `--settings`, an aide's `--model`: what every wake
+//!   replays), `name`,
 //!   `nameSource` and `state`; a live job also has a session file with
 //!   `jobId`, `kind bg`, `status`, `entrypoint` and `bridgeSessionId`;
 //! - `stop`/`kill` end the process (SessionEnd `other`) and keep the row;
@@ -209,6 +210,24 @@ fn respawn_flags(name: &str, mode: &str, settings: Option<&str>) -> Value {
         f.extend(["--settings".into(), s.into()]);
     }
     json!(f)
+}
+
+/// `--model M` added to a job's `respawnFlags` (a launch that named one: an
+/// aide's); nothing without one.
+fn note_model(base: &Path, short: &str, model: Option<&str>) {
+    let Some(m) = model else { return };
+    if let Some(mut j) = job_state(base, short) {
+        if let Some(a) = j.get_mut("respawnFlags").and_then(|a| a.as_array_mut()) {
+            a.extend([json!("--model"), json!(m)]);
+        }
+        save_job(base, short, &j);
+    }
+}
+
+/// The `--model` a job's `respawnFlags` keep, if any.
+fn model_of(row: &Value) -> Option<String> {
+    let argv: Vec<&str> = row.get("respawnFlags").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    argv.windows(2).find(|w| w[0] == "--model").map(|w| w[1].to_string())
 }
 
 /// What a job's `respawnFlags` say: (name, mode, settings).
@@ -680,16 +699,54 @@ pub fn break_a_config(base: &Path, fleet: &str) {
 /// as its current session when `bind` (a member added after `create`). Its
 /// session id. (The hook binds it anyway; `bind` records nimitz's own `via`.)
 pub fn live_session(base: &Path, id: &Id, cwd: &str, bind: bool) -> String {
+    live_job(base, id, cwd, bind).1
+}
+
+/// `live_session`: (its job, its session id). An aide's job keeps its model.
+fn live_job(base: &Path, id: &Id, cwd: &str, bind: bool) -> (String, String) {
     let base = crate::os::canonical(&base).unwrap_or_else(|_| base.to_path_buf());
     let e = env(&base);
     let settings = crate::claude::settings_json(&e, id, true);
     let short = start(&base, cwd, &id.name(), "bypassPermissions", Some(&settings), "startup", true);
+    note_model(&base, &short, crate::claude::model_for(&e, id).as_deref());
     let sid = job_state(&base, &short).and_then(|j| j.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default();
     if bind {
         let now = crate::evidence::now();
         let _ = crate::registry::update(&e, |r| crate::registry::bind_job(r, id, id.role(), &id.name(), cwd, Some(&short), &sid, "launch", now));
     }
-    sid
+    (short, sid)
+}
+
+/// Add an admiral's aide `F/@NAME` to `fleet`: an `[[aide]]` (Sonnet, a
+/// `wiki.note.v1` inbox) whose `dirs.sandbox` is `dirs/<f>/<name>`, made and
+/// trusted here; when `live`, a live labelled job of it, bound and pinned.
+pub fn add_aide(base: &Path, fleet: &str, name: &str, live: bool) -> Result<Id, String> {
+    let base = base.canonicalize().map_err(|e| e.to_string())?;
+    let e = env(&base);
+    let id = Id::aide(&Id::admiral(fleet), name);
+    let dir = base.join("dirs").join(fleet.to_lowercase()).join(name.to_lowercase());
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir_s = dir.to_string_lossy().into_owned();
+    // trusted beside every folder the world trusts already
+    for f in trust_files(&base) {
+        let mut v = read_json(&f).unwrap_or(json!({"projects": {}}));
+        v["projects"][&dir_s] = json!({"hasTrustDialogAccepted": true});
+        write_json(&f, &v);
+    }
+    let mut fod = crate::config::load_fleet(&e, fleet).map_err(|i| i.message)?;
+    fod.config.aide.push(AideDef {
+        name: name.to_string(),
+        model: Some("sonnet".into()),
+        dirs: [("sandbox".to_string(), dir_s.clone())].into(),
+        inbox: InboxDef { types: vec!["wiki.note.v1".into()], ..Default::default() },
+        ..Default::default()
+    });
+    fs::write(fod.dir.join("fleet.toml"), crate::config::toml_out(&fod.config)).map_err(|e| e.to_string())?;
+    if live {
+        let (short, _) = live_job(&base, &id, &dir_s, true);
+        crate::pins::pin(&e, &short).map_err(|e| e.to_string())?;
+    }
+    Ok(id)
 }
 
 fn apply_cfg(e: &crate::env::Env, plan: &Plan) -> Result<(), String> {
@@ -710,6 +767,7 @@ struct Args {
     print: bool,
     name: Option<String>,
     mode: Option<String>,
+    model: Option<String>,
     settings: Option<String>,
     resume: Option<String>,
     session_id: Option<String>,
@@ -719,7 +777,7 @@ struct Args {
 }
 
 fn parse(args: &[String]) -> Args {
-    let mut a = Args { bg: false, print: false, name: None, mode: None, settings: None, resume: None, session_id: None, cont: false, fork: false, prompt: None };
+    let mut a = Args { bg: false, print: false, name: None, mode: None, model: None, settings: None, resume: None, session_id: None, cont: false, fork: false, prompt: None };
     let mut i = 0;
     while i < args.len() {
         let take = |i: &mut usize| -> Option<String> {
@@ -733,6 +791,7 @@ fn parse(args: &[String]) -> Args {
             "--fork-session" => a.fork = true,
             "--name" => a.name = take(&mut i),
             "--permission-mode" => a.mode = take(&mut i),
+            "--model" => a.model = take(&mut i),
             "--settings" => {
                 // several --settings (the wrapper's, then yours) merge, later keys winning
                 let next = take(&mut i);
@@ -1092,8 +1151,10 @@ fn inside(base: &Path, short: &str, verb: &str, arg: Option<&str>) -> i32 {
             let Some(name) = arg else { return 2 };
             j["name"] = json!(name);
             j["nameSource"] = json!("user");
+            let model = model_of(&j);
             j["respawnFlags"] = respawn_flags(name, mode.as_deref().unwrap_or(""), settings.as_deref());
             save_job(base, short, &j);
+            note_model(base, short, model.as_deref());
             if let Some(mut d) = read_json(&session_path(base, short)) {
                 d["name"] = json!(name);
                 write_json(&session_path(base, short), &d);
@@ -1110,6 +1171,7 @@ fn inside(base: &Path, short: &str, verb: &str, arg: Option<&str>) -> i32 {
                               "forkedFrom": old, "tokens": 0, "inFlight": {"tasks": 0, "queued": 0},
                               "respawnFlags": respawn_flags(&name, mode.as_deref().unwrap_or(""), settings.as_deref())});
             save_job(base, &new_short, &nrow);
+            note_model(base, &new_short, model_of(&j).as_deref());
             write_session_file(base, &new_short, &new, &row.cwd, &name, t);
             if !labels.is_empty() {
                 fire(base, job_hook(base, &new_short, "SessionStart", &new, Some("fork"), &row.cwd), &labels);
@@ -1315,6 +1377,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             // no --name: the sandbox leaves the name empty (an unnamed agent)
             let name = a.name.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "startup", a.settings.is_some());
+            note_model(&base, &short, a.model.as_deref());
             println!("{short}");
             0
         }
@@ -1335,10 +1398,12 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                         w["copy_once_relaunch"] = json!(false);
                         write_json(&base.join("world.json"), &w);
                         let short = start(&base, &cwd, &name, &a.mode.clone().unwrap_or_default(), a.settings.as_ref(), "startup", a.settings.is_some());
+                        note_model(&base, &short, a.model.as_deref());
                         println!("note: session {target} is already running in the background, so this started a copy as {short}");
                         return 0;
                     }
                     let short = start_as(&base, &cwd, &name, &a.mode.clone().unwrap_or_default(), a.settings.as_ref(), "resume", a.settings.is_some(), Some(target));
+                    note_model(&base, &short, a.model.as_deref());
                     println!("resumed {target} as {short}");
                     return 0;
                 }
@@ -1354,7 +1419,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 }
             };
             // A prompt is not a flag: `--bg --resume <id> [prompt]` keeps the id (probe 2c1).
-            let flags = a.name.is_some() || a.mode.is_some() || a.settings.is_some() || a.fork;
+            let flags = a.name.is_some() || a.mode.is_some() || a.model.is_some() || a.settings.is_some() || a.fork;
             let saved = row.short_id.as_deref().and_then(|s| job_state(&base, s));
             let saved_name = saved.as_ref().and_then(|j| j.get("name").and_then(|v| v.as_str()).map(str::to_string));
 
@@ -1373,6 +1438,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                     j["respawnFlags"] = respawn_flags("", &mode, a.settings.as_deref());
                     save_job(&base, &short, &j);
                 }
+                note_model(&base, &short, a.model.as_deref());
                 if a.name.is_some() {
                     eprintln!("note: --name is ignored for a copy of a running session");
                 }
@@ -1439,6 +1505,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             let name = a.name.clone().unwrap_or_else(|| copy_name(&base, saved_name.as_deref().unwrap_or(&row.name)));
             let mode = a.mode.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
+            note_model(&base, &short, a.model.as_deref());
             record_fork(&base, &short, &row.session_id);
             // `--fork-session` copies the conversation (cli-13); other flags
             // alone start an empty copy (BUG-53)

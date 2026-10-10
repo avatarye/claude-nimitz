@@ -22,7 +22,7 @@ struct Run {
 
 fn raw(vars: &BTreeMap<String, String>, args: &[&str], extra: &[(&str, &str)], stdin: Option<&str>) -> Run {
     let mut c = Command::new(EXE);
-    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_VERBOSE", "1").envs(vars).args(args);
+    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_VERBOSE", "1").env("NIMITZ_NOTIFY_RETRY", "0").envs(vars).args(args);
     for (k, v) in extra {
         c.env(k, v);
     }
@@ -56,6 +56,7 @@ impl Sb {
     }
     fn run_as(&self, id: &str, args: &[&str]) -> Run {
         let role = match id.split('/').count() {
+            _ if id.contains("/@") => "aide",
             1 => "admiral",
             2 => "commodore",
             _ => "ship",
@@ -74,6 +75,9 @@ impl Sb {
         for f in s["fleets"].as_array().unwrap() {
             if f["admiral"]["id"] == id {
                 return f["admiral"].clone();
+            }
+            if let Some(a) = f["aides"].as_array().and_then(|v| v.iter().find(|m| m["id"] == id)) {
+                return a.clone();
             }
             for sq in f["squadrons"].as_array().unwrap() {
                 if sq["commodore"]["id"] == id {
@@ -391,44 +395,62 @@ fn a_ship_starts_nothing_and_an_admiral_only_in_its_own_fleet() {
 /// with `(authority)`. A command that is not in this table fails the test.
 #[test]
 fn every_command_goes_by_the_role_table() {
-    // (command, the rest of the argv, admiral MAIN, commodore MAIN/ARGOS, ship MAIN/ARGOS/CLEAN)
-    const TABLE: &[(&str, &[&str], [bool; 3])] = &[
-        ("init", &["--label", "box"], [false, false, false]),
-        ("trust", &["/tmp"], [false, false, false]),
-        ("doctor", &[], [true, true, true]),
-        ("doctor", &["--fix"], [false, false, false]),
-        ("rules", &[], [true, true, true]),
-        ("status", &[], [true, true, true]),
-        ("check", &["MAIN"], [true, true, true]),
-        ("fleet", &["new", "ZED"], [false, false, false]),
-        ("fleet", &["set", "MAIN", "--admiral-mode", "auto"], [true, false, false]),
-        ("fleet", &["rm", "BETA"], [false, false, false]),
-        ("squadron", &["new", "MAIN/EXTRA", "--brief", "x"], [true, false, false]),
-        ("squadron", &["set", "MAIN/ARGOS", "--comms", "open"], [true, true, false]),
-        ("squadron", &["rm", "MAIN/ARGOS"], [true, false, false]),
-        ("ship", &["new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "x"], [true, true, false]),
-        ("ship", &["set", "MAIN/ARGOS/CLEAN", "--mode", "auto"], [true, true, false]),
-        ("ship", &["rm", "MAIN/ARGOS/FRESH"], [true, true, false]),
-        ("machine", &["add", "MAIN", "box2", "--hostname", "box2"], [false, false, false]),
-        ("machine", &["rm", "MAIN", "box2"], [false, false, false]),
-        ("migrate", &["fleet-skill", "/nonexistent-nimitz", "--into", "MAIN"], [false, false, false]),
-        ("up", &["MAIN"], [true, false, false]),
-        ("start", &["MAIN/ARGOS/STOPPED"], [true, true, false]),
-        ("stop", &["MAIN/ARGOS/CLEAN"], [true, true, false]),
-        ("relaunch", &["MAIN/ARGOS/CLEAN"], [true, true, false]),
-        ("rm", &["MAIN/ARGOS/STOPPED"], [true, true, false]),
-        ("sweep", &["MAIN/ARGOS/CLEAN"], [true, true, true]),
-        ("sweep", &["MAIN/ARGOS"], [true, true, false]),
-        ("sweep", &["MAIN"], [true, false, false]),
-        ("adopt", &["00000000-0000", "MAIN/ARGOS/FRESH"], [true, true, false]),
+    // (command, the rest of the argv, admiral MAIN, commodore MAIN/ARGOS, ship MAIN/ARGOS/CLEAN, aide MAIN/@KB)
+    const TABLE: &[(&str, &[&str], [bool; 4])] = &[
+        ("init", &["--label", "box"], [false, false, false, false]),
+        ("trust", &["/tmp"], [false, false, false, false]),
+        ("doctor", &[], [true, true, true, true]),
+        ("doctor", &["--fix"], [false, false, false, false]),
+        ("rules", &[], [true, true, true, true]),
+        ("status", &[], [true, true, true, true]),
+        ("check", &["MAIN"], [true, true, true, true]),
+        ("fleet", &["new", "ZED"], [false, false, false, false]),
+        ("fleet", &["set", "MAIN", "--admiral-mode", "auto"], [true, false, false, false]),
+        ("fleet", &["rm", "BETA"], [false, false, false, false]),
+        ("squadron", &["new", "MAIN/EXTRA", "--brief", "x"], [true, false, false, false]),
+        ("squadron", &["set", "MAIN/ARGOS", "--comms", "open"], [true, true, false, false]),
+        ("squadron", &["rm", "MAIN/ARGOS"], [true, false, false, false]),
+        ("ship", &["new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "x"], [true, true, false, false]),
+        ("ship", &["set", "MAIN/ARGOS/CLEAN", "--mode", "auto"], [true, true, false, false]),
+        ("ship", &["rm", "MAIN/ARGOS/FRESH"], [true, true, false, false]),
+        ("machine", &["add", "MAIN", "box2", "--hostname", "box2"], [false, false, false, false]),
+        ("machine", &["rm", "MAIN", "box2"], [false, false, false, false]),
+        ("migrate", &["fleet-skill", "/nonexistent-nimitz", "--into", "MAIN"], [false, false, false, false]),
+        ("up", &["MAIN"], [true, false, false, false]),
+        ("start", &["MAIN/ARGOS/STOPPED"], [true, true, false, false]),
+        ("stop", &["MAIN/ARGOS/CLEAN"], [true, true, false, false]),
+        ("relaunch", &["MAIN/ARGOS/CLEAN"], [true, true, false, false]),
+        ("rm", &["MAIN/ARGOS/STOPPED"], [true, true, false, false]),
+        ("sweep", &["MAIN/ARGOS/CLEAN"], [true, true, true, false]),
+        ("sweep", &["MAIN/ARGOS"], [true, true, false, false]),
+        ("sweep", &["MAIN"], [true, false, false, false]),
+        ("sweep", &["MAIN/@KB"], [true, false, false, true]),
+        // an aide: its admiral (and you) start and stop it; it starts and stops nothing
+        ("start", &["MAIN/@KB"], [true, false, false, false]),
+        ("stop", &["MAIN/@KB"], [true, false, false, false]),
+        ("adopt", &["00000000-0000", "MAIN/ARGOS/FRESH"], [true, true, false, false]),
         // every member signals with SendMessage: no authority refusal, comms.denied instead
-        ("signal", &["MAIN/ARGOS", "hi"], [true, true, true]),
-        ("open", &["MAIN/ARGOS/CLEAN"], [false, false, false]),
-        ("layout", &["herdr", "MAIN"], [true, false, false]),
-        ("restore", &["MAIN"], [true, true, false]),
-        ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false]),
+        ("signal", &["MAIN/ARGOS", "hi"], [true, true, true, true]),
+        ("open", &["MAIN/ARGOS/CLEAN"], [false, false, false, false]),
+        ("layout", &["herdr", "MAIN"], [true, false, false, false]),
+        ("restore", &["MAIN"], [true, true, false, false]),
+        ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false, false]),
+        // aide inboxes (KB is in this world, REF is not: an allowed row fails on
+        // "no aide" or "no item", never on authority); the aide works its own
+        // inbox and never posts to it
+        ("inbox", &["status"], [true, true, true, true]),
+        ("inbox", &["post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"body\": \"x\"}"], [true, true, true, false]),
+        ("inbox", &["claim", "MAIN/@KB"], [false, false, false, true]),
+        ("inbox", &["retry", "MAIN/@KB", "000000000001"], [true, false, false, false]),
+        ("ask", &["MAIN/@REF", "a question", "--no-wait"], [true, true, true, true]),
+        ("inbox", &["heartbeat", "MAIN/@KB", "1"], [false, false, false, true]),
+        ("inbox", &["done", "MAIN/@KB", "1"], [false, false, false, true]),
+        ("inbox", &["fail", "MAIN/@KB", "1", "--reason", "x"], [false, false, false, true]),
+        ("inbox", &["drop", "MAIN/@KB", "1"], [true, false, false, false]),
+        ("inbox", &["list", "MAIN/@KB"], [true, true, true, true]),
+        ("inbox", &["result", "MAIN/@REF", "1"], [true, true, true, true]),
     ];
-    let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];
+    let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN", "MAIN/@KB"];
     let listed = Sb::new(false).run(&["__commands"]);
     assert_eq!(listed.code, 0, "{}", listed.out);
     for cmd in listed.out.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -438,6 +460,7 @@ fn every_command_goes_by_the_role_table() {
         // one world per role and form, so a `--yes` run changes nothing for the next row
         for form in ["--plan", "--yes"] {
             let sb = Sb::new(false);
+            nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", true).unwrap();
             for (cmd, rest, may) in TABLE {
                 let mut args = vec![*cmd];
                 args.extend(rest.iter().copied());
@@ -2474,4 +2497,103 @@ fn an_attach_pane_on_an_older_claude_code_is_never_typed_into() {
     assert_ne!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("(tab.unverified)"), "{}", r.out);
     assert!(sb.prompts("w1:p2").is_empty(), "nothing typed");
+}
+
+// ------------------------------------------------------------------ aides
+
+/// An aide's whole life through the CLI: its parent's start launches it
+/// (Sonnet, pinned), status shows it with its inbox, its parent's stop stops
+/// it first, and check says when it is down or on a model the account
+/// does not allow.
+#[test]
+fn an_aide_comes_up_with_its_admiral_and_goes_down_before_it() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let r = sb.run(&["start", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let (adm, kb) = (r.out.find("ADMIRAL").expect("the admiral's line"), r.out.find("@KB").unwrap_or_else(|| panic!("the aide's line: {}", r.out)));
+    assert!(adm < kb && r.out[kb..].lines().next().unwrap().contains("launch"), "the aide after its admiral, a first launch: {}", r.out);
+    assert!(!r.out.contains("aide.down"), "its start is the fix: {}", r.out);
+    let r = sb.run(&["start", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let m = sb.member("MAIN/@KB");
+    assert!(live(&m), "{}", r.out);
+    let short = m["session"]["short_id"].as_str().unwrap().to_string();
+    assert_eq!(m["session"]["pinned"], true, "{}", r.out);
+    let state: Value = serde_json::from_slice(&std::fs::read(sb.base.join("claude_home/jobs").join(&short).join("state.json")).unwrap()).unwrap();
+    let flags: Vec<String> = serde_json::from_value(state["respawnFlags"].clone()).unwrap();
+    assert!(flags.windows(2).any(|w| w == ["--model", "sonnet"]), "{flags:?}");
+    // status: its row under the admiral, its inbox; the JSON says who it is
+    assert_eq!((m["role"].as_str(), m["parent"].as_str(), m["inbox"]["pending"].as_u64()), (Some("aide"), Some("MAIN"), Some(0)));
+    let r = sb.run(&["status"]);
+    let line = r.out.lines().position(|l| l.trim_start().starts_with("MAIN/@KB")).unwrap_or_else(|| panic!("{}", r.out));
+    assert!(r.out.lines().nth(line + 1).unwrap().contains("inbox: empty"), "{}", r.out);
+    assert!(r.out.lines().position(|l| l.trim_start().starts_with("MAIN ")).is_some_and(|a| a < line), "{}", r.out);
+    // its parent's stop: the aide first
+    let adm_job = sb.member("MAIN")["session"]["short_id"].as_str().unwrap().to_string();
+    let r = sb.run(&["stop", "MAIN", "--plan", "-v"]);
+    let (a, b) = (r.out.find(&format!("stop {short}")), r.out.find(&format!("stop {adm_job}")));
+    assert!(a.is_some() && a < b, "the aide first: {}", r.out);
+    let r = sb.run(&["stop", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!live(&sb.member("MAIN/@KB")) && !live(&sb.member("MAIN")));
+    // check: down with its parent, on purpose (Info); down under a live parent (an error)
+    let r = sb.run(&["check", "MAIN/@KB", "--json"]);
+    let issues: Value = serde_json::from_str(r.out.trim()).unwrap_or_else(|e| panic!("{e}: {}", r.out));
+    let down = |v: &Value| v.as_array().unwrap().iter().find(|i| i["code"] == "aide.down").cloned().expect("aide.down");
+    assert_eq!(down(&issues)["severity"], "Info", "{issues}");
+    assert_eq!(sb.run(&["start", "MAIN", "--only", "--yes"]).code, 0);
+    assert!(live(&sb.member("MAIN")) && !live(&sb.member("MAIN/@KB")));
+    let r = sb.run(&["check", "MAIN/@KB"]);
+    assert!(r.out.contains("aide.down") && r.out.contains("fix: nimitz start MAIN/@KB"), "{}", r.out);
+    assert_eq!(down(&serde_json::from_str(sb.run(&["check", "MAIN/@KB", "--json"]).out.trim()).unwrap())["severity"], "Error");
+    std::fs::write(sb.base.join("claude_home/settings.json"), r#"{"availableModels": ["opus"]}"#).unwrap();
+    let r = sb.run(&["check", "MAIN/@KB"]);
+    assert!(r.out.contains("aide.model") && r.out.contains("add sonnet to availableModels"), "{}", r.out);
+}
+
+/// An aide under a claim is relaunched after the item, not under it; a live
+/// unpinned one is pinned again by a start; one whose `dirs` names another
+/// machine is not this machine's to start.
+#[test]
+fn a_start_waits_for_an_aide_s_item_pins_it_and_skips_one_of_another_machine() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", true).unwrap();
+    let r = sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", r#"{"body": "x"}"#]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(sb.run_as("MAIN/@KB", &["inbox", "claim", "MAIN/@KB"]).code, 0);
+    let r = sb.run(&["start", "MAIN/@KB", "-f", "--plan"]);
+    assert!(r.out.contains("busy: after item 1") && r.out.contains("relaunch.busy"), "{}", r.out);
+    // unpinned while live: the fleet's start pins it again
+    let short = sb.member("MAIN/@KB")["session"]["short_id"].as_str().unwrap().to_string();
+    sb.claude(&sb.base, &["__unpin", &short]);
+    assert!(sb.run(&["check", "MAIN/@KB"]).out.contains("aide.unpinned"));
+    let r = sb.run(&["start", "MAIN", "--plan", "-v"]);
+    assert!(r.out.contains(&format!("pin {short}")), "{}", r.out);
+    assert_eq!(sb.run(&["start", "MAIN", "--yes"]).code, 0);
+    assert_eq!(sb.member("MAIN/@KB")["session"]["pinned"], true);
+    // an aide of another machine: not in this machine's start, nor down here
+    let f = PathBuf::from(&sb.vars["NIMITZ_HOME"]).join("main/fleet.toml");
+    let t = std::fs::read_to_string(&f).unwrap();
+    std::fs::write(&f, format!("{t}\n[[aide]]\nname = \"FAR\"\n[aide.dirs]\nfar = \"/nowhere\"\n\n[machines.far]\nhostname = \"far-host\"\n")).unwrap();
+    let r = sb.run(&["start", "MAIN", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("@FAR"), "{}", r.out);
+    assert!(!sb.run(&["check", "MAIN/@FAR"]).out.contains("aide.down"));
+}
+
+/// `start F/@KB` is one member's start, as a ship's is: no fleet summary,
+/// no `active.none`.
+#[test]
+fn an_aides_start_is_a_members_start() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let r = sb.run(&["start", "MAIN/@KB", "--plan", "--json"]);
+    let start = r.out.find('{').unwrap_or_else(|| panic!("{}", r.out));
+    let plan: Value = serde_json::Deserializer::from_str(&r.out[start..]).into_iter::<Value>().next().unwrap().unwrap();
+    assert_eq!(plan["summary"], "start MAIN/@KB", "{plan}");
+    assert!(!plan["warnings"].as_array().unwrap().iter().any(|w| w["code"] == "active.none"), "{plan}");
+    // a fleet's start still speaks for the fleet
+    let r = sb.run(&["start", "MAIN", "--plan", "--json"]);
+    assert!(r.out.contains("active.none") && r.out.contains("\"summary\": \"start MAIN: "), "{}", r.out);
 }

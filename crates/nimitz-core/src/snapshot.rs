@@ -156,19 +156,24 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         .iter()
         .flat_map(|(id, rec)| rec.lineage.iter().map(move |l| (l.session_id.as_str(), id.as_str())))
         .collect();
-    // Every configured member's folder on this machine.
+    // Every configured member's folder on this machine; ships and aides work
+    // in folders the user may share (the shared-folder rule below), a lead's
+    // folder is exclusive (`lead.intruder`).
     let mut dir_of: HashMap<String, String> = HashMap::new();
-    let mut ship_ids: Vec<Id> = vec![];
+    let mut shared_ids: Vec<Id> = vec![];
     for fc in &fleets_cfg {
         let mut put = |id: Id| {
             if let Some(d) = crate::config::member_dir(env, fc, &id) {
                 dir_of.insert(id.0.clone(), norm_dir(&d.to_string_lossy()));
             }
-            if id.role() == Role::Ship {
-                ship_ids.push(id);
+            if matches!(id.role(), Role::Ship | Role::Aide) {
+                shared_ids.push(id);
             }
         };
         put(Id::admiral(&fc.config.fleet));
+        for a in &fc.config.aide {
+            put(Id::aide(&Id::admiral(&fc.config.fleet), &a.name));
+        }
         for (_, sq) in &fc.squadrons {
             put(Id::commodore(&fc.config.fleet, &sq.squadron));
             for sh in &sq.ships {
@@ -240,8 +245,8 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             claimed.insert(r.session_id.clone());
         }
     }
-    // The stowaway rule in ship folders (plan-v4 section 6). A ship folder may
-    // be shared by several ships and by the user's own work: an unlabelled,
+    // The stowaway rule in ship (and aide) folders (plan-v4 section 6). A ship
+    // folder may be shared by several ships and by the user's own work: an unlabelled,
     // unclaimed row there is the user's own and is not shown, unless it is a
     // copy of a ship in that folder: (a) its transcript shares the root of a
     // lineage conversation of the ship (a `/branch`, `/fork`, `--fork-session`
@@ -285,7 +290,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         if !unlabelled(r) || legacy_names.contains_key(&r.name) {
             continue;
         }
-        let here: Vec<&Id> = ship_ids.iter().filter(|id| dir_of.get(&id.0).is_some_and(|d| same_dir(d, &r.cwd))).collect();
+        let here: Vec<&Id> = shared_ids.iter().filter(|id| dir_of.get(&id.0).is_some_and(|d| same_dir(d, &r.cwd))).collect();
         let by_exact_name = |id: &Id| names_of(id).contains(&r.name);
         let by_copy_name = |id: &Id| names_of(id).iter().any(|n| r.name.strip_prefix(&format!("{n}-")).map(two_words).unwrap_or(false));
         let by_fork = |id: &Id| r.name.is_empty() && r.forked_from.as_ref().map(|f| lineage_of.get(f.as_str()) == Some(&id.0.as_str())).unwrap_or(false);
@@ -298,8 +303,8 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         }
         let copy_of = copy_of
             .or_else(|| here.iter().find(|id| by_exact_name(id)).map(|id| (*id, "name")))
-            .or_else(|| ship_ids.iter().find(|id| by_copy_name(id)).map(|id| (id, "name")))
-            .or_else(|| ship_ids.iter().find(|id| by_fork(id)).map(|id| (id, "fork")));
+            .or_else(|| shared_ids.iter().find(|id| by_copy_name(id)).map(|id| (id, "name")))
+            .or_else(|| shared_ids.iter().find(|id| by_fork(id)).map(|id| (id, "fork")));
         match copy_of {
             Some((id, how)) => {
                 by_identity.entry(id.0.clone()).or_default().push(r.clone());
@@ -330,9 +335,17 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             dir: fc.dir.to_string_lossy().into_owned(),
             machine: fc.machine.clone(),
             admiral: build_member(env, cache, fc, &fid, &reg, &mut by_identity, &labels, &events, &copies),
+            aides: vec![],
             squadrons: vec![],
             issues: vec![],
         };
+        for a in &fc.config.aide {
+            let aid = Id::aide(&fid, &a.name);
+            let mut m = build_member(env, cache, fc, &aid, &reg, &mut by_identity, &labels, &events, &copies);
+            m.parent = Some(fid.clone());
+            m.inbox = Some(inbox_of(env, &aid, &a.inbox, now));
+            fleet.aides.push(m);
+        }
         for (_, sq) in &fc.squadrons {
             let sqid = Id::commodore(&fc.config.fleet, &sq.squadron);
             let mut squadron = Squadron {
@@ -393,9 +406,17 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         let unread = |m: &mut Member| m.reasons.insert(0, format!("config unreadable: {}", err.message));
         let mut admiral = build_member(env, cache, &fc, &fid, &reg, &mut by_identity, &labels, &events, &copies);
         unread(&mut admiral);
-        let mut fleet = Fleet { id: fid.clone(), dir: dir.to_string_lossy().into_owned(), machine: None, admiral, squadrons: vec![], issues: vec![err.clone()] };
+        let mut fleet = Fleet { id: fid.clone(), dir: dir.to_string_lossy().into_owned(), machine: None, admiral, aides: vec![], squadrons: vec![], issues: vec![err.clone()] };
         for k in under {
             let id = Id(k);
+            // the admiral's aide, known by the registry or its labels (its config is in the broken file)
+            if id.role() == Role::Aide && id.parent().as_ref() == Some(&fid) {
+                let mut m = build_member(env, cache, &fc, &id, &reg, &mut by_identity, &labels, &events, &copies);
+                m.parent = Some(fid.clone());
+                unread(&mut m);
+                fleet.aides.push(m);
+                continue;
+            }
             let Some(sq) = id.squadron() else { continue };
             let sqid = Id::commodore(fid.fleet(), sq);
             if !fleet.squadrons.iter().any(|s| s.id == sqid) {
@@ -423,17 +444,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     snap.machine = snap.fleets.iter().find_map(|f| f.machine.clone()).or_else(|| crate::registry::machine_label(env));
 
     // Labelled rows of identities in no config (a removed ship, a foreign fleet).
-    let configured: HashSet<String> = {
-        let mut s = HashSet::new();
-        for f in &snap.fleets {
-            s.insert(f.admiral.id.0.clone());
-            for sq in &f.squadrons {
-                s.insert(sq.commodore.id.0.clone());
-                s.extend(sq.ships.iter().map(|m| m.id.0.clone()));
-            }
-        }
-        s
-    };
+    let configured: HashSet<String> = snap.fleets.iter().flat_map(|f| f.members()).map(|m| m.id.0.clone()).collect();
     for (owner, rs) in by_identity.iter().filter(|(o, _)| !configured.contains(*o)) {
         for r in rs {
             let short = r.short_id.as_deref().unwrap_or(&r.session_id);
@@ -468,7 +479,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     scope_trees.push(crate::env::canon(&env.home));
     let mut folder_of: Vec<(String, Id)> = vec![];
     for f in &snap.fleets {
-        for m in all_members(f) {
+        for m in f.members() {
             if let Some(c) = &m.cwd {
                 folder_of.push((norm_dir(c), m.id.clone()));
             }
@@ -543,7 +554,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         if i.id.is_some() { legacy.push(i) } else { snap.issues.push(i) }
     }
     for f in &mut snap.fleets {
-        for_each_member(f, |m| m.issues.extend(legacy.iter().filter(|i| i.id.as_ref() == Some(&m.id)).cloned()));
+        f.members_mut().for_each(|m| m.issues.extend(legacy.iter().filter(|i| i.id.as_ref() == Some(&m.id)).cloned()));
     }
 
     // lead.intruder (plan-v4 section 6): a lead's folder is exclusive. Any
@@ -608,13 +619,18 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
                 m.issues.push(i);
             }
         };
-        fix(&mut f.admiral);
-        for sq in &mut f.squadrons {
-            fix(&mut sq.commodore);
-            sq.ships.iter_mut().for_each(&mut fix);
-        }
+        f.members_mut().for_each(&mut fix);
     }
     snap
+}
+
+/// An aide's inbox as a look sees it: read only (`Queue::peek_status`), so
+/// a snapshot never writes state; a config nimitz cannot run says why.
+fn inbox_of(env: &Env, aide: &Id, def: &InboxDef, now: f64) -> crate::queue::Status {
+    match crate::queue::Limits::from_def(def) {
+        Ok(l) => crate::queue::Queue::open(env, aide, l).peek_status(now, false),
+        Err(e) => crate::queue::Status { aide: aide.0.clone(), error: Some(e), ..Default::default() },
+    }
 }
 
 /// Claude Code's own idle hint in a job row ("send a prompt to start") is not
@@ -633,7 +649,7 @@ fn idle_hint(needs: &str) -> bool {
 pub fn stowaway_fleet(snap: &Snapshot, s: &SessionInfo) -> Option<String> {
     let cn = norm_dir(&s.cwd);
     for f in &snap.fleets {
-        if all_members(f).iter().any(|m| m.cwd.as_deref().is_some_and(|c| norm_dir(c) == cn)) {
+        if f.members().any(|m| m.cwd.as_deref().is_some_and(|c| norm_dir(c) == cn)) {
             return Some(f.id.fleet().to_string());
         }
     }
@@ -661,23 +677,6 @@ pub(crate) fn norm_dir(d: &str) -> String {
 
 fn same_dir(a: &str, b: &str) -> bool {
     a.trim_end_matches('/') == b.trim_end_matches('/') || norm_dir(a) == norm_dir(b)
-}
-
-fn all_members(f: &Fleet) -> Vec<&Member> {
-    let mut v = vec![&f.admiral];
-    for sq in &f.squadrons {
-        v.push(&sq.commodore);
-        v.extend(sq.ships.iter());
-    }
-    v
-}
-
-fn for_each_member(f: &mut Fleet, mut each: impl FnMut(&mut Member)) {
-    each(&mut f.admiral);
-    for sq in &mut f.squadrons {
-        each(&mut sq.commodore);
-        sq.ships.iter_mut().for_each(&mut each);
-    }
 }
 
 /// A job with no live process: stopped when its last event is a SessionEnd
@@ -768,7 +767,7 @@ fn build_member(
                 })
                 .map(|(i, _)| i)
         });
-    // A lead's row is its registry job (a hand rm + resume binds the new job
+    // A lead's (or an aide's) row is its registry job (a hand rm + resume binds the new job
     // beside an older labelled stray: the registry job stays, the stray is the
     // intruder; a /branch or /rename of the real job changes nothing). Two
     // cases hand the lead to another own live job: (i) the registry has no
@@ -778,7 +777,7 @@ fn build_member(
     // expected name, else the earliest with a started_at; never on a None or
     // an equal started_at.
     let mut primary_at = primary_at;
-    if id.role().lead() {
+    if id.role().always_on() {
         let reg_job_at = rec.and_then(|x| x.job.as_deref()).and_then(|job| rows.iter().position(|r| r.short_id.as_deref() == Some(job)));
         let expected = id.name();
         let cands: Vec<usize> = (0..rows.len()).filter(|&i| own(&rows[i]) && rows[i].live() && rows[i].short_id.is_some()).collect();
@@ -946,6 +945,8 @@ fn build_member(
         tasks,
         issues: vec![],
         pane: None,
+        parent: None,
+        inbox: None,
     };
     // Every member carries its own issues: the session rules, then what needs
     // the registry (name.taken is added by the caller once every member's rows

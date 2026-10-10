@@ -7,25 +7,16 @@ use nimitz_core::{Caller, Id, Issue, Member, Plan, Severity, Snapshot, Status, S
 
 /// Parse and shape-check an identity id (contracts.md section 4).
 pub fn parse_id(s: &str) -> Result<Id, String> {
-    let parts: Vec<&str> = s.split('/').collect();
-    let ok = (1..=3).contains(&parts.len()) && parts.iter().all(|p| nimitz_core::config::valid_name(p));
-    if ok {
-        Ok(Id(s.to_string()))
+    let id = Id(s.to_string());
+    if id.well_formed() {
+        Ok(id)
     } else {
-        Err(format!("{s:?} is not an id (F, F/SQ or F/SQ/SHIP; names are [A-Z0-9_]+)"))
+        Err(format!("{s:?} is not an id (F, F/SQ, F/SQ/SHIP or an aide's F/@NAME; names are [A-Z0-9_]+)"))
     }
 }
 
 pub fn members(snap: &Snapshot) -> Vec<&Member> {
-    let mut v = vec![];
-    for f in &snap.fleets {
-        v.push(&f.admiral);
-        for sq in &f.squadrons {
-            v.push(&sq.commodore);
-            v.extend(sq.ships.iter());
-        }
-    }
-    v
+    snap.fleets.iter().flat_map(|f| f.members()).collect()
 }
 
 pub fn member<'a>(snap: &'a Snapshot, id: &Id) -> Option<&'a Member> {
@@ -33,15 +24,7 @@ pub fn member<'a>(snap: &'a Snapshot, id: &Id) -> Option<&'a Member> {
 }
 
 fn members_mut(snap: &mut Snapshot) -> Vec<&mut Member> {
-    let mut v = vec![];
-    for f in &mut snap.fleets {
-        v.push(&mut f.admiral);
-        for sq in &mut f.squadrons {
-            v.push(&mut sq.commodore);
-            v.extend(sq.ships.iter_mut());
-        }
-    }
-    v
+    snap.fleets.iter_mut().flat_map(|f| f.members_mut()).collect()
 }
 
 fn live(m: &Member) -> bool {
@@ -98,11 +81,8 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
     let col = snap
         .fleets
         .iter()
-        .flat_map(|f| {
-            std::iter::once(2 + f.admiral.id.0.len()).chain(f.squadrons.iter().flat_map(|q| {
-                std::iter::once(2 + q.commodore.id.0.len()).chain(q.ships.iter().map(|m| 4 + m.id.0.len()))
-            }))
-        })
+        .flat_map(|f| f.members())
+        .map(|m| if matches!(m.role, nimitz_core::Role::Ship | nimitz_core::Role::Aide) { 4 } else { 2 } + m.id.0.len())
         .max()
         .unwrap_or(0)
         .max(26);
@@ -113,6 +93,13 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
             out::issue(i);
         }
         member_line(&ctx.env, &f.admiral, 1, col);
+        // its aides under it, each with its inbox
+        for a in &f.aides {
+            member_line(&ctx.env, a, 2, col);
+            if let Some(q) = &a.inbox {
+                out::line(&format!("        inbox: {}", q.line()));
+            }
+        }
         for sq in &f.squadrons {
             member_line(&ctx.env, &sq.commodore, 1, col);
             for i in &sq.issues {
@@ -358,7 +345,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         return Ok(finish_plan(ctx, &plan));
     };
     // Who gets the typing: the member itself, or its commodore for a ship.
-    let (via, text) = if m.role.lead() {
+    let (via, text) = if m.role != nimitz_core::Role::Ship {
         (m, text)
     } else {
         let cid = Id::commodore(id.fleet(), id.squadron().unwrap_or_default());

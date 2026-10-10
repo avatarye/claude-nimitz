@@ -13,9 +13,12 @@ pub enum Role {
     Admiral,
     Commodore,
     Ship,
+    /// an always-on member with a durable inbox, attached to its parent
+    /// (`F/@NAME`; docs/design/aide.md)
+    Aide,
 }
 
-/// `admiral | commodore | ship`; a 0.3.x registry's `tender` reads as a ship
+/// `admiral | commodore | ship | aide`; a 0.3.x registry's `tender` reads as a ship
 /// (the id `F/SQ/~task` is what marks it, and `migrate::retire_tenders` moves
 /// such an identity out of the members).
 impl<'de> Deserialize<'de> for Role {
@@ -25,7 +28,8 @@ impl<'de> Deserialize<'de> for Role {
             "admiral" => Ok(Role::Admiral),
             "commodore" => Ok(Role::Commodore),
             "ship" | "tender" => Ok(Role::Ship),
-            other => Err(serde::de::Error::unknown_variant(other, &["admiral", "commodore", "ship"])),
+            "aide" => Ok(Role::Aide),
+            other => Err(serde::de::Error::unknown_variant(other, &["admiral", "commodore", "ship", "aide"])),
         }
     }
 }
@@ -36,6 +40,7 @@ impl Role {
             Role::Admiral => "admiral",
             Role::Commodore => "commodore",
             Role::Ship => "ship",
+            Role::Aide => "aide",
         }
     }
     /// Admirals and commodores lead; every member, leads too, runs as a
@@ -44,9 +49,15 @@ impl Role {
     pub fn lead(self) -> bool {
         matches!(self, Role::Admiral | Role::Commodore)
     }
+    /// Pinned and wanted up whenever its fleet is: the leads and the aides
+    /// (a ship parks on purpose).
+    pub fn always_on(self) -> bool {
+        matches!(self, Role::Admiral | Role::Commodore | Role::Aide)
+    }
 }
 
-/// `F`, `F/SQ`, `F/SQ/SHIP` (contracts.md section 4).
+/// `F`, `F/SQ`, `F/SQ/SHIP` (contracts.md section 4); an aide is its
+/// parent's id plus `@NAME` (`F/@KB`, docs/design/aide.md section 2).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Id(pub String);
 
@@ -60,36 +71,62 @@ impl Id {
     pub fn ship(fleet: &str, sq: &str, ship: &str) -> Id {
         Id(format!("{fleet}/{sq}/{ship}"))
     }
+    /// `parent/@NAME`
+    pub fn aide(parent: &Id, name: &str) -> Id {
+        Id(format!("{parent}/@{name}"))
+    }
     pub fn parts(&self) -> Vec<&str> {
         self.0.split('/').collect()
     }
     pub fn fleet(&self) -> &str {
         self.parts()[0]
     }
+    /// The squadron part; never an aide's `@NAME` (`F/@KB` has none).
     pub fn squadron(&self) -> Option<&str> {
-        self.parts().get(1).copied()
+        self.parts().get(1).copied().filter(|p| !p.starts_with('@'))
     }
+    /// A last part `@NAME` makes an aide, whatever the count; otherwise
+    /// one part is an admiral, two a commodore, three a ship.
     pub fn role(&self) -> Role {
         let p = self.parts();
+        if p.len() > 1 && p.last().is_some_and(|x| x.starts_with('@')) {
+            return Role::Aide;
+        }
         match p.len() {
             1 => Role::Admiral,
             2 => Role::Commodore,
             _ => Role::Ship,
         }
     }
-    /// The session name (address) for this identity.
+    /// The session name (address) for this identity. An aide's is its
+    /// parent's parts joined by `.`, then `@NAME`: `[F]-@KB`, `[F.SQ]-@X`.
     pub fn name(&self) -> String {
         let p = self.parts();
         match (self.role(), p.as_slice()) {
+            (Role::Aide, [parent @ .., a]) => format!("[{}]-{a}", parent.join(".")),
             (Role::Admiral, [f]) => format!("[{f}]-ADMIRAL"),
             (Role::Commodore, [f, sq]) => format!("[{f}.{sq}]-COMMODORE"),
             (_, [f, sq, s]) => format!("[{f}.{sq}]-{s}"),
             _ => self.0.clone(),
         }
     }
-    /// The identity above this one in the chain of command.
+    /// One to three names (`config::valid_name`), or such an id plus
+    /// `@NAME` (an aide): an id nimitz could have made.
+    pub fn well_formed(&self) -> bool {
+        let p = self.parts();
+        let (head, aide) = match p.split_last() {
+            Some((last, rest)) if !rest.is_empty() && last.starts_with('@') => (rest, Some(&last[1..])),
+            _ => (p.as_slice(), None),
+        };
+        (1..=3).contains(&head.len()) && head.iter().copied().chain(aide).all(crate::config::valid_name)
+    }
+    /// The identity above this one in the chain of command (an aide's: the
+    /// member it is attached to).
     pub fn parent(&self) -> Option<Id> {
         let p = self.parts();
+        if self.role() == Role::Aide {
+            return Some(Id(p[..p.len() - 1].join("/")));
+        }
         match p.len() {
             1 => None,
             2 => Some(Id(p[0].to_string())),
@@ -129,6 +166,84 @@ pub struct FleetConfig {
     pub machines: BTreeMap<String, MachineDef>,
     #[serde(default)]
     pub admiral: AdmiralDef,
+    /// the admiral's aide (`[[aide]]`, docs/design/aide.md section 3)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aide: Vec<AideDef>,
+}
+
+/// An aide (`[[aide]]`): an always-on member with a durable inbox.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AideDef {
+    /// `KB` for `HOME/@KB`
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// a reader that works in a detached worktree at the repo's last commit
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub snapshot: bool,
+    /// machine label -> folder (one machine runs it)
+    #[serde(default)]
+    pub dirs: BTreeMap<String, String>,
+    #[serde(default)]
+    pub inbox: InboxDef,
+}
+
+/// `[aide.inbox]`: the queue's limits (`queue::Limits` reads them).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InboxDef {
+    /// the allowed item types (`queue::TYPES`)
+    #[serde(default)]
+    pub types: Vec<String>,
+    /// open | fleet | parent
+    #[serde(default = "InboxDef::open")]
+    pub policy: String,
+    /// pending plus claimed; a post past it is refused
+    #[serde(default = "InboxDef::depth")]
+    pub depth_cap: usize,
+    /// a sender's posts per window: `60/h`, `10/m`
+    #[serde(default = "InboxDef::rate")]
+    pub per_sender: String,
+    /// a claim's lifetime: `15m`
+    #[serde(default = "InboxDef::lease")]
+    pub lease: String,
+    #[serde(default = "InboxDef::tries")]
+    pub max_tries: u32,
+    /// how long done items and their results stay: `7d`
+    #[serde(default = "InboxDef::keep")]
+    pub keep_done: String,
+}
+
+impl InboxDef {
+    fn open() -> String {
+        "open".into()
+    }
+    fn depth() -> usize {
+        500
+    }
+    fn rate() -> String {
+        "60/h".into()
+    }
+    fn lease() -> String {
+        "15m".into()
+    }
+    fn tries() -> u32 {
+        3
+    }
+    fn keep() -> String {
+        "7d".into()
+    }
+}
+
+impl Default for InboxDef {
+    fn default() -> Self {
+        InboxDef { types: vec![], policy: Self::open(), depth_cap: Self::depth(), per_sender: Self::rate(), lease: Self::lease(), max_tries: Self::tries(), keep_done: Self::keep() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -223,6 +338,10 @@ pub struct IdentityRecord {
     pub session: Option<String>,
     #[serde(default)]
     pub lineage: Vec<LineageEntry>,
+    /// fields a newer nimitz wrote that this one does not know: kept, and
+    /// written back as they were
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// The registry format this nimitz writes.
@@ -242,6 +361,21 @@ pub struct Registry {
     /// history by `migrate::retire_tenders`; never members, never started
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retired: BTreeMap<String, IdentityRecord>,
+    /// what a newer nimitz wrote that this one cannot read as it was:
+    /// `registry::parse` fills it, `registry::render` writes it back where
+    /// it came from (never serialized as a field of its own)
+    #[serde(skip)]
+    pub unknown: Unknown,
+}
+
+/// A registry's records this nimitz does not know (a role a newer nimitz
+/// wrote), keyed by (map: `identities` | `retired`, id).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Unknown {
+    /// records on an id this nimitz cannot place: never members, kept as they were
+    pub records: BTreeMap<(String, String), serde_json::Value>,
+    /// the original `role` of records that took the role their id spells
+    pub roles: BTreeMap<(String, String), serde_json::Value>,
 }
 
 impl IdentityRecord {
@@ -413,6 +547,12 @@ pub struct Member {
     pub issues: Vec<Issue>,
     /// set by the TUI/CLI from the mux, never by core
     pub pane: Option<String>,
+    /// an aide's parent (the member it is attached to)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Id>,
+    /// an aide's inbox, read without a write (`queue::Queue::peek_status`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox: Option<crate::queue::Status>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -430,8 +570,24 @@ pub struct Fleet {
     pub dir: String,
     pub machine: Option<String>,
     pub admiral: Member,
+    /// the admiral's aides (`[[aide]]`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aides: Vec<Member>,
     pub squadrons: Vec<Squadron>,
     pub issues: Vec<Issue>,
+}
+
+impl Fleet {
+    /// Every member, chain-of-command order: the admiral, its aides, then
+    /// each squadron's commodore and its ships.
+    pub fn members(&self) -> impl Iterator<Item = &Member> {
+        std::iter::once(&self.admiral).chain(self.aides.iter()).chain(self.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter())))
+    }
+    pub fn members_mut(&mut self) -> impl Iterator<Item = &mut Member> {
+        std::iter::once(&mut self.admiral)
+            .chain(self.aides.iter_mut())
+            .chain(self.squadrons.iter_mut().flat_map(|q| std::iter::once(&mut q.commodore).chain(q.ships.iter_mut())))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -507,4 +663,37 @@ pub struct Outcome {
 pub enum Caller {
     User,
     Member { id: Id, role: Role },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_at_part_makes_an_aide_of_its_parent() {
+        let kb = Id("HOME/@KB".into());
+        assert_eq!(kb.role(), Role::Aide);
+        assert_eq!((kb.fleet(), kb.squadron(), kb.parent()), ("HOME", None, Some(Id::admiral("HOME"))), "no squadron: @KB is not one");
+        assert_eq!(kb.name(), "[HOME]-@KB");
+        let x = Id("HOME/GITHUB/@X".into());
+        assert_eq!((x.role(), x.squadron(), x.parent(), x.name()), (Role::Aide, Some("GITHUB"), Some(Id::commodore("HOME", "GITHUB")), "[HOME.GITHUB]-@X".to_string()));
+        let y = Id("HOME/GITHUB/NIMITZ_DEV/@Y".into());
+        assert_eq!((y.role(), y.parent(), y.name()), (Role::Aide, Some(Id::ship("HOME", "GITHUB", "NIMITZ_DEV")), "[HOME.GITHUB.NIMITZ_DEV]-@Y".to_string()));
+        // every other id keeps its meaning
+        assert_eq!((Id::admiral("F").role(), Id::commodore("F", "SQ").role(), Id::ship("F", "SQ", "S").role()), (Role::Admiral, Role::Commodore, Role::Ship));
+        assert_eq!(Id::commodore("F", "SQ").squadron(), Some("SQ"));
+        assert!(Role::Aide.always_on() && !Role::Aide.lead() && !Role::Ship.always_on() && Role::Commodore.always_on());
+        assert_eq!(serde_json::to_string(&Role::Aide).unwrap(), "\"aide\"");
+        assert_eq!(serde_json::from_str::<Role>("\"aide\"").unwrap(), Role::Aide);
+    }
+
+    #[test]
+    fn well_formed_is_one_to_three_names_or_such_plus_an_at_name() {
+        for ok in ["F", "F/SQ", "F/SQ/S", "F/@KB", "F/SQ/@X", "F/SQ/S/@Y", "HOME_2/@K_B9"] {
+            assert!(Id(ok.into()).well_formed(), "{ok}");
+        }
+        for bad in ["", "f", "F/", "F/SQ/S/T", "@KB", "F/@", "F/@kb", "F/@@KB", "F/@KB/S", "A/B/C/D/@X", "F/SQ/~fix", "F/@K B"] {
+            assert!(!Id(bad.into()).well_formed(), "{bad}");
+        }
+    }
 }

@@ -2213,3 +2213,72 @@ fn the_wake_pollers_return_at_once_when_there_is_nothing_to_wait_for() {
     sessions::wait_settled(&w.env, &live, 0.5);
     assert!(t.elapsed().as_secs_f64() >= 0.5, "a running job is waited for, up to the limit");
 }
+
+/// `sandbox::add_aide`: an `[[aide]]` with a trusted folder of its own, and
+/// (live) a pinned job bound to it whose saved flags keep `--model`; the fake
+/// `claude` takes `--model` on a launch and keeps it in `respawnFlags`.
+#[test]
+fn an_aide_in_the_sandbox_runs_pinned_with_its_model() {
+    let w = world();
+    let kb = sandbox::add_aide(&w.base, "MAIN", "KB", true).expect("an aide");
+    assert_eq!(kb, Id("MAIN/@KB".into()));
+    let fod = nimitz_core::config::load_fleet(&w.env, "MAIN").unwrap();
+    let dir = w.base.canonicalize().unwrap().join("dirs/main/kb");
+    assert_eq!(nimitz_core::config::member_dir(&w.env, &fod, &kb), Some(dir.clone()));
+    assert!(!nimitz_core::config::validate(&w.env, &fod).iter().any(|i| i.id.as_ref() == Some(&kb)));
+    let job_flags = |short: &str| -> Vec<String> {
+        let p = w.env.claude_home.join("jobs").join(short).join("state.json");
+        let j: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+        serde_json::from_value(j["respawnFlags"].clone()).unwrap()
+    };
+    let row = w.rows().into_iter().find(|r| r.name == "[MAIN]-@KB" && r.live()).expect("a live job");
+    let short = row.short_id.clone().unwrap();
+    assert!(job_flags(&short).windows(2).any(|f| f == ["--model", "sonnet"]), "{:?}", job_flags(&short));
+    assert!(nimitz_core::pins::is_pinned(&w.env, &short));
+    let rec = nimitz_core::registry::load(&w.env).identities.remove(&kb.0).expect("bound");
+    assert_eq!((rec.role, rec.job.as_deref(), rec.cwd.as_str()), (Role::Aide, Some(short.as_str()), dir.to_str().unwrap()));
+    // the parent rides in the job's env (the hook records only the identity labels)
+    let flags = job_flags(&short);
+    let settings: serde_json::Value = serde_json::from_str(&flags[flags.iter().position(|f| f == "--settings").unwrap() + 1]).unwrap();
+    assert_eq!((settings["env"]["NIMITZ_PARENT"].as_str(), settings["env"]["NIMITZ_ROLE"].as_str()), (Some("MAIN"), Some("aide")));
+    // a second aide, not live: its cold launch carries its model through the fake
+    let refd = sandbox::add_aide(&w.base, "MAIN", "REF", false).unwrap();
+    let cwd = w.base.canonicalize().unwrap().join("dirs/main/ref");
+    let (rc, out) = claude::run(&claude::launch_bg(&w.env, &refd, "", Some(&claude::aide_prompt(&refd))), cwd.to_str());
+    assert_eq!(rc, 0, "{out}");
+    let r = w.rows().into_iter().find(|r| r.name == "[MAIN]-@REF").expect("its job");
+    assert!(job_flags(r.short_id.as_deref().unwrap()).windows(2).any(|f| f == ["--model", "sonnet"]));
+}
+
+/// An aide in the snapshot: under its fleet, with its parent and its inbox
+/// (read without a write); `check` says when it is down, unpinned, or on a
+/// model the account does not allow.
+#[test]
+fn an_aide_shows_in_the_snapshot_and_check_keeps_it_up() {
+    let w = world();
+    let kb = sandbox::add_aide(&w.base, "MAIN", "KB", true).unwrap();
+    let snap = w.snap();
+    let main = snap.fleets.iter().find(|f| f.id.fleet() == "MAIN").unwrap();
+    assert_eq!(main.aides.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), [kb.clone()]);
+    assert_eq!(main.members().nth(1).map(|m| m.id.clone()), Some(kb.clone()), "right after the admiral");
+    let m = &main.aides[0];
+    assert_eq!((m.role, m.parent.clone(), m.status), (Role::Aide, Some(Id::admiral("MAIN")), Status::Idle), "{:?}", m.reasons);
+    assert_eq!(m.inbox.as_ref().map(|q| q.line()).as_deref(), Some("empty"));
+    assert!(!w.env.state.join("queues").exists(), "a snapshot writes no queue state");
+    let aide_codes = |snap: &Snapshot| -> Vec<String> { nimitz_core::check::check(&w.env, snap, Some(&kb)).into_iter().filter(|i| i.code.starts_with("aide.")).map(|i| i.code).collect() };
+    assert!(aide_codes(&snap).is_empty(), "{:?}", aide_codes(&snap));
+    // unpinned: a warning; stopped: down (an error a start fixes, not one that refuses it)
+    let short = m.session.as_ref().unwrap().short_id.clone().unwrap();
+    assert_eq!(w.fake(&["__unpin", &short]).0, 0);
+    assert_eq!(aide_codes(&w.snap()), ["aide.unpinned"]);
+    assert_eq!(w.fake(&["stop", &short]).0, 0);
+    let snap = w.snap();
+    let down = nimitz_core::check::check(&w.env, &snap, Some(&kb)).into_iter().find(|i| i.code == "aide.down").expect("down");
+    assert_eq!((down.severity, down.fix.as_deref()), (Severity::Error, Some("nimitz start MAIN/@KB")));
+    assert!(w.start(&snap, &kb, false).ok(), "{:?}", w.start(&snap, &kb, false).refusals);
+    // a model the account does not allow
+    std::fs::write(w.env.claude_home.join("settings.json"), r#"{"availableModels": ["opus"]}"#).unwrap();
+    let model = nimitz_core::check::check(&w.env, &snap, Some(&kb)).into_iter().find(|i| i.code == "aide.model").expect("aide.model");
+    assert_eq!(model.fix.as_deref(), Some("add sonnet to availableModels, or set model in [[aide]]"));
+    assert!(!w.start(&snap, &kb, false).ok(), "a start refuses it");
+}

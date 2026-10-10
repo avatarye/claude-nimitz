@@ -110,6 +110,9 @@ pub struct CoreSource {
     pub mux: Box<dyn Mux>,
     /// the next load is the first: make it quick
     pub first: bool,
+    /// Admiralty runs as the user (no labels, no Claude Code session above
+    /// it, `queue::sender_of`): it may read reply results, as `inbox` lets the user
+    pub as_user: bool,
 }
 
 impl CoreSource {
@@ -118,7 +121,8 @@ impl CoreSource {
         // outside a Herdr pane, the Herdr server the user's commands recorded
         // (`active::user_mux_vars`): Admiralty sees the leads' panes wherever it runs
         let mux = nimitz_mux::detect(&nimitz_core::active::user_mux_vars(&env, vars));
-        CoreSource { env, cache: nimitz_core::snapshot::Cache::default(), mux, first: false }
+        let as_user = nimitz_core::queue::sender_of(&env, vars, None).kind == "user";
+        CoreSource { env, cache: nimitz_core::snapshot::Cache::default(), mux, first: false, as_user }
     }
 }
 
@@ -137,18 +141,11 @@ pub fn merge_check(snap: &mut Snapshot, found: Vec<nimitz_core::Issue>) {
                 if f.id.fleet() != id.fleet() {
                     continue;
                 }
-                let mut members: Vec<&mut nimitz_core::Member> = vec![&mut f.admiral];
-                for sq in &mut f.squadrons {
-                    members.push(&mut sq.commodore);
-                    members.extend(sq.ships.iter_mut());
-                }
-                if let Some(m) = members.into_iter().find(|m| m.id == id) {
-                    m.issues.push(i.clone());
-                    placed = true;
-                } else {
+                let on_member = f.members_mut().find(|m| m.id == id).map(|m| m.issues.push(i.clone())).is_some();
+                if !on_member {
                     f.issues.push(i.clone());
-                    placed = true;
                 }
+                placed = true;
                 break;
             }
         }
@@ -178,6 +175,15 @@ impl DataSource for CoreSource {
             }
         }
         merge_check(&mut snap, found);
+        // an aide's queue as the user sees it: reply results too (the
+        // snapshot's own peek hides them; `status --json` is every member's).
+        // Only for the user: inside a member's or another session, no results
+        let now = nimitz_core::evidence::now();
+        for a in snap.fleets.iter_mut().flat_map(|f| f.aides.iter_mut()).filter(|_| self.as_user) {
+            if let Ok(q) = nimitz_core::queue::Queue::of(&self.env, &a.id) {
+                a.inbox = Some(q.peek_status(now, true));
+            }
+        }
         Bundle {
             snap,
             panes: self.mux.panes(),

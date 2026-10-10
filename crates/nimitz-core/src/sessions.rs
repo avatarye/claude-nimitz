@@ -13,7 +13,8 @@ use crate::types::*;
 use std::collections::HashMap;
 
 /// Parse a session name (address) back into an identity (contracts.md section 4):
-/// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-SHIP`.
+/// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-SHIP`, an aide's `[F]-@NAME`
+/// (`[F.SQ]-@NAME` for a commodore's).
 /// None for names that are not fleet addresses (teammates, ad-hoc sessions).
 /// A trailing ` [ref]` (how `SendMessage` disambiguates two sessions with one
 /// name) is not part of the address, so it cannot hide a target from the rules.
@@ -28,6 +29,10 @@ pub fn id_from_name(name: &str) -> Option<Id> {
     let close = rest.find(']')?;
     let tag = &rest[..close];
     let role = rest[close + 1..].strip_prefix('-')?;
+    if role.starts_with('@') {
+        let id = Id(format!("{}/{role}", tag.replace('.', "/")));
+        return id.well_formed().then_some(id);
+    }
     let (fleet, sq) = match tag.split_once('.') {
         Some((f, s)) => (f, Some(s)),
         None => (tag, None),
@@ -60,7 +65,7 @@ pub fn caller_from_env(vars: &HashMap<String, String>) -> Caller {
         (None, None) => Caller::User,
         (Some(id), Some(role)) => {
             let id = Id(id.clone());
-            let shape_ok = id.parts().iter().all(|p| crate::config::valid_name(p)) && id.name() != id.0;
+            let shape_ok = id.well_formed();
             // the role label must agree with the id's shape; otherwise distrust both
             if shape_ok && id.role().as_str() == role {
                 Caller::Member { role: id.role(), id }
@@ -406,8 +411,10 @@ pub fn may_start(caller: &Caller, target: &Id, verb: &str) -> Result<(), String>
         Caller::User => Ok(()),
         Caller::Member { id, role: Role::Admiral } if target.fleet() == id.fleet() && target != id => Ok(()),
         Caller::Member { id, role: Role::Commodore } if target.parent().as_ref() == Some(id) => Ok(()),
+        // an aide works its inbox; it starts and stops nothing, itself included
+        Caller::Member { id, role: Role::Aide } => Err(format!("{} may not {verb} {target}: an aide starts and stops nothing, itself included; its parent does", caller_name(id))),
         Caller::Member { id, .. } => Err(format!(
-            "{} may not {verb} {target}: you {verb} anything; an admiral, the members of its own fleet; a commodore, its own ships",
+            "{} may not {verb} {target}: you {verb} anything; an admiral, the members of its own fleet (its aides too); a commodore, its own ships",
             caller_name(id)
         )),
     }
@@ -423,6 +430,7 @@ pub fn may_config(caller: &Caller, scope: &Id) -> Result<(), String> {
         Caller::User => Ok(()),
         Caller::Member { id, role: Role::Admiral } if scope.fleet() == id.fleet() => Ok(()),
         Caller::Member { id, role: Role::Commodore } if scope == id || scope.parent().as_ref() == Some(id) => Ok(()),
+        Caller::Member { id, role: Role::Aide } => Err(format!("{} may not change the config of {scope}: an aide changes no config", caller_name(id))),
         Caller::Member { id, .. } => Err(format!(
             "{} may not change the config of {scope}: you change any; an admiral, its own fleet; a commodore, its own squadron and its ships",
             caller_name(id)
@@ -452,8 +460,7 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
     let id_at = |i: usize| -> Option<Id> {
         let s = w.get(i)?;
         let id = Id(s.to_string());
-        let ok = !s.is_empty() && id.parts().iter().all(|p| crate::config::valid_name(p));
-        ok.then_some(id)
+        id.well_formed().then_some(id)
     };
     let in_fleet = |t: &Id| *role == Role::Admiral && t.fleet() == me.fleet();
     let in_squadron = |t: &Id| *role == Role::Commodore && (t == me || t.parent().as_ref() == Some(me));
@@ -469,7 +476,7 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
         }),
         // `start`: a pane (-p) is the user's; nothing relaunches itself; a fleet
         // or no target is a whole-fleet start (an admiral's own, a commodore's ships)
-        Some("start") if *role == Role::Ship => false,
+        Some("start") if matches!(role, Role::Ship | Role::Aide) => false,
         // `start`: a pane (-p) is the user's; nothing relaunches itself alone
         // (`--only -f`); a wider start of yours skips you; a fleet or no
         // target is a whole-fleet start (an admiral's own, a commodore's ships)
@@ -487,9 +494,10 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
             }
         }
         Some("stop") | Some("relaunch") | Some("rm") => id_at(2).is_some_and(|t| may_start(caller, &t, "start").is_ok()),
+        // a ship or an aide sweeps its own stale copy rows only
         Some("sweep") => match id_at(2) {
             None => w.len() == 2 && matches!(role, Role::Admiral | Role::Commodore),
-            Some(t) => in_fleet(&t) || in_squadron(&t) || (*role == Role::Ship && t == *me),
+            Some(t) => in_fleet(&t) || in_squadron(&t) || (matches!(role, Role::Ship | Role::Aide) && t == *me),
         },
         Some("adopt") => id_at(3).is_some_and(|t| may_start(caller, &t, "adopt as").is_ok()),
         Some("up") => id_at(2).is_some_and(|t| in_fleet(&t)),
@@ -505,6 +513,18 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
             _ => false,
         },
         Some("fleet") => w.get(2) == Some(&"set") && id_at(3).is_some_and(|t| in_fleet(&t)),
+        // an aide's inbox (aide.md section 7): its own claim, heartbeat, done
+        // and fail; a dead letter's retry or drop its parent's; list, status
+        // and result anyone's; a post or an ask by the inbox's policy (judged
+        // when it runs), never an aide's to itself
+        Some("inbox") => match (w.get(2).copied(), id_at(3)) {
+            (Some("claim" | "heartbeat" | "done" | "fail"), Some(t)) => t == *me,
+            (Some("retry" | "drop"), Some(t)) => t.role() == Role::Aide && t.parent().as_ref() == Some(me),
+            (Some("post"), Some(t)) => t != *me,
+            (Some("list" | "status" | "result"), _) => true,
+            _ => false,
+        },
+        Some("ask") => id_at(2).is_some_and(|t| t != *me),
         _ => false,
     }
 }
@@ -540,15 +560,7 @@ fn refuse(plan: &mut Plan, code: &str, msg: String, fix: Option<String>, id: Opt
 
 /// Every member of a snapshot, with its fleet.
 fn members(snap: &Snapshot) -> Vec<(&Fleet, &Member)> {
-    let mut out = vec![];
-    for f in &snap.fleets {
-        out.push((f, &f.admiral));
-        for sq in &f.squadrons {
-            out.push((f, &sq.commodore));
-            out.extend(sq.ships.iter().map(|m| (f, m)));
-        }
-    }
-    out
+    snap.fleets.iter().flat_map(|f| f.members().map(move |m| (f, m))).collect()
 }
 
 fn member<'a>(snap: &'a Snapshot, id: &Id) -> Option<(&'a Fleet, &'a Member)> {
@@ -593,7 +605,7 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
     };
     let cwd = m.cwd.clone().or_else(|| crate::config::member_dir(env, &fod, id).map(|p| p.to_string_lossy().into_owned()));
     let Some(cwd) = cwd else {
-        refuse(plan, "folder.missing", format!("{id} has no folder on this machine"), Some(format!("nimitz ship set {id} --dir <folder|managed>")), Some(id.clone()));
+        refuse(plan, "folder.missing", format!("{id} has no folder on this machine"), Some(dir_fix(id)), Some(id.clone()));
         return;
     };
     let mode = crate::config::permission_mode(&fod, id);
@@ -934,6 +946,12 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
             cwd: Some(cwd.to_string()),
             why: "cold launch of a lead as a background job; `nimitz open` attaches to it".into(),
         }),
+        Role::Aide => plan.steps.push(Step {
+            id: Some(id.clone()),
+            cmd: crate::claude::launch_bg(env, id, mode, Some(&crate::claude::aide_prompt(id))),
+            cwd: Some(cwd.to_string()),
+            why: "cold launch of an aide as a background job; it works its inbox".into(),
+        }),
     }
 }
 
@@ -945,8 +963,12 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
 fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: bool) {
     // (lead.intruder rides along too: an intruder in a lead's folder is told
     // and fixed, but it does not hold up the lead's own job)
-    const TABLE_HANDLED: [&str; 8] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "history.lost", "lead.intruder"];
+    const TABLE_HANDLED: [&str; 10] = ["name.drift", "labels.missing", "labels.mismatch", "dup.live", "copy.rows", "lineage.broken", "history.lost", "lead.intruder", "aide.down", "aide.unpinned"];
     for i in crate::check::check(env, snap, id) {
+        // (an aide that is down or unpinned: the start is the fix)
+        if id.is_some() && i.id.as_ref() == id && ["aide.down", "aide.unpinned"].contains(&i.code.as_str()) {
+            continue;
+        }
         let forced_away = force && i.code == "cc.version";
         match i.severity {
             Severity::Error if !TABLE_HANDLED.contains(&i.code.as_str()) && !forced_away => plan.refusals.push(i),
@@ -1126,6 +1148,8 @@ pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan
     }
     gate(env, &mut plan, snap, Some(&f.id), false);
     let mut ids = vec![f.admiral.id.clone()];
+    // its aides, top-down after it: those whose `dirs` names this machine
+    ids.extend(f.aides.iter().filter(|a| fod.as_ref().is_some_and(|fod| crate::config::member_dir(env, fod, &a.id).is_some())).map(|a| a.id.clone()));
     for sq in &f.squadrons {
         ids.push(sq.commodore.id.clone());
         // ships with a folder on this machine, in depends_on order
@@ -1256,10 +1280,19 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         refuse(&mut plan, "authority", why, None, Some(id.clone()));
         return plan;
     }
-    let Some((_, m)) = member(snap, id) else {
+    let Some((f, m)) = member(snap, id) else {
         refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
         return plan;
     };
+    // an admiral's live aides stop first: an aide never outlives its parent
+    // (docs/design/aide.md section 10; a claimed item comes back with its lease)
+    if m.role == Role::Admiral {
+        for a in &f.aides {
+            if let Some(short) = a.session.as_ref().filter(|p| p.pid.is_some()).and_then(|p| p.short_id.clone()) {
+                plan.steps.push(Step { id: Some(a.id.clone()), cmd: crate::claude::stop(env, &short), cwd: a.cwd.clone(), why: format!("its aide first: stop {} (a claimed item comes back with its lease)", a.id) });
+            }
+        }
+    }
     // its conversation runs in a process with no job (a `claude --resume`
     // by hand, an SDK host) while its own job is not live: nimitz cannot stop
     // it there (cli-18). A live job is stopped as ever, whatever else holds
@@ -1271,7 +1304,9 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         return plan;
     }
     let Some(p) = m.session.as_ref().filter(|p| p.pid.is_some()) else {
-        refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
+        if plan.steps.is_empty() {
+            refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
+        }
         return plan;
     };
     // a process with no job (an interactive 0.3.x lead, an SDK host): nimitz
@@ -1457,6 +1492,26 @@ fn relabel_to(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str, sid: &
     v
 }
 
+/// How a member gets a folder on this machine: a ship's `ship set --dir`;
+/// an aide's `[[aide]]` dirs (no `aide set` yet).
+pub fn dir_fix(id: &Id) -> String {
+    match id.role() {
+        Role::Aide => format!("edit {id}'s [[aide]] in fleet.toml: dirs.<this machine's label> = \"<folder>\""),
+        _ => format!("nimitz ship set {id} --dir <folder|managed>"),
+    }
+}
+
+/// What retires a member for good: its config's `rm` (an aide leaves
+/// fleet.toml by hand; there is no `aide rm` yet).
+fn retire_hint(id: &Id) -> String {
+    match id.role() {
+        Role::Admiral => format!("nimitz fleet rm {id}"),
+        Role::Commodore => format!("nimitz squadron rm {id}"),
+        Role::Ship => format!("nimitz ship rm {id}"),
+        Role::Aide => "deleting its [[aide]] from fleet.toml".into(),
+    }
+}
+
 /// Remove job rows: a member's stale rows (`target` = identity), or one row of
 /// a stowaway / non-fleet session (`target` = short id or session id).
 pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Plan {
@@ -1469,17 +1524,13 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         }
         sweep_member(env, &mut plan, m, caller);
         if plan.steps.is_empty() && plan.refusals.is_empty() {
-            let retire = match m.role {
-                Role::Admiral => "fleet rm",
-                Role::Commodore => "squadron rm",
-                Role::Ship => "ship rm",
-            };
+            let retire = retire_hint(&m.id);
             let own = m.session.as_ref().map(|p| format!("; its own row {} goes with the member", p.short_id.as_deref().unwrap_or(&p.session_id))).unwrap_or_default();
             plan.warnings.push(issue(
                 "copy.rows",
                 Severity::Info,
                 format!("{target} has no stale rows{own}"),
-                m.session.as_ref().map(|_| format!("{}  # replaces the row (same conversation); nimitz {retire} {target} retires the member", start_cmd(&m.id, "-f"))),
+                m.session.as_ref().map(|_| format!("{}  # replaces the row (same conversation); {retire} retires the member", start_cmd(&m.id, "-f"))),
                 Some(m.id.clone()),
             ));
         }
@@ -1537,16 +1588,12 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
     if let Some(member) = current {
         // a member's own row goes with the member: a relaunch replaces it, a
         // retire removes it (acceptance env F7)
-        let retire = match member.role() {
-            Role::Admiral => "fleet rm",
-            Role::Commodore => "squadron rm",
-            Role::Ship => "ship rm",
-        };
+        let retire = retire_hint(&member);
         refuse(
             &mut plan,
             "lineage.current",
             format!("session {} is {member}'s current session; its row goes with the member, never alone", row.session_id),
-            Some(format!("{}  # replaces the row (same conversation); nimitz {retire} {member} retires the member", start_cmd(&member, "-f"))),
+            Some(format!("{}  # replaces the row (same conversation); {retire} retires the member", start_cmd(&member, "-f"))),
             Some(member.clone()),
         );
         return plan;
@@ -1665,8 +1712,8 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
             }
             Box::new(move |m: &Id| m.fleet() == fleet)
         }
-        // a ship: its own stale copy rows, nothing else
-        Caller::Member { id: me, role: Role::Ship } if id == Some(me) => {
+        // a ship or an aide: its own stale copy rows, nothing else
+        Caller::Member { id: me, role: Role::Ship | Role::Aide } if id == Some(me) => {
             let me = me.clone();
             Box::new(move |m: &Id| *m == me)
         }
@@ -2330,9 +2377,9 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                                 return out;
                             }
                         }
-                        // a lead stays up: pin its job (plan-v4 section 7); a
-                        // pin that cannot be written is a warning, not a failed start
-                        if id.role().lead() {
+                        // a lead or an aide stays up: pin its job (plan-v4 section 7);
+                        // a pin that cannot be written is a warning, not a failed start
+                        if id.role().always_on() {
                             if let Some(job) = &job {
                                 match crate::pins::pin(env, job) {
                                     Ok(true) => note(&mut out, "; pinned"),
@@ -2686,6 +2733,15 @@ mod tests {
         assert_eq!(id_from_name("[F.SQ]-COMMODORE/"), None);
         // a SendMessage ref suffix does not hide the address
         assert_eq!(id_from_name("[F.SQ]-S [3fa9c1]"), Some(Id::ship("F", "SQ", "S")));
+        // an aide: its parent's place, then @NAME
+        for a in ["HOME/@KB", "HOME/GITHUB/@X", "HOME/GITHUB/NIMITZ_DEV/@X"] {
+            let id = Id(a.into());
+            assert_eq!(id_from_name(&id.name()), Some(id.clone()), "{}", id.name());
+        }
+        assert_eq!(Id("HOME/@KB".into()).name(), "[HOME]-@KB");
+        for bad in ["[HOME]-@kb", "[HOME]-@", "[home]-@KB", "[A.B.C.D]-@X", "[HOME]-@@KB"] {
+            assert_eq!(id_from_name(bad), None, "{bad}");
+        }
     }
 
     #[test]
@@ -2705,6 +2761,12 @@ mod tests {
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "not an id"), ("NIMITZ_ROLE", "admiral")])), unverified);
         // NIMITZ_HOME alone is no label at all
         assert_eq!(caller_from_env(&m(&[("NIMITZ_HOME", "/h")])), Caller::User);
+        // an aide: its role label must say aide
+        let kb = Id("HOME/@KB".into());
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/@KB"), ("NIMITZ_ROLE", "aide")])), Caller::Member { id: kb, role: Role::Aide });
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/@KB"), ("NIMITZ_ROLE", "commodore")])), unverified);
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/@kb"), ("NIMITZ_ROLE", "aide")])), unverified);
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/KB"), ("NIMITZ_ROLE", "aide")])), unverified);
         assert!(may_start(&unverified, &Id::ship("F", "SQ", "S"), "start").unwrap_err().contains("partial or inconsistent"));
     }
 
@@ -2729,6 +2791,27 @@ mod tests {
         // ships: nothing
         let a_ship = Caller::Member { id: ship.clone(), role: Role::Ship };
         assert!(may_start(&a_ship, &Id::ship("F", "SQ", "T"), "start").is_err());
+        // an aide: its admiral (and you) start and stop it; it starts, stops and configures nothing, itself included
+        let kb = Id("F/@KB".into());
+        let aide = Caller::Member { id: kb.clone(), role: Role::Aide };
+        assert!(may_start(&admiral, &kb, "stop").is_ok() && may_start(&Caller::User, &kb, "start").is_ok());
+        assert!(may_start(&own, &kb, "start").is_err() && may_start(&a_ship, &kb, "start").is_err());
+        for t in [kb.clone(), ship.clone(), Id::admiral("F")] {
+            assert!(may_start(&aide, &t, "start").unwrap_err().contains("an aide starts and stops nothing"), "{t}");
+            assert!(may_config(&aide, &t).is_err());
+        }
+        assert!(may_run(&aide, "nimitz sweep F/@KB") && !may_run(&aide, "nimitz sweep F/SQ/S"));
+        assert!(!may_run(&aide, "nimitz start F/@KB") && !may_run(&aide, "nimitz stop F/@KB") && !may_run(&aide, "nimitz start F/@KB --only -f"));
+        assert!(may_run(&admiral, "nimitz start F/@KB") && may_run(&admiral, "nimitz stop F/@KB"));
+        assert!(may_run(&aide, "nimitz signal F hi") && !may_run(&aide, "nimitz signal F/SQ hi"));
+        // the inbox: the aide works its own; the admiral repairs its aide's dead letters
+        assert!(may_run(&admiral, "nimitz inbox retry F/@KB 17") && may_run(&admiral, "nimitz inbox drop F/@KB 17  # or retry"));
+        assert!(!may_run(&admiral, "nimitz inbox retry G/@KB 17") && !may_run(&own, "nimitz inbox retry F/@KB 17") && !may_run(&aide, "nimitz inbox retry F/@KB 17"));
+        assert!(may_run(&aide, "nimitz inbox claim F/@KB") && may_run(&aide, "nimitz inbox done F/@KB 3 --result {}") && !may_run(&admiral, "nimitz inbox claim F/@KB"));
+        assert!(!may_run(&aide, "nimitz inbox claim F/@REF"), "not another aide's");
+        assert!(may_run(&a_ship, "nimitz inbox post F/@KB --type wiki.note.v1") && !may_run(&aide, "nimitz inbox post F/@KB --type x") && may_run(&aide, "nimitz inbox post F/@REF --type x"));
+        assert!(may_run(&a_ship, "nimitz inbox list F/@KB") && may_run(&a_ship, "nimitz inbox status") && may_run(&a_ship, "nimitz inbox result F/@REF 4"));
+        assert!(may_run(&a_ship, "nimitz ask F/@REF q") && !may_run(&Caller::Member { id: Id("F/@REF".into()), role: Role::Aide }, "nimitz ask F/@REF q"));
     }
 
     #[test]

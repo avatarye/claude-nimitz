@@ -403,7 +403,7 @@ fn resolve_socket(env: &Env, to: &str) -> Option<String> {
 /// The chain-of-command signal table (plan-v4 section 12): an admiral, every
 /// member of its own fleet; a commodore, its admiral and its ships; a ship,
 /// its commodore, its admiral (a reply) and other ships as the squadron's
-/// comms rule allows. Targets that are not fleet names (teammates of an agent
+/// comms rule allows; an aide, its parent only (and a parent its aide). Targets that are not fleet names (teammates of an agent
 /// team, other sessions) are not ours to rule, except an address nimitz
 /// cannot resolve (a socket, BUG-22): a ship under a closed comms rule may
 /// not signal what it cannot name.
@@ -415,13 +415,15 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
         }
         let closed = match from.role() {
             Role::Ship => !matches!(squadron_comms(env, from), Comms::Mode(m) if m == "open"),
-            _ => false,
+            // an aide signals its parent only: never what nimitz cannot name
+            Role::Aide => true,
+            Role::Admiral | Role::Commodore => false,
         };
         return if closed {
             Err(format!(
-                "{to_name} is not a fleet address nimitz can resolve{}; a {} under this squadron's comms rule signals only named members (nimitz chain of command; sender {})",
+                "{to_name} is not a fleet address nimitz can resolve{}; {} signals only named members (nimitz chain of command; sender {})",
                 resolved.map(|n| format!(" (it is {n:?})")).unwrap_or_default(),
-                from.role().as_str(),
+                if from.role() == Role::Aide { "an aide" } else { "a ship under this squadron's comms rule" },
                 from.name()
             ))
         } else {
@@ -446,12 +448,14 @@ pub fn signal_table(from: &Id, to: &Id, comms: &dyn Fn() -> Comms) -> Result<(),
         Role::Commodore => match to.role() {
             Role::Admiral if to.fleet() == from.fleet() => Ok(()),
             Role::Ship if same_sq => Ok(()),
+            Role::Aide if to.parent().as_ref() == Some(from) => Ok(()),
             _ => deny(format!("a commodore signals its admiral and its ships, not {to_name}")),
         },
         Role::Ship => match to.role() {
             Role::Commodore if same_sq => Ok(()),
             // a reply: the admiral may signal a ship, and the ship answers it
             Role::Admiral if to.fleet() == from.fleet() => Ok(()),
+            Role::Aide if to.parent().as_ref() == Some(from) => Ok(()),
             Role::Ship => match comms() {
                 Comms::Mode(m) if m == "open" && same_sq => Ok(()),
                 Comms::Mode(m) if m == "open" => deny(format!("comms is open within the squadron only; {to_name} is in another squadron")),
@@ -463,6 +467,11 @@ pub fn signal_table(from: &Id, to: &Id, comms: &dyn Fn() -> Comms) -> Result<(),
                 Comms::Mode(m) => deny(format!("unknown comms rule {m:?}; only the commodore may be signalled")),
             },
             _ => deny(format!("a ship signals its commodore, its admiral (a reply) and, by the comms rule, other ships; not {to_name}")),
+        },
+        // an aide reports to its parent and to nobody else (docs/design/aide.md section 7)
+        Role::Aide => match from.parent() {
+            Some(p) if *to == p => Ok(()),
+            _ => deny(format!("an aide signals its parent only, not {to_name}")),
         },
     }
 }
@@ -560,6 +569,18 @@ mod tests {
         // a `[ref]` suffix (two sessions with one name) does not get around the table
         assert!(denied(&send(&env, &ship, &format!("{} [3fa9c1]", Id::commodore("MAIN", "BOREAL").name()))));
         assert!(!denied(&send(&env, &ship, &format!("{} [3fa9c1]", argos.name()))));
+        // an aide: its parent, both ways, and nobody else (aide.md section 7)
+        let kb = Id("MAIN/@KB".into());
+        assert!(!denied(&send(&env, &kb, &adm.name())));
+        assert!(!denied(&send(&env, &adm, &kb.name())));
+        for to in [argos.name(), ship.name(), Id::admiral("OTHER").name(), Id("MAIN/@REF".into()).name(), "sock:/tmp/x".to_string()] {
+            assert!(denied(&send(&env, &kb, &to)), "{to}");
+        }
+        assert!(denied(&send(&env, &argos, &kb.name())) && denied(&send(&env, &ship, &kb.name())), "not its parent");
+        // a commodore's aide (later): its commodore, both ways
+        let x = Id("MAIN/ARGOS/@X".into());
+        assert!(signal_table(&x, &argos, &|| Comms::default()).is_ok() && signal_table(&argos, &x, &|| Comms::default()).is_ok());
+        assert!(signal_table(&ship, &x, &|| Comms::default()).is_err() && signal_table(&x, &ship, &|| Comms::default()).is_err());
     }
 
     /// A SessionStart delivers the rules and records it; a prompt in a session

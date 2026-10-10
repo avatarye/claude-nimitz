@@ -48,19 +48,25 @@ pub fn workspace_of(id: &Id) -> String {
     }
 }
 
-/// Tab label, the member's full place: `F.ADMIRAL`, `F.SQ.COMMODORE` or
-/// `F.SQ.SHIP`. (Before 0.3.1 the tab was only the last part; `legacy_tab_of`
-/// gives that, so a layout still finds an old tab.)
+/// Tab label, the member's full place: `F.ADMIRAL`, `F.SQ.COMMODORE`,
+/// `F.SQ.SHIP`, or an aide's `F.@NAME` (its parent's parts, then `@NAME`).
+/// (Before 0.3.1 the tab was only the last part; `legacy_tab_of` gives that,
+/// so a layout still finds an old tab.)
 pub fn tab_of(id: &Id) -> String {
-    format!("{}.{}", workspace_of(id), legacy_tab_of(id))
+    match id.role() {
+        Role::Aide => id.0.replace('/', "."),
+        _ => format!("{}.{}", workspace_of(id), legacy_tab_of(id)),
+    }
 }
 
-/// The short tab label of 0.3.0 and before: ADMIRAL, COMMODORE or the ship's name.
+/// The short tab label of 0.3.0 and before: ADMIRAL, COMMODORE or the ship's
+/// name (an aide, newer than that, has its `@NAME`).
 pub fn legacy_tab_of(id: &Id) -> String {
     match id.role() {
         Role::Admiral => "ADMIRAL".into(),
         Role::Commodore => "COMMODORE".into(),
-        _ => id.parts().get(2).map(|s| s.to_string()).unwrap_or_default(),
+        Role::Ship => id.parts().get(2).map(|s| s.to_string()).unwrap_or_default(),
+        Role::Aide => id.parts().last().map(|s| s.to_string()).unwrap_or_default(),
     }
 }
 
@@ -201,5 +207,18 @@ pub fn drop_shown(spec: &mut LayoutSpec, shown_sessions: &[String]) {
     for id in dropped {
         spec.plan.steps.retain(|s| !(s.id.as_ref() == Some(&id) && s.cmd.get(1).map(|c| c == "attach").unwrap_or(false)));
         spec.plan.warnings.push(skip(&id, format!("{id} already has a pane; `nimitz start {id} -p` shows it")));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_aide_tab_is_its_parent_place_then_its_name() {
+        assert_eq!(tab_of(&Id::ship("F", "SQ", "S")), "F.SQ.S");
+        assert_eq!(tab_of(&Id::admiral("F")), "F.ADMIRAL");
+        assert_eq!((tab_of(&Id("HOME/@KB".into())), workspace_of(&Id("HOME/@KB".into()))), ("HOME.@KB".to_string(), "HOME".to_string()));
+        assert_eq!(tab_of(&Id("HOME/GITHUB/NIMITZ_DEV/@X".into())), "HOME.GITHUB.NIMITZ_DEV.@X");
     }
 }

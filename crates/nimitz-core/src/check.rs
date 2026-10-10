@@ -224,11 +224,63 @@ pub fn folder_issue_in(env: &Env, cache: &mut TrustCache, id: &Id, cwd: &str) ->
             code: "folder.missing".into(),
             severity: Severity::Error,
             message: format!("{id}'s folder {cwd} does not exist"),
-            fix: Some(format!("mkdir -p {cwd}  # or point {id} elsewhere with nimitz ship set")),
+            fix: Some(match id.role() {
+                Role::Aide => format!("mkdir -p {cwd}  # or point {id} elsewhere in its [[aide]] dirs"),
+                _ => format!("mkdir -p {cwd}  # or point {id} elsewhere with nimitz ship set"),
+            }),
             id: Some(id.clone()),
         });
     }
     trust_issue(env, cache, id, dir)
+}
+
+/// An aide is always on (docs/design/aide.md section 9): `aide.down` when
+/// the machine that runs it (its `dirs` names this one) has no live job of
+/// it (an error while its parent runs; Info when the parent is down too: a
+/// `stop F` stops both on purpose), `aide.unpinned` when its live job is not pinned (the daemon would
+/// idle-retire it), `aide.model` when, on the machine that runs it, the
+/// account's `availableModels` leave its model out (Claude Code would
+/// silently run the default instead).
+pub fn aide_issues(env: &Env, m: &Member, here: bool, parent_live: bool) -> Vec<Issue> {
+    let mut out = vec![];
+    let id = &m.id;
+    let live = m.session.as_ref().filter(|s| s.pid.is_some());
+    if here && live.is_none() {
+        let why = m.reasons.first().map(String::as_str).unwrap_or("no live job");
+        out.push(Issue {
+            code: "aide.down".into(),
+            severity: if parent_live { Severity::Error } else { Severity::Info },
+            message: if parent_live {
+                format!("{id} is always on but not running ({why})")
+            } else {
+                format!("{id} is down with its parent ({why}); it comes back with the parent's start")
+            },
+            fix: Some(format!("nimitz start {id}")),
+            id: Some(id.clone()),
+        });
+    }
+    if let Some(s) = live.filter(|s| s.short_id.is_some() && !s.pinned) {
+        out.push(Issue {
+            code: "aide.unpinned".into(),
+            severity: Severity::Warn,
+            message: format!("{id}'s job {} is not pinned; the daemon may retire it when idle", s.short_id.as_deref().unwrap_or_default()),
+            fix: Some(format!("nimitz start {id}")),
+            id: Some(id.clone()),
+        });
+    }
+    // (only where it runs: another machine's account is not this one's)
+    if let (true, Some(model), Some(allowed)) = (here, crate::claude::model_for(env, id), crate::claude::available_models(env)) {
+        if !crate::claude::model_allowed(&model, &allowed) {
+            out.push(Issue {
+                code: "aide.model".into(),
+                severity: Severity::Error,
+                message: format!("{id} runs on {model}, which availableModels ({}) leaves out; Claude Code would run the default model instead", allowed.join(", ")),
+                fix: Some(format!("add {model} to availableModels, or set model in [[aide]]")),
+                id: Some(id.clone()),
+            });
+        }
+    }
+    out
 }
 
 /// `nimitz check [<id>]`: the target, every member under it (a fleet's
@@ -272,17 +324,17 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
     // Member issues: folders, then the session-level rules.
     let mut trust = TrustCache::default();
     for fleet in &snap.fleets {
-        let mut members: Vec<&Member> = vec![&fleet.admiral];
-        for sq in &fleet.squadrons {
-            members.push(&sq.commodore);
-            members.extend(sq.ships.iter());
-        }
-        for m in members {
+        for m in fleet.members() {
             if !in_scope(&m.id, id) {
                 continue;
             }
             if let Some(i) = m.cwd.as_deref().and_then(|cwd| folder_issue_in(env, &mut trust, &m.id, cwd)) {
                 out.push(i);
+            }
+            if m.role == Role::Aide {
+                let here = fleets.iter().find(|f| f.config.fleet == m.id.fleet()).is_some_and(|f| crate::config::member_dir(env, f, &m.id).is_some());
+                let parent_live = m.id.parent().and_then(|p| fleet.members().find(|x| x.id == p)).is_some_and(|p| p.session.as_ref().is_some_and(|s| s.pid.is_some()));
+                out.extend(aide_issues(env, m, here, parent_live));
             }
             // Session rules (name.*, labels.*, dup.live, copy.rows, lineage.broken,
             // held, ship.elsewhere) arrive here too: snapshot puts
@@ -340,12 +392,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
                 }
             }
             for fl in &snap.fleets {
-                let mut ms = vec![&fl.admiral];
-                for sq in &fl.squadrons {
-                    ms.push(&sq.commodore);
-                    ms.extend(sq.ships.iter());
-                }
-                exact.extend(ms.into_iter().filter(|m| m.id == *t || below(&m.id, Some(t))).filter_map(|m| m.cwd.as_deref()).map(|c| crate::env::canon(Path::new(c))));
+                exact.extend(fl.members().filter(|m| m.id == *t || below(&m.id, Some(t))).filter_map(|m| m.cwd.as_deref()).map(|c| crate::env::canon(Path::new(c))));
             }
             Some((exact, trees.iter().map(|d| crate::env::canon(d)).collect()))
         }
@@ -451,7 +498,22 @@ pub(crate) mod tests {
             tasks: vec![],
             issues: vec![],
             pane: None,
+            parent: None,
+            inbox: None,
         }
+    }
+
+    /// `aide.model` is the machine's that runs the aide: another machine's
+    /// account (its `availableModels`) says nothing about it.
+    #[test]
+    fn aide_model_is_checked_only_where_the_aide_runs() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.claude_home).unwrap();
+        std::fs::write(env.claude_home.join("settings.json"), r#"{"availableModels": ["opus"]}"#).unwrap();
+        let m = member(Id("MAIN/@KB".into()), None);
+        let codes = |here: bool| aide_issues(&env, &m, here, true).into_iter().map(|i| i.code).collect::<Vec<_>>();
+        assert_eq!(codes(true), ["aide.down", "aide.model"]);
+        assert!(codes(false).is_empty(), "{:?}", codes(false));
     }
 
     pub(crate) fn snap_for(env: &Env, ship_cwd: Option<&str>) -> Snapshot {
@@ -466,6 +528,7 @@ pub(crate) mod tests {
                 dir: f.dir.to_string_lossy().into_owned(),
                 machine: Some("test-mac".into()),
                 admiral: member(Id::admiral("MAIN"), admiral_dir.to_str()),
+                aides: vec![],
                 squadrons: vec![Squadron {
                     id: Id::commodore("MAIN", "ARGOS"),
                     commodore: member(Id::commodore("MAIN", "ARGOS"), sq_dir.to_str()),

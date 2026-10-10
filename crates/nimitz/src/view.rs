@@ -7,7 +7,7 @@
 //! unchanged. Colour only on a terminal, never with `NO_COLOR`; without it
 //! the verbs carry the meaning.
 use crate::out;
-use nimitz_core::{Id, Issue, Outcome, Plan, Severity, Step};
+use nimitz_core::{Id, Issue, Outcome, Plan, Role, Severity, Step};
 use std::collections::BTreeMap;
 use std::io::IsTerminal;
 
@@ -219,22 +219,22 @@ impl View {
     }
 }
 
-/// `MAIN`, `MAIN · ARGOS`: the group a member's line is under.
+/// `MAIN`, `MAIN · ARGOS`: the group a member's line is under (an
+/// admiral's aide is in its fleet's).
 fn group(id: &Id) -> String {
-    let p = id.parts();
-    if p.len() == 1 {
-        p[0].to_string()
-    } else {
-        format!("{} · {}", p[0], p[1])
+    match id.squadron() {
+        Some(sq) => format!("{} · {sq}", id.fleet()),
+        None => id.fleet().to_string(),
     }
 }
 
-/// The member's name inside its group.
+/// The member's name inside its group: `ADMIRAL`, `COMMODORE`, the ship's
+/// name, an aide's `@NAME`.
 fn short(id: &Id) -> String {
-    match id.parts().len() {
-        1 => "ADMIRAL".into(),
-        2 => "COMMODORE".into(),
-        _ => id.parts()[2].to_string(),
+    match id.role() {
+        Role::Admiral => "ADMIRAL".into(),
+        Role::Commodore => "COMMODORE".into(),
+        Role::Ship | Role::Aide => id.parts().last().copied().unwrap_or_default().to_string(),
     }
 }
 
