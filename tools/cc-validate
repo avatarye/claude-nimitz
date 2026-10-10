@@ -1,0 +1,802 @@
+#!/usr/bin/env python3
+"""cc-validate: validate nimitz against the installed Claude Code, on demand.
+
+    tools/cc-validate [--plan] [--force]
+
+Reads `claude --version` and docs/compat.toml's `max`. Equal (or older): the
+version is already tested, exit 0. Newer (or `--force`): checks the main
+checkout (clean, on dev, level with origin/dev), snapshots the live fleets,
+then in a fresh worktree from dev builds, runs the unit suite, the real-CC
+e2e, a hook-payload probe with doctor's pinned-format check, and a static
+diff of Claude Code internals nimitz relies on against the previous tested
+binary. On a pass it bumps the tested max, commits, merges into dev
+(--no-ff), pushes origin dev, installs nimitz and admiralty, updates the
+plugin if plugin/ changed and checks doctor. On a fail it changes nothing and
+writes a report under ~/.cache/nimitz-ci/<version>/.
+
+Stdlib Python on purpose: it drives git, cargo and claude and must still run
+when the workspace does not build (a cargo xtask would be built by the very
+build it checks). Every child process gets a scrubbed env: no NIMITZ_* or
+CLAUDE_CODE_* of the caller reaches it.
+
+Exit: 0 pass or already tested; 1 a stage failed; 2 the checkout is not
+ready (nothing ran).
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# Unit tests that fail for a reason outside nimitz on this machine, by name.
+KNOWN_FAILURES = {
+    # tmux 3.4 has no `codepoint-widths` option (3.5 added it)
+    "borders_stay_put_when_the_terminal_draws_icons_two_cells_wide",
+}
+
+# Static markers in the Claude Code binary: (name, what nimitz relies on,
+# a literal anchor, a regex matched in a window around each anchor). Each
+# match is normalized (non-printables, minified names of 1-3 chars, chunk
+# hashes) and compared as a set with the previous tested binary.
+MARKERS = [
+    ("retire", "the daemon's idle-retire log line", b"`bg retire ", rb"`bg retire [^`]{0,120}`"),
+    ("pins lock", "jobs/pins.json lock options and message", b"`pins.json lock compromised",
+     rb"stale:[\w$]+,retries:\{[^}]{0,60}\},onCompromised:[\x20-\x7e]{0,30}`pins\.json lock compromised"),
+    ("copy text", "the 'started a copy as' notes", b"started a copy", rb"[\x20-\x7e]{0,40}started a copy[\x20-\x7e]{0,30}"),
+    ("peer frame", "the cross-session message frame", b"<cross-session-message from=", rb"<cross-session-message from=[\x20-\x7e]{0,40}"),
+    ("agents re-exec", "the attach client re-execs as `claude agents`", b'"cli_bg_attach",',
+     rb'"cli_bg_attach",[\x20-\x7e]{0,80}?args:\["agents"'),
+    ("messaging socket", "CLAUDE_CODE_MESSAGING_SOCKET uses", b"CLAUDE_CODE_MESSAGING_SOCKET",
+     rb"[\x20-\x7e]{0,30}CLAUDE_CODE_MESSAGING_SOCKET[\x20-\x7e]{0,30}"),
+]
+
+# Hook payload fields nimitz reads (crates/nimitz-core/src/hook.rs), per event.
+PAYLOAD_FIELDS = {
+    "SessionStart": ["session_id", "hook_event_name", "source", "cwd"],
+    "UserPromptSubmit": ["session_id", "hook_event_name", "prompt"],
+    "PreToolUse": ["session_id", "hook_event_name", "tool_name", "tool_input"],
+    "PermissionRequest": ["session_id", "hook_event_name", "tool_name", "tool_input"],
+}
+
+GLYPH = {True: "\u2713", False: "\u2717", None: "\u2013"}  # check, cross, dash
+RGB = {True: (0xa6, 0xe2, 0x2e), False: (0xfd, 0x97, 0x1f), None: (0x8a, 0x86, 0x72)}
+
+
+# ---------------------------------------------------------------- helpers
+
+def vkey(v):
+    return tuple(int(x) for x in re.findall(r"\d+", v))
+
+
+def newer(a, b):
+    return vkey(a) > vkey(b)
+
+
+def next_patch(v):
+    p = v.split(".")
+    p[-1] = str(int(p[-1]) + 1)
+    return ".".join(p)
+
+
+def dur(s):
+    s = int(round(s))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s // 3600}h{s % 3600 // 60:02d}m"
+
+
+def tilde(p, home):
+    p = str(p)
+    return "~" + p[len(str(home)):] if p.startswith(str(home) + "/") else p
+
+
+def colour_on(stream):
+    no = bool(os.environ.get("NO_COLOR"))
+    if os.environ.get("NIMITZ_COLOR") == "1":
+        return not no
+    return stream.isatty() and not no and os.environ.get("TERM") != "dumb"
+
+
+def norm(b):
+    s = re.sub(rb"[^\x20-\x7e]", b".", b).decode()
+    s = re.sub(r"chunk-[a-z0-9]{6,10}", "chunk-X", s)
+    s = re.sub(r"-[a-z0-9]{8}\.js\b", "-HASH.js", s)  # bundle chunk names
+    return re.sub(r"(?<![A-Za-z0-9_$])[A-Za-z_$][A-Za-z0-9_$]{0,2}(?![A-Za-z0-9_$])", "_", s)
+
+
+def around(data, anchor, rx, pad=200):
+    """The matches of `rx` that hold an occurrence of `anchor` (a regex over
+    the whole binary is far too slow): (absolute start, bytes)."""
+    out, i = {}, data.find(anchor)
+    while i >= 0:
+        lo = max(0, i - pad)
+        for m in re.finditer(rx, data[lo:i + len(anchor) + pad]):
+            if m.start() <= i - lo < m.end():
+                out[lo + m.start()] = m.group(0)
+        i = data.find(anchor, i + 1)
+    return sorted(out.items())
+
+
+def markers_of(data):
+    """{name: sorted normalized matches}, plus the pins lock's stale value."""
+    out, found = {}, {}
+    for name, _, anchor, rx in MARKERS:
+        found[name] = around(data, anchor, rx)
+        out[name] = sorted({norm(b) for _, b in found[name]})
+    stale = None
+    if found["pins lock"]:
+        at, b = found["pins lock"][0]
+        var = re.search(rb"stale:([\w$]+)", b).group(1)
+        lo = max(0, at - 20000)
+        hits = list(re.finditer(rb"(?<![\w$.])" + re.escape(var) + rb"=([^,;]{1,12})[,;]", data[lo:at]))
+        stale = hits[-1].group(1).decode() if hits else None
+    out["pins lock"] = out["pins lock"] + [f"stale={stale}"] if out["pins lock"] else []
+    return out
+
+
+def failed_tests(out):
+    return sorted({m.group(1).split("::")[-1] for m in re.finditer(r"^test (\S+) \.\.\. FAILED", out, re.M)})
+
+
+def passed_count(out):
+    return sum(int(m.group(1)) for m in re.finditer(r"^test result: \w+\. (\d+) passed", out, re.M))
+
+
+# ---------------------------------------------------------------- processes
+
+@dataclass
+class Res:
+    code: int
+    out: str
+
+
+class Sh:
+    """Runs a command with the scrubbed env (plus `extra`); output to `log`."""
+
+    def __init__(self, env):
+        self.env = env
+
+    def run(self, cmd, cwd=None, extra=None, timeout=600, log=None):
+        env = dict(self.env, **(extra or {}))
+        try:
+            p = subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               stdin=subprocess.DEVNULL, timeout=timeout)
+            r = Res(p.returncode, p.stdout.decode("utf-8", "replace"))
+        except subprocess.TimeoutExpired as e:
+            r = Res(124, (e.stdout or b"").decode("utf-8", "replace") + f"\n[ERROR] timed out after {timeout}s\n")
+        except OSError as e:
+            r = Res(127, f"[ERROR] {e}\n")
+        if log:
+            with open(log, "a") as f:
+                f.write(f"$ {' '.join(map(str, cmd))}  (cwd {cwd or '.'}, exit {r.code})\n{r.out}\n")
+        return r
+
+
+def scrubbed_env(home):
+    env = {
+        "HOME": str(home),
+        "PATH": f"{home}/.cargo/bin:{home}/.local/bin:/usr/bin:/bin",
+        "TERM": "xterm-256color",
+        "LANG": "C.UTF-8",
+        "USER": os.environ.get("USER", ""),
+        "XDG_RUNTIME_DIR": os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+    }
+    if os.environ.get("SSH_AUTH_SOCK"):
+        env["SSH_AUTH_SOCK"] = os.environ["SSH_AUTH_SOCK"]  # git push over ssh
+    return env
+
+
+# ---------------------------------------------------------------- the run
+
+@dataclass
+class Cfg:
+    repo: Path
+    home: Path
+    cache: Path
+    versions: Path
+    claude_home: Path
+    e2e_base: Path
+    force: bool = False
+    plan: bool = False
+
+
+@dataclass
+class Stage:
+    name: str
+    ok: object
+    summary: str
+    secs: float = 0.0
+    detail: str = ""
+
+
+@dataclass
+class Run:
+    cfg: Cfg
+    sh: Sh
+    out: object = sys.stdout
+    stages: list = field(default_factory=list)
+    version: str = ""
+    tested: str = ""
+    wt: Path = None
+    branch: str = ""
+    snap: dict = field(default_factory=dict)
+    fleets: list = field(default_factory=list)
+    changed: bool = False  # anything left the worktree (merge, push, install)
+    merged: str = ""
+    formats_secs: float = 0.0
+
+    # ---- output
+    def paint(self, s, ok, bold=False):
+        if not colour_on(self.out) or not s:
+            return s
+        r, g, b = RGB[ok]
+        return f"\x1b[{'1;' if bold else ''}38;2;{r};{g};{b}m{s}\x1b[0m"
+
+    def say(self, s=""):
+        print(s, file=self.out, flush=True)
+
+    def line(self, st):
+        t = dur(st.secs) if st.ok is not None else ""
+        self.say(f"  {self.paint(GLYPH[st.ok], st.ok, True)} {st.name:<10} {st.summary:<50} {t:>6}".rstrip())
+
+    def stage(self, name, fn, *a):
+        live = self.out.isatty() if hasattr(self.out, "isatty") else False
+        if live:
+            print(f"  \u00b7 {name:<10} running...", end="", file=self.out, flush=True)
+        t0 = time.monotonic()
+        try:
+            ok, summary, *detail = fn(*a)
+        except Exception as e:  # a bug in a stage is that stage's failure
+            ok, summary, detail = False, f"{type(e).__name__}: {e}", [repr(e)]
+        st = Stage(name, ok, summary, time.monotonic() - t0, detail[0] if detail else "")
+        if live:
+            print("\r\x1b[K", end="", file=self.out)
+        self.line(st)
+        self.stages.append(st)
+        return ok
+
+    def skip(self, name, why):
+        st = Stage(name, None, why)
+        self.line(st)
+        self.stages.append(st)
+
+    @property
+    def report_dir(self):
+        return self.cfg.cache / self.version
+
+    def log(self, name):
+        return self.report_dir / f"{name}.log"
+
+    def nimitz_built(self):
+        return self.cfg.cache / "target" / "debug" / "nimitz"
+
+    def cargo_env(self):
+        return {"CARGO_TARGET_DIR": str(self.cfg.cache / "target")}
+
+    # ---- step 1: versions
+    def installed_version(self):
+        r = self.sh.run(["claude", "--version"], timeout=60)
+        m = re.match(r"\s*(\d+(?:\.\d+)+)", r.out)
+        return m.group(1) if r.code == 0 and m else None
+
+    def compat_max(self, root=None):
+        s = ((root or self.cfg.repo) / "docs" / "compat.toml").read_text()
+        return re.search(r'^max\s*=\s*"([^"]+)"', s, re.M).group(1)
+
+    # ---- step 2: the main checkout
+    def checkout_issue(self, fetch=True):
+        """None when the main checkout is clean, on dev and level with
+        origin/dev; else (what is wrong, the fix)."""
+        g = lambda *a: self.sh.run(["git", "-C", str(self.cfg.repo), *a], timeout=120)
+        repo = self.cfg.repo
+        if g("status", "--porcelain").out.strip():
+            return ("has uncommitted changes", f"commit or stash them in {repo}, then run cc-validate again")
+        br = g("symbolic-ref", "--short", "-q", "HEAD").out.strip()
+        if br != "dev":
+            return (f"is on {br or 'a detached HEAD'}, not dev", f"git -C {repo} switch dev")
+        if fetch:
+            f = g("fetch", "-q", "origin", "dev")
+            if f.code != 0:
+                return ("cannot fetch origin dev: " + (f.out.strip().splitlines() or ["?"])[-1],
+                        "check the network and the ssh key, then run cc-validate again")
+        lr = g("rev-list", "--left-right", "--count", "dev...origin/dev").out.split()
+        ahead, behind = (int(lr[0]), int(lr[1])) if len(lr) == 2 else (0, 0)
+        if ahead and behind:
+            return (f"dev and origin/dev diverged ({ahead} ahead, {behind} behind)", "reconcile dev with origin/dev first")
+        if behind:
+            return (f"dev is {behind} behind origin/dev", f"git -C {repo} pull --ff-only origin dev")
+        if ahead:
+            return (f"dev is {ahead} ahead of origin/dev", f"git -C {repo} push origin dev")
+        return None
+
+    # ---- step 3 and 7: the live-fleet guard
+    def guard_snapshot(self):
+        r = self.sh.run(["nimitz", "status", "--json"], timeout=120)
+        try:
+            d = json.loads(r.out)
+        except ValueError:
+            raise RuntimeError(f"nimitz status --json failed (exit {r.code})")
+        snap = {}
+
+        def walk(x):
+            if isinstance(x, dict):
+                if x.get("role") in ("admiral", "commodore", "ship") and "id" in x:
+                    s = x.get("session") or {}
+                    snap[x["id"]] = [s.get("session_id"), s.get("pid")]
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+
+        walk(d.get("fleets", []))
+        return snap, [f["id"] for f in d.get("fleets", []) if "id" in f]
+
+    def st_guard(self):
+        self.snap, self.fleets = self.guard_snapshot()
+        (self.report_dir / "guard-before.json").write_text(json.dumps(self.snap, indent=1, sort_keys=True))
+        live = sum(1 for v in self.snap.values() if v[1])
+        return True, f"{len(self.fleets)} fleet(s), {len(self.snap)} members, {live} live"
+
+    def st_guard_again(self):
+        now, _ = self.guard_snapshot()
+        (self.report_dir / "guard-after.json").write_text(json.dumps(now, indent=1, sort_keys=True))
+        diff = []
+        for k in sorted(set(self.snap) | set(now)):
+            a, b = self.snap.get(k), now.get(k)
+            if a != b:
+                diff.append(f"{k}: {a} -> {b}")
+        if diff:
+            return False, f"live fleet changed: {len(diff)} member(s)", "\n".join(diff)
+        return True, "live fleet unchanged"
+
+    # ---- step 4: the worktree and the checks
+    def st_worktree(self):
+        v = self.version
+        self.branch = f"ci/cc-{v}"
+        self.wt = self.cfg.cache / f"wt-{v}"
+        g = lambda *a: self.sh.run(["git", "-C", str(self.cfg.repo), *a], timeout=120, log=self.log("worktree"))
+        g("worktree", "remove", "--force", str(self.wt))  # a stale one of a killed run
+        if self.wt.exists() and self.wt.is_relative_to(self.cfg.cache):
+            shutil.rmtree(self.wt)
+        g("worktree", "prune")
+        g("branch", "-D", self.branch)
+        r = g("worktree", "add", "-q", "-b", self.branch, str(self.wt), "dev")
+        if r.code != 0:
+            return False, "git worktree add failed", r.out
+        head = g("rev-parse", "--short", "dev").out.strip()
+        return True, f"{self.branch} at dev {head}"
+
+    def st_build(self):
+        r = self.sh.run(["cargo", "build", "--workspace", "--all-targets"], cwd=self.wt,
+                        extra=self.cargo_env(), timeout=3600, log=self.log("build"))
+        if r.code != 0:
+            return False, "cargo build failed", "\n".join(r.out.splitlines()[-40:])
+        return True, "workspace, all targets"
+
+    def tests(self, name, cmd, extra, timeout):
+        r = self.sh.run(cmd, cwd=self.wt, extra=dict(self.cargo_env(), **extra), timeout=timeout, log=self.log(name))
+        failed = failed_tests(r.out)
+        bad = [t for t in failed if t not in KNOWN_FAILURES]
+        known = [t for t in failed if t in KNOWN_FAILURES]
+        n = passed_count(r.out)
+        note = f" ({len(known)} known failure)" if known else ""
+        if bad:
+            return False, f"{len(bad)} failed, {n} passed{note}", "\n".join(bad)
+        if r.code != 0 and not known:
+            return False, f"exit {r.code}, no failing test named", "\n".join(r.out.splitlines()[-40:])
+        if n == 0:
+            return False, "no test ran", "\n".join(r.out.splitlines()[-40:])
+        return True, f"{n} passed{note}"
+
+    def st_unit(self):
+        return self.tests("unit", ["cargo", "test", "--workspace", "--no-fail-fast"], {}, 3600)
+
+    def st_e2e(self):
+        extra = {"NIMITZ_E2E": "1", "NIMITZ_E2E_LIVE_FLEETS": ",".join(self.fleets)}
+        return self.tests("e2e", ["cargo", "test", "-p", "nimitz", "--test", "e2e", "--", "--test-threads=3"], extra, 5400)
+
+    def cheap_model(self):
+        try:
+            allowed = [m.lower() for m in json.loads((self.cfg.claude_home / "settings.json").read_text()).get("availableModels") or []]
+        except (OSError, ValueError):
+            allowed = []
+        for fam in ("haiku", "sonnet"):
+            if not allowed or any(fam in m for m in allowed):
+                return fam
+        return allowed[0]
+
+    def probe(self):
+        """Two real background jobs with logging hooks: their payloads, then
+        doctor's pinned formats while they live. (hooks, formats) results."""
+        base = self.cfg.e2e_base / f"ccv-probe-{os.getpid()}"
+        work, logf = base / "work", base / "payloads.jsonl"
+        for d in (work, base / "state", base / "nimitz"):
+            d.mkdir(parents=True, exist_ok=True)
+        hook = base / "hook.py"
+        hook.write_text(
+            "import sys, json, time\n"
+            f"with open({str(logf)!r}, 'a') as f:\n"
+            "    f.write(json.dumps({'event': sys.argv[1], 'ts': time.time(), 'raw': sys.stdin.read()}) + '\\n')\n")
+        cmd = lambda ev: {"type": "command", "command": f"python3 {hook} {ev}"}
+        hooks = {ev: [{"hooks": [cmd(ev)]}] for ev in ("SessionStart", "UserPromptSubmit", "PermissionRequest", "Notification", "Stop")}
+        hooks["PreToolUse"] = [{"matcher": "AskUserQuestion", "hooks": [cmd("PreToolUse")]}]
+        settings = base / "settings.json"
+        settings.write_text(json.dumps({"hooks": hooks, "env": {"NIMITZ_STATE": str(base / "state"), "NIMITZ_HOME": str(base / "nimitz")}}))
+        tag = f"CCV{os.getpid()}"
+        asks = [
+            (f"{tag}-ASK", "Call the AskUserQuestion tool once to ask me: 'Proceed with the probe?' with options Yes and No. Do nothing else."),
+            (f"{tag}-PERM", "Run the shell command: curl -sI https://example.com -o /dev/null. Do nothing else."),
+        ]
+        jobs, plog = [], self.log("probe")
+        try:
+            for name, prompt in asks:
+                r = self.sh.run(["claude", "--bg", "--name", name, "--model", self.cheap_model(), "--permission-mode", "default",
+                                 "--settings", str(settings), prompt], cwd=work, timeout=120, log=plog)
+                m = re.search(r"attach ([0-9a-f]{8})", r.out)
+                if not m:
+                    return (False, f"claude --bg failed for {name}", r.out), (None, "not run: no probe jobs")
+                jobs.append(m.group(1))
+            need = {"SessionStart": 2, "UserPromptSubmit": 2, "PreToolUse": 1, "PermissionRequest": 1}
+            seen, end = [], time.monotonic() + 240
+            while time.monotonic() < end:
+                seen = [json.loads(line) for line in logf.read_text().splitlines()] if logf.exists() else []
+                count = {e: sum(1 for p in seen if p["event"] == e) for e in need}
+                if all(count[e] >= n for e, n in need.items()):
+                    break
+                time.sleep(2)
+            (self.report_dir / "payloads.jsonl").write_text("".join(json.dumps(p) + "\n" for p in seen))
+            hooks_res = self.check_payloads(seen, need)
+            t0 = time.monotonic()
+            formats_res = self.check_formats(base, jobs)
+            self.formats_secs = time.monotonic() - t0
+            return hooks_res, formats_res
+        finally:
+            self.drop_probe(base, jobs)
+
+    def check_payloads(self, seen, need):
+        problems = []
+        for ev, n in need.items():
+            got = [p for p in seen if p["event"] == ev]
+            if len(got) < n:
+                problems.append(f"{ev}: {len(got)} of {n} payloads")
+            for p in got:
+                try:
+                    raw = json.loads(p["raw"])
+                except ValueError:
+                    problems.append(f"{ev}: payload is not JSON")
+                    continue
+                miss = [k for k in PAYLOAD_FIELDS[ev] if k not in raw]
+                if ev == "PreToolUse" and raw.get("tool_name") != "AskUserQuestion":
+                    miss.append("tool_name=AskUserQuestion")
+                if miss:
+                    problems.append(f"{ev}: lacks {', '.join(miss)}")
+        if problems:
+            return False, problems[0], "\n".join(problems)
+        return True, f"{len(seen)} payloads; every field nimitz reads"
+
+    def check_formats(self, base, jobs):
+        nz = self.nimitz_built()
+        if not nz.exists():
+            return None, "not run: no build"
+        extra = {"NIMITZ_HOME": str(base / "nimitz"), "NIMITZ_STATE": str(base / "state")}
+        r = self.sh.run([str(nz), "doctor"], extra=extra, timeout=120, log=self.log("formats"))
+        lines = [l for l in r.out.splitlines() if "pinned formats" in l]
+        ok = [l for l in lines if l.startswith("[OK]")]
+        mine = sum(1 for j in jobs if (self.cfg.claude_home / "jobs" / j / "state.json").is_file())
+        if ok and len(ok) == len(lines) and mine == len(jobs):
+            n = re.search(r"(\d+) session/job", ok[0])
+            return True, f"doctor: {n.group(1) if n else '?'} files carry every field (probe jobs live)"
+        return False, (lines[0] if lines else "no pinned-formats line in doctor")[:58], "\n".join(lines) or r.out
+
+    def drop_probe(self, base, jobs):
+        for j in jobs:
+            st = self.cfg.claude_home / "jobs" / j / "state.json"
+            try:
+                cwd = json.loads(st.read_text()).get("cwd", "")
+            except (OSError, ValueError):
+                cwd = ""
+            if cwd and not cwd.startswith(str(base)):
+                continue  # not ours: never touched
+            self.sh.run(["claude", "stop", j], timeout=60, log=self.log("probe"))
+            self.sh.run(["claude", "rm", j], timeout=60, log=self.log("probe"))
+        projects = self.cfg.claude_home / "projects"
+        for p in projects.glob(f"*ccv-probe-{os.getpid()}*") if projects.is_dir() else []:
+            shutil.rmtree(p, ignore_errors=True)
+        shutil.rmtree(base, ignore_errors=True)
+
+    def previous_binary(self):
+        """The tested max's binary, else the newest older one present."""
+        have = [p.name for p in self.cfg.versions.iterdir() if re.fullmatch(r"\d+(\.\d+)+", p.name)] if self.cfg.versions.is_dir() else []
+        older = sorted((v for v in have if newer(self.version, v)), key=vkey)
+        if self.tested in older:
+            return self.tested
+        return older[-1] if older else None
+
+    def st_internals(self):
+        new = self.cfg.versions / self.version
+        if not new.is_file():
+            return False, f"no binary at {tilde(new, self.cfg.home)}"
+        nm = markers_of(new.read_bytes())
+        prev = self.previous_binary()
+        om = markers_of((self.cfg.versions / prev).read_bytes()) if prev else None
+        report, bad = [], []
+        for name, what, _, _ in MARKERS:
+            report.append(f"## {name}: {what}")
+            if not nm[name]:
+                bad.append(f"{name}: missing")
+                report.append(f"  MISSING in {self.version}")
+            elif om is not None and om[name] != nm[name]:
+                bad.append(f"{name}: changed")
+                report += [f"  - {x}" for x in om[name] if x not in nm[name]]
+                report += [f"  + {x}" for x in nm[name] if x not in om[name]]
+            else:
+                report.append(f"  same ({len(nm[name])} form(s))")
+        (self.report_dir / "internals.diff").write_text(f"# {prev or '(none)'} -> {self.version}\n" + "\n".join(report) + "\n")
+        if bad:
+            return False, "; ".join(bad)[:58], "\n".join(report)
+        if prev is None:
+            return True, f"{len(MARKERS)} markers present (no older binary to diff)"
+        return True, f"{len(MARKERS)} markers same as {prev}"
+
+    # ---- step 5: on a pass
+    def bump(self, root, old, new):
+        """Raise the tested max from `old` to `new` in the four places."""
+        edits = [
+            ("docs/compat.toml", rf'^max = "{re.escape(old)}"$', f'max = "{new}"'),
+            ("README.md", rf"(Status: in testing \(Claude Code [\d.]+ - ){re.escape(old)}\)", rf"\g<1>{new})"),
+            ("crates/nimitz-core/src/compat.rs", rf'assert_eq!\(c\.max, "{re.escape(old)}"\);', f'assert_eq!(c.max, "{new}");'),
+            ("crates/nimitz-core/src/check.rs", rf'snap\.cc_version = Some\("{re.escape(next_patch(old))}"\.into\(\)\);',
+             f'snap.cc_version = Some("{next_patch(new)}".into());'),
+        ]
+        for rel, rx, to in edits:
+            p = root / rel
+            s = p.read_text()
+            s2, n = re.subn(rx, to, s, flags=re.M)
+            if n != 1:
+                raise RuntimeError(f"{rel}: expected one match of {rx}, found {n}; bump by hand")
+            p.write_text(s2)
+        return [e[0] for e in edits]
+
+    def st_bump(self):
+        files = self.bump(self.wt, self.tested, self.version)
+        r = self.sh.run(["cargo", "test", "-q", "-p", "nimitz-core"], cwd=self.wt, extra=self.cargo_env(), timeout=1800, log=self.log("bump"))
+        if r.code != 0:
+            return False, "nimitz-core tests fail after the bump", "\n".join(r.out.splitlines()[-40:])
+        summary = "; ".join(f"{s.name} {s.summary}" for s in self.stages if s.ok)
+        msg = f"chore(compat): tested up to Claude Code {self.version} (cc-validate)\n\n{summary}\n"
+        g = lambda *a: self.sh.run(["git", "-C", str(self.wt), *a], timeout=120, log=self.log("bump"))
+        c = g("commit", "-q", "-am", msg)
+        if c.code != 0:
+            return False, "git commit failed", c.out
+        return True, f"{self.tested} -> {self.version} in {len(files)} files"
+
+    def st_merge(self):
+        issue = self.checkout_issue()
+        if issue:
+            return False, f"main checkout {issue[0]} (dev moved during the run?)", issue[1]
+        g = lambda *a: self.sh.run(["git", "-C", str(self.cfg.repo), *a], timeout=300, log=self.log("merge"))
+        r = g("merge", "--no-ff", "-q", self.branch, "-m", f"merge: tested up to Claude Code {self.version} (cc-validate)")
+        if r.code != 0:
+            g("merge", "--abort")
+            return False, "git merge failed (aborted)", r.out
+        self.changed = True
+        head = g("rev-parse", "--short", "HEAD").out.strip()
+        p = g("push", "-q", "origin", "dev")
+        if p.code != 0:
+            return False, f"dev {head} merged; push failed", f"{p.out}\nfix: git -C {self.cfg.repo} push origin dev"
+        self.merged = head
+        return True, f"dev {head}, pushed to origin/dev"
+
+    def st_install(self):
+        for c in ("nimitz", "admiralty"):
+            r = self.sh.run(["cargo", "install", "-q", "--path", f"crates/{c}", "--root", str(self.cfg.home / ".local"), "--force"],
+                            cwd=self.cfg.repo, extra=self.cargo_env(), timeout=3600, log=self.log("install"))
+            if r.code != 0:
+                return False, f"cargo install {c} failed", "\n".join(r.out.splitlines()[-30:])
+        return True, "nimitz, admiralty"
+
+    def plugin_versions(self):
+        repo_v = json.loads((self.cfg.repo / "plugin" / ".claude-plugin" / "plugin.json").read_text())["version"]
+        try:
+            inst = json.loads((self.cfg.claude_home / "plugins" / "installed_plugins.json").read_text())["plugins"]
+            got = [e.get("version") for k, v in inst.items() if k.startswith("nimitz@") for e in v]
+        except (OSError, ValueError, KeyError):
+            got = []
+        return repo_v, (got[0] if got else None)
+
+    def st_plugin(self):
+        want, have = self.plugin_versions()
+        if want == have:
+            return None, f"unchanged ({have})"
+        for cmd in (["claude", "plugin", "marketplace", "update", "claude-nimitz"], ["claude", "plugin", "update", "nimitz@claude-nimitz"]):
+            r = self.sh.run(cmd, timeout=300, log=self.log("plugin"))
+            if r.code != 0:
+                return False, f"{' '.join(cmd[:3])} failed", r.out
+        return True, f"{have} -> {want}"
+
+    def st_doctor(self):
+        r = self.sh.run(["nimitz", "doctor"], timeout=120, log=self.log("doctor"))
+        last = (r.out.strip().splitlines() or [""])[-1]
+        if r.code == 0 and "doctor: ready" in last:
+            return True, "ready"
+        errs = [l for l in r.out.splitlines() if l.startswith("[ERROR]")]
+        return False, (errs[0] if errs else last)[:58], r.out
+
+    # ---- cleanup and report
+    def drop_worktree(self):
+        if not self.wt:
+            return
+        g = lambda *a: self.sh.run(["git", "-C", str(self.cfg.repo), *a], timeout=120, log=self.log("worktree"))
+        g("worktree", "remove", "--force", str(self.wt))
+        if self.wt.exists() and self.wt.is_relative_to(self.cfg.cache):
+            shutil.rmtree(self.wt, ignore_errors=True)
+        g("worktree", "prune")
+        g("branch", "-D", self.branch)
+
+    def write_report(self, passed, result):
+        rows = [f"| {GLYPH[s.ok]} | {s.name} | {s.summary} | {dur(s.secs) if s.ok is not None else ''} |" for s in self.stages]
+        fails = [s for s in self.stages if s.ok is False]
+        body = [f"# cc-validate: Claude Code {self.version} ({'PASS' if passed else 'FAIL'})", "",
+                f"Tested max before the run: {self.tested}. {result}", "",
+                "| | stage | result | time |", "| --- | --- | --- | --- |", *rows, ""]
+        for s in fails:
+            body += [f"## {s.name}: {s.summary}", "", "```", s.detail.strip() or "(no detail)", "```", ""]
+        body += ["Logs: the `*.log` files next to this report; `internals.diff`; `payloads.jsonl`; `guard-*.json`.", ""]
+        (self.report_dir / "report.md").write_text("\n".join(body))
+        return self.report_dir / "report.md"
+
+    # ---- the whole run
+    def plan_lines(self, issue):
+        h, v, t = self.cfg.home, self.version, self.tested
+        prev = self.previous_binary() or "(no older binary)"
+        rows = [
+            ("checkout", f"{tilde(self.cfg.repo, h)}: " + (f"{issue[0]}" if issue else "dev, clean, level with origin/dev")),
+            ("guard", "snapshot the live fleets (nimitz status --json)"),
+            ("worktree", f"ci/cc-{v} from dev at {tilde(self.cfg.cache / ('wt-' + v), h)}"),
+            ("build", "cargo build --workspace --all-targets"),
+            ("unit", "cargo test --workspace" + (f" ({len(KNOWN_FAILURES)} known failure allowed)" if KNOWN_FAILURES else "")),
+            ("e2e", f"NIMITZ_E2E=1 cargo test -p nimitz --test e2e, real Claude Code, {self.cheap_model()}"),
+            ("hooks", "two probe jobs: SessionStart, UserPromptSubmit, AskUserQuestion, PermissionRequest"),
+            ("formats", "nimitz doctor's pinned formats, sandbox home, probe jobs live"),
+            ("internals", f"{len(MARKERS)} markers vs {prev}"),
+            ("guard", "compare with the snapshot"),
+        ]
+        bump = f"compat.toml max, README range, 2 pinned tests: {t} -> {v}" if newer(v, t) else f"nothing to bump: {v} is the max"
+        after = [("bump", bump)]
+        if newer(v, t):
+            after += [("merge", "commit, merge --no-ff into dev, push origin dev"),
+                      ("install", "cargo install nimitz, admiralty"),
+                      ("plugin", "claude plugin update, if plugin/ changed")]
+        after += [("doctor", "nimitz doctor is ready")]
+        return rows, after
+
+    def main(self):
+        cfg = self.cfg
+        self.tested = self.compat_max()
+        self.version = self.installed_version() or ""
+        if not self.version:
+            self.say("cc-validate  \u00b7  no `claude --version`")
+            self.say(self.paint("[ERROR] claude is not on PATH or does not run", False))
+            return 1
+        head = f"cc-validate  \u00b7  Claude Code {self.version} installed  \u00b7  tested up to {self.tested}"
+        self.say(head)
+        self.say()
+        if not newer(self.version, self.tested) and not cfg.force:
+            self.say(f"[OK] already tested: {self.version} is within the tested range (--force validates it again)")
+            return 0
+        issue = self.checkout_issue(fetch=not cfg.plan)
+        if cfg.plan:
+            rows, after = self.plan_lines(issue)
+            for n, w in rows:
+                self.say(f"  {n:<10} {w}")
+            self.say("on a pass:")
+            for n, w in after:
+                self.say(f"  {n:<10} {w}")
+            self.say(f"on a fail: nothing changes; a report in {tilde(cfg.cache / self.version, cfg.home)}/")
+            self.say()
+            if issue:
+                self.say(self.paint(f"[ERROR] the main checkout {issue[0]}", False))
+                self.say(f"        fix: {issue[1]}")
+                return 2
+            self.say("run it without --plan to validate")
+            return 0
+        if issue:
+            self.say(f"  {self.paint(GLYPH[False], False, True)} {'checkout':<10} {issue[0]}")
+            self.say()
+            self.say(self.paint(f"[ERROR] the main checkout {issue[0]}; nothing ran", False))
+            self.say(f"        fix: {issue[1]}")
+            return 2
+        self.stages.append(Stage("checkout", True, "dev, clean, level with origin/dev"))
+        self.line(self.stages[-1])
+        if self.report_dir.exists():
+            for p in self.report_dir.iterdir():
+                if p.is_file():
+                    p.unlink()
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if not self.stage("guard", self.st_guard):
+                return self.finish(False, "no live-fleet snapshot: nothing ran")
+            if not self.stage("worktree", self.st_worktree):
+                return self.finish(False, "no worktree: nothing ran")
+            built = self.stage("build", self.st_build)
+            if built:
+                self.stage("unit", self.st_unit)
+                self.stage("e2e", self.st_e2e)
+            else:
+                self.skip("unit", "not run: no build")
+                self.skip("e2e", "not run: no build")
+            t0 = time.monotonic()
+            try:
+                (hk, fm) = self.probe()
+            except Exception as e:
+                hk, fm = (False, f"probe: {type(e).__name__}: {e}", repr(e)), (None, "not run: the probe failed")
+            for name, res, secs in (("hooks", hk, time.monotonic() - t0 - self.formats_secs), ("formats", fm, self.formats_secs)):
+                st = Stage(name, res[0], res[1], secs, res[2] if len(res) > 2 else "")
+                self.line(st)
+                self.stages.append(st)
+            self.stage("internals", self.st_internals)
+            self.stage("guard", self.st_guard_again)
+            passed = all(s.ok is not False for s in self.stages) and all(
+                any(s.name == n and s.ok for s in self.stages) for n in ("unit", "e2e", "hooks", "formats", "internals"))
+            if not passed:
+                return self.finish(False, "nothing changed")
+            if newer(self.version, self.tested):
+                for name, fn in (("bump", self.st_bump), ("merge", self.st_merge), ("install", self.st_install), ("plugin", self.st_plugin)):
+                    if self.stage(name, fn) is False:
+                        return self.finish(False, "merged into dev; see the failing stage" if self.changed else "nothing changed")
+            else:
+                self.skip("bump", f"nothing to bump: {self.version} is the tested max")
+            if not self.stage("doctor", self.st_doctor):
+                return self.finish(False, "the install is not ready")
+            if self.changed and not self.stage("guard", self.st_guard_again):
+                return self.finish(False, "the live fleet changed after the merge")
+            done = f"dev {self.merged} pushed" if self.changed else "nothing to change"
+            return self.finish(True, f"Claude Code {self.version} is tested; {done}")
+        finally:
+            self.drop_worktree()
+
+    def finish(self, passed, result):
+        self.say()
+        path = self.write_report(passed, result)
+        rp = tilde(path, self.cfg.home)
+        if passed:
+            self.say(self.paint(f"PASS  {result}", True, True))
+            self.say(f"      report: {rp}")
+            return 0
+        failed = [s.name for s in self.stages if s.ok is False]
+        self.say(self.paint(f"FAIL  {', '.join(failed) or 'a stage'} failed: {result}", False, True))
+        self.say(f"      report: {rp}")
+        return 1
+
+
+def main_checkout(start):
+    r = subprocess.run(["git", "-C", str(start), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"[ERROR] {start} is not in a git checkout")
+    return Path(r.stdout.strip()).parent
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="cc-validate", description=__doc__.split("\n\n")[0])
+    ap.add_argument("--plan", action="store_true", help="show what it will do; change nothing")
+    ap.add_argument("--force", action="store_true", help="validate a version already tested")
+    a = ap.parse_args(argv)
+    home = Path(os.environ["HOME"])
+    cfg = Cfg(repo=main_checkout(Path(__file__).resolve().parent), home=home,
+              cache=Path(os.environ.get("NIMITZ_CI_CACHE") or home / ".cache" / "nimitz-ci"),
+              versions=home / ".local" / "share" / "claude" / "versions", claude_home=home / ".claude",
+              e2e_base=home / ".cache" / "nimitz-e2e", force=a.force, plan=a.plan)
+    return Run(cfg, Sh(scrubbed_env(home))).main()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

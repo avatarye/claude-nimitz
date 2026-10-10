@@ -116,6 +116,40 @@ create, edit, remove, `?` all keys, `q` quit.
   - a stowaway (a session in a fleet folder with no labels): `nimitz adopt <session> <id>`, or stop and `rm` it;
   - `tab.resumed` (Herdr reopened a conversation in a pane): `/exit` in that pane, then `nimitz start F`.
 - `-v` on any plan shows the commands it runs.
+- `nimitz doctor` says Claude Code is above the tested range ("tested up to
+  ..."): launches still go ahead. To validate the new version and raise the
+  range, run `tools/cc-validate` in the repo (see For maintainers).
+
+### For maintainers
+
+- Unit suite: `cargo test --workspace`. Real Claude Code e2e (opt-in, cheap
+  model, every test fleet under `~/.cache/nimitz-e2e`):
+  `NIMITZ_E2E=1 NIMITZ_E2E_LIVE_FLEETS=HOME,MAIN cargo test -p nimitz --test e2e -- --test-threads=3`.
+- After a Claude Code update, `tools/cc-validate` (stdlib Python; you run it, as
+  you, on this machine) does the whole validation in one command:
+  - `--plan` shows what it will do; `--force` validates a version already tested.
+  - Installed `claude --version` equal to `docs/compat.toml`'s `max`: "already
+    tested", exit 0.
+  - The main checkout must be clean, on dev and level with origin/dev, or it
+    stops with the fix (exit 2) and runs nothing.
+  - It snapshots the live fleets (`nimitz status --json`), then in a fresh
+    worktree from dev (`~/.cache/nimitz-ci/wt-<version>`): build, unit suite,
+    the full e2e, a hook-payload probe (two throwaway background jobs) with
+    doctor's pinned-format check, and a static diff of the Claude Code
+    internals nimitz relies on (retire line, pins lock, copy text, peer frame,
+    the agents re-exec, the messaging socket) against the previous tested
+    binary in `~/.local/share/claude/versions/`. Then the live fleets again: any
+    change to a member's session or pid fails the run.
+  - On a pass: bumps `max`, the README range and the pinned tests; commits;
+    merges into dev (`--no-ff`); **pushes origin dev**; installs nimitz and
+    admiralty; updates the plugin if `plugin/` changed; checks `nimitz doctor`.
+  - On a fail: changes nothing and writes `~/.cache/nimitz-ci/<version>/report.md`
+    (failing stages and tests; the logs, `internals.diff`, `payloads.jsonl` and
+    the guard snapshots next to it).
+  - Each stage prints one line with ✓ or ✗ and its time; exit 0 pass, 1 fail.
+  - Its own tests (fakes; no git, cargo or claude): `python3 tools/test_cc_validate.py`.
+  - A unit test that fails for a reason outside nimitz on this machine is
+    listed in `KNOWN_FAILURES` at the top of the script.
 
 The sections below are the reference: the restore details, identity,
 authority and messaging.
