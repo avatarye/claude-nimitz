@@ -2551,7 +2551,12 @@ fn write_pending(env: &Env, id: &Id, session_id: &str) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    let _ = std::fs::write(p, serde_json::json!({"id": id.0, "session_id": session_id, "at": crate::evidence::now()}).to_string());
+    let _ = std::fs::write(p, pending_record(id, session_id, crate::evidence::now()).to_string());
+}
+
+/// A `S/pending/<id>.json` record: the session a start is waiting on.
+pub fn pending_record(id: &Id, session_id: &str, at: f64) -> serde_json::Value {
+    serde_json::json!({"id": id.0, "session_id": session_id, "at": at})
 }
 
 fn clear_pending(env: &Env, id: &Id) {
@@ -2623,8 +2628,13 @@ fn claim_folder(env: &Env, id: &Id, cwd: Option<&str>, session_id: &str) {
     let Some(cwd) = cwd.filter(|c| id.role() == Role::Ship && crate::env::canon(std::path::Path::new(c)).starts_with(crate::env::canon(&env.home))) else { return };
     let mut cache = crate::evidence::FileCache::default();
     let pid = crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.session_id == session_id).and_then(|r| r.pid);
-    let line = serde_json::json!({"machine": env.hostname, "id": id.0, "session_id": session_id, "pid": pid, "at": crate::evidence::now()});
+    let line = ship_lock_line(&env.hostname, id, session_id, pid, crate::evidence::now());
     let _ = std::fs::write(ship_lock_path(cwd), line.to_string());
+}
+
+/// A ship lock as its file holds it (`.nimitz-ship.lock`, shared on purpose).
+pub fn ship_lock_line(machine: &str, id: &Id, session_id: &str, pid: Option<i64>, at: f64) -> serde_json::Value {
+    serde_json::json!({"machine": machine, "id": id.0, "session_id": session_id, "pid": pid, "at": at})
 }
 
 /// How long a stop waits for the worker process to exit (seconds).

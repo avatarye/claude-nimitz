@@ -4,6 +4,51 @@
   "machine": "work",
   "updated_at": 1.5,
   "identities": {
+    "MAIN": {
+      "role": "admiral",
+      "name": "[MAIN]-ADMIRAL",
+      "cwd": "/w",
+      "job": "j",
+      "session": "s",
+      "lineage": [
+        {
+          "session_id": "s",
+          "job": "j",
+          "via": "launch",
+          "at": 1.0
+        }
+      ]
+    },
+    "MAIN/@KB": {
+      "role": "aide",
+      "name": "[MAIN]-@KB",
+      "cwd": "/w",
+      "job": "j",
+      "session": "s",
+      "lineage": [
+        {
+          "session_id": "s",
+          "job": "j",
+          "via": "launch",
+          "at": 1.0
+        }
+      ]
+    },
+    "MAIN/ARGOS": {
+      "role": "commodore",
+      "name": "[MAIN.ARGOS]-COMMODORE",
+      "cwd": "/w",
+      "job": "j",
+      "session": "s",
+      "lineage": [
+        {
+          "session_id": "s",
+          "job": "j",
+          "via": "launch",
+          "at": 1.0
+        }
+      ]
+    },
     "MAIN/ARGOS/CLEAN": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-CLEAN",
@@ -24,6 +69,21 @@
           "via": "clear",
           "at": 2.0,
           "home": "/h"
+        }
+      ]
+    },
+    "MAIN/ARGOS/DRIFT": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-DRIFT",
+      "cwd": "/w",
+      "job": "j",
+      "session": "s",
+      "lineage": [
+        {
+          "session_id": "s",
+          "job": "j",
+          "via": "launch",
+          "at": 1.0
         }
       ]
     }

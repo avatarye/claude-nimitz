@@ -93,7 +93,7 @@ fn every_format_change_has_a_step_and_a_fixture() {
 }
 
 /// `tests/fixtures/formats/shapes/<artifact>.v<version>.<ext>` holds `text`;
-/// `NIMITZ_BLESS=1` writes it (and drops the artifact's older shapes).
+/// `NIMITZ_BLESS=1` writes it (and drops the artifact's shapes of other versions).
 pub fn pin(shapes: &Path, artifact: &str, ext: &str, ty: &str, text: &str) -> Option<String> {
     let v = formats::current(artifact);
     let p = shapes.join(format!("{artifact}.v{v}.{ext}"));
@@ -101,7 +101,8 @@ pub fn pin(shapes: &Path, artifact: &str, ext: &str, ty: &str, text: &str) -> Op
         std::fs::create_dir_all(shapes).unwrap();
         for e in std::fs::read_dir(shapes).unwrap().flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
-            if n.starts_with(&format!("{artifact}.v")) && e.path() != p {
+            let other = n.strip_prefix(&format!("{artifact}.v")).and_then(|r| r.split('.').next()).and_then(|m| m.parse::<u32>().ok()).is_some_and(|m| m != v);
+            if other {
                 std::fs::remove_file(e.path()).unwrap();
             }
         }
@@ -128,6 +129,31 @@ fn json<T: serde::de::DeserializeOwned + serde::Serialize>(example: serde_json::
 fn toml_of<T: serde::de::DeserializeOwned + serde::Serialize>(example: &str) -> String {
     let t: T = toml::from_str(example).unwrap();
     toml::to_string_pretty(&t).unwrap()
+}
+
+/// Every `Role`: the match fails to compile when one is added, so the
+/// registry example below gets the new one (and its golden moves).
+fn every_role() -> Vec<nimitz_core::Role> {
+    use nimitz_core::Role;
+    let all = vec![Role::Admiral, Role::Commodore, Role::Ship, Role::Aide];
+    for r in &all {
+        match r {
+            Role::Admiral | Role::Commodore | Role::Ship | Role::Aide => {}
+        }
+    }
+    all
+}
+
+/// Every `Comms` form, the same way.
+fn every_comms() -> Vec<nimitz_core::Comms> {
+    use nimitz_core::Comms;
+    let all = vec![Comms::Mode("commodore-only".into()), Comms::Allow { allow: vec!["MAIN/ARGOS/CLEAN".into(), "MAIN/BOREAL".into()] }];
+    for c in &all {
+        match c {
+            Comms::Mode(_) | Comms::Allow { .. } => {}
+        }
+    }
+    all
 }
 
 /// A populated example of each owned type, serialized, against the golden
@@ -180,12 +206,22 @@ work = "managed"
 [ships.permission_mode]
 work = "plan"
 "#;
-    let registry = json!({
+    let mut registry = json!({
         "version": 3, "min_nimitz": "0.5.0", "machine": "work", "updated_at": 1.5,
         "identities": {"MAIN/ARGOS/CLEAN": {"role": "ship", "name": "[MAIN.ARGOS]-CLEAN", "cwd": "/w", "job": "ab12cd34", "session": "s2",
             "lineage": [{"session_id": "s1", "job": "ab12cd34", "via": "launch", "at": 1.0, "home": "/h"}, {"session_id": "s2", "job": "ab12cd34", "via": "clear", "at": 2.0, "home": "/h"}]}},
         "retired": {"MAIN/ARGOS/~t": {"role": "ship", "name": "t", "cwd": "/w", "session": "s0", "lineage": []}},
     });
+    // one record of every role (an aide's id is F/@NAME)
+    for role in every_role() {
+        let id = match role {
+            nimitz_core::Role::Admiral => nimitz_core::Id::admiral("MAIN"),
+            nimitz_core::Role::Commodore => nimitz_core::Id::commodore("MAIN", "ARGOS"),
+            nimitz_core::Role::Ship => nimitz_core::Id::ship("MAIN", "ARGOS", "DRIFT"),
+            nimitz_core::Role::Aide => nimitz_core::Id::aide(&nimitz_core::Id::admiral("MAIN"), "KB"),
+        };
+        registry["identities"][&id.0] = json!({"role": role, "name": id.name(), "cwd": "/w", "job": "j", "session": "s", "lineage": [{"session_id": "s", "job": "j", "via": "launch", "at": 1.0}]});
+    }
     let active = json!({"version": 1, "at": 1.5, "machine": "work", "herdr": {"session": "NIMITZ", "socket": "/s"},
         "members": {"MAIN": {"job": "ab12cd34", "session": "s1", "status": "idle", "waiting_for": "you", "attached": true,
             "place": {"workspace_id": "w1", "workspace": "MAIN", "tab_id": "t1", "tab": "MAIN", "pane_id": "p1"}}}});
@@ -200,9 +236,25 @@ work = "plan"
     let event = json!({"ts": 1.5, "event": "SessionStart", "session_id": "s1", "source": "startup", "reason": "r", "agent_id": "a", "agent_type": "t",
         "tool_name": "SendMessage", "to": "x", "pid": 42, "labels": {"NIMITZ_ID": "MAIN"}, "rules": 5, "job": "ab12cd34", "kind": "bg", "entrypoint": "cli",
         "binding": "bound", "cwd": "/w"});
+    // the squadron once per comms form
+    let squadrons: String = std::iter::once(toml_of::<nimitz_core::SquadronConfig>(squadron))
+        .chain(every_comms().into_iter().map(|c| {
+            let mut sq: nimitz_core::SquadronConfig = toml::from_str(squadron).unwrap();
+            sq.comms = c;
+            toml::to_string_pretty(&sq).unwrap()
+        }))
+        .collect::<Vec<_>>()
+        .join("\n# ---\n");
+    let main = nimitz_core::Id::admiral("MAIN");
     let shown = [
         ("fleet", "toml", "FleetConfig", toml_of::<nimitz_core::FleetConfig>(fleet)),
-        ("squadron", "toml", "SquadronConfig", toml_of::<nimitz_core::SquadronConfig>(squadron)),
+        ("squadron", "toml", "SquadronConfig", squadrons),
+        ("legacy", "toml", "config::legacy_toml", nimitz_core::config::legacy_toml(&[("[GENERAL]-HOME".to_string(), nimitz_core::Id::ship("MAIN", "GENERAL", "HOME"))].into())),
+        ("ship-lock", "json", "sessions::ship_lock_line", nimitz_core::sessions::ship_lock_line("work", &nimitz_core::Id::ship("MAIN", "ARGOS", "CLEAN"), "s1", Some(42), 1.5).to_string() + "\n"),
+        ("pending", "json", "sessions::pending_record", nimitz_core::sessions::pending_record(&main, "s1", 1.5).to_string() + "\n"),
+        ("inbox-records", "json", "inbox::record_value", nimitz_core::inbox::record_value("/tmp/s.sock", 42, 1.5).to_string() + "\n"),
+        ("own-pins", "json", "pins::list_text", nimitz_core::pins::list_text(&["ab12cd34".into(), "ef56ab78".into()]) + "\n"),
+        ("queues", "meta.json", "queue::meta (queue.json)", nimitz_core::queue::meta("ab12cd34", &nimitz_core::Id::aide(&main, "KB")).to_string() + "\n"),
         ("registry", "json", "Registry", nimitz_core::registry::render(&nimitz_core::registry::parse(&registry.to_string()).unwrap()).unwrap() + "\n"),
         ("active", "json", "active::ActiveSet", json::<nimitz_core::active::ActiveSet>(active)),
         ("needs", "json", "notify::Notice", json::<nimitz_core::notify::Notice>(notice)),
