@@ -10,25 +10,115 @@ a Claude subscription login and with Bedrock.
 
 Status: in testing (Claude Code 2.1.288 - 2.1.294).
 
-## Install for testing
+## User manual
 
-Needs Rust (cargo) and Claude Code. Herdr is needed to run admirals and
-commodores; status, config and ships work without it.
+### What it is
+
+nimitz runs fleets of Claude Code sessions with a chain of command: a fleet
+has one **admiral**, squadrons each led by a **commodore**, and **ships** that do
+the long work in one folder. Every member is a Claude Code background job; you
+look at one in a Herdr pane and detach with ctrl-z.
+
+### Install and first setup
+
+Needs Rust (cargo) and Claude Code; Herdr for panes (status, config and ships
+work without it).
 
 ```sh
 git clone -b dev https://github.com/avatarye/claude-nimitz && cd claude-nimitz
-cargo build --release
 cargo install --path crates/nimitz       # nimitz: the CLI and the hook binary
 cargo install --path crates/admiralty    # admiralty: the TUI
 claude plugin marketplace add "$PWD" && claude plugin install nimitz@claude-nimitz
 nimitz init --label <this-machine>       # data root and machine label
-nimitz doctor                            # hooks, trust, Claude Code versions; --fix sets crossSessionInbound
+nimitz doctor                            # run again until: [OK] doctor: ready
 ```
 
-`nimitz init` asks you to run `claude` once in the data root
-(`~/.claude-nimitz`) to accept the trust prompt. Run `nimitz doctor` again until
-it says `[OK] doctor: ready`. To try nimitz without touching your setup, use a
-sandbox: `nimitz sandbox create /tmp/nz --herdr && eval "$(nimitz sandbox env /tmp/nz)"`.
+`nimitz init` asks you to run `claude` once in `~/.claude-nimitz` to accept the
+trust prompt. In Herdr: `herdr plugin link <repo>/herdr-plugin` and bind a key
+to `admiralty.toggle` to open Admiralty as an overlay. To try it all without
+touching your setup: `nimitz sandbox create /tmp/nz --herdr && eval "$(nimitz sandbox env /tmp/nz)"`.
+
+### Daily use
+
+Every command that changes something shows its plan first: add `--plan` to
+only look, `--yes` to run without the question.
+
+| You want to | Run |
+| --- | --- |
+| Bring a fleet (or a squadron, a ship, everything) up and ready | `nimitz start F` · `nimitz start F/SQ` · `nimitz start F/SQ/SHIP` · `nimitz start` |
+| Do the same after a Claude Code update, a Herdr closure or a reboot | `nimitz start [F]` (it tells the three apart, member by member) |
+| Also wake the ships that were parked | `nimitz start F --all` |
+| Restart a member (same conversation, a new process) | `nimitz start F/SQ/SHIP -f` |
+| Restart one lead alone (`F` and `F/SQ` mean the whole fleet or squadron) | `nimitz start F --only -f` · `nimitz start F/SQ --only -f` |
+| Open a member's pane and focus it | `nimitz start F/SQ/SHIP -p` (a lead: `nimitz start F --only -p`) |
+| Start a member's conversation over (drops its history) | `nimitz start F/SQ/SHIP --fresh` |
+| Stop a member | `nimitz stop F/SQ/SHIP` |
+| See everything | `nimitz status`, or `admiralty` (keys below) |
+| Message a member | `nimitz signal F/SQ/SHIP "text"`, or `m` in Admiralty |
+| Answer a member that waits on you (`[nimitz needs-you]`) | `nimitz start <id> -p`, then answer in its pane |
+| Detach from a member's pane | ctrl-z (never `/exit`: inside an attach it opens the agent view) |
+
+What a plan looks like (`nimitz start DEMO --plan` after a Claude Code update):
+
+```text
+start DEMO  ·  Claude Code updated to 2.1.289  ·  4 to relaunch  ·  3 panes to reattach  ·  1 skipped
+
+             job       pane       why
+DEMO
+  ADMIRAL    relaunch  reattach   on 2.1.288 · pane w2:p1
+DEMO · OPS
+  COMMODORE  relaunch  reattach   on 2.1.288 · pane w3:p1
+  BUILD      relaunch  reattach   on 2.1.288 · pane w3:p2
+  DOCS       skip      ·          on 2.1.288; mid-turn
+  TEST       relaunch  ·          on 2.1.288
+
+needs you
+  skip    DEMO/OPS/DOCS  is mid-turn: not relaunched now (relaunch.busy)
+          fix: nimitz start DEMO/OPS/DOCS -f  # once it is idle
+
+--yes runs these 15 steps; -v shows the commands
+```
+
+Admiralty keys: `j`/`k` move, `tab` next fleet, `enter` jump to a pane, `a`
+start, `A` a pane for it, `x` more actions (stop, relaunch, sweep, rm, adopt),
+`m` message, `!` what waits on you, `i` every issue with its fix, `c`/`e`/`D`
+create, edit, remove, `?` all keys, `q` quit.
+
+### Fleets, squadrons and ships
+
+| You want to | Run |
+| --- | --- |
+| A new fleet on this machine | `nimitz fleet new F --machine <label>` |
+| A new squadron | `nimitz squadron new F/SQ --brief "what it is for"` |
+| A new ship | `nimitz ship new F/SQ/SHIP --dir <folder>\|managed --prompt "what it does"` |
+| Change a ship | `nimitz ship set F/SQ/SHIP --prompt "..." --mode <permission mode>` |
+| Remove a ship, a squadron, a fleet | `nimitz ship rm F/SQ/SHIP` · `nimitz squadron rm F/SQ` · `nimitz fleet rm F` |
+| Run a fleet on another machine too | `nimitz machine add F <label> --hostname <host>` |
+
+### Two rules
+
+- Never start, resume or stop a member with `claude` yourself: a resume of a
+  live job makes a copy, `claude --resume` holds the conversation where nimitz
+  cannot wake it, a session without nimitz's labels is a stowaway, and a job
+  started from a shell takes the wrong environment. `nimitz start` does it right.
+- Plan first: read the plan (`--plan`), then run it (`--yes`). Never `--force`
+  unless you mean it.
+
+### When something is wrong
+
+- `nimitz doctor`: the install (hooks, plugin, trust, Claude Code version).
+- `nimitz check [<id>]`: the fleet's problems, each with its one fix line.
+- Common fixes nimitz prints:
+  - a drifted name or missing labels: `nimitz start <id> -f` (a lead: `--only -f`);
+  - `history.lost` (its transcript is gone): `nimitz start <id> --fresh`;
+  - `tab.taken` (its tab runs something else): ctrl-z or quit it there, then `nimitz start <id> -p`;
+  - copies or stale rows: `nimitz sweep <id>`;
+  - a stowaway (a session in a fleet folder with no labels): `nimitz adopt <session> <id>`, or stop and `rm` it;
+  - `tab.resumed` (Herdr reopened a conversation in a pane): `/exit` in that pane, then `nimitz start F`.
+- `-v` on any plan shows the commands it runs.
+
+The sections below are the reference: the restore details, identity,
+authority and messaging.
 
 ## Documents
 
