@@ -2199,3 +2199,39 @@ fn the_wake_pollers_return_at_once_when_there_is_nothing_to_wait_for() {
     sessions::wait_settled(&w.env, &live, 0.5);
     assert!(t.elapsed().as_secs_f64() >= 0.5, "a running job is waited for, up to the limit");
 }
+
+/// `sandbox::add_aide`: an `[[aide]]` with a trusted folder of its own, and
+/// (live) a pinned job bound to it whose saved flags keep `--model`; the fake
+/// `claude` takes `--model` on a launch and keeps it in `respawnFlags`.
+#[test]
+fn an_aide_in_the_sandbox_runs_pinned_with_its_model() {
+    let w = world();
+    let kb = sandbox::add_aide(&w.base, "MAIN", "KB", true).expect("an aide");
+    assert_eq!(kb, Id("MAIN/@KB".into()));
+    let fod = nimitz_core::config::load_fleet(&w.env, "MAIN").unwrap();
+    let dir = w.base.canonicalize().unwrap().join("dirs/main/kb");
+    assert_eq!(nimitz_core::config::member_dir(&w.env, &fod, &kb), Some(dir.clone()));
+    assert!(!nimitz_core::config::validate(&w.env, &fod).iter().any(|i| i.id.as_ref() == Some(&kb)));
+    let job_flags = |short: &str| -> Vec<String> {
+        let p = w.env.claude_home.join("jobs").join(short).join("state.json");
+        let j: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+        serde_json::from_value(j["respawnFlags"].clone()).unwrap()
+    };
+    let row = w.rows().into_iter().find(|r| r.name == "[MAIN]-@KB" && r.live()).expect("a live job");
+    let short = row.short_id.clone().unwrap();
+    assert!(job_flags(&short).windows(2).any(|f| f == ["--model", "sonnet"]), "{:?}", job_flags(&short));
+    assert!(nimitz_core::pins::is_pinned(&w.env, &short));
+    let rec = nimitz_core::registry::load(&w.env).identities.remove(&kb.0).expect("bound");
+    assert_eq!((rec.role, rec.job.as_deref(), rec.cwd.as_str()), (Role::Aide, Some(short.as_str()), dir.to_str().unwrap()));
+    // the parent rides in the job's env (the hook records only the identity labels)
+    let flags = job_flags(&short);
+    let settings: serde_json::Value = serde_json::from_str(&flags[flags.iter().position(|f| f == "--settings").unwrap() + 1]).unwrap();
+    assert_eq!((settings["env"]["NIMITZ_PARENT"].as_str(), settings["env"]["NIMITZ_ROLE"].as_str()), (Some("MAIN"), Some("aide")));
+    // a second aide, not live: its cold launch carries its model through the fake
+    let refd = sandbox::add_aide(&w.base, "MAIN", "REF", false).unwrap();
+    let cwd = w.base.canonicalize().unwrap().join("dirs/main/ref");
+    let (rc, out) = claude::run(&claude::launch_bg(&w.env, &refd, "", Some(&claude::aide_prompt(&refd))), cwd.to_str());
+    assert_eq!(rc, 0, "{out}");
+    let r = w.rows().into_iter().find(|r| r.name == "[MAIN]-@REF").expect("its job");
+    assert!(job_flags(r.short_id.as_deref().unwrap()).windows(2).any(|f| f == ["--model", "sonnet"]));
+}

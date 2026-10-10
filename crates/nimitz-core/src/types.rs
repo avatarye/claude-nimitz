@@ -71,6 +71,10 @@ impl Id {
     pub fn ship(fleet: &str, sq: &str, ship: &str) -> Id {
         Id(format!("{fleet}/{sq}/{ship}"))
     }
+    /// `parent/@NAME`
+    pub fn aide(parent: &Id, name: &str) -> Id {
+        Id(format!("{parent}/@{name}"))
+    }
     pub fn parts(&self) -> Vec<&str> {
         self.0.split('/').collect()
     }

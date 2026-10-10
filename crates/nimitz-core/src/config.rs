@@ -338,6 +338,27 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         }
     }
 
+    // Aides (`[[aide]]`): a name, an inbox nimitz can run, each once, known machines.
+    let mut aide_names: Vec<&str> = vec![];
+    for a in &c.aide {
+        let aid = Id::aide(&fid, &a.name);
+        if !valid_name(&a.name) {
+            out.push(inv(format!("aide name {:?} is not [A-Z0-9_]+ (the id adds the @)", a.name), Some(aid.clone())));
+        }
+        if aide_names.contains(&a.name.as_str()) {
+            out.push(inv(format!("aide {:?} is defined twice", a.name), Some(aid.clone())));
+        }
+        aide_names.push(&a.name);
+        if let Err(e) = crate::queue::Limits::from_def(&a.inbox) {
+            out.push(inv(format!("aide {aid}: [aide.inbox] {e}"), Some(aid.clone())));
+        }
+        for label in a.dirs.keys() {
+            if !c.machines.contains_key(label) {
+                out.push(inv(format!("aide {aid}: machine label {label:?} is not in fleet.toml [machines]"), Some(aid.clone())));
+            }
+        }
+    }
+
     // Layout: a session folder inside another session folder (on this machine),
     // judged by `nesting` (contracts.md section 7).
     let mut folders: Vec<(Id, PathBuf, bool)> = vec![(fid.clone(), f.dir.join("admiral"), true)];
@@ -1304,6 +1325,50 @@ pub(crate) mod tests {
             ..Default::default()
         };
         apply_ok(env, &plan_ship_new(env, "MAIN", "ARGOS", ship));
+    }
+
+    /// MAIN's `[[aide]]` `def`, written into fleet.toml.
+    pub fn add_aide(env: &Env, def: AideDef) {
+        let mut f = load_fleet(env, "MAIN").unwrap();
+        f.config.aide.push(def);
+        std::fs::write(f.dir.join("fleet.toml"), toml_out(&f.config)).unwrap();
+    }
+
+    #[test]
+    fn an_aide_runs_in_its_dirs_folder_with_its_mode_and_is_validated() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let repo = td.path().join("kb");
+        std::fs::create_dir_all(&repo).unwrap();
+        let kb = Id("MAIN/@KB".into());
+        add_aide(&env, AideDef { name: "KB".into(), permission_mode: Some("acceptEdits".into()), dirs: [("test-mac".to_string(), repo.to_string_lossy().into_owned())].into(), ..Default::default() });
+        let f = load_fleet(&env, "MAIN").unwrap();
+        assert!(validate(&env, &f).is_empty(), "{:?}", validate(&env, &f));
+        assert_eq!(member_dir(&env, &f, &kb), Some(repo.canonicalize().unwrap()));
+        assert_eq!(permission_mode(&f, &kb), "acceptEdits");
+        assert_eq!(find_aide(&f, &kb).map(|a| a.name.as_str()), Some("KB"));
+        // not this machine's folder, no such aide, another fleet's: none
+        let mut other = f.clone();
+        other.machine = Some("elsewhere".into());
+        assert_eq!(member_dir(&env, &other, &kb), None);
+        assert_eq!(member_dir(&env, &f, &Id("MAIN/@REF".into())), None);
+        assert_eq!((member_dir(&env, &f, &Id("OTHER/@KB".into())), permission_mode(&f, &Id("MAIN/@REF".into()))), (None, String::new()));
+        // a bad name, a twin, an inbox nimitz cannot run, an unknown machine
+        let mut bad = f.clone();
+        bad.config.aide.push(AideDef { name: "kb".into(), ..Default::default() });
+        bad.config.aide.push(AideDef { name: "KB".into(), ..Default::default() });
+        let mut inbox = InboxDef { types: vec!["no.such.v1".into()], ..Default::default() };
+        bad.config.aide.push(AideDef { name: "REF".into(), inbox: inbox.clone(), dirs: [("nowhere".to_string(), "/x".to_string())].into(), ..Default::default() });
+        inbox.types.clear();
+        inbox.per_sender = "lots".into();
+        bad.config.aide.push(AideDef { name: "RATE".into(), inbox, ..Default::default() });
+        let issues = validate(&env, &bad);
+        assert!(issues.iter().all(|i| i.code == "config.invalid" && i.severity == Severity::Error), "{issues:?}");
+        let msgs = issues.iter().map(|i| i.message.as_str()).collect::<Vec<_>>().join("\n");
+        for want in ["aide name \"kb\"", "aide \"KB\" is defined twice", "unknown inbox type \"no.such.v1\"", "\"nowhere\" is not in fleet.toml", "per_sender \"lots\""] {
+            assert!(msgs.contains(want), "missing {want:?} in {msgs}");
+        }
+        assert!(issues.iter().any(|i| i.id == Some(Id("MAIN/@REF".into()))), "{issues:?}");
     }
 
     #[test]
