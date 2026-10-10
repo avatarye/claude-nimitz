@@ -14,6 +14,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-width",
+ "windows-sys",
 ]
 
 [[package]]
@@ -691,6 +692,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "windows-sys",
 ]
 
 [[package]]
@@ -702,6 +704,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "windows-sys",
 ]
 
 [[package]]
@@ -712,6 +715,7 @@ dependencies = [
  "nimitz-core",
  "serde",
  "serde_json",
+ "windows-sys",
 ]
 
 [[package]]

@@ -659,8 +659,8 @@ mod tests {
               {{"name": "HOME", "prompt": "p", "dirs": {{"m": "{}"}}}},
               {{"name": "PROJ", "prompt": "p", "dirs": {{"m": "{}"}}}},
               {{"name": "GONE", "prompt": "p", "dirs": {{"m": "/no/such/folder"}}}}]}}"#,
-            home.display(),
-            proj.display()
+            home.display().to_string().replace('\\', "\\\\"),
+            proj.display().to_string().replace('\\', "\\\\")
         );
         let old = td.path().join("old/gen");
         old_fleet(&old, &json, None);

@@ -46,7 +46,7 @@
 //!   `copy_once` (one wake answers with a copy and the job stays stopped,
 //!   r3-e2e finding 12; the knob then clears).
 //!
-//! Live sandbox sessions record pid 1 (always alive), so the real `kill(pid, 0)`
+//! Live sandbox sessions record `LIVE_PID` (always alive), so the real `kill(pid, 0)`
 //! liveness check works unchanged; a stopped session simply has no session file.
 //! The hooks get a stable fake pid per job (`NIMITZ_HOOK_PID`) and the path of
 //! the session file (`NIMITZ_HOOK_SESSION_FILE`): what real Claude Code gives
@@ -68,8 +68,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const HOST: &str = "sandbox-host";
-/// pid 1 is always alive, so `kill(pid, 0)` needs no fake.
-pub const LIVE_PID: i64 = 1;
+/// A pid that is always alive, so the real liveness check needs no fake:
+/// 1 (init) on Unix, 4 (System) on Windows.
+pub const LIVE_PID: i64 = if cfg!(windows) { 4 } else { 1 };
 pub const CC_VERSION: &str = "2.1.288";
 
 // ------------------------------------------------------------------ small helpers
@@ -92,12 +93,14 @@ fn ms(t: f64) -> i64 {
 /// The pid the hooks of a job (or an interactive session) report: stable per
 /// job, never a live process (the session file says pid 1 for liveness).
 pub fn fake_pid(key: &str) -> i64 {
-    100_000 + key.bytes().fold(0i64, |a, b| (a * 31 + b as i64) % 400_000)
+    let p = 100_000 + key.bytes().fold(0i64, |a, b| (a * 31 + b as i64) % 400_000);
+    // Windows pids are multiples of 4: an odd one is never a live process
+    if cfg!(windows) { p | 1 } else { p }
 }
 
 /// Env vars that point nimitz/admiralty at the sandbox.
 pub fn env_for(base: &Path) -> HashMap<String, String> {
-    let b = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let b = crate::os::canonical(&base).unwrap_or_else(|_| base.to_path_buf());
     let p = |x: &str| b.join(x).to_string_lossy().into_owned();
     HashMap::from([
         ("HOME".into(), p("home")),
@@ -105,8 +108,8 @@ pub fn env_for(base: &Path) -> HashMap<String, String> {
         ("NIMITZ_STATE".into(), p("state")),
         ("NIMITZ_CLAUDE_HOME".into(), p("claude_home")),
         // like ACME: the PATH `claude` is a wrapper that adds its own --settings
-        ("NIMITZ_CLAUDE_BIN".into(), p("bin/claude-wrapper")),
-        ("NIMITZ_NATIVE_CLAUDE_BIN".into(), p("bin/claude")),
+        ("NIMITZ_CLAUDE_BIN".into(), p(&format!("bin/{}", crate::os::exe_name("claude-wrapper")))),
+        ("NIMITZ_NATIVE_CLAUDE_BIN".into(), p(&format!("bin/{}", crate::os::exe_name("claude")))),
         ("NIMITZ_HOSTNAME".into(), HOST.into()),
         ("NIMITZ_MUX".into(), "none".into()),
     ])
@@ -140,9 +143,12 @@ fn trust_files(base: &Path) -> Vec<PathBuf> {
     vec![claude_home(base).join(".claude.json"), base.join("claude_home.json")]
 }
 
+/// The data root is trusted too, as `nimitz init` has the user do (its
+/// members' folders are under it).
 fn trust(base: &Path, dirs: &[String]) {
+    let root = base.join("nimitz").to_string_lossy().into_owned();
     let projects: serde_json::Map<String, Value> =
-        dirs.iter().map(|d| (d.clone(), json!({"hasTrustDialogAccepted": true}))).collect();
+        dirs.iter().chain(std::iter::once(&root)).map(|d| (d.clone(), json!({"hasTrustDialogAccepted": true}))).collect();
     for f in trust_files(base) {
         write_json(&f, &json!({ "projects": projects }));
     }
@@ -151,7 +157,7 @@ fn trust(base: &Path, dirs: &[String]) {
 fn trusted(base: &Path, cwd: &str) -> bool {
     // NIMITZ_HOME is trusted by `nimitz init`; anything else needs the trust file.
     let home = base.join("nimitz");
-    let real_home = home.canonicalize().unwrap_or_else(|_| home.clone());
+    let real_home = crate::os::canonical(&home).unwrap_or_else(|_| home.clone());
     if Path::new(cwd).starts_with(&home) || Path::new(cwd).starts_with(&real_home) {
         return true;
     }
@@ -431,27 +437,22 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
         fs::remove_dir_all(base).map_err(|e| e.to_string())?;
     }
     fs::create_dir_all(base).map_err(|e| e.to_string())?;
-    let base = base.canonicalize().map_err(|e| e.to_string())?;
+    let base = crate::os::canonical(&base).map_err(|e| e.to_string())?;
     for d in ["home", "nimitz", "state", "claude_home/sessions", "claude_home/jobs", "claude_home/projects", "bin", "dirs"] {
         fs::create_dir_all(base.join(d)).map_err(|e| e.to_string())?;
     }
     // world.json first: the fake claude reads its version and its counter there.
     write_json(&base.join("world.json"), &json!({"next": 1000, "cc_version": CC_VERSION}));
     write_json(&base.join("hook-cmd.json"), &json!([exe.to_string_lossy(), "hook"]));
-    let bin = base.join("bin").join("claude");
-    fs::write(&bin, format!("#!/bin/sh\nexec '{}' __fake-claude '{}' \"$@\"\n", exe.display(), base.display())).map_err(|e| e.to_string())?;
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    let fake = vec!["__fake-claude".to_string(), base.to_string_lossy().into_owned()];
+    let bin = crate::os::write_shim(&base.join("bin").join("claude"), exe, &fake).map_err(|e| e.to_string())?;
     // The ACME wrapper (findings-acme-2.1.288.md): it puts its own `--settings`
     // before your arguments, so a resume through it is always a copy. Cold
     // launches go through it; resume, stop, rm and agents must not.
-    let wrapper = base.join("bin").join("claude-wrapper");
-    fs::write(
-        &wrapper,
-        format!("#!/bin/sh\nexec '{}' --settings '{{\"env\":{{\"CLAUDE_CODE_USE_BEDROCK\":\"1\"}}}}' \"$@\"\n", bin.display()),
-    )
-    .map_err(|e| e.to_string())?;
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    let settings = ["--settings".to_string(), r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#.to_string()];
+    // (Unix: a script that runs the fake claude's; Windows: the fake's prefix, then the wrapper's)
+    let (target, prefix) = if cfg!(windows) { (exe.to_path_buf(), [fake, settings.to_vec()].concat()) } else { (bin, settings.to_vec()) };
+    crate::os::write_shim(&base.join("bin").join("claude-wrapper"), &target, &prefix).map_err(|e| e.to_string())?;
 
     let e = env(&base);
     let mut w = World { base: base.clone(), now: crate::evidence::now(), seq: 0, sessions: vec![], trusted: vec![] };
@@ -679,7 +680,7 @@ pub fn break_a_config(base: &Path, fleet: &str) {
 /// as its current session when `bind` (a member added after `create`). Its
 /// session id. (The hook binds it anyway; `bind` records nimitz's own `via`.)
 pub fn live_session(base: &Path, id: &Id, cwd: &str, bind: bool) -> String {
-    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let base = crate::os::canonical(&base).unwrap_or_else(|_| base.to_path_buf());
     let e = env(&base);
     let settings = crate::claude::settings_json(&e, id, true);
     let short = start(&base, cwd, &id.name(), "bypassPermissions", Some(&settings), "startup", true);
@@ -1125,7 +1126,7 @@ fn inside(base: &Path, short: &str, verb: &str, arg: Option<&str>) -> i32 {
 
 /// The fake `claude`: agents --json, --bg (cold/resume with copy semantics as probed), stop, rm, attach, --version.
 pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
-    let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
+    let base = crate::os::canonical(&base).unwrap_or_else(|_| base.to_path_buf());
     log_call(&base, args);
     let a = parse(args);
     let home = claude_home(&base);

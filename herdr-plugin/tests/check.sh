@@ -1,10 +1,12 @@
 #!/bin/sh
 # Static and offline checks. Never touches the running Herdr: every herdr call runs
 # with HERDR_* unset and XDG_CONFIG_HOME / XDG_STATE_HOME pointed at a temp dir.
-#   1. scripts parse and are executable
+#   1. the test scripts parse and are executable
 #   2. the manifest links into a throwaway Herdr config (Herdr's own validation)
 #   3. the README keybinding snippet passes `herdr config check`
-#   4. bin/toggle.sh logic, against tests/fake-herdr.sh
+#   4. `admiralty herdr toggle` (the action), against tests/fake-herdr.sh
+#      (ADMIRALTY_BIN, else admiralty on PATH; its logic also has unit tests:
+#      cargo test -p admiralty herdr_plugin)
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/haw-check.XXXXXX")
@@ -14,7 +16,7 @@ ok() { echo "[OK] $*"; }
 bad() { echo "[ERROR] $*"; fails=$((fails + 1)); }
 
 # 1
-for f in bin/toggle.sh bin/watch.sh tests/fake-herdr.sh tests/check.sh; do
+for f in tests/fake-herdr.sh tests/check.sh; do
     if sh -n "$root/$f" && [ -x "$root/$f" ]; then ok "$f parses, executable"; else bad "$f"; fi
 done
 
@@ -49,11 +51,16 @@ else
 fi
 
 # 4
-run() { # tab -> runs toggle.sh in that tab against the fake
+adm=${ADMIRALTY_BIN:-$(command -v admiralty || true)}
+if [ -z "$adm" ]; then
+    echo "[WARN] admiralty not found (ADMIRALTY_BIN or PATH): skipped the toggle checks"
+    if [ "$fails" -eq 0 ]; then echo "[OK] all checks passed"; exit 0; else echo "[ERROR] $fails check(s) failed"; exit 1; fi
+fi
+run() { # tab -> runs the toggle in that tab against the fake
     HERDR_BIN_PATH="$root/tests/fake-herdr.sh" FAKE_DIR="$tmp/fake" \
         HERDR_PLUGIN_STATE_DIR="$tmp/fake/state" HERDR_TAB_ID="$1" \
         HERDR_PLUGIN_CONTEXT_JSON="{\"tab_id\":\"$1\"}" \
-        "$root/bin/toggle.sh" 2>"$tmp/fake/stderr"
+        "$adm" herdr toggle 2>"$tmp/fake/stderr"
 }
 expect() { # label, expected panes file contents, expected state
     got_p=$(tr '\n' ',' < "$tmp/fake/panes"); got_s=$(cat "$tmp/fake/state/pane_id" 2>/dev/null)

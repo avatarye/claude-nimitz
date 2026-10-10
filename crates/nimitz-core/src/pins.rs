@@ -180,13 +180,27 @@ mod tests {
         assert!(own(&env).is_empty());
     }
 
+    /// A folder opened to set its times (Windows opens a folder only with
+    /// `FILE_FLAG_BACKUP_SEMANTICS`, and needs write access for the times).
+    fn dir_handle(p: &std::path::Path) -> std::fs::File {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().write(true).custom_flags(0x0200_0000).open(p).unwrap()
+        }
+        #[cfg(not(windows))]
+        {
+            std::fs::File::open(p).unwrap()
+        }
+    }
+
     #[test]
     fn a_stale_lock_is_taken_over_and_a_live_one_is_waited_for() {
         let (_td, env) = test_env();
         let l = lock_path(&env);
         std::fs::create_dir_all(&l).unwrap();
         let old = std::time::SystemTime::now() - Duration::from_secs_f64(STALE_S + 5.0);
-        std::fs::File::open(&l).unwrap().set_modified(old).unwrap();
+        dir_handle(&l).set_modified(old).unwrap();
         assert!(pin(&env, "lead1").unwrap(), "a lock older than {STALE_S} s is a dead holder's");
         assert!(!l.exists());
         // a fresh lock: held by a live Claude Code; nimitz waits, then gives up

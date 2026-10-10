@@ -66,12 +66,12 @@ impl W {
         for (k, v) in extra.as_object().unwrap() {
             d[k] = v.clone();
         }
-        std::fs::write(self.base.join("claude_home/sessions").join(format!("{name}.json")), serde_json::to_vec_pretty(&d).unwrap()).unwrap();
+        std::fs::write(self.base.join("claude_home").join("sessions").join(format!("{name}.json")), serde_json::to_vec_pretty(&d).unwrap()).unwrap();
         sid
     }
     /// Let Claude Code trust a folder (`.claude.json`).
     fn trust(&self, dir: &str) {
-        let f = self.base.join("claude_home/.claude.json");
+        let f = self.base.join("claude_home").join(".claude.json");
         let mut v: Value = serde_json::from_slice(&std::fs::read(&f).unwrap()).unwrap();
         v["projects"][dir] = json!({"hasTrustDialogAccepted": true});
         std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
@@ -147,7 +147,7 @@ fn cli_12_a_fresh_background_job_of_the_users_own_in_a_ship_folder_is_not_shown(
     assert!(copy_of(&m, &short).is_none() && m.issues.is_empty(), "{:?} {:?}", m.extra_rows, m.issues);
     // the same session in the squadron's own folder (no ship's) is a stowaway, as before
     let sq = w.member(&snap, &Id::commodore("MAIN", "ARGOS")).cwd.unwrap();
-    for p in [w.base.join("claude_home/jobs").join(&short).join("state.json"), w.base.join("claude_home/sessions").join(format!("{short}.json"))] {
+    for p in [w.base.join("claude_home").join("jobs").join(&short).join("state.json"), w.base.join("claude_home").join("sessions").join(format!("{short}.json"))] {
         let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         v["cwd"] = json!(sq);
         std::fs::write(&p, serde_json::to_vec(&v).unwrap()).unwrap();
@@ -227,9 +227,9 @@ fn cli_27_a_session_carrying_the_ships_exact_name_in_its_folder_is_a_copy() {
     assert_eq!(copy_of(&m, &copy).and_then(|r| r.copy.as_deref()), Some("name"), "{:?}", m.extra_rows);
     assert!(has(&m.issues, "copy") && !has(&m.issues, "name.taken") && !has(&m.issues, "dup.live"), "{:?}", codes(&m.issues));
     // the same name in another folder is name.taken, as before
-    let elsewhere = w.base.join("dirs/elsewhere");
+    let elsewhere = w.base.join("dirs").join("elsewhere");
     std::fs::create_dir_all(&elsewhere).unwrap();
-    let elsewhere = elsewhere.canonicalize().unwrap().to_string_lossy().into_owned();
+    let elsewhere = nimitz_core::os::canonical(&elsewhere).unwrap().to_string_lossy().into_owned();
     w.trust(&elsewhere);
     let other = W::short_of(&w.claude_ok(&["--bg", "--name", &id.name(), "x"], &elsewhere));
     let m = w.member(&w.snap(), &id);
@@ -377,7 +377,7 @@ fn cli_05_a_spare_session_file_is_ignored_for_the_grace_time() {
     let old = ((evidence::now() - snapshot::TRANSIENT_GRACE_S - 60.0) * 1000.0) as i64;
     w.session_file("28f3d8a7", &sq, json!({"spare": true, "kind": "bg", "startedAt": old}));
     assert!(!stowaway(&w.snap(), &sid), "an old startedAt alone does not age a spare");
-    let f = std::fs::File::options().write(true).open(w.env.claude_home.join("sessions/28f3d8a7.json")).unwrap();
+    let f = std::fs::File::options().write(true).open(w.env.claude_home.join("sessions").join("28f3d8a7.json")).unwrap();
     f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(snapshot::TRANSIENT_GRACE_S as u64 + 60)).unwrap();
     assert!(stowaway(&w.snap(), &sid));
 }
@@ -435,7 +435,7 @@ fn a_dispatched_job_that_was_a_pre_warmed_spare_is_never_hidden() {
     let w = world();
     let (id, job, _, _) = clean(&w);
     // the daemon claimed a spare for the ship's job: the session file keeps `spare: true`
-    let p = w.base.join("claude_home/sessions").join(format!("{job}.json"));
+    let p = w.base.join("claude_home").join("sessions").join(format!("{job}.json"));
     let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
     v["spare"] = json!(true);
     v["startedAt"] = json!((evidence::now() * 1000.0) as i64);
@@ -451,14 +451,14 @@ fn a_dispatched_job_that_was_a_pre_warmed_spare_is_never_hidden() {
 fn a_labelled_young_spare_with_no_transcript_is_never_hidden() {
     let w = world();
     let (id, job, _, _) = clean(&w);
-    let p = w.base.join("claude_home/sessions").join(format!("{job}.json"));
+    let p = w.base.join("claude_home").join("sessions").join(format!("{job}.json"));
     let mut v: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
     v["spare"] = json!(true);
     v["startedAt"] = json!((evidence::now() * 1000.0) as i64);
     std::fs::write(&p, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
     let sid = v["sessionId"].as_str().unwrap().to_string();
     // no transcript yet: move the session's transcript away
-    let projects = w.base.join("claude_home/projects");
+    let projects = w.base.join("claude_home").join("projects");
     for d in std::fs::read_dir(&projects).unwrap().flatten() {
         let t = d.path().join(format!("{sid}.jsonl"));
         if t.exists() {

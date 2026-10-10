@@ -184,7 +184,7 @@ pub fn events_cached(env: &Env, cache: &mut FileCache) -> Vec<Event> {
         return vec![];
     };
     let size = f.seek(SeekFrom::End(0)).unwrap_or(0);
-    let ino = { use std::os::unix::fs::MetadataExt; f.metadata().map(|m| m.ino()).unwrap_or(0) };
+    let ino = crate::os::file_id(&f);
     if ino != t.ino {
         t.ino = ino;
         t.offset = 0;
@@ -478,30 +478,13 @@ impl SessionRow {
     }
 }
 
-/// The process ids above this one (its parent, its parent's parent, ...):
-/// `/proc/<pid>/stat` on Linux; empty elsewhere.
+/// The process ids above this one (its parent, its parent's parent, ...).
 pub fn ancestors() -> Vec<i64> {
-    let mut out = vec![];
-    let mut pid = std::process::id() as i64;
-    for _ in 0..64 {
-        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else { break };
-        // the field after the `(comm)`, which may hold spaces: state, then ppid
-        let Some(ppid) = stat.rsplit_once(')').and_then(|(_, rest)| rest.split_whitespace().nth(1)).and_then(|p| p.parse::<i64>().ok()) else { break };
-        if ppid <= 0 {
-            break;
-        }
-        out.push(ppid);
-        pid = ppid;
-    }
-    out
+    crate::os::ancestors()
 }
 
 pub fn pid_alive(pid: i64) -> bool {
-    if pid <= 0 || pid > i32::MAX as i64 {
-        return false;
-    }
-    let r = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    crate::os::pid_alive(pid)
 }
 
 fn norm_kind(k: &str) -> String {
@@ -1078,7 +1061,9 @@ pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
     }
     // Claude Code records real paths (/private/tmp for /tmp): the keys come in both forms
     let keys = crate::env::trust_keys(Path::new(dir.trim_end_matches('/')));
-    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| keys.contains(root)))
+    // (in one form: Claude Code on Windows writes `C:\x` and `C:/x`)
+    let keys: Vec<String> = keys.iter().map(|k| crate::env::trust_key(&k.to_string_lossy())).collect();
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| keys.contains(&crate::env::trust_key(&root.to_string_lossy()))))
 }
 
 fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {
@@ -1111,7 +1096,7 @@ mod tests {
     #[test]
     fn the_ancestors_start_at_the_parent() {
         let up = super::ancestors();
-        assert_eq!(up.first().copied(), Some(unsafe { libc::getppid() } as i64), "{up:?}");
+        assert_eq!(up.first().copied(), Some(crate::os::parent_pid()), "{up:?}");
     }
 
     use super::*;
