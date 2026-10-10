@@ -1,45 +1,45 @@
 {
   "projects": {
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/bare": {
+    "@@BASE@@/dirs/main/bare": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/broken": {
+    "@@BASE@@/dirs/main/broken": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/clean": {
+    "@@BASE@@/dirs/main/clean": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/copies": {
+    "@@BASE@@/dirs/main/copies": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/drift": {
+    "@@BASE@@/dirs/main/drift": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/failed": {
+    "@@BASE@@/dirs/main/failed": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/fresh": {
+    "@@BASE@@/dirs/main/fresh": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/gone": {
+    "@@BASE@@/dirs/main/gone": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/mislabel": {
+    "@@BASE@@/dirs/main/mislabel": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/nolabel": {
+    "@@BASE@@/dirs/main/nolabel": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/noprompt": {
+    "@@BASE@@/dirs/main/noprompt": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/stopped": {
+    "@@BASE@@/dirs/main/stopped": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/taken": {
+    "@@BASE@@/dirs/main/taken": {
       "hasTrustDialogAccepted": true
     },
-    "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/twin": {
+    "@@BASE@@/dirs/main/twin": {
       "hasTrustDialogAccepted": true
     }
   }

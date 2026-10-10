@@ -1,6 +1,6 @@
 {
   "bridgeSessionId": null,
-  "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/squadrons/argos",
+  "cwd": "@@BASE@@/nimitz/main/squadrons/argos",
   "entrypoint": "cli",
   "jobId": "6634f372",
   "kind": "bg",

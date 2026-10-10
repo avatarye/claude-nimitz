@@ -1,6 +1,6 @@
 {
   "bridgeSessionId": null,
-  "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/taken",
+  "cwd": "@@BASE@@/dirs/main/taken",
   "entrypoint": "cli",
   "jobId": "b92d9b90",
   "kind": "bg",

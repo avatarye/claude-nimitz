@@ -8,7 +8,7 @@ prompt = "You are [MAIN.ARGOS]-CLEAN."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/clean"
+sandbox = "@@BASE@@/dirs/main/clean"
 
 [ships.permission_mode]
 
@@ -18,7 +18,7 @@ prompt = "You are [MAIN.ARGOS]-DRIFT."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/drift"
+sandbox = "@@BASE@@/dirs/main/drift"
 
 [ships.permission_mode]
 
@@ -28,7 +28,7 @@ prompt = "You are [MAIN.ARGOS]-NOLABEL."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/nolabel"
+sandbox = "@@BASE@@/dirs/main/nolabel"
 
 [ships.permission_mode]
 
@@ -38,7 +38,7 @@ prompt = "You are [MAIN.ARGOS]-TWIN."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/twin"
+sandbox = "@@BASE@@/dirs/main/twin"
 
 [ships.permission_mode]
 
@@ -48,7 +48,7 @@ prompt = "You are [MAIN.ARGOS]-STOPPED."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/stopped"
+sandbox = "@@BASE@@/dirs/main/stopped"
 
 [ships.permission_mode]
 
@@ -58,7 +58,7 @@ prompt = "You are [MAIN.ARGOS]-BARE."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/bare"
+sandbox = "@@BASE@@/dirs/main/bare"
 
 [ships.permission_mode]
 
@@ -68,7 +68,7 @@ prompt = "You are [MAIN.ARGOS]-FRESH."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/fresh"
+sandbox = "@@BASE@@/dirs/main/fresh"
 
 [ships.permission_mode]
 
@@ -78,7 +78,7 @@ prompt = "You are [MAIN.ARGOS]-FAILED."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/failed"
+sandbox = "@@BASE@@/dirs/main/failed"
 
 [ships.permission_mode]
 
@@ -88,7 +88,7 @@ prompt = "You are [MAIN.ARGOS]-COPIES."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/copies"
+sandbox = "@@BASE@@/dirs/main/copies"
 
 [ships.permission_mode]
 
@@ -98,7 +98,7 @@ prompt = "You are [MAIN.ARGOS]-GONE."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/gone"
+sandbox = "@@BASE@@/dirs/main/gone"
 
 [ships.permission_mode]
 
@@ -108,7 +108,7 @@ prompt = "You are [MAIN.ARGOS]-UNTRUSTED."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/untrusted"
+sandbox = "@@BASE@@/dirs/main/untrusted"
 
 [ships.permission_mode]
 
@@ -127,7 +127,7 @@ name = "NOPROMPT"
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/noprompt"
+sandbox = "@@BASE@@/dirs/main/noprompt"
 
 [ships.permission_mode]
 
@@ -137,7 +137,7 @@ prompt = "You are [MAIN.ARGOS]-BROKEN."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/broken"
+sandbox = "@@BASE@@/dirs/main/broken"
 
 [ships.permission_mode]
 
@@ -147,7 +147,7 @@ prompt = "You are [MAIN.ARGOS]-TAKEN."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/taken"
+sandbox = "@@BASE@@/dirs/main/taken"
 
 [ships.permission_mode]
 
@@ -157,7 +157,7 @@ prompt = "You are [MAIN.ARGOS]-MISLABEL."
 depends_on = []
 
 [ships.dirs]
-sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/mislabel"
+sandbox = "@@BASE@@/dirs/main/mislabel"
 
 [ships.permission_mode]
 

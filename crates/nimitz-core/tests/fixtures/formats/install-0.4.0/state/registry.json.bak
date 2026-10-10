@@ -6,21 +6,21 @@
     "BETA": {
       "role": "admiral",
       "name": "[BETA]-ADMIRAL",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/beta/admiral",
+      "cwd": "@@BASE@@/nimitz/beta/admiral",
       "session": "e44408bb-5b0c-4d1e-9f2a-000000000013",
       "lineage": [
         {
           "session_id": "e44408bb-5b0c-4d1e-9f2a-000000000013",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN": {
       "role": "admiral",
       "name": "[MAIN]-ADMIRAL",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/admiral",
+      "cwd": "@@BASE@@/nimitz/main/admiral",
       "job": "c46d79b9",
       "session": "c46d79b9-5b0c-4d1e-9f2a-000000000001",
       "lineage": [
@@ -29,14 +29,14 @@
           "job": "c46d79b9",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS": {
       "role": "commodore",
       "name": "[MAIN.ARGOS]-COMMODORE",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/squadrons/argos",
+      "cwd": "@@BASE@@/nimitz/main/squadrons/argos",
       "job": "6634f372",
       "session": "6634f372-5b0c-4d1e-9f2a-000000000002",
       "lineage": [
@@ -45,14 +45,14 @@
           "job": "6634f372",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/BARE": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-BARE",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/bare",
+      "cwd": "@@BASE@@/dirs/main/bare",
       "job": "7470c13a",
       "session": "7470c13a-5b0c-4d1e-9f2a-00000000000a",
       "lineage": [
@@ -61,28 +61,28 @@
           "job": "7470c13a",
           "via": "relaunch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/BROKEN": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-BROKEN",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/broken",
+      "cwd": "@@BASE@@/dirs/main/broken",
       "session": "1f1a21d7-5b0c-4d1e-9f2a-00000000000f",
       "lineage": [
         {
           "session_id": "1f1a21d7-5b0c-4d1e-9f2a-00000000000f",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/CLEAN": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-CLEAN",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/clean",
+      "cwd": "@@BASE@@/dirs/main/clean",
       "job": "2287e6e4",
       "session": "2287e6e4-5b0c-4d1e-9f2a-000000000004",
       "lineage": [
@@ -91,14 +91,14 @@
           "job": "2287e6e4",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/COPIES": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-COPIES",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/copies",
+      "cwd": "@@BASE@@/dirs/main/copies",
       "job": "30c3b4ac",
       "session": "30c3b4ac-5b0c-4d1e-9f2a-00000000000c",
       "lineage": [
@@ -107,28 +107,28 @@
           "job": "30c3b4ac",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         },
         {
           "session_id": "528b2e65-5b0c-4d1e-9f2a-00000000000d",
           "job": "528b2e65",
           "via": "relaunch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         },
         {
           "session_id": "fd52a81e-5b0c-4d1e-9f2a-00000000000e",
           "job": "fd52a81e",
           "via": "relaunch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/DRIFT": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-DRIFT",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/drift",
+      "cwd": "@@BASE@@/dirs/main/drift",
       "job": "4d4f609d",
       "session": "4d4f609d-5b0c-4d1e-9f2a-000000000005",
       "lineage": [
@@ -137,14 +137,14 @@
           "job": "4d4f609d",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/FAILED": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-FAILED",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/failed",
+      "cwd": "@@BASE@@/dirs/main/failed",
       "job": "96383af3",
       "session": "96383af3-5b0c-4d1e-9f2a-00000000000b",
       "lineage": [
@@ -153,14 +153,14 @@
           "job": "96383af3",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/MISLABEL": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-MISLABEL",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/mislabel",
+      "cwd": "@@BASE@@/dirs/main/mislabel",
       "job": "dbf51549",
       "session": "dbf51549-5b0c-4d1e-9f2a-000000000011",
       "lineage": [
@@ -169,14 +169,14 @@
           "job": "dbf51549",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/NOLABEL": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-NOLABEL",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/nolabel",
+      "cwd": "@@BASE@@/dirs/main/nolabel",
       "job": "ef16da56",
       "session": "ef16da56-5b0c-4d1e-9f2a-000000000006",
       "lineage": [
@@ -185,14 +185,14 @@
           "job": "ef16da56",
           "via": "relaunch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/STOPPED": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-STOPPED",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/stopped",
+      "cwd": "@@BASE@@/dirs/main/stopped",
       "job": "d5a94781",
       "session": "d5a94781-5b0c-4d1e-9f2a-000000000009",
       "lineage": [
@@ -201,14 +201,14 @@
           "job": "d5a94781",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/ARGOS/TWIN": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-TWIN",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/twin",
+      "cwd": "@@BASE@@/dirs/main/twin",
       "job": "abe1cdc8",
       "session": "abe1cdc8-5b0c-4d1e-9f2a-000000000008",
       "lineage": [
@@ -217,21 +217,21 @@
           "job": "09de540f",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         },
         {
           "session_id": "abe1cdc8-5b0c-4d1e-9f2a-000000000008",
           "job": "abe1cdc8",
           "via": "relaunch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     },
     "MAIN/BOREAL": {
       "role": "commodore",
       "name": "[MAIN.BOREAL]-COMMODORE",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/squadrons/boreal",
+      "cwd": "@@BASE@@/nimitz/main/squadrons/boreal",
       "job": "80fc6d2b",
       "session": "80fc6d2b-5b0c-4d1e-9f2a-000000000003",
       "lineage": [
@@ -240,7 +240,7 @@
           "job": "80fc6d2b",
           "via": "launch",
           "at": 1791667195.0526922,
-          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+          "home": "@@BASE@@/nimitz"
         }
       ]
     }
@@ -249,7 +249,7 @@
     "MAIN/ARGOS/~fixci": {
       "role": "ship",
       "name": "[MAIN.ARGOS]-COMMODORE/fixci",
-      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/squadrons/argos",
+      "cwd": "@@BASE@@/nimitz/main/squadrons/argos",
       "session": "45bc8f02-5b0c-4d1e-9f2a-000000000012",
       "lineage": [
         {

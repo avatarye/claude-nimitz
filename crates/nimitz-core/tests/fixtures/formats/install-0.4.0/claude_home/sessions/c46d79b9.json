@@ -1,6 +1,6 @@
 {
   "bridgeSessionId": null,
-  "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/admiral",
+  "cwd": "@@BASE@@/nimitz/main/admiral",
   "entrypoint": "cli",
   "jobId": "c46d79b9",
   "kind": "bg",

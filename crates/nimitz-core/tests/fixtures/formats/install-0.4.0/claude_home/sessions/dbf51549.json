@@ -1,6 +1,6 @@
 {
   "bridgeSessionId": null,
-  "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/mislabel",
+  "cwd": "@@BASE@@/dirs/main/mislabel",
   "entrypoint": "cli",
   "jobId": "dbf51549",
   "kind": "bg",
