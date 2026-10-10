@@ -147,6 +147,18 @@ pub fn truncate_spans(spans: Vec<Span<'static>>, w: usize) -> Vec<Span<'static>>
     out
 }
 
+/// `spans` in `w` columns, whole: the highest `rank` goes first (the order
+/// stays); what one span alone cannot fit is cut.
+pub fn drop_spans(spans: &[Span<'static>], rank: &[u8], w: usize) -> Vec<Span<'static>> {
+    let mut keep: Vec<bool> = vec![true; spans.len()];
+    let width = |keep: &[bool]| spans.iter().zip(keep).filter(|(_, k)| **k).map(|(s, _)| s.content.width()).sum::<usize>();
+    while width(&keep) > w && keep.iter().filter(|k| **k).count() > 1 {
+        let worst = (0..spans.len()).filter(|i| keep[*i]).max_by_key(|i| (rank[*i], *i)).unwrap_or(0);
+        keep[worst] = false;
+    }
+    truncate_spans(spans.iter().zip(&keep).filter(|(_, k)| **k).map(|(s, _)| s.clone()).collect(), w)
+}
+
 fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
 }
@@ -250,7 +262,7 @@ fn row_spans_anim(r: &Row, w: &[u16; 4], inner: usize, gap: usize, icons: &Icons
     out.push(Span::raw(sep));
     let used = spans_width(&out);
     let room = inner.saturating_sub(used);
-    let detail = truncate_spans(n.detail.clone(), room);
+    let detail = if n.drop_rank.len() == n.detail.len() && !n.drop_rank.is_empty() { drop_spans(&n.detail, &n.drop_rank, room) } else { truncate_spans(n.detail.clone(), room) };
     let dw = spans_width(&detail);
     out.extend(detail);
     if dw < room {

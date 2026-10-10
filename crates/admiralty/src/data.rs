@@ -171,6 +171,14 @@ impl DataSource for CoreSource {
             }
         }
         merge_check(&mut snap, found);
+        // an aide's queue as the user sees it: reply results too (the
+        // snapshot's own peek hides them; `status --json` is every member's)
+        let now = nimitz_core::evidence::now();
+        for a in snap.fleets.iter_mut().flat_map(|f| f.aides.iter_mut()) {
+            if let Ok(q) = nimitz_core::queue::Queue::of(&self.env, &a.id) {
+                a.inbox = Some(q.peek_status(now, true));
+            }
+        }
         Bundle {
             snap,
             panes: self.mux.panes(),

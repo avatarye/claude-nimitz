@@ -702,6 +702,12 @@ impl App {
                 it.action = MenuAction::AdoptAs(sid, id);
             }
         }
+        // an aide: its dead letters (the user's repair)
+        if matches!(self.target(), Target::Member(ref id) if id.role() == nimitz_core::Role::Aide) {
+            for a in [Act::InboxRetry, Act::InboxDrop] {
+                v.push(MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(a), action: MenuAction::Act(a) });
+            }
+        }
         if let Target::Fleet(id) = self.target() {
             for a in [Act::Restore, Act::Layout, Act::LayoutShips] {
                 v.push(MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(a), action: MenuAction::Act(a) });

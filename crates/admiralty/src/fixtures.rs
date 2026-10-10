@@ -105,6 +105,49 @@ fn pane(pane_id: &str, session: Option<&str>, title: &str, state: &str) -> Pane 
 
 // ------------------------------------------------------------------ fleets
 
+/// MAIN's notes keeper `@KB`, busy: three pending, one claimed (it works on
+/// it now), a dead letter, two senders, and a query answered among the
+/// recent items (the user may read its result).
+fn aide_kb(f: &str) -> Member {
+    use nimitz_core::queue::{ClaimedRow, DeadRow, RecentRow, SenderRow, Status as Q};
+    let id = Id::aide(&Id::admiral(f), "KB");
+    let mut m = member(
+        id.clone(),
+        Status::Busy,
+        &["session file: status busy for 2m", "pinned (jobs/pins.json): the daemon never idle-retires it"],
+        Some(session(&id, "a1de0001", Some(4150), "background", Some("busy"), None, 3600.0, true)),
+    );
+    m.cwd = Some("/home/u/notes/knowledge-base".into());
+    m.parent = Some(Id::admiral(f));
+    let recent = |n: u32, kind: &str, state: &str, sender: &str, age_s: f64, result: Option<serde_json::Value>| RecentRow { id: format!("{n:012}"), kind: kind.into(), state: state.into(), sender: sender.into(), age_s, result };
+    m.inbox = Some(Q {
+        aide: id.0.clone(),
+        pending: 3,
+        claimed: vec![ClaimedRow { id: format!("{:012}", 41), kind: "wiki.note.v1".into(), by: "a1de0001".into(), until: NOW + 420.0, tries: 1 }],
+        done: 12,
+        dead: vec![DeadRow { id: format!("{:012}", 37), kind: "wiki.note.v1".into(), sender: "member MAIN/ARGOS/BOLT".into(), tries: 3, reason: "the page it names has a merge conflict; ingest-auto will not write over it".into() }],
+        oldest_age_s: Some(240.0),
+        lease_until: Some(NOW + 420.0),
+        quarantined: 0,
+        error: None,
+        undelivered: 0,
+        depth_cap: 500,
+        senders: vec![
+            SenderRow { sender: "member MAIN/ARGOS/BOLT".into(), used: 7, limit: 60, window_s: 3600.0, frees_in_s: 1800.0 },
+            SenderRow { sender: "user".into(), used: 2, limit: 60, window_s: 3600.0, frees_in_s: 3000.0 },
+        ],
+        recent: vec![
+            recent(44, "wiki.note.v1", "pending", "member MAIN/ARGOS/BOLT", 60.0, None),
+            recent(43, "wiki.note.v1", "pending", "user", 150.0, None),
+            recent(42, "wiki.note.v1", "pending", "member MAIN/ARGOS/BOLT", 240.0, None),
+            recent(41, "wiki.note.v1", "claimed", "member MAIN/ARGOS/BOLT", 300.0, None),
+            recent(40, "wiki.query.v1", "done", "user", 900.0, Some(serde_json::json!({"answer": "Leases are 15 minutes; a heartbeat past half the lease renews it.", "citations": ["wiki/inbox.md"], "confidence": "high"}))),
+            recent(37, "wiki.note.v1", "dead", "member MAIN/ARGOS/BOLT", 5400.0, None),
+        ],
+    });
+    m
+}
+
 fn fleet_main() -> Fleet {
     let f = "MAIN";
     let mut admiral = member(
@@ -197,7 +240,7 @@ fn fleet_main() -> Fleet {
         dir: "/home/u/.claude-nimitz/main".into(),
         machine: Some("west-mac".into()),
         admiral,
-        aides: vec![],
+        aides: vec![aide_kb(f)],
         squadrons: vec![argos, kits],
         issues: vec![],
     }

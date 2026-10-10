@@ -393,7 +393,7 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
     }
     lines.push(Line::raw(""));
     lines.push(Line::styled("What the icons mean", bold(mono::FG)));
-    let legend: [(&str, Style, &str); 22] = [
+    let legend: [(&str, Style, &str); 23] = [
         (icons.issue, bold(mono::ERROR), "errors (orange) and warnings (yellow); `i` lists them with fixes"),
         (icons.legacy, bold(mono::WARN), "a session of an old fleet-skill fleet; `x` then `d` adopts it"),
         (icons.s_needs, bold(mono::NEEDS), "needs you: waiting at a prompt or a question"),
@@ -408,6 +408,7 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
         (icons.squadron, st(mono::FG), "squadron"),
         (icons.commodore, bold(mono::STRONG), "commodore"),
         (icons.ship, st(mono::FG), "ship"),
+        (icons.aide, st(mono::FG), "aide: always on, works its inbox; its row shows the queue (pink: a dead letter, yellow: a backlog, green: working)"),
         (icons.crew, st(mono::BUSY), "crew: a sub-agent inside a session"),
         (icons.teammate, st(mono::BUSY), "teammate"),
         (icons.stowaway, bold(mono::WARN), "stowaway: a session in fleet scope with no labels"),
@@ -710,6 +711,60 @@ fn draw_form(f: &mut Frame, area: Rect, form: &Form) {
 /// For tests: the plain text of a line.
 pub fn plain(l: &Line) -> String {
     l.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// A line with 24-bit ANSI colour (what `dump --ansi` prints), reset at its end.
+pub fn ansi(l: &Line) -> String {
+    let mut out = String::new();
+    for sp in &l.spans {
+        out.push_str(&sgr(l.style.patch(sp.style)));
+        out.push_str(&sp.content);
+    }
+    out.push_str("\u{1b}[0m");
+    out
+}
+
+/// A drawn screen, a line per row: its symbols, or (`colour`) with ANSI SGR
+/// codes wherever a cell's style changes.
+pub fn screen_lines(buf: &ratatui::buffer::Buffer, colour: bool) -> Vec<String> {
+    let a = buf.area;
+    (0..a.height)
+        .map(|y| {
+            let mut out = String::new();
+            let mut last: Option<Style> = None;
+            for x in 0..a.width {
+                let c = &buf[(x, y)];
+                let style = Style::new().fg(c.fg).bg(c.bg).add_modifier(c.modifier);
+                if colour && last != Some(style) {
+                    out.push_str(&sgr(style));
+                    last = Some(style);
+                }
+                out.push_str(c.symbol());
+            }
+            if colour {
+                out.push_str("\u{1b}[0m");
+            }
+            out
+        })
+        .collect()
+}
+
+/// The SGR sequence for `s` (a reset first, then its colours and weight).
+fn sgr(s: Style) -> String {
+    let mut codes = vec!["0".to_string()];
+    let rgb = |c: Option<ratatui::style::Color>, base: u8| match c {
+        Some(ratatui::style::Color::Rgb(r, g, b)) => Some(format!("{base};2;{r};{g};{b}")),
+        _ => None,
+    };
+    codes.extend(rgb(s.fg, 38));
+    codes.extend(rgb(s.bg, 48));
+    let m = s.add_modifier;
+    for (bit, code) in [(Modifier::BOLD, "1"), (Modifier::DIM, "2"), (Modifier::ITALIC, "3"), (Modifier::UNDERLINED, "4"), (Modifier::REVERSED, "7")] {
+        if m.contains(bit) {
+            codes.push(code.into());
+        }
+    }
+    format!("\u{1b}[{}m", codes.join(";"))
 }
 
 /// For tests: a style is bold.

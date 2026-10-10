@@ -14,6 +14,9 @@ use admiralty::{fixtures, frames, render, run};
 const USAGE: &str = "usage:
   admiralty [--sandbox DIR | --demo | --demo-monitor | --fixture FILE] [--interval SECS] [--exit-after-jump]
   admiralty dump [--width N] [--sandbox DIR | --demo | --fixture FILE]   the list as plain text
+       [--ansi]                     with its colours (24-bit ANSI)
+       [--height N]                 the whole screen N rows tall, as the TUI draws it
+       [--select ID [--detail]]     the cursor on a row (`MAIN/@KB` or a row id `M:MAIN/@KB`), its detail panel open
   admiralty sandbox create [--herdr]|env DIR                             a fake world (fake claude, optional fake herdr)
 
 env: NIMITZ_HOME, NIMITZ_STATE, NIMITZ_CLAUDE_HOME, NIMITZ_MUX ... (contracts.md section 2),
@@ -43,6 +46,7 @@ fn main() -> ExitCode {
     let mut vars: HashMap<String, String> = std::env::vars().collect();
     let mut dump = false;
     let mut width = 160u16;
+    let (mut ansi, mut height, mut select, mut detail): (bool, Option<u16>, Option<String>, bool) = (false, None, None, false);
     let mut interval = 2.0f64;
     let mut source = Source::Core;
     let mut exit_after_jump = ["ADMIRALTY_WATCH_EXIT_AFTER_JUMP", "ADMIRALTY_EXIT_AFTER_JUMP"].iter().any(|k| vars.get(*k).map(|v| v == "1").unwrap_or(false));
@@ -50,16 +54,20 @@ fn main() -> ExitCode {
     while i < args.len() {
         match args[i].as_str() {
             "dump" => dump = true,
+            "--ansi" => ansi = true,
+            "--detail" => detail = true,
             "--exit-after-jump" => exit_after_jump = true,
             "--demo" => source = Source::Fixture(fixtures::demo()),
             "--demo-monitor" => source = Source::Fixture(fixtures::demo_monitor_only()),
-            "--interval" | "--width" | "--fixture" | "--sandbox" => {
+            "--interval" | "--width" | "--height" | "--select" | "--fixture" | "--sandbox" => {
                 let flag = args[i].clone();
                 i += 1;
                 let Some(v) = args.get(i) else { return fail(&format!("{flag} needs a value")) };
                 match flag.as_str() {
                     "--interval" => interval = v.parse().unwrap_or(2.0),
                     "--width" => width = v.parse().unwrap_or(160),
+                    "--height" => height = v.parse().ok(),
+                    "--select" => select = Some(v.clone()),
                     "--fixture" => match load_fixture_file(&PathBuf::from(v)) {
                         Ok(b) => source = Source::Fixture(b),
                         Err(e) => return fail(&e),
@@ -111,8 +119,26 @@ fn main() -> ExitCode {
     if dump {
         let mut src = make();
         app.apply(src.load());
+        if let Some(id) = &select {
+            let row = if id.contains(':') { id.clone() } else { format!("M:{id}") };
+            if !app.goto_id(&row) {
+                return fail(&format!("no row {row} to select"));
+            }
+        }
+        // the whole screen: a height asked for, or a detail panel (it floats over the list)
+        if height.is_some() || detail {
+            app.detail_open = detail;
+            let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height.unwrap_or(48))).expect("a test terminal");
+            if let Err(e) = term.draw(|f| render::draw(&mut app, f)) {
+                return fail(&e.to_string());
+            }
+            for l in render::screen_lines(term.backend().buffer(), ansi) {
+                println!("{l}");
+            }
+            return ExitCode::SUCCESS;
+        }
         for (l, _) in frames::frame_lines(&app.rows, width, usize::MAX, app.icons) {
-            println!("{}", render::plain(&l));
+            println!("{}", if ansi { render::ansi(&l) } else { render::plain(&l) });
         }
         return ExitCode::SUCCESS;
     }
