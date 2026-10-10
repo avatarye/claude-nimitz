@@ -959,6 +959,31 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
     // nightly Claude Code update never stops a fleet (0.3.2).
 }
 
+/// For the user, a member folder Claude Code will not trust is no refusal:
+/// the plan trusts it first (`trust::step`, which says what that lets run).
+/// A member caller keeps the refusal (or the warning); its fix, `nimitz
+/// trust`, is the user's.
+fn trust_first(env: &Env, plan: &mut Plan, snap: &Snapshot, caller: &Caller) {
+    if *caller != Caller::User {
+        return;
+    }
+    let mut steps: Vec<Step> = vec![];
+    let mut take = |issues: &mut Vec<Issue>| {
+        issues.retain(|i| {
+            let dir = (i.code == "folder.untrusted").then(|| i.id.as_ref().and_then(|id| member(snap, id)).and_then(|(_, m)| m.cwd.clone())).flatten();
+            let Some(dir) = dir else { return true };
+            let s = crate::trust::step(env, i.id.clone(), std::path::Path::new(&dir));
+            if !steps.iter().any(|x| x.cmd == s.cmd) {
+                steps.push(s);
+            }
+            false
+        })
+    };
+    take(&mut plan.refusals);
+    take(&mut plan.warnings);
+    plan.steps.splice(0..0, steps);
+}
+
 /// The flags of `nimitz start`: `--force` (a cold launch over a broken
 /// lineage or an untested Claude Code), `--fresh` (a cold launch that starts
 /// a new lineage entry, the fix for `history.lost`).
@@ -984,6 +1009,7 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
         return plan;
     }
     gate(env, &mut plan, snap, Some(id), force);
+    trust_first(env, &mut plan, snap, caller);
     // `--fresh` starts over: not under a live job (that would make two)
     if opts.fresh && member(snap, id).map(|(_, m)| m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)).unwrap_or(false) {
         refuse(
@@ -1799,7 +1825,7 @@ fn classify(step: &Step) -> Kind {
     let c: Vec<&str> = step.cmd.iter().map(String::as_str).collect();
     match c.as_slice() {
         ["bind", ..] => Kind::Bind,
-        ["mkdir", _] | ["write", _, _] | ["archive", _] => Kind::Config,
+        ["mkdir", _] | ["write", _, _] | ["archive", _] | ["trust", _] => Kind::Config,
         [_, "stop", short] => Kind::Stop { short: short.to_string() },
         [_, "rm", short] => Kind::Rm { short: short.to_string() },
         _ if !step.cmd.contains(&"--bg".to_string()) => Kind::Other,

@@ -18,7 +18,7 @@ fn below(member: &Id, target: Option<&Id>) -> bool {
 }
 
 /// The trust file next to Claude Code's home (`~/.claude` -> `~/.claude.json`).
-fn trust_file(env: &Env) -> std::path::PathBuf {
+pub(crate) fn trust_file(env: &Env) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.json", env.claude_home.display()))
 }
 
@@ -140,8 +140,13 @@ fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
 /// inside a git repository asks about its root. Also used when a launch fails
 /// with "Workspace not trusted".
 pub fn untrusted_fix(dir: &Path) -> String {
-    let at = crate::env::git_root(dir).unwrap_or_else(|| crate::env::canon(dir));
-    format!("run `claude` once in {} and accept the trust prompt", at.display())
+    crate::trust::fix(dir)
+}
+
+/// `trust_issue`'s verdict for a folder alone (no member): Error, Warn or
+/// trusted (None). For `trust::untrusted`.
+pub(crate) fn trust_verdict(env: &Env, dir: &Path) -> Option<Severity> {
+    trust_issue(env, &Id(String::new()), dir).map(|i| i.severity)
 }
 
 /// `folder.missing` / `folder.untrusted` for a member's folder, if either applies.
@@ -493,7 +498,7 @@ pub(crate) mod tests {
         set(&[&home]);
         let i = folder_issue(&env, &id, wt.join("src").to_str().unwrap()).expect("home trust does not cover a git root");
         assert_eq!(i.code, "folder.untrusted");
-        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt", wt.display()).as_str()));
+        assert_eq!(i.fix.as_deref(), Some(format!("nimitz trust {}", wt.display()).as_str()));
         set(&[&wt]);
         assert!(folder_issue(&env, &id, wt.join("src").to_str().unwrap()).is_none());
         // outside git, the home's trust still covers it
@@ -535,7 +540,7 @@ pub(crate) mod tests {
         let i = folder_issue(&env, &id, ship.to_str().unwrap()).expect("the old runs do not cover the new repository");
         assert_eq!((i.code.as_str(), i.severity), ("folder.untrusted", Severity::Warn));
         assert!(i.message.contains("git repository"), "{}", i.message);
-        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt", ship.display()).as_str()));
+        assert_eq!(i.fix.as_deref(), Some(format!("nimitz trust {}", ship.display()).as_str()));
         // (this needs birth times; without them the old answer, "ran here", stands)
         assert!(crate::env::git_birth(&ship).is_some(), "the test file system keeps no birth time");
         // a later write to the old transcript is no proof either: only a start is

@@ -31,3 +31,4 @@ pub mod rules;
 pub mod sandbox;
 pub mod sessions;
 pub mod snapshot;
+pub mod trust;
