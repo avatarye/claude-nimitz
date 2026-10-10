@@ -249,15 +249,41 @@ pub fn write(env: &Env, n: &Notice) -> std::io::Result<()> {
 
 /// Write `n`'s file only if there is none: the whole file under a temp name,
 /// then a hard link to its own (fails when the file exists: O_EXCL's rule,
-/// with no half-written file ever seen).
+/// with no half-written file ever seen). Where the file system has no hard
+/// links (exFAT, some SMB shares): `create_new` (O_EXCL itself) and a write.
 fn create(env: &Env, n: &Notice) -> std::io::Result<()> {
     let p = path(env, &n.key());
     std::fs::create_dir_all(dir(env))?;
-    let tmp = p.with_extension(format!("new{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_vec_pretty(n).unwrap_or_default())?;
+    let body = serde_json::to_vec_pretty(n).unwrap_or_default();
+    let mut salt = [0u8; 8];
+    let _ = crate::os::random(&mut salt);
+    let tmp = p.with_extension(format!("new{}-{}", std::process::id(), u64::from_le_bytes(salt)));
+    std::fs::write(&tmp, &body)?;
     let r = std::fs::hard_link(&tmp, &p);
     let _ = std::fs::remove_file(&tmp);
-    r
+    match r {
+        Err(e) if no_hard_links(&e) => create_new(&p, &body),
+        r => r,
+    }
+}
+
+/// A hard link the file system does not support (not one that exists already).
+fn no_hard_links(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::Unsupported || matches!(e.raw_os_error(), Some(code) if UNSUPPORTED_LINK.contains(&code))
+}
+
+/// EPERM, ENOTSUP/EOPNOTSUPP, EXDEV, EMLINK (Linux, macOS), and Windows'
+/// ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION: no hard link here.
+#[cfg(unix)]
+const UNSUPPORTED_LINK: [i32; 6] = [libc::EPERM, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EXDEV, libc::EMLINK, libc::ENOSYS];
+#[cfg(windows)]
+const UNSUPPORTED_LINK: [i32; 2] = [50, 1];
+
+/// `body` into a file that must not exist yet (O_EXCL).
+fn create_new(p: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(p)?;
+    f.write_all(body)
 }
 
 /// Record a notice unless it repeats the one on file. Returns the notice to deliver.
@@ -415,6 +441,13 @@ mod tests {
         assert!(a ^ b, "exactly one of two concurrent records wins");
         assert!(record(&env, dead_letter(&Id("MAIN/@KB".into()), &d)).is_none(), "told once");
         assert_eq!(std::fs::read_dir(dir(&env)).unwrap().count(), 1, "no temp file left");
+        // where the file system has no hard links: create_new, once
+        let other = dir(&env).join("fallback.json");
+        assert!(create_new(&other, b"{}").is_ok());
+        assert_eq!(create_new(&other, b"{}").unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        let _ = std::fs::remove_file(&other);
+        assert!(no_hard_links(&std::io::Error::from(std::io::ErrorKind::Unsupported)));
+        assert!(!no_hard_links(&std::io::Error::from(std::io::ErrorKind::AlreadyExists)), "an existing file is the answer, not a fallback");
         // the aide's own question does not replace it, and its next prompt does not clear it
         record(&env, n).unwrap();
         clear(&env, "MAIN/@KB", Some("s1"));

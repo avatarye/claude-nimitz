@@ -182,7 +182,7 @@ queues/HOME%2F@KB/
 | `inbox list <aide> [--state ...]` / `inbox status [<aide>]` | anyone (read-only) | depths, the oldest age, the claimed item and its lease, dead items with their reason |
 | `inbox retry <aide> <id>` / `inbox drop <aide> <id>` | the user, the parent | dead -> pending (tries reset) / dead or pending -> removed (kept in `dead/dropped/`) |
 | `inbox result <aide> <id> [--token T] [--wait D]` | **the requester only** (4.6), the user | the item's state and, once done, its result; `--wait` blocks until done or dead |
-| `ask <aide> "<question>" [--scope S] [--length short\|medium\|long] [--wait D \| --no-wait]` | by the policy | posts a `wiki.query.v1` and waits (2 minutes unless `--wait`) for the answer and prints it (exit 0), or exits 5 at the timeout with the id and the token to fetch it later; `--no-wait` returns at once (exit 5) |
+| `ask <aide> "<question>" [--scope S] [--length short\|medium\|long] [--wait D \| --no-wait]` | by the policy | posts a `wiki.query.v1`, prints its handle to stderr at once (`asked HOME/@REF item 42; token <t>; later: nimitz inbox result HOME/@REF 42 --token <t>`), then waits (100 s unless `--wait`) for the answer and prints it (exit 0), or exits 5 at the timeout with the id and the token to fetch it later; `--no-wait` returns at once (exit 5) |
 
 - A **lease expiry** is applied by every queue operation and by `check`: a
   claimed item past `until` goes back to pending ("expired" in history). Its
@@ -319,12 +319,14 @@ FIFO, lease, tries and dead letters.
   subreaper) never is. (Detection looks at the parent alone: a heuristic, enough for a
   caller limited to `Bash(nimitz *)`, which cannot wrap the command.)
 
-**`nimitz ask`** posts, keeps the token in memory and polls the item file
-(every 500 ms; the queue lock is not held between polls) until it is done
-(print the answer, exit 0), dead (print the reason, exit 6) or the timeout
-(print the id and the token, exit 5). An agent's Bash call gets the answer
-synchronously, and nothing else gets it. `--wait` defaults to 2 minutes and
-is capped at 10 (a Bash call's own timeout).
+**`nimitz ask`** posts, prints its handle (the item id and the token, with
+the `inbox result` command that reads it later) to stderr at once, then
+polls the item file (every 500 ms; the queue lock is not held between polls)
+until it is done (print the answer, exit 0), dead (print the reason, exit 6)
+or the timeout (print the id and the token, exit 5). An agent's Bash call
+gets the answer synchronously, and nothing else gets it. `--wait` defaults to
+100 s, under Claude Code's own 120 s Bash timeout (a call killed while it
+waits still printed its handle), and is capped at 10 minutes.
 
 **A requester that has gone:** the result stays in `done/` until `keep_done`
 (7 days), readable with the token or by the same member; there is no
@@ -437,7 +439,11 @@ answer and nimitz delivers it (4.6).
   set model in [[aide]]". Today's list allows it (`opus`, `sonnet`, `fable`).
 - **Permissions** (in `--settings`, so `respawnFlags` keep them):
   - `Bash(nimitz *)`, as every member has;
-  - `Bash(git -C <repo> *)` and `Bash(git *)` in its folder;
+  - git only as `git -C <its folder> <sub>`, for the subcommands an ingest
+    needs (status, add, commit, log, diff, show, rev-parse, ls-files, grep,
+    `restore --staged`); push, remote, fetch, pull, clone, config and
+    submodule denied in any form (`claude::AIDE_GIT_ALLOW`, `AIDE_GIT_DENY`:
+    a user's own `Bash(git *)` does not reach an aide);
   - Edit and Write within the repo (`acceptEdits` in its folder).
   - Nothing else is pre-allowed: a payload that talks it into `curl` or a write
     outside the repo hits a prompt, and the prompt becomes a needs-you, not an
@@ -689,11 +695,11 @@ From the port's commits (7dd6984 .. 0145dfc):
 | Phase | What | Tests |
 | --- | --- | --- |
 | S1 | `queue.rs` and the CLI: post, claim, heartbeat, done, fail, list, status, retry, drop; types registry with `wiki.note.v1` and `wiki.query.v1`; locks, leases, dead letters, depth and rate limits, sender detection; request and reply: the reply address, tokens, `inbox result`, `nimitz ask --wait`, delivery at `done`; `inbox status --json`, the structured summary Admiralty and `status` read | unit (FIFO under concurrency, lease expiry, at-least-once, caps, rate, who may read a result), sandbox CLI, the role table |
-| S2 | The aide: `@` ids, `Role::Aide`, `[[aide]]` config and `aide new\|set\|rm`, labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (aide text and the loop); **Admiralty aide rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the aide exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
-| S3 | The doorbell (ring and coalesce), the SessionStart context (with the 15-minute cron request), the piggyback timer, needs-you for dead letters and prompts | sandbox (rings, coalescing, piggyback), notify tests, Admiralty snapshots |
+| S2 | The aide: `@` ids, `Role::Aide`, `[[aide]]` config (edited by hand: `brief` is accepted but unused until S4; `snapshot = true` refused until S4b), labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (aide text and the loop); needs-you for an aide's prompts and its dead letters (from S3); **Admiralty aide rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the aide exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
+| S3 | The doorbell (ring and coalesce), the SessionStart context (with the 15-minute cron request), the piggyback timer | sandbox (rings, coalescing, piggyback), notify tests, Admiralty snapshots |
 | S4 | `HOME/@KB` live: the repo and `ingest-auto` (MYCC_DEV), the brief, the git-commit idempotency | real-CC e2e on a throwaway repo: post -> commit; kill mid-item -> one commit only; `/clear` -> drains again |
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
-| S5 | Other parents (`always_on`, ring-to-start) | sandbox |
+| S5 | Other parents (`always_on`, ring-to-start); `aide new\|set\|rm` (moved from S2: until then `[[aide]]` is edited in fleet.toml) | sandbox, the role table |
 
 Carried from the S1 review into later phases:
 

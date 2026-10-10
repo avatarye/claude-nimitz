@@ -353,6 +353,10 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         if let Err(e) = crate::queue::Limits::from_def(&a.inbox) {
             out.push(inv(format!("aide {aid}: [aide.inbox] {e}"), Some(aid.clone())));
         }
+        // (no worktree yet: a reader would work in the writer's live folder)
+        if a.snapshot {
+            out.push(inv(format!("aide {aid}: the read-only snapshot aide comes in S4b; leave snapshot unset for now"), Some(aid.clone())));
+        }
         for label in a.dirs.keys() {
             if !c.machines.contains_key(label) {
                 out.push(inv(format!("aide {aid}: machine label {label:?} is not in fleet.toml [machines]"), Some(aid.clone())));
@@ -525,7 +529,7 @@ pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
         Role::Aide => {
             let label = f.machine.as_ref()?;
             let d = find_aide(f, id)?.dirs.get(label)?;
-            Some(expand_dir(d)).map(|p| p.canonicalize().unwrap_or(p))
+            Some(expand_dir(d)).map(|p| crate::os::canonical(&p).unwrap_or(p))
         }
     }
 }
@@ -1399,6 +1403,10 @@ pub(crate) mod tests {
         let issues = validate(&env, &bad);
         assert!(issues.iter().all(|i| i.code == "config.invalid" && i.severity == Severity::Error), "{issues:?}");
         let msgs = issues.iter().map(|i| i.message.as_str()).collect::<Vec<_>>().join("\n");
+        let mut snap = f.clone();
+        snap.config.aide[0].snapshot = true;
+        let s = validate(&env, &snap);
+        assert!(s.iter().any(|i| i.code == "config.invalid" && i.severity == Severity::Error && i.message.contains("snapshot aide comes in S4b; leave snapshot unset")), "{s:?}");
         for want in ["aide name \"kb\"", "aide \"KB\" is defined twice", "unknown inbox type \"no.such.v1\"", "\"nowhere\" is not in fleet.toml", "per_sender \"lots\""] {
             assert!(msgs.contains(want), "missing {want:?} in {msgs}");
         }

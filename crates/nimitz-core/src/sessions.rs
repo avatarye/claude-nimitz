@@ -513,6 +513,18 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
             _ => false,
         },
         Some("fleet") => w.get(2) == Some(&"set") && id_at(3).is_some_and(|t| in_fleet(&t)),
+        // an aide's inbox (aide.md section 7): its own claim, heartbeat, done
+        // and fail; a dead letter's retry or drop its parent's; list, status
+        // and result anyone's; a post or an ask by the inbox's policy (judged
+        // when it runs), never an aide's to itself
+        Some("inbox") => match (w.get(2).copied(), id_at(3)) {
+            (Some("claim" | "heartbeat" | "done" | "fail"), Some(t)) => t == *me,
+            (Some("retry" | "drop"), Some(t)) => t.role() == Role::Aide && t.parent().as_ref() == Some(me),
+            (Some("post"), Some(t)) => t != *me,
+            (Some("list" | "status" | "result"), _) => true,
+            _ => false,
+        },
+        Some("ask") => id_at(2).is_some_and(|t| t != *me),
         _ => false,
     }
 }
@@ -2792,6 +2804,14 @@ mod tests {
         assert!(!may_run(&aide, "nimitz start F/@KB") && !may_run(&aide, "nimitz stop F/@KB") && !may_run(&aide, "nimitz start F/@KB --only -f"));
         assert!(may_run(&admiral, "nimitz start F/@KB") && may_run(&admiral, "nimitz stop F/@KB"));
         assert!(may_run(&aide, "nimitz signal F hi") && !may_run(&aide, "nimitz signal F/SQ hi"));
+        // the inbox: the aide works its own; the admiral repairs its aide's dead letters
+        assert!(may_run(&admiral, "nimitz inbox retry F/@KB 17") && may_run(&admiral, "nimitz inbox drop F/@KB 17  # or retry"));
+        assert!(!may_run(&admiral, "nimitz inbox retry G/@KB 17") && !may_run(&own, "nimitz inbox retry F/@KB 17") && !may_run(&aide, "nimitz inbox retry F/@KB 17"));
+        assert!(may_run(&aide, "nimitz inbox claim F/@KB") && may_run(&aide, "nimitz inbox done F/@KB 3 --result {}") && !may_run(&admiral, "nimitz inbox claim F/@KB"));
+        assert!(!may_run(&aide, "nimitz inbox claim F/@REF"), "not another aide's");
+        assert!(may_run(&a_ship, "nimitz inbox post F/@KB --type wiki.note.v1") && !may_run(&aide, "nimitz inbox post F/@KB --type x") && may_run(&aide, "nimitz inbox post F/@REF --type x"));
+        assert!(may_run(&a_ship, "nimitz inbox list F/@KB") && may_run(&a_ship, "nimitz inbox status") && may_run(&a_ship, "nimitz inbox result F/@REF 4"));
+        assert!(may_run(&a_ship, "nimitz ask F/@REF q") && !may_run(&Caller::Member { id: Id("F/@REF".into()), role: Role::Aide }, "nimitz ask F/@REF q"));
     }
 
     #[test]

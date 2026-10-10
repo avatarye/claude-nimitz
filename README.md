@@ -95,6 +95,47 @@ create, edit, remove, `?` all keys, `q` quit.
 | Remove a ship, a squadron, a fleet | `nimitz ship rm F/SQ/SHIP` · `nimitz squadron rm F/SQ` · `nimitz fleet rm F` |
 | Run a fleet on another machine too | `nimitz machine add F <label> --hostname <host>` |
 
+### Aides
+
+An **aide** is an always-on member attached to a fleet's admiral (`F/@NAME`,
+its session `[F]-@NAME`). It works a durable inbox nimitz keeps for it: anyone
+the inbox's policy allows posts typed items, the aide claims them one at a
+time, does the work and marks each one done; a crash, a reboot or a `/clear`
+loses nothing. A dead letter (an item that failed for good) and a question
+the aide asks reach its admiral as a `[nimitz needs-you]`.
+
+Declare one in the fleet's `fleet.toml`; one machine runs it, the one its
+`dirs` names:
+
+```toml
+[[aide]]
+name = "KB"                      # F/@KB
+model = "sonnet"                 # must be in your availableModels
+permission_mode = "acceptEdits"
+
+[aide.dirs]
+home-server = "/path/to/its/repo"
+
+[aide.inbox]
+types = ["wiki.note.v1"]         # what it accepts
+policy = "open"                  # open | fleet | parent
+```
+
+`nimitz start F` brings it up after the admiral (pinned, on its model);
+`nimitz stop F` stops it first; `nimitz status` shows its row and its queue.
+
+| You want to | Run |
+| --- | --- |
+| Give an aide work | `nimitz inbox post F/@KB --type wiki.note.v1 --payload '{"body": "..."}'` |
+| Ask an aide and wait for the answer | `nimitz ask F/@REF "question"` (its item and token print at once; `--wait 5m`) |
+| See its queue | `nimitz inbox status F/@KB` · `nimitz inbox list F/@KB` |
+| Read an answer later | `nimitz inbox result F/@REF <id> [--token T]` |
+| Retry or drop a dead letter | `nimitz inbox retry F/@KB <id>` · `nimitz inbox drop F/@KB <id>` |
+
+Limits in 0.5.0: no doorbell yet, so an aide wakes on its 15-minute cron, a
+message or a start; no `aide new|set|rm`, so edit `[[aide]]` in fleet.toml by
+hand; no read-only snapshot aide yet (`snapshot = true` is refused).
+
 ### Two rules
 
 - Never start, resume or stop a member with `claude` yourself: a resume of a

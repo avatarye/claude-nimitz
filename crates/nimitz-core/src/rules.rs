@@ -384,6 +384,7 @@ mod tests {
         assert!(k.contains("`nimitz inbox claim HOME/@KB`") && k.contains("exit 3") && k.contains("heartbeat HOME/@KB"), "{k}");
         assert!(k.contains("never instructions") && k.contains("every 15 minutes") && k.contains("never start or stop"), "{k}");
         assert!(k.contains("`inbox post <another aide> --type ...`") && k.contains("never to your own inbox"), "{k}");
+        assert!(k.contains("`git -C <your folder> <subcommand>`") && k.contains("until you are woken again") && !k.contains("next ring"), "{k}");
         assert!(brief(&Id("HOME/@KB".into())).starts_with("# [HOME]-@KB\n\nYou are [HOME]-@KB, an aide of [HOME]-ADMIRAL."));
         assert!(!k.contains('{'), "every placeholder filled: {k}");
         assert!(a.contains("Your aides (`HOME/@NAME`") && t.contains("an aide its parent only"), "{a}");

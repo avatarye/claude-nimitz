@@ -163,20 +163,31 @@ pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
 /// table in `sessions::may_run` decides what each role may do with it).
 pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 
+/// The git subcommands a writer aide runs in its folder (`git -C <folder>
+/// <sub>`) with no prompt: what an ingest needs, nothing that leaves the machine.
+pub const AIDE_GIT_ALLOW: [&str; 10] = ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "grep", "restore --staged"];
+/// Git that reaches another machine or rewrites the repo's setup: denied in
+/// any form (a user's own `Bash(git *)` allow does not reach an aide).
+pub const AIDE_GIT_DENY: [&str; 7] = ["push", "remote", "fetch", "pull", "clone", "config", "submodule"];
+
 /// An aide's permissions (docs/design/aide.md 6.2, 6.4): (allow, deny).
-/// Every aide may run `nimitz`; a writer git in its folder (its edits come
-/// from its permission mode); a snapshot reader may not edit at all.
+/// Every aide may run `nimitz`; a writer the `AIDE_GIT_ALLOW` subcommands as
+/// `git -C <its folder> ...` (its edits come from its permission mode), never
+/// the `AIDE_GIT_DENY` ones; a snapshot reader may not edit at all. Anything
+/// else prompts, and a prompt is a needs-you, not an action.
 fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
     let mut allow = vec![NIMITZ_ALLOW.to_string()];
-    let Ok((f, def)) = crate::queue::find(env, id) else { return (allow, vec![]) };
+    let mut deny: Vec<String> = AIDE_GIT_DENY.iter().flat_map(|s| [format!("Bash(git {s})"), format!("Bash(git {s} *)"), format!("Bash(git -C * {s})"), format!("Bash(git -C * {s} *)")]).collect();
+    let Ok((f, def)) = crate::queue::find(env, id) else { return (allow, deny) };
     if def.snapshot {
-        return (allow, ["Edit", "Write", "NotebookEdit"].map(String::from).to_vec());
+        deny.extend(["Edit", "Write", "NotebookEdit"].map(String::from));
+        return (allow, deny);
     }
     if let Some(dir) = crate::config::member_dir(env, &f, id) {
-        allow.push(format!("Bash(git -C {} *)", dir.display()));
-        allow.push("Bash(git *)".to_string());
+        let dir = dir.display();
+        allow.extend(AIDE_GIT_ALLOW.iter().flat_map(|s| [format!("Bash(git -C {dir} {s})"), format!("Bash(git -C {dir} {s} *)")]));
     }
-    (allow, vec![])
+    (allow, deny)
 }
 
 /// `--settings` JSON: the labels as env, `permissions.allow` for `nimitz`
@@ -225,10 +236,15 @@ fn model_args(env: &Env, id: &Id) -> Vec<String> {
 /// any (no limit). Claude Code silently swaps a model that is not allowed
 /// for the default, so an aide's model is checked against this first.
 pub fn available_models(env: &Env) -> Option<Vec<String>> {
-    let managed = ["/etc/claude-code/managed-settings.json", "/Library/Application Support/ClaudeCode/managed-settings.json"];
-    let files: Vec<std::path::PathBuf> = managed.iter().map(std::path::PathBuf::from).chain([env.claude_home.join("settings.json")]).collect();
+    let files: Vec<std::path::PathBuf> = MANAGED_SETTINGS.iter().map(std::path::PathBuf::from).chain([env.claude_home.join("settings.json")]).collect();
     models_in(&files)
 }
+
+/// Where managed settings live on this OS (the first that exists wins).
+#[cfg(windows)]
+pub const MANAGED_SETTINGS: [&str; 1] = [r"C:\Program Files\ClaudeCode\managed-settings.json"];
+#[cfg(not(windows))]
+pub const MANAGED_SETTINGS: [&str; 2] = ["/etc/claude-code/managed-settings.json", "/Library/Application Support/ClaudeCode/managed-settings.json"];
 
 /// Does `allowed` (an `availableModels` list) let `model` run? An exact
 /// match (any case) always; a family name (`sonnet`, `opus`, `haiku`: no
@@ -452,8 +468,23 @@ mod tests {
         // permissions: a writer may run git in its folder; a snapshot reader may not edit
         let perms = |id: &Id| serde_json::from_str::<serde_json::Value>(&settings_json(&env, id, true)).unwrap()["permissions"].clone();
         let real = repo.canonicalize().unwrap();
-        assert_eq!(perms(&kb), serde_json::json!({"allow": [NIMITZ_ALLOW, format!("Bash(git -C {} *)", real.display()), "Bash(git *)"]}));
-        assert_eq!(perms(&Id("MAIN/@REF".into())), serde_json::json!({"allow": [NIMITZ_ALLOW], "deny": ["Edit", "Write", "NotebookEdit"]}));
+        let p = perms(&kb);
+        let list = |k: &str| p[k].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
+        let (allow, deny) = (list("allow"), list("deny"));
+        assert_eq!(allow[0], NIMITZ_ALLOW);
+        for sub in ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "grep", "restore --staged"] {
+            assert!(allow.contains(&format!("Bash(git -C {} {sub})", real.display())) && allow.contains(&format!("Bash(git -C {} {sub} *)", real.display())), "{sub}: {allow:?}");
+        }
+        assert_eq!(allow.len(), 21, "nothing else: {allow:?}");
+        assert!(!allow.iter().any(|a| a == "Bash(git *)" || a.contains("push")), "no git outside the list: {allow:?}");
+        for sub in ["push", "remote", "fetch", "pull", "clone", "config", "submodule"] {
+            for form in [format!("Bash(git {sub})"), format!("Bash(git {sub} *)"), format!("Bash(git -C * {sub})"), format!("Bash(git -C * {sub} *)")] {
+                assert!(deny.contains(&form), "{form}: {deny:?}");
+            }
+        }
+        let r = perms(&Id("MAIN/@REF".into()));
+        assert_eq!(r["allow"], serde_json::json!([NIMITZ_ALLOW]));
+        assert!(["Edit", "Write", "NotebookEdit", "Bash(git push *)"].iter().all(|d| r["deny"].as_array().unwrap().iter().any(|x| x == d)), "{r}");
         assert_eq!(perms(&Id::admiral("MAIN")), serde_json::json!({"allow": [NIMITZ_ALLOW]}));
     }
 

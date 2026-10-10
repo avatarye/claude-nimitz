@@ -98,7 +98,8 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   inbox list|status [<F/@S>]       the queue (others' payloads hidden); status --json is what Admiralty reads
   inbox retry|drop <F/@S> <item>   a dead letter back to pending, or removed (the user's, or the aide's parent's)
   inbox result <F/@S> <item>       the answer to your request [--token T] [--wait D] (exit 5: not yet, 6: dead)
-  ask <F/@S> <question>            post a wiki.query.v1 and wait for the answer [--wait 2m, at most 10m] [--scope S] [--length L]
+  ask <F/@S> <question>            post a wiki.query.v1 and wait for the answer [--wait D: 100s by default, at most 10m] [--scope S] [--length L]
+                                   (its item and token go to stderr at once: `nimitz inbox result` picks the answer up later)
   migrate fleet-skill <dir...> --into <F>
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
   sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)

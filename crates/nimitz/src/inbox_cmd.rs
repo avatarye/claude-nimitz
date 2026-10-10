@@ -14,8 +14,10 @@ use nimitz_core::types::Id;
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-/// The default and the cap of `--wait` (aide.md 4.6).
-const WAIT_DEFAULT: f64 = 120.0;
+/// The default and the cap of `--wait` (aide.md 4.6): the default stays
+/// under Claude Code's own 120 s Bash timeout, so an agent's `ask` returns
+/// before its shell is killed.
+const WAIT_DEFAULT: f64 = 100.0;
 const WAIT_MAX: f64 = 600.0;
 
 fn refuse(r: &Refusal) -> i32 {
@@ -470,6 +472,12 @@ pub fn ask(ctx: &Ctx) -> Result<i32, String> {
         let t = now();
         // while `ask` waits, the answer comes back here, not as a peer message too
         let posted = q.post(&s, "wiki.query.v1", &p, None, wait.map(|w| t + w), t)?;
+        // the handle first, on stderr: a caller killed while it waits (a Bash
+        // timeout) still has its item and its token
+        if let Some(tok) = &posted.token {
+            let n = posted.id.trim_start_matches('0');
+            eprintln!("asked {} item {n}; token {tok}; later: nimitz inbox result {} {n} --token {tok}", q.aide, q.aide);
+        }
         let Some(wait) = wait else {
             posted_line(&q, &posted);
             return Ok(5);

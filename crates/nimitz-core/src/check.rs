@@ -238,8 +238,9 @@ pub fn folder_issue_in(env: &Env, cache: &mut TrustCache, id: &Id, cwd: &str) ->
 /// the machine that runs it (its `dirs` names this one) has no live job of
 /// it (an error while its parent runs; Info when the parent is down too: a
 /// `stop F` stops both on purpose), `aide.unpinned` when its live job is not pinned (the daemon would
-/// idle-retire it), `aide.model` when the account's `availableModels` leave
-/// its model out (Claude Code would silently run the default instead).
+/// idle-retire it), `aide.model` when, on the machine that runs it, the
+/// account's `availableModels` leave its model out (Claude Code would
+/// silently run the default instead).
 pub fn aide_issues(env: &Env, m: &Member, here: bool, parent_live: bool) -> Vec<Issue> {
     let mut out = vec![];
     let id = &m.id;
@@ -267,7 +268,8 @@ pub fn aide_issues(env: &Env, m: &Member, here: bool, parent_live: bool) -> Vec<
             id: Some(id.clone()),
         });
     }
-    if let (Some(model), Some(allowed)) = (crate::claude::model_for(env, id), crate::claude::available_models(env)) {
+    // (only where it runs: another machine's account is not this one's)
+    if let (true, Some(model), Some(allowed)) = (here, crate::claude::model_for(env, id), crate::claude::available_models(env)) {
         if !crate::claude::model_allowed(&model, &allowed) {
             out.push(Issue {
                 code: "aide.model".into(),
@@ -499,6 +501,19 @@ pub(crate) mod tests {
             parent: None,
             inbox: None,
         }
+    }
+
+    /// `aide.model` is the machine's that runs the aide: another machine's
+    /// account (its `availableModels`) says nothing about it.
+    #[test]
+    fn aide_model_is_checked_only_where_the_aide_runs() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.claude_home).unwrap();
+        std::fs::write(env.claude_home.join("settings.json"), r#"{"availableModels": ["opus"]}"#).unwrap();
+        let m = member(Id("MAIN/@KB".into()), None);
+        let codes = |here: bool| aide_issues(&env, &m, here, true).into_iter().map(|i| i.code).collect::<Vec<_>>();
+        assert_eq!(codes(true), ["aide.down", "aide.model"]);
+        assert!(codes(false).is_empty(), "{:?}", codes(false));
     }
 
     pub(crate) fn snap_for(env: &Env, ship_cwd: Option<&str>) -> Snapshot {

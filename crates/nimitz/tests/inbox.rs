@@ -43,7 +43,7 @@ impl Sb {
         let f = sb.fleet_toml();
         let mut t = std::fs::read_to_string(&f).unwrap();
         t.push_str("\n[[aide]]\nname = \"KB\"\nmodel = \"sonnet\"\n[aide.inbox]\ntypes = [\"wiki.note.v1\"]\nper_sender = \"3/m\"\nmax_tries = 2\n");
-        t.push_str("\n[[aide]]\nname = \"REF\"\nmodel = \"sonnet\"\nsnapshot = true\n[aide.inbox]\ntypes = [\"wiki.query.v1\"]\n");
+        t.push_str("\n[[aide]]\nname = \"REF\"\nmodel = \"sonnet\"\n[aide.inbox]\ntypes = [\"wiki.query.v1\"]\n");
         std::fs::write(&f, t).unwrap();
         sb
     }
@@ -272,7 +272,9 @@ fn ask_json_keeps_the_token_short_ids_work_and_a_broken_aide_is_one_row() {
     // a timed-out ask in JSON still hands back the token
     let r = sb.run(&["ask", "MAIN/@REF", "q?", "--wait", "1s", "--json"]);
     assert_eq!(r.code, 5, "{}", r.out);
-    let v: Value = serde_json::from_str(r.out.trim()).unwrap();
+    // (its handle went to stderr: `asked ...`; stdout is the JSON alone)
+    assert!(r.out.contains("asked MAIN/@REF item 1; token "), "{}", r.out);
+    let v: Value = serde_json::Deserializer::from_str(&r.out[r.out.find('{').unwrap()..]).into_iter::<Value>().next().unwrap().unwrap();
     assert!(v["token"].as_str().is_some_and(|t| t.len() == 32), "{v}");
     let id = v["id"].as_str().unwrap().trim_start_matches('0').to_string();
     // the short id the fix lines use works; a path never does
@@ -305,4 +307,20 @@ fn the_fleet_and_parent_policies() {
     assert_eq!(post(SHIP).code, 0, "fleet policy: a member of MAIN may");
     let other = [("NIMITZ_ROLE", "ship"), ("NIMITZ_ID", "BETA/X/Y"), ("NIMITZ_FLEET", "BETA"), ("NIMITZ_SQUADRON", "X")];
     assert!(post(&other).out.contains("(authority)"), "another fleet's member may not");
+}
+
+/// `ask` hands out its handle on stderr right after the post, so a caller
+/// killed while it waits (a Bash timeout) can still pick the answer up.
+#[test]
+fn ask_prints_its_item_and_token_to_stderr_at_once() {
+    let sb = Sb::new();
+    let o = Command::new(EXE).env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_NOTIFY_RETRY", "0").envs(&sb.vars).args(["ask", "MAIN/@REF", "how long is a lease?", "--wait", "1s"]).stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let line = err.lines().find(|l| l.starts_with("asked MAIN/@REF item 1; token ")).unwrap_or_else(|| panic!("{err}"));
+    let tok = line.split("token ").nth(1).unwrap().split(';').next().unwrap().to_string();
+    assert!(line.ends_with(&format!("; later: nimitz inbox result MAIN/@REF 1 --token {tok}")), "{line}");
+    assert_eq!(o.status.code(), Some(5), "not answered within the wait");
+    // the token opens it later
+    let r = sb.run(&["inbox", "result", "MAIN/@REF", "1", "--token", &tok]);
+    assert!(!r.out.contains("not_yours"), "{}", r.out);
 }
