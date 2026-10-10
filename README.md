@@ -146,7 +146,13 @@ create, edit, remove, `?` all keys, `q` quit.
   - On a fail: changes nothing and writes `~/.cache/nimitz-ci/<version>/report.md`
     (failing stages and tests; the logs, `internals.diff`, `payloads.jsonl` and
     the guard snapshots next to it).
-  - Each stage prints one line with ✓ or ✗ and its time; exit 0 pass, 1 fail.
+  - Each stage prints one line with ✓ or ✗ and its time. Exit 0: a pass, or
+    already tested; 1: a stage failed (or another run holds the lock); 2: the
+    checkout is not ready; 130: interrupted (cleaned up, nothing merged).
+  - The guard explains one change by itself: the daemon retiring an idle
+    member (same session, no process). A member you restart during the run
+    fails it; run it again.
+  - It installs where `nimitz` already is (`~/.local/bin` or `~/.cargo/bin`).
   - Its own tests (fakes; no git, cargo or claude): `python3 tools/test_cc_validate.py`.
   - A unit test that fails for a reason outside nimitz on this machine is
     listed in `KNOWN_FAILURES` at the top of the script.

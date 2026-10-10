@@ -18,7 +18,9 @@ use nimitz_core::{Id, Plan};
 fn nimitz() -> PathBuf {
     static BUILD: Once = Once::new();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bin = root.join("target/debug/nimitz");
+    // the build's own target dir (CARGO_TARGET_DIR, relative to the root or absolute)
+    let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).map(|t| root.join(t)).unwrap_or_else(|| root.join("target"));
+    let bin = target.join("debug/nimitz");
     BUILD.call_once(|| {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let st = std::process::Command::new(cargo).args(["build", "-q", "-p", "nimitz"]).current_dir(&root).status().unwrap();

@@ -16,8 +16,10 @@ _spec = importlib.util.spec_from_loader("cc_validate", _loader)
 ccv = importlib.util.module_from_spec(_spec)
 _loader.exec_module(ccv)
 
-UNIT_OK = "test a::one ... ok\ntest result: ok. 640 passed; 0 failed; 0 ignored\n"
-E2E_OK = "test e2e_00 ... ok\ntest result: ok. 27 passed; 0 failed; 0 ignored\n"
+RUN = "     Running unittests src/lib.rs (target/debug/deps/x)\n"
+UNIT_OK = RUN + "test a::one ... ok\ntest result: ok. 640 passed; 0 failed; 0 ignored\n"
+E2E_OK = RUN + "test e2e_00 ... ok\ntest result: ok. 27 passed; 0 failed; 0 ignored\n"
+SHA = "43f2441" + "0" * 33
 
 
 class FakeSh:
@@ -26,6 +28,7 @@ class FakeSh:
     def __init__(self, rules):
         self.rules = rules  # [(substring, Res | callable(cmd, cwd) -> Res)]
         self.calls = []
+        self.killed = set()
 
     def run(self, cmd, cwd=None, extra=None, timeout=600, log=None):
         line = " ".join(map(str, cmd))
@@ -37,6 +40,14 @@ class FakeSh:
 
     def ran(self, key):
         return [c for c, _ in self.calls if key in c]
+
+
+# a fleet with a squadron and a ship (the guard walks every member)
+STATUS = {"fleets": [{"id": "HOME",
+                      "admiral": {"id": "HOME", "role": "admiral", "session": {"session_id": "s1", "pid": 11}},
+                      "squadrons": [{"id": "HOME/GH", "commodore": {"id": "HOME/GH", "role": "commodore", "session": {"session_id": "s2", "pid": 12}},
+                                     "ships": [{"id": "HOME/GH/DEV", "role": "ship", "session": {"session_id": "s3", "pid": 13}},
+                                               {"id": "HOME/GH/OFF", "role": "ship", "session": None}]}]}]}
 
 
 def lay_repo(root, max_v="2.1.296"):
@@ -69,7 +80,7 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def rules(self, version="2.1.297", porcelain="", branch="dev", counts="0\t0", unit=UNIT_OK, e2e=E2E_OK):
-        status = {"fleets": [{"id": "HOME", "admiral": {"id": "HOME", "role": "admiral", "session": {"session_id": "s1", "pid": 11}}}]}
+        status = STATUS
 
         def add_worktree(cmd, cwd):
             shutil.copytree(self.repo, Path(cmd[cmd.index("-b") + 2]))
@@ -83,6 +94,7 @@ class Base(unittest.TestCase):
             ("nimitz status --json", ccv.Res(0, json.dumps(status))),
             ("worktree add", add_worktree),
             ("rev-parse --short", ccv.Res(0, "abc1234\n")),
+            ("rev-parse dev", ccv.Res(0, SHA + "\n")),
             ("--test e2e", ccv.Res(0 if "FAILED" not in e2e else 101, e2e)),
             ("test --workspace", ccv.Res(0 if "FAILED" not in unit else 101, unit)),
             ("test -q -p nimitz-core", ccv.Res(0, "test result: ok. 300 passed\n")),
@@ -95,6 +107,8 @@ class Base(unittest.TestCase):
         r = ccv.Run(cfg, sh, out=out)
         r.probe = lambda: ((True, "6 payloads; every field nimitz reads"), (True, "doctor: 18 files carry every field"))
         r.st_internals = lambda: (True, "6 markers same as 2.1.296")
+        for k, v in getattr(self, "patch", {}).items():
+            setattr(r, k, v)
         self.run_obj = r
         code = r.main()
         return code, out.getvalue()
@@ -214,7 +228,7 @@ class PassAndFail(Base):
         self.assertFalse((self.cfg.cache / "wt-2.1.297").exists())
 
     def test_fail_in_e2e_changes_nothing_and_writes_a_report(self):
-        e2e = "test e2e_07_lead_attach ... FAILED\ntest result: FAILED. 26 passed; 1 failed\n"
+        e2e = RUN + "test e2e_07_lead_attach ... FAILED\ntest result: FAILED. 26 passed; 1 failed\n"
         sh = FakeSh(self.rules(e2e=e2e))
         code, out = self.run_it(sh)
         self.assertEqual(code, 1, out)
@@ -227,13 +241,13 @@ class PassAndFail(Base):
         self.assertIn("(FAIL)", report)
 
     def test_a_known_unit_failure_does_not_fail_the_run(self):
-        unit = "test glyphs::borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\ntest result: FAILED. 644 passed; 1 failed\n"
+        unit = RUN + "test glyphs::borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\ntest result: FAILED. 644 passed; 1 failed\n"
         code, out = self.run_it(FakeSh(self.rules(unit=unit)))
         self.assertEqual(code, 0, out)
         self.assertIn("1 known failure", out)
 
     def test_an_unknown_unit_failure_fails(self):
-        unit = "test x::new_bug ... FAILED\ntest result: FAILED. 644 passed; 1 failed\n"
+        unit = RUN + "test x::new_bug ... FAILED\ntest result: FAILED. 644 passed; 1 failed\n"
         sh = FakeSh(self.rules(unit=unit))
         code, out = self.run_it(sh)
         self.assertEqual(code, 1, out)
@@ -265,6 +279,97 @@ class PassAndFail(Base):
         self.assert_nothing_changed(sh)
         self.assertIn("HOME: ['s1', 11] -> ['s1', 12]", (self.cfg.cache / "2.1.297" / "report.md").read_text())
 
+    def guard_runs(self, later):
+        sh = FakeSh(self.rules())
+        n = {"i": 0}
+
+        def status(cmd, cwd):
+            n["i"] += 1
+            return ccv.Res(0, json.dumps(STATUS) if n["i"] == 1 else json.dumps(later))
+
+        sh.rules.insert(0, ("nimitz status --json", status))
+        return sh, *self.run_it(sh)
+
+    def test_the_guard_sees_squadrons_and_ships_and_explains_a_retire(self):
+        changed = json.loads(json.dumps(STATUS))
+        changed["fleets"][0]["squadrons"][0]["ships"][0]["session"]["session_id"] = "s9"
+        sh, code, out = self.guard_runs(changed)
+        self.assertEqual(code, 1, out)
+        self.assertIn("HOME/GH/DEV", (self.cfg.cache / "2.1.297" / "report.md").read_text())
+        retired = json.loads(json.dumps(STATUS))
+        retired["fleets"][0]["squadrons"][0]["commodore"]["session"]["pid"] = None
+        self.tearDown(); self.setUp()
+        sh, code, out = self.guard_runs(retired)
+        self.assertEqual(code, 0, out)
+        self.assertIn("1 retired idle", out)
+
+    def test_an_empty_status_with_fleets_on_disk_is_no_guard(self):
+        (self.home / ".claude-nimitz" / "home").mkdir(parents=True)
+        (self.home / ".claude-nimitz" / "home" / "fleet.toml").write_text("")
+        sh = FakeSh([("nimitz status --json", ccv.Res(0, json.dumps({"fleets": []})))] + self.rules())
+        code, out = self.run_it(sh)
+        self.assertEqual(code, 1, out)
+        self.assertIn("no members, yet fleets exist", out)
+        self.assertFalse(sh.ran("worktree add"))
+
+    def test_a_guard_change_after_the_merge_fails(self):
+        sh = FakeSh(self.rules())
+        n = {"i": 0}
+        later = json.dumps(STATUS).replace('"pid": 13', '"pid": 99')
+
+        def status(cmd, cwd):
+            n["i"] += 1
+            return ccv.Res(0, json.dumps(STATUS) if n["i"] < 3 else later)
+
+        sh.rules.insert(0, ("nimitz status --json", status))
+        code, out = self.run_it(sh)
+        self.assertEqual(code, 1, out)
+        self.assertTrue(sh.ran("push -q origin dev"))
+        self.assertIn("changed after the merge", out)
+
+    def test_a_crashed_test_binary_is_not_hidden_by_a_known_failure(self):
+        unit = (RUN + "test glyphs::borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\n"
+                "test result: FAILED. 2 passed; 1 failed\n" + RUN + "error: process didn't exit successfully (signal: 11, SIGSEGV)\n")
+        sh = FakeSh(self.rules(unit=unit))
+        code, out = self.run_it(sh)
+        self.assertEqual(code, 1, out)
+        self.assertIn("crashed", out)
+        self.assert_nothing_changed(sh)
+
+    def test_dev_moving_but_level_with_origin_merges_nothing(self):
+        sh = FakeSh(self.rules())
+        n = {"i": 0}
+
+        def dev(cmd, cwd):
+            n["i"] += 1
+            return ccv.Res(0, (SHA if n["i"] == 1 else "f" * 40) + "\n")
+
+        sh.rules.insert(0, ("rev-parse dev", dev))
+        code, out = self.run_it(sh)
+        self.assertEqual(code, 1, out)
+        self.assertIn("dev moved during the run", out)
+        self.assertFalse(sh.ran("merge --no-ff") or sh.ran("push"))
+
+    def test_a_stage_that_raises_still_removes_the_worktree(self):
+        def boom():
+            raise ValueError("bug")
+        self.patch = {"st_e2e": boom}
+        sh = FakeSh(self.rules())
+        code, out = self.run_it(sh)
+        self.assertEqual(code, 1, out)
+        self.assertIn("ValueError: bug", out)
+        self.assert_nothing_changed(sh)
+
+    def test_a_second_run_waits_for_the_lock(self):
+        self.cfg.cache.mkdir(parents=True)
+        held = ccv.Run(self.cfg, FakeSh([])).take_lock()
+        sh = FakeSh(self.rules())
+        code, out = self.run_it(sh)
+        self.assertEqual(code, 1, out)
+        self.assertIn("another cc-validate is running", out)
+        self.assertFalse(sh.ran("worktree"))
+        held.close()
+
     def test_dev_moving_during_the_run_merges_nothing(self):
         sh = FakeSh(self.rules())
         n = {"i": 0}
@@ -285,6 +390,43 @@ class PassAndFail(Base):
         self.assertEqual(code, 1, out)
         self.assertIn("merged into dev", out)
         self.assertFalse(sh.ran("cargo install"))
+
+
+class Jobs(Base):
+    def job(self, short, cwd):
+        d = self.cfg.claude_home / "jobs" / short
+        d.mkdir(parents=True)
+        (d / "state.json").write_text(json.dumps({"cwd": cwd, "state": "working"}))
+
+    def test_drop_probe_stops_only_its_own_jobs(self):
+        base = self.cfg.e2e_base / "ccv-probe-77"
+        base.mkdir(parents=True)
+        self.job("aaaa0001", str(base / "work"))          # launched, ours
+        self.job("aaaa0002", str(base / "work"))          # its launch timed out: found by folder
+        self.job("bbbb0001", "/home/u/.claude-nimitz/home/admiral")  # a live member
+        self.job("bbbb0002", str(self.cfg.e2e_base / "ccv-probe-777" / "work"))  # another probe
+        sh = FakeSh([])
+        r = ccv.Run(self.cfg, sh)
+        r.version = "2.1.297"
+        r.report_dir.mkdir(parents=True)
+        r.drop_probe(base, ["aaaa0001", "bbbb0001"])
+        stopped = sorted(c.split()[-1] for c in sh.ran("claude stop"))
+        self.assertEqual(stopped, ["aaaa0001", "aaaa0002"])
+        self.assertEqual(len(sh.ran("claude rm")), 2)
+        self.assertFalse(base.exists())
+
+    def test_a_killed_e2e_has_its_own_jobs_dropped(self):
+        e = self.cfg.e2e_base
+        self.job("cccc0001", str(e / "nimitz-e2e-3-4242" / "ship"))
+        self.job("cccc0002", str(e / "nimitz-e2e-3-42420" / "ship"))  # another pid
+        self.job("cccc0003", "/home/u/work")
+        sh = FakeSh([])
+        sh.killed = {4242}
+        r = ccv.Run(self.cfg, sh)
+        r.version = "2.1.297"
+        r.report_dir.mkdir(parents=True)
+        r.drop_killed_e2e()
+        self.assertEqual([c.split()[-1] for c in sh.ran("claude stop")], ["cccc0001"])
 
 
 class Internals(Base):

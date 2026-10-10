@@ -26,7 +26,9 @@ import argparse
 import json
 import os
 import re
+import fcntl
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -149,6 +151,29 @@ def passed_count(out):
     return sum(int(m.group(1)) for m in re.finditer(r"^test result: \w+\. (\d+) passed", out, re.M))
 
 
+def failed_count(out):
+    return sum(int(m.group(1)) for m in re.finditer(r"^test result: \w+\. \d+ passed; (\d+) failed", out, re.M))
+
+
+def binaries_ran(out):
+    """(test binaries cargo started, result lines they printed): a binary
+    that crashed (a signal, an abort) prints no result line."""
+    return len(re.findall(r"^\s+(?:Running|Doc-tests) ", out, re.M)), len(re.findall(r"^test result:", out, re.M))
+
+
+def group_pids(pgid):
+    """The pids in process group `pgid` (Linux /proc)."""
+    out = set()
+    for st in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            fields = st.read_text().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 2 and fields[2] == str(pgid):
+            out.add(int(st.parent.name))
+    return out
+
+
 # ---------------------------------------------------------------- processes
 
 @dataclass
@@ -158,21 +183,40 @@ class Res:
 
 
 class Sh:
-    """Runs a command with the scrubbed env (plus `extra`); output to `log`."""
+    """Runs a command with the scrubbed env (plus `extra`); output to `log`.
+    Each command is its own process group: a timeout or ctrl-c kills the
+    whole group (cargo and the test binary under it), and `killed` keeps
+    the pids for the cleanup of what they started."""
 
     def __init__(self, env):
         self.env = env
+        self.killed = set()
+
+    def kill(self, p):
+        self.killed |= group_pids(p.pid) | {p.pid}
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except OSError:
+            pass
 
     def run(self, cmd, cwd=None, extra=None, timeout=600, log=None):
         env = dict(self.env, **(extra or {}))
         try:
-            p = subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                               stdin=subprocess.DEVNULL, timeout=timeout)
-            r = Res(p.returncode, p.stdout.decode("utf-8", "replace"))
-        except subprocess.TimeoutExpired as e:
-            r = Res(124, (e.stdout or b"").decode("utf-8", "replace") + f"\n[ERROR] timed out after {timeout}s\n")
+            p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, start_new_session=True)
         except OSError as e:
             r = Res(127, f"[ERROR] {e}\n")
+        else:
+            try:
+                out, _ = p.communicate(timeout=timeout)
+                r = Res(p.returncode, out.decode("utf-8", "replace"))
+            except subprocess.TimeoutExpired:
+                self.kill(p)
+                out, _ = p.communicate()
+                r = Res(124, out.decode("utf-8", "replace") + f"\n[ERROR] timed out after {timeout}s\n")
+            except KeyboardInterrupt:
+                self.kill(p)
+                raise
         if log:
             with open(log, "a") as f:
                 f.write(f"$ {' '.join(map(str, cmd))}  (cwd {cwd or '.'}, exit {r.code})\n{r.out}\n")
@@ -231,6 +275,8 @@ class Run:
     changed: bool = False  # anything left the worktree (merge, push, install)
     merged: str = ""
     formats_secs: float = 0.0
+    dev_sha: str = ""  # the dev the worktree was made from: the only one a pass may merge into
+    lock: object = None
 
     # ---- output
     def paint(self, s, ok, bold=False):
@@ -275,10 +321,10 @@ class Run:
         return self.report_dir / f"{name}.log"
 
     def nimitz_built(self):
-        return self.cfg.cache / "target" / "debug" / "nimitz"
+        return self.wt / "target" / "debug" / "nimitz"
 
     def cargo_env(self):
-        return {"CARGO_TARGET_DIR": str(self.cfg.cache / "target")}
+        return {}  # the worktree's own target dir: tests may assume <root>/target
 
     # ---- step 1: versions
     def installed_version(self):
@@ -286,9 +332,9 @@ class Run:
         m = re.match(r"\s*(\d+(?:\.\d+)+)", r.out)
         return m.group(1) if r.code == 0 and m else None
 
-    def compat_max(self, root=None):
+    def compat_max(self, root=None, key="max"):
         s = ((root or self.cfg.repo) / "docs" / "compat.toml").read_text()
-        return re.search(r'^max\s*=\s*"([^"]+)"', s, re.M).group(1)
+        return re.search(rf'^{key}\s*=\s*"([^"]+)"', s, re.M).group(1)
 
     # ---- step 2: the main checkout
     def checkout_issue(self, fetch=True):
@@ -306,8 +352,11 @@ class Run:
             if f.code != 0:
                 return ("cannot fetch origin dev: " + (f.out.strip().splitlines() or ["?"])[-1],
                         "check the network and the ssh key, then run cc-validate again")
-        lr = g("rev-list", "--left-right", "--count", "dev...origin/dev").out.split()
-        ahead, behind = (int(lr[0]), int(lr[1])) if len(lr) == 2 else (0, 0)
+        lr = g("rev-list", "--left-right", "--count", "dev...origin/dev")
+        n = lr.out.split()
+        if lr.code != 0 or len(n) != 2 or not all(x.isdigit() for x in n):
+            return ("cannot compare dev with origin/dev", f"git -C {repo} fetch origin dev, then run cc-validate again")
+        ahead, behind = int(n[0]), int(n[1])
         if ahead and behind:
             return (f"dev and origin/dev diverged ({ahead} ahead, {behind} behind)", "reconcile dev with origin/dev first")
         if behind:
@@ -341,6 +390,8 @@ class Run:
 
     def st_guard(self):
         self.snap, self.fleets = self.guard_snapshot()
+        if not self.snap and list((self.cfg.home / ".claude-nimitz").glob("*/fleet.toml")):
+            return False, "nimitz status shows no members, yet fleets exist", "the status format may have changed; no guard, no run"
         (self.report_dir / "guard-before.json").write_text(json.dumps(self.snap, indent=1, sort_keys=True))
         live = sum(1 for v in self.snap.values() if v[1])
         return True, f"{len(self.fleets)} fleet(s), {len(self.snap)} members, {live} live"
@@ -348,14 +399,21 @@ class Run:
     def st_guard_again(self):
         now, _ = self.guard_snapshot()
         (self.report_dir / "guard-after.json").write_text(json.dumps(now, indent=1, sort_keys=True))
-        diff = []
+        diff, retired = [], []
         for k in sorted(set(self.snap) | set(now)):
             a, b = self.snap.get(k), now.get(k)
-            if a != b:
+            if a == b:
+                continue
+            # the daemon retiring an idle member: same session, no process
+            if a and b and a[0] == b[0] and a[1] and b[1] is None:
+                retired.append(k)
+            else:
                 diff.append(f"{k}: {a} -> {b}")
+        note = f" ({len(retired)} retired idle)" if retired else ""
         if diff:
-            return False, f"live fleet changed: {len(diff)} member(s)", "\n".join(diff)
-        return True, "live fleet unchanged"
+            return (False, f"live fleet changed: {len(diff)} member(s){note}",
+                    "\n".join(diff) + "\n(a member you restarted during the run counts too: run cc-validate again)")
+        return True, f"live fleet unchanged{note}"
 
     # ---- step 4: the worktree and the checks
     def st_worktree(self):
@@ -368,11 +426,13 @@ class Run:
             shutil.rmtree(self.wt)
         g("worktree", "prune")
         g("branch", "-D", self.branch)
-        r = g("worktree", "add", "-q", "-b", self.branch, str(self.wt), "dev")
+        self.dev_sha = g("rev-parse", "dev").out.strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", self.dev_sha):
+            return False, "cannot read dev", self.dev_sha
+        r = g("worktree", "add", "-q", "-b", self.branch, str(self.wt), self.dev_sha)
         if r.code != 0:
             return False, "git worktree add failed", r.out
-        head = g("rev-parse", "--short", "dev").out.strip()
-        return True, f"{self.branch} at dev {head}"
+        return True, f"{self.branch} at dev {self.dev_sha[:7]}"
 
     def st_build(self):
         r = self.sh.run(["cargo", "build", "--workspace", "--all-targets"], cwd=self.wt,
@@ -390,6 +450,13 @@ class Run:
         note = f" ({len(known)} known failure)" if known else ""
         if bad:
             return False, f"{len(bad)} failed, {n} passed{note}", "\n".join(bad)
+        started, reported = binaries_ran(r.out)
+        if started != reported:
+            return False, f"{started - reported} test binary crashed (no result line)", "\n".join(r.out.splitlines()[-40:])
+        if failed_count(r.out) != len(failed):
+            return False, f"{failed_count(r.out)} failed, {len(failed)} named", "\n".join(r.out.splitlines()[-40:])
+        if r.code == 124:
+            return False, "timed out", "\n".join(r.out.splitlines()[-40:])
         if r.code != 0 and not known:
             return False, f"exit {r.code}, no failing test named", "\n".join(r.out.splitlines()[-40:])
         if n == 0:
@@ -401,7 +468,35 @@ class Run:
 
     def st_e2e(self):
         extra = {"NIMITZ_E2E": "1", "NIMITZ_E2E_LIVE_FLEETS": ",".join(self.fleets)}
-        return self.tests("e2e", ["cargo", "test", "-p", "nimitz", "--test", "e2e", "--", "--test-threads=3"], extra, 5400)
+        try:
+            return self.tests("e2e", ["cargo", "test", "-p", "nimitz", "--test", "e2e", "--", "--test-threads=3"], extra, 5400)
+        finally:
+            self.drop_killed_e2e()
+
+    def drop_killed_e2e(self):
+        """A killed e2e binary never ran its cleanup: stop and rm the jobs of
+        its own test folders (`nimitz-e2e-<n>-<its pid>`), nothing else."""
+        if not self.sh.killed:
+            return
+        mine = re.compile(r"/nimitz-e2e-\d+-(" + "|".join(map(str, sorted(self.sh.killed))) + r")(/|$)")
+        self.stop_jobs(self.jobs_where(lambda cwd: str(self.cfg.e2e_base) in cwd and mine.search(cwd)), self.log("e2e"))
+
+    def jobs_where(self, pred):
+        """The background jobs whose folder `pred` accepts (jobs/<id>/state.json)."""
+        jd, out = self.cfg.claude_home / "jobs", []
+        for st in sorted(jd.glob("*/state.json")) if jd.is_dir() else []:
+            try:
+                cwd = json.loads(st.read_text()).get("cwd") or ""
+            except (OSError, ValueError):
+                continue
+            if cwd and pred(cwd):
+                out.append(st.parent.name)
+        return out
+
+    def stop_jobs(self, jobs, log):
+        for j in jobs:
+            self.sh.run(["claude", "stop", j], timeout=60, log=log)
+            self.sh.run(["claude", "rm", j], timeout=60, log=log)
 
     def cheap_model(self):
         try:
@@ -429,11 +524,20 @@ class Run:
         hooks = {ev: [{"hooks": [cmd(ev)]}] for ev in ("SessionStart", "UserPromptSubmit", "PermissionRequest", "Notification", "Stop")}
         hooks["PreToolUse"] = [{"matcher": "AskUserQuestion", "hooks": [cmd("PreToolUse")]}]
         settings = base / "settings.json"
-        settings.write_text(json.dumps({"hooks": hooks, "env": {"NIMITZ_STATE": str(base / "state"), "NIMITZ_HOME": str(base / "nimitz")}}))
+        # as the e2e's member settings: the live plugin off, nimitz's places
+        # private, no mux (a worker inherits the daemon's env, the user's live
+        # HERDR_* included)
+        settings.write_text(json.dumps({
+            "enabledPlugins": {"nimitz@claude-nimitz": False},
+            "hooks": hooks,
+            "env": {"NIMITZ_STATE": str(base / "state"), "NIMITZ_HOME": str(base / "nimitz"), "NIMITZ_MUX": "none",
+                    "HERDR_ENV": "", "NIMITZ_HERDR_SESSION": ""},
+        }))
         tag = f"CCV{os.getpid()}"
         asks = [
             (f"{tag}-ASK", "Call the AskUserQuestion tool once to ask me: 'Proceed with the probe?' with options Yes and No. Do nothing else."),
-            (f"{tag}-PERM", "Run the shell command: curl -sI https://example.com -o /dev/null. Do nothing else."),
+            # a command no allowlist names: it must ask
+            (f"{tag}-PERM", f"Run exactly this shell command once: printf ccv-probe-{os.getpid()} > ccv-perm-probe.txt. Do nothing else."),
         ]
         jobs, plog = [], self.log("probe")
         try:
@@ -466,7 +570,7 @@ class Run:
         for ev, n in need.items():
             got = [p for p in seen if p["event"] == ev]
             if len(got) < n:
-                problems.append(f"{ev}: {len(got)} of {n} payloads")
+                problems.append(f"{ev}: {len(got)} of {n} payloads" + (" (does an allowlist permit the probe command?)" if ev == "PermissionRequest" else ""))
             for p in got:
                 try:
                     raw = json.loads(p["raw"])
@@ -493,22 +597,26 @@ class Run:
         mine = sum(1 for j in jobs if (self.cfg.claude_home / "jobs" / j / "state.json").is_file())
         if ok and len(ok) == len(lines) and mine == len(jobs):
             n = re.search(r"(\d+) session/job", ok[0])
-            return True, f"doctor: {n.group(1) if n else '?'} files carry every field (probe jobs live)"
+            return True, f"{n.group(1) if n else '?'} files carry every field; probe jobs live"
         return False, (lines[0] if lines else "no pinned-formats line in doctor")[:58], "\n".join(lines) or r.out
 
     def drop_probe(self, base, jobs):
+        """Stop and rm the probe's jobs: the ones it launched (unless their
+        folder says they are another's) and any whose folder is under `base`
+        (a launch that timed out before printing its id)."""
+        under = lambda cwd: cwd == str(base) or cwd.startswith(str(base) + "/")
+        mine = set(self.jobs_where(under))
         for j in jobs:
             st = self.cfg.claude_home / "jobs" / j / "state.json"
             try:
                 cwd = json.loads(st.read_text()).get("cwd", "")
             except (OSError, ValueError):
                 cwd = ""
-            if cwd and not cwd.startswith(str(base)):
-                continue  # not ours: never touched
-            self.sh.run(["claude", "stop", j], timeout=60, log=self.log("probe"))
-            self.sh.run(["claude", "rm", j], timeout=60, log=self.log("probe"))
+            if not cwd or under(cwd):
+                mine.add(j)
+        self.stop_jobs(sorted(mine), self.log("probe"))
         projects = self.cfg.claude_home / "projects"
-        for p in projects.glob(f"*ccv-probe-{os.getpid()}*") if projects.is_dir() else []:
+        for p in projects.glob(f"*-ccv-probe-{os.getpid()}-work") if projects.is_dir() else []:
             shutil.rmtree(p, ignore_errors=True)
         shutil.rmtree(base, ignore_errors=True)
 
@@ -583,6 +691,9 @@ class Run:
         if issue:
             return False, f"main checkout {issue[0]} (dev moved during the run?)", issue[1]
         g = lambda *a: self.sh.run(["git", "-C", str(self.cfg.repo), *a], timeout=300, log=self.log("merge"))
+        now = g("rev-parse", "dev").out.strip()
+        if now != self.dev_sha:
+            return False, f"dev moved during the run ({self.dev_sha[:7]} -> {now[:7]})", "the run tested the older dev: run cc-validate again"
         r = g("merge", "--no-ff", "-q", self.branch, "-m", f"merge: tested up to Claude Code {self.version} (cc-validate)")
         if r.code != 0:
             g("merge", "--abort")
@@ -595,13 +706,20 @@ class Run:
         self.merged = head
         return True, f"dev {head}, pushed to origin/dev"
 
+    def install_root(self):
+        """Where the installed nimitz lives (<root>/bin/nimitz): ~/.local or
+        ~/.cargo; ~/.local when none is installed."""
+        found = shutil.which("nimitz", path=getattr(self.sh, "env", {}).get("PATH"))
+        return Path(found).resolve().parent.parent if found else self.cfg.home / ".local"
+
     def st_install(self):
+        root = self.install_root()
         for c in ("nimitz", "admiralty"):
-            r = self.sh.run(["cargo", "install", "-q", "--path", f"crates/{c}", "--root", str(self.cfg.home / ".local"), "--force"],
+            r = self.sh.run(["cargo", "install", "-q", "--path", f"crates/{c}", "--root", str(root), "--force"],
                             cwd=self.cfg.repo, extra=self.cargo_env(), timeout=3600, log=self.log("install"))
             if r.code != 0:
                 return False, f"cargo install {c} failed", "\n".join(r.out.splitlines()[-30:])
-        return True, "nimitz, admiralty"
+        return True, f"nimitz, admiralty in {tilde(root / 'bin', self.cfg.home)}"
 
     def plugin_versions(self):
         repo_v = json.loads((self.cfg.repo / "plugin" / ".claude-plugin" / "plugin.json").read_text())["version"]
@@ -658,7 +776,7 @@ class Run:
         h, v, t = self.cfg.home, self.version, self.tested
         prev = self.previous_binary() or "(no older binary)"
         rows = [
-            ("checkout", f"{tilde(self.cfg.repo, h)}: " + (f"{issue[0]}" if issue else "dev, clean, level with origin/dev")),
+            ("checkout", f"{tilde(self.cfg.repo, h)}: " + (f"{issue[0]}" if issue else "dev, clean, level with origin/dev (as of the last fetch)")),
             ("guard", "snapshot the live fleets (nimitz status --json)"),
             ("worktree", f"ci/cc-{v} from dev at {tilde(self.cfg.cache / ('wt-' + v), h)}"),
             ("build", "cargo build --workspace --all-targets"),
@@ -669,11 +787,12 @@ class Run:
             ("internals", f"{len(MARKERS)} markers vs {prev}"),
             ("guard", "compare with the snapshot"),
         ]
-        bump = f"compat.toml max, README range, 2 pinned tests: {t} -> {v}" if newer(v, t) else f"nothing to bump: {v} is the max"
+        bump = (f"compat.toml max, README range, 2 pinned tests: {t} -> {v}" if newer(v, t)
+                else f"nothing to bump: {v} is " + ("the tested max" if v == t else f"below the tested max {t}"))
         after = [("bump", bump)]
         if newer(v, t):
             after += [("merge", "commit, merge --no-ff into dev, push origin dev"),
-                      ("install", "cargo install nimitz, admiralty"),
+                      ("install", f"cargo install nimitz, admiralty into {tilde(self.install_root() / 'bin', h)}"),
                       ("plugin", "claude plugin update, if plugin/ changed")]
         after += [("doctor", "nimitz doctor is ready")]
         return rows, after
@@ -690,7 +809,11 @@ class Run:
         self.say(head)
         self.say()
         if not newer(self.version, self.tested) and not cfg.force:
-            self.say(f"[OK] already tested: {self.version} is within the tested range (--force validates it again)")
+            low = self.compat_max(key="min")
+            if newer(low, self.version):
+                self.say(f"[OK] nothing to validate: {self.version} is below the supported min {low} (nimitz refuses it; update Claude Code)")
+            else:
+                self.say(f"[OK] already tested: {self.version} is within the tested range (--force validates it again)")
             return 0
         issue = self.checkout_issue(fetch=not cfg.plan)
         if cfg.plan:
@@ -714,6 +837,10 @@ class Run:
             self.say(self.paint(f"[ERROR] the main checkout {issue[0]}; nothing ran", False))
             self.say(f"        fix: {issue[1]}")
             return 2
+        self.lock = self.take_lock()
+        if not self.lock:
+            self.say(self.paint(f"[ERROR] another cc-validate is running ({tilde(cfg.cache / '.lock', cfg.home)})", False))
+            return 1
         self.stages.append(Stage("checkout", True, "dev, clean, level with origin/dev"))
         self.line(self.stages[-1])
         if self.report_dir.exists():
@@ -753,15 +880,32 @@ class Run:
                     if self.stage(name, fn) is False:
                         return self.finish(False, "merged into dev; see the failing stage" if self.changed else "nothing changed")
             else:
-                self.skip("bump", f"nothing to bump: {self.version} is the tested max")
+                self.skip("bump", f"nothing to bump: {self.version} is " + ("the tested max" if self.version == self.tested else f"below the tested max {self.tested}"))
             if not self.stage("doctor", self.st_doctor):
                 return self.finish(False, "the install is not ready")
             if self.changed and not self.stage("guard", self.st_guard_again):
                 return self.finish(False, "the live fleet changed after the merge")
             done = f"dev {self.merged} pushed" if self.changed else "nothing to change"
             return self.finish(True, f"Claude Code {self.version} is tested; {done}")
+        except KeyboardInterrupt:
+            self.say()
+            self.say(self.paint("[WARN] interrupted: cleaning up; nothing merged" if not self.changed else "[WARN] interrupted after the merge", False))
+            self.drop_killed_e2e()
+            self.write_report(False, "interrupted")
+            return 130
         finally:
             self.drop_worktree()
+
+    def take_lock(self):
+        """One run at a time: a second would remove the first's worktree."""
+        self.cfg.cache.mkdir(parents=True, exist_ok=True)
+        f = open(self.cfg.cache / ".lock", "w")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return None
+        return f
 
     def finish(self, passed, result):
         self.say()
