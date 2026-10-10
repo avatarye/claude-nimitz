@@ -671,9 +671,12 @@ claim that names another member's session is that member's hook, not the
 agent view), and the pane shows what its foreground runs, as a pane Herdr
 shows an agent in but claims no session for does
 (`evidence::session_of_unclaimed`): the job a `claude attach <job>`
-attaches to (the job row's `resumeSessionId`, else `sessionId`), else the
-conversation a held `claude --resume <sid>` runs, else a foreground pid's
-session file. `status`, Admiralty's dots, enter and `J`/`K`, `start -p`
+attaches to (the job row's `resumeSessionId`, else `sessionId`), else a
+foreground pid's session file (an interactive resume a `/clear` moved
+on), else the conversation a held `claude --resume <sid>` names. A claim
+backed by the attach alone (`evidence::Backing::Attach`: no process names
+the session in its argv or its session file) is inferred too: under that
+argv an older Claude Code may run the agent view. `status`, Admiralty's dots, enter and `J`/`K`, `start -p`
 and a restore's claim and reattach all read the pane so. The root cause
 is closed at launch: every member's `--settings` env blanks
 `HERDR_PANE_ID`, `HERDR_TAB_ID` and `HERDR_WORKSPACE_ID`

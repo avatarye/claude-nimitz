@@ -25,9 +25,9 @@ pub struct Pane {
     pub cwd: String,
     /// the multiplexer's own state for the pane's agent (Herdr: working|blocked|done|idle|unknown)
     pub state: String,
-    /// the session is read from the pane's `claude attach <job>` alone, with
-    /// no claim of Herdr's that the foreground backs (none, or another
-    /// session's, ignored): typed into only while it runs exactly that attach
+    /// the session is read from the pane's `claude attach <job>` alone (no
+    /// claim of Herdr's, one the foreground does not back, ignored, or one
+    /// only the attach backs): typed into only while it runs exactly that attach
     /// (`runs_exact_attach`, read just before typing; R-24)
     pub inferred: bool,
 }

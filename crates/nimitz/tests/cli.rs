@@ -2326,7 +2326,7 @@ fn a_job_labelled_for_another_home_never_binds_the_member() {
 /// shows no member and nothing is typed (a signal finds the tab taken).
 #[test]
 fn an_unclaimed_attach_pane_takes_typing_only_while_it_runs_the_exact_attach() {
-    attach_pane_typing(false);
+    attach_pane_typing(None);
 }
 
 /// The same pane claimed by a ship's hook (its worker inherited the pane's
@@ -2335,23 +2335,31 @@ fn an_unclaimed_attach_pane_takes_typing_only_while_it_runs_the_exact_attach() {
 /// by the same rule: only while it runs exactly the attach.
 #[test]
 fn an_attach_pane_a_ships_hook_claimed_takes_typing_only_while_it_runs_the_exact_attach() {
-    attach_pane_typing(true);
+    attach_pane_typing(Some("MAIN/ARGOS/CLEAN"));
 }
 
-/// The commodore's attach pane (with Herdr's claim for its ship `claimed`,
-/// else none) through status, a needs-you delivery and `signal`, then the
-/// agent view.
-fn attach_pane_typing(claimed: bool) {
+/// Herdr's claim of the commodore's own session, backed by the attach
+/// alone: under that argv an older Claude Code may run the agent view, so
+/// the pane is inferred and takes typing by the same rule.
+#[test]
+fn an_attach_pane_its_own_claim_names_takes_typing_only_while_it_runs_the_exact_attach() {
+    attach_pane_typing(Some("MAIN/ARGOS"));
+}
+
+/// The commodore's attach pane (with Herdr's claim for member `claimed`'s
+/// session, else none) through status, a needs-you delivery and `signal`,
+/// then the agent view.
+fn attach_pane_typing(claimed: Option<&str>) {
     let sb = Sb::new(true);
     let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
-    let ship = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string();
+    let claim = claimed.map(|id| sb.member(id)["session"]["session_id"].as_str().unwrap().to_string());
     // the native binary's own path carries its version
     let bin = "/home/u/.local/share/claude/versions/2.1.293".to_string();
     sb.herdr_world(|w| {
         let p = &mut w["panes"][1];
         p.as_object_mut().unwrap().remove("agent_session");
-        if claimed {
-            p["agent_session"] = serde_json::json!({"kind": "id", "source": "herdr:claude", "value": ship});
+        if let Some(sid) = &claim {
+            p["agent_session"] = serde_json::json!({"kind": "id", "source": "herdr:claude", "value": sid});
         }
         p["agent"] = Value::from("claude");
         p["agent_status"] = Value::from("idle");
@@ -2482,21 +2490,41 @@ fn with_no_multiplexer_a_signal_goes_to_the_inbox_as_a_request() {
 
 /// An attach pane on a Claude Code older than the one measured to re-exec
 /// as the agent view is never typed into: the view might keep the attach's argv.
+///
+/// With Herdr's claim the same: the view's own spare (a claim no member
+/// owns, which the attach does not back), the commodore's session (backed by
+/// the attach alone) or a ship's (an inherited `HERDR_PANE_ID`). Status
+/// shows the commodore there, and neither a needs-you delivery nor `signal`
+/// types into it.
 #[test]
 fn an_attach_pane_on_an_older_claude_code_is_never_typed_into() {
-    let sb = Sb::new(true);
-    let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
-    sb.herdr_world(|w| {
-        let p = &mut w["panes"][1];
-        p.as_object_mut().unwrap().remove("agent_session");
-        p["agent"] = Value::from("claude");
-        p["agent_status"] = Value::from("idle");
-        p["foreground"] = serde_json::json!(["/home/u/.local/share/claude/versions/2.1.292", "attach", job]);
-    });
-    let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
-    assert_ne!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("(tab.unverified)"), "{}", r.out);
-    assert!(sb.prompts("w1:p2").is_empty(), "nothing typed");
+    for claim in ["", "spare", "own", "ship"] {
+        let sb = Sb::new(true);
+        let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
+        let value = match claim {
+            "spare" => "55555555-0000-0000-0000-000000000000".to_string(),
+            "own" => sb.member("MAIN/ARGOS")["session"]["session_id"].as_str().unwrap().to_string(),
+            _ => sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string(),
+        };
+        sb.herdr_world(|w| {
+            let p = &mut w["panes"][1];
+            p.as_object_mut().unwrap().remove("agent_session");
+            if !claim.is_empty() {
+                p["agent_session"] = serde_json::json!({"kind": "id", "source": "herdr:claude", "value": value});
+            }
+            p["agent"] = Value::from("claude");
+            p["agent_status"] = Value::from("idle");
+            p["foreground"] = serde_json::json!(["/home/u/.local/share/claude/versions/2.1.292", "attach", job]);
+        });
+        assert_eq!(sb.member("MAIN/ARGOS")["pane"], Value::from("w1:p2"), "claim {claim:?}: status shows the commodore there");
+        raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+        let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+        assert_ne!(n["delivery"], "delivered", "claim {claim:?}: {n}");
+        let r = sb.run(&["signal", "MAIN/ARGOS", "hello", "--yes"]);
+        assert_ne!(r.code, 0, "{}", r.out);
+        assert!(r.out.contains("(tab.unverified)"), "claim {claim:?}: {}", r.out);
+        assert!(sb.prompts("w1:p2").is_empty(), "claim {claim:?}: nothing typed");
+    }
 }
 
 // ------------------------------------------------------------------ aides

@@ -738,17 +738,22 @@ fn shape_through_the_adapter() {
 fn an_unbacked_claim_shows_what_runs_in_the_pane() {
     let (a_sid, b_sid) = ("9aacf927-0000-4000-8000-00000000000a", "f29c13aa-0000-4000-8000-00000000000b");
     let claim = json!({"kind": "id", "source": "herdr:claude", "value": a_sid});
-    let pane = |id: &str, fg: Value| json!({"pane_id": id, "tab_id": "w1:t1", "workspace_id": "w1", "agent": "claude", "agent_status": "working", "cwd": "/home", "agent_session": claim, "foreground": fg, "pid": 777});
+    let on = |id: &str, fg: Value, pid: i64, claim: &Value| json!({"pane_id": id, "tab_id": "w1:t1", "workspace_id": "w1", "agent": "claude", "agent_status": "working", "cwd": "/home", "agent_session": claim, "foreground": fg, "pid": pid});
+    let pane = |id: &str, fg: Value| on(id, fg, 777, &claim);
     let w = World::new(Some(json!({
         "next_ws": 2,
         "workspaces": [{"workspace_id": "w1", "label": "HOME", "focused": true, "active_tab_id": "w1:t1"}],
         "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "HOME.ADMIRAL", "focused": true}],
         "panes": [
             pane("w1:p1", json!(["/home/u/.local/bin/claude", "attach", "f29c13aa"])),
-            pane("w1:p2", json!(["claude", "--resume", "s-held"])),
+            on("w1:p2", json!(["claude", "--resume", "s-held"]), 778, &claim),
             pane("w1:p3", json!(["claude"])),
             pane("w1:p4", json!(["claude", "--resume", a_sid])),
             pane("w1:p5", json!(["yazi"])),
+            // an interactive resume a `/clear` moved on: its session file wins over the argv
+            pane("w1:p6", json!(["claude", "--resume", "s-held"])),
+            // B's own claim, backed by the attach alone: shown, inferred all the same
+            on("w1:p7", json!(["claude", "attach", "f29c13aa"]), 779, &json!({"kind": "id", "source": "herdr:claude", "value": b_sid})),
         ]
     })));
     let home = w.dir.join("claude_home");
@@ -757,7 +762,7 @@ fn an_unbacked_claim_shows_what_runs_in_the_pane() {
     fs::write(home.join("jobs/f29c13aa/state.json"), json!({"sessionId": b_sid}).to_string()).unwrap();
     fs::write(home.join("sessions/777.json"), json!({"pid": 777, "sessionId": "s-own"}).to_string()).unwrap();
     let m = Herdr { claude_home: home.clone(), ..w.mux() };
-    let want = [("w1:p1", Some(b_sid), true), ("w1:p2", Some("s-held"), false), ("w1:p3", Some("s-own"), false), ("w1:p4", Some(a_sid), false), ("w1:p5", None, false)];
+    let want = [("w1:p1", Some(b_sid), true), ("w1:p2", Some("s-held"), false), ("w1:p3", Some("s-own"), false), ("w1:p4", Some(a_sid), false), ("w1:p5", None, false), ("w1:p6", Some("s-own"), false), ("w1:p7", Some(b_sid), true)];
     let panes = m.panes();
     for (id, sid, inferred) in want {
         let p = panes.iter().find(|p| p.pane.pane_id == id).unwrap_or_else(|| panic!("no pane {id}"));
@@ -768,13 +773,19 @@ fn an_unbacked_claim_shows_what_runs_in_the_pane() {
         for (id, sid, inferred) in want {
             let p = shape.panes.iter().find(|p| p.pane.pane_id == id).unwrap();
             assert_eq!((p.session_id.as_deref(), p.inferred), (sid, inferred), "shape({foregrounds}): {id}");
-            assert_eq!(p.claimed.as_deref(), Some(a_sid), "the claim is kept for the agent-view test: {id}");
+            assert!(p.claimed.is_some(), "the claim is kept for the agent-view test: {id}");
         }
     }
     // the job's conversation now: a `/clear` moves it
     fs::write(home.join("jobs/f29c13aa/state.json"), json!({"sessionId": b_sid, "resumeSessionId": "s-after-clear"}).to_string()).unwrap();
     let p1 = m.panes().into_iter().find(|p| p.pane.pane_id == "w1:p1").unwrap();
     assert_eq!((p1.session_id.as_deref(), p1.inferred), (Some("s-after-clear"), true));
+    // a foreground that cannot be read backs no claim and shows nothing
+    let mut world = w.world();
+    world["fail"] = json!("pane process-info");
+    fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
+    let panes = m.panes();
+    assert!(!panes.is_empty() && panes.iter().all(|p| p.session_id.is_none() && !p.inferred), "{panes:?}");
 }
 
 // ---------- error paths ----------

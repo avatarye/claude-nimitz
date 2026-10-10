@@ -393,7 +393,8 @@ impl Herdr {
 
     /// The session a pane shows, and whether it is read from the attach
     /// alone (`Pane.inferred`). Herdr's claim stands only when the pane's
-    /// foreground backs it (`evidence::claim_backed`): Herdr's own hook names
+    /// foreground backs it (`evidence::claim_backing`; one only a `claude
+    /// attach <job>` backs is inferred, as the attach alone is): Herdr's own hook names
     /// the pane by the process's inherited `HERDR_PANE_ID`, which a
     /// background job brings from whoever launched it (or the daemon's), so
     /// a ship's hook can claim its commodore's pane. A claim that is not
@@ -414,8 +415,14 @@ impl Herdr {
                 &read[..]
             }
         };
-        if let Some(claim) = claim.filter(|c| nimitz_core::evidence::claim_backed(home, procs, c)) {
-            return (Some(claim.to_string()), false);
+        // a claim the attach alone backs is inferred too: under that argv an
+        // older Claude Code may run the agent view (R-24)
+        if let Some(claim) = claim {
+            match nimitz_core::evidence::claim_backing(home, procs, claim) {
+                Some(nimitz_core::evidence::Backing::Process) => return (Some(claim.to_string()), false),
+                Some(nimitz_core::evidence::Backing::Attach) => return (Some(claim.to_string()), true),
+                None => {}
+            }
         }
         // the attach alone: shown, typed into only while it runs exactly the attach (`Pane.inferred`)
         if let Some(sid) = nimitz_core::evidence::session_of_attach(home, procs) {
