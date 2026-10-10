@@ -462,11 +462,10 @@ fn find_ship<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<(&'a PathBuf, &'a Squadr
     Some((sd, sq, ship))
 }
 
+/// A folder as written, `~/` (on Windows also `~\`) under this process's
+/// home (`env::home`: `USERPROFILE` when cmd or PowerShell set no `HOME`).
 fn expand_dir(p: &str) -> PathBuf {
-    match p.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/")).join(rest),
-        None => PathBuf::from(p),
-    }
+    crate::env::expand(p, &crate::env::home())
 }
 
 /// The folder of a member on this machine (resolves "managed"); None if not deployed here.
@@ -1259,6 +1258,24 @@ pub(crate) fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
 pub(crate) mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    /// A ship folder under `~` expands through the env module's home (on
+    /// Windows `USERPROFILE` when cmd or PowerShell set no `HOME`), with `~\`
+    /// as well as `~/` there; never into a root-relative `\proj`.
+    #[test]
+    fn a_folder_under_home_expands_with_the_env_home() {
+        let home = crate::env::home();
+        assert_eq!(expand_dir("~/proj"), home.join("proj"));
+        assert_eq!(expand_dir("~"), home);
+        assert_eq!(expand_dir("/srv/x"), PathBuf::from("/srv/x"));
+        assert!(is_absolute_dir(r"~\proj"));
+        if cfg!(windows) {
+            assert_eq!(expand_dir(r"~\proj\a"), home.join(r"proj\a"));
+            assert!(expand_dir("~/proj").is_absolute());
+        } else {
+            assert_eq!(expand_dir(r"~\proj"), PathBuf::from(r"~\proj"), "on Unix a backslash is part of a name");
+        }
+    }
 
     /// A sandboxed Env rooted in a fresh temp dir; keep the TempDir alive.
     pub fn test_env() -> (tempfile::TempDir, Env) {

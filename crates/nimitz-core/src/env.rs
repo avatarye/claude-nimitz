@@ -28,7 +28,13 @@ fn home_dir(v: &HashMap<String, String>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
-fn expand(p: &str, home: &Path) -> PathBuf {
+/// This process's home: `HOME`, on Windows `USERPROFILE` when there is none.
+pub fn home() -> PathBuf {
+    home_dir(&HashMap::new())
+}
+
+/// `p` with a leading `~/` (on Windows also `~\`) or a lone `~` as `home`.
+pub fn expand(p: &str, home: &Path) -> PathBuf {
     match p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\").filter(|_| cfg!(windows))) {
         Some(rest) => home.join(rest),
         None if p == "~" => home.to_path_buf(),
@@ -274,6 +280,22 @@ mod tests {
         assert_eq!(e.native_claude_bin, "/bin/native-claude");
         assert_eq!(e.hostname, "box.example.com");
         assert_eq!(e.mux, Some("none".into()));
+    }
+
+    #[test]
+    fn home_falls_back_to_userprofile_on_windows_and_tilde_expands() {
+        let h = home_dir(&vars(&[("USERPROFILE", r"C:\Users\me")]));
+        if cfg!(windows) {
+            assert_eq!(h, PathBuf::from(r"C:\Users\me"));
+        } else {
+            assert_ne!(h, PathBuf::from(r"C:\Users\me"), "USERPROFILE is Windows' only");
+        }
+        let home = Path::new("/h");
+        assert_eq!(expand("~/proj", home), PathBuf::from("/h/proj"));
+        assert_eq!(expand("~", home), PathBuf::from("/h"));
+        assert_eq!(expand("/srv/x", home), PathBuf::from("/srv/x"));
+        let back = expand(r"~\proj", home);
+        assert_eq!(back, if cfg!(windows) { home.join("proj") } else { PathBuf::from(r"~\proj") });
     }
 
     #[test]
