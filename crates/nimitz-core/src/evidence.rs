@@ -489,7 +489,7 @@ pub fn pid_alive(pid: i64) -> bool {
 
 /// When a session file says its process started (epoch ms), for
 /// `os::is_same_process`: `procStart` when it reads as a Windows FILETIME
-/// (100 ns since 1601), else `startedAt`.
+/// (100 ns since 1601), else unknown (the pid alone decides).
 pub fn proc_started_ms(d: &Value) -> Option<i64> {
     const FT_1970: u64 = 116_444_736_000_000_000;
     let ft = match d.get("procStart") {
@@ -497,10 +497,10 @@ pub fn proc_started_ms(d: &Value) -> Option<i64> {
         Some(Value::Number(n)) => n.as_u64(),
         _ => None,
     };
-    match ft.filter(|t| *t > FT_1970 && *t < 2 * FT_1970) {
-        Some(t) => Some(((t - FT_1970) / 10_000) as i64),
-        None => ts(d, "startedAt").map(|t| (t * 1000.0) as i64),
-    }
+    // only a FILETIME `procStart`: `startedAt` may be carried over from an
+    // earlier process (a resume, a respawn), and a start older than the
+    // process would read a live member as dead; without it, pid alone
+    ft.filter(|t| *t > FT_1970 && *t < 2 * FT_1970).map(|t| ((t - FT_1970) / 10_000) as i64)
 }
 
 fn norm_kind(k: &str) -> String {
@@ -1144,10 +1144,11 @@ mod tests {
     #[test]
     fn a_session_file_whose_pid_a_later_process_took_is_no_live_row() {
         use serde_json::json;
-        // its process's start: `procStart` when a FILETIME, else `startedAt`
+        // its process's start: `procStart` when a FILETIME, never `startedAt`
+        // (a resume or respawn may carry it over: a live member read as dead)
         assert_eq!(proc_started_ms(&json!({"procStart": "134041824000000000", "startedAt": 1})), Some(1_759_708_800_000));
         assert_eq!(proc_started_ms(&json!({"procStart": 134041824000000000u64})), Some(1_759_708_800_000));
-        assert_eq!(proc_started_ms(&json!({"procStart": "123456", "startedAt": 1_759_708_800_000i64})), Some(1_759_708_800_000));
+        assert_eq!(proc_started_ms(&json!({"procStart": "123456", "startedAt": 1_759_708_800_000i64})), None);
         assert_eq!(proc_started_ms(&json!({})), None);
 
         let me = std::process::id() as i64;
@@ -1157,7 +1158,8 @@ mod tests {
             let vars: HashMap<String, String> = [("NIMITZ_CLAUDE_HOME".to_string(), td.path().to_string_lossy().into_owned())].into();
             let env = Env::from_vars(&vars);
             fs::create_dir_all(td.path().join("sessions")).unwrap();
-            let d = json!({"pid": me, "sessionId": "5e55e55e-0000-4000-8000-000000000001", "cwd": "/x", "kind": "interactive", "startedAt": started});
+            const FT_1970: i64 = 116_444_736_000_000_000;
+            let d = json!({"pid": me, "sessionId": "5e55e55e-0000-4000-8000-000000000001", "cwd": "/x", "kind": "interactive", "startedAt": started, "procStart": (started * 10_000 + FT_1970).to_string()});
             fs::write(td.path().join(format!("sessions/{me}.json")), d.to_string()).unwrap();
             rows_from_files(&env, &mut FileCache::default()).unwrap().iter().any(|r| r.pid == Some(me))
         };
