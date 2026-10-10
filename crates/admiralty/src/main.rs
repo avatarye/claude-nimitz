@@ -9,12 +9,13 @@ use std::time::Duration;
 use admiralty::actions::Ctx;
 use admiralty::app::App;
 use admiralty::data::{load_fixture_file, Bundle, CoreSource, DataSource, FixtureSource};
-use admiralty::{fixtures, frames, render, run};
+use admiralty::{fixtures, frames, herdr_plugin, render, run};
 
 const USAGE: &str = "usage:
   admiralty [--sandbox DIR | --demo | --demo-monitor | --fixture FILE] [--interval SECS] [--exit-after-jump]
   admiralty dump [--width N] [--sandbox DIR | --demo | --fixture FILE]   the list as plain text
   admiralty sandbox create [--herdr]|env DIR                             a fake world (fake claude, optional fake herdr)
+  admiralty herdr toggle|watch                                           the Herdr plugin's action and overlay pane
 
 env: NIMITZ_HOME, NIMITZ_STATE, NIMITZ_CLAUDE_HOME, NIMITZ_MUX ... (contracts.md section 2),
      ADMIRALTY_ICONS=ascii (no Nerd Font), ADMIRALTY_STATE (where folds and filters are saved),
@@ -28,7 +29,23 @@ enum Source {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = nimitz_core::os::args();
+    let mut args: Vec<String> = nimitz_core::os::args();
+    // the Herdr plugin's commands (herdr-plugin/herdr-plugin.toml)
+    if args.first().map(String::as_str) == Some("herdr") {
+        let vars: HashMap<String, String> = std::env::vars().collect();
+        match args.get(1).map(String::as_str) {
+            Some("toggle") => return code(herdr_plugin::toggle(&vars)),
+            Some("watch") => {
+                let (env, extra) = herdr_plugin::watch_setup(&vars);
+                for (k, v) in env {
+                    std::env::set_var(k, v);
+                }
+                std::env::remove_var("ADMIRALTY_WATCH_EXIT_AFTER_JUMP");
+                args = extra; // the TUI, with the overlay's extra arguments
+            }
+            _ => return fail(&format!("usage: admiralty herdr toggle|watch\n{USAGE}")),
+        }
+    }
     match args.first().map(String::as_str) {
         Some("__fake-claude") if args.len() >= 2 => return code(nimitz_core::sandbox::fake_claude(&PathBuf::from(&args[1]), &args[2..])),
         Some("__fake-herdr") if args.len() >= 2 => return code(nimitz_mux::fake::fake_herdr(&PathBuf::from(&args[1]), &args[2..])),

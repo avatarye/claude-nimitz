@@ -5,8 +5,12 @@ A [Herdr](https://herdr.dev) plugin that calls up `admiralty`
 whatever you are doing. Press the key to open it; press it again, quit it with
 `q`, or jump to an agent with `enter`, and it goes away.
 
-Needs Herdr 0.9 and `admiralty` on `PATH` or in `~/.cargo/bin`
-(`cargo install --path crates/admiralty`; it has `--exit-after-jump`).
+Needs Herdr 0.9 and `admiralty` on the Herdr server's `PATH`
+(`cargo install --path crates/admiralty` puts it in `~/.cargo/bin`). Runs on
+macOS, Linux and Windows: both plugin commands are the `admiralty` binary
+itself (`admiralty herdr toggle`, `admiralty herdr watch`). Herdr runs a
+command as an argv with no shell and takes one command per action id, so a
+shell script could not serve Windows.
 
 The plugin id is `admiralty` (until nimitz 0.3.0 it was `admiralty-watch`; see
 Install for the switch).
@@ -26,7 +30,7 @@ they show, attach typed only into a plain shell, jobs resumed by exact id).
 
 ## How it works
 
-One action, `admiralty.toggle`, runs `bin/toggle.sh`:
+One action, `admiralty.toggle`, runs `admiralty herdr toggle`:
 
 | State when you press the key | Result |
 | --- | --- |
@@ -34,7 +38,7 @@ One action, `admiralty.toggle`, runs `bin/toggle.sh`:
 | watch open in this tab | closes; focus goes back to the pane you were in |
 | watch open in another tab | closes there, opens here |
 
-The overlay runs `bin/watch.sh`, which runs `admiralty` with
+The overlay runs `admiralty herdr watch`: the TUI with
 `ADMIRALTY_EXIT_AFTER_JUMP=1`. The overlay is a Herdr plugin pane, so it closes
 when that process exits: on `q`, and right after `enter` lands on an agent's pane.
 Sending a message with `m` keeps the watch up. A jump that fails, or an agent with no pane, leaves the watch up with
@@ -59,7 +63,8 @@ Linked as `admiralty-watch` before? Unlink that first so two copies never run
 (`herdr plugin unlink admiralty-watch`), link this one, and change the
 keybinding's `command` from `admiralty.toggle` to `admiralty.toggle`.
 
-Then add this to `~/.config/herdr/config.toml`. `alt+f` (f for fleet) is a direct
+Then add this to Herdr's `config.toml` (`~/.config/herdr/`; Windows:
+`%APPDATA%\herdr\`). `alt+f` (f for fleet) is a direct
 key, one press with no prefix; it is free in Herdr's defaults and in the current
 config. `prefix+f` also works if you would rather keep it behind the prefix:
 
@@ -81,13 +86,12 @@ toggle --plugin admiralty` runs it from a shell.
 
 ### Options
 
-`bin/watch.sh` reads these from the Herdr server's environment. Extra arguments
+`admiralty herdr watch` reads these from the Herdr server's environment. Extra arguments
 can also go in a file, read when `ADMIRALTY_ARGS` is unset, with no restart:
 `$(herdr plugin config-dir admiralty)/args`.
 
 | Variable | Default | |
 | --- | --- | --- |
-| `ADMIRALTY_BIN` | `admiralty` on PATH, then `~/.cargo/bin` | binary to run |
 | `ADMIRALTY_ARGS` | the `args` file, else none | extra arguments, e.g. `--sandbox /tmp/aw-sb` |
 | `ADMIRALTY_EXIT_AFTER_JUMP` | `1` | `0` keeps the watch up after a jump |
 | `ADMIRALTY_INSET` | `2,2` | rows,columns at the bottom and right that Admiralty leaves blank: with the sidebar shown, Herdr 0.9.3 hides the overlay terminal's last 2 rows and columns under its border (the status and key bars would vanish); `0,0` when the sidebar is hidden |
@@ -106,10 +110,13 @@ Remove the `[[keys.command]]` block, then:
     tests/check.sh                                       # offline
     uv run --with pyte python tests/e2e_isolated.py      # private Herdr server
 
-`check.sh` parses the scripts, links the manifest into a throwaway Herdr config
+`check.sh` parses the test scripts, links the manifest into a throwaway Herdr config
 (Herdr's own validation), runs `herdr config check` on the snippet above, and runs
-`bin/toggle.sh` against a fake `herdr` (open, close, move between tabs, stale id,
-open failure).
+`admiralty herdr toggle` (`ADMIRALTY_BIN`, else PATH) against a fake `herdr`
+(open, close, move between tabs, stale id, open failure). The same cases are
+unit tests: `cargo test -p admiralty herdr_plugin`. On Windows run only those:
+Herdr there keeps its config under `%APPDATA%` and ignores `XDG_CONFIG_HOME`, so
+`check.sh` would link into the real Herdr.
 
 `e2e_isolated.py` starts a separate Herdr client and server in a pseudo-terminal
 under a temp `XDG_CONFIG_HOME` / `XDG_STATE_HOME`, with every `HERDR_*` variable

@@ -3,21 +3,23 @@ name = "Admiralty"
 version = "0.1.0"
 min_herdr_version = "0.9.0"
 description = "Call up the admiralty fleet tree (claude-nimitz) over the current tab; the same key puts it away."
-platforms = ["macos", "linux"]
+platforms = ["macos", "linux", "windows"]
 
-# One action. Bind it to a key in config.toml (see README). bin/toggle.sh closes the
-# overlay when it is open in this tab and opens it otherwise. Herdr resolves the
-# explicit relative program against $HERDR_PLUGIN_ROOT. (Plugin id `admiralty`;
-# before nimitz 0.3.1 it was `admiralty-watch`.)
+# One action. Bind it to a key in config.toml (see README). `admiralty herdr toggle`
+# closes the overlay when it is open in this tab and opens it otherwise. Both
+# commands are the admiralty binary itself (on the Herdr server's PATH): Herdr runs
+# an argv with no shell and takes one command per action id, so a shell script
+# could not serve Windows. (Plugin id `admiralty`; before nimitz 0.3.1 it was
+# `admiralty-watch`.)
 [[actions]]
 id = "toggle"
 title = "Admiralty: toggle"
 description = "Open the admiralty overlay in this tab, or close it if it is already open here."
 contexts = ["global"]
-command = ["./bin/toggle.sh"]
+command = ["admiralty", "herdr", "toggle"]
 
 # The overlay itself. It closes when the admiralty TUI exits: q, or right after enter
-# jumps to an agent's pane (bin/watch.sh turns on --exit-after-jump).
+# jumps to an agent's pane (`admiralty herdr watch` turns on --exit-after-jump).
 # Overlay, not popup: a popup is session-modal, so Herdr's keys (this toggle
 # included) never fire while it is up, and `plugin pane open` returns no pane id
 # for it, so nothing can close it but its own process. An overlay is an ordinary
@@ -27,4 +29,4 @@ command = ["./bin/toggle.sh"]
 id = "watch"
 title = "Admiralty"
 placement = "overlay"
-command = ["./bin/watch.sh"]
+command = ["admiralty", "herdr", "watch"]
