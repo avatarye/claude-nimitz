@@ -938,7 +938,7 @@ fn e2e_08_rules_update_is_delivered_once_at_the_next_prompt() {
     assert_eq!(delivered[0]["rules"], nimitz_core::rules::VERSION);
     let d = w.deliveries();
     assert_eq!((d[&job]["version"].as_u64(), d[&job]["via"].as_str()), (Some(nimitz_core::rules::VERSION as u64), Some("UserPromptSubmit")), "{d}");
-    let text = std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid).expect("transcript")).unwrap();
+    let text = std::fs::read_to_string(w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript")).unwrap();
     let header = format!("nimitz rules updated v1\u{2192}v{}", nimitz_core::rules::VERSION);
     let lines: Vec<String> = text.lines().filter(|l| l.contains(&header)).map(|l| l.chars().take(240).collect()).collect();
     println!("transcript lines with the header ({}):\n{}", lines.len(), lines.join("\n"));
@@ -968,7 +968,7 @@ fn e2e_09_a_ship_runs_nimitz_without_a_prompt_and_stop_is_refused() {
     assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {ev:?}");
     assert!(!ev.iter().any(|e| e["reason"].as_str().map(|r| r.starts_with("needs-you")).unwrap_or(false)), "{ev:?}");
     assert!(std::fs::read_dir(w.base.join("state/needs")).map(|d| d.count() == 0).unwrap_or(true), "a needs-you notice was left");
-    let text = std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid).expect("transcript")).unwrap();
+    let text = std::fs::read_to_string(w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript")).unwrap();
     let calls = std::fs::read_to_string(w.base.join("nimitz-calls.log")).unwrap_or_default();
     for want in ["--version", "status", &format!("stop {other} --yes")] {
         assert!(calls.lines().any(|l| l.trim() == want), "the ship did not run `nimitz {want}` through its PATH; calls:\n{calls}");
@@ -1380,7 +1380,7 @@ fn e2e_19_accept_e9_no_row_and_no_transcript_is_history_lost_with_fresh() {
     w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
     let (code, out) = w.claude(&w.base, &["rm", &job]);
     assert_eq!(code, 0, "{out}");
-    let t = w.transcript(&w.ship_dir(), &sid).expect("a transcript");
+    let t = w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("a transcript");
     std::fs::rename(&t, t.with_extension("aside")).unwrap();
     let (code, out) = w.nz(&["start", &w.ship(), "--plan"]);
     println!("E9 plan: {out}");
@@ -1459,9 +1459,15 @@ fn e2e_00_sessions_run_on_the_cheap_model() {
     assert_eq!(code, 0, "{out}");
     let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();
-    let t = std::fs::read_to_string(w.transcript(&dir, &sid).expect("transcript")).unwrap();
+    // Claude Code 2.1.296 may report the session idle before its transcript
+    // is on disk, and before the reply is in it (seen under load: no project
+    // folder at the idle, the file there seconds later), so both are waited for
     // (`<synthetic>` lines are Claude Code's own, for an API error or an interrupt)
-    let models: Vec<String> = t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["type"] == "assistant").filter_map(|v| v["message"]["model"].as_str().map(str::to_lowercase)).filter(|m| m != "<synthetic>").collect();
+    let models_in = |t: &str| -> Vec<String> { t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["type"] == "assistant").filter_map(|v| v["message"]["model"].as_str().map(str::to_lowercase)).filter(|m| m != "<synthetic>").collect() };
+    // the reply lands in the transcript after the session reads idle (2.1.296)
+    let models = w
+        .wait(30, || w.transcript(&dir, &sid).and_then(|p| std::fs::read_to_string(p).ok()).map(|t| models_in(&t)).filter(|m| !m.is_empty()))
+        .unwrap_or_default();
     let want = cheap_model().to_lowercase();
     let want = want.split('[').next().unwrap_or("").to_string();
     println!("[OK] asked for {want}, ran on {models:?}");
@@ -1631,7 +1637,7 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
     assert!(out.contains("inbox"), "{out}");
     w.wait(120, || Some(w.events()).filter(|ev| ev.iter().filter(|e| e["event"] == "UserPromptSubmit").count() > ups)).expect("the signal started a turn");
     w.wait(180, || w.member(&w.fleet).filter(|m| m["status"] == "Idle")).expect("turn over");
-    let t = std::fs::read_to_string(w.transcript(&dir, &sid).expect("transcript")).unwrap();
+    let t = std::fs::read_to_string(w.wait(30, || w.transcript(&dir, &sid)).expect("transcript")).unwrap();
     let seen = t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| v["type"] == "user" && v["message"]["content"].as_str().is_some_and(|c| c.contains("[nimitz signal]"))).expect("the message in the transcript");
     println!("[OK] seen as: origin {}", seen["origin"]);
     assert_eq!(seen["origin"]["kind"], "peer");

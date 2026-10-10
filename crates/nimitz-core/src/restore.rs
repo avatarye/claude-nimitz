@@ -951,7 +951,9 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                     if older {
                         rp.updated += 1;
                     }
-                    let why = if older { format!("on {on}") } else { format!("on {on} (--restart)") };
+                    // (the flag as the command names it: `start -f`, `restore --restart`)
+                    let flag = if ctx.verb == "start" { "-f" } else { "--restart" };
+                    let why = if older { format!("on {on}") } else { format!("on {on} ({flag})") };
                     relaunch_live(ctx, m, s, why, had_tab, rep, rp);
                     return;
                 }
