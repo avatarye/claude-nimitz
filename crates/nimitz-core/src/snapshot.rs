@@ -756,7 +756,7 @@ fn build_member(
                 })
                 .map(|(i, _)| i)
         });
-    // A lead's row is its registry job (a hand rm + resume binds the new job
+    // A lead's (or an aide's) row is its registry job (a hand rm + resume binds the new job
     // beside an older labelled stray: the registry job stays, the stray is the
     // intruder; a /branch or /rename of the real job changes nothing). Two
     // cases hand the lead to another own live job: (i) the registry has no
@@ -766,7 +766,7 @@ fn build_member(
     // expected name, else the earliest with a started_at; never on a None or
     // an equal started_at.
     let mut primary_at = primary_at;
-    if id.role().lead() {
+    if id.role().always_on() {
         let reg_job_at = rec.and_then(|x| x.job.as_deref()).and_then(|job| rows.iter().position(|r| r.short_id.as_deref() == Some(job)));
         let expected = id.name();
         let cands: Vec<usize> = (0..rows.len()).filter(|&i| own(&rows[i]) && rows[i].live() && rows[i].short_id.is_some()).collect();

@@ -11,7 +11,7 @@ pub fn parse_id(s: &str) -> Result<Id, String> {
     if id.well_formed() {
         Ok(id)
     } else {
-        Err(format!("{s:?} is not an id (F, F/SQ or F/SQ/SHIP; names are [A-Z0-9_]+)"))
+        Err(format!("{s:?} is not an id (F, F/SQ, F/SQ/SHIP or an aide's F/@NAME; names are [A-Z0-9_]+)"))
     }
 }
 
@@ -338,7 +338,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         return Ok(finish_plan(ctx, &plan));
     };
     // Who gets the typing: the member itself, or its commodore for a ship.
-    let (via, text) = if m.role.lead() {
+    let (via, text) = if m.role != nimitz_core::Role::Ship {
         (m, text)
     } else {
         let cid = Id::commodore(id.fleet(), id.squadron().unwrap_or_default());

@@ -26,16 +26,17 @@ use std::path::{Path, PathBuf};
 // ------------------------------------------------------------------ ids
 
 /// An aide id: a parent's id plus `@NAME` (`HOME/@KB`). The parent's parts
-/// and the name are upper-case names (`config::valid_name`); `@` is in no
+/// and the name are upper-case names (`Id::well_formed`); `@` is in no
 /// other id, so no member id reads as an aide id.
 pub fn aide_id(s: &str) -> Result<Id, String> {
-    let parts: Vec<&str> = s.split('/').collect();
-    let (last, parent) = parts.split_last().ok_or("an empty id")?;
-    let name = last.strip_prefix('@').ok_or_else(|| format!("{s:?} is not an aide id (F/@NAME)"))?;
-    if parent.is_empty() || parent.len() > 3 || !parent.iter().chain([&name]).all(|p| crate::config::valid_name(p)) {
+    let id = Id(s.to_string());
+    if id.role() != crate::types::Role::Aide {
+        return Err(format!("{s:?} is not an aide id (F/@NAME)"));
+    }
+    if !id.well_formed() {
         return Err(format!("{s:?} is not an aide id (F/@NAME, upper-case names)"));
     }
-    Ok(Id(s.to_string()))
+    Ok(id)
 }
 
 /// The aide's parent (`HOME` for `HOME/@KB`).
@@ -63,7 +64,7 @@ pub fn find(env: &Env, aide: &Id) -> Result<(crate::types::FleetOnDisk, crate::t
     }
     let f = crate::config::load_fleet(env, parent.fleet()).map_err(|i| i.message)?;
     let name = aide.0.rsplit('@').next().unwrap_or_default();
-    let def = f.config.aide.iter().find(|s| s.name == name).cloned().ok_or_else(|| format!("no aide {aide} in fleet {} ([[aide]] name = {name:?})", parent.fleet()))?;
+    let def = crate::config::find_aide(&f, aide).cloned().ok_or_else(|| format!("no aide {aide} in fleet {} ([[aide]] name = {name:?})", parent.fleet()))?;
     Ok((f, def))
 }
 
@@ -1015,13 +1016,8 @@ pub fn sender_of(env: &Env, vars: &std::collections::HashMap<String, String>, fr
         None => (None, None, None),
     };
     let get = |k: &str| vars.get(k).filter(|v| !v.is_empty()).cloned();
-    if let (Some(id), Some(role)) = (get("NIMITZ_ID"), get("NIMITZ_ROLE")) {
-        let ok = if role == "aide" {
-            aide_id(&id).is_ok()
-        } else {
-            matches!(crate::sessions::caller_from_env(vars), crate::types::Caller::Member { id: ref m, .. } if m.0 == id)
-        };
-        if ok {
+    if let (Some(id), Some(_)) = (get("NIMITZ_ID"), get("NIMITZ_ROLE")) {
+        if matches!(crate::sessions::caller_from_env(vars), crate::types::Caller::Member { id: ref m, .. } if m.0 == id) {
             return Sender { kind: "member".into(), id: Some(id), session: sid, job, cwd, label: None, verified: true };
         }
         return Sender { kind: "process".into(), label: Some(format!("unverified labels {id}")), session: sid, job, cwd, ..Default::default() };

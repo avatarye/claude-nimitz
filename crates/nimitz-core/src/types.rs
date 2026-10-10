@@ -13,9 +13,12 @@ pub enum Role {
     Admiral,
     Commodore,
     Ship,
+    /// an always-on member with a durable inbox, attached to its parent
+    /// (`F/@NAME`; docs/design/aide.md)
+    Aide,
 }
 
-/// `admiral | commodore | ship`; a 0.3.x registry's `tender` reads as a ship
+/// `admiral | commodore | ship | aide`; a 0.3.x registry's `tender` reads as a ship
 /// (the id `F/SQ/~task` is what marks it, and `migrate::retire_tenders` moves
 /// such an identity out of the members).
 impl<'de> Deserialize<'de> for Role {
@@ -25,7 +28,8 @@ impl<'de> Deserialize<'de> for Role {
             "admiral" => Ok(Role::Admiral),
             "commodore" => Ok(Role::Commodore),
             "ship" | "tender" => Ok(Role::Ship),
-            other => Err(serde::de::Error::unknown_variant(other, &["admiral", "commodore", "ship"])),
+            "aide" => Ok(Role::Aide),
+            other => Err(serde::de::Error::unknown_variant(other, &["admiral", "commodore", "ship", "aide"])),
         }
     }
 }
@@ -36,6 +40,7 @@ impl Role {
             Role::Admiral => "admiral",
             Role::Commodore => "commodore",
             Role::Ship => "ship",
+            Role::Aide => "aide",
         }
     }
     /// Admirals and commodores lead; every member, leads too, runs as a
@@ -44,9 +49,15 @@ impl Role {
     pub fn lead(self) -> bool {
         matches!(self, Role::Admiral | Role::Commodore)
     }
+    /// Pinned and wanted up whenever its fleet is: the leads and the aides
+    /// (a ship parks on purpose).
+    pub fn always_on(self) -> bool {
+        matches!(self, Role::Admiral | Role::Commodore | Role::Aide)
+    }
 }
 
-/// `F`, `F/SQ`, `F/SQ/SHIP` (contracts.md section 4).
+/// `F`, `F/SQ`, `F/SQ/SHIP` (contracts.md section 4); an aide is its
+/// parent's id plus `@NAME` (`F/@KB`, docs/design/aide.md section 2).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Id(pub String);
 
@@ -66,35 +77,52 @@ impl Id {
     pub fn fleet(&self) -> &str {
         self.parts()[0]
     }
+    /// The squadron part; never an aide's `@NAME` (`F/@KB` has none).
     pub fn squadron(&self) -> Option<&str> {
-        self.parts().get(1).copied()
+        self.parts().get(1).copied().filter(|p| !p.starts_with('@'))
     }
+    /// A last part `@NAME` makes an aide, whatever the count; otherwise
+    /// one part is an admiral, two a commodore, three a ship.
     pub fn role(&self) -> Role {
         let p = self.parts();
+        if p.len() > 1 && p.last().is_some_and(|x| x.starts_with('@')) {
+            return Role::Aide;
+        }
         match p.len() {
             1 => Role::Admiral,
             2 => Role::Commodore,
             _ => Role::Ship,
         }
     }
-    /// The session name (address) for this identity.
+    /// The session name (address) for this identity. An aide's is its
+    /// parent's parts joined by `.`, then `@NAME`: `[F]-@KB`, `[F.SQ]-@X`.
     pub fn name(&self) -> String {
         let p = self.parts();
         match (self.role(), p.as_slice()) {
+            (Role::Aide, [parent @ .., a]) => format!("[{}]-{a}", parent.join(".")),
             (Role::Admiral, [f]) => format!("[{f}]-ADMIRAL"),
             (Role::Commodore, [f, sq]) => format!("[{f}.{sq}]-COMMODORE"),
             (_, [f, sq, s]) => format!("[{f}.{sq}]-{s}"),
             _ => self.0.clone(),
         }
     }
-    /// One to three names (`config::valid_name`): an id nimitz could have made.
+    /// One to three names (`config::valid_name`), or such an id plus
+    /// `@NAME` (an aide): an id nimitz could have made.
     pub fn well_formed(&self) -> bool {
         let p = self.parts();
-        (1..=3).contains(&p.len()) && p.iter().all(|x| crate::config::valid_name(x))
+        let (head, aide) = match p.split_last() {
+            Some((last, rest)) if !rest.is_empty() && last.starts_with('@') => (rest, Some(&last[1..])),
+            _ => (p.as_slice(), None),
+        };
+        (1..=3).contains(&head.len()) && head.iter().copied().chain(aide).all(crate::config::valid_name)
     }
-    /// The identity above this one in the chain of command.
+    /// The identity above this one in the chain of command (an aide's: the
+    /// member it is attached to).
     pub fn parent(&self) -> Option<Id> {
         let p = self.parts();
+        if self.role() == Role::Aide {
+            return Some(Id(p[..p.len() - 1].join("/")));
+        }
         match p.len() {
             1 => None,
             2 => Some(Id(p[0].to_string())),
@@ -601,4 +629,37 @@ pub struct Outcome {
 pub enum Caller {
     User,
     Member { id: Id, role: Role },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_at_part_makes_an_aide_of_its_parent() {
+        let kb = Id("HOME/@KB".into());
+        assert_eq!(kb.role(), Role::Aide);
+        assert_eq!((kb.fleet(), kb.squadron(), kb.parent()), ("HOME", None, Some(Id::admiral("HOME"))), "no squadron: @KB is not one");
+        assert_eq!(kb.name(), "[HOME]-@KB");
+        let x = Id("HOME/GITHUB/@X".into());
+        assert_eq!((x.role(), x.squadron(), x.parent(), x.name()), (Role::Aide, Some("GITHUB"), Some(Id::commodore("HOME", "GITHUB")), "[HOME.GITHUB]-@X".to_string()));
+        let y = Id("HOME/GITHUB/NIMITZ_DEV/@Y".into());
+        assert_eq!((y.role(), y.parent(), y.name()), (Role::Aide, Some(Id::ship("HOME", "GITHUB", "NIMITZ_DEV")), "[HOME.GITHUB.NIMITZ_DEV]-@Y".to_string()));
+        // every other id keeps its meaning
+        assert_eq!((Id::admiral("F").role(), Id::commodore("F", "SQ").role(), Id::ship("F", "SQ", "S").role()), (Role::Admiral, Role::Commodore, Role::Ship));
+        assert_eq!(Id::commodore("F", "SQ").squadron(), Some("SQ"));
+        assert!(Role::Aide.always_on() && !Role::Aide.lead() && !Role::Ship.always_on() && Role::Commodore.always_on());
+        assert_eq!(serde_json::to_string(&Role::Aide).unwrap(), "\"aide\"");
+        assert_eq!(serde_json::from_str::<Role>("\"aide\"").unwrap(), Role::Aide);
+    }
+
+    #[test]
+    fn well_formed_is_one_to_three_names_or_such_plus_an_at_name() {
+        for ok in ["F", "F/SQ", "F/SQ/S", "F/@KB", "F/SQ/@X", "F/SQ/S/@Y", "HOME_2/@K_B9"] {
+            assert!(Id(ok.into()).well_formed(), "{ok}");
+        }
+        for bad in ["", "f", "F/", "F/SQ/S/T", "@KB", "F/@", "F/@kb", "F/@@KB", "F/@KB/S", "A/B/C/D/@X", "F/SQ/~fix", "F/@K B"] {
+            assert!(!Id(bad.into()).well_formed(), "{bad}");
+        }
+    }
 }

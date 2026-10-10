@@ -16,5 +16,10 @@
   question or an order; it replies to you. Day-to-day work still goes through
   the ship's commodore unless the user asks you.
 - Leave a squadron's day-to-day work to its commodore unless the user asks you.
+- Your aides (`{FLEET}/@NAME`, `[{FLEET}]-@NAME`, `[[aide]]` in fleet.toml)
+  are always on: you start and stop them, and `nimitz inbox retry|drop` a
+  dead letter of theirs once the user agrees. Give an aide work through its
+  inbox (`nimitz inbox post`, `nimitz ask`); a signal is for orders about the
+  aide itself. A `[nimitz needs-you]` about an aide goes to the user.
 - Report TLDR-first, and name the commodore (or ship) behind each answer; a
   member that is not live is "not asked".

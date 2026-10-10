@@ -13,7 +13,8 @@ use crate::types::*;
 use std::collections::HashMap;
 
 /// Parse a session name (address) back into an identity (contracts.md section 4):
-/// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-SHIP`.
+/// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-SHIP`, an aide's `[F]-@NAME`
+/// (`[F.SQ]-@NAME` for a commodore's).
 /// None for names that are not fleet addresses (teammates, ad-hoc sessions).
 /// A trailing ` [ref]` (how `SendMessage` disambiguates two sessions with one
 /// name) is not part of the address, so it cannot hide a target from the rules.
@@ -28,6 +29,10 @@ pub fn id_from_name(name: &str) -> Option<Id> {
     let close = rest.find(']')?;
     let tag = &rest[..close];
     let role = rest[close + 1..].strip_prefix('-')?;
+    if role.starts_with('@') {
+        let id = Id(format!("{}/{role}", tag.replace('.', "/")));
+        return id.well_formed().then_some(id);
+    }
     let (fleet, sq) = match tag.split_once('.') {
         Some((f, s)) => (f, Some(s)),
         None => (tag, None),
@@ -468,7 +473,7 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
         }),
         // `start`: a pane (-p) is the user's; nothing relaunches itself; a fleet
         // or no target is a whole-fleet start (an admiral's own, a commodore's ships)
-        Some("start") if *role == Role::Ship => false,
+        Some("start") if matches!(role, Role::Ship | Role::Aide) => false,
         // `start`: a pane (-p) is the user's; nothing relaunches itself alone
         // (`--only -f`); a wider start of yours skips you; a fleet or no
         // target is a whole-fleet start (an admiral's own, a commodore's ships)
@@ -924,6 +929,12 @@ fn cold_launch(env: &Env, plan: &mut Plan, fod: &FleetOnDisk, id: &Id, role: Rol
             cmd: crate::claude::launch_bg(env, id, mode, Some(&crate::claude::lead_prompt(id))),
             cwd: Some(cwd.to_string()),
             why: "cold launch of a lead as a background job; `nimitz open` attaches to it".into(),
+        }),
+        Role::Aide => plan.steps.push(Step {
+            id: Some(id.clone()),
+            cmd: crate::claude::launch_bg(env, id, mode, Some(&crate::claude::aide_prompt(id))),
+            cwd: Some(cwd.to_string()),
+            why: "cold launch of an aide as a background job; it works its inbox".into(),
         }),
     }
 }
@@ -1421,6 +1432,17 @@ fn relabel_to(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str, sid: &
     v
 }
 
+/// What retires a member for good: its config's `rm` (an aide leaves
+/// fleet.toml by hand; there is no `aide rm` yet).
+fn retire_hint(id: &Id) -> String {
+    match id.role() {
+        Role::Admiral => format!("nimitz fleet rm {id}"),
+        Role::Commodore => format!("nimitz squadron rm {id}"),
+        Role::Ship => format!("nimitz ship rm {id}"),
+        Role::Aide => "deleting its [[aide]] from fleet.toml".into(),
+    }
+}
+
 /// Remove job rows: a member's stale rows (`target` = identity), or one row of
 /// a stowaway / non-fleet session (`target` = short id or session id).
 pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Plan {
@@ -1433,17 +1455,13 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
         }
         sweep_member(env, &mut plan, m, caller);
         if plan.steps.is_empty() && plan.refusals.is_empty() {
-            let retire = match m.role {
-                Role::Admiral => "fleet rm",
-                Role::Commodore => "squadron rm",
-                Role::Ship => "ship rm",
-            };
+            let retire = retire_hint(&m.id);
             let own = m.session.as_ref().map(|p| format!("; its own row {} goes with the member", p.short_id.as_deref().unwrap_or(&p.session_id))).unwrap_or_default();
             plan.warnings.push(issue(
                 "copy.rows",
                 Severity::Info,
                 format!("{target} has no stale rows{own}"),
-                m.session.as_ref().map(|_| format!("{}  # replaces the row (same conversation); nimitz {retire} {target} retires the member", start_cmd(&m.id, "-f"))),
+                m.session.as_ref().map(|_| format!("{}  # replaces the row (same conversation); {retire} retires the member", start_cmd(&m.id, "-f"))),
                 Some(m.id.clone()),
             ));
         }
@@ -1501,16 +1519,12 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
     if let Some(member) = current {
         // a member's own row goes with the member: a relaunch replaces it, a
         // retire removes it (acceptance env F7)
-        let retire = match member.role() {
-            Role::Admiral => "fleet rm",
-            Role::Commodore => "squadron rm",
-            Role::Ship => "ship rm",
-        };
+        let retire = retire_hint(&member);
         refuse(
             &mut plan,
             "lineage.current",
             format!("session {} is {member}'s current session; its row goes with the member, never alone", row.session_id),
-            Some(format!("{}  # replaces the row (same conversation); nimitz {retire} {member} retires the member", start_cmd(&member, "-f"))),
+            Some(format!("{}  # replaces the row (same conversation); {retire} retires the member", start_cmd(&member, "-f"))),
             Some(member.clone()),
         );
         return plan;
@@ -2294,9 +2308,9 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                                 return out;
                             }
                         }
-                        // a lead stays up: pin its job (plan-v4 section 7); a
-                        // pin that cannot be written is a warning, not a failed start
-                        if id.role().lead() {
+                        // a lead or an aide stays up: pin its job (plan-v4 section 7);
+                        // a pin that cannot be written is a warning, not a failed start
+                        if id.role().always_on() {
                             if let Some(job) = &job {
                                 match crate::pins::pin(env, job) {
                                     Ok(true) => note(&mut out, "; pinned"),
@@ -2633,6 +2647,15 @@ mod tests {
         assert_eq!(id_from_name("[F.SQ]-COMMODORE/"), None);
         // a SendMessage ref suffix does not hide the address
         assert_eq!(id_from_name("[F.SQ]-S [3fa9c1]"), Some(Id::ship("F", "SQ", "S")));
+        // an aide: its parent's place, then @NAME
+        for a in ["HOME/@KB", "HOME/GITHUB/@X", "HOME/GITHUB/NIMITZ_DEV/@X"] {
+            let id = Id(a.into());
+            assert_eq!(id_from_name(&id.name()), Some(id.clone()), "{}", id.name());
+        }
+        assert_eq!(Id("HOME/@KB".into()).name(), "[HOME]-@KB");
+        for bad in ["[HOME]-@kb", "[HOME]-@", "[home]-@KB", "[A.B.C.D]-@X", "[HOME]-@@KB"] {
+            assert_eq!(id_from_name(bad), None, "{bad}");
+        }
     }
 
     #[test]
@@ -2652,6 +2675,12 @@ mod tests {
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "not an id"), ("NIMITZ_ROLE", "admiral")])), unverified);
         // NIMITZ_HOME alone is no label at all
         assert_eq!(caller_from_env(&m(&[("NIMITZ_HOME", "/h")])), Caller::User);
+        // an aide: its role label must say aide
+        let kb = Id("HOME/@KB".into());
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/@KB"), ("NIMITZ_ROLE", "aide")])), Caller::Member { id: kb, role: Role::Aide });
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/@KB"), ("NIMITZ_ROLE", "commodore")])), unverified);
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/@kb"), ("NIMITZ_ROLE", "aide")])), unverified);
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/KB"), ("NIMITZ_ROLE", "aide")])), unverified);
         assert!(may_start(&unverified, &Id::ship("F", "SQ", "S"), "start").unwrap_err().contains("partial or inconsistent"));
     }
 

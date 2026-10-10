@@ -461,6 +461,16 @@ fn find_ship<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<(&'a PathBuf, &'a Squadr
     Some((sd, sq, ship))
 }
 
+/// An aide's `[[aide]]` in its fleet (only an admiral's aide exists for now).
+pub fn find_aide<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<&'a AideDef> {
+    let parent = id.parent()?;
+    if id.role() != Role::Aide || parent.role() != Role::Admiral || parent.fleet() != f.config.fleet {
+        return None;
+    }
+    let name = id.parts().last()?.strip_prefix('@')?;
+    f.config.aide.iter().find(|a| a.name == name)
+}
+
 fn expand_dir(p: &str) -> PathBuf {
     match p.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/")).join(rest),
@@ -489,6 +499,12 @@ pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
                 // the real path when it exists: Claude Code records (and trusts) that one
                 d => Some(expand_dir(d)).map(|p| p.canonicalize().unwrap_or(p)),
             }
+        }
+        // one machine runs an aide: the one its `dirs` names
+        Role::Aide => {
+            let label = f.machine.as_ref()?;
+            let d = find_aide(f, id)?.dirs.get(label)?;
+            Some(expand_dir(d)).map(|p| p.canonicalize().unwrap_or(p))
         }
     }
 }
@@ -521,6 +537,7 @@ pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
             .and_then(|(_, _, ship)| f.machine.as_ref().and_then(|m| ship.permission_mode.get(m).cloned()))
             .or_else(squadron_mode)
             .unwrap_or(fallback),
+        Role::Aide => find_aide(f, id).and_then(|a| a.permission_mode.clone()).unwrap_or(fallback),
     }
 }
 
@@ -887,6 +904,14 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
                 }
             }
         }
+        // (no `aide rm` yet: an aide leaves fleet.toml by hand)
+        Role::Aide => refuse(
+            &mut plan,
+            "config.aide",
+            format!("{id} is an aide; nimitz does not remove aides yet"),
+            Some(format!("delete its [[aide]] from {}", f.dir.join("fleet.toml").display())),
+            Some(id.clone()),
+        ),
     }
     plan
 }

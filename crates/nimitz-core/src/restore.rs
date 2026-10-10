@@ -890,6 +890,8 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
     let (env, opts) = (ctx.env, ctx.opts);
     let id = &m.id;
     let lead = m.role.lead();
+    // a lead or an aide is wanted up whenever its fleet is (a ship by the active set)
+    let always_on = m.role.always_on();
     let active = ctx.active.and_then(|a| a.members.get(&id.0));
     let had_tab = active.map(|a| a.attached).unwrap_or(false);
     let fail = |rp: &mut RestorePlan, rep: &mut FleetReport, i: Issue| {
@@ -974,7 +976,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 fail(rp, rep, issue("session.unreadable", Severity::Error, format!("{id}'s session file cannot be read; its process may be live"), Some(format!("nimitz status  # read it again in a moment")), Some(id.clone())));
                 return;
             }
-            let wanted = lead || opts.all || (in_set && m.status != Status::Stopped);
+            let wanted = always_on || opts.all || (in_set && m.status != Status::Stopped);
             if opts.shape_only && !lead {
                 found(rp, id, "not live", "no tab (a layout makes tabs for live members)");
                 rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} is not live; no tab (`nimitz start {id}` first)"), None, Some(id.clone())));
@@ -992,7 +994,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 }
                 return;
             }
-            let down = if lead { "down, a lead" } else if in_set { "down, it was active" } else { "down (--all)" };
+            let down = if lead { "down, a lead" } else if always_on { "down, an aide" } else if in_set { "down, it was active" } else { "down (--all)" };
             // a live copy or an impostor holds its name: never a second one (R-26)
             if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
                 found(rp, id, format!("{down}; a live copy holds its name"), "nothing; see the fix");
@@ -1077,7 +1079,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
             let rec = crate::registry::load(env).identities.remove(&id.0);
             let current = rec.as_ref().and_then(|r| r.session.clone());
             let has_log = |sid: &str| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), cwd.as_deref(), sid).is_some();
-            let wanted = lead || opts.all || in_set;
+            let wanted = always_on || opts.all || in_set;
             match (current.filter(|sid| has_log(sid)), cwd.as_deref()) {
                 (Some(sid), Some(cwd)) if wanted => {
                     if let Some(i) = crate::check::check(env, ctx.snap, Some(id)).into_iter().find(|i| i.id.as_ref() == Some(id) && i.severity == Severity::Error && !TABLE_HANDLED.contains(&i.code.as_str())) {
@@ -1393,8 +1395,9 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
     }
     let rank = match m.role {
         Role::Ship => 0,
-        Role::Commodore => 1,
-        Role::Admiral => 2,
+        Role::Aide => 1,
+        Role::Commodore => 2,
+        Role::Admiral => 3,
     };
     rp.later.push((rank, group));
     found(rp, id, why, format!("relaunch (same id and history){then}"));
@@ -1606,10 +1609,10 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
     }
 }
 
-/// A lead's job must be pinned (plan-v4 section 7): a missing pin is re-added
-/// after the lead is back (R-02, R-25).
+/// A lead's or an aide's job must be pinned (plan-v4 section 7): a missing
+/// pin is re-added after it is back (R-02, R-25).
 fn pin_step(env: &Env, m: &Member, rp: &mut RestorePlan) {
-    if !m.role.lead() {
+    if !m.role.always_on() {
         return;
     }
     if let Some(job) = m.session.as_ref().and_then(|s| s.short_id.clone()) {

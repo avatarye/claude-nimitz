@@ -193,6 +193,7 @@ fn mode_args(mode: &str) -> Vec<String> {
 /// hands it say the rest.
 pub fn lead_prompt(id: &Id) -> String {
     match id.role() {
+        Role::Aide => aide_prompt(id),
         Role::Admiral => format!(
             "You are {}, the admiral of fleet {}. Read CLAUDE.md in this folder, run `nimitz status`, report the fleet TLDR-first, then wait for the user.",
             id.name(),
@@ -205,6 +206,16 @@ pub fn lead_prompt(id: &Id) -> String {
             id.fleet()
         ),
     }
+}
+
+/// An aide's cold-launch prompt: who it is, and its loop in one line; the
+/// SessionStart hook hands it the full rules.
+pub fn aide_prompt(id: &Id) -> String {
+    format!(
+        "You are {}, an aide of {}. Work your inbox: `nimitz inbox claim {id}`, do the item, then `nimitz inbox done` or `nimitz inbox fail`, until claim exits 3. `nimitz rules {id}` has the full text.",
+        id.name(),
+        id.parent().map(|p| p.name()).unwrap_or_default()
+    )
 }
 
 /// Cold launch of any member: `claude --bg --name N --permission-mode M --settings S [prompt]`

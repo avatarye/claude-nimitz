@@ -294,7 +294,8 @@ impl Icons {
         match r {
             Role::Admiral => self.admiral,
             Role::Commodore => self.commodore,
-            Role::Ship => self.ship,
+            // (an aide's own icon comes with its row in the tree)
+            Role::Ship | Role::Aide => self.ship,
         }
     }
 }

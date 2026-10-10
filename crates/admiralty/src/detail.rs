@@ -42,7 +42,8 @@ pub fn art_for(n: &Node) -> Art {
         Kind::Member(r) => match r {
             nimitz_core::Role::Admiral => Art::Admiral,
             nimitz_core::Role::Commodore => Art::Commodore,
-            nimitz_core::Role::Ship => Art::Ship,
+            // (an aide's own picture comes with its row in the tree)
+            nimitz_core::Role::Ship | nimitz_core::Role::Aide => Art::Ship,
         },
     }
 }

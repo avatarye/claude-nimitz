@@ -685,7 +685,8 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     };
     let m = find_member(snap, id).ok_or("not in the snapshot")?;
     let (via_m, relay) = match m.role {
-        Role::Admiral | Role::Commodore => (m, false),
+        // an aide, always on as a lead is, is typed into directly
+        Role::Admiral | Role::Commodore | Role::Aide => (m, false),
         Role::Ship => {
             let sq = id.parent().ok_or("no squadron")?;
             (find_member(snap, &sq).ok_or("its commodore is not in the snapshot")?, true)
