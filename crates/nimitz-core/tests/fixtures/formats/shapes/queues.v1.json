@@ -1,0 +1,43 @@
+{
+  "id": "000000000017",
+  "ref": "ab12cd34:000000000017",
+  "type": "wiki.note.v1",
+  "key": "k",
+  "posted_at": 1.5,
+  "sender": {
+    "kind": "member",
+    "id": "MAIN/ARGOS/CLEAN",
+    "session": "s1",
+    "job": "ab12cd34",
+    "cwd": "/w",
+    "label": "[MAIN.ARGOS]-CLEAN",
+    "verified": true
+  },
+  "payload": {
+    "text": "x"
+  },
+  "tries": 1,
+  "claim": {
+    "by": "s9",
+    "at": 2.0,
+    "until": 3.0
+  },
+  "history": [
+    {
+      "at": 1.5,
+      "event": "posted",
+      "note": "n"
+    }
+  ],
+  "result": {
+    "ok": true
+  },
+  "reply_to": {
+    "token_sha256": "ff",
+    "waiting_until": 4.0,
+    "delivered_at": 5.0,
+    "delivery": "peer"
+  },
+  "finished_at": 6.0,
+  "reason": "r"
+}

@@ -1,0 +1,14 @@
+{
+  "run": "r1",
+  "started": 1.5,
+  "fleets": [
+    "MAIN"
+  ],
+  "total": 3,
+  "done": 1,
+  "steps": [
+    "a",
+    "b",
+    "c"
+  ]
+}

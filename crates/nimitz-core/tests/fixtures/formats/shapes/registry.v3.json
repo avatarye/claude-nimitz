@@ -1,0 +1,40 @@
+{
+  "version": 3,
+  "min_nimitz": "0.5.0",
+  "machine": "work",
+  "updated_at": 1.5,
+  "identities": {
+    "MAIN/ARGOS/CLEAN": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-CLEAN",
+      "cwd": "/w",
+      "job": "ab12cd34",
+      "session": "s2",
+      "lineage": [
+        {
+          "session_id": "s1",
+          "job": "ab12cd34",
+          "via": "launch",
+          "at": 1.0,
+          "home": "/h"
+        },
+        {
+          "session_id": "s2",
+          "job": "ab12cd34",
+          "via": "clear",
+          "at": 2.0,
+          "home": "/h"
+        }
+      ]
+    }
+  },
+  "retired": {
+    "MAIN/ARGOS/~t": {
+      "role": "ship",
+      "name": "t",
+      "cwd": "/w",
+      "session": "s0",
+      "lineage": []
+    }
+  }
+}
