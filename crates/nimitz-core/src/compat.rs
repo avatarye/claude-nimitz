@@ -79,6 +79,9 @@ pub fn older(v: &str, than: &str) -> bool {
 /// in its path is still the one it runs.
 pub fn claude_version_in(path: &str) -> Option<String> {
     let path = path.strip_suffix(" (deleted)").unwrap_or(path);
+    // a Windows path: `\` separators, `claude.exe`
+    let unix = path.replace('\\', "/");
+    let path = unix.strip_suffix(".exe").unwrap_or(&unix);
     let first = |rest: &str| rest.split('/').next().filter(|v| v.starts_with(|c: char| c.is_ascii_digit())).map(String::from);
     if let Some(v) = path.split("/claude/versions/").nth(1).and_then(first) {
         return Some(v);
@@ -88,24 +91,9 @@ pub fn claude_version_in(path: &str) -> Option<String> {
     (bin == "claude").then(|| first(v)).flatten()
 }
 
-/// The executable process `pid` runs: `/proc/<pid>/exe` on Linux,
-/// `proc_pidpath` on macOS.
+/// The executable process `pid` runs (`os::exe_of`).
 pub fn exe_of(pid: i64) -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        std::fs::read_link(format!("/proc/{pid}/exe")).ok().map(|e| e.to_string_lossy().into_owned())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
-        let n = unsafe { libc::proc_pidpath(pid as libc::c_int, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
-        (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = pid;
-        None
-    }
+    crate::os::exe_of(pid)
 }
 
 /// The Claude Code version a process runs: from its argv0, else from the
@@ -154,6 +142,7 @@ pub fn position(c: &Compat, version: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::collections::HashMap;
 
     #[test]
@@ -200,6 +189,7 @@ mod tests {
         assert_eq!(position(&c, "3.0.0"), 1);
     }
 
+    #[cfg(unix)]
     #[test]
     fn installed_reads_the_native_binary() {
         let td = tempfile::tempdir().unwrap();

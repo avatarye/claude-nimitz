@@ -283,11 +283,14 @@ pub fn doctor(ctx: &Ctx) -> Result<i32, String> {
 }
 
 /// Herdr's config: `HERDR_CONFIG_PATH`, else `~/.config/herdr/config.toml`
-/// (read-only). Checked when the file is there or nimitz runs with Herdr.
+/// (Windows: `%APPDATA%\herdr\config.toml`) (read-only). Checked when the
+/// file is there or nimitz runs with Herdr.
 pub fn herdr_config_path(ctx: &Ctx) -> PathBuf {
-    match ctx.vars.get("HERDR_CONFIG_PATH").filter(|p| !p.is_empty()) {
+    let var = |k: &str| ctx.vars.get(k).filter(|p| !p.is_empty()).cloned();
+    match var("HERDR_CONFIG_PATH") {
         Some(p) => PathBuf::from(p),
-        None => PathBuf::from(ctx.vars.get("HOME").cloned().unwrap_or_default()).join(".config/herdr/config.toml"),
+        None if cfg!(windows) && var("APPDATA").is_some() => PathBuf::from(var("APPDATA").unwrap_or_default()).join("herdr").join("config.toml"),
+        None => PathBuf::from(var("HOME").unwrap_or_default()).join(".config").join("herdr").join("config.toml"),
     }
 }
 
@@ -334,12 +337,14 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         if trusted(ctx, &env.home) {
             r.ok(&format!("Claude Code trusts {}", env.home.display()));
         } else {
+            // the real path: Claude Code resolves a linked data root, and (Windows) compares its case
+            let real = nimitz_core::env::canon(&env.home);
             match nimitz_core::trust::too_broad(env, &env.home) {
                 None => {
-                    r.err(&format!("Claude Code does not trust {}", env.home.display()), Some("nimitz doctor --fix"));
+                    r.err(&format!("Claude Code does not trust {}", real.display()), Some("nimitz doctor --fix"));
                     r.fixes.steps.push(nimitz_core::trust::step(env, None, &env.home));
                 }
-                Some(why) => r.err(&format!("Claude Code does not trust {}; {why}", env.home.display()), None),
+                Some(why) => r.err(&format!("Claude Code does not trust {}; {why}", real.display()), None),
             }
         }
     }
@@ -567,7 +572,7 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
 /// The marketplace to add: this build's repo when it is still on disk, else GitHub.
 pub fn plugin_install_fix() -> String {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let source = match repo.canonicalize() {
+    let source = match nimitz_core::os::canonical(&repo) {
         Ok(r) if r.join(".claude-plugin/marketplace.json").is_file() => out::quote(&r.to_string_lossy()),
         _ => "avatarye/claude-nimitz".to_string(),
     };
@@ -579,7 +584,7 @@ fn resolved(bin: &str) -> String {
     let Some(p) = (if bin.contains('/') { Some(PathBuf::from(bin)) } else { nimitz_core::env::which(bin).map(PathBuf::from) }) else {
         return bin.to_string();
     };
-    match p.canonicalize() {
+    match nimitz_core::os::canonical(&p) {
         Ok(real) if real != p => format!("{} -> {}", p.display(), real.display()),
         _ => p.to_string_lossy().into_owned(),
     }

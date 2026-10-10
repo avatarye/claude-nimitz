@@ -15,6 +15,7 @@ pub mod compat;
 pub mod config;
 pub mod env;
 pub mod migrate;
+pub mod os;
 pub mod registry;
 
 // core-sessions

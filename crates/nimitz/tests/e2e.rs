@@ -29,6 +29,8 @@
 //! Run: `NIMITZ_E2E=1 NIMITZ_E2E_LIVE_FLEETS=HOME,MAIN,ADMIRALTY cargo test -p nimitz --test e2e -- --test-threads=3`
 //! (the fleets the guard watches; unset, every fleet that is not `NIMITZ_E2E*`).
 //! The slow cases (#6 crash window, #7 lead attach) are marked.
+// Unix only for now: the real-Claude wrappers here are `#!/bin/sh` scripts.
+#![cfg(unix)]
 use serde_json::{json, Value};
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
@@ -64,7 +66,7 @@ fn cheap_model() -> String {
     let list = ["/etc/claude-code/managed-settings.json", "/Library/Application Support/ClaudeCode/managed-settings.json"]
         .into_iter()
         .find_map(|p| read(PathBuf::from(p)))
-        .or_else(|| read(home().join(".claude/settings.json")))
+        .or_else(|| read(home().join(".claude").join("settings.json")))
         .unwrap_or_default();
     let allows = |fam: &str| list.is_empty() || list.iter().any(|m| m == fam || m.contains(&format!("-{fam}")) || m.starts_with(fam));
     for fam in ["haiku", "sonnet"] {
@@ -82,7 +84,7 @@ fn home() -> PathBuf {
 /// The native `claude`: newest `~/.localtools/tools/claude-code/*/claude`, else
 /// the first on PATH, resolved (a wrapper script on PATH would add flags).
 fn native() -> String {
-    let mut vs: Vec<PathBuf> = std::fs::read_dir(home().join(".localtools/tools/claude-code"))
+    let mut vs: Vec<PathBuf> = std::fs::read_dir(home().join(".localtools").join("tools").join("claude-code"))
         .into_iter()
         .flatten()
         .flatten()
@@ -134,9 +136,9 @@ struct E2e {
 
 impl E2e {
     fn new(n: u32) -> E2e {
-        let base = home().join(".cache/nimitz-e2e").join(format!("nimitz-e2e-{n}-{}", std::process::id()));
+        let base = home().join(".cache").join("nimitz-e2e").join(format!("nimitz-e2e-{n}-{}", std::process::id()));
         std::fs::create_dir_all(&base).unwrap();
-        let base = base.canonicalize().unwrap();
+        let base = nimitz_core::os::canonical(&base).unwrap();
         for d in ["nimitz", "state", "bin", "ship"] {
             std::fs::create_dir_all(base.join(d)).unwrap();
         }
@@ -144,8 +146,8 @@ impl E2e {
         // `nimitz` on the members' PATH is THIS build (a wrapper that logs each
         // call to `nimitz-calls.log` first); `claude-cheap` adds the model to a
         // cold launch (the native binary stays flag-free for wakes)
-        executable(&base.join("bin/nimitz"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{EXE}' \"$@\"\n", base.join("nimitz-calls.log").display()));
-        executable(&base.join("bin/claude-cheap"), &format!("#!/bin/sh\nexec '{native}' --model '{}' \"$@\"\n", cheap_model()));
+        executable(&base.join("bin").join("nimitz"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{EXE}' \"$@\"\n", base.join("nimitz-calls.log").display()));
+        executable(&base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{native}' --model '{}' \"$@\"\n", cheap_model()));
         let b = |x: &str| base.join(x).to_string_lossy().into_owned();
         let vars: HashMap<String, String> = [
             ("HOME", home().to_string_lossy().into_owned()),
@@ -275,7 +277,7 @@ impl E2e {
             "env": {"NIMITZ_STATE": self.base.join("state"), "NIMITZ_HOME": self.base.join("nimitz"), "NIMITZ_MUX": "none", "HERDR_ENV": "", "NIMITZ_HERDR_SESSION": ""},
             "hooks": hooks,
         });
-        write(&dir.join(".claude/settings.json"), &serde_json::to_string_pretty(&s).unwrap());
+        write(&dir.join(".claude").join("settings.json"), &serde_json::to_string_pretty(&s).unwrap());
     }
 
     /// Fleet, squadron SQ and ship SHIP (folder `ship`, the given prompt and
@@ -286,7 +288,7 @@ impl E2e {
         self.ok(&["ship", "new", &self.ship(), "--dir", self.ship_dir().to_str().unwrap(), "--prompt", prompt, "--mode", mode, "--yes"]);
         self.settings(&self.ship_dir());
         self.settings(&self.fleet_dir().join("admiral"));
-        self.settings(&self.fleet_dir().join("squadrons/sq"));
+        self.settings(&self.fleet_dir().join("squadrons").join("sq"));
         self.leads_by_hand();
     }
 
@@ -296,7 +298,7 @@ impl E2e {
     /// and a lead that is live and clean is left alone (case 7 tests a lead's
     /// own launch).
     fn leads_by_hand(&self) {
-        let leads = [(self.fleet.clone(), self.fleet_dir().join("admiral")), (format!("{}/SQ", self.fleet), self.fleet_dir().join("squadrons/sq"))];
+        let leads = [(self.fleet.clone(), self.fleet_dir().join("admiral")), (format!("{}/SQ", self.fleet), self.fleet_dir().join("squadrons").join("sq"))];
         for (id, dir) in &leads {
             let idv = nimitz_core::Id(id.clone());
             let settings = self.no_mux(nimitz_core::claude::settings_json(&self.env, &idv, true));
@@ -375,11 +377,11 @@ impl E2e {
     }
 
     fn registry(&self) -> Value {
-        read_json(&self.base.join("state/registry.json"))
+        read_json(&self.base.join("state").join("registry.json"))
     }
 
     fn events(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.base.join("state/events.jsonl"))
+        std::fs::read_to_string(self.base.join("state").join("events.jsonl"))
             .unwrap_or_default()
             .lines()
             .filter_map(|l| serde_json::from_str(l).ok())
@@ -391,7 +393,7 @@ impl E2e {
     }
 
     fn deliveries(&self) -> Value {
-        read_json(&self.base.join("state/rules-delivered.json"))
+        read_json(&self.base.join("state").join("rules-delivered.json"))
     }
 
     /// Claude Code's pin list (`~/.claude/jobs/pins.json`).
@@ -575,7 +577,7 @@ impl Drop for E2e {
             let _ = nimitz_core::pins::unpin(&self.env, &own);
         }
         let tag = nimitz_core::evidence::project_dir_name(&self.base.to_string_lossy());
-        for e in std::fs::read_dir(home().join(".claude/projects")).into_iter().flatten().flatten() {
+        for e in std::fs::read_dir(home().join(".claude").join("projects")).into_iter().flatten().flatten() {
             if e.file_name().to_string_lossy().contains(&tag) {
                 let _ = std::fs::remove_dir_all(e.path());
             }
@@ -811,6 +813,7 @@ fn e2e_05_live_member_start_is_a_noop_and_a_hand_resume_is_a_swept_copy() {
 
 /// 6. (slow: the crash window) kill -9 of a working member: afterwards the
 /// member is live again under the same job, or parked; never a duplicate.
+#[cfg(unix)]
 #[test]
 fn e2e_06_slow_kill_9_of_a_working_member_never_makes_a_duplicate() {
     if !gated() {
@@ -827,7 +830,7 @@ fn e2e_06_slow_kill_9_of_a_working_member_never_makes_a_duplicate() {
     println!("[OK] killing pid {pid} (status {})", busy["status"]);
     unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     std::thread::sleep(secs(1));
-    let state = read_json(&home().join(".claude/jobs").join(&job).join("state.json"));
+    let state = read_json(&home().join(".claude").join("jobs").join(&job).join("state.json"));
     println!("state after kill -9: {} ", state["state"]);
     let t0 = std::time::Instant::now();
     let (code, out) = w.nz(&["start", &w.ship(), "--yes"]);
@@ -875,8 +878,8 @@ fn e2e_07_slow_lead_is_a_pinned_background_job_attach_detach_unpin() {
     let pins1 = w.pins();
     assert!(pins1.contains(&job), "{pins1:?}");
     assert!(pins0.iter().all(|p| pins1.contains(p)), "another pin was dropped: {pins0:?} -> {pins1:?}");
-    assert!(!home().join(".claude/jobs/pins.json.lock").exists(), "the pin lock was left behind");
-    assert_eq!(read_json(&w.base.join("state/pins.json")).as_array().map(|a| a.len()), Some(1));
+    assert!(!home().join(".claude").join("jobs").join("pins.json.lock").exists(), "the pin lock was left behind");
+    assert_eq!(read_json(&w.base.join("state").join("pins.json")).as_array().map(|a| a.len()), Some(1));
     // its first turn (CLAUDE.md, `nimitz status` through Bash(nimitz *)) ends idle
     let rested = w.wait(240, || w.member(&w.fleet).filter(|m| matches!(m["status"].as_str(), Some("Idle" | "NeedsYou")))).expect("admiral's first turn over");
     println!("admiral after its first turn: status {} reasons {}", rested["status"], rested["reasons"]);
@@ -901,7 +904,7 @@ fn e2e_07_slow_lead_is_a_pinned_background_job_attach_detach_unpin() {
     let pins2 = w.pins();
     assert!(!pins2.contains(&job), "the retired lead's pin stays: {pins2:?}");
     assert!(pins0.iter().all(|p| pins2.contains(p)), "another pin was dropped: {pins0:?} -> {pins2:?}");
-    assert_eq!(read_json(&w.base.join("state/pins.json")).as_array().map(|a| a.len()).unwrap_or(0), 0);
+    assert_eq!(read_json(&w.base.join("state").join("pins.json")).as_array().map(|a| a.len()).unwrap_or(0), 0);
     w.finish();
 }
 
@@ -918,7 +921,7 @@ fn e2e_08_rules_update_is_delivered_once_at_the_next_prompt() {
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
     // an older binary delivered v1 to this job: the record says so (this binary's
     // VERSION is newer; the same path a newer binary takes against an old record)
-    let p = w.base.join("state/rules-delivered.json");
+    let p = w.base.join("state").join("rules-delivered.json");
     let mut d = read_json(&p);
     assert_eq!(d[&job]["version"], nimitz_core::rules::VERSION, "{d}");
     d[&job]["version"] = json!(1);
@@ -967,7 +970,7 @@ fn e2e_09_a_ship_runs_nimitz_without_a_prompt_and_stop_is_refused() {
     let ev = w.events();
     assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {ev:?}");
     assert!(!ev.iter().any(|e| e["reason"].as_str().map(|r| r.starts_with("needs-you")).unwrap_or(false)), "{ev:?}");
-    assert!(std::fs::read_dir(w.base.join("state/needs")).map(|d| d.count() == 0).unwrap_or(true), "a needs-you notice was left");
+    assert!(std::fs::read_dir(w.base.join("state").join("needs")).map(|d| d.count() == 0).unwrap_or(true), "a needs-you notice was left");
     let text = std::fs::read_to_string(w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript")).unwrap();
     let calls = std::fs::read_to_string(w.base.join("nimitz-calls.log")).unwrap_or_default();
     for want in ["--version", "status", &format!("stop {other} --yes")] {
@@ -1072,7 +1075,7 @@ fn e2e_12_v1_registry_migrates_and_a_live_start_binds_into_v2() {
     w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
     // the 0.3.x file, word for word (round-2 `inside-registry.json` shape):
     // version 1, `current`, `bound_at`, no `job`; a tender identity
-    let p = w.base.join("state/registry.json");
+    let p = w.base.join("state").join("registry.json");
     let v2 = read_json(&p);
     let mut ids = serde_json::Map::new();
     for (k, rec) in v2["identities"].as_object().unwrap() {
@@ -1081,18 +1084,18 @@ fn e2e_12_v1_registry_migrates_and_a_live_start_binds_into_v2() {
     }
     ids.insert(
         format!("{}/SQ/~t1", w.fleet),
-        json!({"role": "tender", "name": format!("[{}.SQ]-COMMODORE/t1", w.fleet), "cwd": w.fleet_dir().join("squadrons/sq"),
+        json!({"role": "tender", "name": format!("[{}.SQ]-COMMODORE/t1", w.fleet), "cwd": w.fleet_dir().join("squadrons").join("sq"),
             "current": "00000000-0000-4000-8000-000000000001",
             "lineage": [{"session_id": "00000000-0000-4000-8000-000000000001", "bound_at": 1791334000.0, "via": "launch"}]}),
     );
     let v1 = json!({"version": 1, "machine": v2["machine"], "identities": ids});
     std::fs::write(&p, serde_json::to_string_pretty(&v1).unwrap()).unwrap();
-    let _ = std::fs::remove_file(w.base.join("state/registry.json.bak"));
+    let _ = std::fs::remove_file(w.base.join("state").join("registry.json.bak"));
     // a read migrates in memory and writes nothing
     let st = w.member(&w.ship()).unwrap();
     assert_eq!((st["status"].as_str(), st["session"]["short_id"].as_str()), (Some("Stopped"), Some(job.as_str())), "{st}");
     assert_eq!(read_json(&p)["version"], 1, "a read rewrote the file");
-    assert!(!w.base.join("state/registry.json.v1").exists());
+    assert!(!w.base.join("state").join("registry.json.v1").exists());
     // a live start: the job comes from the row that runs `current`; a native resume; v2 saved
     let out = w.ok(&["start", &w.ship(), "--yes"]);
     println!("{out}");
@@ -1109,7 +1112,7 @@ fn e2e_12_v1_registry_migrates_and_a_live_start_binds_into_v2() {
     assert_eq!((lineage[0]["via"].as_str(), lineage[0]["job"].as_str(), lineage[0]["session_id"].as_str()), (Some("launch"), Some(job.as_str()), Some(sid.as_str())), "the old entry got its job");
     assert!(r["identities"].get(format!("{}/SQ/~t1", w.fleet)).is_none(), "the tender is a member: {r}");
     assert_eq!(r["retired"][format!("{}/SQ/~t1", w.fleet)]["session"], "00000000-0000-4000-8000-000000000001");
-    let old = read_json(&w.base.join("state/registry.json.v1"));
+    let old = read_json(&w.base.join("state").join("registry.json.v1"));
     assert_eq!(old["version"], 1, "registry.json.v1 is not the old file: {old}");
     assert!(!w.issue_codes().iter().any(|(c, _)| matches!(c.as_str(), "registry.corrupt" | "lineage.broken")), "{:?}", w.issue_codes());
     w.finish();
@@ -1215,7 +1218,7 @@ fn e2e_14_raw_birth_id_wake_after_branch_returns_the_pre_branch_conversation() {
     w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["session_id"] == branch.as_str())).expect("status follows the branch");
     w.ok(&["stop", &w.ship(), "--yes"]);
     w.wait(30, || w.member(&w.ship()).filter(|m| m["session"]["pid"].is_null())).expect("ship stopped");
-    let state = read_json(&home().join(".claude/jobs").join(&job).join("state.json"));
+    let state = read_json(&home().join(".claude").join("jobs").join(&job).join("state.json"));
     println!("state.json after /branch + stop: sessionId {} resumeSessionId {}", state["sessionId"], state["resumeSessionId"]);
     // the daemon's own bookkeeping settles a moment after the process ended: a
     // wake inside that moment makes a copy ("already running in the background";
@@ -1354,7 +1357,7 @@ fn e2e_18_accept_clil3b_the_agent_views_draft_in_a_lead_folder_is_not_an_intrude
     // the agent view claims a draft spare in the admiral's folder
     let dir = w.fleet_dir().join("admiral").to_string_lossy().into_owned();
     let spare = w.wait(30, || {
-        std::fs::read_dir(home().join(".claude/sessions")).into_iter().flatten().flatten().map(|e| read_json(&e.path())).find(|v| v["spare"] == true && v["cwd"].as_str() == Some(dir.as_str()) && v["pid"].as_i64().map(nimitz_core::evidence::pid_alive).unwrap_or(false))
+        std::fs::read_dir(home().join(".claude").join("sessions")).into_iter().flatten().flatten().map(|e| read_json(&e.path())).find(|v| v["spare"] == true && v["cwd"].as_str() == Some(dir.as_str()) && v["pid"].as_i64().map(nimitz_core::evidence::pid_alive).unwrap_or(false))
     });
     let pane = w.pane();
     let spare = spare.unwrap_or_else(|| panic!("no draft spare in the admiral folder after /exit:\n{pane}"));
@@ -1551,6 +1554,7 @@ fn e2e_agent_view_re_execs_as_claude_agents() {
 /// typing, through the session's inbox socket (Claude Code's cross-session
 /// messaging; the line format Claude Code logs as its own inject example):
 /// does an idle background job take it as a turn, and what does it see?
+#[cfg(unix)]
 #[test]
 fn e2e_probe_inbox_delivery() {
     if !gated() || std::env::var("NIMITZ_E2E_PROBE").ok().as_deref() != Some("1") {
@@ -1601,7 +1605,7 @@ fn e2e_probe_inbox_delivery() {
             println!("PROBE inbox: transcript line: {}", &l[..l.len().min(1500)]);
         }
     }
-    let row = std::fs::read_to_string(home().join(".claude/jobs").join(m["session"]["short_id"].as_str().unwrap()).join("state.json")).unwrap_or_default();
+    let row = std::fs::read_to_string(home().join(".claude").join("jobs").join(m["session"]["short_id"].as_str().unwrap()).join("state.json")).unwrap_or_default();
     println!("PROBE inbox: job row detail: {}", serde_json::from_str::<Value>(&row).map(|v| v["detail"].clone()).unwrap_or_default());
     w.finish();
 }
@@ -1629,7 +1633,7 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
     assert_eq!(code, 0, "{out}");
     let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();
-    let rec = read_json(&w.base.join("state/inbox").join(format!("{sid}.json")));
+    let rec = read_json(&w.base.join("state").join("inbox").join(format!("{sid}.json")));
     let sock = rec["socket"].as_str().unwrap_or_else(|| panic!("no inbox recorded for {sid}: {rec}")).to_string();
     assert!(Path::new(&sock).exists() && rec["pid"] == m["session"]["pid"], "{rec}");
     let ups = w.events().iter().filter(|e| e["event"] == "UserPromptSubmit").count();
@@ -1653,6 +1657,7 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
 /// the commodore, then the admiral: the same session id, a new process on
 /// the binary the worker runs, its labels intact. The test's own members
 /// only; no multiplexer (`--jobs-only`).
+#[cfg(unix)]
 #[test]
 fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
     if !gated() {
@@ -1669,7 +1674,7 @@ fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
         let m = w.member(id).unwrap();
         (id.clone(), m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["pid"].as_i64().unwrap())
     }).collect();
-    let newer = w.base.join("bin/claude-newer");
+    let newer = w.base.join("bin").join("claude-newer");
     executable(&newer, &format!("#!/bin/sh\nfor a; do [ \"$a\" = --version ] && {{ echo '2.1.999 (Claude Code)'; exit 0; }}; done\nexec '{}' \"$@\"\n", w.native));
     let restore = |form: &str| {
         let mut c = w.nz_cmd();

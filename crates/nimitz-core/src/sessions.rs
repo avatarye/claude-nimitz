@@ -2517,19 +2517,18 @@ pub fn pending_relaunch(env: &Env, id: &Id) -> Option<String> {
     v.get("session_id").and_then(|s| s.as_str()).map(str::to_string)
 }
 
-/// An identity's start lock (flock on `NIMITZ_STATE/locks/<id>.lock`); released on drop.
+/// An identity's start lock (a file lock on `NIMITZ_STATE/locks/<id>.lock`); released on drop.
 pub struct IdLock(#[allow(dead_code)] std::fs::File);
 
 /// Take `id`'s start lock; the flag says whether another nimitz held it first.
 pub fn lock_identity(env: &Env, id: &Id) -> std::io::Result<(IdLock, bool)> {
-    use std::os::unix::io::AsRawFd;
     let dir = env.state.join("locks");
     std::fs::create_dir_all(&dir)?;
     let name: String = id.0.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(format!("{name}.lock")))?;
-    let waited = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0;
-    if waited && unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-        return Err(std::io::Error::last_os_error());
+    let waited = f.try_lock().is_err();
+    if waited {
+        f.lock()?;
     }
     Ok((IdLock(f), waited))
 }
@@ -2585,13 +2584,17 @@ fn claim_folder(env: &Env, id: &Id, cwd: Option<&str>, session_id: &str) {
 const STOP_EXIT_S: f64 = 10.0;
 
 /// Wait up to `limit` seconds for process `pid` to exit; true once it has.
-/// Pid 1 is never a worker (the sandbox's sessions record it as "alive").
+/// Pid 1 and the sandbox's `LIVE_PID` (4 on Windows) are never a worker (the
+/// sandbox's sessions record it as "alive"). The process is the one there
+/// when the wait began (`os::is_same_process`): a pid Windows reuses meanwhile
+/// is gone.
 fn worker_gone_within(pid: i64, limit: f64) -> bool {
-    if pid <= 1 {
+    if pid <= 1 || pid == crate::sandbox::LIVE_PID {
         return true;
     }
+    let created = crate::os::process_started_ms(pid);
     let until = std::time::Instant::now() + std::time::Duration::from_secs_f64(limit);
-    while crate::evidence::pid_alive(pid) {
+    while crate::os::is_same_process(pid, created) {
         if std::time::Instant::now() >= until {
             return false;
         }
@@ -2622,6 +2625,20 @@ pub fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sandbox's always-alive pid (1, or 4, System, on Windows) is never
+    /// waited on; a live process is waited on to the limit; a dead one is gone.
+    #[test]
+    fn a_stop_waits_only_for_a_real_worker() {
+        let t = std::time::Instant::now();
+        assert!(worker_gone_within(crate::sandbox::LIVE_PID, 5.0) && worker_gone_within(1, 5.0));
+        assert!(t.elapsed().as_secs_f64() < 1.0);
+        assert!(!worker_gone_within(std::process::id() as i64, 0.2), "this process is alive");
+        let mut c = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
+        let pid = c.id() as i64;
+        c.wait().unwrap();
+        assert!(worker_gone_within(pid, 2.0));
+    }
 
     /// The post-launch wait binds a job's SessionStart only when the job's row
     /// backs the labels on the line: a polluted daemon's job (no saved labels)

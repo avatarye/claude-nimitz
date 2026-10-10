@@ -77,6 +77,13 @@ pub fn editor_size(real: (u16, u16), inset: (u16, u16)) -> (u16, u16) {
 /// Run `f` with the terminal's size shrunk by `inset` (TIOCSWINSZ on stdout),
 /// then put the size back: an editor in Herdr's overlay keeps its last lines
 /// in view. A size the terminal set while the editor ran (a resize) is kept.
+/// (Windows: a console's size is not the program's to set; no inset.)
+#[cfg(windows)]
+fn with_inset_size<T>(_inset: (u16, u16), f: impl FnOnce() -> T) -> T {
+    f()
+}
+
+#[cfg(unix)]
 fn with_inset_size<T>(inset: (u16, u16), f: impl FnOnce() -> T) -> T {
     use std::os::unix::io::AsRawFd;
     if inset == (0, 0) {
@@ -105,8 +112,8 @@ fn with_inset_size<T>(inset: (u16, u16), f: impl FnOnce() -> T) -> T {
 fn edit_in_editor(text: &str) -> std::io::Result<String> {
     let path = std::env::temp_dir().join(format!("admiralty-edit-{}.md", std::process::id()));
     std::fs::write(&path, text)?;
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "vi".into());
-    let status = std::process::Command::new("sh").arg("-c").arg(format!("{editor} \"$1\"")).arg("sh").arg(&path).status()?;
+    let (editor, mut cmd) = nimitz_core::os::editor(&path);
+    let status = cmd.status()?;
     let out = std::fs::read_to_string(&path)?;
     let _ = std::fs::remove_file(&path);
     if status.success() {

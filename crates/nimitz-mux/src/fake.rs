@@ -275,7 +275,7 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             for p in world["panes"].as_array_mut().expect("panes") {
                 let sid = p.pointer("/agent_session/value").and_then(Value::as_str).map(String::from);
                 // the claude that ran there (an attach), else `claude` on PATH
-                let bin = p["foreground"].as_array().and_then(|a| a.first()).and_then(Value::as_str).filter(|b| b.ends_with("claude")).map(String::from).unwrap_or_else(|| "claude".into());
+                let bin = p["foreground"].as_array().and_then(|a| a.first()).and_then(Value::as_str).filter(|b| b.ends_with("claude") || b.ends_with("claude.exe")).map(String::from).unwrap_or_else(|| "claude".into());
                 let o = p.as_object_mut().expect("pane");
                 for k in ["agent_session", "agent_status", "agent", "pid"] {
                     o.remove(k);
@@ -283,8 +283,8 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                 o.insert("foreground".into(), json!(["zsh"]));
                 let (Some(sid), true) = (sid, resume && exec) else { continue };
                 let cwd = s(p, "cwd");
-                let mut c = std::process::Command::new("sh");
-                c.arg("-c").arg(format!("{bin} --resume {sid}")).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                let mut c = shell_line(&format!("{bin} --resume {sid}"));
+                c.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
                 if !cwd.is_empty() && Path::new(&cwd).is_dir() {
                     c.current_dir(&cwd);
                 }
@@ -293,7 +293,7 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                     p["agent_session"] = json!({"kind": "id", "source": "herdr:claude", "value": sid});
                     p["agent_status"] = json!("idle");
                     p["agent"] = json!("claude");
-                    p["pid"] = json!(1);
+                    p["pid"] = json!(nimitz_core::sandbox::LIVE_PID);
                 }
             }
             ok("__restart", json!({"type": "ok"}))
@@ -441,8 +441,8 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             // pane's folder, as Herdr's pty would (a `claude attach <job>` of
             // the fake claude wakes a parked job); its output is dropped
             if exec {
-                let mut c = std::process::Command::new("sh");
-                c.arg("-c").arg(&line).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                let mut c = shell_line(&line);
+                c.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
                 if !cwd.is_empty() && Path::new(&cwd).is_dir() {
                     c.current_dir(&cwd);
                 }
@@ -469,5 +469,45 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             eprintln!("[fake herdr] unsupported: {a:?}");
             2
         }
+    }
+}
+
+/// The command a pane's shell would run for `line`: `sh -c` on Unix; on
+/// Windows (no `sh` to count on) the line split into words, `'...'` and
+/// `"..."` quoting kept, and run directly.
+fn shell_line(line: &str) -> std::process::Command {
+    #[cfg(unix)]
+    {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(line);
+        c
+    }
+    #[cfg(not(unix))]
+    {
+        let mut words: Vec<String> = vec![];
+        let (mut cur, mut quote, mut any) = (String::new(), None::<char>, false);
+        for ch in line.chars() {
+            match (quote, ch) {
+                (Some(q), c) if c == q => quote = None,
+                (Some(_), c) => cur.push(c),
+                (None, '\'' | '"') => {
+                    quote = Some(ch);
+                    any = true;
+                }
+                (None, c) if c.is_whitespace() => {
+                    if any || !cur.is_empty() {
+                        words.push(std::mem::take(&mut cur));
+                    }
+                    any = false;
+                }
+                (None, c) => cur.push(c),
+            }
+        }
+        if any || !cur.is_empty() {
+            words.push(cur);
+        }
+        let mut c = std::process::Command::new(words.first().cloned().unwrap_or_default());
+        c.args(words.iter().skip(1));
+        c
     }
 }

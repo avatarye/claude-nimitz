@@ -191,7 +191,8 @@ pub fn unreadable_squadrons(f: &FleetOnDisk) -> Vec<(Id, PathBuf, Issue)> {
 /// The fleet as far as it loads: a squadron whose squadron.toml does not parse
 /// is left out (see `unreadable_squadrons`). Err only when fleet.toml itself is bad.
 pub fn load_fleet(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
-    let mut dir = env.fleet_dir(fleet);
+    // (a case-insensitive file system finds `Bad/` as `bad/`: take the name on disk)
+    let mut dir = crate::os::name_on_disk(&env.fleet_dir(fleet));
     if !dir.join("fleet.toml").is_file() {
         // a mis-cased folder (`Bad/` for BAD): load it, and let the layout rule say so
         if let Some(d) = fleet_dirs(env).into_iter().find(|d| fleet_of_dir(d) == fleet.to_uppercase()) {
@@ -223,7 +224,7 @@ fn load_fleet_for_write(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
 /// `CLAUDE.md`, `CLAUDE.local.md` and `.claude/CLAUDE.md` in `dir`: every
 /// session below it would inherit them.
 fn inherited_md(dir: &Path) -> Vec<PathBuf> {
-    ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"].iter().map(|n| dir.join(n)).filter(|p| p.is_file()).collect()
+    ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"].iter().map(|n| n.split('/').fold(dir.to_path_buf(), |p, c| p.join(c))).filter(|p| p.is_file()).collect()
 }
 
 fn layout_md_issue(p: &Path, id: Option<Id>) -> Issue {
@@ -461,11 +462,10 @@ fn find_ship<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<(&'a PathBuf, &'a Squadr
     Some((sd, sq, ship))
 }
 
+/// A folder as written, `~/` (on Windows also `~\`) under this process's
+/// home (`env::home`: `USERPROFILE` when cmd or PowerShell set no `HOME`).
 pub fn expand_dir(p: &str) -> PathBuf {
-    match p.strip_prefix("~/") {
-        Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/")).join(rest),
-        None => PathBuf::from(p),
-    }
+    crate::env::expand(p, &crate::env::home())
 }
 
 /// The folder of a member on this machine (resolves "managed"); None if not deployed here.
@@ -487,7 +487,7 @@ pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
                     Some(f.dir.join("ships").join(sq.squadron.to_lowercase()).join(ship.name.to_lowercase()))
                 }
                 // the real path when it exists: Claude Code records (and trusts) that one
-                d => Some(expand_dir(d)).map(|p| p.canonicalize().unwrap_or(p)),
+                d => Some(expand_dir(d)).map(|p| crate::os::canonical(&p).unwrap_or(p)),
             }
         }
     }
@@ -657,11 +657,21 @@ pub fn normalize_ship_dir(f: &FleetOnDisk, d: &str) -> Result<String, String> {
             return Err(format!("{d:?} puts the machine in the folder; use --dir {rest} --machine {label}"));
         }
     }
-    if d == "managed" || d.starts_with('/') || d.starts_with("~/") {
-        let t = d.trim_end_matches('/');
-        return Ok(if t.is_empty() { "/".into() } else { t.to_string() });
+    if d == "managed" || is_absolute_dir(d) {
+        let t = d.trim_end_matches(['/', '\\']);
+        // a root keeps its separator: `/`, `C:\`
+        return Ok(if t.is_empty() { d[..1].into() } else if t.len() == 2 && t.ends_with(':') { d[..3].to_string() } else { t.to_string() });
     }
     Err(format!("folder {d:?} is relative; give an absolute path, ~/..., or managed"))
+}
+
+/// An absolute folder or one under `~`, in either system's form: a ship's
+/// folders are written for every machine of the fleet (`/srv/x`, `~/x`,
+/// `~\x`, `C:\x`, `C:/x`, `\\server\share`).
+pub fn is_absolute_dir(d: &str) -> bool {
+    let b = d.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+    d.starts_with('/') || d.starts_with("~/") || d.starts_with("~\\") || d.starts_with(r"\\") || drive
 }
 
 /// Shared tail of ship new/set: check folders, rewrite squadron.toml, make managed folders.
@@ -1255,6 +1265,24 @@ pub(crate) mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// A ship folder under `~` expands through the env module's home (on
+    /// Windows `USERPROFILE` when cmd or PowerShell set no `HOME`), with `~\`
+    /// as well as `~/` there; never into a root-relative `\proj`.
+    #[test]
+    fn a_folder_under_home_expands_with_the_env_home() {
+        let home = crate::env::home();
+        assert_eq!(expand_dir("~/proj"), home.join("proj"));
+        assert_eq!(expand_dir("~"), home);
+        assert_eq!(expand_dir("/srv/x"), PathBuf::from("/srv/x"));
+        assert!(is_absolute_dir(r"~\proj"));
+        if cfg!(windows) {
+            assert_eq!(expand_dir(r"~\proj\a"), home.join(r"proj\a"));
+            assert!(expand_dir("~/proj").is_absolute());
+        } else {
+            assert_eq!(expand_dir(r"~\proj"), PathBuf::from(r"~\proj"), "on Unix a backslash is part of a name");
+        }
+    }
+
     /// A sandboxed Env rooted in a fresh temp dir; keep the TempDir alive.
     pub fn test_env() -> (tempfile::TempDir, Env) {
         let td = tempfile::tempdir().unwrap();
@@ -1461,7 +1489,7 @@ pub(crate) mod tests {
         let real = td.path().join("proj");
         std::fs::create_dir_all(&real).unwrap();
         let link = td.path().join("proj-link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
+        crate::os::symlink(&real, &link).unwrap();
         let mut f = load_fleet(&env, "MAIN").unwrap();
         for (name, d) in [("A", &real), ("B", &link)] {
             f.squadrons[0].1.ships.push(ShipDef { name: name.into(), prompt: Some("p".into()), dirs: [("test-mac".to_string(), d.to_string_lossy().into_owned())].into(), ..Default::default() });
@@ -1473,7 +1501,7 @@ pub(crate) mod tests {
         apply_ok(&env, &plan_ship_new(&env, "MAIN", "ARGOS", ShipDef { name: "A".into(), ..f.squadrons[0].1.ships[1].clone() }));
         assert!(plan_ship_new(&env, "MAIN", "ARGOS", ship).refusals.iter().any(|i| i.code == "config.layout"));
         // member_dir gives the real path
-        assert_eq!(member_dir(&env, &f, &Id::ship("MAIN", "ARGOS", "B")), Some(real.canonicalize().unwrap()));
+        assert_eq!(member_dir(&env, &f, &Id::ship("MAIN", "ARGOS", "B")), Some(crate::os::canonical(&real).unwrap()));
     }
 
     #[test]
@@ -1481,11 +1509,13 @@ pub(crate) mod tests {
         for rel in ["CLAUDE.md", "squadrons/CLAUDE.md", "ships/CLAUDE.md", ".claude/CLAUDE.md", "ships/argos/CLAUDE.local.md"] {
             let (_td, env) = test_env();
             make_fleet(&env);
-            let p = env.fleet_dir("MAIN").join(rel);
+            let p = rel.split('/').fold(env.fleet_dir("MAIN"), |p, c| p.join(c));
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, "x").unwrap();
             let issues = validate(&env, &load_fleet(&env, "MAIN").unwrap());
-            assert!(issues.iter().any(|i| i.code == "config.layout" && i.message.contains(&p.display().to_string())), "{rel}: {issues:?}");
+            // (either separator: the message joins `.claude/CLAUDE.md` as one part)
+            let slash = |s: &str| s.replace('\\', "/");
+            assert!(issues.iter().any(|i| i.code == "config.layout" && slash(&i.message).contains(&slash(&p.display().to_string()))), "{rel}: {issues:?}");
         }
         let (_td, env) = test_env();
         make_fleet(&env);

@@ -111,9 +111,11 @@ then.
   window) is not in the confirm the user saw. Narrowed (only a named first
   launch trusts); closing it needs `--yes` to carry the confirmed plan.
 - `nimitz up` (deprecated) still refuses an untrusted folder.
-- Windows, at the rebase onto windows-port: keys through `env::trust_key`
-  (`/` separators, case as on disk), `canonicalize`'s `\\?\` prefix,
-  PowerShell quoting in the fix, `case_exact_hint`.
+- Windows (done at the merge with dev, which carries the windows port):
+  each key is written in its trimmed form and `env::trust_key`'s `/` form,
+  the case as on disk (`env::canon` strips `\\?\` through `os::canonical`);
+  the fix quotes with double quotes there. `case_exact_hint` stays for fixes
+  that still run `claude` by hand. Unverified on a Windows machine.
 - NFC key forms (macOS) are not written.
 - Claude Code's gated "storage v5" config backend (a versioned update, not the
   lock directory) is not verified to notice nimitz's rename.

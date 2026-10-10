@@ -77,10 +77,26 @@ fn abs(dir: &Path) -> PathBuf {
     d
 }
 
-fn key(p: &Path) -> String {
+/// The forms of a key Claude Code may write for `p`: the trimmed path, and on
+/// Windows also `env::trust_key`'s `/` form (Claude Code writes `C:\x` and
+/// `C:/x`, and compares with case: the case is the path's, as on disk).
+fn key_forms(p: &Path) -> Vec<String> {
     let s = p.to_string_lossy();
-    let t = s.trim_end_matches('/');
-    if t.is_empty() { "/".into() } else { t.to_string() }
+    let mut out = vec![];
+    if cfg!(windows) {
+        let t = s.trim_end_matches(['\\', '/']);
+        out.push(if t.len() == 2 && t.ends_with(':') { format!("{t}\\") } else { t.to_string() });
+    }
+    let k = crate::env::trust_key(&s);
+    if !out.contains(&k) {
+        out.push(k);
+    }
+    out
+}
+
+#[cfg(test)]
+fn key(p: &Path) -> String {
+    crate::env::trust_key(&p.to_string_lossy())
 }
 
 /// The folder Claude Code asks about for `dir`: the git root that holds its
@@ -105,10 +121,11 @@ pub fn target(env: &Env, dir: &Path) -> PathBuf {
 /// The keys written for `dir`: the target as given and its real path.
 pub fn keys(env: &Env, dir: &Path) -> Vec<String> {
     let t = target(env, dir);
-    let mut out = vec![key(&t)];
-    let real = key(&crate::env::canon(&t));
-    if !out.contains(&real) {
-        out.push(real);
+    let mut out = vec![];
+    for k in key_forms(&t).into_iter().chain(key_forms(&crate::env::canon(&t))) {
+        if !out.contains(&k) {
+            out.push(k);
+        }
     }
     out
 }
@@ -139,9 +156,14 @@ pub fn too_broad(env: &Env, dir: &Path) -> Option<String> {
     Some(format!("nimitz does not trust {}{repo}: it is {why}, and trusting it lets every folder under it run its own .claude settings, hooks and MCP servers", t.display()))
 }
 
+/// A path as a shell word: POSIX quoting, or on Windows double quotes (cmd and
+/// PowerShell both take them for a plain argument).
 fn quoted(p: &Path) -> String {
     let s = p.to_string_lossy();
-    if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-~:+@".contains(c)) { s.into_owned() } else { format!("'{}'", s.replace('\'', r"'\''")) }
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-~:+@".contains(c) || (cfg!(windows) && c == '\\')) {
+        return s.into_owned();
+    }
+    if cfg!(windows) { format!("\"{}\"", s.replace('"', "\"\"")) } else { format!("'{}'", s.replace('\'', r"'\''")) }
 }
 
 /// The fix for an untrusted folder (`at`: the folder Claude Code asks about).

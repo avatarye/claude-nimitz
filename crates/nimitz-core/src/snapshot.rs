@@ -30,7 +30,9 @@ pub const TRANSIENT_GRACE_S: f64 = 120.0;
 #[derive(Default)]
 pub struct Cache {
     pub files: FileCache,
-    cli: Option<(f64, Vec<SessionRow>)>,
+    /// the CLI's rows, each with its process's creation time when read
+    /// (`os::process_started_ms`: Windows only)
+    cli: Option<(f64, Vec<(SessionRow, Option<i64>)>)>,
     version: Option<(f64, Option<String>)>,
 }
 
@@ -48,19 +50,29 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let cli_rows = match &cache.cli {
         Some((t, r)) if now - t < CLI_EVERY_S => r.clone(),
         _ => {
-            let r: Vec<SessionRow> =
-                crate::claude::agents(env).map(|v| v.into_iter().map(|r| r.to_session_row()).collect()).unwrap_or_default();
+            let r: Vec<(SessionRow, Option<i64>)> = crate::claude::agents(env)
+                .map(|v| {
+                    v.into_iter()
+                        .map(|r| {
+                            let r = r.to_session_row();
+                            let created = r.pid.and_then(crate::os::process_started_ms);
+                            (r, created)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             cache.cli = Some((now, r.clone()));
             r
         }
     };
-    // A cached CLI row may be up to CLI_EVERY_S old: its pid must still be alive.
+    // A cached CLI row may be up to CLI_EVERY_S old: its pid must still be
+    // alive, and (Windows) the very process the CLI saw, not a reuse of its pid.
     // A row the files show stopped but the CLI shows live (its session file
     // could not be read) is live.
     let cli_rows: Vec<SessionRow> = cli_rows
         .into_iter()
-        .map(|mut r| {
-            if r.pid.map(|p| !evidence::pid_alive(p)).unwrap_or(false) {
+        .map(|(mut r, created)| {
+            if r.pid.map(|p| !crate::os::is_same_process(p, created)).unwrap_or(false) {
                 r.pid = None;
                 r.status = None;
             }

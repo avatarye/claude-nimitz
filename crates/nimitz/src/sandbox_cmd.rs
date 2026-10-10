@@ -63,7 +63,7 @@ fn create(dir: &Path, herdr: bool) -> Result<i32, String> {
         out::error(&e);
         return Ok(1);
     }
-    let base = dir.canonicalize().map_err(|e| e.to_string())?;
+    let base = nimitz_core::os::canonical(&dir).map_err(|e| e.to_string())?;
     if herdr {
         let hb = base.join("herdr");
         std::fs::create_dir_all(&hb).map_err(|e| e.to_string())?;
@@ -72,10 +72,7 @@ fn create(dir: &Path, herdr: bool) -> Result<i32, String> {
         let mut world = nimitz_mux::fake::default_world();
         world["exec"] = serde_json::json!(true);
         nimitz_mux::fake::write_world(&hb, Some(&world)).map_err(|e| e.to_string())?;
-        let script = base.join("bin").join("herdr");
-        std::fs::write(&script, format!("#!/bin/sh\nexec '{}' __fake-herdr '{}' \"$@\"\n", exe.display(), hb.display())).map_err(|e| e.to_string())?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        nimitz_core::os::write_shim(&base.join("bin").join("herdr"), &exe, &["__fake-herdr".into(), hb.to_string_lossy().into_owned()]).map_err(|e| e.to_string())?;
     }
     out::ok(&format!("sandbox at {}{}", base.display(), if herdr { " (with a fake herdr)" } else { "" }));
     out::line(&format!("use it: eval \"$(nimitz sandbox env {})\"", base.display()));
@@ -85,8 +82,8 @@ fn create(dir: &Path, herdr: bool) -> Result<i32, String> {
 /// The env that points nimitz at the sandbox (and at its fake herdr, if any).
 pub fn env_vars(dir: &Path) -> BTreeMap<String, String> {
     let mut v: BTreeMap<String, String> = nimitz_core::sandbox::env_for(dir).into_iter().collect();
-    let base = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    let herdr = base.join("bin").join("herdr");
+    let base = nimitz_core::os::canonical(&dir).unwrap_or_else(|_| dir.to_path_buf());
+    let herdr = base.join("bin").join(nimitz_core::os::exe_name("herdr"));
     if herdr.is_file() {
         v.insert("NIMITZ_MUX".into(), "herdr".into());
         v.insert("NIMITZ_HERDR_BIN".into(), herdr.to_string_lossy().into_owned());
