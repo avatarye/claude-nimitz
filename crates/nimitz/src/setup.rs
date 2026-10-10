@@ -235,6 +235,12 @@ impl Report {
     fn ok(&mut self, s: &str) {
         out::ok(s);
     }
+    fn info(&mut self, s: &str, fix: Option<&str>) {
+        out::line(&format!("[INFO] {s}"));
+        if let Some(f) = fix {
+            out::line(&format!("       fix: {f}"));
+        }
+    }
     fn warn(&mut self, s: &str, fix: Option<&str>) {
         out::warn(s);
         if let Some(f) = fix {
@@ -531,6 +537,8 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         }
     }
 
+    formats_check(env, &mut r);
+
     if fix && !r.fixes.steps.is_empty() {
         let fixes = r.fixes.clone();
         match ctx.gate(&fixes) {
@@ -567,6 +575,46 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     } else {
         out::error(&format!("doctor: {} problem(s)", r.errors));
         1
+    }
+}
+
+/// Formats (docs/design/migrations.md): a step that failed (Error, with its
+/// log line and the backup), a file a newer nimitz wrote (Error), the local
+/// steps due (Info), the shared ones (Warn: each affects every machine), and
+/// the machines of each fleet no nimitz with the guard was seen on (Warn).
+fn formats_check(env: &nimitz_core::env::Env, r: &mut Report) {
+    use nimitz_core::formats::{self, Scope};
+    let mut quiet = true;
+    for f in formats::failed(env) {
+        let i = f.issue();
+        r.err(&format!("formats: {}", i.message), i.fix.as_deref());
+        quiet = false;
+    }
+    for t in formats::too_new(env) {
+        let i = t.issue(None);
+        r.err(&format!("formats: {}", i.message), i.fix.as_deref());
+        quiet = false;
+    }
+    let due = formats::due(env, formats::ARTIFACTS, None);
+    let local = formats::moved(&due.iter().filter(|d| d.scope == Scope::Local).cloned().collect::<Vec<_>>());
+    if !local.is_empty() {
+        let when = if formats::up_to_date(env) { "nimitz migrate --yes applies them" } else { "the next nimitz command applies them (or nimitz migrate --yes)" };
+        r.info(&format!("formats: local step(s) due here: {}; {when}", local.join(", ")), None);
+        quiet = false;
+    }
+    for d in due.iter().filter(|d| d.scope == Scope::Shared) {
+        let every = d.min_nimitz.map(|m| format!("each one needs nimitz >= {m} first")).unwrap_or_else(|| "update each one first".into());
+        r.warn(&format!("formats: {} {}->{} due on {} ({}); it affects every machine: {every}", d.artifact, d.from, d.to, d.file.display(), d.summary), Some("nimitz migrate --shared --yes"));
+        quiet = false;
+    }
+    for f in nimitz_core::config::load_all(env).0 {
+        for i in formats::machine_issues(&f) {
+            r.warn(&format!("{}: {}", f.config.fleet, i.message), i.fix.as_deref());
+            quiet = false;
+        }
+    }
+    if quiet {
+        r.ok(&format!("formats: every file here is at the format nimitz {} writes; every listed machine runs it", formats::NIMITZ));
     }
 }
 

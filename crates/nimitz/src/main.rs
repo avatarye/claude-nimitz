@@ -78,7 +78,8 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   init [--label L]                 data root, machine label, Claude Code's trust of the data root, doctor
   trust <folder>                   Claude Code's trust for the folder's git root (or the folder): yours alone,
                                    it lets the folder's .claude settings, hooks and MCP servers run
-  doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs
+  doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs,
+                                   the format steps due, the machines of each fleet
   rules [<id>]                     the role rules nimitz hands a member at session start
   status [--json]                  the fleets, their members and issues
   check [<id>]                     integrity check of <id>, its parents and everything under it
@@ -100,7 +101,11 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   inbox result <F/@S> <item>       the answer to your request [--token T] [--wait D] (exit 5: not yet, 6: dead)
   ask <F/@S> <question>            post a wiki.query.v1 and wait for the answer [--wait D: 100s by default, at most 10m] [--scope S] [--length L]
                                    (its item and token go to stderr at once: `nimitz inbox result` picks the answer up later)
+  migrate --plan|--yes [--shared]  the format steps due here (docs/design/migrations.md): local ones run by
+                                   themselves with the first command after an update; --shared runs the shared
+                                   ones (fleet.toml), which affect every machine: update each one first. Yours alone
   migrate fleet-skill <dir...> --into <F>
+                                   import old fleet-skill fleets
   hook <Event>                     Claude Code hook (reads stdin, always exits 0)
   sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)
 

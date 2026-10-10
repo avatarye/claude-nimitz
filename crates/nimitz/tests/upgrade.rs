@@ -168,6 +168,10 @@ fn a_0_4_0_install_migrates_on_its_first_command_then_runs() {
     assert!(!again.err.contains("migrated"), "{}", again.err);
     assert_eq!(w.json(&reg)["identities"], old["identities"]);
     assert_eq!(std::fs::read(w.state(&format!("registry.json.pre-{V}"))).unwrap(), before, "the backup is taken once");
+    // no fleet here holds an aide: nothing shared is due
+    let plan = w.run(&["migrate", "--plan"]);
+    assert_eq!(plan.code, 0, "{}{}", plan.out, plan.err);
+    assert!(plan.out.contains("nothing to migrate"), "{}", plan.out);
 }
 
 /// The hook is on Claude Code's hot path: it never migrates, and it reads
@@ -200,7 +204,57 @@ fn a_newer_nimitz_state_stops_every_command_but_doctor() {
     let s = w.run(&["status"]);
     assert_eq!(s.code, 1, "{}{}", s.out, s.err);
     assert!(s.err.contains(&format!("{} needs nimitz >= 99.0.0 (this machine runs {V}): update nimitz here", reg.display())), "{}", s.err);
+    let d = w.run(&["doctor"]);
+    assert!(d.out.contains("needs nimitz >= 99.0.0"), "{}{}", d.out, d.err);
     assert_eq!(std::fs::read(&reg).unwrap(), raw_reg, "never rewritten");
     assert_eq!(w.json(&w.state("formats.json"))["nimitz"], "99.0.0", "the newer mark stays");
     assert!(!std::fs::read_dir(w.base.join("state")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("corrupt")));
+}
+
+/// A fleet that holds `[[aide]]` and no stamp: the shared step is due, said
+/// by `migrate --plan`, doctor and check, run only by `migrate --shared
+/// --yes` (yours alone); a fleet stamped for a newer nimitz is refused.
+#[test]
+fn the_shared_step_waits_for_migrate_shared_yes() {
+    let w = World::new(false);
+    let fleet_toml = w.base.join("nimitz/main/fleet.toml");
+    let kb = w.base.join("dirs/main/kb");
+    std::fs::create_dir_all(&kb).unwrap();
+    let ok = w.run(&["machine", "add", "MAIN", "far", "--hostname", "far-box", "--yes"]);
+    assert_eq!(ok.code, 0, "{}{}", ok.out, ok.err);
+    let mut text = std::fs::read_to_string(&fleet_toml).unwrap();
+    text.push_str(&format!("\n[[aide]]\nname = \"KB\"\n\n[aide.dirs]\nsandbox = {:?}\n", kb.to_string_lossy()));
+    std::fs::write(&fleet_toml, &text).unwrap();
+
+    let plan = w.run(&["migrate", "--plan"]);
+    assert_eq!(plan.code, 0, "{}{}", plan.out, plan.err);
+    assert!(plan.out.contains(&format!("  shared  fleet 1->2  {}", fleet_toml.display())), "{}", plan.out);
+    assert!(plan.out.contains("affects every machine: each one needs nimitz >= 0.5.0 first"), "{}", plan.out);
+    let doctor = w.run(&["doctor"]);
+    assert!(doctor.out.contains("[WARN] formats: fleet 1->2 due on") && doctor.out.contains("fix: nimitz migrate --shared --yes"), "{}", doctor.out);
+    assert!(doctor.out.contains("[WARN] MAIN: machine far: no nimitz >= 0.5.0 seen; update it: it cannot load this fleet's [[aide]]"), "{}", doctor.out);
+    assert!(w.run(&["check", "MAIN"]).out.contains("format.shared"));
+    // the local run, and a member, never touch it
+    let local = w.run(&["migrate", "--yes"]);
+    assert_eq!(local.code, 0, "{}{}", local.out, local.err);
+    assert!(local.out.contains("migrate --shared --yes"), "{}", local.out);
+    let member = raw(&w.vars, &["migrate", "--shared", "--yes"], &[("NIMITZ_ID", "MAIN"), ("NIMITZ_ROLE", "admiral")], None);
+    assert_eq!(member.code, 1, "{}{}", member.out, member.err);
+    assert!(member.out.contains("yours alone"), "{}", member.out);
+    assert_eq!(std::fs::read_to_string(&fleet_toml).unwrap(), text);
+    // yours: stamped, the rest as it was, the backup beside it
+    let shared = w.run(&["migrate", "--shared", "--yes"]);
+    assert_eq!(shared.code, 0, "{}{}", shared.out, shared.err);
+    assert_eq!(std::fs::read_to_string(&fleet_toml).unwrap(), format!("format = 2\nmin_nimitz = \"0.5.0\"\n{text}"));
+    assert_eq!(std::fs::read_to_string(w.base.join(format!("nimitz/main/fleet.toml.pre-{V}"))).unwrap(), text);
+    assert!(w.run(&["migrate", "--plan"]).out.contains("nothing to migrate"));
+    assert!(!w.run(&["check", "MAIN"]).out.contains("format.shared"));
+    // a later nimitz's stamp: refused before the strict parse, never rewritten
+    let future = format!("min_nimitz = \"99.0.0\"\nfuture_key = 1\n{text}");
+    std::fs::write(&fleet_toml, &future).unwrap();
+    let st = w.run(&["status"]);
+    assert!(st.out.contains(&format!("{} needs nimitz >= 99.0.0 (this machine runs {V}): update nimitz here", fleet_toml.display())), "{}{}", st.out, st.err);
+    let set = w.run(&["fleet", "set", "MAIN", "--admiral-mode", "plan", "--yes"]);
+    assert_ne!(set.code, 0, "{}{}", set.out, set.err);
+    assert_eq!(std::fs::read_to_string(&fleet_toml).unwrap(), future);
 }
