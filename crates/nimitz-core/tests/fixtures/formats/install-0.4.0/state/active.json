@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "at": 1791667200.6646078,
+  "machine": "sandbox",
+  "herdr": null,
+  "members": {
+    "MAIN": {
+      "job": "c46d79b9",
+      "session": "c46d79b9-5b0c-4d1e-9f2a-000000000001",
+      "status": "busy",
+      "attached": false,
+      "place": null
+    },
+    "MAIN/ARGOS": {
+      "job": "6634f372",
+      "session": "6634f372-5b0c-4d1e-9f2a-000000000002",
+      "status": "idle",
+      "attached": false,
+      "place": null
+    },
+    "MAIN/ARGOS/CLEAN": {
+      "job": "2287e6e4",
+      "session": "2287e6e4-5b0c-4d1e-9f2a-000000000004",
+      "status": "idle",
+      "attached": false,
+      "place": null
+    },
+    "MAIN/ARGOS/DRIFT": {
+      "job": "4d4f609d",
+      "session": "4d4f609d-5b0c-4d1e-9f2a-000000000005",
+      "status": "idle",
+      "attached": false,
+      "place": null
+    },
+    "MAIN/ARGOS/MISLABEL": {
+      "job": "dbf51549",
+      "session": "dbf51549-5b0c-4d1e-9f2a-000000000011",
+      "status": "idle",
+      "attached": false,
+      "place": null
+    },
+    "MAIN/ARGOS/NOLABEL": {
+      "job": "ef16da56",
+      "session": "ef16da56-5b0c-4d1e-9f2a-000000000006",
+      "status": "idle",
+      "attached": false,
+      "place": null
+    },
+    "MAIN/ARGOS/STOPPED": {
+      "job": "d5a94781",
+      "session": "d5a94781-5b0c-4d1e-9f2a-000000000009",
+      "status": "idle",
+      "attached": false,
+      "place": null
+    },
+    "MAIN/ARGOS/TWIN": {
+      "job": "abe1cdc8",
+      "session": "abe1cdc8-5b0c-4d1e-9f2a-000000000008",
+      "status": "busy",
+      "attached": false,
+      "place": null
+    },
+    "MAIN/BOREAL": {
+      "job": "80fc6d2b",
+      "session": "80fc6d2b-5b0c-4d1e-9f2a-000000000003",
+      "status": "idle",
+      "attached": false,
+      "place": null
+    }
+  }
+}

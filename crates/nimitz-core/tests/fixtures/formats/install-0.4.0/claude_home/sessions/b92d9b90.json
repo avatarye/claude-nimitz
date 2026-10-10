@@ -1,0 +1,14 @@
+{
+  "bridgeSessionId": null,
+  "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/taken",
+  "entrypoint": "cli",
+  "jobId": "b92d9b90",
+  "kind": "bg",
+  "name": "[MAIN.ARGOS]-TAKEN",
+  "pid": 1,
+  "sessionId": "b92d9b90-5b0c-4d1e-9f2a-000000000010",
+  "startedAt": 1791663595052,
+  "status": "idle",
+  "statusUpdatedAt": 1791667135052,
+  "version": "2.1.288"
+}

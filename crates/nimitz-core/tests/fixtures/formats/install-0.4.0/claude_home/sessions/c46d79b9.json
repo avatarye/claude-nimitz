@@ -1,0 +1,14 @@
+{
+  "bridgeSessionId": null,
+  "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/admiral",
+  "entrypoint": "cli",
+  "jobId": "c46d79b9",
+  "kind": "bg",
+  "name": "[MAIN]-ADMIRAL",
+  "pid": 1,
+  "sessionId": "c46d79b9-5b0c-4d1e-9f2a-000000000001",
+  "startedAt": 1791663595052,
+  "status": "busy",
+  "statusUpdatedAt": 1791667135052,
+  "version": "2.1.288"
+}

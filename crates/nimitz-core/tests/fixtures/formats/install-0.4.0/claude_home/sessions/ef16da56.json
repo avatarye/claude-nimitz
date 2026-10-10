@@ -1,0 +1,14 @@
+{
+  "bridgeSessionId": null,
+  "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/nolabel",
+  "entrypoint": "cli",
+  "jobId": "ef16da56",
+  "kind": "bg",
+  "name": "[MAIN.ARGOS]-NOLABEL",
+  "pid": 1,
+  "sessionId": "ef16da56-5b0c-4d1e-9f2a-000000000006",
+  "startedAt": 1791663595052,
+  "status": "idle",
+  "statusUpdatedAt": 1791667135052,
+  "version": "2.1.288"
+}

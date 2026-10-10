@@ -1,0 +1,263 @@
+{
+  "version": 2,
+  "machine": "sandbox-host",
+  "updated_at": 1791667195.0871747,
+  "identities": {
+    "BETA": {
+      "role": "admiral",
+      "name": "[BETA]-ADMIRAL",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/beta/admiral",
+      "session": "e44408bb-5b0c-4d1e-9f2a-000000000013",
+      "lineage": [
+        {
+          "session_id": "e44408bb-5b0c-4d1e-9f2a-000000000013",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN": {
+      "role": "admiral",
+      "name": "[MAIN]-ADMIRAL",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/admiral",
+      "job": "c46d79b9",
+      "session": "c46d79b9-5b0c-4d1e-9f2a-000000000001",
+      "lineage": [
+        {
+          "session_id": "c46d79b9-5b0c-4d1e-9f2a-000000000001",
+          "job": "c46d79b9",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS": {
+      "role": "commodore",
+      "name": "[MAIN.ARGOS]-COMMODORE",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/squadrons/argos",
+      "job": "6634f372",
+      "session": "6634f372-5b0c-4d1e-9f2a-000000000002",
+      "lineage": [
+        {
+          "session_id": "6634f372-5b0c-4d1e-9f2a-000000000002",
+          "job": "6634f372",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/BARE": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-BARE",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/bare",
+      "job": "7470c13a",
+      "session": "7470c13a-5b0c-4d1e-9f2a-00000000000a",
+      "lineage": [
+        {
+          "session_id": "7470c13a-5b0c-4d1e-9f2a-00000000000a",
+          "job": "7470c13a",
+          "via": "relaunch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/BROKEN": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-BROKEN",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/broken",
+      "session": "1f1a21d7-5b0c-4d1e-9f2a-00000000000f",
+      "lineage": [
+        {
+          "session_id": "1f1a21d7-5b0c-4d1e-9f2a-00000000000f",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/CLEAN": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-CLEAN",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/clean",
+      "job": "2287e6e4",
+      "session": "2287e6e4-5b0c-4d1e-9f2a-000000000004",
+      "lineage": [
+        {
+          "session_id": "2287e6e4-5b0c-4d1e-9f2a-000000000004",
+          "job": "2287e6e4",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/COPIES": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-COPIES",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/copies",
+      "job": "30c3b4ac",
+      "session": "30c3b4ac-5b0c-4d1e-9f2a-00000000000c",
+      "lineage": [
+        {
+          "session_id": "30c3b4ac-5b0c-4d1e-9f2a-00000000000c",
+          "job": "30c3b4ac",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        },
+        {
+          "session_id": "528b2e65-5b0c-4d1e-9f2a-00000000000d",
+          "job": "528b2e65",
+          "via": "relaunch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        },
+        {
+          "session_id": "fd52a81e-5b0c-4d1e-9f2a-00000000000e",
+          "job": "fd52a81e",
+          "via": "relaunch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/DRIFT": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-DRIFT",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/drift",
+      "job": "4d4f609d",
+      "session": "4d4f609d-5b0c-4d1e-9f2a-000000000005",
+      "lineage": [
+        {
+          "session_id": "4d4f609d-5b0c-4d1e-9f2a-000000000005",
+          "job": "4d4f609d",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/FAILED": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-FAILED",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/failed",
+      "job": "96383af3",
+      "session": "96383af3-5b0c-4d1e-9f2a-00000000000b",
+      "lineage": [
+        {
+          "session_id": "96383af3-5b0c-4d1e-9f2a-00000000000b",
+          "job": "96383af3",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/MISLABEL": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-MISLABEL",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/mislabel",
+      "job": "dbf51549",
+      "session": "dbf51549-5b0c-4d1e-9f2a-000000000011",
+      "lineage": [
+        {
+          "session_id": "dbf51549-5b0c-4d1e-9f2a-000000000011",
+          "job": "dbf51549",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/NOLABEL": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-NOLABEL",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/nolabel",
+      "job": "ef16da56",
+      "session": "ef16da56-5b0c-4d1e-9f2a-000000000006",
+      "lineage": [
+        {
+          "session_id": "ef16da56-5b0c-4d1e-9f2a-000000000006",
+          "job": "ef16da56",
+          "via": "relaunch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/STOPPED": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-STOPPED",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/stopped",
+      "job": "d5a94781",
+      "session": "d5a94781-5b0c-4d1e-9f2a-000000000009",
+      "lineage": [
+        {
+          "session_id": "d5a94781-5b0c-4d1e-9f2a-000000000009",
+          "job": "d5a94781",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/ARGOS/TWIN": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-TWIN",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/twin",
+      "job": "abe1cdc8",
+      "session": "abe1cdc8-5b0c-4d1e-9f2a-000000000008",
+      "lineage": [
+        {
+          "session_id": "09de540f-5b0c-4d1e-9f2a-000000000007",
+          "job": "09de540f",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        },
+        {
+          "session_id": "abe1cdc8-5b0c-4d1e-9f2a-000000000008",
+          "job": "abe1cdc8",
+          "via": "relaunch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    },
+    "MAIN/BOREAL": {
+      "role": "commodore",
+      "name": "[MAIN.BOREAL]-COMMODORE",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/squadrons/boreal",
+      "job": "80fc6d2b",
+      "session": "80fc6d2b-5b0c-4d1e-9f2a-000000000003",
+      "lineage": [
+        {
+          "session_id": "80fc6d2b-5b0c-4d1e-9f2a-000000000003",
+          "job": "80fc6d2b",
+          "via": "launch",
+          "at": 1791667195.0526922,
+          "home": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz"
+        }
+      ]
+    }
+  },
+  "retired": {
+    "MAIN/ARGOS/~fixci": {
+      "role": "ship",
+      "name": "[MAIN.ARGOS]-COMMODORE/fixci",
+      "cwd": "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/nimitz/main/squadrons/argos",
+      "session": "45bc8f02-5b0c-4d1e-9f2a-000000000012",
+      "lineage": [
+        {
+          "session_id": "45bc8f02-5b0c-4d1e-9f2a-000000000012",
+          "via": "launch",
+          "at": 1791667195.0526922
+        }
+      ]
+    }
+  }
+}

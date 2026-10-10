@@ -1,0 +1,172 @@
+squadron = "ARGOS"
+brief = "SQUADRON.md"
+comms = "open"
+
+[[ships]]
+name = "CLEAN"
+prompt = "You are [MAIN.ARGOS]-CLEAN."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/clean"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "DRIFT"
+prompt = "You are [MAIN.ARGOS]-DRIFT."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/drift"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "NOLABEL"
+prompt = "You are [MAIN.ARGOS]-NOLABEL."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/nolabel"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "TWIN"
+prompt = "You are [MAIN.ARGOS]-TWIN."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/twin"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "STOPPED"
+prompt = "You are [MAIN.ARGOS]-STOPPED."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/stopped"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "BARE"
+prompt = "You are [MAIN.ARGOS]-BARE."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/bare"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "FRESH"
+prompt = "You are [MAIN.ARGOS]-FRESH."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/fresh"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "FAILED"
+prompt = "You are [MAIN.ARGOS]-FAILED."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/failed"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "COPIES"
+prompt = "You are [MAIN.ARGOS]-COPIES."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/copies"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "GONE"
+prompt = "You are [MAIN.ARGOS]-GONE."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/gone"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "UNTRUSTED"
+prompt = "You are [MAIN.ARGOS]-UNTRUSTED."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/untrusted"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "ELSEWHERE"
+prompt = "You are [MAIN.ARGOS]-ELSEWHERE."
+depends_on = []
+
+[ships.dirs]
+sandbox = "managed"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "NOPROMPT"
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/noprompt"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "BROKEN"
+prompt = "You are [MAIN.ARGOS]-BROKEN."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/broken"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "TAKEN"
+prompt = "You are [MAIN.ARGOS]-TAKEN."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/taken"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "MISLABEL"
+prompt = "You are [MAIN.ARGOS]-MISLABEL."
+depends_on = []
+
+[ships.dirs]
+sandbox = "/home/user/.claude/jobs/9aacf927/tmp/mig/world040/dirs/main/mislabel"
+
+[ships.permission_mode]
+
+[[ships]]
+name = "LATE"
+prompt = "hi"
+depends_on = []
+
+[ships.dirs]
+sandbox = "managed"
+
+[ships.permission_mode]
