@@ -34,3 +34,4 @@ pub mod sessions;
 pub mod snapshot;
 pub mod queue;
 pub mod sha256;
+pub mod trust;

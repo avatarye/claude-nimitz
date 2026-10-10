@@ -18,12 +18,12 @@ fn below(member: &Id, target: Option<&Id>) -> bool {
 }
 
 /// The trust file next to Claude Code's home (`~/.claude` -> `~/.claude.json`).
-fn trust_file(env: &Env) -> std::path::PathBuf {
+pub(crate) fn trust_file(env: &Env) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.json", env.claude_home.display()))
 }
 
 /// What one check run reads once for every member's folder: the trust
-/// file's `projects` table and the trust roots (`evidence::folder_trusted`).
+/// files' `projects` tables and the trust roots (`evidence::folder_trusted`).
 /// A run sees the files as they were when it first read them.
 #[derive(Default)]
 pub struct TrustCache {
@@ -31,11 +31,24 @@ pub struct TrustCache {
     projects: Option<Option<serde_json::Map<String, serde_json::Value>>>,
 }
 
-/// The `projects` table of Claude Code's trust file, or None when it cannot be read.
+/// The `projects` tables of Claude Code's config files (`trust::files`, the
+/// set `evidence::folder_trusted` reads), merged: a key is accepted when any
+/// file accepts it. None when no file can be read.
 fn trust_projects(env: &Env) -> Option<serde_json::Map<String, serde_json::Value>> {
-    let raw = std::fs::read_to_string(trust_file(env)).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    v.get("projects")?.as_object().cloned()
+    let accepted = |e: &serde_json::Value| e.get("hasTrustDialogAccepted").and_then(|b| b.as_bool()) == Some(true);
+    let mut out: Option<serde_json::Map<String, serde_json::Value>> = None;
+    for f in crate::trust::files(env) {
+        let Some(projects) = std::fs::read_to_string(f).ok().and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok()).and_then(|v| v.get("projects")?.as_object().cloned()) else {
+            continue;
+        };
+        let all = out.get_or_insert_with(Default::default);
+        for (k, e) in projects {
+            if !all.get(&k).is_some_and(accepted) {
+                all.insert(k, e);
+            }
+        }
+    }
+    out
 }
 
 /// Has Claude Code already started a session in exactly this folder (a
@@ -86,7 +99,9 @@ fn ran_since_repo(env: &Env, dir: &Path) -> bool {
 
 /// How Claude Code will treat `dir` (BUG-50; evidence over prediction):
 /// - trusted: inside NIMITZ_HOME when the data root is trusted (nimitz init
-///   asks for it; checked on its real path); a trust entry on the
+///   asks for it; the real path only, and outside any repository other than
+///   the data root's own: Claude Code wants a repository's own trust, and
+///   resolves a link out of the data root first); a trust entry on the
 ///   folder's repository itself (git root or below); Claude Code ran a session
 ///   in this exact folder (inside a repository: since the repository appeared,
 ///   M16); or, outside git, the folder or a parent accepted.
@@ -94,14 +109,16 @@ fn ran_since_repo(env: &Env, dir: &Path) -> bool {
 ///   may not be trusted (real Claude Code refused both, with no session there).
 /// - nothing accepts it: Error.
 ///
-/// Keys are compared as given and as real paths (/tmp is /private/tmp). An
-/// unreadable trust file is unknown, not untrusted: no issue.
+/// Keys are compared as given and as real paths (/tmp is /private/tmp). With
+/// no config file readable, trust is unknown, not untrusted: no issue.
 fn trust_issue(env: &Env, cache: &mut TrustCache, id: &Id, dir: &Path) -> Option<Issue> {
     let real = crate::env::canon(dir);
     let home = crate::env::canon(&env.home);
     // inside NIMITZ_HOME: trusted when the data root is (nimitz init asks for
-    // it); when it is not, the fix names the data root, which covers them all
-    let in_home = dir.starts_with(&env.home) || real.starts_with(&home);
+    // it); when it is not, the fix names the data root, which covers them all.
+    // The real path (a link out of the data root is judged where it leads),
+    // and not inside a repository of its own (`trust::target` agrees).
+    let in_home = real.starts_with(&home) && crate::env::git_root(&real).is_none_or(|r| r == home);
     if in_home && crate::evidence::folder_trusted(env, &mut cache.files, &home.to_string_lossy()) {
         return None;
     }
@@ -170,13 +187,22 @@ fn case_twin(projects: &serde_json::Map<String, serde_json::Value>, keys: &[Path
 /// with "Workspace not trusted".
 pub fn untrusted_fix(dir: &Path) -> String {
     let at = crate::env::git_root(dir).unwrap_or_else(|| crate::env::canon(dir));
-    format!("run `claude` once in {} and accept the trust prompt{}", at.display(), case_exact_hint(&at))
+    crate::trust::fix(&at)
+}
+
+/// `trust_issue`'s verdict for a folder alone (no member): Error, Warn or
+/// trusted (None). For `trust::untrusted`.
+pub(crate) fn trust_verdict(env: &Env, dir: &Path) -> Option<Severity> {
+    // a fresh read: a trust written a moment ago counts
+    trust_issue(env, &mut TrustCache::default(), &Id(String::new()), dir).map(|i| i.severity)
 }
 
 /// Windows: how to start `claude` in `dir` spelled exactly as on disk.
 /// Claude Code stores the trust under the folder as the shell spelled it, and
 /// a cmd.exe with clink/zoxide hands it `c:\...`; a background launch looks
 /// it up as `C:\...`, with case. PowerShell's Set-Location keeps the case.
+/// (`nimitz trust` writes the on-disk form itself; this is for a fix that
+/// still runs `claude` by hand.)
 pub fn case_exact_hint(dir: &Path) -> String {
     if cfg!(windows) {
         format!(" (spelled exactly, from PowerShell: Set-Location -LiteralPath '{}'; claude)", dir.display())
@@ -588,7 +614,7 @@ pub(crate) mod tests {
         set(&[&home]);
         let i = folder_issue(&env, &id, wt.join("src").to_str().unwrap()).expect("home trust does not cover a git root");
         assert_eq!(i.code, "folder.untrusted");
-        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt{}", wt.display(), case_exact_hint(&wt)).as_str()));
+        assert_eq!(i.fix.as_deref(), Some(format!("nimitz trust {}", wt.display()).as_str()));
         set(&[&wt]);
         assert!(folder_issue(&env, &id, wt.join("src").to_str().unwrap()).is_none());
         // outside git, the home's trust still covers it
@@ -654,7 +680,7 @@ pub(crate) mod tests {
         let i = folder_issue(&env, &id, ship.to_str().unwrap()).expect("the old runs do not cover the new repository");
         assert_eq!((i.code.as_str(), i.severity), ("folder.untrusted", Severity::Warn));
         assert!(i.message.contains("git repository"), "{}", i.message);
-        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt{}", ship.display(), case_exact_hint(&ship)).as_str()));
+        assert_eq!(i.fix.as_deref(), Some(format!("nimitz trust {}", ship.display()).as_str()));
         // (this needs birth times; without them the old answer, "ran here", stands)
         assert!(crate::env::git_birth(&ship).is_some(), "the test file system keeps no birth time");
         // a later write to the old transcript is no proof either: only a start is
@@ -751,6 +777,85 @@ pub(crate) mod tests {
         let root = crate::env::canon(&env.home).display().to_string().replace('\\', "/");
         std::fs::write(&trust, serde_json::json!({"projects": {root: {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
         assert!(check(&env, &snap_for(&env, managed.to_str()), None).is_empty());
+    }
+
+    /// The data root's trust covers what really is in it, outside git: a
+    /// managed folder that became a repository wants its own trust, and a
+    /// link in the data root is judged where it leads. `trust::target` names
+    /// the same folder the fix does.
+    #[test]
+    fn the_data_roots_trust_covers_neither_a_repository_in_it_nor_a_link_out_of_it() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let root = crate::env::canon(&env.home);
+        std::fs::write(trust_file(&env), serde_json::json!({"projects": {root.display().to_string(): {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let managed = crate::config::load_fleet(&env, "MAIN").unwrap().dir.join("ships/argos/argos");
+        std::fs::create_dir_all(&managed).unwrap();
+        assert!(folder_issue(&env, &id, managed.to_str().unwrap()).is_none(), "under the trusted data root");
+        // `git init` there: Claude Code asks about the repository
+        std::fs::create_dir_all(managed.join(".git")).unwrap();
+        let i = folder_issue(&env, &id, managed.to_str().unwrap()).expect("the data root's trust does not cover a repository in it");
+        assert_eq!((i.code.as_str(), i.severity), ("folder.untrusted", Severity::Warn));
+        assert_eq!(crate::trust::shown(&env, &managed), crate::env::canon(&managed));
+        assert_eq!(i.fix, Some(crate::trust::fix(&crate::trust::target(&env, &managed))));
+        assert_eq!(crate::trust::untrusted(&env, &managed), Some(Severity::Warn));
+        // a link in the data root to a folder outside it
+        let outside = crate::env::canon(td.path()).join("outside/proj");
+        std::fs::create_dir_all(&outside).unwrap();
+        let link = env.home.join("linked");
+        crate::os::symlink(&outside, &link).unwrap();
+        let i = folder_issue(&env, &id, link.to_str().unwrap()).expect("a link out of the data root is not covered by it");
+        assert_eq!((i.code.as_str(), i.severity), ("folder.untrusted", Severity::Error));
+        assert_eq!(crate::trust::shown(&env, &link), outside);
+        assert_eq!(i.fix, Some(crate::trust::fix(&crate::trust::target(&env, &link))));
+        assert!(i.fix.as_deref().unwrap().contains(outside.to_str().unwrap()), "{i:?}");
+        // the data root itself as a repository is still the data root's trust
+        std::fs::remove_dir_all(managed.join(".git")).unwrap();
+        std::fs::create_dir_all(env.home.join(".git")).unwrap();
+        assert!(folder_issue(&env, &id, managed.to_str().unwrap()).is_none());
+        assert_eq!(crate::trust::shown(&env, &managed), root);
+    }
+
+    /// A `CLAUDE_CONFIG_DIR` layout (the Claude home not named `.claude`)
+    /// keeps its trust in `<claude home>/.claude.json`: check reads it, as
+    /// `evidence::folder_trusted` and `nimitz trust` do, and a key is accepted
+    /// when any of the files accepts it.
+    #[test]
+    fn check_reads_every_config_file_trust_writes() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        assert_ne!(env.claude_home.file_name().unwrap(), ".claude");
+        let dir = crate::env::canon(td.path()).join("project");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let (inner, outer) = (env.claude_home.join(".claude.json"), trust_file(&env));
+        assert_eq!(crate::trust::files(&env), vec![inner.clone(), outer.clone()]);
+        std::fs::create_dir_all(&env.claude_home).unwrap();
+        let accept = |yes: bool| serde_json::json!({"projects": {dir.display().to_string(): {"hasTrustDialogAccepted": yes}}}).to_string();
+        let trusted = || crate::evidence::folder_trusted(&env, &mut Default::default(), dir.to_str().unwrap());
+        // no file readable: unknown, no issue
+        std::fs::write(&outer, "not json").unwrap();
+        assert!(folder_issue(&env, &id, dir.to_str().unwrap()).is_none());
+        // only the Claude home's own file, and it does not trust the folder: flagged
+        std::fs::remove_file(&outer).unwrap();
+        std::fs::write(&inner, r#"{"projects": {}}"#).unwrap();
+        let i = folder_issue(&env, &id, dir.to_str().unwrap()).expect("read from <claude home>/.claude.json");
+        assert_eq!(i.code, "folder.untrusted");
+        // `nimitz trust` writes it there, and both readers see it
+        crate::trust::write(&env, &dir).unwrap();
+        assert!(folder_issue(&env, &id, dir.to_str().unwrap()).is_none());
+        assert!(trusted());
+        // one file accepts, the other names the folder without: accepted
+        std::fs::write(&outer, accept(false)).unwrap();
+        assert!(folder_issue(&env, &id, dir.to_str().unwrap()).is_none());
+        std::fs::write(&inner, accept(false)).unwrap();
+        std::fs::write(&outer, accept(true)).unwrap();
+        assert!(folder_issue(&env, &id, dir.to_str().unwrap()).is_none());
+        assert!(trusted());
+        std::fs::write(&outer, accept(false)).unwrap();
+        assert!(folder_issue(&env, &id, dir.to_str().unwrap()).is_some());
+        assert!(!trusted());
     }
 
     /// Claude Code (Windows) compares trust keys with case and looks a folder

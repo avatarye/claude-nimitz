@@ -1236,12 +1236,35 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
     if state != "never run" {
         rp.down += 1;
     }
+    // a folder the user's start trusts first: said in the row and in a note;
+    // only the named target's (a fleet- or squadron-wide start never trusts
+    // a folder the user did not name: that one is refused, its fix the trust)
+    let trusts: Vec<Step> = p.steps.iter().filter(|s| s.cmd.first().is_some_and(|c| c == "trust")).cloned().collect();
+    if !trusts.is_empty() && ctx.named.as_ref() != Some(id) {
+        found(rp, id, state, "not started; see the fix");
+        for t in &trusts {
+            fail_with(rp, rep, Issue {
+                code: "folder.untrusted".into(),
+                severity: Severity::Error,
+                message: format!("{id}'s folder is not trusted by Claude Code; a wider start does not trust it ({})", crate::trust::CONSEQUENCE),
+                fix: Some(format!("{}, then nimitz start {id}", crate::trust::fix(std::path::Path::new(&t.cmd[1])))),
+                id: Some(id.clone()),
+            });
+        }
+        return;
+    }
+    for t in &trusts {
+        rp.plan.warnings.push(Issue { code: "folder.trust".into(), severity: Severity::Info, message: t.why.clone(), fix: None, id: t.id.clone() });
+    }
     rp.steps.push(RestoreStep::Wake { id: id.clone(), steps: p.steps });
     let mut action = match (opts.fresh, state) {
         (true, _) => "a new conversation (--fresh: its history is dropped)".to_string(),
         (_, "never run") => "first launch".to_string(),
         _ => "wake by its id (same history; top-down)".to_string(),
     };
+    if let Some(t) = trusts.first() {
+        action = format!("trust {}, then {action}", crate::env::canon(std::path::Path::new(&t.cmd[1])).display());
+    }
     if (lead || opts.pane || had_tab) && !opts.jobs_only {
         // the job the start leaves: named once it runs (a first launch's and a
         // fresh one's session is not known before)

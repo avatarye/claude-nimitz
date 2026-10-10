@@ -39,28 +39,34 @@ fn lock_path(env: &Env) -> PathBuf {
     env.claude_home.join("jobs").join("pins.json.lock")
 }
 
-/// `pins.json.lock`, held until dropped.
-struct PinLock(PathBuf);
+/// A proper-lockfile lock directory (`mkdir`), held until dropped. Claude
+/// Code takes its files' locks this way (`pins.json`, `.claude.json`).
+pub(crate) struct DirLock(PathBuf);
 
-impl Drop for PinLock {
+impl Drop for DirLock {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir(&self.0);
     }
 }
 
-fn lock(env: &Env) -> std::io::Result<PinLock> {
-    let p = lock_path(env);
+fn lock(env: &Env) -> std::io::Result<DirLock> {
+    dir_lock(&lock_path(env), STALE_S, WAIT)
+}
+
+/// Take the lock directory `p`: a lock older than `stale_s` is a dead
+/// holder's and is taken over; otherwise wait up to `wait`.
+pub(crate) fn dir_lock(p: &std::path::Path, stale_s: f64, wait: Duration) -> std::io::Result<DirLock> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let deadline = Instant::now() + WAIT;
+    let deadline = Instant::now() + wait;
     loop {
-        match std::fs::create_dir(&p) {
-            Ok(()) => return Ok(PinLock(p)),
+        match std::fs::create_dir(p) {
+            Ok(()) => return Ok(DirLock(p.to_path_buf())),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let age = crate::evidence::mtime_secs(&p).map(|t| crate::evidence::now() - t).unwrap_or(0.0);
-                if age > STALE_S {
-                    let _ = std::fs::remove_dir(&p); // a dead holder's; the next mkdir takes it
+                let age = crate::evidence::mtime_secs(p).map(|t| crate::evidence::now() - t).unwrap_or(0.0);
+                if age > stale_s {
+                    let _ = std::fs::remove_dir(p); // a dead holder's; the next mkdir takes it
                     continue;
                 }
                 if Instant::now() >= deadline {
@@ -151,7 +157,7 @@ pub fn unpin(env: &Env, short: &str) -> std::io::Result<bool> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::config::tests::test_env;
 
@@ -182,7 +188,7 @@ mod tests {
 
     /// A folder opened to set its times (Windows opens a folder only with
     /// `FILE_FLAG_BACKUP_SEMANTICS`, and needs write access for the times).
-    fn dir_handle(p: &std::path::Path) -> std::fs::File {
+    pub(crate) fn dir_handle(p: &std::path::Path) -> std::fs::File {
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;

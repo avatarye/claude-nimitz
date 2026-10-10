@@ -518,12 +518,13 @@ fn internal_kind(k: &str) -> bool {
 }
 
 /// The terminal an interactive process runs in, as the session file names it:
-/// `tmux` (`<session>:@<window>.%<pane>`), else any `herdr*` field.
+/// `tmux` (`<session>:@<window>.%<pane>`), else a `herdr*` field: the first
+/// by name, whatever the file's order (maps keep it).
 fn terminal_of(d: &Value) -> Option<String> {
     if let Some(t) = s(d, "tmux") {
         return Some(format!("tmux {t}"));
     }
-    d.as_object()?.iter().find(|(k, v)| k.starts_with("herdr") && v.is_string()).map(|(k, v)| format!("{k} {}", v.as_str().unwrap_or_default()))
+    d.as_object()?.iter().filter(|(k, v)| k.starts_with("herdr") && v.is_string()).min_by_key(|(k, _)| *k).map(|(k, v)| format!("{k} {}", v.as_str().unwrap_or_default()))
 }
 
 /// Rows from the files `claude agents --json --all` reads. None when the
@@ -1065,18 +1066,14 @@ pub fn read_tasks(env: &Env, cache: &mut FileCache, team: &str) -> Vec<Task> {
 // ------------------------------------------------------------------ trust
 
 /// Whether Claude Code trusts `dir` (it or a parent has `hasTrustDialogAccepted`),
-/// from `<claude_home>/.claude.json` (the `CLAUDE_CONFIG_DIR` layout) and, when
-/// the Claude home is `~/.claude`, from `~/.claude.json`. Inside a git
+/// in any of the config files `trust::files` names (`<claude_home>/.claude.json`,
+/// the `CLAUDE_CONFIG_DIR` layout, and `<claude_home>.json`, `~/.claude.json`;
+/// `check` reads the same set). Inside a git
 /// repository Claude Code keys the trust on the repository (its root or
 /// below), so a parent above the root does not count (M16). The trusted roots
 /// are cached by mtime (the real file is megabytes).
 pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
-    let mut files = vec![env.claude_home.join(".claude.json")];
-    if env.claude_home.file_name().map(|n| n == ".claude").unwrap_or(false) {
-        if let Some(parent) = env.claude_home.parent() {
-            files.push(parent.join(".claude.json"));
-        }
-    }
+    let files = crate::trust::files(env);
     // Claude Code records real paths (/private/tmp for /tmp): the keys come in both forms
     let keys = crate::env::trust_keys(Path::new(dir.trim_end_matches('/')));
     // (in one form: Claude Code on Windows writes `C:\x` and `C:/x`)
@@ -1118,6 +1115,16 @@ mod tests {
     }
 
     use super::*;
+
+    /// Maps keep the file's order (preserve_order): with two `herdr*` fields
+    /// the terminal is the first by name, as when maps were sorted.
+    #[test]
+    fn the_terminal_is_the_first_herdr_field_by_name_whatever_the_file_order() {
+        let d: Value = serde_json::from_str(r#"{"herdrZ": "z", "herdrPane": 3, "herdrA": "a"}"#).unwrap();
+        assert_eq!(terminal_of(&d).as_deref(), Some("herdrA a"));
+        let d: Value = serde_json::from_str(r#"{"herdrA": "a", "herdrZ": "z", "tmux": "s:@1.%2"}"#).unwrap();
+        assert_eq!(terminal_of(&d).as_deref(), Some("tmux s:@1.%2"));
+    }
 
     /// A second project's `<sid>` folder (only `workflows/scripts`) is never
     /// taken for the session's, whichever the directory lists first.

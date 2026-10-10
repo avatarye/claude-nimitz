@@ -969,6 +969,32 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
     // nightly Claude Code update never stops a fleet (0.3.2).
 }
 
+/// The user's start of a member that never ran: a folder Claude Code will
+/// not trust is no refusal, the plan trusts it first (`trust::step`, which
+/// says what that lets run). Only the started member's own folder, only on
+/// its first launch, never one `trust::too_broad` names; a member caller,
+/// a wake and a parent's folder keep the refusal (or the warning), the fix
+/// `nimitz trust` (the user's).
+fn trust_first(env: &Env, plan: &mut Plan, snap: &Snapshot, caller: &Caller, id: &Id) {
+    if *caller != Caller::User {
+        return;
+    }
+    let Some((_, m)) = member(snap, id) else { return };
+    let never_ran = m.session.is_none() && crate::registry::load(env).identities.get(&id.0).and_then(|r| r.session.clone()).is_none();
+    let Some(dir) = m.cwd.clone().filter(|_| never_ran) else { return };
+    let dir = std::path::Path::new(&dir);
+    if crate::trust::too_broad(env, dir).is_some() {
+        return;
+    }
+    let mine = |i: &Issue| i.code == "folder.untrusted" && i.id.as_ref() == Some(id);
+    if !plan.refusals.iter().chain(plan.warnings.iter()).any(mine) {
+        return;
+    }
+    plan.refusals.retain(|i| !mine(i));
+    plan.warnings.retain(|i| !mine(i));
+    plan.steps.insert(0, crate::trust::step(env, Some(id.clone()), dir));
+}
+
 /// The flags of `nimitz start`: `--force` (a cold launch over a broken
 /// lineage or an untested Claude Code), `--fresh` (a cold launch that starts
 /// a new lineage entry, the fix for `history.lost`).
@@ -994,6 +1020,7 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
         return plan;
     }
     gate(env, &mut plan, snap, Some(id), force);
+    trust_first(env, &mut plan, snap, caller, id);
     // `--fresh` starts over: not under a live job (that would make two)
     if opts.fresh && member(snap, id).map(|(_, m)| m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)).unwrap_or(false) {
         refuse(
@@ -1834,7 +1861,7 @@ fn classify(step: &Step) -> Kind {
     let c: Vec<&str> = step.cmd.iter().map(String::as_str).collect();
     match c.as_slice() {
         ["bind", ..] => Kind::Bind,
-        ["mkdir", _] | ["write", _, _] | ["archive", _] => Kind::Config,
+        ["mkdir", _] | ["write", _, _] | ["archive", _] | ["trust", _] => Kind::Config,
         [_, "stop", short] => Kind::Stop { short: short.to_string() },
         [_, "rm", short] => Kind::Rm { short: short.to_string() },
         _ if !step.cmd.contains(&"--bg".to_string()) => Kind::Other,

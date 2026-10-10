@@ -1731,3 +1731,49 @@ fn e2e_start_f_relaunches_and_a_fleet_start_all_wakes_a_stopped_ship() {
     assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "woken by its id");
     w.finish();
 }
+
+/// `nimitz trust` replaces the trust prompt: in a git repo Claude Code does
+/// not trust (a fresh `git init` under the test base: a parent's trust never
+/// covers a repository), a background launch is refused; `nimitz trust <repo>`
+/// writes the trust as the prompt would (the real `~/.claude.json`, under
+/// Claude Code's lock, a backup in the test's state), and the same launch
+/// starts. The trust is removed again at the end, pass or fail.
+#[test]
+fn e2e_trust_lets_a_background_job_start_in_an_untrusted_repo() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(96);
+    let repo = w.base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut git = w.scrubbed("git");
+    git.args(["init", "-q"]).current_dir(&repo);
+    assert_eq!(E2e::run(git).0, 0, "git init");
+    w.settings(&repo);
+    struct Forget<'a>(&'a nimitz_core::env::Env, PathBuf);
+    impl Drop for Forget<'_> {
+        fn drop(&mut self) {
+            if let Err(e) = nimitz_core::trust::forget(self.0, &self.1) {
+                println!("[WARN] e2e #96: the trust of {} is left: {e}", self.1.display());
+            }
+        }
+    }
+    let _forget = Forget(&w.env, repo.clone());
+    assert!(nimitz_core::trust::untrusted(&w.env, &repo).is_some(), "the test repo starts untrusted");
+    let name = format!("[{}]-TRUST", w.fleet);
+    let launch = || w.claude(&repo, &["--bg", "--name", &name, "--model", &cheap_model(), "Reply with the word ok and nothing else."]);
+    let (code, out) = launch();
+    println!("before: exit {code}: {out}");
+    assert!(out.to_lowercase().contains("trust"), "refused for want of trust:\n{out}");
+    assert!(w.jobs_in(&repo).is_empty(), "no job before the trust: {:?}", w.jobs_in(&repo));
+    let plan = w.ok(&["trust", repo.to_str().unwrap(), "--plan"]);
+    assert!(plan.contains("hooks and MCP servers") && plan.contains(".claude.json"), "{plan}");
+    println!("{}", w.ok(&["trust", repo.to_str().unwrap(), "--yes"]));
+    assert!(nimitz_core::trust::is_written(&w.env, &repo));
+    assert!(nimitz_core::trust::untrusted(&w.env, &repo).is_none(), "check agrees");
+    let (code, out) = launch();
+    println!("after: exit {code}: {out}");
+    assert_eq!(code, 0, "{out}");
+    w.wait(60, || (!w.jobs_in(&repo).is_empty()).then_some(())).unwrap_or_else(|| panic!("a job in the repo:\n{out}"));
+    w.finish();
+}
