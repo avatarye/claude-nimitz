@@ -161,7 +161,19 @@ fn case_twin(projects: &serde_json::Map<String, serde_json::Value>, keys: &[Path
 /// with "Workspace not trusted".
 pub fn untrusted_fix(dir: &Path) -> String {
     let at = crate::env::git_root(dir).unwrap_or_else(|| crate::env::canon(dir));
-    format!("run `claude` once in {} and accept the trust prompt", at.display())
+    format!("run `claude` once in {} and accept the trust prompt{}", at.display(), case_exact_hint(&at))
+}
+
+/// Windows: how to start `claude` in `dir` spelled exactly as on disk.
+/// Claude Code stores the trust under the folder as the shell spelled it, and
+/// a cmd.exe with clink/zoxide hands it `c:\...`; a background launch looks
+/// it up as `C:\...`, with case. PowerShell's Set-Location keeps the case.
+pub fn case_exact_hint(dir: &Path) -> String {
+    if cfg!(windows) {
+        format!(" (spelled exactly, from PowerShell: Set-Location -LiteralPath '{}'; claude)", dir.display())
+    } else {
+        String::new()
+    }
 }
 
 /// `folder.missing` / `folder.untrusted` for a member's folder, if either applies.
@@ -513,7 +525,7 @@ pub(crate) mod tests {
         set(&[&home]);
         let i = folder_issue(&env, &id, wt.join("src").to_str().unwrap()).expect("home trust does not cover a git root");
         assert_eq!(i.code, "folder.untrusted");
-        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt", wt.display()).as_str()));
+        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt{}", wt.display(), case_exact_hint(&wt)).as_str()));
         set(&[&wt]);
         assert!(folder_issue(&env, &id, wt.join("src").to_str().unwrap()).is_none());
         // outside git, the home's trust still covers it
@@ -555,7 +567,7 @@ pub(crate) mod tests {
         let i = folder_issue(&env, &id, ship.to_str().unwrap()).expect("the old runs do not cover the new repository");
         assert_eq!((i.code.as_str(), i.severity), ("folder.untrusted", Severity::Warn));
         assert!(i.message.contains("git repository"), "{}", i.message);
-        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt", ship.display()).as_str()));
+        assert_eq!(i.fix.as_deref(), Some(format!("run `claude` once in {} and accept the trust prompt{}", ship.display(), case_exact_hint(&ship)).as_str()));
         // (this needs birth times; without them the old answer, "ran here", stands)
         assert!(crate::env::git_birth(&ship).is_some(), "the test file system keeps no birth time");
         // a later write to the old transcript is no proof either: only a start is

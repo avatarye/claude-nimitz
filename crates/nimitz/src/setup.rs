@@ -310,7 +310,12 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         } else {
             // the real path: Claude Code resolves a linked data root, and (Windows) compares its case
             let real = nimitz_core::env::canon(&env.home);
-            r.err(&format!("Claude Code does not trust {}", real.display()), Some(&format!("cd {} && claude   # accept the trust dialog, then exit", out::quote(&real.to_string_lossy()))));
+            let fix = if cfg!(windows) {
+                format!("powershell -NoProfile -Command \"Set-Location -LiteralPath '{}'; claude\"   # spelled exactly (Claude Code compares the case); accept the trust dialog, then exit", real.display())
+            } else {
+                format!("cd {} && claude   # accept the trust dialog, then exit", out::quote(&real.to_string_lossy()))
+            };
+            r.err(&format!("Claude Code does not trust {}", real.display()), Some(&fix));
         }
     }
 
