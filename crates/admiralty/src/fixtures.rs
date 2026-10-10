@@ -118,6 +118,9 @@ fn aide_kb(f: &str) -> Member {
         Some(session(&id, "a1de0001", Some(4150), "background", Some("busy"), None, 3600.0, true)),
     );
     m.cwd = Some("/home/u/notes/knowledge-base".into());
+    if let Some(s) = m.session.as_mut() {
+        s.cwd = "/home/u/notes/knowledge-base".into(); // its job runs in its folder
+    }
     m.parent = Some(Id::admiral(f));
     let recent = |n: u32, kind: &str, state: &str, sender: &str, age_s: f64, result: Option<serde_json::Value>| RecentRow { id: format!("{n:012}"), kind: kind.into(), state: state.into(), sender: sender.into(), age_s, result };
     m.inbox = Some(Q {
