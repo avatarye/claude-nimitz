@@ -30,11 +30,16 @@ pub struct ShapePane {
     pub tab_id: String,
     pub workspace_id: String,
     pub cwd: String,
-    /// the session the pane shows (a claim its foreground backs)
+    /// the session the pane shows: a claim its foreground backs, else what
+    /// the foreground runs (an unbacked claim is ignored)
     pub session_id: Option<String>,
     /// the multiplexer's own claim, backed or not (only the agent view test reads it)
     #[serde(default)]
     pub claimed: Option<String>,
+    /// `session_id` is read from the pane's `claude attach <job>` alone
+    /// (`nimitz_mux::Pane.inferred`)
+    #[serde(default)]
+    pub inferred: bool,
     pub foreground: Option<Vec<String>>,
     /// the pid of what runs in the foreground, when the mux read it
     pub foreground_pid: Option<i64>,
@@ -337,9 +342,22 @@ impl Ctx<'_> {
     /// with no other agent in it?
     fn pane_is(&self, p: &ShapePane, m: &Member, cmd: &[String]) -> Option<bool> {
         let s = m.session.as_ref()?;
+        let mine = |sid: &String| sid == &s.session_id || s.birth_id.as_deref() == Some(sid) || (s.short_id.is_some() && self.job_of.get(sid) == s.short_id.as_ref());
+        // the attach of the member's job, but Herdr says the pane shows
+        // another agent (its own hook ran in this pane): a copy, or an agent
+        // view from a Claude Code that does not re-exec as `claude agents`
+        // (R-24; one that does is not the same argv, below)
+        // A claim that names ANOTHER member's session is that member's hook
+        // naming the pane by an inherited HERDR_PANE_ID (a ship launched from
+        // here), not the agent view: the attach still runs, so the pane is
+        // the member's. The view's draft spare and a copy carry no labels and
+        // name no member.
+        let other = |sid: &String| !mine(sid) && !self.member_of.get(sid).is_some_and(|o| o != &m.id);
+        // the mux ignores a claim the attach does not back and reads the
+        // pane from the attach (inferred): one that names no member is the view
+        let view = p.claimed.as_ref().is_some_and(other);
         if let Some(sid) = &p.session_id {
-            let mine = sid == &s.session_id || s.birth_id.as_deref() == Some(sid) || (s.short_id.is_some() && self.job_of.get(sid) == s.short_id.as_ref());
-            if mine {
+            if mine(sid) && !(p.inferred && view) {
                 return Some(true);
             }
         }
@@ -348,17 +366,7 @@ impl Ctx<'_> {
         if !same {
             return Some(false);
         }
-        // the attach of the member's job, but Herdr says the pane shows
-        // another agent (its own hook ran in this pane): a copy, or an agent
-        // view from a Claude Code that does not re-exec as `claude agents`
-        // (R-24; one that does is not the same argv, above)
-        // A claim that names ANOTHER member's session is that member's hook
-        // naming the pane by an inherited HERDR_PANE_ID (a ship launched from
-        // here), not the agent view: the attach still runs, so the pane is
-        // the member's. The view's draft spare and a copy carry no labels and
-        // name no member.
-        let other = |sid: &String| !(sid == &s.session_id || s.birth_id.as_deref() == Some(sid) || (s.short_id.is_some() && self.job_of.get(sid) == s.short_id.as_ref())) && !self.member_of.get(sid).is_some_and(|o| o != &m.id);
-        Some(p.session_id.is_none() && !p.claimed.as_ref().is_some_and(other))
+        Some((p.session_id.is_none() || p.inferred) && !view)
     }
 
     /// The pane that holds `h`'s conversation interactively: it shows that

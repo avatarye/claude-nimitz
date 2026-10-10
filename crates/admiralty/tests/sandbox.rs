@@ -321,9 +321,20 @@ fn admiralty_outside_herdr_uses_the_recorded_server_and_sees_the_panes() {
 /// A lead's attach pane that Herdr never claimed (an attach client runs no
 /// Herdr hook: `agent` claude, no `agent_session`) still shows the lead: its
 /// `claude attach <job>` foreground names the job, so the row gets its pane
-/// (the dot, `j`, `A` focusing it) as `nimitz status` does.
+/// (the dot, `j`, `A` focusing it) as `nimitz status` does. So does one a
+/// ship's hook claimed (its worker inherited the pane's `HERDR_PANE_ID` from
+/// the daemon): the attach does not back that claim, so it is ignored.
 #[test]
 fn an_unclaimed_attach_pane_still_shows_its_lead() {
+    attach_pane_shows_its_lead(false);
+}
+
+#[test]
+fn an_attach_pane_a_ships_hook_claimed_still_shows_its_lead() {
+    attach_pane_shows_its_lead(true);
+}
+
+fn attach_pane_shows_its_lead(claimed: bool) {
     let dir = tempfile::tempdir().unwrap();
     let sb = dir.path().join("sb");
     let bin = env!("CARGO_BIN_EXE_admiralty");
@@ -338,10 +349,14 @@ fn an_unclaimed_attach_pane_still_shows_its_lead() {
     let b = CoreSource::detect(&vars).load();
     let lead = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find_map(|m| m.session.as_ref().and_then(|s| s.short_id.clone().map(|j| (m.id.clone(), j, s.session_id.clone())))).expect("a lead with a job");
     let (id, job, sid) = lead;
+    let ship = b.snap.fleets.iter().flat_map(|f| f.squadrons.iter().flat_map(|q| q.ships.iter())).find_map(|m| m.session.as_ref().map(|s| (m.id.clone(), s.session_id.clone()))).expect("a ship with a session");
     let world = sb.join("herdr").join("world.json");
     let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
     let p = &mut w["panes"][0];
     p.as_object_mut().unwrap().remove("agent_session");
+    if claimed {
+        p["agent_session"] = serde_json::json!({"kind": "id", "source": "herdr:claude", "value": ship.1});
+    }
     p["agent"] = serde_json::json!("claude");
     p["agent_status"] = serde_json::json!("working");
     p["foreground"] = serde_json::json!(["/home/u/.local/bin/claude", "attach", job]);
@@ -350,6 +365,8 @@ fn an_unclaimed_attach_pane_still_shows_its_lead() {
     let b = CoreSource::detect(&vars).load();
     let shown = b.panes.iter().find(|p| p.pane.pane_id == pane).expect("the pane");
     assert_eq!(shown.session_id.as_deref(), Some(sid.as_str()), "{id}'s attach pane shows its session");
+    assert!(shown.inferred, "known by its attach alone");
+    assert!(!b.panes.iter().any(|p| p.session_id.as_deref() == Some(ship.1.as_str())), "{}'s claim shows it nowhere", ship.0);
     // `A` finds that pane and only focuses it (nothing is typed, no new tab)
     let ctx = Ctx { env: nimitz_core::env::Env::from_vars(&vars), mux: nimitz_mux::detect(&vars), live: false, exit_after_jump: false };
     match actions::existing_open(&ctx, &b.snap, &Target::Member(id.clone())) {

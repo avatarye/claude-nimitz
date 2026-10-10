@@ -1288,10 +1288,13 @@ fn is_claude(argv: &[String]) -> bool {
 /// The session of the job a pane's foreground attaches to (`claude attach
 /// <job>`, a short or full job id): its job row's conversation now
 /// (`resumeSessionId`, which `/clear` moves; else `sessionId`). What a pane
-/// shows when Herdr claims no session for it: an attach client never runs
-/// Herdr's SessionStart hook, so Herdr sees claude there but not which
-/// session. Not used against a claim: a claim the attach does not back may be
-/// the agent view (R-24).
+/// shows when Herdr claims no session for it, or one the pane's foreground
+/// does not back (`claim_backed`): an attach client never runs Herdr's
+/// SessionStart hook, so Herdr sees claude there but not which session, and
+/// a claim it does not back is another process's hook naming the pane by an
+/// inherited `HERDR_PANE_ID`. Such a pane is `inferred`: typed into only
+/// while it runs exactly the attach (R-24: the agent view re-execs as
+/// `claude agents`).
 pub fn session_of_attach(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {
     procs.iter().filter(|(argv, _)| is_claude(argv)).find_map(|(argv, _)| {
         let job = argv.windows(2).find(|w| w[0] == "attach").map(|w| w[1].as_str())?;
@@ -1301,7 +1304,8 @@ pub fn session_of_attach(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)
     })
 }
 
-/// The session a pane Herdr claims none for shows, from its foreground alone:
+/// The session a pane Herdr claims none for (or one its foreground does not
+/// back) shows, from its foreground alone:
 /// the job a `claude attach <job>` attaches to (`session_of_attach`), else
 /// the conversation a `claude --resume <sid>` holds, else the session a
 /// foreground pid's session file names (`claude -c`, a plain `claude`).
@@ -1344,7 +1348,7 @@ pub fn claim_backed(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)], si
 
 /// The session a pane's foreground runs, read from the processes themselves
 /// (no multiplexer claim): a foreground pid's session file (an interactive
-/// session in the pane). What a pane shows when Herdr's claim is not backed.
+/// session in the pane), the last of `session_of_unclaimed`'s reads.
 /// Not an attach client's job: `session_of_attach` reads that, and the
 /// typing paths check the exact attach again (R-24).
 pub fn session_of_foreground(claude_home: &Path, procs: &[(Vec<String>, Option<i64>)]) -> Option<String> {

@@ -2303,18 +2303,39 @@ fn a_job_labelled_for_another_home_never_binds_the_member() {
 /// shows no member and nothing is typed (a signal finds the tab taken).
 #[test]
 fn an_unclaimed_attach_pane_takes_typing_only_while_it_runs_the_exact_attach() {
+    attach_pane_typing(false);
+}
+
+/// The same pane claimed by a ship's hook (its worker inherited the pane's
+/// HERDR_PANE_ID from the daemon): the claim is not backed by the attach, so
+/// it is ignored, the pane is the commodore's (inferred), and it takes typing
+/// by the same rule: only while it runs exactly the attach.
+#[test]
+fn an_attach_pane_a_ships_hook_claimed_takes_typing_only_while_it_runs_the_exact_attach() {
+    attach_pane_typing(true);
+}
+
+/// The commodore's attach pane (with Herdr's claim for its ship `claimed`,
+/// else none) through status, a needs-you delivery and `signal`, then the
+/// agent view.
+fn attach_pane_typing(claimed: bool) {
     let sb = Sb::new(true);
     let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
+    let ship = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].as_str().unwrap().to_string();
     // the native binary's own path carries its version
     let bin = "/home/u/.local/share/claude/versions/2.1.293".to_string();
     sb.herdr_world(|w| {
         let p = &mut w["panes"][1];
         p.as_object_mut().unwrap().remove("agent_session");
+        if claimed {
+            p["agent_session"] = serde_json::json!({"kind": "id", "source": "herdr:claude", "value": ship});
+        }
         p["agent"] = Value::from("claude");
         p["agent_status"] = Value::from("idle");
         p["foreground"] = serde_json::json!([bin, "attach", job]);
     });
     assert_eq!(sb.member("MAIN/ARGOS")["pane"], Value::from("w1:p2"), "status shows it there");
+    assert!(sb.member("MAIN/ARGOS/CLEAN")["pane"].is_null(), "never the ship's");
     raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
     let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
     assert_eq!(n["delivery"], "delivered", "{n}");

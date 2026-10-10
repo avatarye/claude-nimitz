@@ -391,17 +391,19 @@ impl Herdr {
         Ok(procs.into_iter().enumerate().map(|(i, a)| (a, pids.get(i).copied().flatten())).collect())
     }
 
-    /// Keep a pane's session claim only when its foreground backs it
-    /// (`evidence::claim_backed`): Herdr's own hook names the pane by the
-    /// process's inherited `HERDR_PANE_ID`, which a background job brings
-    /// from whoever launched it. An unreadable foreground drops the claim.
-    /// The session a pane shows: Herdr's claim when the foreground backs it,
-    /// else the session the foreground itself runs (a commodore's pane that a
-    /// ship's hook claimed still shows the commodore), else none. A pane with
-    /// no claim shows what its foreground runs (`session_of_unclaimed`): the
-    /// job a `claude attach <job>` attaches to (an attach client never runs
-    /// Herdr's hook, so Herdr never names the session of the very pane
-    /// nimitz opened for a lead), or a held `claude --resume <sid>`.
+    /// The session a pane shows, and whether it is read from the attach
+    /// alone (`Pane.inferred`). Herdr's claim stands only when the pane's
+    /// foreground backs it (`evidence::claim_backed`): Herdr's own hook names
+    /// the pane by the process's inherited `HERDR_PANE_ID`, which a
+    /// background job brings from whoever launched it (or the daemon's), so
+    /// a ship's hook can claim its commodore's pane. A claim that is not
+    /// backed is ignored, and the pane shows what runs in it, as a pane with
+    /// no claim does (`session_of_unclaimed`): the job a `claude attach <job>`
+    /// attaches to (inferred: an attach client never runs Herdr's hook, so
+    /// Herdr never names the session of the very pane nimitz opened for a
+    /// lead), else a held `claude --resume <sid>`, else the session the
+    /// foreground pid's session file names. An unreadable foreground backs
+    /// nothing and shows nothing.
     fn shown(&self, pane_id: &str, claim: Option<&str>, procs: Option<&[(Vec<String>, Option<i64>)]>) -> (Option<String>, bool) {
         let home = &self.claude_home;
         let read;
@@ -412,17 +414,14 @@ impl Herdr {
                 &read[..]
             }
         };
-        let Some(claim) = claim else {
-            // the attach alone: shown, typed into only while it runs exactly the attach (`Pane.inferred`)
-            if let Some(sid) = nimitz_core::evidence::session_of_attach(home, procs) {
-                return (Some(sid), true);
-            }
-            return (nimitz_core::evidence::session_of_unclaimed(home, procs), false);
-        };
-        if nimitz_core::evidence::claim_backed(home, procs, claim) {
+        if let Some(claim) = claim.filter(|c| nimitz_core::evidence::claim_backed(home, procs, c)) {
             return (Some(claim.to_string()), false);
         }
-        (nimitz_core::evidence::session_of_foreground(home, procs), false)
+        // the attach alone: shown, typed into only while it runs exactly the attach (`Pane.inferred`)
+        if let Some(sid) = nimitz_core::evidence::session_of_attach(home, procs) {
+            return (Some(sid), true);
+        }
+        (nimitz_core::evidence::session_of_unclaimed(home, procs), false)
     }
 
     fn run(&self, args: &[&str]) -> Result<Value, MuxError> {
