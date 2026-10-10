@@ -22,6 +22,15 @@ fn trust_file(env: &Env) -> std::path::PathBuf {
     std::path::PathBuf::from(format!("{}.json", env.claude_home.display()))
 }
 
+/// What one check run reads once for every member's folder: the trust
+/// file's `projects` table and the trust roots (`evidence::folder_trusted`).
+/// A run sees the files as they were when it first read them.
+#[derive(Default)]
+pub struct TrustCache {
+    files: crate::evidence::FileCache,
+    projects: Option<Option<serde_json::Map<String, serde_json::Value>>>,
+}
+
 /// The `projects` table of Claude Code's trust file, or None when it cannot be read.
 fn trust_projects(env: &Env) -> Option<serde_json::Map<String, serde_json::Value>> {
     let raw = std::fs::read_to_string(trust_file(env)).ok()?;
@@ -87,20 +96,20 @@ fn ran_since_repo(env: &Env, dir: &Path) -> bool {
 ///
 /// Keys are compared as given and as real paths (/tmp is /private/tmp). An
 /// unreadable trust file is unknown, not untrusted: no issue.
-fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
+fn trust_issue(env: &Env, cache: &mut TrustCache, id: &Id, dir: &Path) -> Option<Issue> {
     let real = crate::env::canon(dir);
     let home = crate::env::canon(&env.home);
     // inside NIMITZ_HOME: trusted when the data root is (nimitz init asks for
     // it); when it is not, the fix names the data root, which covers them all
     let in_home = dir.starts_with(&env.home) || real.starts_with(&home);
-    if in_home && crate::evidence::folder_trusted(env, &mut Default::default(), &home.to_string_lossy()) {
+    if in_home && crate::evidence::folder_trusted(env, &mut cache.files, &home.to_string_lossy()) {
         return None;
     }
-    let projects = trust_projects(env)?;
+    let projects = cache.projects.get_or_insert_with(|| trust_projects(env)).as_ref()?;
     // (keys compared in one form: Claude Code on Windows writes `C:\x` and `C:/x`)
     // (one key accepted is enough when two forms name the same folder)
     let mut by_key: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
-    for (k, e) in &projects {
+    for (k, e) in projects {
         *by_key.entry(crate::env::trust_key(k)).or_default() |= e.get("hasTrustDialogAccepted").and_then(|b| b.as_bool()).unwrap_or(false);
     }
     let accepted = |p: &PathBuf| by_key.get(&crate::env::trust_key(&p.to_string_lossy())).copied().unwrap_or(false);
@@ -178,6 +187,11 @@ pub fn case_exact_hint(dir: &Path) -> String {
 
 /// `folder.missing` / `folder.untrusted` for a member's folder, if either applies.
 pub fn folder_issue(env: &Env, id: &Id, cwd: &str) -> Option<Issue> {
+    folder_issue_in(env, &mut TrustCache::default(), id, cwd)
+}
+
+/// `folder_issue` with the trust files read once per run (`TrustCache`).
+pub fn folder_issue_in(env: &Env, cache: &mut TrustCache, id: &Id, cwd: &str) -> Option<Issue> {
     let dir = Path::new(cwd);
     if !dir.is_dir() {
         return Some(Issue {
@@ -188,7 +202,7 @@ pub fn folder_issue(env: &Env, id: &Id, cwd: &str) -> Option<Issue> {
             id: Some(id.clone()),
         });
     }
-    trust_issue(env, id, dir)
+    trust_issue(env, cache, id, dir)
 }
 
 /// `nimitz check [<id>]`: the target, every member under it (a fleet's
@@ -230,6 +244,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
     }
 
     // Member issues: folders, then the session-level rules.
+    let mut trust = TrustCache::default();
     for fleet in &snap.fleets {
         let mut members: Vec<&Member> = vec![&fleet.admiral];
         for sq in &fleet.squadrons {
@@ -240,7 +255,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
             if !in_scope(&m.id, id) {
                 continue;
             }
-            if let Some(i) = m.cwd.as_deref().and_then(|cwd| folder_issue(env, &m.id, cwd)) {
+            if let Some(i) = m.cwd.as_deref().and_then(|cwd| folder_issue_in(env, &mut trust, &m.id, cwd)) {
                 out.push(i);
             }
             // Session rules (name.*, labels.*, dup.live, copy.rows, lineage.broken,
@@ -532,6 +547,30 @@ pub(crate) mod tests {
         std::fs::create_dir_all(home.join("plain")).unwrap();
         set(&[&home]);
         assert!(folder_issue(&env, &id, home.join("plain").to_str().unwrap()).is_none());
+    }
+
+    /// One check run reads the trust file once (`TrustCache`), however many
+    /// members it checks: a second member's check sees the file as the
+    /// first read it; a new run reads it again.
+    #[test]
+    fn a_check_run_reads_the_trust_file_once() {
+        let (td, env) = test_env();
+        let home = crate::os::canonical(&td.path()).unwrap().join("home");
+        let (a, b) = (home.join("a"), home.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let trust = format!("{}.json", env.claude_home.display());
+        let set = |dirs: &[&Path]| {
+            let p: serde_json::Map<String, serde_json::Value> = dirs.iter().map(|d| (d.display().to_string(), serde_json::json!({"hasTrustDialogAccepted": true}))).collect();
+            std::fs::write(&trust, serde_json::json!({ "projects": p }).to_string()).unwrap();
+        };
+        let id = Id::ship("MAIN", "ARGOS", "S4");
+        set(&[&a, &b]);
+        let mut run = TrustCache::default();
+        assert!(folder_issue_in(&env, &mut run, &id, a.to_str().unwrap()).is_none());
+        set(&[]);
+        assert!(folder_issue_in(&env, &mut run, &id, b.to_str().unwrap()).is_none(), "the run's one read");
+        assert!(folder_issue_in(&env, &mut TrustCache::default(), &id, b.to_str().unwrap()).is_some(), "a new run reads again");
     }
 
     /// M16 (cli-G6): a ship folder under a trusted home ran sessions as a plain

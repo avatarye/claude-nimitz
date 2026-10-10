@@ -302,11 +302,12 @@ fn check_result(env: &Env, fleet_dir: &Path, config: &FleetConfig, existing: Opt
     let machine = config.machines.iter().find(|(_, m)| env.matches_hostname(&m.hostname)).map(|(l, _)| l.clone());
     let f = FleetOnDisk { dir: fleet_dir.to_path_buf(), config: config.clone(), squadrons, machine };
     let mut issues = config::validate(env, &f);
+    let mut trust = crate::check::TrustCache::default();
     for (_, sq) in &f.squadrons {
         for ship in &sq.ships {
             let id = Id::ship(&config.fleet, &sq.squadron, &ship.name);
             if let Some(d) = config::member_dir(env, &f, &id) {
-                issues.extend(crate::check::folder_issue(env, &id, &d.to_string_lossy()));
+                issues.extend(crate::check::folder_issue_in(env, &mut trust, &id, &d.to_string_lossy()));
             }
         }
     }
