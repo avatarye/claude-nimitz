@@ -242,3 +242,44 @@ fn a_crashed_aide_gives_the_item_back_and_a_poison_item_dead_letters() {
     assert!(st["dead"][0]["reason"].as_str().unwrap().contains("lease ran out"), "{st}");
     let _ = &sb.base;
 }
+
+#[test]
+fn ask_json_keeps_the_token_short_ids_work_and_a_broken_aide_is_one_row() {
+    let sb = Sb::new();
+    // a timed-out ask in JSON still hands back the token
+    let r = sb.run(&["ask", "MAIN/@REF", "q?", "--wait", "1s", "--json"]);
+    assert_eq!(r.code, 5, "{}", r.out);
+    let v: Value = serde_json::from_str(r.out.trim()).unwrap();
+    assert!(v["token"].as_str().is_some_and(|t| t.len() == 32), "{v}");
+    let id = v["id"].as_str().unwrap().trim_start_matches('0').to_string();
+    // the short id the fix lines use works; a path never does
+    assert_eq!(sb.run(&["inbox", "result", "MAIN/@REF", &id, "--token", v["token"].as_str().unwrap()]).code, 5);
+    let t = sb.run(&["inbox", "drop", "MAIN/@REF", "../../MAIN%2F@KB/pending/000000000001"]);
+    assert_eq!(t.code, 2, "{}", t.out);
+    // one aide's bad config: its row says so, the others still show
+    let f = sb.fleet_toml();
+    let s = std::fs::read_to_string(&f).unwrap().replace("types = [\"wiki.query.v1\"]", "types = [\"wiki.query.v1\"]\npolicy = \"anyone\"");
+    std::fs::write(&f, s).unwrap();
+    let all = sb.json(&[], &["inbox", "status"]);
+    let rows = all.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{all}");
+    assert!(rows.iter().any(|r| r["aide"] == "MAIN/@REF" && r["error"].as_str().is_some_and(|e| e.contains("anyone"))), "{all}");
+    assert!(rows.iter().any(|r| r["aide"] == "MAIN/@KB" && r["error"].is_null()), "{all}");
+}
+
+#[test]
+fn the_fleet_and_parent_policies() {
+    let sb = Sb::new();
+    let f = sb.fleet_toml();
+    let s = std::fs::read_to_string(&f).unwrap().replace("types = [\"wiki.note.v1\"]", "types = [\"wiki.note.v1\"]\npolicy = \"parent\"");
+    std::fs::write(&f, s).unwrap();
+    let post = |who: &[(&str, &str)]| sb.run_as(who, &["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", r#"{"body": "x"}"#]);
+    assert!(post(SHIP).out.contains("(authority)"), "parent policy: a ship may not");
+    assert_eq!(post(ADMIRAL).code, 0, "the parent may");
+    assert_eq!(post(&[]).code, 0, "the user may");
+    let s = std::fs::read_to_string(&f).unwrap().replace("policy = \"parent\"", "policy = \"fleet\"");
+    std::fs::write(&f, s).unwrap();
+    assert_eq!(post(SHIP).code, 0, "fleet policy: a member of MAIN may");
+    let other = [("NIMITZ_ROLE", "ship"), ("NIMITZ_ID", "BETA/X/Y"), ("NIMITZ_FLEET", "BETA"), ("NIMITZ_SQUADRON", "X")];
+    assert!(post(&other).out.contains("(authority)"), "another fleet's member may not");
+}

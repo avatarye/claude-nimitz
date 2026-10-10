@@ -432,6 +432,12 @@ fn every_command_goes_by_the_role_table() {
         ("inbox", &["claim", "MAIN/@KB"], [false, false, false]),
         ("inbox", &["retry", "MAIN/@KB", "000000000001"], [true, false, false]),
         ("ask", &["MAIN/@REF", "a question", "--no-wait"], [true, true, true]),
+        ("inbox", &["heartbeat", "MAIN/@KB", "1"], [false, false, false]),
+        ("inbox", &["done", "MAIN/@KB", "1"], [false, false, false]),
+        ("inbox", &["fail", "MAIN/@KB", "1", "--reason", "x"], [false, false, false]),
+        ("inbox", &["drop", "MAIN/@KB", "1"], [true, false, false]),
+        ("inbox", &["list", "MAIN/@KB"], [true, true, true]),
+        ("inbox", &["result", "MAIN/@REF", "1"], [true, true, true]),
     ];
     let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];
     let listed = Sb::new(false).run(&["__commands"]);

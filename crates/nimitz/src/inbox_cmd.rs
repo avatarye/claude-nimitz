@@ -48,6 +48,15 @@ fn me(ctx: &Ctx) -> Sender {
     queue::sender_of(&ctx.env, &ctx.vars, ctx.args.value("--from"))
 }
 
+/// Who holds a lease when `s` claims: its session, else its id; the user
+/// (None) may finish any item (repairs).
+fn holder(s: &Sender) -> Option<String> {
+    if is_user(s) {
+        return None;
+    }
+    Some(s.session.clone().or(s.id.clone()).unwrap_or_default())
+}
+
 fn is_user(s: &Sender) -> bool {
     s.kind == "user"
 }
@@ -131,7 +140,7 @@ fn post(ctx: &Ctx) -> Result<i32, Refusal> {
     let q = open(ctx, &id)?;
     let s = me(ctx);
     may_post(&s, &q)?;
-    let p = q.post(&s, &kind, &payload(ctx)?, ctx.args.value("--key"), now())?;
+    let p = q.post(&s, &kind, &payload(ctx)?, ctx.args.value("--key"), None, now())?;
     posted(&q, &p);
     Ok(0)
 }
@@ -158,7 +167,7 @@ fn claim(ctx: &Ctx) -> Result<i32, Refusal> {
     let s = me(ctx);
     the_aide(&s, &id, "claim")?;
     let q = open(ctx, &id)?;
-    let by = s.session.clone().or(s.id.clone()).unwrap_or_else(|| "the user".into());
+    let by = holder(&s).unwrap_or_else(|| "the user".into());
     match q.claim(&by, now())? {
         Some(item) => {
             // always JSON: the aide reads it
@@ -179,16 +188,17 @@ fn claim(ctx: &Ctx) -> Result<i32, Refusal> {
 fn item_arg(ctx: &Ctx) -> Result<(Id, String), Refusal> {
     ctx.args.at_most(3).map_err(usage)?;
     let id = aide(ctx, 1)?;
-    let item = ctx.args.need(2, "item id").map_err(usage)?.to_string();
+    let item = queue::item_id(ctx.args.need(2, "item id").map_err(usage)?).map_err(usage)?;
     Ok((id, item))
 }
 
 fn heartbeat(ctx: &Ctx) -> Result<i32, Refusal> {
     ctx.args.allow(&[]).map_err(usage)?;
     let (id, item) = item_arg(ctx)?;
-    the_aide(&me(ctx), &id, "heartbeat")?;
+    let s = me(ctx);
+    the_aide(&s, &id, "heartbeat")?;
     let q = open(ctx, &id)?;
-    let i = q.heartbeat(&item, now())?;
+    let i = q.heartbeat(&item, holder(&s).as_deref(), now())?;
     out::ok(&format!("item {} leased until {}", i.id, i.claim.map(|c| queue::human(c.until - now())).map(|h| format!("+{h}")).unwrap_or_default()));
     Ok(0)
 }
@@ -196,7 +206,8 @@ fn heartbeat(ctx: &Ctx) -> Result<i32, Refusal> {
 fn done(ctx: &Ctx) -> Result<i32, Refusal> {
     ctx.args.allow(&["--result", "--result-file"]).map_err(usage)?;
     let (id, item) = item_arg(ctx)?;
-    the_aide(&me(ctx), &id, "done")?;
+    let s = me(ctx);
+    the_aide(&s, &id, "done")?;
     let q = open(ctx, &id)?;
     let result = match (ctx.args.value("--result"), ctx.args.value("--result-file")) {
         (Some(r), None) => Some(r.to_string()),
@@ -206,7 +217,7 @@ fn done(ctx: &Ctx) -> Result<i32, Refusal> {
     };
     let result = result.map(|r| serde_json::from_str::<Value>(&r).map_err(|e| usage(format!("the result is not JSON: {e}")))).transpose()?;
     let t = now();
-    let i = q.done(&item, result, t)?;
+    let i = q.done(&item, holder(&s).as_deref(), result, t)?;
     let delivery = if i.reply_to.is_some() { Some(queue::deliver(&ctx.env, &q, &i, t)) } else { None };
     if out::json_mode() {
         out::json(&json!({"ok": true, "id": i.id, "delivered": delivery.as_ref().map(|d| d.is_ok()), "delivery": delivery.as_ref().map(|d| match d { Ok(s) | Err(s) => s.clone() })}));
@@ -224,10 +235,11 @@ fn done(ctx: &Ctx) -> Result<i32, Refusal> {
 fn fail(ctx: &Ctx) -> Result<i32, Refusal> {
     ctx.args.allow(&["--reason", "--permanent"]).map_err(usage)?;
     let (id, item) = item_arg(ctx)?;
-    the_aide(&me(ctx), &id, "fail")?;
+    let s = me(ctx);
+    the_aide(&s, &id, "fail")?;
     let reason = ctx.args.value("--reason").ok_or_else(|| usage("--reason is required (one line)".into()))?;
     let q = open(ctx, &id)?;
-    let (i, dead) = q.fail(&item, reason, ctx.args.flag("--permanent"), now())?;
+    let (i, dead) = q.fail(&item, holder(&s).as_deref(), reason, ctx.args.flag("--permanent"), now())?;
     if dead {
         out::warn(&format!("item {} is a dead letter after {} tr{}: {reason}", i.id, i.tries, if i.tries == 1 { "y" } else { "ies" }));
         out::line(&format!("       fix: nimitz inbox retry {id} {}  # or drop it (the user's or {}'s)", i.id, queue::parent_of(&id)));
@@ -314,7 +326,12 @@ fn status(ctx: &Ctx) -> Result<i32, Refusal> {
     let t = now();
     let mut all = vec![];
     for id in &ids {
-        all.push(open(ctx, id)?.status(t, results));
+        // one aide whose queue cannot open is one row with its error, never the whole list
+        match open(ctx, id) {
+            Ok(q) => all.push(q.status(t, results)),
+            Err(e) if ctx.args.pos.get(1).is_none() => all.push(queue::Status { aide: id.0.clone(), error: Some(e.message), ..Default::default() }),
+            Err(e) => return Err(e),
+        }
     }
     if out::json_mode() {
         if ctx.args.pos.get(1).is_some() {
@@ -341,6 +358,9 @@ fn status(ctx: &Ctx) -> Result<i32, Refusal> {
 
 /// `3 pending · 1 claimed · oldest 4m · 1 dead` (what status and Admiralty show).
 pub fn summary(s: &queue::Status) -> String {
+    if let Some(e) = &s.error {
+        return format!("cannot read its queue: {e}");
+    }
     let mut parts = vec![];
     if s.pending == 0 && s.claimed.is_empty() {
         parts.push("empty".to_string());
@@ -350,11 +370,14 @@ pub fn summary(s: &queue::Status) -> String {
     if !s.claimed.is_empty() {
         parts.push(format!("{} claimed", s.claimed.len()));
     }
-    if let Some(o) = s.oldest_pending_s {
+    if let Some(o) = s.oldest_age_s {
         parts.push(format!("oldest {}", queue::human(o)));
     }
     if !s.dead.is_empty() {
         parts.push(format!("{} dead", s.dead.len()));
+    }
+    if s.quarantined > 0 {
+        parts.push(format!("{} unreadable (quarantine/)", s.quarantined));
     }
     if s.undelivered > 0 {
         parts.push(format!("{} answer{} to pick up", s.undelivered, if s.undelivered == 1 { "" } else { "s" }));
@@ -377,14 +400,26 @@ fn await_item(q: &Queue, item: &str, wait: f64) -> Option<(State, queue::Item)> 
 /// Print a done item's result (an answer as markdown with its citations) or a
 /// dead one's reason; the exit code (0 done, 5 not yet, 6 dead).
 fn show(q: &Queue, item: &str, got: Option<(State, queue::Item)>, token: Option<&str>) -> Result<i32, Refusal> {
-    let Some((st, i)) = got else { return Err(Refusal { code: "inbox.unknown", message: format!("no item {item} in {}", q.aide), exit: 1 }) };
+    let Some((st, i)) = got else {
+        // dropped while it waited: as final as a dead letter
+        if q.dir.join("dead").join("dropped").join(format!("{item}.json")).exists() {
+            return Err(Refusal { code: "inbox.dead", message: format!("item {item} was dropped from {}", q.aide), exit: 6 });
+        }
+        return Err(Refusal { code: "inbox.unknown", message: format!("no item {item} in {}", q.aide), exit: 1 });
+    };
     let code = match st {
         State::Done => 0,
         State::Dead => 6,
         _ => 5,
     };
     if out::json_mode() {
-        out::json(&json!({"id": i.id, "state": st.dir(), "result": i.result, "reason": i.reason}));
+        let mut v = json!({"id": i.id, "state": st.dir(), "result": i.result, "reason": i.reason});
+        if st != State::Done && st != State::Dead {
+            if let Some(t) = token {
+                v["token"] = json!(t); // a process asker's only way back to its answer
+            }
+        }
+        out::json(&v);
         return Ok(code);
     }
     match st {
@@ -450,13 +485,18 @@ pub fn ask(ctx: &Ctx) -> Result<i32, String> {
         let q = open(ctx, &id)?;
         let s = me(ctx);
         may_post(&s, &q)?;
-        let posted = q.post(&s, "wiki.query.v1", &p, None, now())?;
-        if ctx.args.flag("--no-wait") {
+        let wait = if ctx.args.flag("--no-wait") { None } else { Some(wait_secs(ctx)?.unwrap_or(WAIT_DEFAULT)) };
+        let t = now();
+        // while `ask` waits, the answer comes back here, not as a peer message too
+        let posted = q.post(&s, "wiki.query.v1", &p, None, wait.map(|w| t + w), t)?;
+        let Some(wait) = wait else {
             posted_line(&q, &posted);
             return Ok(5);
-        }
-        let wait = wait_secs(ctx)?.unwrap_or(WAIT_DEFAULT);
+        };
         let got = await_item(&q, &posted.id, wait);
+        if matches!(got, Some((State::Done, _))) {
+            let _ = q.mark_delivered(&posted.id, "returned to `nimitz ask`", true, now());
+        }
         show(&q, &posted.id, got, posted.token.as_deref())
     })();
     Ok(r.unwrap_or_else(|e| refuse(&e)))

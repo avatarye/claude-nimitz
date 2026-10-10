@@ -43,6 +43,12 @@ pub fn parent_of(aide: &Id) -> Id {
     Id(aide.0.rsplit_once('/').map(|(p, _)| p.to_string()).unwrap_or_default())
 }
 
+/// An item id as given (`17`, `000000000017`) in its one form: twelve
+/// digits. Anything else is refused (never a path).
+pub fn item_id(s: &str) -> Result<String, String> {
+    s.trim().parse::<u64>().map(|n| format!("{n:012}")).map_err(|_| format!("{s:?} is not an item id (a number, e.g. 17)"))
+}
+
 /// `HOME/@KB` -> `HOME%2F@KB`
 pub fn escape(id: &Id) -> String {
     id.0.replace('/', "%2F")
@@ -201,7 +207,9 @@ impl Limits {
         };
         let (n, w) = d.per_sender.split_once('/').ok_or_else(|| format!("per_sender {:?}: posts/window, e.g. 60/h", d.per_sender))?;
         let n: u32 = n.trim().parse().map_err(|_| format!("per_sender {:?}: posts/window, e.g. 60/h", d.per_sender))?;
-        let w = duration(&format!("1{}", w.trim())).or_else(|_| duration(w))?;
+        let w = w.trim();
+        // `60/h` is one hour; `60/15m` fifteen minutes
+        let w = if w.starts_with(|c: char| c.is_ascii_digit()) { duration(w)? } else { duration(&format!("1{w}"))? };
         Ok(Limits { types: d.types.clone(), policy, depth_cap: d.depth_cap, per_sender: (n, w), lease_s: duration(&d.lease)?, max_tries: d.max_tries.max(1), keep_done_s: duration(&d.keep_done)? })
     }
 }
@@ -268,6 +276,9 @@ pub struct Event {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReplyTo {
     pub token_sha256: String,
+    /// `nimitz ask --wait` returns the answer itself until then: no peer message
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_until: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivered_at: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -277,6 +288,11 @@ pub struct ReplyTo {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Item {
     pub id: String,
+    /// `<queue uid>:<id>`: unique across a reset queue (a lost `seq` or a
+    /// wiped folder restarts the ids; the uid changes with it). What an aide
+    /// records in its work (`@KB`'s commit trailer `inbox-item: <ref>`).
+    #[serde(default, rename = "ref")]
+    pub reference: String,
     #[serde(rename = "type")]
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -418,7 +434,16 @@ pub struct Status {
     pub dead: Vec<DeadRow>,
     /// the oldest pending item's age
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_pending_s: Option<f64>,
+    pub oldest_age_s: Option<f64>,
+    /// the earliest lease end of a claimed item
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_until: Option<f64>,
+    /// files that do not read as items, set aside under `quarantine/`
+    #[serde(default)]
+    pub quarantined: usize,
+    /// this aide's queue cannot be read (its config): the row says why
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     /// reply results not delivered (the asker was gone)
     pub undelivered: usize,
     pub depth_cap: usize,
@@ -454,7 +479,19 @@ impl Queue {
         for s in State::ALL {
             std::fs::create_dir_all(self.dir.join(s.dir())).map_err(io)?;
         }
-        let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.dir.join("queue.lock")).map_err(io)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.dir, std::fs::Permissions::from_mode(0o700)).map_err(io)?;
+        }
+        let mut o = std::fs::OpenOptions::new();
+        o.create(true).truncate(false).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        let f = o.open(self.dir.join("queue.lock")).map_err(io)?;
         f.lock().map_err(io)?;
         Ok(f)
     }
@@ -477,8 +514,10 @@ impl Queue {
     /// leaves both; the later state wins on read).
     fn shift(&self, from: State, to: State, item: &Item) -> Result<(), Refusal> {
         self.write(to, item)?;
-        let _ = std::fs::remove_file(self.path(from, &item.id));
-        Ok(())
+        match std::fs::remove_file(self.path(from, &item.id)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(no("inbox.io", 1, format!("item {} is now {} but its {} copy stays: {e}", item.id, to.dir(), from.dir()))),
+            _ => Ok(()),
+        }
     }
 
     fn ids(&self, s: State) -> Vec<String> {
@@ -513,6 +552,17 @@ impl Queue {
     /// Under the lock: drop a copy left in an earlier state, return expired
     /// leases to pending (or dead at `max_tries`), prune old done items.
     fn housekeep(&self, now: f64) -> Result<(), Refusal> {
+        // a file that does not read as an item would block the queue (a
+        // claimed one is "busy" for ever, a pending head fails every claim)
+        for s in State::ALL {
+            for id in self.ids(s) {
+                if Self::read(&self.path(s, &id)).is_none() {
+                    let q = self.dir.join("quarantine");
+                    let _ = std::fs::create_dir_all(&q);
+                    let _ = std::fs::rename(self.path(s, &id), q.join(format!("{}-{id}.json", s.dir())));
+                }
+            }
+        }
         for s in State::ALL {
             for id in self.ids(s) {
                 let later = State::ALL.into_iter().any(|t| t.rank() > s.rank() && self.path(t, &id).exists());
@@ -550,10 +600,24 @@ impl Queue {
         let p = self.dir.join("seq");
         let n: u64 = std::fs::read_to_string(&p).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(1);
         // never below an id on disk (a lost seq file must not reuse one)
-        let top = State::ALL.into_iter().flat_map(|s| self.ids(s)).filter_map(|i| i.parse::<u64>().ok()).max().unwrap_or(0);
+        let dropped = self.dir.join("dead").join("dropped");
+        let dropped_ids = std::fs::read_dir(&dropped).into_iter().flatten().flatten().filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".json")).and_then(|n| n.parse::<u64>().ok()));
+        let top = State::ALL.into_iter().flat_map(|s| self.ids(s)).filter_map(|i| i.parse::<u64>().ok()).chain(dropped_ids).max().unwrap_or(0);
         let n = n.max(top + 1);
         write_private(&p, &format!("{}\n", n + 1)).map_err(|e| no("inbox.io", 1, format!("{}: {e}", p.display())))?;
         Ok(format!("{n:012}"))
+    }
+
+    /// The queue's own id, made once (`queue.json`): an item's `ref` is
+    /// `<uid>:<id>`, so a queue reset (ids restart) never repeats a ref.
+    fn uid(&self) -> Result<String, Refusal> {
+        let p = self.dir.join("queue.json");
+        if let Some(u) = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).and_then(|v| v.get("uid").and_then(Value::as_str).map(str::to_string)) {
+            return Ok(u);
+        }
+        let u = token().map_err(|e| no("inbox.io", 1, e))?[..8].to_string();
+        write_private(&p, &serde_json::json!({"uid": u, "aide": self.aide.0}).to_string()).map_err(|e| no("inbox.io", 1, e.to_string()))?;
+        Ok(u)
     }
 
     fn senders_path(&self) -> PathBuf {
@@ -571,7 +635,9 @@ impl Queue {
     }
 
     /// Queue an item. Every sender is rate-limited (aide.md 4.5).
-    pub fn post(&self, sender: &Sender, kind: &str, payload: &Value, key: Option<&str>, now: f64) -> Result<Posted, Refusal> {
+    /// `wait_until`: the asker waits for the answer itself (`ask --wait`)
+    /// until then, so no peer message duplicates it.
+    pub fn post(&self, sender: &Sender, kind: &str, payload: &Value, key: Option<&str>, wait_until: Option<f64>, now: f64) -> Result<Posted, Refusal> {
         let t = type_def(kind).ok_or_else(|| no("inbox.type", 4, format!("unknown type {kind:?} (known: {})", TYPES.iter().map(|t| t.name).collect::<Vec<_>>().join(", "))))?;
         if !self.limits.types.iter().any(|x| x == kind) {
             return Err(no("inbox.type", 4, format!("{} takes {}, not {kind}", self.aide, self.limits.types.join(", "))));
@@ -600,9 +666,14 @@ impl Queue {
             return Err(no("inbox.rate", 4, format!("{} posted {limit} items in the last {}; the next fits in {}", sender.line(), human(window), human(free.max(1.0)))));
         }
         mine.push(now);
+        let uid = self.uid()?;
         let id = self.next_id()?;
-        let token = t.reply.then(token);
+        let token = if t.reply { Some(token().map_err(|e| no("inbox.io", 1, e))?) } else { None };
+        // the sender's count first: a failed post must not slip past the rate
+        let text = serde_json::to_string(&senders).unwrap_or_else(|_| "{}".into());
+        write_private(&self.senders_path(), &text).map_err(|e| no("inbox.io", 1, e.to_string()))?;
         let item = Item {
+            reference: format!("{uid}:{id}"),
             id: id.clone(),
             kind: kind.into(),
             key: key.map(str::to_string),
@@ -613,13 +684,11 @@ impl Queue {
             claim: None,
             history: vec![Event { at: now, event: "posted".into(), note: None }],
             result: None,
-            reply_to: token.as_ref().map(|t| ReplyTo { token_sha256: crate::sha256::hex(t.as_bytes()), delivered_at: None, delivery: None }),
+            reply_to: token.as_ref().map(|t| ReplyTo { token_sha256: crate::sha256::hex(t.as_bytes()), waiting_until: wait_until, delivered_at: None, delivery: None }),
             finished_at: None,
             reason: None,
         };
         self.write(State::Pending, &item)?;
-        let text = serde_json::to_string(&senders).unwrap_or_else(|_| "{}".into());
-        write_private(&self.senders_path(), &text).map_err(|e| no("inbox.io", 1, e.to_string()))?;
         Ok(Posted { id, token, duplicate: false })
     }
 
@@ -640,18 +709,26 @@ impl Queue {
         Ok(Some(item))
     }
 
-    fn claimed(&self, id: &str, now: f64) -> Result<Item, Refusal> {
+    /// The claimed item `id`, held by `by` (None: the user, who may finish
+    /// any): a stale session cannot finish an item re-leased to another.
+    fn claimed(&self, id: &str, by: Option<&str>, now: f64) -> Result<Item, Refusal> {
         self.housekeep(now)?;
-        Self::read(&self.path(State::Claimed, id)).ok_or_else(|| match self.get(id) {
+        let item = Self::read(&self.path(State::Claimed, id)).ok_or_else(|| match self.get(id) {
             Some((s, _)) => no("inbox.state", 1, format!("item {id} is {}, not claimed (its lease may have run out)", s.dir())),
             None => no("inbox.unknown", 1, format!("no item {id} in {}", self.aide)),
-        })
+        })?;
+        if let (Some(b), Some(c)) = (by, item.claim.as_ref()) {
+            if c.by != b {
+                return Err(no("inbox.lease", 1, format!("item {id} is leased to {}, not {b} (the lease ran out and it was claimed again)", c.by)));
+            }
+        }
+        Ok(item)
     }
 
     /// Extend the lease of a claimed item.
-    pub fn heartbeat(&self, id: &str, now: f64) -> Result<Item, Refusal> {
+    pub fn heartbeat(&self, id: &str, by: Option<&str>, now: f64) -> Result<Item, Refusal> {
         let _l = self.lock()?;
-        let mut item = self.claimed(id, now)?;
+        let mut item = self.claimed(id, by, now)?;
         if let Some(c) = item.claim.as_mut() {
             c.until = now + self.limits.lease_s;
         }
@@ -660,7 +737,7 @@ impl Queue {
     }
 
     /// A claimed item is done, with its result (a reply type's answer).
-    pub fn done(&self, id: &str, result: Option<Value>, now: f64) -> Result<Item, Refusal> {
+    pub fn done(&self, id: &str, by: Option<&str>, result: Option<Value>, now: f64) -> Result<Item, Refusal> {
         if let Some(r) = &result {
             let n = serde_json::to_vec(r).map(|b| b.len()).unwrap_or(usize::MAX);
             if n > MAX_RESULT {
@@ -668,7 +745,7 @@ impl Queue {
             }
         }
         let _l = self.lock()?;
-        let mut item = self.claimed(id, now)?;
+        let mut item = self.claimed(id, by, now)?;
         if type_def(&item.kind).is_some_and(|t| t.reply) && result.is_none() {
             return Err(no("inbox.result", 2, format!("{} is a request: done needs --result (the answer)", item.kind)));
         }
@@ -682,9 +759,9 @@ impl Queue {
 
     /// A claimed item failed: back to pending, or dead at `max_tries` (or
     /// `permanent`). Returns the item and whether it is dead.
-    pub fn fail(&self, id: &str, reason: &str, permanent: bool, now: f64) -> Result<(Item, bool), Refusal> {
+    pub fn fail(&self, id: &str, by: Option<&str>, reason: &str, permanent: bool, now: f64) -> Result<(Item, bool), Refusal> {
         let _l = self.lock()?;
-        let mut item = self.claimed(id, now)?;
+        let mut item = self.claimed(id, by, now)?;
         item.claim = None;
         item.note(now, "failed", Some(reason.into()));
         let dead = permanent || item.tries >= self.limits.max_tries;
@@ -761,7 +838,7 @@ impl Queue {
     /// The summary Admiralty and `status` read. `results`: include reply
     /// results in `recent` (the user's view only).
     pub fn status(&self, now: f64, results: bool) -> Status {
-        // housekeeping needs the lock; a status that cannot take it reads as is
+        // housekeeping under the lock (it waits for a post or claim in progress)
         if let Ok(_l) = self.lock() {
             let _ = self.housekeep(now);
         }
@@ -783,7 +860,10 @@ impl Queue {
                 .collect(),
             done: of(State::Done).count(),
             dead: of(State::Dead).map(|i| DeadRow { id: i.id.clone(), kind: i.kind.clone(), sender: i.sender.line(), tries: i.tries, reason: i.reason.clone().unwrap_or_default() }).collect(),
-            oldest_pending_s: of(State::Pending).map(|i| now - i.posted_at).fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.max(x)))),
+            lease_until: of(State::Claimed).filter_map(|i| i.claim.as_ref().map(|c| c.until)).fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.min(x)))),
+            quarantined: std::fs::read_dir(self.dir.join("quarantine")).map(|d| d.count()).unwrap_or(0),
+            error: None,
+            oldest_age_s: of(State::Pending).map(|i| now - i.posted_at).fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.max(x)))),
             undelivered: of(State::Done).filter(|i| i.reply_to.as_ref().is_some_and(|r| r.delivered_at.is_none())).count(),
             depth_cap: self.limits.depth_cap,
             senders,
@@ -820,17 +900,13 @@ pub fn may_read(item: &Item, who: &Sender, token: Option<&str>) -> bool {
     }
 }
 
-/// 128 random bits as hex (`/dev/urandom`).
-fn token() -> String {
+/// 128 random bits as hex (`/dev/urandom`). No random source: an error,
+/// never a guessable token.
+fn token() -> Result<String, String> {
     use std::io::Read;
     let mut b = [0u8; 16];
-    let ok = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).is_ok();
-    if !ok {
-        // no urandom: the time and the pid, hashed (not secret, but unique)
-        let seed = format!("{:?}{}", std::time::SystemTime::now(), std::process::id());
-        b.copy_from_slice(&crate::sha256::digest(seed.as_bytes())[..16]);
-    }
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).map_err(|e| format!("no random source for a reply token: {e}"))?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
 /// `90` -> `1m30s`, `7200` -> `2h`.
@@ -892,6 +968,9 @@ pub fn deliver(env: &Env, q: &Queue, item: &Item, now: f64) -> Result<String, St
     if !type_def(&item.kind).is_some_and(|t| t.reply) || item.reply_to.as_ref().is_some_and(|r| r.delivered_at.is_some()) {
         return Ok("nothing to deliver".into());
     }
+    if item.reply_to.as_ref().and_then(|r| r.waiting_until).is_some_and(|w| w > now) {
+        return Ok("the asker waits for it (`nimitz ask --wait` returns it)".into());
+    }
     let r = (|| {
         let (sid, pid) = live_session(env, &item.sender).ok_or("the asker is not live; the answer waits for `nimitz inbox result`")?;
         if !crate::inbox::format_ok(crate::inbox::receiver_version(env, Some(pid), item.sender.job.as_deref()).as_deref()) {
@@ -924,7 +1003,7 @@ pub fn deliver(env: &Env, q: &Queue, item: &Item, now: f64) -> Result<String, St
 /// the user's mod), else `--from` (an unverified process), else the user at a
 /// terminal.
 pub fn sender_of(env: &Env, vars: &std::collections::HashMap<String, String>, from: Option<&str>) -> Sender {
-    let session = session_above(env);
+    let session = session_above(env, vars);
     let (sid, job, cwd) = match &session {
         Some(v) => (
             v.get("sessionId").and_then(Value::as_str).map(str::to_string),
@@ -951,15 +1030,30 @@ pub fn sender_of(env: &Env, vars: &std::collections::HashMap<String, String>, fr
     }
     match from {
         Some(f) => Sender { kind: "process".into(), label: Some(f.to_string()), verified: false, ..Default::default() },
+        // a process cut off from whatever started it (`setsid`, `nohup ... &`:
+        // re-parented to init or a subreaper) proves nothing: not the user
+        None if detached() => Sender { kind: "process".into(), label: Some("detached".into()), verified: false, ..Default::default() },
         None => Sender { kind: "user".into(), verified: true, ..Default::default() },
     }
 }
 
+/// Re-parented to init or to a subreaper (`systemd --user`): the process
+/// that started it is gone, so its ancestry says nothing (Linux; elsewhere
+/// false).
+fn detached() -> bool {
+    let Some(parent) = crate::evidence::ancestors().into_iter().next() else { return false };
+    parent == 1 || std::fs::read_to_string(format!("/proc/{parent}/comm")).is_ok_and(|c| c.trim() == "systemd")
+}
+
 /// The session file of the nearest Claude Code process above this one.
-fn session_above(env: &Env) -> Option<Value> {
-    if let Ok(pids) = std::env::var("NIMITZ_TEST_ANCESTORS") {
-        // tests: the ancestry is given (a sandbox has no Claude Code above it)
-        return pids.split(',').filter_map(|p| p.trim().parse::<i64>().ok()).find_map(|p| read_session(env, p));
+fn session_above(env: &Env, vars: &std::collections::HashMap<String, String>) -> Option<Value> {
+    // tests only (a debug build): the ancestry is given, a sandbox has no
+    // Claude Code above it. A release build never reads it, so no caller
+    // can name another session as its own.
+    if cfg!(debug_assertions) {
+        if let Some(pids) = vars.get("NIMITZ_TEST_ANCESTORS") {
+            return pids.split(',').filter_map(|p| p.trim().parse::<i64>().ok()).find_map(|p| read_session(env, p));
+        }
     }
     crate::evidence::ancestors().into_iter().find_map(|p| read_session(env, p))
 }
@@ -1006,17 +1100,17 @@ mod tests {
     fn fifo_lease_done_and_the_order_survives_a_lost_seq_file() {
         let (_td, env) = test_env();
         let q = q(&env);
-        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, 100.0).unwrap();
-        let b = q.post(&member("HOME/X"), "wiki.note.v1", &note("b"), None, 101.0).unwrap();
+        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, None, 100.0).unwrap();
+        let b = q.post(&member("HOME/X"), "wiki.note.v1", &note("b"), None, None, 101.0).unwrap();
         assert!(a.id < b.id && a.token.is_none(), "a note is fire and forget");
         let got = q.claim("s1", 102.0).unwrap().unwrap();
         assert_eq!((got.id.as_str(), got.tries), (a.id.as_str(), 1));
         assert_eq!(q.claim("s1", 103.0).unwrap_err().code, "inbox.busy", "one claim at a time");
-        q.done(&a.id, Some(json!({"commit": "abc"})), 104.0).unwrap();
+        q.done(&a.id, None, Some(json!({"commit": "abc"})), 104.0).unwrap();
         assert_eq!(q.get(&a.id).unwrap().0, State::Done);
         // the seq file is lost: ids never go backwards
         std::fs::remove_file(q.dir.join("seq")).unwrap();
-        let c = q.post(&member("HOME"), "wiki.note.v1", &note("c"), None, 105.0).unwrap();
+        let c = q.post(&member("HOME"), "wiki.note.v1", &note("c"), None, None, 105.0).unwrap();
         assert!(c.id > b.id);
         assert_eq!(q.claim("s1", 106.0).unwrap().unwrap().id, b.id, "FIFO");
     }
@@ -1025,7 +1119,7 @@ mod tests {
     fn an_expired_lease_returns_the_item_then_dead_letters_it() {
         let (_td, env) = test_env();
         let q = q(&env);
-        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, 0.0).unwrap();
+        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, None, 0.0).unwrap();
         q.claim("s1", 1.0).unwrap();
         // the aide crashed: 60 s later the lease is gone
         let again = q.claim("s2", 62.0).unwrap().unwrap();
@@ -1050,14 +1144,14 @@ mod tests {
     fn fail_returns_to_pending_then_dead_or_dead_at_once_when_permanent() {
         let (_td, env) = test_env();
         let q = q(&env);
-        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, 0.0).unwrap();
+        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, None, 0.0).unwrap();
         q.claim("s", 1.0).unwrap();
-        assert!(!q.fail(&a.id, "repo dirty", false, 2.0).unwrap().1);
+        assert!(!q.fail(&a.id, None, "repo dirty", false, 2.0).unwrap().1);
         q.claim("s", 3.0).unwrap();
-        assert!(q.fail(&a.id, "repo dirty", false, 4.0).unwrap().1, "the second try was the last");
-        let b = q.post(&member("HOME"), "wiki.note.v1", &note("b"), None, 5.0).unwrap();
+        assert!(q.fail(&a.id, None, "repo dirty", false, 4.0).unwrap().1, "the second try was the last");
+        let b = q.post(&member("HOME"), "wiki.note.v1", &note("b"), None, None, 5.0).unwrap();
         q.claim("s", 6.0).unwrap();
-        assert!(q.fail(&b.id, "bad payload", true, 7.0).unwrap().1);
+        assert!(q.fail(&b.id, None, "bad payload", true, 7.0).unwrap().1);
         assert_eq!(q.status(8.0, false).dead.len(), 2);
     }
 
@@ -1066,30 +1160,30 @@ mod tests {
         let (_td, env) = test_env();
         let q = Queue::open(&env, &aide_id("HOME/@KB").unwrap(), limits(&["wiki.note.v1"]));
         let m = member("HOME/X");
-        assert_eq!(q.post(&m, "wiki.query.v1", &json!({"question": "q"}), None, 0.0).unwrap_err().code, "inbox.type");
-        assert_eq!(q.post(&m, "nope.v1", &note("x"), None, 0.0).unwrap_err().code, "inbox.type");
-        assert_eq!(q.post(&m, "wiki.note.v1", &json!({"title": "no body"}), None, 0.0).unwrap_err().code, "inbox.schema");
-        assert_eq!(q.post(&m, "wiki.note.v1", &json!({"body": "x", "domain": "Not A Slug"}), None, 0.0).unwrap_err().code, "inbox.schema");
-        assert_eq!(q.post(&m, "wiki.note.v1", &json!({"body": "x", "kind": "rumour"}), None, 0.0).unwrap_err().code, "inbox.schema");
-        assert_eq!(q.post(&m, "wiki.note.v1", &json!({"body": "x", "extra": 1}), None, 0.0).unwrap_err().code, "inbox.schema");
-        assert_eq!(q.post(&m, "wiki.note.v1", &note(&"x".repeat(80 * 1024)), None, 0.0).unwrap_err().code, "inbox.size");
+        assert_eq!(q.post(&m, "wiki.query.v1", &json!({"question": "q"}), None, None, 0.0).unwrap_err().code, "inbox.type");
+        assert_eq!(q.post(&m, "nope.v1", &note("x"), None, None, 0.0).unwrap_err().code, "inbox.type");
+        assert_eq!(q.post(&m, "wiki.note.v1", &json!({"title": "no body"}), None, None, 0.0).unwrap_err().code, "inbox.schema");
+        assert_eq!(q.post(&m, "wiki.note.v1", &json!({"body": "x", "domain": "Not A Slug"}), None, None, 0.0).unwrap_err().code, "inbox.schema");
+        assert_eq!(q.post(&m, "wiki.note.v1", &json!({"body": "x", "kind": "rumour"}), None, None, 0.0).unwrap_err().code, "inbox.schema");
+        assert_eq!(q.post(&m, "wiki.note.v1", &json!({"body": "x", "extra": 1}), None, None, 0.0).unwrap_err().code, "inbox.schema");
+        assert_eq!(q.post(&m, "wiki.note.v1", &note(&"x".repeat(80 * 1024)), None, None, 0.0).unwrap_err().code, "inbox.size");
         // every sender is rate-limited, members too: 3 a minute
         for i in 0..3 {
-            q.post(&m, "wiki.note.v1", &note(&format!("n{i}")), None, i as f64).unwrap();
+            q.post(&m, "wiki.note.v1", &note(&format!("n{i}")), None, None, i as f64).unwrap();
         }
-        let r = q.post(&m, "wiki.note.v1", &note("n3"), None, 10.0).unwrap_err();
+        let r = q.post(&m, "wiki.note.v1", &note("n3"), None, None, 10.0).unwrap_err();
         assert_eq!((r.code, r.exit), ("inbox.rate", 4));
         // another sender still fits until the depth cap (4)
         let other = member("HOME/Y");
-        q.post(&other, "wiki.note.v1", &note("o1"), None, 11.0).unwrap();
-        assert_eq!(q.post(&other, "wiki.note.v1", &note("o2"), None, 12.0).unwrap_err().code, "inbox.full");
+        q.post(&other, "wiki.note.v1", &note("o1"), None, None, 11.0).unwrap();
+        assert_eq!(q.post(&other, "wiki.note.v1", &note("o2"), None, None, 12.0).unwrap_err().code, "inbox.full");
         // the window moves on
         q.claim("s", 70.0).unwrap();
         let first = q.list(Some(State::Claimed))[0].1.id.clone();
-        q.done(&first, None, 71.0).unwrap();
-        assert!(q.post(&m, "wiki.note.v1", &note("later"), Some("k1"), 72.0).is_ok());
+        q.done(&first, None, None, 71.0).unwrap();
+        assert!(q.post(&m, "wiki.note.v1", &note("later"), Some("k1"), None, 72.0).is_ok());
         // a key already queued is not queued again
-        let d = q.post(&other, "wiki.note.v1", &note("same"), Some("k1"), 73.0).unwrap();
+        let d = q.post(&other, "wiki.note.v1", &note("same"), Some("k1"), None, 73.0).unwrap();
         assert!(d.duplicate);
     }
 
@@ -1098,14 +1192,14 @@ mod tests {
         let (_td, env) = test_env();
         let q = Queue::open(&env, &aide_id("HOME/@REF").unwrap(), limits(&["wiki.query.v1"]));
         let asker = Sender { kind: "session".into(), session: Some("s-ask".into()), job: Some("j-ask".into()), verified: true, ..Default::default() };
-        let p = q.post(&asker, "wiki.query.v1", &json!({"question": "what is the lease?", "length": "short"}), None, 0.0).unwrap();
+        let p = q.post(&asker, "wiki.query.v1", &json!({"question": "what is the lease?", "length": "short"}), None, None, 0.0).unwrap();
         let token = p.token.clone().expect("a request gets a token");
         let item = q.get(&p.id).unwrap().1;
         assert_ne!(item.reply_to.as_ref().unwrap().token_sha256, token, "only the hash is stored");
         assert!(!std::fs::read_to_string(q.path(State::Pending, &p.id)).unwrap().contains(&token));
         q.claim("ref", 1.0).unwrap();
-        assert_eq!(q.done(&p.id, None, 2.0).unwrap_err().code, "inbox.result", "a request is done with its answer");
-        let done = q.done(&p.id, Some(json!({"answer": "15 minutes [[lease]]", "citations": ["wiki/lease.md"]})), 3.0).unwrap();
+        assert_eq!(q.done(&p.id, None, None, 2.0).unwrap_err().code, "inbox.result", "a request is done with its answer");
+        let done = q.done(&p.id, None, Some(json!({"answer": "15 minutes [[lease]]", "citations": ["wiki/lease.md"]})), 3.0).unwrap();
         assert!(may_read(&done, &asker, None));
         let same_job_new_session = Sender { kind: "session".into(), session: Some("s-new".into()), job: Some("j-ask".into()), verified: true, ..Default::default() };
         assert!(may_read(&done, &same_job_new_session, None), "the same job after a /clear");
@@ -1127,9 +1221,9 @@ mod tests {
     fn done_items_are_pruned_after_keep_done_and_a_crash_copy_is_resolved() {
         let (_td, env) = test_env();
         let q = q(&env);
-        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, 0.0).unwrap();
+        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, None, 0.0).unwrap();
         q.claim("s", 1.0).unwrap();
-        q.done(&a.id, None, 2.0).unwrap();
+        q.done(&a.id, None, None, 2.0).unwrap();
         // a crash left the pending copy too: the later state wins and the copy goes
         let item = q.get(&a.id).unwrap().1;
         q.write(State::Pending, &item).unwrap();
@@ -1151,7 +1245,7 @@ mod tests {
                 let (env, aide, d) = (env.clone(), aide.clone(), d.clone());
                 std::thread::spawn(move || {
                     let q = Queue::open(&env, &aide, Limits::from_def(&d).unwrap());
-                    (0..10).map(|i| q.post(&member(&format!("HOME/T{t}")), "wiki.note.v1", &note(&format!("{t}-{i}")), None, 0.0).unwrap().id).collect::<Vec<_>>()
+                    (0..10).map(|i| q.post(&member(&format!("HOME/T{t}")), "wiki.note.v1", &note(&format!("{t}-{i}")), None, None, 0.0).unwrap().id).collect::<Vec<_>>()
                 })
             })
             .collect();
@@ -1164,6 +1258,110 @@ mod tests {
     }
 
     #[test]
+    fn item_ids_take_one_form_and_never_a_path() {
+        assert_eq!(item_id("17").unwrap(), "000000000017");
+        assert_eq!(item_id("000000000017").unwrap(), "000000000017");
+        for bad in ["../../x", "17/..", "-1", "", "1e3", "HOME%2F@REF/claimed/000000000042"] {
+            assert!(item_id(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn two_claimers_never_take_the_same_item() {
+        let (_td, env) = test_env();
+        let q0 = q(&env);
+        q0.post(&member("HOME"), "wiki.note.v1", &note("only"), None, None, 0.0).unwrap();
+        let got: Vec<bool> = (0..6)
+            .map(|i| {
+                let env = env.clone();
+                std::thread::spawn(move || q(&env).claim(&format!("s{i}"), 1.0).ok().flatten().is_some())
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .collect();
+        assert_eq!(got.iter().filter(|x| **x).count(), 1, "{got:?}");
+    }
+
+    #[test]
+    fn a_stale_holder_cannot_finish_an_item_leased_again() {
+        let (_td, env) = test_env();
+        let q = q(&env);
+        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, None, 0.0).unwrap();
+        q.claim("old-session", 1.0).unwrap();
+        q.claim("new-session", 70.0).unwrap(); // the old lease ran out
+        assert_eq!(q.done(&a.id, Some("old-session"), None, 71.0).unwrap_err().code, "inbox.lease");
+        assert_eq!(q.fail(&a.id, Some("old-session"), "x", false, 71.0).unwrap_err().code, "inbox.lease");
+        q.done(&a.id, Some("new-session"), None, 72.0).unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_file_is_set_aside_not_left_to_block_the_queue() {
+        let (_td, env) = test_env();
+        let q = q(&env);
+        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, None, 0.0).unwrap();
+        std::fs::write(q.dir.join("claimed/000000000099.json"), "{ not json").unwrap();
+        std::fs::write(q.dir.join("pending/000000000000.json"), "").unwrap();
+        assert_eq!(q.claim("s", 1.0).unwrap().unwrap().id, a.id, "neither busy nor stuck");
+        assert_eq!(q.status(2.0, false).quarantined, 2);
+    }
+
+    #[test]
+    fn a_reset_queue_restarts_its_ids_but_never_a_ref() {
+        let (_td, env) = test_env();
+        let q0 = q(&env);
+        let a = q0.post(&member("HOME"), "wiki.note.v1", &note("a"), None, None, 0.0).unwrap();
+        let ref_a = q0.get(&a.id).unwrap().1.reference;
+        assert!(ref_a.ends_with(&format!(":{}", a.id)), "{ref_a}");
+        // a dropped item's id is never reused
+        q0.drop_item(&a.id, 1.0).unwrap();
+        std::fs::remove_file(q0.dir.join("seq")).unwrap();
+        let b = q0.post(&member("HOME"), "wiki.note.v1", &note("b"), None, None, 2.0).unwrap();
+        assert!(b.id > a.id);
+        // the folder is wiped: the ids restart, the refs do not repeat
+        std::fs::remove_dir_all(&q0.dir).unwrap();
+        let c = q0.post(&member("HOME"), "wiki.note.v1", &note("c"), None, None, 3.0).unwrap();
+        assert_eq!(c.id, a.id);
+        assert_ne!(q0.get(&c.id).unwrap().1.reference, ref_a);
+    }
+
+    #[test]
+    fn the_answer_reaches_the_live_asker_once_and_not_while_ask_waits() {
+        use std::io::Read;
+        let (td, env) = test_env();
+        let q = Queue::open(&env, &aide_id("HOME/@REF").unwrap(), limits(&["wiki.query.v1"]));
+        // the asker: a live session (this process) with a messaging socket
+        let me = std::process::id() as i64;
+        let sock = td.path().join(format!("{me}.sock"));
+        let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let sessions = env.claude_home.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join(format!("{me}.json")), json!({"pid": me, "sessionId": "s-live", "jobId": "jlive001", "version": "2.1.296"}).to_string()).unwrap();
+        crate::inbox::record(&env, "s-live", me, &sock.to_string_lossy());
+        let asker = Sender { kind: "session".into(), session: Some("s-live".into()), job: Some("jlive001".into()), verified: true, ..Default::default() };
+        let t = std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut s = String::new();
+            c.read_to_string(&mut s).unwrap();
+            s
+        });
+        // `ask --wait` until 100: no peer message while it waits
+        let p = q.post(&asker, "wiki.query.v1", &json!({"question": "q"}), None, Some(100.0), 0.0).unwrap();
+        q.claim("ref", 1.0).unwrap();
+        let done = q.done(&p.id, None, Some(json!({"answer": "the answer [[page]]"})), 2.0).unwrap();
+        assert!(deliver(&env, &q, &done, 2.0).unwrap().contains("waits"));
+        // past the wait (ask gave up): delivered, once
+        let note = deliver(&env, &q, &done, 101.0).unwrap();
+        assert!(note.contains("delivered to session s-live"), "{note}");
+        let line = t.join().unwrap();
+        assert!(line.contains("[nimitz reply] HOME/@REF answered your request") && line.contains("the answer [[page]]"), "{line}");
+        let now_done = q.get(&p.id).unwrap().1;
+        assert!(now_done.reply_to.as_ref().unwrap().delivered_at.is_some());
+        assert_eq!(deliver(&env, &q, &now_done, 102.0).unwrap(), "nothing to deliver");
+        assert_eq!(q.status(103.0, false).undelivered, 0);
+    }
+
+    #[test]
     fn limits_parse_durations_and_rates() {
         assert_eq!(duration("15m").unwrap(), 900.0);
         assert_eq!(duration("7d").unwrap(), 604800.0);
@@ -1172,6 +1370,10 @@ mod tests {
         assert_eq!((l.per_sender, l.lease_s, l.keep_done_s, l.max_tries), ((60, 3600.0), 900.0, 604800.0, 3));
         assert!(Limits::from_def(&InboxDef { types: vec!["wiki.nope.v9".into()], ..Default::default() }).is_err());
         assert!(Limits::from_def(&InboxDef { policy: "anyone".into(), ..Default::default() }).is_err());
+        let w = Limits::from_def(&InboxDef { per_sender: "60/15m".into(), ..Default::default() }).unwrap();
+        assert_eq!(w.per_sender, (60, 900.0), "a window with a number");
+        let w = Limits::from_def(&InboxDef { per_sender: "10/30s".into(), ..Default::default() }).unwrap();
+        assert_eq!(w.per_sender, (10, 30.0));
         assert_eq!(human(90.0), "1m30s");
         assert_eq!(human(7200.0), "2h");
     }
