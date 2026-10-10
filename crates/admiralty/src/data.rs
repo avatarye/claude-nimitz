@@ -137,18 +137,11 @@ pub fn merge_check(snap: &mut Snapshot, found: Vec<nimitz_core::Issue>) {
                 if f.id.fleet() != id.fleet() {
                     continue;
                 }
-                let mut members: Vec<&mut nimitz_core::Member> = vec![&mut f.admiral];
-                for sq in &mut f.squadrons {
-                    members.push(&mut sq.commodore);
-                    members.extend(sq.ships.iter_mut());
-                }
-                if let Some(m) = members.into_iter().find(|m| m.id == id) {
-                    m.issues.push(i.clone());
-                    placed = true;
-                } else {
+                let on_member = f.members_mut().find(|m| m.id == id).map(|m| m.issues.push(i.clone())).is_some();
+                if !on_member {
                     f.issues.push(i.clone());
-                    placed = true;
                 }
+                placed = true;
                 break;
             }
         }

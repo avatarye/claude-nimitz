@@ -312,12 +312,7 @@ pub fn issues(env: &Env, snap: &Snapshot) -> Vec<Issue> {
         }
     }
     for f in &snap.fleets {
-        let mut ms = vec![&f.admiral];
-        for sq in &f.squadrons {
-            ms.push(&sq.commodore);
-            ms.extend(sq.ships.iter());
-        }
-        for m in ms {
+        for m in f.members() {
             let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some()) else { continue };
             // the record is keyed as the hook keys it: the job, else the session
             let key = s.short_id.clone().unwrap_or_else(|| format!("session:{}", s.session_id));

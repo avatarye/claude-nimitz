@@ -1142,14 +1142,7 @@ fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &s
     if env.matches_hostname(&m.hostname) {
         let live: Vec<String> = snap
             .and_then(|s| s.fleets.iter().find(|fl| fl.id == fid))
-            .map(|fl| {
-                let mut v = vec![&fl.admiral];
-                for sq in &fl.squadrons {
-                    v.push(&sq.commodore);
-                    v.extend(sq.ships.iter());
-                }
-                v.into_iter().filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some())).map(|m| m.id.0.clone()).collect()
-            })
+            .map(|fl| fl.members().filter(|m| m.session.as_ref().is_some_and(|s| s.pid.is_some())).map(|m| m.id.0.clone()).collect())
             .unwrap_or_default();
         let (code, message) = if live.is_empty() {
             ("config.pending", format!("{label} is this machine: {fleet}'s ships stop running here after their next stop"))

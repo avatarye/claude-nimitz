@@ -60,7 +60,7 @@ pub fn caller_from_env(vars: &HashMap<String, String>) -> Caller {
         (None, None) => Caller::User,
         (Some(id), Some(role)) => {
             let id = Id(id.clone());
-            let shape_ok = id.parts().iter().all(|p| crate::config::valid_name(p)) && id.name() != id.0;
+            let shape_ok = id.well_formed();
             // the role label must agree with the id's shape; otherwise distrust both
             if shape_ok && id.role().as_str() == role {
                 Caller::Member { role: id.role(), id }
@@ -452,8 +452,7 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
     let id_at = |i: usize| -> Option<Id> {
         let s = w.get(i)?;
         let id = Id(s.to_string());
-        let ok = !s.is_empty() && id.parts().iter().all(|p| crate::config::valid_name(p));
-        ok.then_some(id)
+        id.well_formed().then_some(id)
     };
     let in_fleet = |t: &Id| *role == Role::Admiral && t.fleet() == me.fleet();
     let in_squadron = |t: &Id| *role == Role::Commodore && (t == me || t.parent().as_ref() == Some(me));
@@ -540,15 +539,7 @@ fn refuse(plan: &mut Plan, code: &str, msg: String, fix: Option<String>, id: Opt
 
 /// Every member of a snapshot, with its fleet.
 fn members(snap: &Snapshot) -> Vec<(&Fleet, &Member)> {
-    let mut out = vec![];
-    for f in &snap.fleets {
-        out.push((f, &f.admiral));
-        for sq in &f.squadrons {
-            out.push((f, &sq.commodore));
-            out.extend(sq.ships.iter().map(|m| (f, m)));
-        }
-    }
-    out
+    snap.fleets.iter().flat_map(|f| f.members().map(move |m| (f, m))).collect()
 }
 
 fn member<'a>(snap: &'a Snapshot, id: &Id) -> Option<(&'a Fleet, &'a Member)> {

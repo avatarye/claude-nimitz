@@ -338,13 +338,7 @@ impl App {
                 m.reasons.insert(0, "pane: blocked at an approval or a question (multiplexer)".into());
             }
         };
-        for f in &mut b.snap.fleets {
-            mark(&mut f.admiral);
-            for sq in &mut f.squadrons {
-                mark(&mut sq.commodore);
-                sq.ships.iter_mut().for_each(mark);
-            }
-        }
+        b.snap.fleets.iter_mut().flat_map(|f| f.members_mut()).for_each(mark);
         // a squadron that got worse since the last full look (a warning, an
         // error or needs you; idle to busy is just work): its bar pulses once.
         // The quick first look has no check issues: it is not compared, and

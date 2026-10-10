@@ -216,7 +216,7 @@ fn status_word(s: Status) -> &'static str {
 /// Herdr, or a member's command): a look from outside Herdr forgets no tab.
 pub fn from_snapshot(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrIdentity>, prev: Option<&ActiveSet>) -> ActiveSet {
     let mut members = BTreeMap::new();
-    let all = snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter()))));
+    let all = snap.fleets.iter().flat_map(|f| f.members());
     for m in all {
         let Some(s) = m.session.as_ref() else { continue };
         if s.pid.is_none() {

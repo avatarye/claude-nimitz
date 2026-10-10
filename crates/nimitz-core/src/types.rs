@@ -87,6 +87,11 @@ impl Id {
             _ => self.0.clone(),
         }
     }
+    /// One to three names (`config::valid_name`): an id nimitz could have made.
+    pub fn well_formed(&self) -> bool {
+        let p = self.parts();
+        (1..=3).contains(&p.len()) && p.iter().all(|x| crate::config::valid_name(x))
+    }
     /// The identity above this one in the chain of command.
     pub fn parent(&self) -> Option<Id> {
         let p = self.parts();
@@ -510,6 +515,17 @@ pub struct Fleet {
     pub admiral: Member,
     pub squadrons: Vec<Squadron>,
     pub issues: Vec<Issue>,
+}
+
+impl Fleet {
+    /// Every member, chain-of-command order: the admiral, then each
+    /// squadron's commodore and its ships.
+    pub fn members(&self) -> impl Iterator<Item = &Member> {
+        std::iter::once(&self.admiral).chain(self.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter())))
+    }
+    pub fn members_mut(&mut self) -> impl Iterator<Item = &mut Member> {
+        std::iter::once(&mut self.admiral).chain(self.squadrons.iter_mut().flat_map(|q| std::iter::once(&mut q.commodore).chain(q.ships.iter_mut())))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

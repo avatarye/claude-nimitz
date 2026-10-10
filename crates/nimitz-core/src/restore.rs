@@ -780,7 +780,7 @@ fn found(rp: &mut RestorePlan, id: &Id, found: impl Into<String>, action: impl I
 }
 
 pub fn fleet_members(f: &Fleet) -> Vec<&Member> {
-    std::iter::once(&f.admiral).chain(f.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter()))).collect()
+    f.members().collect()
 }
 
 fn dedup(plan: &mut Plan) {

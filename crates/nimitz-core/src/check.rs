@@ -199,12 +199,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
 
     // Member issues: folders, then the session-level rules.
     for fleet in &snap.fleets {
-        let mut members: Vec<&Member> = vec![&fleet.admiral];
-        for sq in &fleet.squadrons {
-            members.push(&sq.commodore);
-            members.extend(sq.ships.iter());
-        }
-        for m in members {
+        for m in fleet.members() {
             if !in_scope(&m.id, id) {
                 continue;
             }
@@ -267,12 +262,7 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
                 }
             }
             for fl in &snap.fleets {
-                let mut ms = vec![&fl.admiral];
-                for sq in &fl.squadrons {
-                    ms.push(&sq.commodore);
-                    ms.extend(sq.ships.iter());
-                }
-                exact.extend(ms.into_iter().filter(|m| m.id == *t || below(&m.id, Some(t))).filter_map(|m| m.cwd.as_deref()).map(|c| crate::env::canon(Path::new(c))));
+                exact.extend(fl.members().filter(|m| m.id == *t || below(&m.id, Some(t))).filter_map(|m| m.cwd.as_deref()).map(|c| crate::env::canon(Path::new(c))));
             }
             Some((exact, trees.iter().map(|d| crate::env::canon(d)).collect()))
         }

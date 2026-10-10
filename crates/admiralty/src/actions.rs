@@ -175,20 +175,7 @@ pub fn cli_command(env: &Env, bin: &str) -> std::process::Command {
 // ------------------------------------------------------------------ lookups
 
 pub fn find_member<'a>(snap: &'a Snapshot, id: &Id) -> Option<&'a Member> {
-    for f in &snap.fleets {
-        if &f.admiral.id == id {
-            return Some(&f.admiral);
-        }
-        for sq in &f.squadrons {
-            if &sq.commodore.id == id {
-                return Some(&sq.commodore);
-            }
-            if let Some(m) = sq.ships.iter().find(|m| &m.id == id) {
-                return Some(m);
-            }
-        }
-    }
-    None
+    snap.fleets.iter().flat_map(|f| f.members()).find(|m| &m.id == id)
 }
 
 fn live(m: &Member) -> bool {

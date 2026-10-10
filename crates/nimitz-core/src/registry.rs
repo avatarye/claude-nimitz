@@ -510,7 +510,7 @@ pub fn identity_of(env: &Env, labels: &BTreeMap<String, String>) -> Option<Id> {
         }
     }
     let id = Id(labels.get("NIMITZ_ID")?.clone());
-    let shape_ok = !id.fleet().is_empty() && id.parts().iter().all(|p| crate::config::valid_name(p));
+    let shape_ok = id.well_formed();
     (shape_ok && !crate::migrate::is_tender_id(&id.0) && labels.get("NIMITZ_ROLE").map(String::as_str) == Some(id.role().as_str())).then_some(id)
 }
 

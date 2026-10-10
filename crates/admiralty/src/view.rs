@@ -132,12 +132,7 @@ impl FleetState {
 
 /// Every member of a fleet, chain-of-command order.
 pub fn fleet_members(f: &Fleet) -> Vec<&Member> {
-    let mut v = vec![&f.admiral];
-    for sq in &f.squadrons {
-        v.push(&sq.commodore);
-        v.extend(sq.ships.iter());
-    }
-    v
+    f.members().collect()
 }
 
 pub fn squadron_members(sq: &Squadron) -> Vec<&Member> {
@@ -149,13 +144,8 @@ pub fn squadron_members(sq: &Squadron) -> Vec<&Member> {
 /// Every issue in a fleet: the fleet's own, the squadrons', every member's.
 pub fn fleet_issues(f: &Fleet) -> Vec<&Issue> {
     let mut v: Vec<&Issue> = f.issues.iter().collect();
-    v.extend(f.admiral.issues.iter());
-    for sq in &f.squadrons {
-        v.extend(sq.issues.iter());
-        for m in squadron_members(sq) {
-            v.extend(m.issues.iter());
-        }
-    }
+    v.extend(f.squadrons.iter().flat_map(|sq| sq.issues.iter()));
+    v.extend(f.members().flat_map(|m| m.issues.iter()));
     v
 }
 
