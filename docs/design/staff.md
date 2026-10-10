@@ -1,8 +1,9 @@
 # Staff: always-on members with a durable inbox
 
-Status: **approved by the user (2026-10-10)**, with the answers in section 14,
-MYCC_DEV's six changes and a second staff member, `@LIBRARIAN`, with request
-and reply (sections 4.6 and 6.4). Nothing is built; S1 is next. Branch
+Status: revised after the user's review (2026-10-10): the answers in section
+14 (settled), MYCC_DEV's six changes, and a second staff member, `@REF`,
+with request and reply (sections 4.6 and 6.4). Nothing is built; S1 starts
+after the user signs off on this revision. Branch
 `design/staff`, off dev 947d360.
 
 ## 1. Summary
@@ -19,10 +20,10 @@ The first two share one git repo, `/mnt/data/shared/nimitz-knowledge-base`
 - `HOME/@KB`, the admiral's notes keeper, the **writer**. It turns
   `wiki.note.v1` items into pages, fully automatically, with one git commit
   per item. Fire and forget: the poster gets an id, no answer.
-- `HOME/@LIBRARIAN`, the **reader**. It answers `wiki.query.v1` questions by
+- `HOME/@REF`, the **reader**. It answers `wiki.query.v1` questions by
   Lodestar's query rules, read-only, from the last commit. Request and reply:
   the answer goes back to the one who asked, and only to them
-  (`nimitz ask HOME/@LIBRARIAN "..." --wait 2m` returns it to an agent's Bash
+  (`nimitz ask HOME/@REF "..." --wait 2m` returns it to an agent's Bash
   call).
 
 Decisions already made by the user (from the commodore, 2026-10-10):
@@ -46,7 +47,7 @@ Decisions already made by the user (from the commodore, 2026-10-10):
 
 | | Admiral staff (phase 1) | Commodore staff (later) | Ship staff (later) |
 | --- | --- | --- | --- |
-| Id | `HOME/@KB`, `HOME/@LIBRARIAN` | `HOME/GITHUB/@X` | `HOME/GITHUB/NIMITZ_DEV/@X` |
+| Id | `HOME/@KB`, `HOME/@REF` | `HOME/GITHUB/@X` | `HOME/GITHUB/NIMITZ_DEV/@X` |
 | Session name | `[HOME]-@KB` | `[HOME.GITHUB]-@X` | `[HOME.GITHUB.NIMITZ_DEV]-@X` |
 | Herdr tab | `HOME.@KB` | `HOME.GITHUB.@X` | `HOME.GITHUB.NIMITZ_DEV.@X` |
 | Labels | `NIMITZ_ROLE=staff`, `NIMITZ_ID`, `NIMITZ_FLEET`, `NIMITZ_PARENT=HOME` | `+ NIMITZ_SQUADRON` | `+ NIMITZ_SQUADRON` |
@@ -84,8 +85,8 @@ max_tries = 3                    # then dead-letter
 keep_done = "7d"                 # done items (and their results) kept, then pruned
 
 [[staff]]
-name = "LIBRARIAN"               # id HOME/@LIBRARIAN
-brief = "staff/librarian/BRIEF.md"
+name = "REF"                     # id HOME/@REF
+brief = "staff/ref/BRIEF.md"
 model = "sonnet"
 permission_mode = "default"      # read-only: Edit, Write and NotebookEdit denied in its settings
 snapshot = true                  # reads a detached worktree at the repo's last commit (6.4)
@@ -209,7 +210,7 @@ runs next to v1 while posters move over. `reply: true` makes it a request
 {
   "title": "optional, <= 200 chars",
   "body": "required markdown, <= 64 KiB",
-  "kind": "optional: decision | fact | howto | gotcha | question | preference",
+  "kind": "optional: decision | fact | howto | gotcha | question | preference | gap",
   "domain": "optional slug hint ([a-z0-9-]+, <= 40); the KB maps one it does not know to misc",
   "tags": ["optional", "<= 20"],
   "links": ["optional URLs the note cites; not fetched in v1"],
@@ -269,7 +270,7 @@ rules stay few.
 ### 4.6 Request and reply (any type with `reply: true`)
 
 One mechanism for both staff: `@KB`'s notes are fire and forget (`reply:
-false`), `@LIBRARIAN`'s queries are requests. Nothing else differs: the same
+false`), `@REF`'s queries are requests. Nothing else differs: the same
 FIFO, lease, tries and dead letters.
 
 **The reply address.** `post` of a reply type records who asked:
@@ -291,7 +292,7 @@ FIFO, lease, tries and dead letters.
    requester) checks the reply address. A member or session that is live
    gets a peer message through its own messaging socket (`inbox::send`, the
    peer-credential check included):
-   `[nimitz reply] HOME/@LIBRARIAN answered your question 000000000042 (wiki.query.v1). <answer, up to 8 KiB; longer: "run nimitz inbox result HOME/@LIBRARIAN 000000000042">`.
+   `[nimitz reply] HOME/@REF answered your question 000000000042 (wiki.query.v1). <answer, up to 8 KiB; longer: "run nimitz inbox result HOME/@REF 000000000042">`.
    It is a notice: it arrives as a peer message, never as the user's input.
 2. `delivered_at` is set, and there is no second delivery.
 3. Not live, or no socket (a process sender): nothing is sent. The answer
@@ -385,7 +386,7 @@ answer and nimitz delivers it (4.6).
 - A permission prompt or AskUserQuestion in the staff also notifies the parent.
   The staff runs unattended, as a ship does.
 
-## 6. The first two staff: `HOME/@KB` and `HOME/@LIBRARIAN`
+## 6. The first two staff: `HOME/@KB` and `HOME/@REF`
 
 ### 6.1 The repo
 
@@ -446,13 +447,13 @@ answer and nimitz delivers it (4.6).
 
 Rollback is `git revert <sha>`; `inbox list --state done` maps items to commits.
 
-### 6.4 The second staff: `HOME/@LIBRARIAN`, read-only retrieval
+### 6.4 The second staff: `HOME/@REF`, read-only retrieval
 
-The name: a librarian finds and cites, never writes. (Shorter, if preferred:
-`@REF`.)
+The name: `@REF` (the user's choice): the reference desk, which finds and
+cites and never writes. "The librarian" below is its role.
 
 - **Always on, Sonnet, pinned**, like `@KB`; its own queue,
-  `queues/HOME%2F@LIBRARIAN/`, type `wiki.query.v1`, the same FIFO, lease and
+  `queues/HOME%2F@REF/`, type `wiki.query.v1`, the same FIFO, lease and
   dead-letter machinery.
 - **It follows Lodestar's query rules** (the KB's `agent/skills/query.md`):
   - navigate by `_index.md`;
@@ -466,7 +467,7 @@ The name: a librarian finds and cites, never writes. (Shorter, if preferred:
 - **A consistent snapshot, never the working tree mid-write.** `@KB` writes
   files, then commits; a reader of the working tree could see half an ingest.
   So the librarian works in a **detached worktree at the last commit**:
-  - `NIMITZ_STATE/staff/HOME%2F@LIBRARIAN/snapshot`, made once with
+  - `NIMITZ_STATE/staff/HOME%2F@REF/snapshot`, made once with
     `git -C <repo> worktree add --detach <snapshot> HEAD` (outside Dropbox: a
     synced worktree would race the sync);
   - `inbox claim` (nimitz, not the staff) moves it to the repo's current
@@ -481,9 +482,13 @@ The name: a librarian finds and cites, never writes. (Shorter, if preferred:
   within `length`, then `inbox done --result {answer, citations, gaps,
   confidence, snapshot}`. A question the wiki cannot answer is still `done`:
   an answer that says so, with `gaps`. Only an error is `fail`.
-- **No writes back.** A gap it finds is not filed as a note. The requester may
-  post one to `@KB`; whether the librarian may post gaps to `@KB` itself is
-  open (section 14).
+- **Gaps go to `@KB`** (the user, 2026-10-10). A gap it finds while
+  answering (the wiki does not say, or says it two ways) it posts with
+  `nimitz inbox post HOME/@KB --type wiki.note.v1`, `kind: "gap"` (nothing
+  known yet) or `kind: "question"` (an open question), the query's item id in
+  `source.label`. It goes through the inbox like any post: `@KB`'s policy,
+  the per-sender rate limit (the librarian is a sender like everyone else),
+  dedupe by `key = sha256(body)`. It still never writes the repo itself.
 
 ## 7. Authority and comms
 
@@ -546,7 +551,7 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
   HOME
     ADMIRAL      Idle   f29c13aa  ...
     @KB          Busy   7a1c02e9  inbox 3 pending · 1 claimed (lease 11m) · 0 dead · oldest 2m
-    @LIBRARIAN   Idle   5e0b77c1  inbox empty · snapshot 4f2a9c1 · 2 answers waiting for pickup
+    @REF         Idle   5e0b77c1  inbox empty · snapshot 4f2a9c1 · 2 answers waiting for pickup
   HOME · GITHUB
     COMMODORE    ...
   ```
@@ -663,16 +668,16 @@ From the port's commits (7dd6984 .. 0145dfc):
 | S2 | The staff member: `@` ids, `Role::Staff`, `[[staff]]` config and `staff new\|set\|rm`, labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (staff text and the loop) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop |
 | S3 | The doorbell (ring and coalesce), the SessionStart context (with the 15-minute cron request), the piggyback timer, needs-you for dead letters and prompts; Admiralty rows and the inbox panel | sandbox (rings, coalescing, piggyback), notify tests, Admiralty snapshots |
 | S4 | `HOME/@KB` live: the repo and `ingest-auto` (MYCC_DEV), the brief, the git-commit idempotency | real-CC e2e on a throwaway repo: post -> commit; kill mid-item -> one commit only; `/clear` -> drains again |
-| S4b | `HOME/@LIBRARIAN` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
+| S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
 | S5 | Other parents (`always_on`, ring-to-start) | sandbox |
 
 Each phase is its own branch and review; nothing merges into dev until the
 user says (branch policy, 2026-10-10).
 
-## 14. Decisions (the user, 2026-10-10) and open questions
+## 14. Decisions (the user, 2026-10-10): settled
 
-Answered in the md review (verdict "revise the design first"; comment:
-"include the design for librarian", done in 4.6 and 6.4):
+From the md review (verdict "revise the design first"; comment: "include the
+design for librarian", done in 4.6 and 6.4) and the follow-up answers:
 
 1. Rate limits: **every sender**, members included.
 2. Retention: done items and stored reply results kept **7 days**.
@@ -680,12 +685,11 @@ Answered in the md review (verdict "revise the design first"; comment:
    minutes.
 4. Cross-machine posting: not now.
 5. Hand edits in the KB repo: commit only its own paths and carry on.
-6. The mod calls `nimitz inbox post` itself (and `nimitz ask`).
-7. S1 waits for the user's sign-off on this revision.
+6. The mod calls `nimitz inbox post` (and `nimitz ask`) itself.
+7. The librarian's name: **`@REF`** (`HOME/@REF`).
+8. The librarian **posts the gaps it finds to `@KB`**, as `wiki.note.v1`
+   items of kind `gap` or `question`, through `nimitz inbox post`,
+   rate-limited like every sender (6.4).
+9. `ask --wait`: **2 minutes by default, capped at 10**.
 
-Open:
-
-1. The librarian's name: `@LIBRARIAN` (proposed), or shorter (`@REF`)?
-2. May the librarian post the gaps it finds to `@KB` as notes (a reader that
-   feeds the writer), or does that stay the requester's call?
-3. `ask --wait`: 2 minutes by default, 10 at most?
+No open questions. S1 starts after the user signs off on this revision.
