@@ -245,3 +245,12 @@ Where the build differs from, or adds to, the sections above:
   migrations at once and a 0.3.x registry through the lift. e2e_97 also runs
   the old binary's `status` once on the migrated registry. Real Claude Code: `e2e_97` in
   `crates/nimitz/tests/e2e.rs` (`NIMITZ_E2E=1 NIMITZ_E2E_OLD_BIN=<0.4.0 build>`).
+
+Known limits after the review (documented, not fixed):
+
+- A file that keeps changing under its step is retried 64 times, then left
+  at its old version with the marker set: 0.5 reads the old version, and
+  `doctor` shows the step as due.
+- An Admiralty state file that does not parse is left alone (never
+  overwritten with defaults), so its UI preferences stay as they were until
+  the file is fixed or removed.
