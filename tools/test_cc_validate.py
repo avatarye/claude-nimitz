@@ -240,6 +240,17 @@ class PassAndFail(Base):
         self.assertIn("e2e_07_lead_attach", report)
         self.assertIn("(FAIL)", report)
 
+    def test_the_real_cargo_log_shape_reads_right(self):
+        log = ("     Running unittests src/lib.rs (/t/debug/deps/nimitz_core-0123abcd)\ntest a ... ok\ntest result: ok. 1 passed; 0 failed\n"
+               "     Running tests/glyphs.rs (/t/debug/deps/glyphs-0123abcd)\n"
+               "test borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\ntest result: FAILED. 2 passed; 1 failed\n"
+               "     Running tests/mux.rs (/t/debug/deps/mux-0123abcd)\n[OK] all nimitz-mux tests passed\n"
+               "   Doc-tests nimitz_core\ntest result: ok. 0 passed; 0 failed\n"
+               "error: 1 target failed:\n    `-p admiralty --test glyphs`\n")
+        self.assertEqual(ccv.unexplained_targets(log), [])
+        self.assertEqual(ccv.failed_count(log), 1)
+        self.assertEqual(ccv.unexplained_targets(log.replace("--test glyphs", "--lib")), ["-p admiralty --lib"])
+
     def test_a_known_unit_failure_does_not_fail_the_run(self):
         unit = RUN + "test glyphs::borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\ntest result: FAILED. 644 passed; 1 failed\n"
         code, out = self.run_it(FakeSh(self.rules(unit=unit)))
@@ -328,8 +339,14 @@ class PassAndFail(Base):
         self.assertIn("changed after the merge", out)
 
     def test_a_crashed_test_binary_is_not_hidden_by_a_known_failure(self):
-        unit = (RUN + "test glyphs::borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\n"
-                "test result: FAILED. 2 passed; 1 failed\n" + RUN + "error: process didn't exit successfully (signal: 11, SIGSEGV)\n")
+        unit = ("     Running tests/glyphs.rs (/t/debug/deps/glyphs-0123abcd)\n"
+                "test borders_stay_put_when_the_terminal_draws_icons_two_cells_wide ... FAILED\n"
+                "test result: FAILED. 2 passed; 1 failed\n"
+                "     Running tests/mux.rs (/t/debug/deps/mux-0123abcd)\n[OK] a harness-less test passes\n"
+                "     Running tests/ui.rs (/t/debug/deps/ui-0123abcd)\nrunning 79 tests\n"
+                "error: test failed, to rerun pass `-p admiralty --test ui`\n"
+                "Caused by:\n  process didn't exit successfully (signal: 11, SIGSEGV)\n"
+                "error: 2 targets failed:\n    `-p admiralty --test glyphs`\n    `-p admiralty --test ui`\n")
         sh = FakeSh(self.rules(unit=unit))
         code, out = self.run_it(sh)
         self.assertEqual(code, 1, out)

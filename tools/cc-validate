@@ -155,10 +155,35 @@ def failed_count(out):
     return sum(int(m.group(1)) for m in re.finditer(r"^test result: \w+\. \d+ passed; (\d+) failed", out, re.M))
 
 
-def binaries_ran(out):
-    """(test binaries cargo started, result lines they printed): a binary
-    that crashed (a signal, an abort) prints no result line."""
-    return len(re.findall(r"^\s+(?:Running|Doc-tests) ", out, re.M)), len(re.findall(r"^test result:", out, re.M))
+def sections(out):
+    """{test target: its output}, keyed as cargo's failed-target list names
+    them: `--test x` by x, a lib or bin by its crate (underscores), doc tests
+    by `doc:<crate>`."""
+    out_s, key, buf = {}, None, []
+    for line in out.splitlines():
+        m = re.match(r"^\s+Running .+? \(.*/deps/([^/]+)-[0-9a-f]+\)$", line)
+        d = re.match(r"^\s+Doc-tests (\S+)$", line)
+        if m or d:
+            if key:
+                out_s[key] = out_s.get(key, "") + "\n".join(buf)
+            key, buf = (m.group(1) if m else "doc:" + d.group(1)), []
+        else:
+            buf.append(line)
+    if key:
+        out_s[key] = out_s.get(key, "") + "\n".join(buf)
+    return out_s
+
+
+def unexplained_targets(out):
+    """The targets cargo lists as failed with no failing test named in their
+    output: a crash (a signal, an abort) or a harness-less test that failed."""
+    secs, bad = sections(out), []
+    for m in re.finditer(r"`-p (\S+) (?:--test (\S+)|--doc|--lib|--bin \S+)`", out):
+        crate, test = m.group(1).replace("-", "_"), m.group(2)
+        key = test or ("doc:" + crate if "--doc" in m.group(0) else crate)
+        if not re.search(r"^test \S+ \.\.\. FAILED", secs.get(key, ""), re.M):
+            bad.append(m.group(0).strip("`"))
+    return sorted(set(bad))
 
 
 def group_pids(pgid):
@@ -450,9 +475,9 @@ class Run:
         note = f" ({len(known)} known failure)" if known else ""
         if bad:
             return False, f"{len(bad)} failed, {n} passed{note}", "\n".join(bad)
-        started, reported = binaries_ran(r.out)
-        if started != reported:
-            return False, f"{started - reported} test binary crashed (no result line)", "\n".join(r.out.splitlines()[-40:])
+        crashed = unexplained_targets(r.out)
+        if crashed:
+            return False, f"{len(crashed)} test target crashed or failed unnamed", "\n".join(crashed + r.out.splitlines()[-40:])
         if failed_count(r.out) != len(failed):
             return False, f"{failed_count(r.out)} failed, {len(failed)} named", "\n".join(r.out.splitlines()[-40:])
         if r.code == 124:
