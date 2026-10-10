@@ -1,7 +1,8 @@
 # Format versions and chained migrations
 
-Status: design and build for 0.5.0 (the user, 2026-10-10: "add and maintain
-an auto chained migration function, starting from 0.4 -> 0.5").
+Status: built for 0.5.0; section 8 lists where the build differs (the user,
+2026-10-10: "add and maintain an auto chained migration function, starting
+from 0.4 -> 0.5").
 
 ## 1. The rule
 
@@ -143,3 +144,64 @@ from a real 0.4.0 install for N = the 0.4.0 version).
   a fleet and a ship and launches it; the new binary migrates (the summary
   line), then `status` shows the ship live with the same session and lineage,
   and `start -f` relaunches it.
+
+## 8. As built (0.5.0, branch feat/migrations)
+
+Where the build differs from, or adds to, the sections above:
+
+- **Version.** The workspace is 0.5.0 (`formats::NIMITZ`): the steps stamp
+  `min_nimitz = "0.5.0"`, which a 0.4.0-numbered build would refuse itself.
+- **The registry's v1.** `ARTIFACTS` gives each artifact an `oldest` version
+  the pure chain starts from; the registry's is 2. A 0.3.x (v1) file is
+  brought to 2 by its `lift` (`registry::lift_v1`: the load that has always
+  read it, saved; `registry.json.v1` kept), then 2 -> 3 runs. A load never
+  moves a file past the shape it read: `migrate::registry_v2` stamps 2, and
+  a writer keeps the version it read (a v2 registry the hook writes stays v2
+  for the runner, with its backup). A fresh registry is 3 with `min_nimitz`.
+- **Which commands migrate.** All but `hook`, `__notify`, `sandbox`,
+  `migrate` (it lists and runs the steps itself, so `--plan` still sees the
+  local ones) and the hidden `__*` helpers. A sandbox is made at this
+  nimitz's formats (its manifest and machine record are written by `create`).
+- **A newer nimitz ran here.** The runner never lowers the manifest's
+  `nimitz`, so an older nimitz checks on every run; a local file too new for
+  it (`registry`, `active`, `queues`, `admiralty-ui`, or a manifest entry
+  above what it knows) stops every command but `doctor` with
+  `[ERROR] <file> needs nimitz >= X (this machine runs Y): update nimitz here`.
+- **The guard** also refuses a `format` above the artifact's current one
+  when there is no `min_nimitz` ("is format N, newer than this nimitz reads").
+  It covers fleet.toml and squadron.toml (`config.too_new` on the fleet's
+  admiral or the squadron's commodore: only that fleet or squadron is
+  unreadable here), legacy.toml (its map is not read; `config.too_new` in
+  `validate`), the registry (`load_checked`, `save`, `recover_locked`: never
+  moved aside; `health` no longer calls it corrupt) and active.json (not
+  read, not written over). The ship lock keeps its lenient read (no guard).
+- **Codes.** `config.too_new` (Error), `format.shared` (Warn, from
+  `config::validate`; fix `nimitz migrate --shared --yes`), `format.failed`
+  (Error: a step the log says failed and nothing did since; its log line and
+  backup), `format.machine` (Warn, doctor only). `check` gets
+  `formats::issues` (local files too new, failed steps).
+- **Machine records** are written by every migrating command (a lenient read
+  of each fleet.toml's `[machines]`; a write only when the version changed).
+  The warning's version is the fleet's `min_nimitz`, or 0.5.0 (the first
+  nimitz that records itself); its tail is "update it before adding an aide",
+  or, for a fleet that holds one, "update it: it cannot load this fleet's
+  [[aide]]".
+- **migrate.** `nimitz migrate --plan` lists every step, `--json` gives
+  `{nimitz, due, too_new}`; with neither `--plan` nor `--yes` it asks for
+  `--yes`. Members are refused before anything runs (both forms).
+- **Fixtures and shapes.** `fleet/v1.toml` (the 0.4.0 install's) and
+  `fleet/v1.aide.toml` (a dev-era fleet with an aide, unstamped),
+  `registry/v2.json` (the 0.4.0 install's), `needs/v1.json` (written by the
+  0.4.0 binary's hook in a sandbox). The pinned shapes are
+  `tests/fixtures/formats/shapes/<artifact>.v<N>.{json,toml}`; Admiralty's
+  `Saved` is pinned by `crates/admiralty/tests/formats.rs` into the same
+  folder. The shapes catch a field added, renamed or dropped that the
+  example serializes; a new optional field skipped when empty needs the
+  example to set it.
+- **Tests.** Unit: `formats::tests` (each step on its fixture, idempotence,
+  the runner's backup, log, resume and second run, the guard), the registry
+  and active guards, `config`'s too-new fleet and squadron. CLI:
+  `crates/nimitz/tests/upgrade.rs` (the 0.4.0 install under this build:
+  `status`, `check`, `start --plan`; the hook never migrates; a newer
+  nimitz's state; the shared step). Real Claude Code: `e2e_97` in
+  `crates/nimitz/tests/e2e.rs` (`NIMITZ_E2E=1 NIMITZ_E2E_OLD_BIN=<0.4.0 build>`).
