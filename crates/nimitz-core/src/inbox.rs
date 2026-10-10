@@ -551,4 +551,19 @@ mod tests {
         // release the waiting servers
         let _ = std::fs::OpenOptions::new().read(true).write(true).open(&pipe);
     }
+
+    /// Opt-in, against a REAL Claude Code session on this machine:
+    /// `NIMITZ_INBOX_PID=<pid of a session> cargo test -p nimitz-core --lib
+    /// real_session -- --ignored`. The session's transcript then holds a
+    /// cross-session message from nimitz.
+    #[test]
+    #[ignore = "needs a live Claude Code session (NIMITZ_INBOX_PID)"]
+    fn a_real_session_takes_the_line() {
+        let pid: i64 = std::env::var("NIMITZ_INBOX_PID").expect("NIMITZ_INBOX_PID").parse().unwrap();
+        let env = Env::from_process();
+        let socks = candidates(&env, "", pid);
+        assert!(!socks.is_empty(), "no inbox for process {pid}");
+        let sock = send(&env, &socks, pid, "nimitz inbox check: reply with exactly INBOX-OK").unwrap();
+        eprintln!("posted to {}", sock.display());
+    }
 }

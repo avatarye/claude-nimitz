@@ -61,6 +61,22 @@ pub fn git_root(dir: &Path) -> Option<PathBuf> {
     canon(dir).ancestors().find(|a| a.join(".git").exists()).map(Path::to_path_buf)
 }
 
+/// A trust-file key (or a folder) in the one form keys are compared in:
+/// without a trailing separator; on Windows also with `/` for `\` and in
+/// lower case (Claude Code writes `C:\x` and `C:/x` there, and the file
+/// system ignores case).
+pub fn trust_key(k: &str) -> String {
+    if cfg!(windows) {
+        let k = k.replace('\\', "/").to_lowercase();
+        let t = k.trim_end_matches('/');
+        // a drive root keeps its separator
+        if t.len() == 2 && t.ends_with(':') { format!("{t}/") } else { t.to_string() }
+    } else {
+        let t = k.trim_end_matches('/');
+        if t.is_empty() { "/".into() } else { t.to_string() }
+    }
+}
+
 /// `dir` and its parents, as given and as real paths, without duplicates: the
 /// trust-file keys that may cover `dir`.
 pub fn trust_ancestors(dir: &Path) -> Vec<PathBuf> {

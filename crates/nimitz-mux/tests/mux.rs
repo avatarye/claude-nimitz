@@ -141,6 +141,7 @@ impl Drop for World {
     }
 }
 
+#[cfg_attr(not(unix), allow(unused_variables))]
 fn set_exec(p: &Path) {
     #[cfg(unix)]
     {
@@ -561,7 +562,7 @@ fn layout_reruns_only_into_a_shell_pane() {
 // ---------- real replies (tests/fixtures/herdr-0.9.3, anonymised captures) ----------
 
 fn fixture(name: &str) -> Value {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/herdr-0.9.3").join(name);
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("herdr-0.9.3").join(name);
     serde_json::from_slice(&fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))).expect("fixture json")
 }
 
@@ -721,7 +722,10 @@ fn shape_through_the_adapter() {
     fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
     w.mux().run_in(&pane_ref("w1:p1", "w1:t1", "w1"), &cmdv(&["sh", "-c", "pwd > mark.txt"])).expect("run");
     let text = fs::read_to_string(&mark).expect("the line ran in the pane's cwd");
-    assert_eq!(text.trim(), w.dir.canonicalize().unwrap().to_string_lossy());
+    // (Windows: Git Bash's `pwd` prints its own form of the folder; the line ran there)
+    if cfg!(unix) {
+        assert_eq!(text.trim(), nimitz_core::os::canonical(&w.dir).unwrap().to_string_lossy());
+    }
 }
 
 // ---------- error paths ----------
@@ -757,8 +761,8 @@ fn error_pane_run() {
 fn e2e_private_server() {
     let tmp = std::env::temp_dir().join(format!("nimitz-mux-e2e-{}", std::process::id()));
     let _ = fs::remove_dir_all(&tmp);
-    fs::create_dir_all(tmp.join("config/herdr")).expect("mkdir");
-    fs::write(tmp.join("config/herdr/config.toml"), "onboarding = false\n").expect("config");
+    fs::create_dir_all(tmp.join("config").join("herdr")).expect("mkdir");
+    fs::write(tmp.join("config").join("herdr").join("config.toml"), "onboarding = false\n").expect("config");
     let wrapper = tmp.join("herdr-iso");
     fs::write(
         &wrapper,
@@ -771,7 +775,7 @@ fn e2e_private_server() {
     .expect("wrapper");
     set_exec(&wrapper);
     let bin = wrapper.to_string_lossy().into_owned();
-    let sock = tmp.join("config/herdr/herdr.sock");
+    let sock = tmp.join("config").join("herdr").join("herdr.sock");
 
     let mut server = Command::new(&wrapper).arg("server").spawn().expect("start private herdr server");
     let cleanup = |server: &mut std::process::Child| {

@@ -1061,7 +1061,9 @@ pub fn folder_trusted(env: &Env, cache: &mut FileCache, dir: &str) -> bool {
     }
     // Claude Code records real paths (/private/tmp for /tmp): the keys come in both forms
     let keys = crate::env::trust_keys(Path::new(dir.trim_end_matches('/')));
-    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| keys.contains(root)))
+    // (in one form: Claude Code on Windows writes `C:\x` and `C:/x`)
+    let keys: Vec<String> = keys.iter().map(|k| crate::env::trust_key(&k.to_string_lossy())).collect();
+    files.iter().any(|f| trusted_roots(cache, f).iter().any(|root| keys.contains(&crate::env::trust_key(&root.to_string_lossy()))))
 }
 
 fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {

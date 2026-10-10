@@ -224,7 +224,7 @@ fn load_fleet_for_write(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
 /// `CLAUDE.md`, `CLAUDE.local.md` and `.claude/CLAUDE.md` in `dir`: every
 /// session below it would inherit them.
 fn inherited_md(dir: &Path) -> Vec<PathBuf> {
-    ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"].iter().map(|n| dir.join(n)).filter(|p| p.is_file()).collect()
+    ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"].iter().map(|n| n.split('/').fold(dir.to_path_buf(), |p, c| p.join(c))).filter(|p| p.is_file()).collect()
 }
 
 fn layout_md_issue(p: &Path, id: Option<Id>) -> Issue {

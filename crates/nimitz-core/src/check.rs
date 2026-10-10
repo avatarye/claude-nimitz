@@ -92,15 +92,13 @@ fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
         return None;
     }
     let projects = trust_projects(env)?;
-    let accepted = |p: &PathBuf| {
-        let k = p.to_string_lossy();
-        projects
-            .get(k.as_ref())
-            .or_else(|| projects.get(&format!("{k}/")))
-            .and_then(|e| e.get("hasTrustDialogAccepted"))
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false)
-    };
+    // (keys compared in one form: Claude Code on Windows writes `C:\x` and `C:/x`)
+    // (one key accepted is enough when two forms name the same folder)
+    let mut by_key: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+    for (k, e) in &projects {
+        *by_key.entry(crate::env::trust_key(k)).or_default() |= e.get("hasTrustDialogAccepted").and_then(|b| b.as_bool()).unwrap_or(false);
+    }
+    let accepted = |p: &PathBuf| by_key.get(&crate::env::trust_key(&p.to_string_lossy())).copied().unwrap_or(false);
     if crate::env::trust_keys(dir).iter().any(accepted) || ran_since_repo(env, dir) {
         return None;
     }

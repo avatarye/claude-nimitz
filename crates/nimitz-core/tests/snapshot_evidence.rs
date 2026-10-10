@@ -36,10 +36,10 @@ impl W {
             .unwrap_or_else(|| panic!("no ship {name}"))
     }
     fn session_file(&self, short: &str) -> std::path::PathBuf {
-        self.base.join("claude_home/sessions").join(format!("{short}.json"))
+        self.base.join("claude_home").join("sessions").join(format!("{short}.json"))
     }
     fn job_file(&self, short: &str) -> std::path::PathBuf {
-        self.base.join("claude_home/jobs").join(short).join("state.json")
+        self.base.join("claude_home").join("jobs").join(short).join("state.json")
     }
     fn patch(&self, p: &std::path::Path, f: impl FnOnce(&mut Value)) {
         let mut v: Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
@@ -122,7 +122,7 @@ fn stowaways_are_only_unlabelled_sessions_in_fleet_scope() {
 
     // the same session outside every fleet folder is not a stowaway
     let stow = snap.stowaways.iter().find(|s| s.name == "quick look at the logs").unwrap().clone();
-    let elsewhere = w.base.join("dirs/not-a-fleet");
+    let elsewhere = w.base.join("dirs").join("not-a-fleet");
     std::fs::create_dir_all(&elsewhere).unwrap();
     let short = stow.short_id.clone().unwrap();
     for p in [w.session_file(&short), w.job_file(&short)] {
@@ -139,7 +139,7 @@ fn a_labelled_session_of_an_unknown_identity_is_reported_not_hidden() {
     let ghost = Id::ship("MAIN", "ARGOS", "RETIRED");
     let labels = nimitz_core::claude::labels_for(&w.env, &ghost);
     let line = json!({"ts": evidence::now(), "event": "SessionStart", "session_id": "ghost-1", "labels": labels});
-    let p = w.base.join("state/events.jsonl");
+    let p = w.base.join("state").join("events.jsonl");
     let mut raw = std::fs::read_to_string(&p).unwrap();
     raw.push_str(&format!("{line}\n"));
     std::fs::write(&p, raw).unwrap();
@@ -183,7 +183,7 @@ fn the_readers_tolerate_whatever_claude_code_writes() {
     std::fs::write(w.session_file("nopid"), br#"{"sessionId": "x"}"#).unwrap();
     std::fs::write(w.session_file("junk"), b"<html>not json</html>").unwrap();
     // junk and half-written lines in events.jsonl
-    let p = w.base.join("state/events.jsonl");
+    let p = w.base.join("state").join("events.jsonl");
     let mut raw = std::fs::read_to_string(&p).unwrap();
     raw.push_str("garbage\n{\"event\": 3}\n{\"event\": \"Stop\", \"session_id\": \"half\"");
     std::fs::write(&p, raw).unwrap();
@@ -217,7 +217,7 @@ fn a_refresh_is_cheap_and_picks_up_new_events() {
     let ghost = Id::ship("MAIN", "ARGOS", "FRESH");
     let labels = nimitz_core::claude::labels_for(&w.env, &ghost);
     let line = json!({"ts": evidence::now(), "event": "SessionStart", "session_id": "new-1", "labels": labels});
-    let p = w.base.join("state/events.jsonl");
+    let p = w.base.join("state").join("events.jsonl");
     let mut raw = std::fs::read_to_string(&p).unwrap();
     raw.push_str(&format!("{line}\n"));
     std::fs::write(&p, raw).unwrap();
@@ -360,7 +360,7 @@ fn daemon_session_files_are_neither_members_nor_stowaways() {
     // even with the member's own session id, they are not rows
     for (kind, name) in [("daemon", "d1"), ("daemon-worker", "d2")] {
         std::fs::write(
-            w.base.join("claude_home/sessions").join(format!("{name}.json")),
+            w.base.join("claude_home").join("sessions").join(format!("{name}.json")),
             json!({"pid": sandbox::LIVE_PID, "sessionId": format!("{name}-0000-4000-8000-000000000000"), "cwd": cwd, "kind": kind,
                    "name": "", "status": "idle", "startedAt": (evidence::now() * 1000.0) as i64}).to_string(),
         )

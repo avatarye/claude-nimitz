@@ -142,6 +142,7 @@ pub fn position(c: &Compat, version: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::collections::HashMap;
 
     #[test]

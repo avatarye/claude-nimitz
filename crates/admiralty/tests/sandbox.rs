@@ -272,7 +272,7 @@ fn bug39_sandbox_with_a_fake_herdr_uses_it() {
     let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
     assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
     let env = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
-    assert!(env.contains("export NIMITZ_MUX=herdr") && env.contains("bin/herdr"), "{env}");
+    assert!(env.contains("export NIMITZ_MUX=herdr") && (env.contains("bin/herdr") || env.contains("bin\\herdr")), "{env}");
     // and the TUI's own dump runs against it with the mux, not monitor-only
     let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for l in env.lines() {
@@ -338,7 +338,7 @@ fn an_unclaimed_attach_pane_still_shows_its_lead() {
     let b = CoreSource::detect(&vars).load();
     let lead = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find_map(|m| m.session.as_ref().and_then(|s| s.short_id.clone().map(|j| (m.id.clone(), j, s.session_id.clone())))).expect("a lead with a job");
     let (id, job, sid) = lead;
-    let world = sb.join("herdr/world.json");
+    let world = sb.join("herdr").join("world.json");
     let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
     let p = &mut w["panes"][0];
     p.as_object_mut().unwrap().remove("agent_session");
@@ -381,7 +381,7 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     let b = CoreSource::detect(&vars).load();
     let (id, job, cwd) = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find_map(|m| m.session.as_ref().and_then(|s| s.short_id.clone().map(|j| (m.id.clone(), j, s.cwd.clone())))).expect("a lead with a job");
     let claude = "/home/u/.local/share/claude/versions/2.1.293";
-    let world = sb.join("herdr/world.json");
+    let world = sb.join("herdr").join("world.json");
     let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
     let p = &mut w["panes"][0];
     p.as_object_mut().unwrap().remove("agent_session");
@@ -402,7 +402,7 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
         });
         std::fs::write(d.join("world.json"), serde_json::to_vec(&decoy).unwrap()).unwrap();
     }
-    let multi = sb.join("bin/herdr-multi");
+    let multi = sb.join("bin").join("herdr-multi");
     std::fs::write(&multi, format!(
         "#!/bin/sh\ncase \"$1\" in --session) s=$2; shift 2;; *) s=default;; esac\ncase \"$s\" in NIMITZ) b='{b}/herdr';; nikitz) b='{b}/herdr-nikitz';; *) b='{b}/herdr-default';; esac\nexec '{bin}' __fake-herdr \"$b\" \"$@\"\n",
         b = sb.display()
@@ -429,10 +429,10 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     assert_eq!(app.current().unwrap().node.pane_id.as_deref(), Some(pane.as_str()), "J lands on it: {}", toast(&app));
     press(&mut app, KeyCode::Char('K'));
     assert_eq!(app.current().unwrap().node.pane_id.as_deref(), Some(pane.as_str()), "K too: {}", toast(&app));
-    let from = std::fs::read_to_string(sb.join("herdr/calls.jsonl")).unwrap_or_default().lines().count();
+    let from = std::fs::read_to_string(sb.join("herdr").join("calls.jsonl")).unwrap_or_default().lines().count();
     press(&mut app, KeyCode::Enter);
     assert!(toast(&app).contains(&format!("Focused {pane}")), "{}", toast(&app));
-    let calls: Vec<String> = std::fs::read_to_string(sb.join("herdr/calls.jsonl")).unwrap().lines().skip(from).map(String::from).collect();
+    let calls: Vec<String> = std::fs::read_to_string(sb.join("herdr").join("calls.jsonl")).unwrap().lines().skip(from).map(String::from).collect();
     // the wrapper routes `--session NIMITZ` alone to this world
     assert!(calls.iter().any(|c| c.contains("\"agent\",\"focus\"") && c.contains(&pane)), "{calls:?}");
     // `m` types there while the pane runs exactly `claude attach <job>`,
@@ -442,7 +442,7 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     let plan = actions::plan_message(b.mux_caps, &b.snap, &b.panes, &Target::Member(id.clone())).unwrap();
     assert_eq!(plan.attach_job.as_deref(), Some(job.as_str()));
     let prompts = |sb: &std::path::Path| -> Vec<String> {
-        let w: serde_json::Value = serde_json::from_slice(&std::fs::read(sb.join("herdr/world.json")).unwrap()).unwrap();
+        let w: serde_json::Value = serde_json::from_slice(&std::fs::read(sb.join("herdr").join("world.json")).unwrap()).unwrap();
         w["panes"][0]["prompts"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default()
     };
     goto(&mut app, &format!("M:{}", id.0));
@@ -490,7 +490,7 @@ fn bug40_the_first_look_is_quick_and_the_full_one_follows() {
 fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
     let w = world();
     let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]);
-    let t = base.join("main/squadrons/argos/squadron.toml");
+    let t = base.join("main").join("squadrons").join("argos").join("squadron.toml");
     let s = std::fs::read_to_string(&t).unwrap();
     std::fs::write(&t, s + "\nname = \"oops\n").unwrap();
     let mut app = app_on(&w, TestMux::default());
@@ -534,7 +534,7 @@ fn bug33_the_ship_form_refuses_label_equals_folder_and_relative_folders() {
 fn the_issues_view_lists_a_broken_squadron_once() {
     let w = world();
     let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]);
-    let t = base.join("main/squadrons/argos/squadron.toml");
+    let t = base.join("main").join("squadrons").join("argos").join("squadron.toml");
     let s = std::fs::read_to_string(&t).unwrap();
     std::fs::write(&t, s + "\nname = \"oops\n").unwrap();
     let app = app_on(&w, TestMux::default());
@@ -552,8 +552,8 @@ fn the_issues_view_lists_a_broken_squadron_once() {
 fn a_broken_fleet_toml_is_a_red_band_with_the_error_in_full_and_the_other_fleets_stay() {
     let w = world();
     let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]);
-    std::fs::create_dir_all(base.join("bad/admiral")).unwrap();
-    std::fs::write(base.join("bad/fleet.toml"), "fleet = \"BAD\"\n\n[m").unwrap();
+    std::fs::create_dir_all(base.join("bad").join("admiral")).unwrap();
+    std::fs::write(base.join("bad").join("fleet.toml"), "fleet = \"BAD\"\n\n[m").unwrap();
     let mut app = app_on(&w, TestMux::default());
     let snap = app.bundle.as_ref().unwrap().snap.clone();
     assert!(snap.fleets.iter().any(|f| f.id.0 == "MAIN"), "the other fleets stay");

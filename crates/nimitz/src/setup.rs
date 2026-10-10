@@ -254,11 +254,14 @@ pub fn doctor(ctx: &Ctx) -> Result<i32, String> {
 }
 
 /// Herdr's config: `HERDR_CONFIG_PATH`, else `~/.config/herdr/config.toml`
-/// (read-only). Checked when the file is there or nimitz runs with Herdr.
+/// (Windows: `%APPDATA%\herdr\config.toml`) (read-only). Checked when the
+/// file is there or nimitz runs with Herdr.
 pub fn herdr_config_path(ctx: &Ctx) -> PathBuf {
-    match ctx.vars.get("HERDR_CONFIG_PATH").filter(|p| !p.is_empty()) {
+    let var = |k: &str| ctx.vars.get(k).filter(|p| !p.is_empty()).cloned();
+    match var("HERDR_CONFIG_PATH") {
         Some(p) => PathBuf::from(p),
-        None => PathBuf::from(ctx.vars.get("HOME").cloned().unwrap_or_default()).join(".config/herdr/config.toml"),
+        None if cfg!(windows) && var("APPDATA").is_some() => PathBuf::from(var("APPDATA").unwrap_or_default()).join("herdr").join("config.toml"),
+        None => PathBuf::from(var("HOME").unwrap_or_default()).join(".config").join("herdr").join("config.toml"),
     }
 }
 

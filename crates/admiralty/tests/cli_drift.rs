@@ -17,8 +17,8 @@ use nimitz_core::{Id, Plan};
 /// Build the CLI once and point Admiralty's lookup at it.
 fn nimitz() -> PathBuf {
     static BUILD: Once = Once::new();
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bin = root.join("target/debug/nimitz");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let bin = root.join("target").join("debug").join("nimitz");
     BUILD.call_once(|| {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let st = std::process::Command::new(cargo).args(["build", "-q", "-p", "nimitz"]).current_dir(&root).status().unwrap();
