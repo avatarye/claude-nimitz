@@ -68,6 +68,8 @@ fn member(id: Id, status: Status, reasons: &[&str], session: Option<SessionInfo>
         tasks: vec![],
         issues: vec![],
         pane: None,
+        parent: None,
+        inbox: None,
     }
 }
 
@@ -195,6 +197,7 @@ fn fleet_main() -> Fleet {
         dir: "/home/u/.claude-nimitz/main".into(),
         machine: Some("west-mac".into()),
         admiral,
+        aides: vec![],
         squadrons: vec![argos, kits],
         issues: vec![],
     }
@@ -312,6 +315,7 @@ fn fleet_forge() -> Fleet {
         dir: "/home/u/.claude-nimitz/forge".into(),
         machine: Some("west-mac".into()),
         admiral,
+        aides: vec![],
         squadrons: vec![iron, mold],
         issues: vec![issue("config.layout", Severity::Warn, "a CLAUDE.md sits in the fleet folder; every session under it inherits it", Some("nimitz doctor --fix"), Some(&Id::admiral(f)))],
     }
@@ -330,6 +334,7 @@ fn fleet_lab() -> Fleet {
         dir: "/home/u/.claude-nimitz/lab".into(),
         machine: None,
         admiral,
+        aides: vec![],
         squadrons: vec![Squadron { id: sq, commodore, ships: vec![lens], comms: Comms::default(), issues: vec![] }],
         issues: vec![],
     }

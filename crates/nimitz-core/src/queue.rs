@@ -453,6 +453,37 @@ pub struct Status {
     pub recent: Vec<RecentRow>,
 }
 
+impl Status {
+    /// `3 pending · 1 claimed · oldest 4m · 1 dead` (what status and Admiralty show).
+    pub fn line(&self) -> String {
+        if let Some(e) = &self.error {
+            return format!("cannot read its queue: {e}");
+        }
+        let mut parts = vec![];
+        if self.pending == 0 && self.claimed.is_empty() {
+            parts.push("empty".to_string());
+        } else {
+            parts.push(format!("{} pending", self.pending));
+        }
+        if !self.claimed.is_empty() {
+            parts.push(format!("{} claimed", self.claimed.len()));
+        }
+        if let Some(o) = self.oldest_age_s {
+            parts.push(format!("oldest {}", human(o)));
+        }
+        if !self.dead.is_empty() {
+            parts.push(format!("{} dead", self.dead.len()));
+        }
+        if self.quarantined > 0 {
+            parts.push(format!("{} unreadable (quarantine/)", self.quarantined));
+        }
+        if self.undelivered > 0 {
+            parts.push(format!("{} answer{} to pick up", self.undelivered, if self.undelivered == 1 { "" } else { "s" }));
+        }
+        parts.join(" · ")
+    }
+}
+
 // ------------------------------------------------------------------ the queue
 
 pub struct Queue {
@@ -838,14 +869,45 @@ impl Queue {
         self.write(State::Done, &item)
     }
 
-    /// The summary Admiralty and `status` read. `results`: include reply
-    /// results in `recent` (the user's view only).
+    /// The summary Admiralty and `inbox status` read. `results`: include
+    /// reply results in `recent` (the user's view only).
     pub fn status(&self, now: f64, results: bool) -> Status {
         // housekeeping under the lock (it waits for a post or claim in progress)
         if let Ok(_l) = self.lock() {
             let _ = self.housekeep(now);
         }
-        let all = self.all();
+        self.summarize(self.all(), now, results)
+    }
+
+    /// `status` with no lock and no write: what housekeeping would do (an
+    /// expired lease back to pending, or dead at `max_tries`; a done item
+    /// past `keep_done` gone) is done in memory only. What a snapshot reads:
+    /// a look never changes state.
+    pub fn peek_status(&self, now: f64, results: bool) -> Status {
+        let all = self
+            .all()
+            .into_iter()
+            .filter_map(|(s, mut i)| match s {
+                State::Claimed if !i.claim.as_ref().is_some_and(|c| c.until > now) => {
+                    i.claim = None;
+                    if i.tries >= self.limits.max_tries {
+                        i.reason = Some(format!("its lease ran out {} times (the aide stopped or crashed on it)", i.tries));
+                        Some((State::Dead, i))
+                    } else {
+                        Some((State::Pending, i))
+                    }
+                }
+                State::Done if i.finished_at.unwrap_or(i.posted_at) + self.limits.keep_done_s < now => None,
+                _ => Some((s, i)),
+            })
+            .collect();
+        self.summarize(all, now, results)
+    }
+
+    fn summarize(&self, all: Vec<(State, Item)>, now: f64, results: bool) -> Status {
+        // (a file in pending or claimed that does not read as an item is set
+        // aside by housekeeping; a peek counts it where it lies)
+        let unread = [State::Pending, State::Claimed].into_iter().flat_map(|s| self.ids(s).into_iter().map(move |id| (s, id))).filter(|(s, id)| Self::read(&self.path(*s, id)).is_none()).count();
         let of = |st: State| all.iter().filter(move |(s, _)| *s == st).map(|(_, i)| i);
         let (limit, window) = self.limits.per_sender;
         let senders = self
@@ -864,7 +926,7 @@ impl Queue {
             done: of(State::Done).count(),
             dead: of(State::Dead).map(|i| DeadRow { id: i.id.clone(), kind: i.kind.clone(), sender: i.sender.line(), tries: i.tries, reason: i.reason.clone().unwrap_or_default() }).collect(),
             lease_until: of(State::Claimed).filter_map(|i| i.claim.as_ref().map(|c| c.until)).fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.min(x)))),
-            quarantined: std::fs::read_dir(self.dir.join("quarantine")).map(|d| d.count()).unwrap_or(0),
+            quarantined: std::fs::read_dir(self.dir.join("quarantine")).map(|d| d.count()).unwrap_or(0) + unread,
             error: None,
             oldest_age_s: of(State::Pending).map(|i| now - i.posted_at).fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.max(x)))),
             undelivered: of(State::Done).filter(|i| i.reply_to.as_ref().is_some_and(|r| r.delivered_at.is_none())).count(),
@@ -1111,6 +1173,40 @@ mod tests {
         let c = q.post(&member("HOME"), "wiki.note.v1", &note("c"), None, None, 105.0).unwrap();
         assert!(c.id > b.id);
         assert_eq!(q.claim("s1", 106.0).unwrap().unwrap().id, b.id, "FIFO");
+    }
+
+    /// A peek (what a snapshot reads) sees what housekeeping would do, and
+    /// writes nothing: the files stay where they are.
+    #[test]
+    fn a_peek_expires_leases_in_memory_only() {
+        let (_td, env) = test_env();
+        let q = q(&env);
+        let a = q.post(&member("HOME"), "wiki.note.v1", &note("a"), None, None, 0.0).unwrap();
+        q.post(&member("HOME"), "wiki.note.v1", &note("b"), None, None, 1.0).unwrap();
+        q.claim("s1", 2.0).unwrap();
+        let p = q.peek_status(10.0, false);
+        assert_eq!((p.pending, p.claimed.len(), p.claimed[0].by.as_str()), (1, 1, "s1"));
+        assert_eq!(p.line(), "1 pending · 1 claimed · oldest 9s");
+        let snapshot = |q: &Queue| State::ALL.map(|s| q.ids(s));
+        let before = snapshot(&q);
+        // the lease ran out: back to pending in the peek, still claimed on disk
+        let p = q.peek_status(100.0, false);
+        assert_eq!((p.pending, p.claimed.len(), p.dead.len()), (2, 0, 0));
+        assert_eq!(snapshot(&q), before, "a peek moves nothing");
+        assert!(q.path(State::Claimed, &a.id).exists());
+        // at max_tries it reads as dead; done items past keep_done are gone
+        let mut i = q.get(&a.id).unwrap().1;
+        i.tries = 2;
+        q.write(State::Claimed, &i).unwrap();
+        assert_eq!(q.peek_status(100.0, false).dead.len(), 1);
+        std::fs::write(q.path(State::Pending, "000000000099"), "not json").unwrap();
+        assert_eq!(q.peek_status(100.0, false).quarantined, 1, "an unreadable file counts where it lies");
+        assert!(q.path(State::Pending, "000000000099").exists());
+        // `status` housekeeps for real
+        assert_eq!(q.status(100.0, false).dead.len(), 1);
+        assert!(!q.path(State::Claimed, &a.id).exists());
+        assert_eq!(Status { error: Some("bad".into()), ..Default::default() }.line(), "cannot read its queue: bad");
+        assert_eq!(Status::default().line(), "empty");
     }
 
     #[test]

@@ -346,7 +346,7 @@ fn status(ctx: &Ctx) -> Result<i32, Refusal> {
         out::line("no aides ([[aide]] in a fleet.toml)");
     }
     for s in &all {
-        out::line(&format!("{}  {}", s.aide, summary(s)));
+        out::line(&format!("{}  {}", s.aide, s.line()));
         for c in &s.claimed {
             out::line(&format!("  claimed  {}  {} by {}  lease {}", c.id, c.kind, c.by, queue::human(c.until - t)));
         }
@@ -355,35 +355,6 @@ fn status(ctx: &Ctx) -> Result<i32, Refusal> {
         }
     }
     Ok(0)
-}
-
-/// `3 pending · 1 claimed · oldest 4m · 1 dead` (what status and Admiralty show).
-pub fn summary(s: &queue::Status) -> String {
-    if let Some(e) = &s.error {
-        return format!("cannot read its queue: {e}");
-    }
-    let mut parts = vec![];
-    if s.pending == 0 && s.claimed.is_empty() {
-        parts.push("empty".to_string());
-    } else {
-        parts.push(format!("{} pending", s.pending));
-    }
-    if !s.claimed.is_empty() {
-        parts.push(format!("{} claimed", s.claimed.len()));
-    }
-    if let Some(o) = s.oldest_age_s {
-        parts.push(format!("oldest {}", queue::human(o)));
-    }
-    if !s.dead.is_empty() {
-        parts.push(format!("{} dead", s.dead.len()));
-    }
-    if s.quarantined > 0 {
-        parts.push(format!("{} unreadable (quarantine/)", s.quarantined));
-    }
-    if s.undelivered > 0 {
-        parts.push(format!("{} answer{} to pick up", s.undelivered, if s.undelivered == 1 { "" } else { "s" }));
-    }
-    parts.join(" · ")
 }
 
 /// Poll `item` until it is done or dead, or `wait` runs out.

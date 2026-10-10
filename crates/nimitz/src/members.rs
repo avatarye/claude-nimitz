@@ -82,7 +82,7 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         .fleets
         .iter()
         .flat_map(|f| f.members())
-        .map(|m| if m.role == nimitz_core::Role::Ship { 4 } else { 2 } + m.id.0.len())
+        .map(|m| if matches!(m.role, nimitz_core::Role::Ship | nimitz_core::Role::Aide) { 4 } else { 2 } + m.id.0.len())
         .max()
         .unwrap_or(0)
         .max(26);
@@ -93,6 +93,13 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
             out::issue(i);
         }
         member_line(&ctx.env, &f.admiral, 1, col);
+        // its aides under it, each with its inbox
+        for a in &f.aides {
+            member_line(&ctx.env, a, 2, col);
+            if let Some(q) = &a.inbox {
+                out::line(&format!("        inbox: {}", q.line()));
+            }
+        }
         for sq in &f.squadrons {
             member_line(&ctx.env, &sq.commodore, 1, col);
             for i in &sq.issues {

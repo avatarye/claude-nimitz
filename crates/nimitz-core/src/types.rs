@@ -528,6 +528,12 @@ pub struct Member {
     pub issues: Vec<Issue>,
     /// set by the TUI/CLI from the mux, never by core
     pub pane: Option<String>,
+    /// an aide's parent (the member it is attached to)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<Id>,
+    /// an aide's inbox, read without a write (`queue::Queue::peek_status`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inbox: Option<crate::queue::Status>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -545,18 +551,23 @@ pub struct Fleet {
     pub dir: String,
     pub machine: Option<String>,
     pub admiral: Member,
+    /// the admiral's aides (`[[aide]]`)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aides: Vec<Member>,
     pub squadrons: Vec<Squadron>,
     pub issues: Vec<Issue>,
 }
 
 impl Fleet {
-    /// Every member, chain-of-command order: the admiral, then each
-    /// squadron's commodore and its ships.
+    /// Every member, chain-of-command order: the admiral, its aides, then
+    /// each squadron's commodore and its ships.
     pub fn members(&self) -> impl Iterator<Item = &Member> {
-        std::iter::once(&self.admiral).chain(self.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter())))
+        std::iter::once(&self.admiral).chain(self.aides.iter()).chain(self.squadrons.iter().flat_map(|q| std::iter::once(&q.commodore).chain(q.ships.iter())))
     }
     pub fn members_mut(&mut self) -> impl Iterator<Item = &mut Member> {
-        std::iter::once(&mut self.admiral).chain(self.squadrons.iter_mut().flat_map(|q| std::iter::once(&mut q.commodore).chain(q.ships.iter_mut())))
+        std::iter::once(&mut self.admiral)
+            .chain(self.aides.iter_mut())
+            .chain(self.squadrons.iter_mut().flat_map(|q| std::iter::once(&mut q.commodore).chain(q.ships.iter_mut())))
     }
 }
 

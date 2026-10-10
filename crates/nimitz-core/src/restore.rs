@@ -792,7 +792,7 @@ fn dedup(plan: &mut Plan) {
 }
 
 /// Issues the relaunch table (a wake) fixes itself: not a reason to skip a member.
-const TABLE_HANDLED: [&str; 4] = ["name.drift", "labels.missing", "copy.rows", "lead.intruder"];
+const TABLE_HANDLED: [&str; 6] = ["name.drift", "labels.missing", "copy.rows", "lead.intruder", "aide.down", "aide.unpinned"];
 
 fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     let (env, snap) = (ctx.env, ctx.snap);
