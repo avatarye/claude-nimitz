@@ -134,7 +134,15 @@ policy = "open"                  # open | fleet | parent
 
 Limits in 0.5.0: no doorbell yet, so an aide wakes on its 15-minute cron, a
 message or a start; no `aide new|set|rm`, so edit `[[aide]]` in fleet.toml by
-hand; no read-only snapshot aide yet (`snapshot = true` is refused).
+hand; no read-only snapshot aide yet (`snapshot = true` is refused). An aide
+runs in its own permission mode (default `acceptEdits`; `bypassPermissions`,
+`dontAsk` and `auto` are refused: they would skip its rules), with git only in
+its folder and never `push`.
+
+**Update every machine first.** A nimitz before 0.5.0 that shares the fleet
+folder cannot load a fleet.toml holding `[[aide]]`, and reads a registry
+that holds an aide as corrupt (it moves it aside). Update every machine to
+0.5.0 before you add an aide, and do not go back below 0.5.0 after one ran.
 
 ### Two rules
 

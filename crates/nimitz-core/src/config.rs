@@ -357,6 +357,11 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         if a.snapshot {
             out.push(inv(format!("aide {aid}: the read-only snapshot aide comes in S4b; leave snapshot unset for now"), Some(aid.clone())));
         }
+        // its allow and deny lists are what hold a hostile payload: a mode
+        // that skips the lists (or asks no one) is never an aide's
+        if let Some(m) = a.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
+            out.push(inv(format!("aide {aid}: permission_mode {m:?} skips the aide's allow and deny rules; use default, acceptEdits or plan"), Some(aid.clone())));
+        }
         for label in a.dirs.keys() {
             if !c.machines.contains_key(label) {
                 out.push(inv(format!("aide {aid}: machine label {label:?} is not in fleet.toml [machines]"), Some(aid.clone())));
@@ -487,6 +492,10 @@ fn find_ship<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<(&'a PathBuf, &'a Squadr
     Some((sd, sq, ship))
 }
 
+/// Permission modes an aide never runs in: they skip its allow and deny rules
+/// (bypassPermissions, dontAsk) or decide without a prompt (auto).
+pub const AIDE_MODES_REFUSED: [&str; 3] = ["bypassPermissions", "dontAsk", "auto"];
+
 /// An aide's `[[aide]]` in its fleet (only an admiral's aide exists for now).
 pub fn find_aide<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<&'a AideDef> {
     let parent = id.parent()?;
@@ -562,7 +571,8 @@ pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
             .and_then(|(_, _, ship)| f.machine.as_ref().and_then(|m| ship.permission_mode.get(m).cloned()))
             .or_else(squadron_mode)
             .unwrap_or(fallback),
-        Role::Aide => find_aide(f, id).and_then(|a| a.permission_mode.clone()).unwrap_or(fallback),
+        // its own mode, else acceptEdits: never the user's default (which may skip the rules)
+        Role::Aide => find_aide(f, id).and_then(|a| a.permission_mode.clone()).filter(|m| !AIDE_MODES_REFUSED.contains(&m.as_str())).unwrap_or_else(|| "acceptEdits".into()),
     }
 }
 
@@ -1390,7 +1400,7 @@ pub(crate) mod tests {
         other.machine = Some("elsewhere".into());
         assert_eq!(member_dir(&env, &other, &kb), None);
         assert_eq!(member_dir(&env, &f, &Id("MAIN/@REF".into())), None);
-        assert_eq!((member_dir(&env, &f, &Id("OTHER/@KB".into())), permission_mode(&f, &Id("MAIN/@REF".into()))), (None, String::new()));
+        assert_eq!((member_dir(&env, &f, &Id("OTHER/@KB".into())), permission_mode(&f, &Id("MAIN/@REF".into()))), (None, "acceptEdits".to_string()), "an aide never inherits the default mode");
         // a bad name, a twin, an inbox nimitz cannot run, an unknown machine
         let mut bad = f.clone();
         bad.config.aide.push(AideDef { name: "kb".into(), ..Default::default() });
@@ -1753,6 +1763,17 @@ pub(crate) mod tests {
         assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "");
         f.config.admiral.permission_mode = Some("auto".into());
         assert_eq!(permission_mode(&f, &Id::admiral("MAIN")), "auto");
+        // an aide: its own mode, else acceptEdits, never a mode that skips its rules
+        let kb = Id("MAIN/@KB".into());
+        f.config.aide.push(AideDef { name: "KB".into(), ..Default::default() });
+        assert_eq!(permission_mode(&f, &kb), "acceptEdits", "not the user's default");
+        f.config.aide[0].permission_mode = Some("plan".into());
+        assert_eq!(permission_mode(&f, &kb), "plan");
+        for m in AIDE_MODES_REFUSED {
+            f.config.aide[0].permission_mode = Some(m.into());
+            assert_eq!(permission_mode(&f, &kb), "acceptEdits", "{m}");
+            assert!(validate(&env, &f).iter().any(|i| i.message.contains("skips the aide's allow and deny rules")), "{m}");
+        }
     }
 
     #[test]

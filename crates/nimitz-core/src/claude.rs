@@ -165,7 +165,11 @@ pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 
 /// The git subcommands a writer aide runs in its folder (`git -C <folder>
 /// <sub>`) with no prompt: what an ingest needs, nothing that leaves the machine.
-pub const AIDE_GIT_ALLOW: [&str; 10] = ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "grep", "restore --staged"];
+/// (No `grep`: `git grep -O<cmd>` runs a program; the Grep tool covers it.)
+pub const AIDE_GIT_ALLOW: [&str; 9] = ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "restore --staged"];
+/// Options of the allowed subcommands that write a file or run a program:
+/// denied wherever they appear (`show --output=<file>`, `grep -O<cmd>`).
+pub const AIDE_GIT_DENY_OPTS: [&str; 3] = ["--output", "-O", "--open-files-in-pager"];
 /// Git that reaches another machine or rewrites the repo's setup: denied in
 /// any form (a user's own `Bash(git *)` allow does not reach an aide).
 pub const AIDE_GIT_DENY: [&str; 7] = ["push", "remote", "fetch", "pull", "clone", "config", "submodule"];
@@ -178,6 +182,7 @@ pub const AIDE_GIT_DENY: [&str; 7] = ["push", "remote", "fetch", "pull", "clone"
 fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
     let mut allow = vec![NIMITZ_ALLOW.to_string()];
     let mut deny: Vec<String> = AIDE_GIT_DENY.iter().flat_map(|s| [format!("Bash(git {s})"), format!("Bash(git {s} *)"), format!("Bash(git -C * {s})"), format!("Bash(git -C * {s} *)")]).collect();
+    deny.extend(AIDE_GIT_DENY_OPTS.iter().map(|o| format!("Bash(git * {o}*)")));
     let Ok((f, def)) = crate::queue::find(env, id) else { return (allow, deny) };
     if def.snapshot {
         deny.extend(["Edit", "Write", "NotebookEdit"].map(String::from));
@@ -472,10 +477,14 @@ mod tests {
         let list = |k: &str| p[k].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
         let (allow, deny) = (list("allow"), list("deny"));
         assert_eq!(allow[0], NIMITZ_ALLOW);
-        for sub in ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "grep", "restore --staged"] {
+        for sub in ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "restore --staged"] {
             assert!(allow.contains(&format!("Bash(git -C {} {sub})", real.display())) && allow.contains(&format!("Bash(git -C {} {sub} *)", real.display())), "{sub}: {allow:?}");
         }
-        assert_eq!(allow.len(), 21, "nothing else: {allow:?}");
+        assert_eq!(allow.len(), 19, "nothing else: {allow:?}");
+        assert!(!allow.iter().any(|a| a.contains(" grep")), "no git grep (-O runs a program): {allow:?}");
+        for o in ["--output", "-O", "--open-files-in-pager"] {
+            assert!(deny.contains(&format!("Bash(git * {o}*)")), "{o}: {deny:?}");
+        }
         assert!(!allow.iter().any(|a| a == "Bash(git *)" || a.contains("push")), "no git outside the list: {allow:?}");
         for sub in ["push", "remote", "fetch", "pull", "clone", "config", "submodule"] {
             for form in [format!("Bash(git {sub})"), format!("Bash(git {sub} *)"), format!("Bash(git -C * {sub})"), format!("Bash(git -C * {sub} *)")] {
