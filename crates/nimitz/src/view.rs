@@ -52,7 +52,7 @@ impl Paint {
 fn verb_colour(v: &str) -> Rgb {
     match v {
         "wake" | "launch" | "fresh" | "create" | "write" | "bind" | "adopt" => BUSY,
-        "relaunch" | "remove" | "archive" | "rename" | "warn" => WARN,
+        "relaunch" | "remove" | "archive" | "rename" | "warn" | "trust" => WARN,
         "reattach" | "open pane" | "focus" => ACCENT,
         "skip" => NEEDS,
         "refuse" | "stop" | "taken" => ERROR,
@@ -94,6 +94,7 @@ pub fn step_verb(s: &Step) -> &'static str {
     match s.cmd.first().map(String::as_str) {
         Some("write") => "write",
         Some("mkdir") => "create",
+        Some("trust") => "trust",
         Some("archive") => "archive",
         Some("bind") => "bind",
         Some("pin") => "pin",
@@ -132,18 +133,22 @@ impl View {
                 rows.push(Row { id: Some(f.id.clone()), job: f.job.clone(), pane: f.pane.clone(), why });
             }
         } else {
-            // a plain plan: one line per member its steps act on, in step order
-            let mut order: Vec<Option<Id>> = vec![];
+            // a plain plan: one line per member its steps act on, in step
+            // order; a trust is a line of its own (what it lets run is its why)
+            let mut order: Vec<(String, Option<Id>)> = vec![];
             let mut by: BTreeMap<String, Vec<&Step>> = BTreeMap::new();
             for s in &p.steps {
-                let k = s.id.as_ref().map(|i| i.0.clone()).unwrap_or_default();
-                if !order.contains(&s.id) {
-                    order.push(s.id.clone());
+                let mut k = s.id.as_ref().map(|i| i.0.clone()).unwrap_or_default();
+                if s.cmd.first().is_some_and(|c| c == "trust") {
+                    k = format!("{k}\u{1}trust {}", s.cmd.get(1).map(String::as_str).unwrap_or(""));
+                }
+                if !order.iter().any(|(o, _)| *o == k) {
+                    order.push((k.clone(), s.id.clone()));
                 }
                 by.entry(k).or_default().push(s);
             }
-            for id in order {
-                let steps = &by[&id.as_ref().map(|i| i.0.clone()).unwrap_or_default()];
+            for (k, id) in order {
+                let steps = &by[&k];
                 let mut verbs: Vec<&str> = vec![];
                 for s in steps.iter() {
                     let v = step_verb(s);
@@ -191,6 +196,7 @@ impl View {
             ("write", "to write"),
             ("create", "to create"),
             ("archive", "to archive"),
+            ("trust", "to trust"),
         ] {
             let k = n(&|r: &Row| r.job == verb);
             if k > 0 {

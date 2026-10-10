@@ -73,6 +73,7 @@ fn string_form_hooks(hooks: &Value) -> Vec<String> {
             out.push(event.clone());
         }
     }
+    out.sort(); // named in one order, whatever order the file has
     out
 }
 
@@ -152,6 +153,10 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
     if !ctx.env.state.is_dir() {
         plan.steps.push(mk(&ctx.env.state, "per-machine registry and events (never synced)"));
     }
+    // the data root holds every lead's folder: Claude Code must trust it
+    if !trusted(ctx, &ctx.env.home) {
+        plan.steps.push(nimitz_core::trust::step(&ctx.env, None, &ctx.env.home));
+    }
     if !saved || reg.machine != label {
         plan.steps.push(Step {
             id: None,
@@ -167,6 +172,7 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
             for s in &plan.steps {
                 let r = match s.cmd[0].as_str() {
                     "mkdir" => std::fs::create_dir_all(&s.cmd[1]).map_err(|e| e.to_string()),
+                    "trust" => nimitz_core::trust::write(&ctx.env, Path::new(&s.cmd[1])).map(|_| ()),
                     _ => nimitz_core::registry::update(&ctx.env, |r| {
                         r.version = nimitz_core::REGISTRY_VERSION;
                         r.machine = label.clone();
@@ -184,14 +190,32 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
             0
         }
     };
-    if !trusted(ctx, &ctx.env.home) {
-        out::warn(&format!(
-            "Claude Code does not trust {} yet: run `claude` there once, accept the trust dialog, exit, then `nimitz doctor`",
-            ctx.env.home.display()
-        ));
-    }
     let d = doctor_report(ctx, false);
     Ok(code.max(d))
+}
+
+// ------------------------------------------------------------------ trust
+
+/// `nimitz trust <folder>`: Claude Code's trust for the folder's git root
+/// (or the folder outside git), written as Claude Code writes it. Yours
+/// alone: it lets the folder's own .claude settings, hooks and MCP servers run.
+pub fn trust(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&[])?;
+    let dir = ctx.args.need(0, "folder")?;
+    ctx.args.at_most(1)?;
+    let p = Path::new(dir);
+    let mut plan = Plan { summary: format!("trust {}", nimitz_core::trust::shown(p).display()), ..Default::default() };
+    if ctx.caller != nimitz_core::Caller::User {
+        plan.refusals.push(refusal("authority", format!("`nimitz trust` is yours alone: {}", nimitz_core::trust::CONSEQUENCE), None, None));
+    } else if !p.is_dir() {
+        plan.refusals.push(refusal("folder.missing", format!("{dir} is not a folder"), Some(format!("mkdir -p {}", out::quote(dir))), None));
+    } else if !nimitz_core::trust::is_written(&ctx.env, p) {
+        plan.steps.push(nimitz_core::trust::step(&ctx.env, None, p));
+    }
+    Ok(match ctx.gate(&plan) {
+        out::Go::Exit(c) => c,
+        out::Go::Run => out::outcome(&plan, &nimitz_core::config::apply_config_plan(&ctx.env, &plan)),
+    })
 }
 
 // ------------------------------------------------------------------ doctor
@@ -305,7 +329,8 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         if trusted(ctx, &env.home) {
             r.ok(&format!("Claude Code trusts {}", env.home.display()));
         } else {
-            r.err(&format!("Claude Code does not trust {}", env.home.display()), Some(&format!("cd {} && claude   # accept the trust dialog, then exit", out::quote(&env.home.to_string_lossy()))));
+            r.err(&format!("Claude Code does not trust {}", env.home.display()), Some("nimitz doctor --fix"));
+            r.fixes.steps.push(nimitz_core::trust::step(env, None, &env.home));
         }
     }
 
@@ -478,6 +503,10 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             lacks(&p, &JOB_FIELDS, &mut bad);
         }
     }
+    match nimitz_core::trust::format_check(env) {
+        Ok(n) => r.ok(&format!("pinned formats: Claude Code's trust table reads as nimitz writes it ({n} trusted folder key(s))")),
+        Err(e) => bad.push(format!("{e} (nimitz trust needs projects.<path>.hasTrustDialogAccepted)")),
+    }
     if bad.is_empty() {
         r.ok(&format!("pinned formats: {seen} session/job file(s) carry every field nimitz reads"));
     } else {
@@ -492,6 +521,16 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             out::Go::Exit(c) => return c.max(1),
             out::Go::Run => {
                 for s in &fixes.steps {
+                    if s.cmd[0] == "trust" {
+                        match nimitz_core::trust::write(&ctx.env, Path::new(&s.cmd[1])) {
+                            Ok(_) => {
+                                out::ok(&format!("fixed: {}", s.why));
+                                r.errors -= 1;
+                            }
+                            Err(e) => out::error(&format!("fix failed: {e}")),
+                        }
+                        continue;
+                    }
                     let path = Path::new(&s.cmd[1]);
                     let tmp = path.with_extension("json.nimitz-tmp");
                     let done = path.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|_| std::fs::write(&tmp, &s.cmd[2])).and_then(|_| std::fs::rename(&tmp, path));

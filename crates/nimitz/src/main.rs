@@ -74,7 +74,9 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
                                    --fresh: a new conversation; --all: parked ships too; --jobs-only: no tabs;
                                    --only: the target's own member alone (a lead without its fleet or squadron)
   stop <id|session>                stop a member (or one session); start's opposite
-  init [--label L]                 data root, machine label, trust check, doctor
+  init [--label L]                 data root, machine label, Claude Code's trust of the data root, doctor
+  trust <folder>                   Claude Code's trust for the folder's git root (or the folder): yours alone,
+                                   it lets the folder's .claude settings, hooks and MCP servers run
   doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs
   rules [<id>]                     the role rules nimitz hands a member at session start
   status [--json]                  the fleets, their members and issues
@@ -182,6 +184,7 @@ fn dispatch(argv: Vec<String>) -> i32 {
 /// fails that test until its row is in plan-v4 section 12.1.
 const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("init", setup::init),
+    ("trust", setup::trust),
     ("doctor", setup::doctor),
     ("rules", setup::rules),
     ("status", members::status),

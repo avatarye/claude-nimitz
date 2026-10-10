@@ -394,6 +394,7 @@ fn every_command_goes_by_the_role_table() {
     // (command, the rest of the argv, admiral MAIN, commodore MAIN/ARGOS, ship MAIN/ARGOS/CLEAN)
     const TABLE: &[(&str, &[&str], [bool; 3])] = &[
         ("init", &["--label", "box"], [false, false, false]),
+        ("trust", &["/tmp"], [false, false, false]),
         ("doctor", &[], [true, true, true]),
         ("doctor", &["--fix"], [false, false, false]),
         ("rules", &[], [true, true, true]),
@@ -1206,7 +1207,11 @@ fn init_and_doctor_in_an_empty_world() {
     assert!(d.out.contains("fix: nimitz init"), "{}", d.out);
     assert_eq!(raw(&vars, &["init", "--label", "Bad Label", "--yes"], &[], None).code, 1);
     let r = raw(&vars, &["init", "--label", "box", "--yes"], &[], None);
-    assert!(r.out.contains("run `claude` there once"), "asks for trust, does not launch:\n{}", r.out);
+    // init trusts the data root itself (no `claude` to run by hand)
+    assert!(r.out.contains("1 to trust") && !r.out.contains("does not trust"), "{}", r.out);
+    let t: Value = serde_json::from_slice(&std::fs::read(b.join("claude_home/.claude.json")).unwrap()).unwrap();
+    let root = b.join("nimitz").canonicalize().unwrap();
+    assert_eq!(t["projects"][root.to_string_lossy().as_ref()]["hasTrustDialogAccepted"], true, "{}", r.out);
     assert!(b.join("nimitz").is_dir());
     let reg: Value = serde_json::from_str(&std::fs::read_to_string(b.join("state/registry.json")).unwrap()).unwrap();
     assert_eq!(reg["machine"], "box");

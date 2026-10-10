@@ -40,9 +40,32 @@ const KEEP_BACKUPS: usize = 5;
 /// What trusting a folder lets run: said in every plan line and refusal.
 pub const CONSEQUENCE: &str = "Claude Code then runs that folder's own .claude settings, hooks and MCP servers";
 
-/// Claude Code's config file (it holds the trust table).
+/// Claude Code's config file (it holds the trust table): `~/.claude.json`
+/// for the default Claude home, the one a new trust goes to.
 pub fn file(env: &Env) -> PathBuf {
     crate::check::trust_file(env)
+}
+
+/// Every config file nimitz reads trust from: `<claude home>/.claude.json`
+/// (a `CLAUDE_CONFIG_DIR` layout) and `<claude home>.json` (`~/.claude.json`).
+/// A write goes to each that exists (`file` when none does), so what nimitz
+/// writes is what `check` and `evidence` read.
+pub fn files(env: &Env) -> Vec<PathBuf> {
+    let mut out = vec![env.claude_home.join(".claude.json"), file(env)];
+    out.dedup();
+    out
+}
+
+/// The files a write goes to: each that exists; with none, the one Claude
+/// Code itself would make (`~/.claude.json` for the default `~/.claude`, else
+/// `<claude home>/.claude.json`, the `CLAUDE_CONFIG_DIR` layout).
+fn targets(env: &Env) -> Vec<PathBuf> {
+    let have: Vec<PathBuf> = files(env).into_iter().filter(|f| f.exists()).collect();
+    if !have.is_empty() {
+        return have;
+    }
+    let default = env.claude_home.file_name().is_some_and(|n| n == ".claude");
+    vec![if default { file(env) } else { env.claude_home.join(".claude.json") }]
 }
 
 fn abs(dir: &Path) -> PathBuf {
@@ -141,28 +164,37 @@ pub fn for_plan(env: &Env, caller: &Caller, id: Option<&Id>, dir: &Path) -> Opti
     }))
 }
 
-/// Does the config file trust every key of `dir`?
+/// Does every config file trust every key of `dir`?
 pub fn is_written(env: &Env, dir: &Path) -> bool {
-    let Some(v) = std::fs::read(file(env)).ok().and_then(|b| crate::evidence::first_json(&b)) else { return false };
-    keys(dir).iter().all(|k| v["projects"][k]["hasTrustDialogAccepted"].as_bool() == Some(true))
+    let keys = keys(dir);
+    targets(env).iter().all(|f| {
+        let Some(v) = std::fs::read(f).ok().and_then(|b| crate::evidence::first_json(&b)) else { return false };
+        keys.iter().all(|k| v["projects"][k]["hasTrustDialogAccepted"].as_bool() == Some(true))
+    })
 }
 
 /// Trust `dir` (its target, both keys). Returns the keys it set (empty: all
 /// were set already).
 pub fn write(env: &Env, dir: &Path) -> Result<Vec<String>, String> {
     let keys = keys(dir);
-    let mut set = vec![];
-    edit(env, |projects| {
-        for k in &keys {
-            let e = projects.entry(k.clone()).or_insert_with(|| json!({}));
-            let Some(o) = e.as_object_mut() else { return Err(format!("projects[{k:?}] is not an object")) };
-            if o.get("hasTrustDialogAccepted").and_then(Value::as_bool) != Some(true) {
-                o.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
-                set.push(k.clone());
+    let mut set: Vec<String> = vec![];
+    for f in targets(env) {
+        edit(env, &f, |projects| {
+            let mut changed = false;
+            for k in &keys {
+                let e = projects.entry(k.clone()).or_insert_with(|| json!({}));
+                let Some(o) = e.as_object_mut() else { return Err(format!("projects[{k:?}] is not an object")) };
+                if o.get("hasTrustDialogAccepted").and_then(Value::as_bool) != Some(true) {
+                    o.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+                    changed = true;
+                    if !set.contains(k) {
+                        set.push(k.clone());
+                    }
+                }
             }
-        }
-        Ok(!set.is_empty())
-    })?;
+            Ok(changed)
+        })?;
+    }
     Ok(set)
 }
 
@@ -170,27 +202,36 @@ pub fn write(env: &Env, dir: &Path) -> Result<Vec<String>, String> {
 /// entry left empty goes too.
 pub fn forget(env: &Env, dir: &Path) -> Result<(), String> {
     let keys = keys(dir);
-    edit(env, |projects| {
-        let mut changed = false;
-        for k in &keys {
-            if let Some(o) = projects.get_mut(k).and_then(Value::as_object_mut) {
-                changed |= o.remove("hasTrustDialogAccepted").is_some();
-                if o.is_empty() {
-                    projects.remove(k);
+    for f in files(env).into_iter().filter(|f| f.exists()) {
+        edit(env, &f, |projects| {
+            let mut changed = false;
+            for k in &keys {
+                if let Some(o) = projects.get_mut(k).and_then(Value::as_object_mut) {
+                    changed |= o.remove("hasTrustDialogAccepted").is_some();
+                    if o.is_empty() {
+                        projects.remove(k);
+                    }
                 }
             }
-        }
-        Ok(changed)
-    })
-    .map(|_| ())
+            Ok(changed)
+        })?;
+    }
+    Ok(())
 }
 
 /// doctor's pinned-format check: the file is a JSON object, `projects` an
 /// object of objects, `hasTrustDialogAccepted` a bool wherever it is set.
 /// Ok(number of trusted keys); Err(what differs). No file: Ok(0).
 pub fn format_check(env: &Env) -> Result<usize, String> {
-    let f = file(env);
-    let raw = match std::fs::read(&f) {
+    let mut n = 0;
+    for f in files(env) {
+        n += format_check_file(&f)?;
+    }
+    Ok(n)
+}
+
+fn format_check_file(f: &Path) -> Result<usize, String> {
+    let raw = match std::fs::read(f) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
         Err(e) => return Err(format!("{}: {e}", f.display())),
@@ -213,8 +254,8 @@ pub fn format_check(env: &Env) -> Result<usize, String> {
 
 /// Edit `projects` under Claude Code's lock; `f` says whether it changed
 /// anything (nothing changed: nothing is written).
-fn edit(env: &Env, f: impl FnOnce(&mut Map<String, Value>) -> Result<bool, String>) -> Result<bool, String> {
-    let path = file(env);
+fn edit(env: &Env, path: &Path, f: impl FnOnce(&mut Map<String, Value>) -> Result<bool, String>) -> Result<bool, String> {
+    let path = path.to_path_buf();
     let lock = PathBuf::from(format!("{}.lock", path.display()));
     let _held = crate::pins::dir_lock(&lock, STALE_S, WAIT).map_err(|e| format!("{e} (Claude Code is writing {}; try again)", path.display()))?;
     // a linked config file is written where it points (Claude Code's own

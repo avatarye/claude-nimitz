@@ -461,7 +461,7 @@ fn find_ship<'a>(f: &'a FleetOnDisk, id: &Id) -> Option<(&'a PathBuf, &'a Squadr
     Some((sd, sq, ship))
 }
 
-fn expand_dir(p: &str) -> PathBuf {
+pub fn expand_dir(p: &str) -> PathBuf {
     match p.strip_prefix("~/") {
         Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/")).join(rest),
         None => PathBuf::from(p),
