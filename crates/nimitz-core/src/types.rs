@@ -338,6 +338,10 @@ pub struct IdentityRecord {
     pub session: Option<String>,
     #[serde(default)]
     pub lineage: Vec<LineageEntry>,
+    /// fields a newer nimitz wrote that this one does not know: kept, and
+    /// written back as they were
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// The registry format this nimitz writes.
@@ -357,11 +361,21 @@ pub struct Registry {
     /// history by `migrate::retire_tenders`; never members, never started
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub retired: BTreeMap<String, IdentityRecord>,
-    /// records this nimitz cannot read (a role it does not know on an id it
-    /// cannot place: a newer nimitz wrote them), kept as they were
-    /// (`registry::parse`); never members
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub unparsed: BTreeMap<String, serde_json::Value>,
+    /// what a newer nimitz wrote that this one cannot read as it was:
+    /// `registry::parse` fills it, `registry::render` writes it back where
+    /// it came from (never serialized as a field of its own)
+    #[serde(skip)]
+    pub unknown: Unknown,
+}
+
+/// A registry's records this nimitz does not know (a role a newer nimitz
+/// wrote), keyed by (map: `identities` | `retired`, id).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Unknown {
+    /// records on an id this nimitz cannot place: never members, kept as they were
+    pub records: BTreeMap<(String, String), serde_json::Value>,
+    /// the original `role` of records that took the role their id spells
+    pub roles: BTreeMap<(String, String), serde_json::Value>,
 }
 
 impl IdentityRecord {

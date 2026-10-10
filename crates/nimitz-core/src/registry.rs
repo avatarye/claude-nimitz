@@ -171,13 +171,14 @@ fn parse_file(p: &Path) -> Option<Registry> {
 
 /// A registry from its text, tolerant of a role this nimitz does not know
 /// (a newer nimitz wrote it): such a record takes the role its id spells
-/// when the id is one nimitz can place (`Id::well_formed`), else it goes to
-/// `unparsed`, kept as it was (`registry.unknown` in check). One record never
-/// fails the whole load.
+/// when the id is one nimitz can place (`Id::well_formed`), its own role
+/// kept aside; else the whole record is kept aside (`registry.unknown` in
+/// check), never a member. `render` writes both back where they were. One
+/// record never fails the whole load.
 pub fn parse(raw: &str) -> serde_json::Result<Registry> {
     use serde_json::Value;
     let mut v: Value = serde_json::from_str(raw)?;
-    let mut unparsed = serde_json::Map::new();
+    let mut unknown = Unknown::default();
     for map in ["identities", "retired"] {
         let Some(ids) = v.get_mut(map).and_then(Value::as_object_mut) else { continue };
         let keys: Vec<String> = ids.keys().cloned().collect();
@@ -187,25 +188,45 @@ pub fn parse(raw: &str) -> serde_json::Result<Registry> {
                 continue;
             }
             let id = Id(k.clone());
+            let at = (map.to_string(), k.clone());
             match ids[&k].as_object_mut() {
                 Some(rec) if id.well_formed() => {
-                    rec.insert("role".into(), Value::from(id.role().as_str()));
+                    if let Some(old) = rec.insert("role".into(), Value::from(id.role().as_str())) {
+                        unknown.roles.insert(at, old);
+                    }
                 }
                 _ => {
                     if let Some(rec) = ids.remove(&k) {
-                        unparsed.insert(k, rec);
+                        unknown.records.insert(at, rec);
                     }
                 }
             }
         }
     }
-    if !unparsed.is_empty() {
-        match v.get_mut("unparsed").and_then(Value::as_object_mut) {
-            Some(old) => old.extend(unparsed),
-            None => v["unparsed"] = Value::Object(unparsed),
+    let mut r: Registry = serde_json::from_value(v)?;
+    r.unknown = unknown;
+    Ok(r)
+}
+
+/// The registry as its file holds it: what `parse` set aside goes back
+/// where it was (a record nimitz now has under the same key keeps nimitz's).
+pub fn render(r: &Registry) -> serde_json::Result<String> {
+    use serde_json::Value;
+    let mut v = serde_json::to_value(r)?;
+    for ((map, key), role) in &r.unknown.roles {
+        if let Some(rec) = v.get_mut(map.as_str()).and_then(|m| m.get_mut(key.as_str())).and_then(Value::as_object_mut) {
+            rec.insert("role".into(), role.clone());
         }
     }
-    serde_json::from_value(v)
+    for ((map, key), rec) in &r.unknown.records {
+        if v.get(map.as_str()).and_then(Value::as_object).is_none() {
+            v[map.as_str()] = Value::Object(Default::default());
+        }
+        if let Some(m) = v[map.as_str()].as_object_mut() {
+            m.entry(key.clone()).or_insert_with(|| rec.clone());
+        }
+    }
+    serde_json::to_string_pretty(&v)
 }
 
 fn bak_path(env: &Env) -> PathBuf {
@@ -320,15 +341,15 @@ pub fn health(env: &Env) -> Vec<Issue> {
             id: None,
         });
     }
-    if let Some(r) = std::fs::read_to_string(&reg).ok().and_then(|raw| parse(&raw).ok()).filter(|r| !r.unparsed.is_empty()) {
+    if let Some(r) = std::fs::read_to_string(&reg).ok().and_then(|raw| parse(&raw).ok()).filter(|r| !r.unknown.records.is_empty()) {
         out.push(Issue {
             code: "registry.unknown".into(),
             severity: Severity::Warn,
             message: format!(
                 "{} holds {} record(s) this nimitz cannot read (a role it does not know, on an id it cannot place: a newer nimitz wrote them?): {}; kept as they are, never members",
                 reg.display(),
-                r.unparsed.len(),
-                r.unparsed.keys().cloned().collect::<Vec<_>>().join(", ")
+                r.unknown.records.len(),
+                r.unknown.records.keys().map(|(_, k)| k.clone()).collect::<Vec<_>>().join(", ")
             ),
             fix: Some("update nimitz to the version that wrote them".into()),
             id: None,
@@ -486,6 +507,7 @@ fn bind_into(map: &mut BTreeMap<String, IdentityRecord>, id: &Id, role: Role, na
         job: None,
         session: None,
         lineage: vec![],
+        extra: Default::default(),
     });
     rec.role = role;
     rec.name = name.to_string();
@@ -757,7 +779,7 @@ fn lock_file(env: &Env) -> std::io::Result<File> {
 /// Every save also writes `registry.json.bak` (the last good copy, for `recover`).
 fn write_unlocked(env: &Env, r: &mut Registry) -> std::io::Result<()> {
     r.updated_at = crate::evidence::now();
-    let contents = serde_json::to_string_pretty(r).map_err(std::io::Error::other)?;
+    let contents = render(r).map_err(std::io::Error::other)?;
     let path = env.registry_path();
     crate::config::atomic_write(&path, &contents)
         .map_err(|e| std::io::Error::new(e.kind(), format!("registry {}: {e}", path.display())))?;
@@ -1149,34 +1171,49 @@ mod tests {
 
     /// A role this nimitz does not know (a newer one wrote it) never fails
     /// the load: the record takes the role its id spells, or (an id nimitz
-    /// cannot place) waits in `unparsed`, kept through a write, with a
-    /// `registry.unknown` warning.
+    /// cannot place) is set aside, never a member, with a `registry.unknown`
+    /// warning; a write puts both back as they were, in their own maps.
     #[test]
-    fn a_record_with_an_unknown_role_does_not_fail_the_registry() {
+    fn a_record_with_an_unknown_role_does_not_fail_the_registry_and_survives_a_write() {
         let (_td, env) = test_env();
-        let rec = |role: &str, sid: &str| serde_json::json!({"role": role, "name": "n", "cwd": "/w", "session": sid, "lineage": []});
-        let raw = serde_json::json!({"version": REGISTRY_VERSION, "machine": "m", "updated_at": 1.0, "identities": {
-            "MAIN": rec("admiral", "s-adm"),
-            "MAIN/ARGOS/X": rec("future", "s-x"),
-            "MAIN/@KB": rec("aide", "s-kb"),
-            "MAIN/ARGOS/X/Y/@Z": rec("future", "s-z"),
-        }});
+        let rec = |role: &str, sid: &str| serde_json::json!({"role": role, "name": "n", "cwd": "/w", "session": sid, "lineage": [], "future_field": {"x": 1}});
+        let raw = serde_json::json!({"version": REGISTRY_VERSION, "machine": "m", "updated_at": 1.0,
+            "identities": {
+                "MAIN": rec("admiral", "s-adm"),
+                "MAIN/ARGOS/X": rec("future", "s-x"),
+                "MAIN/@KB": rec("aide", "s-kb"),
+                "MAIN/ARGOS/X/Y/@Z": rec("future", "s-z"),
+            },
+            "retired": {
+                "MAIN/ARGOS/OLD": rec("future", "s-old"),
+                "MAIN/ARGOS/X/Y/@Z": rec("future", "s-z2"),
+            }});
         std::fs::create_dir_all(&env.state).unwrap();
         std::fs::write(env.registry_path(), raw.to_string()).unwrap();
         let r = load(&env);
         assert_eq!(r.identities["MAIN"].role, Role::Admiral, "the rest loads");
         assert_eq!(r.identities["MAIN/ARGOS/X"].role, Role::Ship, "the role its id spells");
+        assert_eq!(r.retired["MAIN/ARGOS/OLD"].role, Role::Ship);
         assert_eq!(r.identities["MAIN/@KB"].role, Role::Aide);
-        assert!(!r.identities.contains_key("MAIN/ARGOS/X/Y/@Z") && r.unparsed.contains_key("MAIN/ARGOS/X/Y/@Z"), "{:?}", r.unparsed);
+        assert!(!r.identities.contains_key("MAIN/ARGOS/X/Y/@Z") && !r.retired.contains_key("MAIN/ARGOS/X/Y/@Z"));
+        assert_eq!(r.unknown.records.len(), 2, "one per map, the same key in both: {:?}", r.unknown.records);
         let h = health(&env);
         let w = h.iter().find(|i| i.code == "registry.unknown").expect("a warning");
         assert!(w.severity == Severity::Warn && w.message.contains("MAIN/ARGOS/X/Y/@Z"), "{w:?}");
         assert!(!h.iter().any(|i| i.code == "registry.corrupt"), "{h:?}");
-        // a write keeps it, as it was
+        // a write (of another identity) puts every record back as it was, in its own map
         update(&env, |r| bind(r, &Id::ship("MAIN", "ARGOS", "S"), Role::Ship, "[MAIN.ARGOS]-S", "/w", "s-s", "launch", 2.0)).unwrap();
         let back: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
-        assert_eq!(back["unparsed"]["MAIN/ARGOS/X/Y/@Z"]["role"], "future", "{back}");
-        assert_eq!(load(&env).unparsed.len(), 1);
+        // (the role and every field this nimitz does not know, as they were)
+        for (map, key) in [("identities", "MAIN/ARGOS/X"), ("identities", "MAIN/ARGOS/X/Y/@Z"), ("retired", "MAIN/ARGOS/OLD"), ("identities", "MAIN/@KB")] {
+            assert_eq!(back[map][key], raw[map][key], "{map} {key}");
+        }
+        assert_eq!(back["retired"]["MAIN/ARGOS/X/Y/@Z"], raw["retired"]["MAIN/ARGOS/X/Y/@Z"], "an unplaceable record comes back whole");
+        assert_eq!(back["identities"]["MAIN/ARGOS/X/Y/@Z"], raw["identities"]["MAIN/ARGOS/X/Y/@Z"]);
+        assert!(back.get("unparsed").is_none(), "no map of its own");
+        // and the next load reads the same
+        let again = load(&env);
+        assert_eq!((again.identities["MAIN/ARGOS/X"].role, again.unknown.records.len(), again.unknown.roles.len()), (Role::Ship, 2, 2));
     }
 
     #[test]
@@ -1258,7 +1295,7 @@ mod tests {
             std::fs::write(dir.join("state.json"), row.to_string()).unwrap();
         }
         let entry = |sid: &str, job: Option<&str>, via: &str, at: f64| LineageEntry { session_id: sid.into(), job: job.map(str::to_string), via: via.into(), at, home: None };
-        let rec = |job: Option<&str>, session: Option<&str>, lineage: Vec<LineageEntry>| IdentityRecord { role: Role::Ship, name: "[MAIN.SQ]-X".into(), cwd: "/w".into(), job: job.map(str::to_string), session: session.map(str::to_string), lineage };
+        let rec = |job: Option<&str>, session: Option<&str>, lineage: Vec<LineageEntry>| IdentityRecord { role: Role::Ship, name: "[MAIN.SQ]-X".into(), cwd: "/w".into(), job: job.map(str::to_string), session: session.map(str::to_string), lineage, extra: Default::default() };
         let mut r = Registry { version: REGISTRY_VERSION, machine: "m".into(), ..Default::default() };
         // touched: this home's history, then the foreign hook's binding on top
         r.identities.insert("MAIN/SQ/A".into(), rec(Some("f0f0f0f0"), Some("f0f0f0f0-sid"), vec![entry("a1a1a1a1-sid", Some("a1a1a1a1"), "launch", 1.0), entry("f0f0f0f0-sid", Some("f0f0f0f0"), "launch", 2.0)]));

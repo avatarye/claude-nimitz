@@ -54,6 +54,10 @@ pub fn deliver_cmd(key: &str) -> i32 {
     }
     let env = Env::from_vars(&vars);
     let Some(n) = notify::read(&env, key) else { return 0 };
+    // once: a notice delivered (or given up on) is never sent again
+    if n.delivered_at.is_some() || n.delivery != "pending" {
+        return 0;
+    }
     let retry: f64 = vars.get("NIMITZ_NOTIFY_RETRY").and_then(|v| v.parse().ok()).unwrap_or(600.0);
     let (delivery, note) = deliver(&env, &vars, &n, Duration::from_secs_f64(retry.max(0.0)));
     notify::set_delivery(&env, &n, delivery, Some(note));

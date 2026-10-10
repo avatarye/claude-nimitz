@@ -246,7 +246,7 @@ fn a_crashed_aide_gives_the_item_back_and_a_poison_item_dead_letters() {
     let id = st["dead"][0]["id"].as_str().unwrap().to_string();
     let n: Value = serde_json::from_slice(&std::fs::read(PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("needs").join(format!("MAIN%2F@KB#dead-{id}.json"))).unwrap()).unwrap();
     assert_eq!((n["kind"].as_str(), n["id"].as_str()), (Some("dead"), Some("MAIN/@KB")));
-    assert!(n["detail"].as_str().unwrap().starts_with(&format!("item {} (wiki.note.v1, from the user) failed 2 times: its lease ran out", id.trim_start_matches('0'))), "{n}");
+    assert!(n["detail"].as_str().unwrap().starts_with(&format!("item {} (wiki.note.v1, from the user) failed 2 times; its last reason, quoted: <<its lease ran out", id.trim_start_matches('0'))), "{n}");
     let check = (0..50).find_map(|_| {
         let c = sb.run(&["check"]);
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -254,6 +254,12 @@ fn a_crashed_aide_gives_the_item_back_and_a_poison_item_dead_letters() {
     });
     let check = check.expect("the delivery to an admiral that is not running fails, and check says so");
     assert!(check.contains("MAIN/@KB has a dead letter and MAIN was not told") && check.contains(&format!("nimitz inbox retry MAIN/@KB {}", id.trim_start_matches('0'))), "{check}");
+    // told once: a replay of its delivery sends nothing (it was given up on)
+    let path = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("needs").join(format!("MAIN%2F@KB#dead-{id}.json"));
+    let before = std::fs::read(&path).unwrap();
+    let r = raw(&sb.vars, &["__notify", &format!("MAIN/@KB#dead-{id}")], SHIP);
+    assert_eq!(r.code, 0);
+    assert_eq!(std::fs::read(&path).unwrap(), before, "a delivered or failed notice is not delivered again");
     // a retry clears it
     assert_eq!(sb.run(&["inbox", "retry", "MAIN/@KB", &id]).code, 0);
     assert!(!sb.run(&["check"]).out.contains("notify.failed"));
