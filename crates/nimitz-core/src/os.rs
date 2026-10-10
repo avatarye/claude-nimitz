@@ -90,6 +90,48 @@ pub fn pid_alive(pid: i64) -> bool {
     }
 }
 
+/// When process `pid` started (epoch ms): its creation time on Windows
+/// (`GetProcessTimes`). None elsewhere (Unix keeps the bare pid check) and
+/// for a pid that cannot be opened.
+pub fn process_started_ms(pid: i64) -> Option<i64> {
+    #[cfg(windows)]
+    {
+        win::started_ms(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// How much later than a session file says its process started the process
+/// may have been created and still be that process (clock steps, rounding).
+const SAME_PROCESS_SLACK_MS: i64 = 2000;
+
+/// A process created at `created_ms` can be the one a record says started
+/// at `started_ms`: it was not created after (beyond the slack). Unknown
+/// times prove nothing, so they pass.
+pub fn started_in_time(created_ms: Option<i64>, started_ms: Option<i64>) -> bool {
+    match (created_ms, started_ms) {
+        (Some(c), Some(s)) => c <= s + SAME_PROCESS_SLACK_MS,
+        _ => true,
+    }
+}
+
+/// Is `pid` alive and the process a record (a session file's `startedAt` or
+/// `procStart`, epoch ms) names? Windows reuses pids quickly: a live pid
+/// whose process was created after the record says it started is another
+/// process. Where the creation time is not read (Unix, a process this user
+/// cannot open, the sandbox's always-alive `LIVE_PID`, whose fake sessions
+/// may predate the boot) it is `pid_alive` alone.
+pub fn is_same_process(pid: i64, started_ms: Option<i64>) -> bool {
+    if !pid_alive(pid) {
+        return false;
+    }
+    pid == crate::sandbox::LIVE_PID || started_in_time(process_started_ms(pid), started_ms)
+}
+
 /// The executable process `pid` runs: `/proc/<pid>/exe` on Linux,
 /// `proc_pidpath` on macOS, `QueryFullProcessImageNameW` on Windows.
 pub fn exe_of(pid: i64) -> Option<String> {
@@ -418,6 +460,13 @@ pub(crate) mod win {
         None
     }
 
+    /// The creation time of `pid` as epoch ms (a FILETIME counts 100 ns
+    /// since 1601).
+    pub fn started_ms(pid: i64) -> Option<i64> {
+        let ft = created(&open(pid).ok()?)?;
+        Some((ft / 10_000) as i64 - 11_644_473_600_000)
+    }
+
     pub fn parent_of(pid: i64) -> Option<i64> {
         let ppid = table_parent(pid).filter(|p| *p > 0)?;
         // a parent that started after the child is a reused pid, not the parent
@@ -492,6 +541,28 @@ mod tests {
         assert!(pid_alive(std::process::id() as i64));
         assert!(!pid_alive(0));
         assert!(!pid_alive(-3));
+    }
+
+    #[test]
+    fn a_process_created_after_its_record_says_is_another() {
+        assert!(started_in_time(Some(10_000), Some(10_000)));
+        assert!(started_in_time(Some(5_000), Some(10_000)), "created before the session started");
+        assert!(started_in_time(Some(12_000), Some(10_000)), "within the slack");
+        assert!(!started_in_time(Some(12_001), Some(10_000)), "a reused pid");
+        assert!(started_in_time(None, Some(10_000)) && started_in_time(Some(1), None), "unknown proves nothing");
+        let me = std::process::id() as i64;
+        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        assert!(is_same_process(me, Some(now_ms)) && is_same_process(me, None));
+        assert!(!is_same_process(0, Some(now_ms)) && !is_same_process(-3, None));
+        // a record from long before this process: on Windows another process;
+        // Unix keeps the bare pid check
+        assert_eq!(is_same_process(me, Some(1_000)), !cfg!(windows));
+        // the sandbox's always-alive pid is never judged by its creation time
+        assert!(is_same_process(crate::sandbox::LIVE_PID, Some(1_000)));
+        match process_started_ms(me) {
+            Some(c) => assert!(cfg!(windows) && c <= now_ms && c > now_ms - 86_400_000, "{c}"),
+            None => assert!(!cfg!(windows)),
+        }
     }
 
     #[cfg(any(target_os = "linux", windows))]
