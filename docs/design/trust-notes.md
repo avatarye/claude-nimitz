@@ -88,11 +88,16 @@ then.
 - `start`: only the user's, only the started member's own folder, only on its
   first launch. A wake, a parent's folder and a fleet- or squadron-wide start
   keep the refusal with the fix `nimitz trust <path>, then nimitz start <id>`.
+  `start F` names the admiral and `start F/SQ` the commodore, so a fleet or
+  squadron start (Admiralty `R` too) still trusts that lead's own folder on
+  its first launch (inside the data root: the data root).
 - `ship new|set --dir`: only for this machine's folder (`--machine` another
   machine plans no trust).
 - Writes go to every config file nimitz reads trust from that exists
   (`<claude home>/.claude.json`, `<claude home>.json`); with none, the one
-  Claude Code would make. Backups per source, the newest five plus `.first`.
+  Claude Code would make. Backups per source, the newest five plus `.first`
+  (0600, in `NIMITZ_STATE/backups/`, never synced; it keeps the login token
+  that file holds, for good: delete it once the trust is known good).
 - serde_json `preserve_order` is on (the rewrite keeps Claude Code's order;
   `forget` uses `shift_remove`).
 - e2e `e2e_trust_lets_a_background_job_start_in_an_untrusted_repo` (#96):

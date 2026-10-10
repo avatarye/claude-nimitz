@@ -145,8 +145,16 @@ fn quoted(p: &Path) -> String {
 }
 
 /// The fix for an untrusted folder (`at`: the folder Claude Code asks about).
+/// Never a `nimitz trust` that nimitz would refuse (`/`, the home folder or a
+/// parent of it): there the trust prompt, which Claude Code keeps for that
+/// session only.
 pub fn fix(at: &Path) -> String {
-    format!("nimitz trust {}", quoted(&crate::env::canon(at)))
+    let at = crate::env::canon(at);
+    let home = std::env::var_os("HOME").map(PathBuf::from).map(|h| crate::env::canon(&h));
+    if at.parent().is_none() || home.is_some_and(|h| h.starts_with(&at)) {
+        return format!("run `claude` in {} and accept the trust prompt (nimitz never trusts the home folder or a parent of it)", quoted(&at));
+    }
+    format!("nimitz trust {}", quoted(&at))
 }
 
 /// Will Claude Code refuse `dir` for want of trust? `Error`: nothing trusts

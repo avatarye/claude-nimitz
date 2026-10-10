@@ -140,7 +140,8 @@ fn trust_issue(env: &Env, id: &Id, dir: &Path) -> Option<Issue> {
 /// inside a git repository asks about its root. Also used when a launch fails
 /// with "Workspace not trusted".
 pub fn untrusted_fix(dir: &Path) -> String {
-    crate::trust::fix(dir)
+    let at = crate::env::git_root(dir).unwrap_or_else(|| crate::env::canon(dir));
+    crate::trust::fix(&at)
 }
 
 /// `trust_issue`'s verdict for a folder alone (no member): Error, Warn or
