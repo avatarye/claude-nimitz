@@ -180,6 +180,11 @@ fn dispatch(argv: Vec<String>) -> i32 {
         return usage_error(&e);
     }
     let ctx = Ctx { env: Env::from_vars(&vars), caller: nimitz_core::sessions::caller_from_env(&vars), vars, args };
+    if migrates(&cmd) {
+        if let Some(code) = auto_migrate(&ctx.env, &cmd) {
+            return code;
+        }
+    }
     let r = match COMMANDS.iter().find(|(name, _)| *name == cmd) {
         Some((_, run)) => run(&ctx),
         None => Err(format!("unknown command {cmd:?}")),
@@ -229,6 +234,39 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
         Ok(0)
     }),
 ];
+
+/// Does `cmd` migrate this machine's files first? Not the hook (Claude
+/// Code's hot path; it reads the older formats as they are) nor the
+/// delivery it starts, not `sandbox` (it makes a world, maybe from a shell
+/// whose env points at the real state), not `migrate` (it shows and runs the
+/// steps itself), and not the hidden helpers.
+fn migrates(cmd: &str) -> bool {
+    !matches!(cmd, "hook" | "__notify" | "sandbox" | "migrate") && !cmd.starts_with("__")
+}
+
+/// The automatic local migration (docs/design/migrations.md section 4): the
+/// manifest says this nimitz ran here already, and that is all (one small
+/// read); else the pending local steps run, and one line on stderr says what
+/// moved. Then this machine's record in its fleets. A file a newer nimitz
+/// wrote here stops every command but `doctor` (which reports it).
+fn auto_migrate(env: &Env, cmd: &str) -> Option<i32> {
+    use nimitz_core::formats;
+    if !formats::up_to_date(env) {
+        let ran = formats::run(env, formats::ARTIFACTS, formats::Scope::Local);
+        if let Some(line) = ran.line() {
+            eprintln!("{line}");
+        }
+        if !ran.too_new.is_empty() && cmd != "doctor" {
+            for t in &ran.too_new {
+                eprintln!("[ERROR] {t}");
+            }
+            eprintln!("[ERROR] nimitz {} stops: a newer nimitz ran on this machine, and its files are not this one's to read or write (never downgrade after it ran); `nimitz doctor` lists them", formats::NIMITZ);
+            return Some(1);
+        }
+    }
+    formats::record_machine(env);
+    None
+}
 
 fn usage_error(e: &str) -> i32 {
     out::error(e);

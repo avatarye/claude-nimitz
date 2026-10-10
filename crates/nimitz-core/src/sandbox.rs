@@ -685,6 +685,13 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let mut world = read_json(&base.join("world.json")).unwrap_or(json!({}));
     world["sessions"] = json!(w.sessions.iter().map(|(n, s, j)| json!({"name": n, "session_id": s, "short_id": j})).collect::<Vec<_>>());
     write_json(&base.join("world.json"), &world);
+    // made by this nimitz: its formats are this nimitz's (the manifest says
+    // so), and the machine is on record in its fleets
+    let ran = crate::formats::run(&env(&base), crate::formats::ARTIFACTS, crate::formats::Scope::Local);
+    if !ran.failed.is_empty() {
+        return Err(format!("sandbox formats: {:?}", ran.failed));
+    }
+    crate::formats::record_machine(&env(&base));
     Ok(())
 }
 
