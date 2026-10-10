@@ -631,7 +631,7 @@ class Run:
         ok = [l for l in lines if l.startswith("[OK]")]
         mine = sum(1 for j in jobs if (self.cfg.claude_home / "jobs" / j / "state.json").is_file())
         if ok and len(ok) == len(lines) and mine == len(jobs):
-            n = re.search(r"(\d+) session/job", ok[0])
+            n = next((m for m in (re.search(r"(\d+) session/job", l) for l in ok) if m), None)  # doctor prints one line per pinned format
             return True, f"{n.group(1) if n else '?'} files carry every field; probe jobs live"
         return False, (lines[0] if lines else "no pinned-formats line in doctor")[:58], "\n".join(lines) or r.out
 
