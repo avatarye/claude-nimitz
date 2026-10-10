@@ -1844,6 +1844,21 @@ fn e2e_97_an_update_from_0_4_migrates_and_the_ship_lives_on() {
     let pid = live["session"]["pid"].as_i64();
     assert!(!w.issue_codes().iter().any(|(c, _)| matches!(c.as_str(), "registry.corrupt" | "lineage.broken" | "config.too_new" | "format.failed")), "{:?}", w.issue_codes());
 
+    // the old binary once more on the migrated (v3) registry, no aides: it
+    // reads it (version 3 is past its own 2, the stamp a key it ignores),
+    // shows the same ship, and moves nothing aside
+    w.use_bin(&old);
+    let (code, out) = w.nz(&["status", "--json"]);
+    assert_eq!(code, 0, "the old binary's status on the v3 registry:\n{out}");
+    let old_view: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}:\n{out}"));
+    let seen = old_view["fleets"].as_array().into_iter().flatten().flat_map(|f| f["squadrons"].as_array().cloned().unwrap_or_default()).flat_map(|q| q["ships"].as_array().cloned().unwrap_or_default()).find(|m| m["id"] == w.ship().as_str());
+    let seen = seen.unwrap_or_else(|| panic!("the old binary lost the ship:\n{out}"));
+    assert_eq!(seen["session"]["session_id"].as_str(), Some(sid.as_str()), "{seen}");
+    assert!(!std::fs::read_dir(&state).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("corrupt")), "the old binary moved the registry aside");
+    assert_eq!(w.registry()["version"], 3, "the old binary kept the version");
+    w.use_bin(EXE);
+    assert!(!w.ok(&["status"]).contains("migrated"), "the new binary has nothing to migrate after it");
+
     // the new build relaunches the old build's ship: the same conversation, a new process
     let out = w.ok(&["start", &w.ship(), "-f", "--yes"]);
     println!("{out}");

@@ -142,7 +142,10 @@ its folder and never `push`.
 **Update every machine first.** A nimitz before 0.5.0 that shares the fleet
 folder cannot load a fleet.toml holding `[[aide]]`, and reads a registry
 that holds an aide as corrupt (it moves it aside). Update every machine to
-0.5.0 before you add an aide, and do not go back below 0.5.0 after one ran.
+0.5.0 before you add an aide, and do not go back below 0.5.0 after one ran:
+a 0.4.x on the migrated registry moves it aside when it holds an aide, and
+otherwise rewrites it without the `min_nimitz` stamp (an early 0.4.0 build
+also without each lineage entry's `home`, which keeps two homes' bindings apart).
 `nimitz doctor` names each machine of the fleet no 0.5.0 was seen on. Once
 the aide is in, `nimitz migrate --shared --yes` stamps fleet.toml
 (`format = 2`, `min_nimitz = "0.5.0"`): a later nimitz that needs more is

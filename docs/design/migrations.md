@@ -111,9 +111,14 @@ from a real 0.4.0 install for N = the 0.4.0 version).
 - **0.4.x machines** predate the guard: 0.4.x refuses a fleet.toml that holds
   `[[aide]]` (its parser rejects unknown fields: the fleet stops loading
   there), and reads a registry that holds an aide as corrupt (it renames it
-  and rebuilds it from its backup and the events, losing lineage). So:
+  and rebuilds it from its backup and the events, losing lineage). A 0.4.x
+  on a migrated (v3) registry without aides reads it, and its next write
+  drops `min_nimitz` (the version stays 3); a 0.4.0 built before 5f4cc2a
+  (no lineage `home`) drops the lineage `home` stamps too, so the binding of
+  an entry to the home that made it is lost (two homes sharing one state
+  folder can then see each other's bindings once the job rows are gone). So:
   **update every machine to 0.5.0 before adding an aide, and never downgrade
-  after one ran** (the README, the CHANGELOG, and doctor's machine warning).
+  after one ran** (the README and doctor's machine warning).
 
 ## 6. Maintained
 
@@ -180,8 +185,40 @@ Where the build differs from, or adds to, the sections above:
   (Error: a step the log says failed and nothing did since; its log line and
   backup), `format.machine` (Warn, doctor only). `check` gets
   `formats::issues` (local files too new, failed steps).
-- **Machine records** are written by every migrating command (a lenient read
-  of each fleet.toml's `[machines]`; a write only when the version changed).
+- **Machine records** are written by every migrating command whose local
+  migration succeeded (none failed, nothing too new; a lenient read of each
+  fleet.toml's `[machines]`; a write only when the version changed). A
+  record says the newest nimitz that ran, not the one installed now: a
+  machine downgraded after 0.5 keeps its 0.5 record (doctor cannot tell),
+  and a machine where only the hook runs (no nimitz command) is never
+  recorded.
+- **One migration at a time.** The local run holds `S/migrate.lock` and
+  checks the manifest again once it has it (a command that waited finds the
+  work done). A backup is written from the bytes the step read and never
+  replaces one that is there (a hard link from a temp file, else
+  `create_new`); a file another writer changed under a step is read again,
+  not reported as a failure.
+- **Never empty.** The manifest's mark is not set while any local file is
+  too new (a lost manifest beside a newer registry stops every run, not just
+  the first). And `registry::set_strict` (every nimitz command but `doctor`,
+  the hook and its helpers) makes a registry too new stop the process at
+  its first read, `config.too_new` on stderr, so it is never read as an
+  empty registry that a start would launch fresh sessions from. A manifest
+  entry above what this nimitz knows stops it the same way. Admiralty never
+  writes over an `admiralty-ui.json` whose `format` it does not know, or
+  that does not read.
+- **The lenient stamp** reads `format`/`min_nimitz` from the parsed file, or
+  (a TOML that does not parse) from its lines above the first table, so a
+  newer syntax still says "needs nimitz >= X". A format below 1 is refused
+  ("no format version"), never wrapped into a large one.
+- **Pinned shapes** include one registry record of every `Role` and a
+  squadron of every `Comms` form (exhaustive matches in the test, so a new
+  variant fails to compile there), and the files nimitz writes untyped:
+  `pending`, `inbox-records`, `own-pins`, `ship-lock`, `queues`' queue.json,
+  `legacy` (each through the function that writes it). `REGISTRY_VERSION`
+  and `active::VERSION` are asserted equal to their artifacts' current.
+- **`migrate fleet-skill`** loads the target fleet as every config writer
+  does: refused while a squadron.toml or legacy.toml does not read here.
   The warning's version is the fleet's `min_nimitz`, or 0.5.0 (the first
   nimitz that records itself); its tail is "update it before adding an aide",
   or, for a fleet that holds one, "update it: it cannot load this fleet's
@@ -203,5 +240,8 @@ Where the build differs from, or adds to, the sections above:
   and active guards, `config`'s too-new fleet and squadron. CLI:
   `crates/nimitz/tests/upgrade.rs` (the 0.4.0 install under this build:
   `status`, `check`, `start --plan`; the hook never migrates; a newer
-  nimitz's state; the shared step). Real Claude Code: `e2e_97` in
+  nimitz's state; a too-new registry with the manifest lost or marked; a
+  too-new manifest entry; the shared step), `formats::tests` also two
+  migrations at once and a 0.3.x registry through the lift. e2e_97 also runs
+  the old binary's `status` once on the migrated registry. Real Claude Code: `e2e_97` in
   `crates/nimitz/tests/e2e.rs` (`NIMITZ_E2E=1 NIMITZ_E2E_OLD_BIN=<0.4.0 build>`).
