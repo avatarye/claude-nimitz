@@ -174,7 +174,7 @@ pub fn writable(p: &Path) -> bool {
 
 /// Start `c` outside the caller's lifetime: its own session on Unix (Claude
 /// Code may kill the hook's process group when the hook returns); on Windows
-/// detached from the console, in a new process group, and out of the
+/// with a hidden console of its own, in a new process group, and out of the
 /// caller's job when the job allows it.
 pub fn detach(c: &mut Command) {
     #[cfg(unix)]
@@ -364,11 +364,14 @@ pub(crate) mod win {
     use windows_sys::Win32::System::JobObjects::{IsProcessInJob, JobObjectExtendedLimitInformation, QueryInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_BREAKAWAY_OK};
     use windows_sys::Win32::System::SystemInformation::{ComputerNameDnsHostname, GetComputerNameExW};
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     pub use windows_sys::Win32::System::Threading::CREATE_BREAKAWAY_FROM_JOB;
-    pub const DETACH_FLAGS: u32 = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    /// A hidden console of its own rather than none (`DETACHED_PROCESS`):
+    /// every console program the child starts (the herdr CLI) shares it, where
+    /// with no console each would open, and flash, a window of its own.
+    pub const DETACH_FLAGS: u32 = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP;
 
     /// An open process handle, closed on drop.
     struct Proc(HANDLE);
