@@ -565,12 +565,19 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
   - `inbox.dead` (Warn, fix retry or drop);
   - `inbox.stuck`;
   - `inbox.full`.
-- **Admiralty:**
-  - The staff row sits under its parent with a staff glyph and the depth badge
-    (`3` or `3!` when dead > 0). Enter shows the inbox (items, sender, age,
-    tries, the last reason).
-  - Keys: `a` attaches (`start HOME/@KB -p`), `r` retries and `x` drops a dead
-    item (the user's).
+- **Admiralty** (S2, the user's spec):
+  - A staff row under its parent (in the admiral's box) with an inline queue
+    summary: `KB  idle  · 3 pending · oldest 4m · 1 dead`.
+  - The row's colour by the theme rules: dead letters raise needs-you pink; a
+    backlog over a threshold shows warning yellow; processing shows busy green
+    with the animation.
+  - The detail panel (`w`) shows the queue: pending; claimed (the lease holder
+    and its expiry); done in the last 7 days; dead with reasons; the oldest
+    item's age; per-sender rate-limit state; the last few items (type, sender,
+    age, and the result for a reply type); the actions, retry or drop a dead
+    letter (the user's only).
+  - Keys: `a` attaches (`start HOME/@KB -p`).
+  - Data: `nimitz inbox status --json` (S1), the same summary `status` shows.
 - **The layout-B plan view:** the staff row under its parent in `start` and
   `stop` plans, with its own `why` ("pinned staff; inbox 3 pending").
 
@@ -664,9 +671,9 @@ From the port's commits (7dd6984 .. 0145dfc):
 
 | Phase | What | Tests |
 | --- | --- | --- |
-| S1 | `queue.rs` and the CLI: post, claim, heartbeat, done, fail, list, status, retry, drop; types registry with `wiki.note.v1` and `wiki.query.v1`; locks, leases, dead letters, depth and rate limits, sender detection; request and reply: the reply address, tokens, `inbox result`, `nimitz ask --wait`, delivery at `done` | unit (FIFO under concurrency, lease expiry, at-least-once, caps, rate, who may read a result), sandbox CLI, the role table |
-| S2 | The staff member: `@` ids, `Role::Staff`, `[[staff]]` config and `staff new\|set\|rm`, labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (staff text and the loop) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop |
-| S3 | The doorbell (ring and coalesce), the SessionStart context (with the 15-minute cron request), the piggyback timer, needs-you for dead letters and prompts; Admiralty rows and the inbox panel | sandbox (rings, coalescing, piggyback), notify tests, Admiralty snapshots |
+| S1 | `queue.rs` and the CLI: post, claim, heartbeat, done, fail, list, status, retry, drop; types registry with `wiki.note.v1` and `wiki.query.v1`; locks, leases, dead letters, depth and rate limits, sender detection; request and reply: the reply address, tokens, `inbox result`, `nimitz ask --wait`, delivery at `done`; `inbox status --json`, the structured summary Admiralty and `status` read | unit (FIFO under concurrency, lease expiry, at-least-once, caps, rate, who may read a result), sandbox CLI, the role table |
+| S2 | The staff member: `@` ids, `Role::Staff`, `[[staff]]` config and `staff new\|set\|rm`, labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (staff text and the loop); **Admiralty staff rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the staff member exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
+| S3 | The doorbell (ring and coalesce), the SessionStart context (with the 15-minute cron request), the piggyback timer, needs-you for dead letters and prompts | sandbox (rings, coalescing, piggyback), notify tests, Admiralty snapshots |
 | S4 | `HOME/@KB` live: the repo and `ingest-auto` (MYCC_DEV), the brief, the git-commit idempotency | real-CC e2e on a throwaway repo: post -> commit; kill mid-item -> one commit only; `/clear` -> drains again |
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
 | S5 | Other parents (`always_on`, ring-to-start) | sandbox |
