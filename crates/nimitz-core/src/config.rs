@@ -233,12 +233,18 @@ pub fn load_fleet(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
 
 /// The fleet, for a config change: refuses while any of its squadron.toml files
 /// does not parse (a rewrite could drop or overwrite what is in it).
-fn load_fleet_for_write(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
+/// A legacy.toml a newer nimitz wrote is refused the same way (a writer of
+/// the fleet may rewrite it).
+pub(crate) fn load_fleet_for_write(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
     let f = load_fleet(env, fleet)?;
-    match unreadable_squadrons(&f).into_iter().next() {
-        Some((_, _, i)) => Err(i),
-        None => Ok(f),
+    if let Some((_, _, i)) = unreadable_squadrons(&f).into_iter().next() {
+        return Err(i);
     }
+    let legacy = legacy_path(&f);
+    if let Some(Err(t)) = std::fs::read_to_string(&legacy).ok().map(|raw| crate::formats::guard_toml("legacy", &legacy, &raw)) {
+        return Err(t.issue(Some(Id::admiral(&f.config.fleet))));
+    }
+    Ok(f)
 }
 
 /// `CLAUDE.md`, `CLAUDE.local.md` and `.claude/CLAUDE.md` in `dir`: every

@@ -131,7 +131,9 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
     let fid = Id::admiral(into);
     let fleet_dir = env.fleet_dir(into);
     let existing = if fleet_dir.join("fleet.toml").is_file() {
-        match config::load_fleet(env, into) {
+        // as every config writer: never over a squadron.toml or legacy.toml
+        // that does not read here (a newer nimitz's, or broken)
+        match config::load_fleet_for_write(env, into) {
             Ok(f) => Some(f),
             Err(i) => {
                 plan.refusals.push(i);
@@ -582,6 +584,29 @@ mod tests {
         for want in ["macbook", "LEAD", "bg_isolation", "no prompt", "does not exist"] {
             assert!(r.contains(want), "missing {want:?} in report:\n{r}");
         }
+    }
+
+    /// An import into a fleet whose squadron.toml or legacy.toml a newer
+    /// nimitz wrote is refused, as every config writer refuses it.
+    #[test]
+    fn an_import_never_writes_over_a_file_for_a_newer_nimitz() {
+        let (td, env) = test_env();
+        let a = td.path().join("old/bolt-fleet");
+        old_fleet(&a, BOLT, None);
+        let (plan, _) = plan_from_fleet_skill(&env, std::slice::from_ref(&a), "MAIN");
+        apply_ok(&env, &plan);
+        let f = config::load_fleet(&env, "MAIN").unwrap();
+        let legacy = config::legacy_path(&f);
+        std::fs::write(&legacy, "min_nimitz = \"99.0.0\"\n[names]\n").unwrap();
+        let (plan, _) = plan_from_fleet_skill(&env, std::slice::from_ref(&a), "MAIN");
+        assert!(plan.refusals.iter().any(|r| r.code == "config.too_new"), "{plan:?}");
+        std::fs::remove_file(&legacy).unwrap();
+        let sq = f.squadrons[0].0.join("squadron.toml");
+        let future = format!("min_nimitz = \"99.0.0\"\n{}", std::fs::read_to_string(&sq).unwrap());
+        std::fs::write(&sq, &future).unwrap();
+        let (plan, _) = plan_from_fleet_skill(&env, &[a], "MAIN");
+        assert!(plan.refusals.iter().any(|r| r.code == "config.too_new"), "{plan:?}");
+        assert_eq!(std::fs::read_to_string(&sq).unwrap(), future);
     }
 
     #[test]

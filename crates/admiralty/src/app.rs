@@ -160,6 +160,9 @@ pub struct App {
     pub page: usize,
     last_g: Option<Instant>,
     last_saved: Option<Saved>,
+    /// the state file is not this Admiralty's to write: a newer one wrote it
+    /// (its `format`), or it does not read; it is left as it is
+    state_kept: bool,
 }
 
 /// A row's name where its context is missing (a toast, a menu title): a
@@ -238,6 +241,7 @@ impl App {
             page: 20,
             last_g: None,
             last_saved: None,
+            state_kept: false,
         };
         app.restore();
         app
@@ -303,11 +307,15 @@ impl App {
 
     fn restore(&mut self) {
         let Some(path) = &self.state_path else { return };
-        let Some(s) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) else { return };
-        // a newer Admiralty's state: not read (this one starts from its defaults)
-        if s.format > nimitz_core::formats::current("admiralty-ui") {
+        let Ok(bytes) = std::fs::read(path) else { return };
+        // its stamp first, leniently: a newer Admiralty's state (or one that
+        // does not read) is neither read nor written over; this one starts
+        // from its defaults and keeps them to itself
+        let stamp_ok = nimitz_core::formats::artifact("admiralty-ui").is_some_and(|a| a.guard_file(path, &bytes).is_ok());
+        let Some(s) = serde_json::from_slice::<Saved>(&bytes).ok().filter(|_| stamp_ok) else {
+            self.state_kept = true;
             return;
-        }
+        };
         self.expanded = s.expanded.clone();
         self.filter = s.filter.clone();
         if s.fleet_states.len() == self.fleet_states.len() {
@@ -326,7 +334,7 @@ impl App {
         if self.last_saved.as_ref() == Some(&now) {
             return;
         }
-        let Some(path) = &self.state_path else { return };
+        let Some(path) = self.state_path.as_ref().filter(|_| !self.state_kept) else { return };
         if actions::write_atomic(path, &serde_json::to_vec_pretty(&now).unwrap_or_default()).is_ok() {
             self.last_saved = Some(now);
         }
