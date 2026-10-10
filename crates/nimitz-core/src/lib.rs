@@ -14,6 +14,7 @@ pub mod check;
 pub mod compat;
 pub mod config;
 pub mod env;
+pub mod formats;
 pub mod migrate;
 pub mod os;
 pub mod registry;

@@ -52,6 +52,11 @@ fn file_of(env: &Env, sid: &str) -> Option<PathBuf> {
     (!sid.is_empty() && sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).then(|| dir(env).join(format!("{sid}.json")))
 }
 
+/// A `S/inbox/<session>.json` record: where a session listens.
+pub fn record_value(socket: &str, pid: i64, at: f64) -> serde_json::Value {
+    json!({"socket": socket, "pid": pid, "at": at})
+}
+
 /// SessionStart: session `sid` (process `pid`) listens on `socket`. One file
 /// per session, written through a per-process temp file: hooks of members
 /// that start together never lose each other's record.
@@ -62,7 +67,7 @@ pub fn record(env: &Env, sid: &str, pid: i64, socket: &str) {
     }
     let _ = std::fs::create_dir_all(dir(env));
     let tmp = f.with_extension(format!("json.tmp{}", std::process::id()));
-    if std::fs::write(&tmp, json!({"socket": socket, "pid": pid, "at": crate::evidence::now()}).to_string()).is_ok() {
+    if std::fs::write(&tmp, record_value(socket, pid, crate::evidence::now()).to_string()).is_ok() {
         let _ = std::fs::rename(&tmp, &f);
     }
     // records of sessions whose socket is gone

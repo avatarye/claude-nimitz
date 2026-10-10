@@ -1,0 +1,63 @@
+format = 1
+min_nimitz = "0.5.0"
+squadron = "ARGOS"
+brief = "SQUADRON.md"
+comms = "open"
+permission_mode = "acceptEdits"
+
+[[ships]]
+name = "CLEAN"
+prompt = "hi"
+prompt_file = "p.md"
+depends_on = ["MAIN/ARGOS/OTHER"]
+
+[ships.dirs]
+work = "managed"
+
+[ships.permission_mode]
+work = "plan"
+
+# ---
+format = 1
+min_nimitz = "0.5.0"
+squadron = "ARGOS"
+brief = "SQUADRON.md"
+comms = "commodore-only"
+permission_mode = "acceptEdits"
+
+[[ships]]
+name = "CLEAN"
+prompt = "hi"
+prompt_file = "p.md"
+depends_on = ["MAIN/ARGOS/OTHER"]
+
+[ships.dirs]
+work = "managed"
+
+[ships.permission_mode]
+work = "plan"
+
+# ---
+format = 1
+min_nimitz = "0.5.0"
+squadron = "ARGOS"
+brief = "SQUADRON.md"
+permission_mode = "acceptEdits"
+
+[comms]
+allow = [
+    "MAIN/ARGOS/CLEAN",
+    "MAIN/BOREAL",
+]
+
+[[ships]]
+name = "CLEAN"
+prompt = "hi"
+prompt_file = "p.md"
+depends_on = ["MAIN/ARGOS/OTHER"]
+
+[ships.dirs]
+work = "managed"
+
+[ships.permission_mode]
+work = "plan"

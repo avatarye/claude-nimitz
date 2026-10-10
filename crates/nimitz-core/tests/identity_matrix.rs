@@ -605,8 +605,9 @@ fn a_v1_registry_migrates_on_first_load_and_the_file_is_kept_on_the_first_write(
     }
     std::fs::write(&p, v.to_string()).unwrap();
     // a read migrates in memory and writes nothing
+    // (version 2 in memory: the 2 -> 3 step is the formats runner's, with its backup)
     let r = registry::load(&w.env);
-    assert_eq!(r.version, REGISTRY_VERSION);
+    assert_eq!(r.version, 2);
     let rec = &r.identities[&id.0];
     assert_eq!((rec.job.as_deref(), rec.session.as_deref()), (Some(job.as_str()), Some(sid.as_str())));
     assert_eq!(rec.lineage[0].job.as_deref(), Some(job.as_str()));

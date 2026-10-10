@@ -1,0 +1,8 @@
+{
+  "ab12cd34": {
+    "version": 5,
+    "at": 1.5,
+    "session_id": "s1",
+    "via": "SessionStart"
+  }
+}

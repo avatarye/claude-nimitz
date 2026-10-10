@@ -1,0 +1,23 @@
+fleet = "MAIN"
+
+[machines.sandbox]
+hostname = "sandbox-host"
+os = "linux"
+
+[admiral]
+
+[[aide]]
+name = "KB"
+model = "sonnet"
+
+[aide.dirs]
+sandbox = "@@BASE@@/dirs/main/kb"
+
+[aide.inbox]
+types = ["wiki.note.v1"]
+policy = "open"
+depth_cap = 500
+per_sender = "60/h"
+lease = "15m"
+max_tries = 3
+keep_done = "7d"

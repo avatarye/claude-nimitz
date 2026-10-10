@@ -161,6 +161,14 @@ pub struct AdmiralDef {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FleetConfig {
+    /// the file's format (`formats`; absent = 1): a fleet that holds
+    /// `[[aide]]` is format 2 (`nimitz migrate --shared --yes` stamps it)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<u32>,
+    /// the oldest nimitz that may read the file (`formats::guard`: a newer
+    /// one is refused before the strict parse)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_nimitz: Option<String>,
     pub fleet: String,
     #[serde(default)]
     pub machines: BTreeMap<String, MachineDef>,
@@ -280,6 +288,13 @@ pub struct ShipDef {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SquadronConfig {
+    /// the file's format (`formats`; absent = 1)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<u32>,
+    /// the oldest nimitz that may read the file (`formats::guard`: a newer
+    /// one is refused before the strict parse)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_nimitz: Option<String>,
     pub squadron: String,
     #[serde(default)]
     pub brief: Option<String>,
@@ -344,12 +359,20 @@ pub struct IdentityRecord {
     pub extra: BTreeMap<String, serde_json::Value>,
 }
 
-/// The registry format this nimitz writes.
-pub const REGISTRY_VERSION: u32 = 2;
+/// The registry format this nimitz writes (`formats`: 2 -> 3 in 0.5.0).
+pub const REGISTRY_VERSION: u32 = 3;
+
+/// The oldest nimitz that reads a registry of `REGISTRY_VERSION` (role
+/// `aide`): stamped with it, and by the `registry` 2 -> 3 step.
+pub const REGISTRY_MIN_NIMITZ: &str = "0.5.0";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Registry {
     pub version: u32,
+    /// the oldest nimitz that may read the file (`formats::guard`); a 0.4.x
+    /// registry has none
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_nimitz: Option<String>,
     pub machine: String,
     /// when it was last written (epoch seconds): `status` replays SessionStart
     /// lines newer than this (plan-v4 section 3)

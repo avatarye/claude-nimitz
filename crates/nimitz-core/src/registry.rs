@@ -23,10 +23,33 @@ pub fn load(env: &Env) -> Registry {
 /// fresh registry for the read-only callers; `update` refuses to write over
 /// it (`read_registry`). What a reader gets is this home's view: the
 /// bindings of another home are stripped in memory (`drop_other_homes`).
+///
+/// A registry a newer nimitz wrote is never an empty one: under
+/// `set_strict` (every nimitz command that may launch or write) the process
+/// stops there with the `config.too_new` line; elsewhere (the hook, Admiralty,
+/// doctor) the reader gets an empty view and every write is refused.
 fn load_with(env: &Env, locked: bool) -> (Registry, bool) {
-    let Loaded { mut r, v1, .. } = load_checked(env, locked).unwrap_or_else(|_| Loaded { r: fresh(env), v1: false, dirty: false });
+    let Loaded { mut r, v1, .. } = load_checked(env, locked).unwrap_or_else(|_| {
+        if let Some(t) = std::fs::read_to_string(env.registry_path()).ok().and_then(|raw| too_new(env, &raw)) {
+            if STRICT.load(std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("[ERROR] {t} (config.too_new)");
+                eprintln!("[ERROR] nimitz {} stops: it never reads this registry as an empty one (a start would launch fresh sessions); `nimitz doctor` lists what a newer nimitz wrote here", crate::formats::NIMITZ);
+                std::process::exit(1);
+            }
+        }
+        Loaded { r: fresh(env), v1: false, dirty: false }
+    });
     drop_other_homes(env, &mut r);
     (r, v1)
+}
+
+static STRICT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Make a registry too new for this nimitz stop the process at its first
+/// read (`load`), never read as empty. Set by the nimitz command line for
+/// every command but the hook, its helpers and `doctor`.
+pub fn set_strict(on: bool) {
+    STRICT.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// What a load found. `v1`: the file is a 0.3.x one. `dirty`: the shape in
@@ -56,6 +79,9 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<Loaded> {
             None => fresh(env),
         },
         Err(e) => return Err(std::io::Error::new(e.kind(), format!("registry {}: {e}", env.registry_path().display()))),
+        // a registry a newer nimitz wrote is refused, never "recovered" as
+        // corrupt: it is not read further and never written over
+        Ok(raw) if too_new(env, &raw).is_some() => return Err(std::io::Error::other(too_new(env, &raw).map(|t| t.to_string()).unwrap_or_default())),
         Ok(raw) => match parse(&raw) {
             Ok(r) => r,
             Err(_) => {
@@ -71,7 +97,7 @@ fn load_checked(env: &Env, locked: bool) -> std::io::Result<Loaded> {
             }
         },
     };
-    let v1 = r.version < REGISTRY_VERSION;
+    let v1 = r.version < 2;
     // A 0.3.x registry: its tender identities become history (plan-v4 section
     // 8) and `current` becomes `session` with the job filled from the job rows
     // (section 2). A read never writes; the next `update` saves the v2 shape
@@ -161,7 +187,20 @@ fn drop_other_homes(env: &Env, r: &mut Registry) {
 }
 
 fn fresh(env: &Env) -> Registry {
-    Registry { version: REGISTRY_VERSION, machine: env.hostname.clone(), ..Default::default() }
+    Registry { version: REGISTRY_VERSION, min_nimitz: Some(REGISTRY_MIN_NIMITZ.into()), machine: env.hostname.clone(), ..Default::default() }
+}
+
+/// The registry text is too new for this nimitz (`formats::guard`: a
+/// `version` above `REGISTRY_VERSION`, or a `min_nimitz` above this nimitz).
+pub fn too_new(env: &Env, raw: &str) -> Option<crate::formats::TooNew> {
+    crate::formats::guard_json_bytes("registry", &env.registry_path(), raw.as_bytes(), "version").err()
+}
+
+/// The `registry` artifact's lift (`formats`): a 0.3.x (v1) file read and
+/// saved as version 2 by the load that has always read it (`registry.json.v1`
+/// keeps the old file).
+pub fn lift_v1(env: &Env) -> Result<(), String> {
+    update(env, |_| ()).map_err(|e| e.to_string())
 }
 
 fn parse_file(p: &Path) -> Option<Registry> {
@@ -276,6 +315,10 @@ fn recover_locked(env: &Env) -> Registry {
         return r;
     }
     let (mut r, what) = rebuild(env);
+    // a file a newer nimitz wrote (meanwhile) is not corrupt: never moved aside
+    if std::fs::read_to_string(env.registry_path()).ok().is_some_and(|raw| too_new(env, &raw).is_some()) {
+        return r;
+    }
     let ts = crate::evidence::now() as u64;
     let kept = env.state.join(format!("registry.json.corrupt-{ts}"));
     if std::fs::rename(env.registry_path(), &kept).is_err() {
@@ -340,7 +383,7 @@ pub fn health(env: &Env) -> Vec<Issue> {
             id: None,
         });
     }
-    if let Some(r) = std::fs::read_to_string(&reg).ok().and_then(|raw| parse(&raw).ok()).filter(|r| !r.unknown.records.is_empty()) {
+    if let Some(r) = std::fs::read_to_string(&reg).ok().filter(|raw| too_new(env, raw).is_none()).and_then(|raw| parse(&raw).ok()).filter(|r| !r.unknown.records.is_empty()) {
         out.push(Issue {
             code: "registry.unknown".into(),
             severity: Severity::Warn,
@@ -354,7 +397,9 @@ pub fn health(env: &Env) -> Vec<Issue> {
             id: None,
         });
     }
-    if std::fs::read_to_string(&reg).is_ok_and(|raw| parse(&raw).is_err()) {
+    if std::fs::read_to_string(&reg).is_ok_and(|raw| too_new(env, &raw).is_some()) {
+        // `formats::issues` says it (config.too_new): not corrupt, not this nimitz's to read
+    } else if std::fs::read_to_string(&reg).is_ok_and(|raw| parse(&raw).is_err()) {
         out.push(Issue {
             code: "registry.corrupt".into(),
             severity: Severity::Error,
@@ -400,6 +445,9 @@ pub fn machine_label(env: &Env) -> Option<String> {
 /// identity the file has is refused.
 pub fn save(env: &Env, r: &Registry) -> std::io::Result<()> {
     let _lock = lock(env)?;
+    if let Some(t) = std::fs::read_to_string(env.registry_path()).ok().and_then(|raw| too_new(env, &raw)) {
+        return Err(std::io::Error::other(t.to_string()));
+    }
     let on_disk = parse_file(&env.registry_path()).map(|cur| cur.identities.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
     refuse_shrink(env, &on_disk, r)?;
     write_unlocked(env, &mut r.clone())
@@ -808,6 +856,37 @@ mod tests {
         std::fs::create_dir_all(&env.state).unwrap();
         std::fs::write(env.registry_path(), "{not json").unwrap();
         assert!(load(&env).identities.is_empty());
+    }
+
+    #[test]
+    fn a_too_new_registry_is_refused_and_never_moved_aside() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        // a newer nimitz's registry, in a shape this one could not parse either
+        let raw = serde_json::json!({"version": REGISTRY_VERSION + 1, "min_nimitz": "99.0.0", "machine": "m", "identities": "a shape of the future"}).to_string();
+        std::fs::write(env.registry_path(), &raw).unwrap();
+        assert!(load(&env).identities.is_empty(), "a reader gets nothing of it");
+        let e = update(&env, |r| r.machine = "x".into()).unwrap_err();
+        assert!(e.to_string().contains("needs nimitz >= 99.0.0 (this machine runs"), "{e}");
+        assert!(save(&env, &fresh(&env)).is_err());
+        assert_eq!(std::fs::read_to_string(env.registry_path()).unwrap(), raw, "never written over");
+        let names: Vec<String> = std::fs::read_dir(&env.state).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert!(!names.iter().any(|n| n.contains("corrupt")), "never moved aside as corrupt: {names:?}");
+        assert!(!health(&env).iter().any(|i| i.code.starts_with("registry.")), "{:?}", health(&env));
+        assert!(crate::formats::issues(&env).iter().any(|i| i.code == "config.too_new" && i.message.contains("needs nimitz >= 99.0.0")));
+        // a version above this nimitz's alone is refused the same way
+        std::fs::write(env.registry_path(), serde_json::json!({"version": REGISTRY_VERSION + 1, "machine": "m"}).to_string()).unwrap();
+        assert!(update(&env, |_| ()).unwrap_err().to_string().contains("is format 4"));
+        // equal, or absent: read and written as before
+        for min in [Some(crate::formats::NIMITZ), None] {
+            let mut v = serde_json::json!({"version": REGISTRY_VERSION, "machine": "m", "identities": {}});
+            if let Some(m) = min {
+                v["min_nimitz"] = m.into();
+            }
+            std::fs::write(env.registry_path(), v.to_string()).unwrap();
+            update(&env, |r| r.machine = "y".into()).unwrap();
+            assert_eq!(load(&env).machine, "y");
+        }
     }
 
     #[test]

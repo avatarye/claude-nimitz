@@ -1,0 +1,7 @@
+fleet = "LAYOUT"
+
+[machines.sandbox]
+hostname = "sandbox-host"
+os = "linux"
+
+[admiral]

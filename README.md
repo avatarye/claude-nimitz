@@ -142,7 +142,14 @@ its folder and never `push`.
 **Update every machine first.** A nimitz before 0.5.0 that shares the fleet
 folder cannot load a fleet.toml holding `[[aide]]`, and reads a registry
 that holds an aide as corrupt (it moves it aside). Update every machine to
-0.5.0 before you add an aide, and do not go back below 0.5.0 after one ran.
+0.5.0 before you add an aide, and do not go back below 0.5.0 after one ran:
+a 0.4.x on the migrated registry moves it aside when it holds an aide, and
+otherwise rewrites it without the `min_nimitz` stamp (an early 0.4.0 build
+also without each lineage entry's `home`, which keeps two homes' bindings apart).
+`nimitz doctor` names each machine of the fleet no 0.5.0 was seen on. Once
+the aide is in, `nimitz migrate --shared --yes` stamps fleet.toml
+(`format = 2`, `min_nimitz = "0.5.0"`): a later nimitz that needs more is
+then refused with "update nimitz here" instead of misreading the file.
 
 ### Two rules
 
@@ -169,6 +176,10 @@ that holds an aide as corrupt (it moves it aside). Update every machine to
   - copies or stale rows: `nimitz sweep <id>`;
   - a stowaway (a session in a fleet folder with no labels): `nimitz adopt <session> <id>`, or stop and `rm` it;
   - `tab.resumed` (Herdr reopened a conversation in a pane): `/exit` in that pane, then `nimitz start F`.
+- After an update, the first nimitz command migrates this machine's files by
+  itself (one `[OK] nimitz X: migrated ...` line; the old file kept as
+  `<file>.pre-X`); `nimitz migrate --plan` lists what is due, a shared step
+  included (it affects every machine: update them all first).
 - A lead shows no pane, or a member shows in another's pane (Herdr's hook
   in a background worker claimed the pane the Claude Code daemon was started
   from): after upgrading to 0.5.0, run `nimitz start <F> -f` (a lead:
@@ -182,6 +193,11 @@ that holds an aide as corrupt (it moves it aside). Update every machine to
 
 ### For maintainers
 
+- A change to what a file nimitz owns holds (docs/design/migrations.md): bump
+  its version in `formats::ARTIFACTS`, add the step from the old version (a
+  pure bytes-to-bytes function; shared files only run on `migrate --shared`),
+  add a fixture `crates/nimitz-core/tests/fixtures/formats/<artifact>/vN.*` as
+  the old version wrote it, then `NIMITZ_BLESS=1 cargo test --test formats`.
 - Unit suite: `cargo test --workspace`. Real Claude Code e2e (opt-in, cheap
   model, every test fleet under `~/.cache/nimitz-e2e`):
   `NIMITZ_E2E=1 NIMITZ_E2E_LIVE_FLEETS=HOME,MAIN cargo test -p nimitz --test e2e -- --test-threads=3`.
@@ -226,6 +242,7 @@ authority and messaging.
 | --- | --- |
 | `docs/design/plan-v3.md` | The plan: decisions, vocabulary, setup and CRUD, adapters, compatibility, phases. |
 | `docs/design/cc-control-model.md` | How `nimitz` controls Claude Code sessions along the chain of command. |
+| `docs/design/migrations.md` | Format versions of every file nimitz owns, the chained migrations, the cross-machine guard. |
 | `docs/design/plan-v2.md` | Previous plan (kept for history). |
 | `docs/design/review-identity-and-status.md` | How Claude Code, the old fleet skill and the old watch identify agents; the gaps. |
 | `docs/probes/` | P0 probes: requirements, findings per Claude Code build, comparison. |

@@ -131,7 +131,9 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
     let fid = Id::admiral(into);
     let fleet_dir = env.fleet_dir(into);
     let existing = if fleet_dir.join("fleet.toml").is_file() {
-        match config::load_fleet(env, into) {
+        // as every config writer: never over a squadron.toml or legacy.toml
+        // that does not read here (a newer nimitz's, or broken)
+        match config::load_fleet_for_write(env, into) {
             Ok(f) => Some(f),
             Err(i) => {
                 plan.refusals.push(i);
@@ -236,6 +238,7 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
             comms: Comms::default(),
             permission_mode: None,
             ships,
+            ..Default::default()
         };
         // Already migrated? Identical means nothing to plan; different refuses.
         if let Some(prev) = existing.as_ref().and_then(|f| f.squadrons.iter().find(|(_, s)| s.squadron == sq_name)) {
@@ -269,6 +272,9 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         machines: merge.machines,
         admiral: existing.as_ref().map(|f| f.config.admiral.clone()).unwrap_or_default(),
         aide: existing.as_ref().map(|f| f.config.aide.clone()).unwrap_or_default(),
+        // the stamp the fleet carries already (a merge never lowers it)
+        format: existing.as_ref().and_then(|f| f.config.format),
+        min_nimitz: existing.as_ref().and_then(|f| f.config.min_nimitz.clone()),
     };
     if existing.as_ref().map(|f| f.config != fleet_config).unwrap_or(true) {
         plan.steps.push(step_write(Some(fid.clone()), &fleet_dir.join("fleet.toml"), toml_out(&fleet_config), "merged machine labels"));
@@ -375,7 +381,7 @@ pub fn retire_tenders(r: &mut Registry) -> usize {
 /// is written); the next `update` saves the v2 shape and keeps the old file as
 /// `registry.json.v1`. Returns whether anything changed.
 pub fn registry_v2(env: &Env, r: &mut Registry) -> bool {
-    if r.version >= REGISTRY_VERSION {
+    if r.version >= 2 {
         return false;
     }
     let jobs = job_rows(env);
@@ -390,7 +396,9 @@ pub fn registry_v2(env: &Env, r: &mut Registry) -> bool {
             }
         }
     }
-    r.version = REGISTRY_VERSION;
+    // version 2: the chain's next step (`formats`, 2 -> 3) is the runner's,
+    // with its backup; a load never moves a file past the shape it read
+    r.version = 2;
     true
 }
 
@@ -576,6 +584,29 @@ mod tests {
         for want in ["macbook", "LEAD", "bg_isolation", "no prompt", "does not exist"] {
             assert!(r.contains(want), "missing {want:?} in report:\n{r}");
         }
+    }
+
+    /// An import into a fleet whose squadron.toml or legacy.toml a newer
+    /// nimitz wrote is refused, as every config writer refuses it.
+    #[test]
+    fn an_import_never_writes_over_a_file_for_a_newer_nimitz() {
+        let (td, env) = test_env();
+        let a = td.path().join("old/bolt-fleet");
+        old_fleet(&a, BOLT, None);
+        let (plan, _) = plan_from_fleet_skill(&env, std::slice::from_ref(&a), "MAIN");
+        apply_ok(&env, &plan);
+        let f = config::load_fleet(&env, "MAIN").unwrap();
+        let legacy = config::legacy_path(&f);
+        std::fs::write(&legacy, "min_nimitz = \"99.0.0\"\n[names]\n").unwrap();
+        let (plan, _) = plan_from_fleet_skill(&env, std::slice::from_ref(&a), "MAIN");
+        assert!(plan.refusals.iter().any(|r| r.code == "config.too_new"), "{plan:?}");
+        std::fs::remove_file(&legacy).unwrap();
+        let sq = f.squadrons[0].0.join("squadron.toml");
+        let future = format!("min_nimitz = \"99.0.0\"\n{}", std::fs::read_to_string(&sq).unwrap());
+        std::fs::write(&sq, &future).unwrap();
+        let (plan, _) = plan_from_fleet_skill(&env, &[a], "MAIN");
+        assert!(plan.refusals.iter().any(|r| r.code == "config.too_new"), "{plan:?}");
+        assert_eq!(std::fs::read_to_string(&sq).unwrap(), future);
     }
 
     #[test]

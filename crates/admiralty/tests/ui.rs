@@ -1221,6 +1221,27 @@ fn an_open_crew_fold_is_saved_and_loads_again() {
     assert!(crew_rows(&again, &id).contains(&"old audit".to_string()), "{:?}", crew_rows(&again, &id));
 }
 
+/// A state file a newer Admiralty wrote (its `format`), or one that does not
+/// read, is left alone: not read, and never written over.
+#[test]
+fn a_newer_or_unreadable_ui_state_is_never_written_over() {
+    let (b, id) = crew_world();
+    let newer = r#"{"format": 2, "expanded": {}, "filter": "x", "fleet_states": [], "flagged_only": false, "show_stowaways": true, "future": 1}"#;
+    for raw in [newer, "{not json"] {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("ui.json");
+        std::fs::write(&p, raw).unwrap();
+        let ctx = admiralty::actions::Ctx { env: fixtures::demo_env(), mux: Box::new(TestMux::default()), live: false, exit_after_jump: false };
+        let mut app = admiralty::app::App::new(ctx, Some(p.clone()), true);
+        app.fixed_now = Some(fixtures::NOW);
+        app.apply(b.clone());
+        goto(&mut app, &format!("M:{id}"));
+        press(&mut app, KeyCode::Char('z'));
+        app.persist();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), raw);
+    }
+}
+
 /// A member with no crew older than the window has no fold: `z` says so and
 /// changes nothing (the member stays as it was).
 #[test]

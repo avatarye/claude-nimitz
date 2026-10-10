@@ -1,0 +1,4 @@
+squadron = "BOREAL"
+brief = "SQUADRON.md"
+comms = "commodore-only"
+ships = []

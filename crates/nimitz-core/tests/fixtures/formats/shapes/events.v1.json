@@ -1,0 +1,21 @@
+{
+  "ts": 1.5,
+  "event": "SessionStart",
+  "session_id": "s1",
+  "source": "startup",
+  "reason": "r",
+  "agent_id": "a",
+  "agent_type": "t",
+  "tool_name": "SendMessage",
+  "to": "x",
+  "pid": 42,
+  "labels": {
+    "NIMITZ_ID": "MAIN"
+  },
+  "rules": 5,
+  "job": "ab12cd34",
+  "kind": "bg",
+  "entrypoint": "cli",
+  "binding": "bound",
+  "cwd": "/w"
+}

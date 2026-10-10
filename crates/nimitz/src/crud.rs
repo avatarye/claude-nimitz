@@ -369,11 +369,116 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
 
 /// `nimitz migrate fleet-skill <dir...> --into <F>`: plan by default; `--yes` applies.
 /// Steps that would change nothing are dropped, so a second run is a no-op.
+/// `nimitz migrate --plan|--yes [--shared]`: every format step due here
+/// (docs/design/migrations.md section 4); `--yes` runs the local ones, and
+/// with `--shared` the shared ones (they affect every machine that reads the
+/// data root). `nimitz migrate fleet-skill <dir...> --into <F>`: the import
+/// of old fleet-skill fleets. Both are yours alone, like `init`.
 pub fn migrate(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--into"])?;
-    if ctx.args.need(0, "source (fleet-skill)")? != "fleet-skill" {
-        return Err("only `migrate fleet-skill` exists".into());
+    if ctx.caller != Caller::User {
+        let plan = Plan {
+            summary: "migrate".into(),
+            refusals: vec![refusal("authority", "`nimitz migrate` is yours alone (it rewrites this machine's files, and with --shared the data root of every machine); ask the user".into(), None, None)],
+            ..Default::default()
+        };
+        return Ok(match ctx.gate(&plan) {
+            out::Go::Exit(c) => c.max(1),
+            out::Go::Run => 1,
+        });
     }
+    match ctx.args.pos.first().map(String::as_str) {
+        Some("fleet-skill") => fleet_skill(ctx),
+        Some(other) => Err(format!("migrate {other}: use `migrate --plan|--yes [--shared]` or `migrate fleet-skill <dir...> --into <F>`")),
+        None => formats(ctx),
+    }
+}
+
+/// The format steps due here: listed (`--plan`, `--json`), or run (`--yes`).
+fn formats(ctx: &Ctx) -> Result<i32, String> {
+    use nimitz_core::formats::{self, Scope};
+    ctx.args.allow(&["--shared"])?;
+    let shared = ctx.args.flag("--shared");
+    let due = formats::due(&ctx.env, formats::ARTIFACTS, None);
+    let shown: Vec<&formats::Due> = due.iter().filter(|d| !d.silent).collect();
+    let too_new = formats::too_new(&ctx.env);
+    if out::json_mode() {
+        out::json(&serde_json::json!({"nimitz": formats::NIMITZ, "due": due, "too_new": too_new.iter().map(|t| t.to_string()).collect::<Vec<_>>()}));
+    } else {
+        print_due(&shown);
+        for t in &too_new {
+            out::error(&t.to_string());
+        }
+    }
+    let bookkeeping = due.iter().any(|d| d.silent);
+    if ctx.plan_only() {
+        return Ok(if too_new.is_empty() { 0 } else { 1 });
+    }
+    let runs = |d: &&formats::Due| d.scope == Scope::Local || shared;
+    if !shown.iter().any(runs) && !bookkeeping {
+        if shown.iter().any(|d| d.scope == Scope::Shared) && !out::json_mode() {
+            out::line("the shared steps run with `nimitz migrate --shared --yes` (each machine needs the nimitz they name first)");
+        }
+        return Ok(if too_new.is_empty() { 0 } else { 1 });
+    }
+    if !ctx.yes() {
+        out::error(&format!("pass --yes to run {}, or --plan to only list them", if shared { "the local and the shared steps" } else { "the local steps" }));
+        return Ok(1);
+    }
+    let mut ran = formats::run(&ctx.env, formats::ARTIFACTS, Scope::Local);
+    if shared {
+        let s = formats::run(&ctx.env, formats::ARTIFACTS, Scope::Shared);
+        ran.done.extend(s.done);
+        ran.failed.extend(s.failed);
+        ran.backups.extend(s.backups);
+        ran.too_new.extend(s.too_new);
+    }
+    for d in ran.done.iter().filter(|d| !d.silent) {
+        out::ok(&format!("{} {}->{} {}", d.artifact, d.from, d.to, d.file.display()));
+    }
+    for b in &ran.backups {
+        out::line(&format!("       backup: {}", b.display()));
+    }
+    for (d, e) in &ran.failed {
+        out::error(&format!("{} {}->{} {}: {e} (the file is as it was; log: {})", d.artifact, d.from, d.to, d.file.display(), formats::log_path(&ctx.env).display()));
+    }
+    let left = formats::due(&ctx.env, formats::ARTIFACTS, None).into_iter().filter(|d| !d.silent).count();
+    if ran.failed.is_empty() {
+        out::ok(&format!("migrate: done{}", if left > 0 { format!(" ({left} shared step(s) left for `nimitz migrate --shared --yes`)") } else { String::new() }));
+        Ok(0)
+    } else {
+        Ok(1)
+    }
+}
+
+/// The steps due, one line each; a shared one says it affects every machine.
+fn print_due(due: &[&nimitz_core::formats::Due]) {
+    use nimitz_core::formats::{self, Scope};
+    if due.is_empty() {
+        out::ok(&format!("nimitz {}: nothing to migrate (every file here is at the format this nimitz writes)", formats::NIMITZ));
+        return;
+    }
+    out::line(&format!("nimitz {}: {} step(s) due", formats::NIMITZ, due.len()));
+    for d in due {
+        let every = match (d.scope, d.min_nimitz) {
+            (Scope::Shared, Some(m)) => format!("; affects every machine: each one needs nimitz >= {m} first"),
+            (Scope::Shared, None) => "; affects every machine".into(),
+            _ => String::new(),
+        };
+        out::line(&format!("  {:<6}  {} {}->{}  {}", d.scope.as_str(), d.artifact, d.from, d.to, d.file.display()));
+        out::line(&format!("          {}{every}", d.summary));
+    }
+    let (local, shared) = (due.iter().any(|d| d.scope == Scope::Local), due.iter().any(|d| d.scope == Scope::Shared));
+    let hint = match (local, shared) {
+        (true, true) => "--yes runs the local steps; --shared --yes the shared ones too",
+        (true, false) => "--yes runs them (so does the next nimitz command, by itself)",
+        _ => "--shared --yes runs them, once every machine runs the nimitz they name",
+    };
+    out::line(&format!("nimitz migrate {hint}"));
+}
+
+/// `nimitz migrate fleet-skill <dir...> --into <F>`.
+fn fleet_skill(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&["--into"])?;
     let into = ctx.args.value("--into").ok_or("migrate needs --into <F>")?;
     let dirs: Vec<PathBuf> = ctx.args.pos[1..].iter().map(PathBuf::from).collect();
     if dirs.is_empty() {

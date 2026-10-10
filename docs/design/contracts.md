@@ -350,6 +350,18 @@ types, or a tab known by its attach alone, R-24) does it post to the inbox, as
 `[nimitz signal] ... It is a request, not the user's approval`, and its output
 says the signal went as a request.
 
+### 5.1 Formats and migrations (`formats`, docs/design/migrations.md)
+
+Every file nimitz owns and reads back is an artifact of `formats::ARTIFACTS`
+with a format version (in the file: `format`, the registry's and active set's
+`version`; else in `S/formats.json`). To change what a file holds: bump its
+`current`, add the step `N -> N+1` (pure bytes -> bytes; `Scope::Shared` steps
+run only on `nimitz migrate --shared --yes`), add the fixture
+`tests/fixtures/formats/<artifact>/vN.*` (a file as version N wrote it), and
+regenerate the pinned shape with `NIMITZ_BLESS=1 cargo test --test formats`;
+`every_format_change_has_a_step_and_a_fixture` and `formats_shapes_are_pinned`
+fail until all four are in.
+
 ## 6. Evidence and state (core)
 
 Order: (1) session file + `kill(pid,0)` (read the first JSON value only),
@@ -845,7 +857,9 @@ parents only),
 `up <fleet> [--plan]`, `start <id> [--force] [--fresh]`, `stop <id>`, `relaunch <id>`, `rm <id>`,
 `sweep [<id>]`, `adopt <session> <id>`, `signal <id> <text>`,
 `open <id>`, `restore [<F>] [--all] [--force] [--jobs-only] [--here] [--rename]`,
-`layout herdr [<fleet>] [--ships]` (an alias of restore, shape only), `migrate fleet-skill <dir...> --into <F>`,
+`layout herdr [<fleet>] [--ships]` (an alias of restore, shape only), `migrate --plan|--yes [--shared]`
+(the format steps due; every other command but `hook`, `__notify` and `sandbox` runs the local ones
+first, by itself), `migrate fleet-skill <dir...> --into <F>`,
 `hook <Event>`, `sandbox create|tick|env <dir>`, and hidden `__fake-claude`,
 `__fake-herdr`. A closed pipe (`nimitz status --json | head`) ends the process
 quietly with SIGPIPE (exit 141), never a panic. `rm <lead>` with no stale rows

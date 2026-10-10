@@ -311,6 +311,8 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
         out.extend(crate::config::home_layout(env));
     }
     out.extend(crate::registry::health(env));
+    // this machine's files a newer nimitz wrote; a migration step that failed
+    out.extend(crate::formats::issues(env));
     // needs-you notices that never reached the commodore
     out.extend(crate::notify::issues(env).into_iter().filter(|i| scoped(i)));
     // briefs an older nimitz wrote; live sessions on older rules

@@ -28,6 +28,8 @@
 //!
 //! Run: `NIMITZ_E2E=1 NIMITZ_E2E_LIVE_FLEETS=HOME,MAIN,ADMIRALTY cargo test -p nimitz --test e2e -- --test-threads=3`
 //! (the fleets the guard watches; unset, every fleet that is not `NIMITZ_E2E*`).
+//! The update case (#97) also needs `NIMITZ_E2E_OLD_BIN` (a 0.4.0 `nimitz`
+//! build): `NIMITZ_E2E=1 NIMITZ_E2E_OLD_BIN=<path> cargo test -p nimitz --test e2e e2e_97`.
 //! The slow cases (#6 crash window, #7 lead attach) are marked.
 // Unix only for now: the real-Claude wrappers here are `#!/bin/sh` scripts.
 #![cfg(unix)]
@@ -132,6 +134,9 @@ struct E2e {
     pins_before: Vec<String>,
     /// set at the end of a passing test: the folder is removed
     done: Cell<bool>,
+    /// the nimitz the commands, the hooks and the members' PATH run: this
+    /// build, or (the upgrade case) an older one first (`use_bin`)
+    bin: std::cell::RefCell<String>,
 }
 
 impl E2e {
@@ -172,6 +177,7 @@ impl E2e {
             live_before: BTreeMap::new(),
             pins_before: vec![],
             done: Cell::new(false),
+            bin: std::cell::RefCell::new(EXE.to_string()),
         };
         w.live_before = w.live_fleet();
         w.pins_before = w.pins();
@@ -206,8 +212,16 @@ impl E2e {
         (o.status.code().unwrap_or(-1), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
     }
 
+    /// Run `bin` from now on: the commands, the hooks of the member folders
+    /// written after this (`settings`), and the members' `nimitz` on PATH.
+    fn use_bin(&self, bin: &str) {
+        *self.bin.borrow_mut() = bin.to_string();
+        executable(&self.base.join("bin").join("nimitz"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{bin}' \"$@\"\n", self.base.join("nimitz-calls.log").display()));
+    }
+
     fn nz_cmd(&self) -> Command {
-        let mut c = self.scrubbed(EXE);
+        let bin = self.bin.borrow().clone();
+        let mut c = self.scrubbed(&bin);
         let b = |x: &str| self.base.join(x).to_string_lossy().into_owned();
         c.env("NIMITZ_HOME", b("nimitz"))
             .env("NIMITZ_STATE", b("state"))
@@ -257,7 +271,8 @@ impl E2e {
         // `command` + `args`, as the plugin's hooks.json: Claude Code then runs
         // the hook directly, so its parent pid (the session file's name) is
         // the Claude Code process; a command string runs through `sh -c`
-        let one = |e: &str| json!([{"hooks": [{"type": "command", "command": EXE, "args": ["hook", e], "timeout": 5}]}]);
+        let exe = self.bin.borrow().clone();
+        let one = |e: &str| json!([{"hooks": [{"type": "command", "command": exe, "args": ["hook", e], "timeout": 5}]}]);
         let mut hooks = serde_json::Map::new();
         for e in ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "SubagentStart", "SubagentStop", "PermissionRequest"] {
             hooks.insert(e.into(), one(e));
@@ -265,8 +280,8 @@ impl E2e {
         hooks.insert(
             "PreToolUse".into(),
             json!([
-                {"matcher": "SendMessage", "hooks": [{"type": "command", "command": EXE, "args": ["hook", "PreToolUse"], "timeout": 5}]},
-                {"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": EXE, "args": ["hook", "PreToolUse"], "timeout": 5}]}
+                {"matcher": "SendMessage", "hooks": [{"type": "command", "command": exe, "args": ["hook", "PreToolUse"], "timeout": 5}]},
+                {"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": exe, "args": ["hook", "PreToolUse"], "timeout": 5}]}
             ]),
         );
         // NIMITZ_MUX=none and no HERDR_ENV: a daemon-respawned worker inherits
@@ -635,7 +650,7 @@ fn e2e_01_launch_binds_job_and_session_and_delivers_rules() {
     assert_eq!(m["session"]["labels"]["NIMITZ_ID"], w.ship());
     // the registry: the job is the anchor, the session the conversation now
     let r = w.registry();
-    assert_eq!(r["version"], 2);
+    assert_eq!(r["version"], nimitz_core::REGISTRY_VERSION, "a fresh registry is at the current format");
     let me = &r["identities"][w.ship()];
     assert_eq!(me["job"], job.as_str(), "{me}");
     assert_eq!(me["session"], sid.as_str());
@@ -1775,5 +1790,85 @@ fn e2e_trust_lets_a_background_job_start_in_an_untrusted_repo() {
     println!("after: exit {code}: {out}");
     assert_eq!(code, 0, "{out}");
     w.wait(60, || (!w.jobs_in(&repo).is_empty()).then_some(())).unwrap_or_else(|| panic!("a job in the repo:\n{out}"));
+    w.finish();
+}
+
+/// An update from nimitz 0.4 (`NIMITZ_E2E_OLD_BIN`: a 0.4.0 build; gated on
+/// it as well as `NIMITZ_E2E=1`): the old binary creates the fleet and the
+/// ship, and starts it (its hooks bind it); then this build, as if the user
+/// updated the binary on PATH: its `status` migrates (the one line), shows
+/// the ship live on the same job and session with the same lineage, and
+/// `start <ship> -f` relaunches it into the same conversation.
+#[test]
+fn e2e_97_an_update_from_0_4_migrates_and_the_ship_lives_on() {
+    if !gated() {
+        return;
+    }
+    let Some(old) = std::env::var("NIMITZ_E2E_OLD_BIN").ok().filter(|p| !p.is_empty()) else {
+        println!("[OK] skipped: set NIMITZ_E2E_OLD_BIN to a 0.4.0 nimitz build");
+        return;
+    };
+    let w = E2e::new(97);
+    w.use_bin(&old);
+    let (_, v) = w.nz(&["--version"]);
+    println!("old binary: {}", v.trim());
+    assert!(v.trim().starts_with("nimitz 0.4."), "NIMITZ_E2E_OLD_BIN is not a 0.4 build: {v}");
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let m = w.start_ship_idle();
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let before = w.registry();
+    assert_eq!(before["version"], 2, "a 0.4 registry: {before}");
+    let lineage = before["identities"][w.ship()]["lineage"].clone();
+    assert!(!w.base.join("state").join("formats.json").exists());
+
+    // the update: this build on PATH and in the member folders' hooks
+    w.use_bin(EXE);
+    for d in [w.ship_dir(), w.fleet_dir().join("admiral"), w.fleet_dir().join("squadrons").join("sq")] {
+        w.settings(&d);
+    }
+    let out = w.ok(&["status"]);
+    println!("{out}");
+    let v = env!("CARGO_PKG_VERSION");
+    assert!(out.contains(&format!("[OK] nimitz {v}: migrated registry 2->3")), "the migration line:\n{out}");
+    let state = w.base.join("state");
+    assert_eq!(read_json(&state.join("formats.json"))["nimitz"], v);
+    assert_eq!(read_json(&state.join(format!("registry.json.pre-{v}")))["version"], 2, "the 0.4 file kept");
+    let after = w.registry();
+    assert_eq!((after["version"].as_u64(), after["min_nimitz"].as_str()), (Some(3), Some("0.5.0")));
+    assert_eq!(after["identities"][w.ship()]["lineage"], lineage, "the lineage as the old binary left it");
+    let again = w.ok(&["status"]);
+    assert!(!again.contains("migrated"), "a second run migrates nothing:\n{again}");
+    let live = w.member(&w.ship()).expect("the ship in status");
+    assert!(!live["session"]["pid"].is_null(), "the ship is live: {live}");
+    assert_eq!((live["session"]["short_id"].as_str(), live["session"]["session_id"].as_str()), (Some(job.as_str()), Some(sid.as_str())), "{live}");
+    let pid = live["session"]["pid"].as_i64();
+    assert!(!w.issue_codes().iter().any(|(c, _)| matches!(c.as_str(), "registry.corrupt" | "lineage.broken" | "config.too_new" | "format.failed")), "{:?}", w.issue_codes());
+
+    // the old binary once more on the migrated (v3) registry, no aides: it
+    // reads it (version 3 is past its own 2, the stamp a key it ignores),
+    // shows the same ship, and moves nothing aside
+    w.use_bin(&old);
+    let (code, out) = w.nz(&["status", "--json"]);
+    assert_eq!(code, 0, "the old binary's status on the v3 registry:\n{out}");
+    let old_view: Value = serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}:\n{out}"));
+    let seen = old_view["fleets"].as_array().into_iter().flatten().flat_map(|f| f["squadrons"].as_array().cloned().unwrap_or_default()).flat_map(|q| q["ships"].as_array().cloned().unwrap_or_default()).find(|m| m["id"] == w.ship().as_str());
+    let seen = seen.unwrap_or_else(|| panic!("the old binary lost the ship:\n{out}"));
+    assert_eq!(seen["session"]["session_id"].as_str(), Some(sid.as_str()), "{seen}");
+    assert!(!std::fs::read_dir(&state).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("corrupt")), "the old binary moved the registry aside");
+    assert_eq!(w.registry()["version"], 3, "the old binary kept the version");
+    w.use_bin(EXE);
+    assert!(!w.ok(&["status"]).contains("migrated"), "the new binary has nothing to migrate after it");
+
+    // the new build relaunches the old build's ship: the same conversation, a new process
+    let out = w.ok(&["start", &w.ship(), "-f", "--yes"]);
+    println!("{out}");
+    let m = w.wait(60, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null() && m["session"]["pid"].as_i64() != pid)).unwrap_or_else(|| panic!("relaunched:\n{out}"));
+    assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "the same conversation: {m}");
+    assert_eq!(m["session"]["labels"]["NIMITZ_ID"], w.ship().as_str(), "{m}");
+    w.wait(120, || w.member(&w.ship()).filter(|m| m["status"] == "Idle")).expect("idle after the relaunch");
+    let r = w.registry();
+    let now = r["identities"][w.ship()]["lineage"].as_array().cloned().unwrap_or_default();
+    assert_eq!(now.first(), lineage.as_array().and_then(|l| l.first()), "the lineage keeps its start: {now:?}");
+    assert_eq!(r["version"], 3);
     w.finish();
 }

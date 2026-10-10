@@ -88,7 +88,12 @@ fn read_list(p: &std::path::Path) -> Vec<String> {
 }
 
 fn write_list(p: &std::path::Path, list: &[String]) -> std::io::Result<()> {
-    crate::config::atomic_write(p, &serde_json::to_string_pretty(list).unwrap_or_else(|_| "[]".into()))
+    crate::config::atomic_write(p, &list_text(list))
+}
+
+/// A pin list as its file holds it (`pins.json`, and nimitz's own `S/pins.json`).
+pub fn list_text(list: &[String]) -> String {
+    serde_json::to_string_pretty(list).unwrap_or_else(|_| "[]".into())
 }
 
 /// Edit the pin list under the lock; `f` says whether it changed anything.

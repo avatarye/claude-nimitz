@@ -1,0 +1,14 @@
+{
+  "bridgeSessionId": null,
+  "cwd": "@@BASE@@/dirs/main/clean",
+  "entrypoint": "cli",
+  "jobId": "2287e6e4",
+  "kind": "bg",
+  "name": "[MAIN.ARGOS]-CLEAN",
+  "pid": 1,
+  "sessionId": "2287e6e4-5b0c-4d1e-9f2a-000000000004",
+  "startedAt": 1791663595052,
+  "status": "idle",
+  "statusUpdatedAt": 1791667135052,
+  "version": "2.1.288"
+}

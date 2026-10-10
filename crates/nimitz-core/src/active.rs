@@ -159,6 +159,8 @@ pub fn recorded_server_fix(env: &Env, vars: &HashMap<String, String>) -> Option<
 
 pub fn load(env: &Env) -> Option<ActiveSet> {
     let v = crate::evidence::first_json(&std::fs::read(path(env)).ok()?)?;
+    // a set a newer nimitz wrote is not read (`formats::issues` says so)
+    crate::formats::guard_json("active", &path(env), &v, "version").ok()?;
     serde_json::from_value(v).ok()
 }
 
@@ -260,6 +262,10 @@ pub fn write(env: &Env, mut set: ActiveSet) -> std::io::Result<bool> {
 }
 
 fn write_locked(env: &Env, set: &mut ActiveSet) -> std::io::Result<bool> {
+    // never written over a set a newer nimitz wrote (`version` above `VERSION`)
+    if let Some(t) = std::fs::read(path(env)).ok().and_then(|b| crate::formats::guard_json_bytes("active", &path(env), &b, "version").err()) {
+        return Err(std::io::Error::other(t.to_string()));
+    }
     if let Some(old) = load(env) {
         if old.same_as(set) {
             return Ok(false);
@@ -350,6 +356,18 @@ mod tests {
         // an explicit choice stands
         let none = v(&[("NIMITZ_MUX", "none")]);
         assert_eq!(user_mux_vars(&env, &none), none);
+    }
+
+    #[test]
+    fn a_set_a_newer_nimitz_wrote_is_not_read_nor_written_over() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let raw = serde_json::json!({"version": VERSION + 1, "at": 1.0, "members": {"F": {"session": "s", "status": "idle", "attached": false}}}).to_string();
+        std::fs::write(path(&env), &raw).unwrap();
+        assert!(load(&env).is_none());
+        let set = ActiveSet { version: VERSION, at: 1.0, machine: None, herdr: None, members: BTreeMap::new() };
+        assert!(write(&env, set).unwrap_err().to_string().contains("update nimitz here"));
+        assert_eq!(std::fs::read_to_string(path(&env)).unwrap(), raw);
     }
 
     #[test]

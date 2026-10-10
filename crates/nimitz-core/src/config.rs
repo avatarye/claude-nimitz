@@ -34,11 +34,16 @@ pub struct TomlError {
     pub line: Option<usize>,
     pub col: Option<usize>,
     pub message: String,
+    /// the file needs a newer nimitz (`formats::guard`, before the strict parse)
+    pub too_new: Option<crate::formats::TooNew>,
 }
 
 impl std::fmt::Display for TomlError {
-    /// One line: `path:line:col: message`.
+    /// One line: `path:line:col: message` (too new: `path needs nimitz >= X ...`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(t) = &self.too_new {
+            return write!(f, "{t}");
+        }
         write!(f, "{}", self.path.display())?;
         if let (Some(l), Some(c)) = (self.line, self.col) {
             write!(f, ":{l}:{c}")?;
@@ -57,9 +62,14 @@ impl TomlError {
     }
 }
 
-/// Parse a TOML file.
-fn read_toml<T: serde::de::DeserializeOwned>(p: &Path) -> Result<T, TomlError> {
-    let raw = std::fs::read_to_string(p).map_err(|e| TomlError { path: p.to_path_buf(), line: None, col: None, message: e.to_string() })?;
+/// Parse a shared TOML file of `artifact` (`formats::ARTIFACTS`). Its stamp
+/// (`format`, `min_nimitz`) is read first, leniently: a file a newer nimitz
+/// needs is refused there, never parsed further (and so never rewritten).
+fn read_toml<T: serde::de::DeserializeOwned>(p: &Path, artifact: &str) -> Result<T, TomlError> {
+    let raw = std::fs::read_to_string(p).map_err(|e| TomlError { path: p.to_path_buf(), line: None, col: None, message: e.to_string(), too_new: None })?;
+    if let Err(t) = crate::formats::guard_toml(artifact, p, &raw) {
+        return Err(TomlError { path: p.to_path_buf(), line: None, col: None, message: t.reason(), too_new: Some(t) });
+    }
     toml::from_str(&raw).map_err(|e: toml::de::Error| {
         let at = e.span().map(|sp| {
             let before = &raw[..sp.start.min(raw.len())];
@@ -67,7 +77,7 @@ fn read_toml<T: serde::de::DeserializeOwned>(p: &Path) -> Result<T, TomlError> {
             let col = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
             (line, col)
         });
-        TomlError { path: p.to_path_buf(), line: at.map(|a| a.0), col: at.map(|a| a.1), message: e.message().trim().to_string() }
+        TomlError { path: p.to_path_buf(), line: at.map(|a| a.0), col: at.map(|a| a.1), message: e.message().trim().to_string(), too_new: None }
     })
 }
 
@@ -119,7 +129,7 @@ pub fn unreadable_fleets(env: &Env) -> Vec<(Id, PathBuf, Issue)> {
     fleet_dirs(env)
         .into_iter()
         .filter_map(|dir| {
-            let i = read_toml::<FleetConfig>(&dir.join("fleet.toml")).err().map(|e| fleet_issue(&dir, &e))?;
+            let i = read_toml::<FleetConfig>(&dir.join("fleet.toml"), "fleet").err().map(|e| fleet_issue(&dir, &e))?;
             Some((i.id.clone()?, dir, i))
         })
         .collect()
@@ -129,6 +139,11 @@ pub fn unreadable_fleets(env: &Env) -> Vec<(Id, PathBuf, Issue)> {
 /// the fleet's own admiral id, so it blocks that fleet only.
 fn fleet_issue(dir: &Path, e: &TomlError) -> Issue {
     let fleet = fleet_of_dir(dir);
+    if let Some(t) = &e.too_new {
+        let mut i = t.issue(Some(Id::admiral(&fleet)));
+        i.message = format!("{t} (fleet {fleet} is unreadable on this machine; the other fleets still load)");
+        return i;
+    }
     issue(
         "config.invalid",
         Severity::Error,
@@ -149,11 +164,11 @@ fn squadron_dirs(fleet_dir: &Path) -> Vec<PathBuf> {
 
 /// The fleet plus one `config.invalid` issue per squadron.toml that does not parse.
 fn load_fleet_dir(env: &Env, dir: &Path) -> Result<(FleetOnDisk, Vec<Issue>), Issue> {
-    let config: FleetConfig = read_toml(&dir.join("fleet.toml")).map_err(|e| fleet_issue(dir, &e))?;
+    let config: FleetConfig = read_toml(&dir.join("fleet.toml"), "fleet").map_err(|e| fleet_issue(dir, &e))?;
     let mut squadrons = vec![];
     let mut broken = vec![];
     for sd in squadron_dirs(dir) {
-        match read_toml::<SquadronConfig>(&sd.join("squadron.toml")) {
+        match read_toml::<SquadronConfig>(&sd.join("squadron.toml"), "squadron") {
             Ok(sq) => squadrons.push((sd, sq)),
             Err(e) => broken.push(unreadable_issue(&config.fleet, &sd, &e)),
         }
@@ -164,6 +179,11 @@ fn load_fleet_dir(env: &Env, dir: &Path) -> Result<(FleetOnDisk, Vec<Issue>), Is
 
 fn unreadable_issue(fleet: &str, sd: &Path, e: &TomlError) -> Issue {
     let sq = sd.file_name().map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_default();
+    if let Some(t) = &e.too_new {
+        let mut i = t.issue(Some(Id::commodore(fleet, &sq)));
+        i.message = format!("{t} (squadron {fleet}/{sq} and its ships are unreadable on this machine; the rest of the fleet still loads)");
+        return i;
+    }
     issue(
         "config.invalid",
         Severity::Error,
@@ -181,7 +201,7 @@ pub fn unreadable_squadrons(f: &FleetOnDisk) -> Vec<(Id, PathBuf, Issue)> {
         .into_iter()
         .filter(|sd| !f.squadrons.iter().any(|(d, _)| d == sd))
         .filter_map(|sd| {
-            let err = read_toml::<SquadronConfig>(&sd.join("squadron.toml")).err()?;
+            let err = read_toml::<SquadronConfig>(&sd.join("squadron.toml"), "squadron").err()?;
             let i = unreadable_issue(&f.config.fleet, &sd, &err);
             Some((i.id.clone()?, sd, i))
         })
@@ -213,12 +233,18 @@ pub fn load_fleet(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
 
 /// The fleet, for a config change: refuses while any of its squadron.toml files
 /// does not parse (a rewrite could drop or overwrite what is in it).
-fn load_fleet_for_write(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
+/// A legacy.toml a newer nimitz wrote is refused the same way (a writer of
+/// the fleet may rewrite it).
+pub(crate) fn load_fleet_for_write(env: &Env, fleet: &str) -> Result<FleetOnDisk, Issue> {
     let f = load_fleet(env, fleet)?;
-    match unreadable_squadrons(&f).into_iter().next() {
-        Some((_, _, i)) => Err(i),
-        None => Ok(f),
+    if let Some((_, _, i)) = unreadable_squadrons(&f).into_iter().next() {
+        return Err(i);
     }
+    let legacy = legacy_path(&f);
+    if let Some(Err(t)) = std::fs::read_to_string(&legacy).ok().map(|raw| crate::formats::guard_toml("legacy", &legacy, &raw)) {
+        return Err(t.issue(Some(Id::admiral(&f.config.fleet))));
+    }
+    Ok(f)
 }
 
 /// `CLAUDE.md`, `CLAUDE.local.md` and `.claude/CLAUDE.md` in `dir`: every
@@ -427,6 +453,38 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
                 Some(id.clone()),
             )
         }));
+    }
+    out.extend(format_issues(f));
+    out
+}
+
+/// The fleet's shared files against their formats (`formats`): a fleet.toml
+/// whose content needs a format it does not carry yet (`[[aide]]` and no
+/// `format = 2`: a 0.4.x machine stops loading the fleet, and no machine is
+/// told why), and a legacy.toml a newer nimitz wrote.
+fn format_issues(f: &FleetOnDisk) -> Vec<Issue> {
+    let mut out = vec![];
+    let fid = Id::admiral(&f.config.fleet);
+    let fleet_toml = f.dir.join("fleet.toml");
+    if let (Some(a), Ok(bytes)) = (crate::formats::artifact("fleet"), std::fs::read(&fleet_toml)) {
+        let (have, want) = (a.version_of(&bytes).unwrap_or(1), a.wanted_of(&bytes));
+        if have < want {
+            let needs = a.steps.iter().filter(|s| s.from >= have && s.to <= want).filter_map(|s| s.min_nimitz).last().unwrap_or(crate::formats::NIMITZ);
+            out.push(issue(
+                "format.shared",
+                Severity::Warn,
+                format!(
+                    "{} holds [[aide]] but is format {have}, not {want}: stamp it (format = {want}, min_nimitz = \"{needs}\") so a machine on an older nimitz is told to update instead of failing to load the fleet; it affects every machine: each one needs nimitz >= {needs} first",
+                    fleet_toml.display()
+                ),
+                Some("nimitz migrate --shared --yes".into()),
+                Some(fid.clone()),
+            ));
+        }
+    }
+    let legacy = legacy_path(f);
+    if let Some(Err(t)) = std::fs::read_to_string(&legacy).ok().map(|raw| crate::formats::guard_toml("legacy", &legacy, &raw)) {
+        out.push(t.issue(Some(fid)));
     }
     out
 }
@@ -643,6 +701,7 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
         .into(),
         admiral: AdmiralDef::default(),
         aide: vec![],
+        ..Default::default()
     };
     plan.steps = vec![
         step_mkdir(Some(id.clone()), &dir, "fleet folder"),
@@ -687,6 +746,7 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: C
         comms,
         permission_mode,
         ships: vec![],
+        ..Default::default()
     };
     plan.steps = vec![
         step_mkdir(Some(id.clone()), &sd, "commodore's folder"),
@@ -1074,6 +1134,10 @@ pub fn legacy_path(f: &FleetOnDisk) -> PathBuf {
 /// The fleet's legacy map (empty when there is none or it does not parse).
 pub fn legacy_map(f: &FleetOnDisk) -> BTreeMap<String, Id> {
     let raw = std::fs::read_to_string(legacy_path(f)).unwrap_or_default();
+    // a map a newer nimitz wrote is not read (`validate` says config.too_new)
+    if crate::formats::guard_toml("legacy", &legacy_path(f), &raw).is_err() {
+        return BTreeMap::new();
+    }
     let v: toml::Value = toml::from_str(&raw).unwrap_or(toml::Value::Table(Default::default()));
     v.get("names")
         .and_then(|n| n.as_table())
@@ -1311,7 +1375,7 @@ pub(crate) fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
         std::process::id()
     ));
     std::fs::write(&tmp, contents)?;
-    std::fs::rename(&tmp, path)
+    crate::os::replace(&tmp, path)
 }
 
 #[cfg(test)]
@@ -1375,11 +1439,48 @@ pub(crate) mod tests {
         apply_ok(env, &plan_ship_new(env, "MAIN", "ARGOS", ship));
     }
 
-    /// MAIN's `[[aide]]` `def`, written into fleet.toml.
+    /// MAIN's `[[aide]]` `def`, written into fleet.toml, stamped as
+    /// `nimitz migrate --shared --yes` stamps it (format 2).
     pub fn add_aide(env: &Env, def: AideDef) {
         let mut f = load_fleet(env, "MAIN").unwrap();
         f.config.aide.push(def);
+        f.config.format = Some(2);
+        f.config.min_nimitz = Some("0.5.0".into());
         std::fs::write(f.dir.join("fleet.toml"), toml_out(&f.config)).unwrap();
+    }
+
+    /// The cross-machine guard: a fleet.toml or squadron.toml whose
+    /// `min_nimitz` is above this nimitz is refused before its strict parse
+    /// (so a key this nimitz does not know yet never reads as a typo), its
+    /// fleet or squadron is unreadable here, and no plan rewrites it.
+    #[test]
+    fn a_shared_file_for_a_newer_nimitz_is_refused_and_never_rewritten() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let f = load_fleet(&env, "MAIN").unwrap();
+        let fleet_toml = f.dir.join("fleet.toml");
+        let future = format!("format = 3\nmin_nimitz = \"99.0.0\"\n{}\nsomething_new = true\n", std::fs::read_to_string(&fleet_toml).unwrap().replace("[machines", "[future]\nx = 1\n\n[machines"));
+        std::fs::write(&fleet_toml, &future).unwrap();
+        let (fleets, issues) = load_all(&env);
+        assert!(fleets.is_empty());
+        let i = issues.iter().find(|i| i.code == "config.too_new").unwrap_or_else(|| panic!("{issues:?}"));
+        assert_eq!(i.id, Some(Id::admiral("MAIN")));
+        assert!(i.message.starts_with(&format!("{} needs nimitz >= 99.0.0 (this machine runs {}): update nimitz here", fleet_toml.display(), crate::formats::NIMITZ)), "{}", i.message);
+        assert!(load_fleet(&env, "MAIN").is_err());
+        let plan = plan_fleet_set(&env, "MAIN", Some("plan"));
+        assert!(plan.refusals.iter().any(|r| r.code == "config.too_new"), "{plan:?}");
+        assert_eq!(std::fs::read_to_string(&fleet_toml).unwrap(), future);
+        // equal: read as any fleet
+        let now = format!("min_nimitz = \"{}\"\nfleet = \"MAIN\"\n", crate::formats::NIMITZ);
+        std::fs::write(&fleet_toml, now).unwrap();
+        assert!(load_fleet(&env, "MAIN").is_ok());
+        // a squadron too new: left out of its fleet, the rest loads
+        std::fs::write(&fleet_toml, toml_out(&f.config)).unwrap();
+        let sq = f.squadrons[0].0.join("squadron.toml");
+        std::fs::write(&sq, format!("min_nimitz = \"99.0.0\"\n{}", std::fs::read_to_string(&sq).unwrap())).unwrap();
+        let (fleets, issues) = load_all(&env);
+        assert!(fleets[0].squadrons.is_empty());
+        assert!(issues.iter().any(|i| i.code == "config.too_new" && i.id == Some(Id::commodore("MAIN", "ARGOS"))), "{issues:?}");
     }
 
     #[test]
@@ -1392,6 +1493,13 @@ pub(crate) mod tests {
         add_aide(&env, AideDef { name: "KB".into(), permission_mode: Some("acceptEdits".into()), dirs: [("test-mac".to_string(), repo.to_string_lossy().into_owned())].into(), ..Default::default() });
         let f = load_fleet(&env, "MAIN").unwrap();
         assert!(validate(&env, &f).is_empty(), "{:?}", validate(&env, &f));
+        // the same fleet without its stamp: a 0.4.x machine would not load it
+        let mut bare = f.config.clone();
+        (bare.format, bare.min_nimitz) = (None, None);
+        std::fs::write(f.dir.join("fleet.toml"), toml_out(&bare)).unwrap();
+        let unstamped = validate(&env, &load_fleet(&env, "MAIN").unwrap());
+        assert_eq!(unstamped.iter().map(|i| (i.code.as_str(), i.severity, i.fix.as_deref())).collect::<Vec<_>>(), [("format.shared", Severity::Warn, Some("nimitz migrate --shared --yes"))]);
+        std::fs::write(f.dir.join("fleet.toml"), toml_out(&f.config)).unwrap();
         assert_eq!(member_dir(&env, &f, &kb), Some(repo.canonicalize().unwrap()));
         assert_eq!(permission_mode(&f, &kb), "acceptEdits");
         assert_eq!(find_aide(&f, &kb).map(|a| a.name.as_str()), Some("KB"));

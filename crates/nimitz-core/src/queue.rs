@@ -286,6 +286,11 @@ pub struct ReplyTo {
     pub delivery: Option<String>,
 }
 
+/// A queue's `queue.json`: its format, its own id (`uid`), its aide.
+pub fn meta(uid: &str, aide: &Id) -> Value {
+    serde_json::json!({"format": crate::formats::current("queues"), "uid": uid, "aide": aide.0})
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Item {
     pub id: String,
@@ -664,7 +669,7 @@ impl Queue {
             return Ok(u);
         }
         let u = token().map_err(|e| no("inbox.io", 1, e))?[..8].to_string();
-        write_private(&p, &serde_json::json!({"uid": u, "aide": self.aide.0}).to_string()).map_err(|e| no("inbox.io", 1, e.to_string()))?;
+        write_private(&p, &meta(&u, &self.aide).to_string()).map_err(|e| no("inbox.io", 1, e.to_string()))?;
         Ok(u)
     }
 

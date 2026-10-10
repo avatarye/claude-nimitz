@@ -685,6 +685,13 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     let mut world = read_json(&base.join("world.json")).unwrap_or(json!({}));
     world["sessions"] = json!(w.sessions.iter().map(|(n, s, j)| json!({"name": n, "session_id": s, "short_id": j})).collect::<Vec<_>>());
     write_json(&base.join("world.json"), &world);
+    // made by this nimitz: its formats are this nimitz's (the manifest says
+    // so), and the machine is on record in its fleets
+    let ran = crate::formats::run(&env(&base), crate::formats::ARTIFACTS, crate::formats::Scope::Local);
+    if !ran.failed.is_empty() {
+        return Err(format!("sandbox formats: {:?}", ran.failed));
+    }
+    crate::formats::record_machine(&env(&base));
     Ok(())
 }
 
@@ -741,6 +748,9 @@ pub fn add_aide(base: &Path, fleet: &str, name: &str, live: bool) -> Result<Id, 
         inbox: InboxDef { types: vec!["wiki.note.v1".into()], ..Default::default() },
         ..Default::default()
     });
+    // stamped as `nimitz migrate --shared --yes` stamps a fleet with an aide
+    fod.config.format = Some(2);
+    fod.config.min_nimitz = Some("0.5.0".into());
     fs::write(fod.dir.join("fleet.toml"), crate::config::toml_out(&fod.config)).map_err(|e| e.to_string())?;
     if live {
         let (short, _) = live_job(&base, &id, &dir_s, true);
