@@ -1,17 +1,17 @@
-# Staff: always-on members with a durable inbox
+# Aides: always-on members with a durable inbox
 
 Status: revised after the user's review (2026-10-10): the answers in section
-14 (settled), MYCC_DEV's six changes, and a second staff member, `@REF`,
+14 (settled), MYCC_DEV's six changes, and a second aide, `@REF`,
 with request and reply (sections 4.6 and 6.4). Nothing is built; S1 starts
-after the user signs off on this revision. Branch
-`design/staff`, off dev 947d360.
+after the user signs off on this revision (signed off 2026-10-10; S1 is on
+`feat/aide-s1`). Branch `design/aide`, off dev 947d360.
 
 ## 1. Summary
 
-A **staff** member is a Claude Code background job attached to a parent
-member. It is pinned, always on, and it works through a **durable FIFO inbox
+An **aide** (naval: the admiral's aide; the role was called "staff" in the
+first drafts) is a Claude Code background job attached to a parent member. It is pinned, always on, and it works through a **durable FIFO inbox
 that nimitz owns**. Anyone allowed by the inbox's policy posts typed items. The
-staff claims them one at a time, does the work and marks each one done; a
+aide claims them one at a time, does the work and marks each one done; a
 crash, reboot, `/clear` or relaunch loses nothing.
 
 The first two share one git repo, `/mnt/data/shared/nimitz-knowledge-base`
@@ -32,28 +32,28 @@ Decisions already made by the user (from the commodore, 2026-10-10):
 | --- | --- |
 | Shape | A member attached to a parent, id `<parent>/@NAME`; admiral parents only for now, any lead or ship later |
 | Liveness | Pinned, always on, woken by its parent's `start` |
-| Config | `[[staff]]` |
+| Config | `[[aide]]` |
 | Model | Sonnet (checked against `availableModels`) |
 | Inbox | Durable FIFO owned by nimitz; one file per item; pending -> claimed (lease) -> done, or dead after N tries; an expired lease returns an item to pending |
-| Inbox commands | `nimitz inbox post <staff> --type ...`; the staff runs claim, done and fail; anyone runs list and status |
+| Inbox commands | `nimitz inbox post <aide> --type ...`; the aide runs claim, done and fail; anyone runs list and status |
 | Types | An allowlist with versioned schemas; `wiki.note.v1` only for now |
 | Backpressure | A depth cap, per-sender limits, an open-inbox policy so non-member sessions (the user's mod) can post |
 | Loop | A doorbell on post (the messaging socket), the queue at session start, a fallback timer; FIFO, one at a time, until empty; dead letters raise a needs-you |
-| First staff | Notes keeper on the new repo (not the Obsidian vault), set up from Lodestar by MYCC_DEV; no human gate; provenance `[auto]` plus the source session; every ingest a git commit |
-| Second staff | Retrieval: a read-only librarian on the same repo, Lodestar's query rules, its own `wiki.query.v1` queue |
+| First aide | Notes keeper on the new repo (not the Obsidian vault), set up from Lodestar by MYCC_DEV; no human gate; provenance `[auto]` plus the source session; every ingest a git commit |
+| Second aide | Retrieval: a read-only librarian on the same repo, Lodestar's query rules, its own `wiki.query.v1` queue |
 | Request/reply | A type that declares `reply: true` gets its answer stored with the item and delivered to the requester only; `inbox result`, `nimitz ask --wait` |
 
 ## 2. Identity
 
-| | Admiral staff (phase 1) | Commodore staff (later) | Ship staff (later) |
+| | Admiral aide (phase 1) | Commodore aide (later) | Ship aide (later) |
 | --- | --- | --- | --- |
 | Id | `HOME/@KB`, `HOME/@REF` | `HOME/GITHUB/@X` | `HOME/GITHUB/NIMITZ_DEV/@X` |
 | Session name | `[HOME]-@KB` | `[HOME.GITHUB]-@X` | `[HOME.GITHUB.NIMITZ_DEV]-@X` |
 | Herdr tab | `HOME.@KB` | `HOME.GITHUB.@X` | `HOME.GITHUB.NIMITZ_DEV.@X` |
-| Labels | `NIMITZ_ROLE=staff`, `NIMITZ_ID`, `NIMITZ_FLEET`, `NIMITZ_PARENT=HOME` | `+ NIMITZ_SQUADRON` | `+ NIMITZ_SQUADRON` |
+| Labels | `NIMITZ_ROLE=aide`, `NIMITZ_ID`, `NIMITZ_FLEET`, `NIMITZ_PARENT=HOME` | `+ NIMITZ_SQUADRON` | `+ NIMITZ_SQUADRON` |
 
 - `Id::role()` today counts parts (1 admiral, 2 commodore, 3+ ship). A last
-  part that starts with `@` makes it `Role::Staff`, whatever the count, and
+  part that starts with `@` makes it `Role::Aide`, whatever the count, and
   `Id::parent()` drops that part. `@` is not valid in fleet, squadron or ship
   names today (`valid_name`), so no existing id changes meaning.
 - `NIMITZ_PARENT` already exists as a label (`claude::labels`), so the parent
@@ -62,20 +62,20 @@ Decisions already made by the user (from the commodore, 2026-10-10):
 
 ## 3. Config
 
-In the parent's file: `fleet.toml` for an admiral's staff (`squadron.toml`
-or `[[ships.staff]]` later).
+In the parent's file: `fleet.toml` for an admiral's aide (`squadron.toml`
+or `[[ships.aide]]` later).
 
 ```toml
-[[staff]]
+[[aide]]
 name = "KB"                      # id HOME/@KB
-brief = "staff/kb/BRIEF.md"      # its CLAUDE.md, written by nimitz like a lead brief
+brief = "aides/kb/BRIEF.md"      # its CLAUDE.md, written by nimitz like a lead brief
 model = "sonnet"                 # checked against availableModels
 permission_mode = "acceptEdits"
 
-[staff.dirs]                     # one machine runs it (a staff never runs twice)
+[aide.dirs]                     # one machine runs it (an aide never runs twice)
 home-server = "/mnt/data/shared/nimitz-knowledge-base"
 
-[staff.inbox]
+[aide.inbox]
 types = ["wiki.note.v1"]         # the allowlist; each type is a schema nimitz ships
 policy = "open"                  # open | fleet | parent
 depth_cap = 500                  # pending items; a post past it is refused
@@ -84,17 +84,17 @@ lease = "15m"                    # a claim's lifetime; renewed by `inbox heartbe
 max_tries = 3                    # then dead-letter
 keep_done = "7d"                 # done items (and their results) kept, then pruned
 
-[[staff]]
+[[aide]]
 name = "REF"                     # id HOME/@REF
-brief = "staff/ref/BRIEF.md"
+brief = "aides/ref/BRIEF.md"
 model = "sonnet"
 permission_mode = "default"      # read-only: Edit, Write and NotebookEdit denied in its settings
 snapshot = true                  # reads a detached worktree at the repo's last commit (6.4)
 
-[staff.dirs]
+[aide.dirs]
 home-server = "/mnt/data/shared/nimitz-knowledge-base"   # the repo; it works in the snapshot
 
-[staff.inbox]
+[aide.inbox]
 types = ["wiki.query.v1"]
 policy = "open"
 depth_cap = 200
@@ -104,19 +104,19 @@ max_tries = 2
 keep_done = "7d"
 ```
 
-- `staff new HOME/@KB --dir ... --model sonnet` / `staff set` / `staff rm`
+- `aide new HOME/@KB --dir ... --model sonnet` / `aide set` / `aide rm`
   behave like `ship new|set|rm` (plan, `--yes`, `may_config`).
 - The folder runs one machine's job only. A second machine with the fleet has
-  no `dirs` entry for the staff, so it never starts it. That avoids two
+  no `dirs` entry for the aide, so it never starts it. That avoids two
   keepers committing to one Dropbox repo.
 
 ## 4. The inbox
 
 ### 4.1 Where it lives
 
-`NIMITZ_STATE/queues/<staff id, / as %2F>/` (`~/.local/state/nimitz`): on
+`NIMITZ_STATE/queues/<aide id, / as %2F>/` (`~/.local/state/nimitz`): on
 this machine and **never in Dropbox**. Sync would turn every rename into a
-conflict risk, and the queue belongs to the one machine that runs the staff.
+conflict risk, and the queue belongs to the one machine that runs the aide.
 
 (The existing `nimitz-core/src/inbox.rs` is the *doorbell transport*:
 delivery of one line into a session's messaging socket; it already keeps
@@ -147,7 +147,7 @@ queues/HOME%2F@KB/
   "tries": 1,
   "reply_to": {"token_sha256": "...", "member": "HOME/GITHUB/NIMITZ_DEV",
                "session": "9aacf927-...", "job": "9aacf927", "delivered_at": null},
-  "claim": {"by": "<staff session id>", "at": 1791700100.0, "until": 1791701000.0},
+  "claim": {"by": "<aide session id>", "at": 1791700100.0, "until": 1791701000.0},
   "history": [{"at": ..., "event": "claimed|failed|expired|retried|delivered", "note": "..."}],
   "result": {"commit": "a1b2c3d", "pages": ["wiki/..."]}
 }
@@ -174,19 +174,19 @@ queues/HOME%2F@KB/
 
 | Command | Who | What |
 | --- | --- | --- |
-| `inbox post <staff> --type T (--file F \| --json S \| stdin) [--key K] [--from TEXT]` | by the policy (4.5) | validate the type and schema, size cap, depth cap, rate; write `pending/<seq>`; ring the doorbell (4.4); print the id |
-| `inbox claim <staff>` | the staff only | first expire stale leases; take the oldest pending, `tries += 1`, set the lease, rename it to `claimed/`; print the item JSON, or nothing (exit 3) when empty |
-| `inbox heartbeat <staff> <id>` | the staff | extend the lease (long items) |
-| `inbox done <staff> <id> [--result JSON]` | the staff | `claimed/` -> `done/` with the result (the commit; for a reply type, the answer, 4.6), then deliver it |
-| `inbox fail <staff> <id> --reason TEXT [--permanent]` | the staff | back to `pending/` with the reason in history; at `max_tries`, or with `--permanent`, -> `dead/` and a needs-you |
-| `inbox list <staff> [--state ...]` / `inbox status [<staff>]` | anyone (read-only) | depths, the oldest age, the claimed item and its lease, dead items with their reason |
-| `inbox retry <staff> <id>` / `inbox drop <staff> <id>` | the user, the parent | dead -> pending (tries reset) / dead or pending -> removed (kept in `dead/dropped/`) |
-| `inbox result <staff> <id> [--token T] [--wait D]` | **the requester only** (4.6), the user | the item's state and, once done, its result; `--wait` blocks until done or dead |
-| `ask <staff> "<question>" [--scope S] [--length short\|medium\|long] [--wait D]` | by the policy | posts a `wiki.query.v1` and, with `--wait`, blocks until the answer and prints it (exit 0), or exits 5 at the timeout with the id to fetch later |
+| `inbox post <aide> --type T (--file F \| --json S \| stdin) [--key K] [--from TEXT]` | by the policy (4.5) | validate the type and schema, size cap, depth cap, rate; write `pending/<seq>`; ring the doorbell (4.4); print the id |
+| `inbox claim <aide>` | the aide only | first expire stale leases; take the oldest pending, `tries += 1`, set the lease, rename it to `claimed/`; print the item JSON, or nothing (exit 3) when empty |
+| `inbox heartbeat <aide> <id>` | the aide | extend the lease (long items) |
+| `inbox done <aide> <id> [--result JSON]` | the aide | `claimed/` -> `done/` with the result (the commit; for a reply type, the answer, 4.6), then deliver it |
+| `inbox fail <aide> <id> --reason TEXT [--permanent]` | the aide | back to `pending/` with the reason in history; at `max_tries`, or with `--permanent`, -> `dead/` and a needs-you |
+| `inbox list <aide> [--state ...]` / `inbox status [<aide>]` | anyone (read-only) | depths, the oldest age, the claimed item and its lease, dead items with their reason |
+| `inbox retry <aide> <id>` / `inbox drop <aide> <id>` | the user, the parent | dead -> pending (tries reset) / dead or pending -> removed (kept in `dead/dropped/`) |
+| `inbox result <aide> <id> [--token T] [--wait D]` | **the requester only** (4.6), the user | the item's state and, once done, its result; `--wait` blocks until done or dead |
+| `ask <aide> "<question>" [--scope S] [--length short\|medium\|long] [--wait D]` | by the policy | posts a `wiki.query.v1` and, with `--wait`, blocks until the answer and prints it (exit 0), or exits 5 at the timeout with the id to fetch later |
 
 - A **lease expiry** is applied by every queue operation and by `check`: a
   claimed item past `until` goes back to pending ("expired" in history). Its
-  `tries` already counted the claim, so a staff that crashes on an item
+  `tries` already counted the claim, so an aide that crashes on an item
   dead-letters it after `max_tries`, not forever.
 - **At least once, made exactly once:** a crash after the work but before
   `done` re-delivers the item. Each type's processing is idempotent by the
@@ -252,7 +252,7 @@ rules stay few.
 
 - `policy = "open"`: any process of this user on this machine may post. The
   queue folder is mode 0700 under the user's state dir, so this means "this
-  user", not "anyone on the box". `fleet`: members of the staff's fleet only.
+  user", not "anyone on the box". `fleet`: members of the aide's fleet only.
   `parent`: its parent only.
 - **The depth cap** (pending plus claimed) refuses a post with exit 4,
   `inbox.full`; `check` shows it as a Warn. Nothing is dropped silently.
@@ -262,14 +262,14 @@ rules stay few.
   `nimitz inbox post HOME/@KB --type wiki.note.v1 --file note.json`.
   - Its sender record is `session`, found by ancestry, with no labels needed.
   - A member posting is not a signal: the comms table does not apply. The
-    inbox policy does, because posting asks the staff for work but does not
+    inbox policy does, because posting asks the aide for work but does not
     talk to it.
 - **Rate limits** apply to **every sender**, members included (the user,
   2026-10-10): `per_sender` per member id, session or `--from` process.
 
 ### 4.6 Request and reply (any type with `reply: true`)
 
-One mechanism for both staff: `@KB`'s notes are fire and forget (`reply:
+One mechanism for both aide: `@KB`'s notes are fire and forget (`reply:
 false`), `@REF`'s queries are requests. Nothing else differs: the same
 FIFO, lease, tries and dead letters.
 
@@ -288,7 +288,7 @@ FIFO, lease, tries and dead letters.
 
 **Delivery, once, to the requester only:**
 
-1. At `done`, nimitz (not the staff: the staff never addresses the
+1. At `done`, nimitz (not the aide: the aide never addresses the
    requester) checks the reply address. A member or session that is live
    gets a peer message through its own messaging socket (`inbox::send`, the
    peer-credential check included):
@@ -321,21 +321,21 @@ is capped at 10 (a Bash call's own timeout).
 redelivery to a later session. A member that comes back under the same id
 reads it with `inbox result`.
 
-## 5. The staff's loop
+## 5. The aide's loop
 
 ### 5.1 Three ways to wake (any one is enough; all three together close each other's gaps)
 
 1. **Doorbell on post:**
-   - `post` delivers one peer line to the staff session through its messaging
+   - `post` delivers one peer line to the aide session through its messaging
      socket (`inbox::send`, the transport `nimitz signal` already uses on Unix
      and, on windows-port, through the named pipe):
      `[nimitz inbox] HOME/@KB: 1 new item (wiki.note.v1, from HOME/GITHUB/NIMITZ_DEV). Drain your inbox.`
    - Idle: a new turn. Busy: it queues to the end of the turn.
    - Coalesced: no second ring while the last ring is under a minute old and
-     the staff has not drained since (`ring.json`). A burst of 50 posts rings
+     the aide has not drained since (`ring.json`). A burst of 50 posts rings
      once.
 2. **At session start:**
-   - The SessionStart hook (startup, resume, clear, compact) adds the staff's
+   - The SessionStart hook (startup, resume, clear, compact) adds the aide's
      rules and the inbox state as context: "3 pending, 1 claimed by an older
      session (its lease ends 12:04)".
    - So a relaunch, a `/clear`, a compact or a crash restart goes back to work
@@ -344,16 +344,16 @@ reads it with `inbox result`.
    user's choice):
    - (a) **Piggyback.** Every nimitz run that already reads state (the hooks
      of every member, `status`, `check`) also checks: a pending item older
-     than `ring_after` (2 min), the staff live and idle, no ring within
+     than `ring_after` (2 min), the aide live and idle, no ring within
      `ring_after` -> ring. On a busy machine that is every few seconds.
-   - (b) **The staff's own** session cron (CronCreate, every 15 minutes:
+   - (b) **The aide's own** session cron (CronCreate, every 15 minutes:
      "drain your inbox"), a cheap Sonnet turn while idle. It is
      session-scoped, so the SessionStart context asks for it again after a
      relaunch, a `/clear` or a compact.
 
 ### 5.2 One pass
 
-Text in the staff's rules (rules v5), held by `may_run`:
+Text in the aide's rules (rules v5), held by `may_run`:
 
 ```
 loop:
@@ -363,11 +363,11 @@ loop:
   fail -> nimitz inbox fail <me> <id> --reason "<one line>"   [--permanent when retrying cannot help]
 ```
 
-For a reply type the staff never contacts the requester: `done` stores the
+For a reply type the aide never contacts the requester: `done` stores the
 answer and nimitz delivers it (4.6).
 
-- One at a time, FIFO, until empty. There is no parallel claim: one staff,
-  one lease at a time (`claim` refuses a second while the staff holds one).
+- One at a time, FIFO, until empty. There is no parallel claim: one aide,
+  one lease at a time (`claim` refuses a second while the aide holds one).
 - **Context:** the conversation is disposable. The queue and git hold the
   state, so auto-compact is harmless, and `nimitz start HOME/@KB --fresh` is
   always safe (it runs between items).
@@ -383,10 +383,10 @@ answer and nimitz delivers it (4.6).
   - That is the same `notify` path that today tells a commodore that its ship
     waits.
   - The admiral tells the user; the fix is `nimitz inbox retry|drop HOME/@KB 17`.
-- A permission prompt or AskUserQuestion in the staff also notifies the parent.
-  The staff runs unattended, as a ship does.
+- A permission prompt or AskUserQuestion in the aide also notifies the parent.
+  The aide runs unattended, as a ship does.
 
-## 6. The first two staff: `HOME/@KB` and `HOME/@REF`
+## 6. The first two aides: `HOME/@KB` and `HOME/@REF`
 
 ### 6.1 The repo
 
@@ -396,13 +396,13 @@ answer and nimitz delivers it (4.6).
 - It is **not** the Obsidian vault
   (`/mnt/data/shared/Notes/knowledge-base`), which stays as it is.
 - **The gap:** Lodestar's `ingest` skill "confirms 3-7 key ideas before
-  writing", which is a human gate. The staff needs an **auto mode** of ingest:
+  writing", which is a human gate. The aide needs an **auto mode** of ingest:
   - no confirmation;
   - provenance `[auto]` plus the sender (member or session, the session name,
     the item id);
   - gaps marked, never filled.
   This lives in the KB repo (`agent/skills/ingest-auto.md`), MYCC_DEV's part,
-  and the staff brief points at it.
+  and the aide brief points at it.
 - **Provenance through the capture file** (MYCC_DEV): `ingest-auto` writes the
   item to a capture file under `raw/` whose frontmatter carries the sender,
   the session and the item id (mapped from the envelope, 4.2, and the
@@ -411,20 +411,20 @@ answer and nimitz delivers it (4.6).
   sender, session and item.
 - **Dropbox and git:**
   - `.git` inside Dropbox works for one writer.
-  - The staff is the only writer that runs unattended. The user may edit by
-    hand, so the staff commits only the paths it wrote (6.3), whatever else
+  - The aide is the only writer that runs unattended. The user may edit by
+    hand, so the aide commits only the paths it wrote (6.3), whatever else
     is dirty (the user's choice; section 8).
 
 ### 6.2 Its launch
 
 - **Command:**
-  `claude --bg --name "[HOME]-@KB" --model sonnet --settings '<labels + permissions>' "<staff prompt>"`
+  `claude --bg --name "[HOME]-@KB" --model sonnet --settings '<labels + permissions>' "<aide prompt>"`
   in the repo folder, then pinned in `pins.json` like a lead.
 - **The model:** before the launch, `availableModels` (managed settings, else
   the user's) must allow `sonnet`. Claude Code silently swaps a model that is
   not allowed for the account default (seen in the e2e work), so nimitz
-  refuses instead: `staff.model` Error, fix "add sonnet to availableModels, or
-  set model in [[staff]]". Today's list allows it (`opus`, `sonnet`, `fable`).
+  refuses instead: `aide.model` Error, fix "add sonnet to availableModels, or
+  set model in [[aide]]". Today's list allows it (`opus`, `sonnet`, `fable`).
 - **Permissions** (in `--settings`, so `respawnFlags` keep them):
   - `Bash(nimitz *)`, as every member has;
   - `Bash(git -C <repo> *)` and `Bash(git *)` in its folder;
@@ -447,7 +447,7 @@ answer and nimitz delivers it (4.6).
 
 Rollback is `git revert <sha>`; `inbox list --state done` maps items to commits.
 
-### 6.4 The second staff: `HOME/@REF`, read-only retrieval
+### 6.4 The second aide: `HOME/@REF`, read-only retrieval
 
 The name: `@REF` (the user's choice): the reference desk, which finds and
 cites and never writes. "The librarian" below is its role.
@@ -467,10 +467,10 @@ cites and never writes. "The librarian" below is its role.
 - **A consistent snapshot, never the working tree mid-write.** `@KB` writes
   files, then commits; a reader of the working tree could see half an ingest.
   So the librarian works in a **detached worktree at the last commit**:
-  - `NIMITZ_STATE/staff/HOME%2F@REF/snapshot`, made once with
+  - `NIMITZ_STATE/aides/HOME%2F@REF/snapshot`, made once with
     `git -C <repo> worktree add --detach <snapshot> HEAD` (outside Dropbox: a
     synced worktree would race the sync);
-  - `inbox claim` (nimitz, not the staff) moves it to the repo's current
+  - `inbox claim` (nimitz, not the aide) moves it to the repo's current
     `HEAD` before it hands out a query: `git -C <snapshot> checkout --detach
     <HEAD>`. A commit is atomic for a reader (`HEAD` moves after its objects
     are written), so every query reads one whole commit;
@@ -495,28 +495,28 @@ cites and never writes. "The librarian" below is its role.
 New rows for the role table (plan-v4 section 12.1, the
 `every_command_goes_by_the_role_table` test):
 
-| Command | admiral `F` | commodore | ship | staff `F/@S` | user |
+| Command | admiral `F` | commodore | ship | aide `F/@S` | user |
 | --- | --- | --- | --- | --- | --- |
-| `staff new\|set\|rm F/@S` | its fleet | no | no | no | yes |
-| `start\|stop F/@S` | its fleet (its own staff) | no | no | no (never itself) | yes |
-| `inbox post <staff>` | by the inbox policy | by policy | by policy | by policy (not its own) | yes |
-| `inbox claim\|heartbeat\|done\|fail <staff>` | no | no | no | **its own only** | yes (repairs) |
-| `inbox retry\|drop <staff>` | its own staff | no | no | no | yes |
-| `inbox result <staff> <id>` | its own requests only | its own only | its own only | its own only | yes |
-| `ask <staff> "<question>"` | by the inbox policy | by policy | by policy | by policy (not its own) | yes |
+| `aide new\|set\|rm F/@S` | its fleet | no | no | no | yes |
+| `start\|stop F/@S` | its fleet (its own aide) | no | no | no (never itself) | yes |
+| `inbox post <aide>` | by the inbox policy | by policy | by policy | by policy (not its own) | yes |
+| `inbox claim\|heartbeat\|done\|fail <aide>` | no | no | no | **its own only** | yes (repairs) |
+| `inbox retry\|drop <aide>` | its own aide | no | no | no | yes |
+| `inbox result <aide> <id>` | its own requests only | its own only | its own only | its own only | yes |
+| `ask <aide> "<question>"` | by the inbox policy | by policy | by policy | by policy (not its own) | yes |
 | `inbox list\|status` | yes (others' payloads and results hidden) | yes (same) | yes (same) | yes (same) | yes |
 | `status`, `check`, `rules`, `doctor` | yes | yes | yes | yes | yes |
 
 Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
 
-- parent <-> staff, both ways (orders and reports);
-- staff -> nobody else;
+- parent <-> aide, both ways (orders and reports);
+- aide -> nobody else;
 - the admiral's chain above it: none extra (an admiral is the top).
-- A commodore staff later: its commodore, and that commodore's admiral by reply.
+- A commodore aide later: its commodore, and that commodore's admiral by reply.
 - **A reply is not comms.** The answer to a request goes from nimitz, at
-  `done`, to the requester (4.6), never from the staff by SendMessage. So a
-  librarian needs no comms row for each asker, and a member cannot use a
-  staff to reach a session it may not signal: the reply only ever goes back to
+  `done`, to the requester (4.6), never from the aide by SendMessage. So a
+  librarian needs no comms row for each asker, and a member cannot use an
+  aide to reach a session it may not signal: the reply only ever goes back to
   the one who asked.
 
 ## 8. Failure modes
@@ -524,18 +524,18 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
 | What happens | Effect | What saves it |
 | --- | --- | --- |
 | Crash mid-item | Item claimed, no `done` | The lease expires -> pending; the git-log check (6.3) prevents a double commit |
-| Reboot | The staff is down; the queue is on disk | `nimitz start HOME` (or `start` with no target) wakes it: it is pinned and named in the plan; check says `staff.down` |
-| The daemon retires it | It shouldn't: it is pinned | `check` `staff.unpinned` re-pins on `start` |
+| Reboot | The aide is down; the queue is on disk | `nimitz start HOME` (or `start` with no target) wakes it: it is pinned and named in the plan; check says `aide.down` |
+| The daemon retires it | It shouldn't: it is pinned | `check` `aide.unpinned` re-pins on `start` |
 | `/clear`, compact, relaunch, `--fresh` | Conversation lost | SessionStart context re-arms the loop; state is in the queue and git |
 | Claude Code update | Old binary | `start` relaunches it like a worker, after its parent, only while it holds no claim (otherwise "busy, after this item") |
-| The doorbell misses (no socket record, peer creds mismatch) | No wake | Piggyback timer; `check` `inbox.stuck` (oldest pending > 10 min while the staff is idle) |
+| The doorbell misses (no socket record, peer creds mismatch) | No wake | Piggyback timer; `check` `inbox.stuck` (oldest pending > 10 min while the aide is idle) |
 | A poison item | Fails every time | `max_tries` -> dead -> needs-you to the parent; FIFO continues past it |
 | Flood | Queue grows | Depth cap (exit 4 for the poster), per-sender rate; `check` `inbox.full` |
 | A hostile payload | Tries to act | Data-only rules, the narrow permission allowlist (prompt -> needs-you), a reversible commit |
-| The user edits the repo by hand while it runs | Dirty tree | The staff stages and commits only the paths it wrote, by name (6.3), and carries on (the user's choice); an edit to a file it must write -> `fail` with "repo dirty: <files>" |
-| Dropbox conflicted copy in `.git` | A broken repo | `git fsck` failing -> `fail --permanent` and a needs-you; nimitz `check` names `config.conflict` already for fleet files, extended to the staff's repo |
-| Two machines with the fleet | Two keepers | `dirs` names one machine; another machine refuses `start` of a staff with no folder there |
-| The staff is busy for long | Posts wait | The lease is per item; `heartbeat` for a long one; posters see depth in `inbox status` |
+| The user edits the repo by hand while it runs | Dirty tree | The aide stages and commits only the paths it wrote, by name (6.3), and carries on (the user's choice); an edit to a file it must write -> `fail` with "repo dirty: <files>" |
+| Dropbox conflicted copy in `.git` | A broken repo | `git fsck` failing -> `fail --permanent` and a needs-you; nimitz `check` names `config.conflict` already for fleet files, extended to the aide's repo |
+| Two machines with the fleet | Two keepers | `dirs` names one machine; another machine refuses `start` of an aide with no folder there |
+| The aide is busy for long | Posts wait | The lease is per item; `heartbeat` for a long one; posters see depth in `inbox status` |
 | The requester has gone (session ended, relaunched, a script exited) | The answer cannot be delivered | Kept in `done/` until `keep_done` (7 days), readable with the token or by the same member; no redelivery |
 | `ask --wait` times out | The agent's call returns without the answer | Exit 5 with the id and the token; `inbox result ... --token T` later |
 | The librarian reads while `@KB` writes | A half-written ingest | It reads its snapshot at the last commit (6.4), never the working tree |
@@ -545,7 +545,7 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
 
 ## 9. How it shows
 
-- **`nimitz status`:** a staff row under its parent, indented like a squadron's
+- **`nimitz status`:** an aide row under its parent, indented like a squadron's
   ships.
   ```
   HOME
@@ -555,18 +555,18 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
   HOME · GITHUB
     COMMODORE    ...
   ```
-- **`--json`:** a member with `role: "staff"`, `parent`, and
+- **`--json`:** a member with `role: "aide"`, `parent`, and
   `inbox: {pending, claimed, dead, oldest_age_s, lease_until, undelivered}`
   (and `snapshot` for a reader).
 - **`nimitz check`:**
-  - `staff.down` (Error, fix `nimitz start HOME/@KB`);
-  - `staff.unpinned`;
-  - `staff.model`;
+  - `aide.down` (Error, fix `nimitz start HOME/@KB`);
+  - `aide.unpinned`;
+  - `aide.model`;
   - `inbox.dead` (Warn, fix retry or drop);
   - `inbox.stuck`;
   - `inbox.full`.
 - **Admiralty** (S2, the user's spec):
-  - A staff row under its parent (in the admiral's box) with an inline queue
+  - An aide row under its parent (in the admiral's box) with an inline queue
     summary: `KB  idle  · 3 pending · oldest 4m · 1 dead`.
   - The row's colour by the theme rules: dead letters raise needs-you pink; a
     backlog over a threshold shows warning yellow; processing shows busy green
@@ -578,22 +578,22 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
     letter (the user's only).
   - Keys: `a` attaches (`start HOME/@KB -p`).
   - Data: `nimitz inbox status --json` (S1), the same summary `status` shows.
-- **The layout-B plan view:** the staff row under its parent in `start` and
-  `stop` plans, with its own `why` ("pinned staff; inbox 3 pending").
+- **The layout-B plan view:** the aide row under its parent in `start` and
+  `stop` plans, with its own `why` ("pinned aide; inbox 3 pending").
 
 ## 10. Start, stop, check
 
-- **`start HOME` (or `start`):** the admiral, then its staff (top-down: a
-  staff after its parent), then squadrons. A staff is woken by its exact id,
+- **`start HOME` (or `start`):** the admiral, then its aide (top-down: an
+  aide after its parent), then squadrons. An aide is woken by its exact id,
   like every member.
   - `start HOME/@KB` alone: its parent must be up (the same rule as a ship's
     commodore).
   - `-p` attaches its tab, `-f` relaunches, `--fresh` drops its conversation
     (safe: section 5.2).
-- **`stop HOME`:** stops the staff before its parent. `stop HOME/@KB` stops it
+- **`stop HOME`:** stops the aide before its parent. `stop HOME/@KB` stops it
   alone. A claimed item stays claimed and comes back with the lease.
 - **`relaunch` on a Claude Code update:** like a worker. It waits while the
-  staff holds a claim, then runs between items.
+  aide holds a claim, then runs between items.
 - **`check`:** the codes in 9. `doctor`: the queue folder is writable and owned
   by the user, and the type registry matches the config's `types`.
 
@@ -602,16 +602,16 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
 The same code with a different parent:
 
 - **ids:** the `@` rule;
-- **config:** `[[staff]]` in `squadron.toml` for a commodore, `[[ships.staff]]`
+- **config:** `[[aide]]` in `squadron.toml` for a commodore, `[[ships.aide]]`
   for a ship;
 - **labels:** `NIMITZ_PARENT`;
-- **comms:** parent <-> staff;
-- **authority:** whoever may configure the parent may configure its staff.
+- **comms:** parent <-> aide;
+- **authority:** whoever may configure the parent may configure its aide.
 
-The only question per parent kind is liveness. A ship's staff is still
+The only question per parent kind is liveness. A ship's aide is still
 "always on", which wakes a parked ship's helper; the config can say
-`always_on = false` for staff that only wakes on a ring (the doorbell then
-starts it: `post` runs `start <staff>` when the poster may, else it queues and
+`always_on = false` for aide that only wakes on a ring (the doorbell then
+starts it: `post` runs `start <aide>` when the poster may, else it queues and
 `check` shows it).
 
 ## 12. Windows (reconcile with `origin/windows-port`)
@@ -622,7 +622,7 @@ From the port's commits (7dd6984 .. 0145dfc):
   `~` = `HOME` else `USERPROFILE`), so the queue is at
   `%USERPROFILE%\.local\state\nimitz\inbox\HOME%2F@KB\`.
   - `%2F` and `@` are valid in Windows file names.
-  - Staff names are compared case-insensitively on disk (`os::name_on_disk`),
+  - Aide names are compared case-insensitively on disk (`os::name_on_disk`),
     and the id stays upper case.
 - **The doorbell:**
   - On Windows the messaging socket is a named pipe with a random name, read
@@ -646,13 +646,13 @@ From the port's commits (7dd6984 .. 0145dfc):
 - **State moves** (pending -> claimed -> done) are renames within one folder
   tree on one volume. Each is atomic on NTFS as on ext4, and the queue lock
   makes the move and the `seq` update one step.
-- **Liveness:** "the staff is live and idle" for the piggyback timer uses the
+- **Liveness:** "the aide is live and idle" for the piggyback timer uses the
   port's `os::alive` (`OpenProcess` + `GetExitCodeProcess`, ACCESS_DENIED =
   alive), and the session file's status.
-- **The KB repo:** on Windows the staff is not started (`dirs` names
+- **The KB repo:** on Windows the aide is not started (`dirs` names
   `home-server` only). A Windows machine can still **post**: the queue is per
-  machine, so a post on the Windows box queues for a Windows staff that does
-  not exist. `post` refuses when this machine has no folder for the staff
+  machine, so a post on the Windows box queues for a Windows aide that does
+  not exist. `post` refuses when this machine has no folder for the aide
   ("HOME/@KB runs on home-server"). A cross-machine relay is out of scope
   (the user, 2026-10-10).
 - **Request and reply:** delivery uses the same `inbox::send` (the named pipe
@@ -664,7 +664,7 @@ From the port's commits (7dd6984 .. 0145dfc):
   retries the refresh briefly and, failing that, answers from the snapshot it
   has (its commit named in the answer).
 - **Merge order:** windows-port lands first (it touches `inbox.rs`, `os.rs`,
-  the locks); staff builds on its `os` module. Until then the staff branch
+  the locks); aide builds on its `os` module. Until then the aide branch
   keeps every OS call behind `os::` names so the rebase is mechanical.
 
 ## 13. Build plan
@@ -672,7 +672,7 @@ From the port's commits (7dd6984 .. 0145dfc):
 | Phase | What | Tests |
 | --- | --- | --- |
 | S1 | `queue.rs` and the CLI: post, claim, heartbeat, done, fail, list, status, retry, drop; types registry with `wiki.note.v1` and `wiki.query.v1`; locks, leases, dead letters, depth and rate limits, sender detection; request and reply: the reply address, tokens, `inbox result`, `nimitz ask --wait`, delivery at `done`; `inbox status --json`, the structured summary Admiralty and `status` read | unit (FIFO under concurrency, lease expiry, at-least-once, caps, rate, who may read a result), sandbox CLI, the role table |
-| S2 | The staff member: `@` ids, `Role::Staff`, `[[staff]]` config and `staff new\|set\|rm`, labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (staff text and the loop); **Admiralty staff rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the staff member exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
+| S2 | The aide: `@` ids, `Role::Aide`, `[[aide]]` config and `aide new\|set\|rm`, labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (aide text and the loop); **Admiralty aide rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the aide exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
 | S3 | The doorbell (ring and coalesce), the SessionStart context (with the 15-minute cron request), the piggyback timer, needs-you for dead letters and prompts | sandbox (rings, coalescing, piggyback), notify tests, Admiralty snapshots |
 | S4 | `HOME/@KB` live: the repo and `ingest-auto` (MYCC_DEV), the brief, the git-commit idempotency | real-CC e2e on a throwaway repo: post -> commit; kill mid-item -> one commit only; `/clear` -> drains again |
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
