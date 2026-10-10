@@ -81,7 +81,7 @@ depth_cap = 500                  # pending items; a post past it is refused
 per_sender = "60/h"              # a sender's posts per window
 lease = "15m"                    # a claim's lifetime; renewed by `inbox heartbeat`
 max_tries = 3                    # then dead-letter
-keep_done = "30d"                # done items (and their results) kept, then pruned
+keep_done = "7d"                 # done items (and their results) kept, then pruned
 
 [[staff]]
 name = "LIBRARIAN"               # id HOME/@LIBRARIAN
@@ -100,7 +100,7 @@ depth_cap = 200
 per_sender = "120/h"
 lease = "10m"
 max_tries = 2
-keep_done = "30d"
+keep_done = "7d"
 ```
 
 - `staff new HOME/@KB --dir ... --model sonnet` / `staff set` / `staff rm`
@@ -113,16 +113,18 @@ keep_done = "30d"
 
 ### 4.1 Where it lives
 
-`NIMITZ_STATE/inbox/<staff id, / as %2F>/` (`~/.local/state/nimitz`): on
+`NIMITZ_STATE/queues/<staff id, / as %2F>/` (`~/.local/state/nimitz`): on
 this machine and **never in Dropbox**. Sync would turn every rename into a
 conflict risk, and the queue belongs to the one machine that runs the staff.
 
 (The existing `nimitz-core/src/inbox.rs` is the *doorbell transport*:
-delivery of one line into a session's messaging socket. The queue is a new
-module, `queue.rs`. The CLI word stays `inbox`, as the user chose.)
+delivery of one line into a session's messaging socket; it already keeps
+its socket records in `NIMITZ_STATE/inbox/<session id>.json`, hence
+`queues/`. The queue is a new module, `queue.rs`. The CLI word stays
+`inbox`, as the user chose.)
 
 ```
-inbox/HOME%2F@KB/
+queues/HOME%2F@KB/
   queue.lock          dedicated lock file (std File::lock: flock / LockFileEx)
   seq                 the next sequence number
   pending/000000000042.json
@@ -261,8 +263,8 @@ rules stay few.
   - A member posting is not a signal: the comms table does not apply. The
     inbox policy does, because posting asks the staff for work but does not
     talk to it.
-- **Rate limits** apply to non-member senders only (`session` and
-  `process`); a member is held by the depth cap alone (the user, 2026-10-10).
+- **Rate limits** apply to **every sender**, members included (the user,
+  2026-10-10): `per_sender` per member id, session or `--from` process.
 
 ### 4.6 Request and reply (any type with `reply: true`)
 
@@ -314,7 +316,7 @@ synchronously, and nothing else gets it. `--wait` defaults to 2 minutes and
 is capped at 10 (a Bash call's own timeout).
 
 **A requester that has gone:** the result stays in `done/` until `keep_done`
-(30 days), readable with the token or by the same member; there is no
+(7 days), readable with the token or by the same member; there is no
 redelivery to a later session. A member that comes back under the same id
 reads it with `inbox result`.
 
@@ -337,12 +339,16 @@ reads it with `inbox result`.
      session (its lease ends 12:04)".
    - So a relaunch, a `/clear`, a compact or a crash restart goes back to work
      on its own.
-3. **Fallback timer: the piggyback** (no nimitz daemon, no session cron; the
-   user's choice). Every nimitz run that already reads state (the hooks of
-   every member, `status`, `check`) also checks: a pending item older than
-   `ring_after` (2 min), the staff live and idle, no ring within `ring_after`
-   -> ring. On a busy machine that is every few seconds; on an idle one, the
-   next nimitz run (and `check`'s `inbox.stuck` says so).
+3. **Fallback timer** (no nimitz daemon; two cheap sources, both kept, the
+   user's choice):
+   - (a) **Piggyback.** Every nimitz run that already reads state (the hooks
+     of every member, `status`, `check`) also checks: a pending item older
+     than `ring_after` (2 min), the staff live and idle, no ring within
+     `ring_after` -> ring. On a busy machine that is every few seconds.
+   - (b) **The staff's own** session cron (CronCreate, every 15 minutes:
+     "drain your inbox"), a cheap Sonnet turn while idle. It is
+     session-scoped, so the SessionStart context asks for it again after a
+     relaunch, a `/clear` or a compact.
 
 ### 5.2 One pass
 
@@ -446,7 +452,7 @@ The name: a librarian finds and cites, never writes. (Shorter, if preferred:
 `@REF`.)
 
 - **Always on, Sonnet, pinned**, like `@KB`; its own queue,
-  `inbox/HOME%2F@LIBRARIAN/`, type `wiki.query.v1`, the same FIFO, lease and
+  `queues/HOME%2F@LIBRARIAN/`, type `wiki.query.v1`, the same FIFO, lease and
   dead-letter machinery.
 - **It follows Lodestar's query rules** (the KB's `agent/skills/query.md`):
   - navigate by `_index.md`;
@@ -525,7 +531,7 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
 | Dropbox conflicted copy in `.git` | A broken repo | `git fsck` failing -> `fail --permanent` and a needs-you; nimitz `check` names `config.conflict` already for fleet files, extended to the staff's repo |
 | Two machines with the fleet | Two keepers | `dirs` names one machine; another machine refuses `start` of a staff with no folder there |
 | The staff is busy for long | Posts wait | The lease is per item; `heartbeat` for a long one; posters see depth in `inbox status` |
-| The requester has gone (session ended, relaunched, a script exited) | The answer cannot be delivered | Kept in `done/` until `keep_done` (30 days), readable with the token or by the same member; no redelivery |
+| The requester has gone (session ended, relaunched, a script exited) | The answer cannot be delivered | Kept in `done/` until `keep_done` (7 days), readable with the token or by the same member; no redelivery |
 | `ask --wait` times out | The agent's call returns without the answer | Exit 5 with the id and the token; `inbox result ... --token T` later |
 | The librarian reads while `@KB` writes | A half-written ingest | It reads its snapshot at the last commit (6.4), never the working tree |
 | The snapshot worktree is broken or missing | Queries cannot be read | `claim` recreates it (`worktree prune`, `worktree add --detach`); failing that, `fail` and a needs-you |
@@ -665,15 +671,17 @@ user says (branch policy, 2026-10-10).
 
 ## 14. Decisions (the user, 2026-10-10) and open questions
 
-Answered (the doc's defaults stand):
+Answered in the md review (verdict "revise the design first"; comment:
+"include the design for librarian", done in 4.6 and 6.4):
 
-1. Rate limits: non-member senders only.
-2. Retention: done items (and results) kept 30 days.
-3. The fallback timer: the piggyback alone (no in-session cron).
+1. Rate limits: **every sender**, members included.
+2. Retention: done items and stored reply results kept **7 days**.
+3. The fallback timer: **the piggyback plus an in-session cron** every 15
+   minutes.
 4. Cross-machine posting: not now.
 5. Hand edits in the KB repo: commit only its own paths and carry on.
 6. The mod calls `nimitz inbox post` itself (and `nimitz ask`).
-7. Build S1 next.
+7. S1 waits for the user's sign-off on this revision.
 
 Open:
 
