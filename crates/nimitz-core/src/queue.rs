@@ -553,13 +553,15 @@ impl Queue {
     /// leases to pending (or dead at `max_tries`), prune old done items.
     fn housekeep(&self, now: f64) -> Result<(), Refusal> {
         // a file that does not read as an item would block the queue (a
-        // claimed one is "busy" for ever, a pending head fails every claim)
-        for s in State::ALL {
+        // claimed one is "busy" for ever, a pending head fails every claim):
+        // set aside, named so none overwrites another. Only these two states
+        // (a done or dead file blocks nothing, and they are the many).
+        for s in [State::Claimed, State::Pending] {
             for id in self.ids(s) {
                 if Self::read(&self.path(s, &id)).is_none() {
                     let q = self.dir.join("quarantine");
                     let _ = std::fs::create_dir_all(&q);
-                    let _ = std::fs::rename(self.path(s, &id), q.join(format!("{}-{id}.json", s.dir())));
+                    let _ = std::fs::rename(self.path(s, &id), q.join(format!("{}-{id}-{}.json", s.dir(), (now * 1000.0) as u64)));
                 }
             }
         }

@@ -48,13 +48,14 @@ fn me(ctx: &Ctx) -> Sender {
     queue::sender_of(&ctx.env, &ctx.vars, ctx.args.value("--from"))
 }
 
-/// Who holds a lease when `s` claims: its session, else its id; the user
-/// (None) may finish any item (repairs).
+/// Who holds a lease when `s` claims: its job (it outlives a `/clear` and a
+/// crash restart, which change the session), else its session, else its id;
+/// the user (None) may finish any item (repairs).
 fn holder(s: &Sender) -> Option<String> {
     if is_user(s) {
         return None;
     }
-    Some(s.session.clone().or(s.id.clone()).unwrap_or_default())
+    Some(s.job.clone().or(s.session.clone()).or(s.id.clone()).unwrap_or_default())
 }
 
 fn is_user(s: &Sender) -> bool {
@@ -456,7 +457,7 @@ fn result(ctx: &Ctx) -> Result<i32, Refusal> {
     let q = open(ctx, &id)?;
     let token = ctx.args.value("--token");
     let s = me(ctx);
-    let Some((_, i)) = q.get(&item) else { return Err(Refusal { code: "inbox.unknown", message: format!("no item {item} in {id}"), exit: 1 }) };
+    let Some((_, i)) = q.get(&item) else { return show(&q, &item, None, token) };
     if !queue::may_read(&i, &s, token) {
         return Err(Refusal { code: "inbox.not_yours", message: format!("item {item} is another sender's request"), exit: 1 });
     }
