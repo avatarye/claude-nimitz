@@ -1938,9 +1938,28 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     let base_sha = git(&kb, &["rev-parse", "HEAD"]).trim().to_string();
     println!("{}", w.ok(&["start", &ship, "--yes"]));
     w.wait(45, || w.member(&ship).filter(|m| !m["session"]["pid"].is_null())).expect("ship live");
-    let m = w.wait(1500, || w.member(&ship).filter(|m| m["status"] == "Idle")).expect("the ship's turn ended");
-    let sid = m["session"]["session_id"].as_str().unwrap().to_string();
-    let text = std::fs::read_to_string(w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript")).unwrap();
+    // done: idle, the note committed, and the ship's last reply (its own,
+    // not a subagent's) carries kb-ref's block (a background scribe's turn
+    // may end idle before its completion notification starts the next)
+    let last_reply = |text: &str| -> String {
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["type"] == "assistant" && v["isSidechain"] != true && v["parent_tool_use_id"].is_null())
+            .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
+            .filter_map(|c| c["text"].as_str().map(str::to_string))
+            .last()
+            .unwrap_or_default()
+    };
+    let noted = || !git(&kb, &["log", "--format=%H", "-E", "--grep=^note: [0-9a-f]{64}$", &format!("{base_sha}..HEAD")]).trim().is_empty();
+    let (sid, text) = w
+        .wait(1500, || {
+            let m = w.member(&ship).filter(|m| m["status"] == "Idle")?;
+            let sid = m["session"]["session_id"].as_str()?.to_string();
+            let text = std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid)?).ok()?;
+            (noted() && last_reply(&text).contains("citations")).then_some((sid, text))
+        })
+        .expect("the ship's turns ended with the note committed and kb-ref's answer");
+    let _ = sid;
     // one commit for the note, with its trailers, pushed
     let commits: Vec<String> = git(&kb, &["log", "--format=%H", "-E", "--grep=^note: [0-9a-f]{64}$", &format!("{base_sha}..HEAD")]).lines().map(str::to_string).collect();
     assert_eq!(commits.len(), 1, "one note, one commit: {commits:?}\n{}\n--- the ship's transcript tail:\n{}", git(&kb, &["log", "--oneline", "-5"]), text.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>());
@@ -1951,14 +1970,7 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     assert!(git(&remote, &["branch", "--contains", &commits[0]]).trim().len() > 0, "pushed to the remote");
     assert!(git(&kb, &["status", "--porcelain"]).trim().is_empty(), "nothing left uncommitted in the clone");
     // the ship's last reply: kb-ref's answer, from the note, at the note's commit
-    let last = text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|v| v["type"] == "assistant")
-        .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
-        .filter_map(|c| c["text"].as_str().map(str::to_string))
-        .last()
-        .unwrap_or_default();
+    let last = last_reply(&text);
     assert!(last.contains("citations") && last.to_lowercase().contains("dozen") && last.contains(&commits[0][..12]), "the answer: the marker's fact at the note's commit:\n{last}");
     let ev = w.events();
     assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {:?}", ev.iter().filter(|e| e["event"] == "PermissionRequest").collect::<Vec<_>>());

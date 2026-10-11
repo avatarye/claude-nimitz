@@ -8,7 +8,8 @@
 //! get no answer at all.
 //!
 //! - kb-scribe: Bash only as one `nimitz kb path|status|grep|hash|commit|restore`
-//!   (no `;`, `&`, `|`, redirects, `$`, backticks, globs or comments); Read
+//!   (no `;`, `&`, `|`, redirects, globs or comments; `$`, backticks and `\`
+//!   only inside single quotes; no `--fleet`); Read
 //!   inside the KB but `.git`; Edit and Write inside the KB, never `.git*`,
 //!   `.claude`, a CLAUDE.md, `agent/`, the top-level docs, or an existing
 //!   `raw/` file.
@@ -26,8 +27,8 @@ pub enum Agent {
 }
 
 impl Agent {
-    /// The agent a payload's `agent_type` names (`nimitz:kb-scribe` as Claude
-    /// Code namespaces a plugin agent, or `kb-scribe`).
+    /// The agent a payload's `agent_type` names: only `nimitz:kb-scribe` and
+    /// `nimitz:kb-ref`, as Claude Code names the plugin's agents.
     pub fn of(agent_type: &str) -> Option<Agent> {
         // the plugin's own, as Claude Code names them: a project's or the
         // user's agent of the same bare name is not ours to allow
@@ -125,7 +126,7 @@ fn under(root: &Path, file: &str) -> Result<PathBuf, String> {
     for n in rest.into_iter().rev() {
         full = full.join(n);
         if std::fs::symlink_metadata(&full).is_ok() {
-            return Err(format!("{file}: {} is a link that leads nowhere", full.display()));
+            return Err(format!("{file}: {} is there but does not resolve (a link that leads nowhere, or a file used as a folder)", full.display()));
         }
     }
     full.strip_prefix(root).map(Path::to_path_buf).map_err(|_| format!("{file} is outside the knowledge base ({})", root.display()))
@@ -191,7 +192,8 @@ pub fn decide(agent: Agent, root: Option<&Path>, tool: &str, input: &Value) -> R
 /// them (`caller_from_env`: partial or disagreeing labels are no member's).
 fn fleet_of(vars: &HashMap<String, String>) -> Option<String> {
     match crate::sessions::caller_from_env(vars) {
-        crate::types::Caller::Member { id, .. } => Some(id.fleet().to_string()),
+        crate::types::Caller::Member { id, .. } if id.0 != crate::sessions::UNVERIFIED => Some(id.fleet().to_string()),
+        crate::types::Caller::Member { .. } => None,
         crate::types::Caller::User => None,
     }
 }
@@ -273,7 +275,7 @@ mod tests {
             assert!(decide(Agent::Scribe, r, "Write", &p("wiki/link/escape.md")).is_err());
             // a link to a file not there yet (a pushed commit could hold one)
             std::os::unix::fs::symlink(td.path().join("not-yet.md"), root.join("wiki/dangling.md")).unwrap();
-            assert!(decide(Agent::Scribe, r, "Write", &p("wiki/dangling.md")).unwrap_err().contains("leads nowhere"));
+            assert!(decide(Agent::Scribe, r, "Write", &p("wiki/dangling.md")).unwrap_err().contains("does not resolve"));
             std::os::unix::fs::symlink(td.path().join("nope.md"), root.join("raw/cap-link.md")).unwrap();
             assert!(decide(Agent::Scribe, r, "Write", &p("raw/cap-link.md")).is_err());
         }
@@ -284,7 +286,7 @@ mod tests {
 
     #[test]
     fn the_hook_answers_only_for_the_kb_agents() {
-        let (_td, env) = crate::config::tests::test_env();
+        let (td, env) = crate::config::tests::test_env();
         let vars: HashMap<String, String> = HashMap::new();
         let call = |agent: Option<&str>, tool: &str, input: Value| {
             let mut v = json!({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": input});
@@ -294,6 +296,18 @@ mod tests {
             hook(&env, &v.to_string(), &vars)
         };
         assert_eq!(call(None, "Bash", json!({"command": "rm -rf kb-scribe"})), "", "the session itself: no answer");
+        // the fleet by the labels: whole ones find MAIN's KB; partial ones none
+        crate::config::tests::make_fleet(&env);
+        let kb = td.path().join("kb");
+        std::fs::create_dir_all(&kb).unwrap();
+        for (k, v) in [("kb.remote", json!("/srv/kb.git")), ("kb.dirs.test-mac", json!(kb.to_string_lossy()))] {
+            assert!(crate::config::apply_config_plan(&env, &crate::fleet_settings::plan_set(&env, "MAIN", k, Some(v), true)).verified);
+        }
+        let whole: HashMap<String, String> = [("NIMITZ_ID", "MAIN/ARGOS/ARGOS"), ("NIMITZ_ROLE", "ship")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let partial: HashMap<String, String> = [("NIMITZ_FLEET", "MAIN")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let read = json!({"hook_event_name": "PreToolUse", "agent_type": "nimitz:kb-ref", "tool_name": "Read", "tool_input": {"file_path": kb.join("wiki/x.md").to_string_lossy()}}).to_string();
+        assert!(hook(&env, &read, &whole).contains("\"allow\""), "{}", hook(&env, &read, &whole));
+        assert!(hook(&env, &read, &partial).contains("no knowledge base"));
         assert_eq!(call(Some("general-purpose"), "Bash", json!({"command": "ls"})), "");
         assert_eq!(call(Some("kb-scribe"), "Write", json!({"file_path": "/tmp/x"})), "", "a bare name is a project's agent, not the plugin's");
         let a: Value = serde_json::from_str(&call(Some("nimitz:kb-scribe"), "Bash", json!({"command": "nimitz kb path"}))).unwrap();

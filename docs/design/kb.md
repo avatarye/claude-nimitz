@@ -86,13 +86,14 @@ a plugin-level PreToolUse hook on every tool, `nimitz hook kb-guard`
 a string test that keeps it cheap):
 
 - kb-scribe: Bash only one `nimitz kb path|status|grep|hash|commit|restore`
-  (no `;`, `&`, `|`, redirects, `$`, backticks, `\`, unquoted globs or
-  comments); Read in the KB but `.git`; Edit and Write in the KB, never what
+  (no `;`, `&`, `|`, redirects, unquoted globs or comments; `$`, backticks
+  and `\` only inside single quotes; no `--fleet`); Read in the KB but `.git`; Edit and Write in the KB, never what
   `kb::off_limits` names or an existing `raw/` file.
 - kb-ref: Bash only one `nimitz kb path|status|head|show|grep`; Read in the
   KB but `.git`; nothing else.
 - Paths are judged real (links followed as far as they exist). The KB is the
-  session's fleet's (`NIMITZ_FLEET`, else `NIMITZ_ID`); with none, only Bash
+  session's fleet's (its labels judged as `caller_from_env` judges them);
+  with none, only Bash
   passes, and `nimitz kb path` says why, so the agent stops.
 
 It matches only the plugin's own names: a project's `.claude/agents/kb-scribe.md`

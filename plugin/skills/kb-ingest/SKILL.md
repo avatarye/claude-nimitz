@@ -51,7 +51,7 @@ The note, as JSON from the calling session:
    - `links` are cited as references on the page, never fetched.
    - Stenographer, not ghostwriter: write only what the note says, and fill in nothing around it.
 7. **The log.** Run `append-log`: `ingest | <title> [auto]`, recording the sender, the capture file and its sha256.
-8. **The commit.** Run `nimitz kb commit --title "<title>" --paths <p1,p2,...> --pages <x,y,...> --note <sha256> --from "<sender kind> <sender id>"`.
+8. **The commit.** Run `nimitz kb commit --title '<title>' --paths <p1,p2,...> --pages <x,y,...> --note <sha256> --from '<sender kind> <sender id>'` (single quotes: a `$`, a backtick or `\` in them stays as it is; a `'` in the title is dropped).
    - `title` is the note's title, else the body's first line, at most 72 characters.
    - **`--paths` must be complete:** the capture file, every page written, `wiki/_index.md` and `wiki/_log.md`. A file left out stays uncommitted.
    - "already committed" means this note was ingested before. Report `duplicate`; nimitz prints the earlier commit.
