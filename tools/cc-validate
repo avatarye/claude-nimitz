@@ -71,6 +71,32 @@ RGB = {True: (0xa6, 0xe2, 0x2e), False: (0xfd, 0x97, 0x1f), None: (0x8a, 0x86, 0
 
 # ---------------------------------------------------------------- helpers
 
+RETIRE_RX = re.compile(r"^\[(\S+)\] \[bg\] bg retire ([0-9a-f]+): (.*)$")
+
+
+def idle_retired(log, job, since, until, pad=5.0):
+    """Did Claude Code's daemon log an idle retire of `job` between `since` and
+    `until` (epoch seconds)? Its line: `[<iso>] [bg] bg retire <job>: settled, idle 77m`."""
+    try:
+        with open(log, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 4 * 1024 * 1024))
+            text = f.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        m = RETIRE_RX.match(line)
+        if not m or m.group(2) != job or "idle" not in m.group(3):
+            continue
+        try:
+            t = time.mktime(time.strptime(m.group(1)[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+        except ValueError:
+            continue
+        if since - pad <= t <= until + pad:
+            return True
+    return False
+
+
 def vkey(v):
     return tuple(int(x) for x in re.findall(r"\d+", v))
 
@@ -403,7 +429,7 @@ class Run:
             if isinstance(x, dict):
                 if x.get("role") in ("admiral", "commodore", "ship") and "id" in x:
                     s = x.get("session") or {}
-                    snap[x["id"]] = [s.get("session_id"), s.get("pid")]
+                    snap[x["id"]] = [s.get("session_id"), s.get("pid"), s.get("short_id")]
                 for v in x.values():
                     walk(v)
             elif isinstance(x, list):
@@ -414,6 +440,7 @@ class Run:
         return snap, [f["id"] for f in d.get("fleets", []) if "id" in f]
 
     def st_guard(self):
+        self.guard_t0 = time.time()
         self.snap, self.fleets = self.guard_snapshot()
         if not self.snap and list((self.cfg.home / ".claude-nimitz").glob("*/fleet.toml")):
             return False, "nimitz status shows no members, yet fleets exist", "the status format may have changed; no guard, no run"
@@ -429,9 +456,13 @@ class Run:
             a, b = self.snap.get(k), now.get(k)
             if a == b:
                 continue
-            # the daemon retiring an idle member: same session, no process
-            if a and b and a[0] == b[0] and a[1] and b[1] is None:
+            # the daemon retiring an idle member: same session, no process, and
+            # the daemon's own `bg retire <job>: ... idle` line in the run's window
+            job = (a or [None, None, None])[2] if a and len(a) > 2 else None
+            if a and b and a[0] == b[0] and a[1] and b[1] is None and job and idle_retired(self.cfg.claude_home / "daemon.log", job, getattr(self, "guard_t0", 0.0), time.time()):
                 retired.append(k)
+            elif a and b and a[0] == b[0] and a[1] and b[1] is None:
+                diff.append(f"{k}: {a} -> {b} (stopped, and the daemon logged no idle retire of it during the run)")
             else:
                 diff.append(f"{k}: {a} -> {b}")
         note = f" ({len(retired)} retired idle)" if retired else ""

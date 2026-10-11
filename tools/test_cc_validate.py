@@ -7,6 +7,7 @@ import io
 import json
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -45,7 +46,7 @@ class FakeSh:
 # a fleet with a squadron and a ship (the guard walks every member)
 STATUS = {"fleets": [{"id": "HOME",
                       "admiral": {"id": "HOME", "role": "admiral", "session": {"session_id": "s1", "pid": 11}},
-                      "squadrons": [{"id": "HOME/GH", "commodore": {"id": "HOME/GH", "role": "commodore", "session": {"session_id": "s2", "pid": 12}},
+                      "squadrons": [{"id": "HOME/GH", "commodore": {"id": "HOME/GH", "role": "commodore", "session": {"session_id": "s2", "pid": 12, "short_id": "2a2a2a2a"}},
                                      "ships": [{"id": "HOME/GH/DEV", "role": "ship", "session": {"session_id": "s3", "pid": 13}},
                                                {"id": "HOME/GH/OFF", "role": "ship", "session": None}]}]}]}
 
@@ -296,7 +297,7 @@ class PassAndFail(Base):
         self.assertEqual(code, 1, out)
         self.assertIn("live fleet changed", out)
         self.assert_nothing_changed(sh)
-        self.assertIn("HOME: ['s1', 11] -> ['s1', 12]", (self.cfg.cache / "2.1.297" / "report.md").read_text())
+        self.assertIn("HOME: ['s1', 11, None] -> ['s1', 12, None]", (self.cfg.cache / "2.1.297" / "report.md").read_text())
 
     def guard_runs(self, later):
         sh = FakeSh(self.rules())
@@ -317,10 +318,25 @@ class PassAndFail(Base):
         self.assertIn("HOME/GH/DEV", (self.cfg.cache / "2.1.297" / "report.md").read_text())
         retired = json.loads(json.dumps(STATUS))
         retired["fleets"][0]["squadrons"][0]["commodore"]["session"]["pid"] = None
+        # stopped with no idle retire logged: a change
         self.tearDown(); self.setUp()
+        sh, code, out = self.guard_runs(retired)
+        self.assertEqual(code, 1, out)
+        self.assertIn("logged no idle retire", (self.cfg.cache / "2.1.297" / "report.md").read_text())
+        # the daemon's idle retire of its job during the run: explained
+        self.tearDown(); self.setUp()
+        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
+        self.cfg.claude_home.mkdir(parents=True, exist_ok=True)
+        (self.cfg.claude_home / "daemon.log").write_text(f"[2026-01-01T00:00:00.000Z] [bg] bg retire 2a2a2a2a: settled, idle 60m\n[{now}.000Z] [bg] bg retire 2a2a2a2a: settled, idle 77m\n")
         sh, code, out = self.guard_runs(retired)
         self.assertEqual(code, 0, out)
         self.assertIn("1 retired idle", out)
+        # an old retire line (before the run) explains nothing
+        self.tearDown(); self.setUp()
+        self.cfg.claude_home.mkdir(parents=True, exist_ok=True)
+        (self.cfg.claude_home / "daemon.log").write_text("[2026-01-01T00:00:00.000Z] [bg] bg retire 2a2a2a2a: settled, idle 60m\n")
+        sh, code, out = self.guard_runs(retired)
+        self.assertEqual(code, 1, out)
 
     def test_an_empty_status_with_fleets_on_disk_is_no_guard(self):
         (self.home / ".claude-nimitz" / "home").mkdir(parents=True)
