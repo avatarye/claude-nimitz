@@ -210,18 +210,19 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
     Ok(crate::restore::run_shape(ctx, Some(fleet), opts, true))
 }
 
-/// `nimitz start [<target>] [-f] [-p] [--fresh] [--all] [--force]`: one verb
+/// `nimitz start [<target>] [-f] [-p [--tab]] [--fresh] [--all] [--force]`: one verb
 /// brings any member up and ready (`restore::plan_start`). The target is a
 /// ship, a squadron (its commodore and ships), a fleet, or nothing (every
 /// fleet here). `-f` (`--relaunch`) relaunches the live ones too; `-p`
-/// (`--pane`) gives the named member a pane and focuses it; `--fresh` starts
+/// (`--pane`) gives the named member a pane and focuses it (`--tab`: always
+/// its own tab, reused or created); `--fresh` starts
 /// its new conversation; `--all` wakes parked ships; `--force` keeps its old
 /// meaning (a cold launch over a broken lineage or an untested Claude Code).
 /// The short flags are start's own (read from the positionals, so no other
 /// command, `signal`'s text least of all, ever reads them). With no
 /// multiplexer it brings up the jobs only.
 pub fn start(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--fresh", "--all", "--relaunch", "--pane", "--jobs-only", "--here", "--rename", "--only"])?;
+    ctx.args.allow(&["--fresh", "--all", "--relaunch", "--pane", "--tab", "--jobs-only", "--here", "--rename", "--only"])?;
     let (mut relaunch, mut pane) = (ctx.args.flag("--relaunch"), ctx.args.flag("--pane"));
     let mut pos: Vec<&str> = vec![];
     for a in &ctx.args.pos {
@@ -237,6 +238,10 @@ pub fn start(ctx: &Ctx) -> Result<i32, String> {
     if pos.len() > 1 {
         return Err(format!("start takes one target (a fleet, a squadron or a ship), not {}", pos.len()));
     }
+    let tab = ctx.args.flag("--tab");
+    if tab && !pane {
+        return Err("--tab goes with -p (`nimitz start <id> -p --tab`)".into());
+    }
     let target = pos.first().map(|t| parse_id(t)).transpose()?;
     let jobs_only = ctx.args.flag("--jobs-only") || (!ctx.mux().caps().open && !pane);
     let opts = nimitz_core::restore::RestoreOpts {
@@ -247,6 +252,7 @@ pub fn start(ctx: &Ctx) -> Result<i32, String> {
         rename: ctx.args.flag("--rename"),
         restart: relaunch,
         pane,
+        tab,
         fresh: ctx.args.flag("--fresh"),
         only: ctx.args.flag("--only"),
         ..Default::default()

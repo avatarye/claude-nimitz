@@ -51,6 +51,7 @@ only look, `--yes` to run without the question.
 | Restart a member (same conversation, a new process) | `nimitz start F/SQ/SHIP -f` |
 | Restart one lead alone (`F` and `F/SQ` mean the whole fleet or squadron) | `nimitz start F --only -f` · `nimitz start F/SQ --only -f` |
 | Open a member's pane and focus it | `nimitz start F/SQ/SHIP -p` (a lead: `nimitz start F --only -p`) |
+| Open it in its own tab `F.SQ.SHIP`, never a split | `nimitz start F/SQ/SHIP -p --tab` |
 | Start a member's conversation over (drops its history) | `nimitz start F/SQ/SHIP --fresh` |
 | Stop a member | `nimitz stop F/SQ/SHIP` |
 | See everything | `nimitz status`, or `admiralty` (keys below) |
@@ -295,7 +296,7 @@ and the plan says, member by member, what it found and why it acts (`worker on
   order, same rules). A member that had a pane, lead or ship, gets that pane
   attached again after the relaunch.
 
-`nimitz start [<target>] [-f] [-p] [--fresh] [--all] [--only] [--jobs-only]` is the one
+`nimitz start [<target>] [-f] [-p [--tab]] [--fresh] [--all] [--only] [--jobs-only]` is the one
 verb that brings a member up and ready. The target is a ship `F/SQ/SHIP`, a
 squadron `F/SQ` (its commodore and its ships), a fleet `F`, or nothing (every
 fleet on this machine). `nimitz stop` is its opposite. With no flags it is
@@ -316,6 +317,13 @@ you, or the one running the command is left alone, with a fix line.
   `F.SQ`. `-p` is yours alone, since it opens a pane in your terminal;
   members get an authority refusal. With no multiplexer, `start` brings up
   the jobs only and `-p` is refused.
+- `-p --tab` always puts the member in its own tab, named as above (`F.SQ.SHIP`
+  in workspace `F.SQ`, a lead's own tab, an aide's `F.@NAME` in `F`), then
+  attaches and focuses it. It skips the shown pane and the split: its tab is
+  reused when it is there (its shell pane claimed; a tab that runs something
+  else is `tab.taken`, as always) and created when it is not. A pane that
+  shows the member somewhere else is left as it is, never typed into; the plan
+  notes it (`tab.elsewhere`). `--tab` without `-p` is a usage error.
 - `--only` acts on the target's own member alone: `F` and `F/SQ` name a whole
   fleet or squadron, so `nimitz start F --only -f` relaunches the admiral and
   nothing else. Every fix for a lead that nimitz prints uses it.

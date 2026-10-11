@@ -129,6 +129,9 @@ pub struct RestoreOpts {
     /// `start -p`: the named member gets a pane, focused (its pane, its tab,
     /// a split beside its commodore, a new tab)
     pub pane: bool,
+    /// `start -p --tab`: the named member's pane is its own tab, reused or
+    /// created (no shown pane elsewhere, no split beside its commodore)
+    pub tab: bool,
     /// `start --fresh`: the named member starts a new conversation
     pub fresh: bool,
     /// `start --only`: the target's own member alone (a lead without its
@@ -337,6 +340,11 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// `-p --tab` for this member: its pane is its own tab, nothing else.
+    fn own_tab(&self, m: &Member) -> bool {
+        self.opts.pane && self.opts.tab && self.named.as_ref() == Some(&m.id)
+    }
+
     /// Is this pane the member's: it shows one of the member's job's sessions
     /// (or its conversation now), or runs its exact `claude attach <job>`
     /// with no other agent in it?
@@ -421,8 +429,18 @@ impl Ctx<'_> {
         let id = &m.id;
         let want_tab = norm_label(&tab_of(id));
         let want_ws = norm_label(&workspace_of(id));
-        // (a) by session or by the exact attach
+        // (a) by session or by the exact attach; under `-p --tab` only a pane
+        // of its own tab counts (one elsewhere is left as it is, never typed into)
         let shown: Vec<&ShapePane> = self.shape.panes.iter().filter(|p| self.pane_is(p, m, cmd) == Some(true)).collect();
+        let shown: Vec<&ShapePane> = if self.own_tab(m) {
+            let (own, elsewhere): (Vec<&ShapePane>, Vec<&ShapePane>) = shown.into_iter().partition(|p| norm_label(&self.shape.tab_label(&p.tab_id)) == want_tab);
+            for p in &elsewhere {
+                extra.push(issue("tab.elsewhere", Severity::Info, format!("it shows in pane {} (tab {}) too; --tab attaches it in its own tab {} and leaves that pane as it is", p.pane_id, self.shape.tab_label(&p.tab_id), tab_of(id)), None, Some(id.clone())));
+            }
+            own
+        } else {
+            shown
+        };
         if let Some(p) = shown.first() {
             for other in shown.iter().skip(1) {
                 extra.push(issue("tab.dup", Severity::Warn, format!("{id} shows in pane {} and in pane {} (two attach clients)", p.pane_id, other.pane_id), Some(format!("ctrl-z in pane {} (tab {})", other.pane_id, self.shape.tab_label(&other.tab_id))), Some(id.clone())));
@@ -554,6 +572,9 @@ pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&cra
     if opts.pane && target.is_none() {
         return refuse(rp, "usage", "`-p` gives one member a pane: name it (`nimitz start <id> -p`)".into(), None);
     }
+    if opts.tab && !opts.pane {
+        return refuse(rp, "usage", "--tab goes with -p (`nimitz start <id> -p --tab`)".into(), None);
+    }
     if opts.fresh && (target.is_none() || opts.restart) {
         return refuse(rp, "usage", "`--fresh` starts one member's new conversation: name it, without -f".into(), None);
     }
@@ -683,7 +704,31 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
     rp.plan.steps = rp.steps.iter().flat_map(RestoreStep::display).collect();
     dedup(&mut rp.plan);
     verbs(&mut rp);
+    if opts.pane && opts.tab {
+        if let Some(n) = &ctx.named {
+            own_tab_place(&mut rp, n);
+        }
+    }
     rp
+}
+
+/// `-p --tab`: the named member's line says its pane is its own tab (`F.SQ.SHIP`
+/// in `F.SQ`, a lead's, an aide's `F.@NAME`): new, reused, or shown already.
+fn own_tab_place(rp: &mut RestorePlan, id: &Id) {
+    let steps: Vec<&RestoreStep> = rp.steps.iter().filter(|s| s.id() == id).collect();
+    let focused = if steps.iter().any(|s| matches!(s, RestoreStep::Focus { .. })) { ", focused" } else { "" };
+    let mut place = None;
+    for s in &steps {
+        match s {
+            RestoreStep::Open { label, workspace, .. } => place = Some(format!("its own tab {label}, new in {workspace}{focused}")),
+            RestoreStep::Claim { pane, .. } | RestoreStep::Reattach { pane, .. } => place = Some(format!("its own tab {}, pane {}{focused}", tab_of(id), pane.pane_id)),
+            RestoreStep::Focus { pane: Some(p), .. } if place.is_none() => place = Some(format!("its own tab {}, pane {}", tab_of(id), p.pane_id)),
+            _ => {}
+        }
+    }
+    if let (Some(place), Some(f)) = (place, rp.plan.found.iter_mut().find(|f| &f.id == id)) {
+        f.place = place;
+    }
 }
 
 /// Fill each member line's verbs from what the plan does for it: its job
@@ -1308,9 +1353,10 @@ fn then_focus(ctx: &Ctx, m: &Member, pane: Option<PaneAt>, rp: &mut RestorePlan)
 /// The pane a ship with no tab of its own gets under `-p`: a split beside its
 /// commodore's pane (the pane that shows the commodore, else its tab's), else
 /// a new tab in the squadron's workspace (made when missing). A lead: its tab.
+/// `-p --tab`: always its own tab, never a split.
 fn place_missing(ctx: &Ctx, m: &Member, cmd: Vec<String>, cwd: String, session: String, wakes: bool, rp: &mut RestorePlan) -> String {
     let id = &m.id;
-    if pane_wanted(ctx, m) && m.role == Role::Ship {
+    if pane_wanted(ctx, m) && m.role == Role::Ship && !ctx.opts.tab {
         if let Some(next_to) = commodore_pane(ctx, m) {
             let what = format!("a pane beside its commodore's (pane {})", next_to.pane_id);
             rp.steps.push(RestoreStep::Split { id: id.clone(), next_to, cmd, cwd, session });
@@ -1668,7 +1714,7 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
             }
             let what = place_missing(ctx, m, tab.cmd, tab.cwd, tab.session_id.clone().unwrap_or_default(), wakes && tab.wakes, rp);
             let focused = then_focus(ctx, m, None, rp);
-            let seen = if pane_wanted(ctx, m) { "no pane" } else { "its pane is gone" };
+            let seen = if ctx.own_tab(m) { "no tab of its own" } else if pane_wanted(ctx, m) { "no pane" } else { "its pane is gone" };
             (seen.into(), format!("attach in {what}{wake}{focused}"))
         }
     }
