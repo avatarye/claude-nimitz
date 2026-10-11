@@ -55,9 +55,13 @@ Fetch and push run the user's own transport: ssh in batch mode with a 20 s
 connect timeout (never a prompt nobody would answer, never a hang that
 holds the lock), unless the user set an ssh command (`GIT_SSH*`,
 `core.sshCommand`), and an https transfer that stalls (under 1000 B/s for
-60 s; git 2.31 or later) ends. `sync` pushes only to `origin`, the clone of
-`kb.remote`: a branch that tracks another remote, or an `origin` push URL
-apart, is refused. Of the caller's `GIT_*`, only the transport, TLS, proxy
+60 s; git 2.31 or later) ends. `sync` pulls and pushes only `origin` and the branch's own branch there, by
+name (no `pushRemote` or `pushDefault`), origin being the clone of
+`kb.remote`: a branch that tracks another remote, an `origin` URL or push
+URL apart, a URL rewrite in the clone's own config (`url.*.insteadOf`,
+`pushInsteadOf`), or a merge ref that is no branch, is refused. (A setup
+that fetches over https and pushes over ssh by `pushInsteadOf` is refused
+too: use one URL.) Of the caller's `GIT_*`, only the transport, TLS, proxy
 and identity ones stay. A name
 another file system reads as another (a trailing dot or space, `:`, `~`, an
 invisible character) is off limits.

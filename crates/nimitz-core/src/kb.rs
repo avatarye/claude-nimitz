@@ -503,15 +503,26 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
             return Err(format!("origin also fetches or pushes by {u}, not its own URL {first}: nothing is pushed anywhere but the KB's own remote"));
         }
     }
-    // and as git will use them (an `insteadOf` or `pushInsteadOf` rewrite
-    // that leads elsewhere is refused: the rewritten URLs must be the first's)
-    let rewritten = |args: &[&str]| -> Vec<String> {
+    // no URL rewrite of the clone's own (`url.*.insteadOf` or `pushInsteadOf`
+    // in its .git/config: a rewrite there sends fetch and push elsewhere
+    // while the configured URL still matches); the user's global ones are
+    // theirs, and the rewritten push URLs must still be where the fetch goes
+    let mut local = git(dir);
+    local.args(["config", "--local", "--name-only", "--get-regexp", r"^url\..*\.(push)?insteadof$"]);
+    if let Some(r) = run(local).ok().and_then(|o| o.lines().next().map(str::to_string)) {
+        return Err(format!("the clone rewrites URLs itself ({r}): nothing is synced while its own config could send the notes elsewhere"));
+    }
+    let rewritten = |args: &[&str]| -> Result<Vec<String>, String> {
         let mut c = git(dir);
         c.args(args);
-        run(c).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+        let v: Vec<String> = run(c)?.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
+        if v.is_empty() {
+            return Err(format!("git {} named no URL", args.join(" ")));
+        }
+        Ok(v)
     };
-    let target = rewritten(&["ls-remote", "--get-url", &first]).into_iter().next().unwrap_or(first.clone());
-    for u in rewritten(&["remote", "get-url", "--all", "origin"]).iter().chain(rewritten(&["remote", "get-url", "--push", "--all", "origin"]).iter()) {
+    let target = rewritten(&["ls-remote", "--get-url", "--", &first])?.remove(0);
+    for u in rewritten(&["remote", "get-url", "--all", "origin"])?.iter().chain(rewritten(&["remote", "get-url", "--push", "--all", "origin"])?.iter()) {
         if !same_remote(&target, u) {
             return Err(format!("origin is rewritten to {u} (url.*.insteadOf or pushInsteadOf), not {target}: nothing is pushed anywhere but the KB's own remote"));
         }
@@ -946,9 +957,11 @@ mod tests {
         // a rewrite that leads elsewhere, a merge ref that is no branch: nothing synced
         // (git rewrites the url, never an explicit pushurl)
         g(&a, &["config", "--unset-all", "remote.origin.pushurl"]);
-        g(&a, &["config", "url./elsewhere.git.pushInsteadOf", remote.to_str().unwrap()]);
-        assert!(sync(&env, &a).unwrap_err().contains("is rewritten to"));
-        g(&a, &["config", "--remove-section", "url./elsewhere.git"]);
+        for k in ["pushInsteadOf", "insteadOf"] {
+            g(&a, &["config", &format!("url./elsewhere.git.{k}"), remote.to_str().unwrap()]);
+            assert!(sync(&env, &a).unwrap_err().contains("rewrites URLs itself"), "{k}");
+            g(&a, &["config", "--remove-section", "url./elsewhere.git"]);
+        }
         for bad in ["--upload-pack=touch PWNED", "refs/tags/v2", "+refs/heads/main:refs/heads/other"] {
             g(&a, &["config", "branch.main.merge", bad]);
             assert!(sync(&env, &a).unwrap_err().contains("not a branch of origin"), "{bad}");
