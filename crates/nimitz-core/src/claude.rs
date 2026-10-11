@@ -142,16 +142,12 @@ pub fn version(env: &Env) -> Option<String> {
 
 // ------------------------------------------------------------------ labels and argv
 
-/// The labels `nimitz` gives a member's session (contracts.md section 4); an
-/// aide's carry its parent (`NIMITZ_PARENT`), an admiral's aide no squadron.
+/// The labels `nimitz` gives a member's session (contracts.md section 4).
 pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     m.insert("NIMITZ_FLEET".to_string(), id.fleet().to_string());
     if let Some(sq) = id.squadron() {
         m.insert("NIMITZ_SQUADRON".to_string(), sq.to_string());
-    }
-    if let Some(p) = id.parent().filter(|_| id.role() == Role::Aide) {
-        m.insert("NIMITZ_PARENT".to_string(), p.0);
     }
     m.insert("NIMITZ_ROLE".to_string(), id.role().as_str().to_string());
     m.insert("NIMITZ_ID".to_string(), id.0.clone());
@@ -167,65 +163,8 @@ pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 /// every member's `--settings`, so no member's worker claims a pane.
 pub const HERDR_PANE_VARS: [&str; 3] = ["HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"];
 
-/// An aide's permissions (docs/design/aide.md 6.2, 6.4, and the S4 decision):
-/// (allow, deny). Every aide may run `nimitz`, and nothing else is
-/// pre-allowed. It runs no git at all (denied in any form, so a user's own
-/// `Bash(git *)` allow does not reach it): nimitz searches, reads the tree and
-/// commits for it (`aide grep|status`, `inbox done --commit`). A writer edits
-/// its folder by its permission mode, but never `.git` nor the repo's own
-/// rules (`kb::OFF_LIMITS`); a snapshot reader edits nothing. Anything else
-/// prompts, and a prompt is a needs-you, not an action.
-fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
-    let allow = vec![NIMITZ_ALLOW.to_string()];
-    let mut deny: Vec<String> = vec!["Bash(git)".into(), "Bash(git *)".into()];
-    let Ok((f, def)) = crate::queue::find(env, id) else { return (allow, deny) };
-    if def.snapshot {
-        deny.extend(["Edit", "Write", "NotebookEdit"].map(String::from));
-        return (allow, deny);
-    }
-    if let Some(dir) = crate::config::member_dir(env, &f, id) {
-        let root = rule_root(&dir);
-        // (an Edit rule covers every tool that edits a file)
-        for off in crate::kb::OFF_LIMITS {
-            let pat = if off.ends_with('/') { format!("{root}/{off}**") } else { format!("{root}/{off}") };
-            deny.push(format!("Edit({pat})"));
-        }
-        for off in crate::kb::OFF_LIMITS_ANYWHERE {
-            // a folder's rule takes what is in it, at any depth and at the top
-            if matches!(off, ".git" | ".claude") {
-                deny.push(format!("Edit({root}/**/{off}/**)"));
-                deny.push(format!("Edit({root}/{off}/**)"));
-                // (a worktree's .git is a file)
-                deny.push(format!("Edit({root}/**/{off})"));
-            } else {
-                deny.push(format!("Edit({root}/**/{off})"));
-            }
-        }
-        // its brief: standing instructions it never writes itself
-        if let Some(b) = def.brief.as_deref().filter(|b| !b.is_empty()) {
-            let p = std::path::Path::new(b);
-            let p = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
-            deny.push(format!("Edit({})", rule_root(&p)));
-        }
-    }
-    (allow, deny)
-}
-
-/// A path as a permission rule anchors it at the filesystem root: `//abs`
-/// (`//c/abs` for `C:\abs` on Windows).
-fn rule_root(p: &std::path::Path) -> String {
-    let s = p.to_string_lossy().replace('\\', "/");
-    let s = s.trim_start_matches("//?/").trim_end_matches('/').to_string();
-    let b = s.as_bytes();
-    if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
-        return format!("//{}{}", (b[0] as char).to_ascii_lowercase(), &s[2..]);
-    }
-    format!("/{s}")
-}
-
 /// `--settings` JSON: the labels as env, the Herdr pane env blank
-/// (`HERDR_PANE_VARS`), `permissions.allow` for `nimitz`
-/// (an aide's own rules: `aide_permissions`), plus `worktree.bgIsolation
+/// (`HERDR_PANE_VARS`), `permissions.allow` for `nimitz`, plus `worktree.bgIsolation
 /// none` for background sessions. It is per launch and lives in the job's
 /// `respawnFlags`, so a restart keeps it and a relaunch (every flag again)
 /// re-adds it.
@@ -249,36 +188,16 @@ pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
         vars.insert(k.to_string(), String::new());
     }
     let mut v = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
-    if id.role() == Role::Aide {
-        let (allow, deny) = aide_permissions(env, id);
-        v["permissions"]["allow"] = serde_json::json!(allow);
-        if !deny.is_empty() {
-            v["permissions"]["deny"] = serde_json::json!(deny);
-        }
-    }
     if background {
         v["worktree"] = serde_json::json!({ "bgIsolation": "none" });
     }
     v.to_string()
 }
 
-/// The model an aide runs on (`[[aide]] model`, else Sonnet); None for every
-/// other member (Claude Code's own default).
-pub fn model_for(env: &Env, id: &Id) -> Option<String> {
-    if id.role() != Role::Aide {
-        return None;
-    }
-    Some(crate::queue::find(env, id).ok().and_then(|(_, d)| d.model).unwrap_or_else(|| "sonnet".into()))
-}
-
-fn model_args(env: &Env, id: &Id) -> Vec<String> {
-    model_for(env, id).map(|m| vec!["--model".into(), m]).unwrap_or_default()
-}
-
 /// The models the account may use (`availableModels`): managed settings
 /// when they say, else the user's `settings.json`. None when neither lists
 /// any (no limit). Claude Code silently swaps a model that is not allowed
-/// for the default, so an aide's model is checked against this first.
+/// for the default (the KB subagents run on sonnet).
 pub fn available_models(env: &Env) -> Option<Vec<String>> {
     let files: Vec<std::path::PathBuf> = MANAGED_SETTINGS.iter().map(std::path::PathBuf::from).chain([env.claude_home.join("settings.json")]).collect();
     models_in(&files)
@@ -322,7 +241,6 @@ fn mode_args(mode: &str) -> Vec<String> {
 /// hands it say the rest.
 pub fn lead_prompt(id: &Id) -> String {
     match id.role() {
-        Role::Aide => aide_prompt(id),
         Role::Admiral => format!(
             "You are {}, the admiral of fleet {}. Read CLAUDE.md in this folder, run `nimitz status`, report the fleet TLDR-first, then wait for the user.",
             id.name(),
@@ -337,22 +255,11 @@ pub fn lead_prompt(id: &Id) -> String {
     }
 }
 
-/// An aide's cold-launch prompt: who it is, and its loop in one line; the
-/// SessionStart hook hands it the full rules.
-pub fn aide_prompt(id: &Id) -> String {
-    format!(
-        "You are {}, an aide of {}. Work your inbox: `nimitz inbox claim {id}`, do the item, then `nimitz inbox done` or `nimitz inbox fail`, until claim exits 3. `nimitz rules {id}` has the full text.",
-        id.name(),
-        id.parent().map(|p| p.name()).unwrap_or_default()
-    )
-}
 
-/// Cold launch of any member: `claude --bg --name N [--model X] --permission-mode M --settings S [prompt]`
-/// (a ship's prompt comes from squadron.toml, a lead's from `lead_prompt`,
-/// an aide's from `aide_prompt`; only an aide names a model).
+/// Cold launch of any member: `claude --bg --name N --permission-mode M --settings S [prompt]`
+/// (a ship's prompt comes from squadron.toml, a lead's from `lead_prompt`).
 pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--name".into(), id.name()];
-    c.extend(model_args(env, id));
     c.extend(mode_args(mode));
     c.extend(["--settings".into(), settings_json(env, id, true)]);
     if let Some(p) = prompt.filter(|p| !p.is_empty()) {
@@ -365,7 +272,6 @@ pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<St
 /// (`source: fork`) that carries the labels. Through the PATH binary, as a cold launch.
 pub fn relaunch_bg(env: &Env, id: &Id, mode: &str, from_session: &str) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--resume".into(), from_session.into(), "--name".into(), id.name()];
-    c.extend(model_args(env, id));
     c.extend(mode_args(mode));
     c.extend(["--settings".into(), settings_json(env, id, true)]);
     c
@@ -494,50 +400,6 @@ mod tests {
         assert!(l[5].contains("\"bgIsolation\":\"none\"") && l[5].contains("\"Bash(nimitz *)\""), "{}", l[5]);
         assert!(l.last().unwrap().starts_with("You are [F]-ADMIRAL, the admiral of fleet F."));
         assert!(lead_prompt(&Id::commodore("F", "SQ")).contains("SQUADRON.md"));
-    }
-
-    #[test]
-    fn an_aide_launches_with_its_model_parent_label_and_permissions() {
-        let (td, env) = crate::config::tests::test_env();
-        crate::config::tests::make_fleet(&env);
-        let repo = td.path().join("kb");
-        std::fs::create_dir_all(&repo).unwrap();
-        let dirs: BTreeMap<String, String> = [("test-mac".to_string(), repo.to_string_lossy().into_owned())].into();
-        crate::config::tests::add_aide(&env, AideDef { name: "KB".into(), dirs: dirs.clone(), ..Default::default() });
-        crate::config::tests::add_aide(&env, AideDef { name: "REF".into(), model: Some("haiku".into()), snapshot: true, dirs, ..Default::default() });
-        let kb = Id("MAIN/@KB".into());
-        // labels: the parent, no squadron
-        let l = labels_for(&env, &kb);
-        assert_eq!((l["NIMITZ_ROLE"].as_str(), l["NIMITZ_PARENT"].as_str(), l.get("NIMITZ_SQUADRON")), ("aide", "MAIN", None));
-        assert!(!labels_for(&env, &Id::ship("MAIN", "ARGOS", "ARGOS")).contains_key("NIMITZ_PARENT"), "only an aide's");
-        // --model: the aide's own, else sonnet; on a launch and a relaunch, never a ship's
-        let c = launch_bg(&env, &kb, "acceptEdits", Some(&aide_prompt(&kb)));
-        assert_eq!(&c[1..8], &["--bg", "--name", "[MAIN]-@KB", "--model", "sonnet", "--permission-mode", "acceptEdits"]);
-        assert!(c.last().unwrap().starts_with("You are [MAIN]-@KB, an aide of [MAIN]-ADMIRAL. Work your inbox: `nimitz inbox claim MAIN/@KB`"), "{c:?}");
-        let r = relaunch_bg(&env, &Id("MAIN/@REF".into()), "", "sid");
-        assert_eq!(&r[4..8], &["--name", "[MAIN]-@REF", "--model", "haiku"]);
-        assert!(!launch_bg(&env, &Id::ship("MAIN", "ARGOS", "ARGOS"), "", Some("go")).contains(&"--model".to_string()));
-        assert_eq!(model_for(&env, &Id("MAIN/@NONE".into())).as_deref(), Some("sonnet"), "no config: still sonnet");
-        // permissions: an aide runs no git (nimitz does it for it); a writer
-        // never edits .git or the repo's own rules; a snapshot reader edits nothing
-        let perms = |id: &Id| serde_json::from_str::<serde_json::Value>(&settings_json(&env, id, true)).unwrap()["permissions"].clone();
-        let real = repo.canonicalize().unwrap();
-        let p = perms(&kb);
-        let list = |k: &str| p[k].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
-        let (allow, deny) = (list("allow"), list("deny"));
-        assert_eq!(allow, vec![NIMITZ_ALLOW.to_string()], "nothing but nimitz");
-        assert!(deny.contains(&"Bash(git)".to_string()) && deny.contains(&"Bash(git *)".to_string()), "{deny:?}");
-        let root = format!("/{}", real.display());
-        for pat in [format!("{root}/.git/**"), format!("{root}/**/.git/**"), format!("{root}/.claude/**"), format!("{root}/**/.claude/**"), format!("{root}/agent/**"), format!("{root}/CLAUDE.md"), format!("{root}/**/CLAUDE.md"), format!("{root}/**/.gitattributes"), format!("{root}/**/.gitignore"), format!("{root}/CLAUDE.local.md")] {
-            assert!(deny.contains(&format!("Edit({pat})")), "Edit({pat}): {deny:?}");
-        }
-        assert!(!deny.iter().any(|d| d.starts_with("Write(") || d.starts_with("NotebookEdit(")), "an Edit rule covers them: {deny:?}");
-        assert_eq!(rule_root(std::path::Path::new(r"C:\Users\x\kb")), "//c/Users/x/kb");
-        assert_eq!(rule_root(std::path::Path::new("/srv/kb/")), "//srv/kb");
-        let r = perms(&Id("MAIN/@REF".into()));
-        assert_eq!(r["allow"], serde_json::json!([NIMITZ_ALLOW]));
-        assert!(["Edit", "Write", "NotebookEdit", "Bash(git *)"].iter().all(|d| r["deny"].as_array().unwrap().iter().any(|x| x == d)), "{r}");
-        assert_eq!(perms(&Id::admiral("MAIN")), serde_json::json!({"allow": [NIMITZ_ALLOW]}));
     }
 
     #[test]

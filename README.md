@@ -97,84 +97,18 @@ create, edit, remove, `?` all keys, `q` quit.
 | Remove a ship, a squadron, a fleet | `nimitz ship rm F/SQ/SHIP` · `nimitz squadron rm F/SQ` · `nimitz fleet rm F` |
 | Run a fleet on another machine too | `nimitz machine add F <label> --hostname <host>` |
 
-### Aides
+### Aides (gone in 0.7.0)
 
-An **aide** is an always-on member attached to a fleet's admiral (`F/@NAME`,
-its session `[F]-@NAME`). It works a durable inbox nimitz keeps for it: anyone
-the inbox's policy allows posts typed items, the aide claims them one at a
-time, does the work and marks each one done; a crash, a reboot or a `/clear`
-loses nothing. A dead letter (an item that failed for good) and a question
-the aide asks reach its admiral as a `[nimitz needs-you]`.
-
-Add one with `nimitz aide new F/@KB --dir <its repo> --types wiki.note.v1`
-(the model defaults to sonnet, the mode to acceptEdits); one machine runs it,
-the one its folder is on. It lands in the fleet's `fleet.toml` as:
-
-```toml
-[[aide]]
-name = "KB"                      # F/@KB
-model = "sonnet"                 # must be in your availableModels
-permission_mode = "acceptEdits"
-
-[aide.dirs]
-home-server = "/path/to/its/repo"
-
-[aide.inbox]
-types = ["wiki.note.v1"]         # what it accepts
-policy = "open"                  # open | fleet | parent
-```
-
-`nimitz start F` brings it up after the admiral (pinned, on its model);
-`nimitz stop F` stops it first; `nimitz status` shows its row and its queue.
-
-| You want to | Run |
-| --- | --- |
-| Add, change or remove an aide | `nimitz aide new F/@KB --dir <its repo> --types wiki.note.v1` · `nimitz aide set F/@KB --depth 200` · `nimitz aide rm F/@KB` (you or its admiral; `nimitz help` for the flags) |
-| Give an aide work | `nimitz inbox post F/@KB --type wiki.note.v1 --payload '{"body": "..."}'` |
-| Ask an aide and wait for the answer | `nimitz ask F/@REF "question"` (its item and token print at once; `--wait 5m`) |
-| See its queue | `nimitz inbox status F/@KB` · `nimitz inbox list F/@KB` |
-| Read an answer later | `nimitz inbox result F/@REF <id> [--token T]` |
-| Retry or drop a dead letter | `nimitz inbox retry F/@KB <id>` · `nimitz inbox drop F/@KB <id>` |
-
-An aide wakes four ways: a post rings it (a `[nimitz inbox]` line through
-its own socket, once per burst until it drains); its session start shows its
-inbox; its own 15-minute cron; and the piggyback, which every member's hooks
-and `status`/`check` run at most every 30 s: it rings an idle aide whose work
-has waited two minutes, returns a lapsed lease's item to the queue (or makes
-it a dead letter its admiral hears of), and pushes an answer whose `ask
---wait` gave up. `check` names `inbox.dead`, `inbox.stuck` and `inbox.full`.
-A read-only reader (`aide new F/@REF --dir <repo> --types wiki.query.v1
---snapshot --mode default`) works in a snapshot of its repo (a detached
-worktree under NIMITZ_STATE, trusted on its own) that each `claim` moves to
-the repo's last commit; its answers name that commit, and nimitz posts each
-gap of an answer to the fleet's notes keeper. `aide set F/@REF --snapshot`
-makes a lost snapshot again. An aide
-runs in its own permission mode (default `acceptEdits`; `bypassPermissions`,
-`dontAsk` and `auto` are refused: they would skip its rules) and runs no git at
-all: `nimitz aide grep <term> [<path>]` and `nimitz aide status` read its
-folder, and a note ends in `nimitz inbox done <aide> <item> --commit --title T
---paths A,B --pages A`, which commits exactly those paths with the item's
-`inbox-item: <ref>` trailer (a retry finds that commit and makes no second).
-It never edits `.git` nor its repo's own rules (CLAUDE.md, agent/ and the files
-the KB names), and never pushes. `[[aide]] brief = "<file>"` (in its folder)
-follows its rules at every session start.
-
-**Update every machine first.** A nimitz before 0.5.0 that shares the fleet
-folder cannot load a fleet.toml holding `[[aide]]`, and reads a registry
-that holds an aide as corrupt (it moves it aside); a nimitz 0.5 refuses a
-read-only reader (`snapshot = true`). Update every machine to 0.6.0 before you
-add an aide, and do not go back below 0.5.0 after one ran:
-a 0.4.x on the migrated registry moves it aside when it holds an aide, and
-otherwise rewrites it without the `min_nimitz` stamp (an early 0.4.0 build
-also without each lineage entry's `home`, which keeps two homes' bindings apart).
-`nimitz doctor` names each machine of the fleet that runs too old a nimitz for
-what the fleet holds now, and `aide new` refuses a fleet's first aide while a machine has not run 0.5,
-and its first reader while one has not run 0.6 (`aide.machines`; `--force` is
-yours alone). It sees only the machines `[machines]` lists: a
-machine that reads the fleet folder without a label there is not checked. `aide new` stamps fleet.toml (`format = 2`, `min_nimitz =
-"0.5.0"`, or `"0.6.0"` while it has a reader): an older nimitz is then
-refused with "update nimitz here" instead of misreading the file. `aide rm` of the last aide takes the
-stamp off again (format 1, readable by 0.4).
+nimitz 0.5 and 0.6 had aides (`F/@NAME`): always-on members with a durable
+inbox. 0.7.0 removes them. To upgrade a fleet that has one: stop each aide
+with 0.6 first (`nimitz stop F/@NAME`; one left running is `aide.retired` in
+`nimitz check`, stopped by its short id), install 0.7.0 on every machine, then
+run `nimitz migrate --plan` and `nimitz migrate --shared --yes` once. That
+drops the `[[aide]]` tables and their format stamp from fleet.toml, so every
+nimitz reads it again. Each machine's first 0.7 command moves its aides'
+queues, snapshots and notices to `NIMITZ_STATE/archive/aides-0.6/` (nothing
+is deleted) and drops their records from the registry. Until then a fleet
+with `[[aide]]` still loads, and `check` warns (`aide.legacy`).
 
 ### Two rules
 
@@ -266,7 +200,7 @@ authority and messaging.
 | Where | What |
 | --- | --- |
 | `CHANGELOG.md` | What each release changed; how to upgrade. |
-| `docs/design/aide.md` | Aides: the durable inbox, request and reply, the build plan. |
+| `docs/design/aide.md` | Aides (0.5 to 0.6; superseded in 0.7.0): the durable inbox, request and reply. |
 | `docs/design/migrations.md` | Format versions and chained migrations. |
 | `docs/design/plan-v3.md` | The plan: decisions, vocabulary, setup and CRUD, adapters, compatibility, phases. |
 | `docs/design/cc-control-model.md` | How `nimitz` controls Claude Code sessions along the chain of command. |
@@ -342,7 +276,7 @@ you, or the one running the command is left alone, with a fix line.
   members get an authority refusal. With no multiplexer, `start` brings up
   the jobs only and `-p` is refused.
 - `-p --tab` always puts the member in its own tab, named as above (`F.SQ.SHIP`
-  in workspace `F.SQ`, a lead's own tab, an aide's `F.@NAME` in `F`), then
+  in workspace `F.SQ`, a lead's own tab), then
   attaches and focuses it. It skips the shown pane and the split: its tab is
   reused when it is there (its shell pane claimed; a tab that runs something
   else is `tab.taken`, as always) and created when it is not. A pane that

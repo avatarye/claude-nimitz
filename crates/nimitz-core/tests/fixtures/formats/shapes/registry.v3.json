@@ -19,21 +19,6 @@
         }
       ]
     },
-    "MAIN/@KB": {
-      "role": "aide",
-      "name": "[MAIN]-@KB",
-      "cwd": "/w",
-      "job": "j",
-      "session": "s",
-      "lineage": [
-        {
-          "session_id": "s",
-          "job": "j",
-          "via": "launch",
-          "at": 1.0
-        }
-      ]
-    },
     "MAIN/ARGOS": {
       "role": "commodore",
       "name": "[MAIN.ARGOS]-COMMODORE",

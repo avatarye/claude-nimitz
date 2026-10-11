@@ -16,7 +16,7 @@ const USAGE: &str = "usage:
   admiralty dump [--width N] [--sandbox DIR | --demo | --fixture FILE]   the list as plain text
        [--ansi]                     with its colours (24-bit ANSI)
        [--height N]                 the whole screen N rows tall, as the TUI draws it
-       [--select ID [--detail]]     the cursor on a row (`MAIN/@KB` or a row id `M:MAIN/@KB`), its detail panel open
+       [--select ID [--detail]]     the cursor on a row (`MAIN/ARGOS/BOLT` or a row id `M:MAIN/ARGOS/BOLT`), its detail panel open
   admiralty sandbox create [--herdr]|env DIR                             a fake world (fake claude, optional fake herdr)
   admiralty herdr toggle|watch                                           the Herdr plugin's action and overlay pane
 

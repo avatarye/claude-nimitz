@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.7.0 (unreleased)
+
+Aides are gone. Read **Upgrading** first.
+
+### Upgrading
+
+- **Stop every aide with 0.6 before you install 0.7.0** (`nimitz stop
+  F/@NAME`). An aide job still running afterwards (pinned, so the daemon
+  never retires it) is `aide.retired` in `nimitz check`, with its fix:
+  `nimitz stop <short>`, then `nimitz rm <short>` (yours).
+- On each machine, the first 0.7 command archives the aides' state (their
+  queues, snapshots, doorbell files and needs-you notices) under
+  `NIMITZ_STATE/archive/aides-0.6/`, nothing deleted, and drops the aides'
+  records from the registry (the registry stays version 3: no downgrade
+  barrier). A snapshot reader's folder was a git worktree of the KB: its repo
+  lists it as prunable afterwards (`git worktree prune` there).
+- Once, from any machine: `nimitz migrate --plan`, then `nimitz migrate
+  --shared --yes`. It drops each fleet's `[[aide]]` tables and the
+  `format = 2` / `min_nimitz` stamp they needed, so every nimitz (0.4 too)
+  reads fleet.toml again; the rest of the file, comments included, stays as
+  it was, with a backup beside it. Until then a fleet with `[[aide]]` still
+  loads, and `check` warns (`aide.legacy`).
+- Rules move to **v7** (live members get the change at their next prompt).
+
+### Removed
+
+- The aide role (`F/@NAME`), `nimitz aide new|set|rm|grep|status`, `nimitz
+  inbox ...`, `nimitz ask`, the doorbell and the piggyback (`__ring`), the
+  snapshot reader, the aide checks (`aide.*`, `inbox.*`), and Admiralty's
+  aide rows and queue panel.
+
 ## 0.6.0 (2026-10-11)
 
 The aide system, complete: `@KB` keeps notes in a git knowledge base, `@REF`

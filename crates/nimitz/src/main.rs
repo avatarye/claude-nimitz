@@ -5,7 +5,6 @@
 //! tabs (core never depends on the mux).
 mod args;
 mod crud;
-mod inbox_cmd;
 mod members;
 mod notify;
 mod out;
@@ -72,8 +71,8 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
                                    gets a first launch when it never ran. -f (--relaunch): relaunch the
                                    live ones too (a pane they had is reattached); -p (--pane): a pane for
                                    it, focused (its pane, its tab, a split beside its commodore, a new tab);
-                                   -p --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL, F.SQ.COMMODORE,
-                                   F.@NAME), reused or created, a pane showing it elsewhere left as it is;
+                                   -p --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL, F.SQ.COMMODORE),
+                                   reused or created, a pane showing it elsewhere left as it is;
                                    --fresh: a new conversation; --all: parked ships too; --jobs-only: no tabs;
                                    --only: the target's own member alone (a lead without its fleet or squadron)
   stop <id|session>                stop a member (or one session); start's opposite
@@ -91,24 +90,12 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)
   squadron new|set|rm <F/SQ>       --brief T --comms open|commodore-only|allow:A,B --mode M
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
-  aide grep <term> [<path>] | aide status   an aide's look at its own folder (it runs no git); you: --aide F/@NAME
-  aide new|set|rm <F/@NAME>        --dir PATH --types T,.. [--snapshot (a read-only reader) --machine L --model M --mode M --brief P --policy open|fleet|parent
-                                   --depth N --per-sender N/h --lease 15m --max-tries N --keep-done 7d]; you or its admiral
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine
   rm <id|session>                  remove job rows (never transcripts)
   sweep [<id>]                     drop stale rows and copies of members
   adopt <session> <id>             make a stowaway an identity's session
   signal <id> <text>               type to a member in its tab, else post to its inbox (ships: through the commodore)
-  inbox post <F/@S> --type T [--payload JSON|--file F|stdin] [--key K] [--from TEXT]
-                                   queue an item for an aide (by its inbox policy); a request prints its reply token
-  inbox claim|heartbeat|done|fail  the aide's own: take the oldest item (exit 3: empty), extend its lease,
-                                   finish it (--result JSON: the answer), or fail it (--reason R [--permanent])
-  inbox list|status [<F/@S>]       the queue (others' payloads hidden); status --json is what Admiralty reads
-  inbox retry|drop <F/@S> <item>   a dead letter back to pending, or removed (the user's, or the aide's parent's)
-  inbox result <F/@S> <item>       the answer to your request [--token T] [--wait D] (exit 5: not yet, 6: dead)
-  ask <F/@S> <question>            post a wiki.query.v1 and wait for the answer [--wait D: 100s by default, at most 10m] [--scope S] [--length L]
-                                   (its item and token go to stderr at once: `nimitz inbox result` picks the answer up later)
   migrate --plan|--yes [--shared]  the format steps due here (docs/design/migrations.md): local ones run by
                                    themselves with the first command after an update; --shared runs the shared
                                    ones (fleet.toml), which affect every machine: update each one first. Yours alone
@@ -135,7 +122,7 @@ fn main() {
     // Not a hook (it always exits 0, whatever Claude Code does with its
     // pipe) nor the internal fakes: there the write error is ignored instead
     #[cfg(unix)]
-    let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__ring" | "__fake-claude" | "__fake-herdr"));
+    let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__fake-claude" | "__fake-herdr"));
     #[cfg(unix)]
     if quiet_pipe {
         unsafe {
@@ -151,7 +138,6 @@ fn dispatch(argv: Vec<String>) -> i32 {
     match cmd.as_str() {
         "hook" => return hook(argv.get(1).map(String::as_str).unwrap_or("")),
         "__notify" => return notify::deliver_cmd(argv.get(1).map(String::as_str).unwrap_or("")),
-        "__ring" => return notify::piggyback_cmd(),
         "__fake-claude" => {
             return match argv.get(1) {
                 Some(base) => nimitz_core::sandbox::fake_claude(std::path::Path::new(base), &argv[2..]),
@@ -226,7 +212,6 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("fleet", crud::fleet),
     ("squadron", crud::squadron),
     ("ship", crud::ship),
-    ("aide", crud::aide),
     ("machine", crud::machine),
     ("migrate", crud::migrate),
     ("up", members::up),
@@ -242,8 +227,6 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("restore", restore::restore),
     ("layout", members::layout),
     ("sandbox", sandbox_cmd::sandbox),
-    ("inbox", inbox_cmd::inbox),
-    ("ask", inbox_cmd::ask),
     ("__commands", |_| {
         for (name, _) in COMMANDS {
             if !name.starts_with("__") {
@@ -260,7 +243,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
 /// whose env points at the real state), not `migrate` (it shows and runs the
 /// steps itself), and not the hidden helpers.
 fn migrates(cmd: &str) -> bool {
-    !matches!(cmd, "hook" | "__notify" | "__ring" | "sandbox" | "migrate") && !cmd.starts_with("__")
+    !matches!(cmd, "hook" | "__notify" | "sandbox" | "migrate") && !cmd.starts_with("__")
 }
 
 /// The automatic local migration (docs/design/migrations.md section 4): the
@@ -306,8 +289,6 @@ fn hook(event: &str) -> i32 {
     if let Some(n) = notice {
         notify::spawn_delivery(&env, &n);
     }
-    // the aides' fallback timer rides on every member's hooks (aide.md 5.1 3a)
-    notify::spawn_piggyback(&env);
     if !out.is_empty() {
         // a pipe Claude Code already closed is no failure of the hook
         use std::io::Write;

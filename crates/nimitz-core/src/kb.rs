@@ -1,12 +1,9 @@
-//! An aide's git, run by nimitz, never by the aide (aide.md 6.3, the S4
-//! decision with the KB's skills): `nimitz aide grep` and `nimitz aide
-//! status` read its folder; `nimitz inbox done --commit` stages the paths the
-//! aide names and commits them with the item's trailer. The aide's own
-//! settings deny every git command, so a payload cannot talk it into one, and
-//! nimitz runs git with every option that could run a program turned off,
-//! but for the filters the user's own committed attributes name (git-lfs, say:
-//! a checkout of a reader's snapshot runs them, as any checkout would; an
-//! attributes file not committed stops nimitz's git, `stray_attributes`).
+//! The knowledge base's git, run by nimitz, never by an agent that writes
+//! it: reads (`grep`, `status`) and a commit of exactly the named paths with
+//! a trailer. nimitz runs git with every option that could run a program
+//! turned off, but for the filters the user's own committed attributes name
+//! (git-lfs, say); an attributes file not committed stops nimitz's git
+//! (`stray_attributes`).
 use std::path::{Component, Path};
 use std::process::Command;
 
@@ -333,81 +330,6 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) ->
     Ok(done)
 }
 
-/// Is `snap` a worktree of `repo`, and its own top (not a folder inside
-/// another repo, not a link to one)? Its `--git-common-dir` is the repo's.
-pub fn snapshot_healthy(repo: &Path, snap: &Path) -> bool {
-    // a link is never the snapshot (it could lead into the user's own worktree,
-    // which a refresh would check out and clean)
-    if std::fs::symlink_metadata(snap).map(|m| m.file_type().is_symlink()).unwrap_or(true) || !snap.join(".git").is_file() {
-        return false;
-    }
-    let ask = |dir: &Path, what: &str| -> Option<String> {
-        let mut c = git(dir);
-        c.args(["rev-parse", "--path-format=absolute", what]);
-        run(c).ok().map(|s| s.trim().to_string())
-    };
-    let canon = |s: &str| crate::os::canonical(Path::new(s)).ok();
-    let same_repo = ask(repo, "--git-common-dir").and_then(|a| canon(&a)).is_some_and(|a| ask(snap, "--git-common-dir").and_then(|b| canon(&b)) == Some(a));
-    let own_top = ask(snap, "--show-toplevel").and_then(|t| canon(&t)) == crate::os::canonical(snap).ok();
-    same_repo && own_top
-}
-
-/// A snapshot reader's worktree (aide.md 6.4): made when missing, broken or
-/// another repo's (`worktree add --detach --force`, which takes back a path
-/// still registered; never `worktree prune`, which would drop every worktree
-/// registered from another machine of a synced repo), then moved to the
-/// repo's current `HEAD`. A commit is atomic for a reader (HEAD moves after
-/// its objects are written), so every query reads one whole commit. Returns
-/// the commit the snapshot is at.
-pub fn ensure_snapshot(repo: &Path, snap: &Path) -> Result<String, String> {
-    let mut head = git(repo);
-    head.args(["rev-parse", "HEAD"]);
-    let sha = run(head)?.trim().to_string();
-    if !snapshot_healthy(repo, snap) {
-        // the folder is nimitz's own (under NIMITZ_STATE): whatever is there goes
-        if std::fs::symlink_metadata(snap).is_ok_and(|m| m.file_type().is_symlink()) {
-            std::fs::remove_file(snap).map_err(|e| format!("{}: {e}", snap.display()))?;
-        } else if snap.exists() {
-            std::fs::remove_dir_all(snap).map_err(|e| format!("{}: {e}", snap.display()))?;
-        }
-        if let Some(p) = snap.parent() {
-            std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
-        }
-        let mut add = git(repo);
-        add.args(["worktree", "add", "--detach", "--force"]).arg(snap).arg(&sha);
-        run(add)?;
-        return Ok(sha);
-    }
-    // a reader writes nothing, but whatever is there goes: the snapshot is the commit
-    let mut co = git(snap);
-    co.args(["checkout", "--detach", "--force", &sha]);
-    run(co)?;
-    let mut clean = git(snap);
-    clean.args(["clean", "-ffdxq"]);
-    run(clean)?;
-    Ok(sha)
-}
-
-/// An aide's snapshot unregistered from its repo and gone (`aide rm`).
-pub fn drop_snapshot(repo: &Path, snap: &Path) -> Result<(), String> {
-    if snapshot_healthy(repo, snap) {
-        let mut c = git(repo);
-        c.args(["worktree", "remove", "--force"]).arg(snap);
-        run(c)?;
-    }
-    if snap.exists() {
-        std::fs::remove_dir_all(snap).map_err(|e| format!("{}: {e}", snap.display()))?;
-    }
-    Ok(())
-}
-
-/// The commit a snapshot is at.
-pub fn snapshot_at(snap: &Path) -> Option<String> {
-    let mut c = git(snap);
-    c.args(["rev-parse", "HEAD"]);
-    run(c).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,64 +381,6 @@ mod tests {
         assert!(show(&["diff", "--cached", "--name-only"]).contains("wiki/page.md"), "the user's staged edit is still staged");
         assert_eq!(committed(d, "u1:000000000001").unwrap(), Some(sha));
         assert_eq!(committed(d, "u1:00000000000"), Ok(None), "anchored: no prefix match");
-    }
-
-    #[test]
-    fn a_snapshot_is_made_then_follows_the_repos_head() {
-        let td = repo();
-        let d = td.path();
-        let state = tempfile::tempdir().unwrap();
-        let snap = state.path().join("aides").join("HOME%2F@REF").join("snapshot");
-        let first = ensure_snapshot(d, &snap).unwrap();
-        assert!(snap.join("wiki/page.md").is_file() && snap.join(".git").is_file());
-        // a new commit in the repo, a stray file in the snapshot: the next refresh is that commit, clean
-        std::fs::write(d.join("wiki/new.md"), "new\n").unwrap();
-        Command::new("git").arg("-C").arg(d).args(["add", "wiki/new.md"]).output().unwrap();
-        Command::new("git").arg("-C").arg(d).args(["commit", "-qm", "two"]).output().unwrap();
-        std::fs::write(snap.join("stray.md"), "x").unwrap();
-        let second = ensure_snapshot(d, &snap).unwrap();
-        assert_ne!(first, second);
-        assert_eq!(snapshot_at(&snap).as_deref(), Some(second.as_str()));
-        assert!(snap.join("wiki/new.md").is_file() && !snap.join("stray.md").exists());
-        // the user's uncommitted edit in the repo never shows in the snapshot
-        std::fs::write(d.join("wiki/page.md"), "half written\n").unwrap();
-        ensure_snapshot(d, &snap).unwrap();
-        assert_eq!(std::fs::read_to_string(snap.join("wiki/page.md")).unwrap(), "Alpha beta\n");
-        // broken (its folder gone): made again; a sibling worktree whose folder is
-        // away (another machine's, a drive unmounted) is never pruned
-        let away = state.path().join("away");
-        Command::new("git").arg("-C").arg(d).args(["worktree", "add", "--detach", away.to_str().unwrap()]).output().unwrap();
-        std::fs::rename(&away, state.path().join("moved")).unwrap();
-        std::fs::remove_dir_all(&snap).unwrap();
-        assert_eq!(ensure_snapshot(d, &snap).unwrap(), second);
-        assert!(snap.join("wiki/new.md").is_file());
-        let list = String::from_utf8(Command::new("git").arg("-C").arg(d).args(["worktree", "list"]).output().unwrap().stdout).unwrap();
-        assert!(list.contains("away"), "the away worktree is still registered: {list}");
-        // a snapshot of another repo is not this repo's: made again from this one
-        let other = repo();
-        let other_snap = state.path().join("o");
-        ensure_snapshot(other.path(), &other_snap).unwrap();
-        assert!(!snapshot_healthy(d, &other_snap));
-        ensure_snapshot(d, &other_snap).unwrap();
-        assert!(snapshot_healthy(d, &other_snap) && other_snap.join("wiki/new.md").is_file());
-        // a link to a worktree of this repo (the user's own) is no snapshot
-        #[cfg(unix)]
-        {
-            let users = state.path().join("users");
-            Command::new("git").arg("-C").arg(d).args(["worktree", "add", "--detach", users.to_str().unwrap()]).output().unwrap();
-            std::fs::write(users.join("mine.txt"), "the user's\n").unwrap();
-            let linked = state.path().join("linked");
-            std::os::unix::fs::symlink(&users, &linked).unwrap();
-            assert!(!snapshot_healthy(d, &linked));
-            ensure_snapshot(d, &linked).unwrap();
-            assert!(users.join("mine.txt").exists(), "the user's worktree is untouched");
-            assert!(!std::fs::symlink_metadata(&linked).unwrap().file_type().is_symlink(), "the link is replaced by a snapshot of nimitz's own");
-        }
-        // ignored files go too
-        std::fs::write(other_snap.join("junk.tmp"), "x").unwrap();
-        std::fs::write(other_snap.join(".git").parent().unwrap().join(".gitignore-me"), "x").unwrap();
-        drop_snapshot(d, &other_snap).unwrap();
-        assert!(!other_snap.exists());
     }
 
     #[test]

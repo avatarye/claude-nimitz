@@ -19,7 +19,6 @@ fn parses(artifact: &str, bytes: &[u8]) -> Result<(), String> {
         "registry" => nimitz_core::registry::parse(text).map(|_| ()).map_err(|x| e(&x)),
         "active" => serde_json::from_str::<nimitz_core::active::ActiveSet>(text).map(|_| ()).map_err(|x| e(&x)),
         "needs" => serde_json::from_str::<nimitz_core::notify::Notice>(text).map(|_| ()).map_err(|x| e(&x)),
-        "queues" => serde_json::from_str::<nimitz_core::queue::Item>(text).map(|_| ()).map_err(|x| e(&x)),
         "rules-delivered" => serde_json::from_str::<std::collections::BTreeMap<String, nimitz_core::rules::Delivery>>(text).map(|_| ()).map_err(|x| e(&x)),
         "restore" => serde_json::from_str::<nimitz_core::restore::Progress>(text).map(|_| ()).map_err(|x| e(&x)),
         "events" => text.lines().try_for_each(|l| serde_json::from_str::<nimitz_core::Event>(l).map(|_| ()).map_err(|x| e(&x))),
@@ -135,10 +134,10 @@ fn toml_of<T: serde::de::DeserializeOwned + serde::Serialize>(example: &str) -> 
 /// registry example below gets the new one (and its golden moves).
 fn every_role() -> Vec<nimitz_core::Role> {
     use nimitz_core::Role;
-    let all = vec![Role::Admiral, Role::Commodore, Role::Ship, Role::Aide];
+    let all = vec![Role::Admiral, Role::Commodore, Role::Ship];
     for r in &all {
         match r {
-            Role::Admiral | Role::Commodore | Role::Ship | Role::Aide => {}
+            Role::Admiral | Role::Commodore | Role::Ship => {}
         }
     }
     all
@@ -172,22 +171,6 @@ hostname = "west-mac"
 os = "macos"
 [admiral]
 permission_mode = "plan"
-[[aide]]
-name = "KB"
-brief = "keeps the wiki"
-model = "sonnet"
-permission_mode = "acceptEdits"
-snapshot = true
-[aide.dirs]
-work = "~/kb"
-[aide.inbox]
-types = ["wiki.note.v1"]
-policy = "fleet"
-depth_cap = 50
-per_sender = "10/m"
-lease = "5m"
-max_tries = 2
-keep_done = "1d"
 "#;
     let squadron = r#"
 format = 1
@@ -212,13 +195,12 @@ work = "plan"
             "lineage": [{"session_id": "s1", "job": "ab12cd34", "via": "launch", "at": 1.0, "home": "/h"}, {"session_id": "s2", "job": "ab12cd34", "via": "clear", "at": 2.0, "home": "/h"}]}},
         "retired": {"MAIN/ARGOS/~t": {"role": "ship", "name": "t", "cwd": "/w", "session": "s0", "lineage": []}},
     });
-    // one record of every role (an aide's id is F/@NAME)
+    // one record of every role
     for role in every_role() {
         let id = match role {
             nimitz_core::Role::Admiral => nimitz_core::Id::admiral("MAIN"),
             nimitz_core::Role::Commodore => nimitz_core::Id::commodore("MAIN", "ARGOS"),
             nimitz_core::Role::Ship => nimitz_core::Id::ship("MAIN", "ARGOS", "DRIFT"),
-            nimitz_core::Role::Aide => nimitz_core::Id::aide(&nimitz_core::Id::admiral("MAIN"), "KB"),
         };
         registry["identities"][&id.0] = json!({"role": role, "name": id.name(), "cwd": "/w", "job": "j", "session": "s", "lineage": [{"session_id": "s", "job": "j", "via": "launch", "at": 1.0}]});
     }
@@ -227,10 +209,6 @@ work = "plan"
             "place": {"workspace_id": "w1", "workspace": "MAIN", "tab_id": "t1", "tab": "MAIN", "pane_id": "p1"}}}});
     let notice = json!({"ts": 1.5, "id": "MAIN/@KB", "session_id": "s1", "kind": "dead", "event": "inbox", "tool_use_id": "t1", "detail": "d",
         "delivery": "delivered", "delivery_note": "n", "delivered_at": 2.0, "item": "000000000017"});
-    let item = json!({"id": "000000000017", "ref": "ab12cd34:000000000017", "type": "wiki.note.v1", "key": "k", "posted_at": 1.5,
-        "sender": {"kind": "member", "id": "MAIN/ARGOS/CLEAN", "session": "s1", "job": "ab12cd34", "cwd": "/w", "label": "[MAIN.ARGOS]-CLEAN", "verified": true},
-        "payload": {"text": "x"}, "tries": 1, "claim": {"by": "s9", "at": 2.0, "until": 3.0}, "history": [{"at": 1.5, "event": "posted", "note": "n"}],
-        "result": {"ok": true}, "reply_to": {"token_sha256": "ff", "waiting_until": 4.0, "delivered_at": 5.0, "delivery": "peer"}, "finished_at": 6.0, "reason": "r"});
     let delivered = json!({"ab12cd34": {"version": 5, "at": 1.5, "session_id": "s1", "via": "SessionStart"}});
     let progress = json!({"run": "r1", "started": 1.5, "fleets": ["MAIN"], "total": 3, "done": 1, "steps": ["a", "b", "c"]});
     let event = json!({"ts": 1.5, "event": "SessionStart", "session_id": "s1", "source": "startup", "reason": "r", "agent_id": "a", "agent_type": "t",
@@ -254,11 +232,9 @@ work = "plan"
         ("pending", "json", "sessions::pending_record", nimitz_core::sessions::pending_record(&main, "s1", 1.5).to_string() + "\n"),
         ("inbox-records", "json", "inbox::record_value", nimitz_core::inbox::record_value("/tmp/s.sock", 42, 1.5).to_string() + "\n"),
         ("own-pins", "json", "pins::list_text", nimitz_core::pins::list_text(&["ab12cd34".into(), "ef56ab78".into()]) + "\n"),
-        ("queues", "meta.json", "queue::meta (queue.json)", nimitz_core::queue::meta("ab12cd34", &nimitz_core::Id::aide(&main, "KB")).to_string() + "\n"),
         ("registry", "json", "Registry", nimitz_core::registry::render(&nimitz_core::registry::parse(&registry.to_string()).unwrap()).unwrap() + "\n"),
         ("active", "json", "active::ActiveSet", json::<nimitz_core::active::ActiveSet>(active)),
         ("needs", "json", "notify::Notice", json::<nimitz_core::notify::Notice>(notice)),
-        ("queues", "json", "queue::Item", json::<nimitz_core::queue::Item>(item)),
         ("rules-delivered", "json", "rules::Delivery", json::<std::collections::BTreeMap<String, nimitz_core::rules::Delivery>>(delivered)),
         ("restore", "json", "restore::Progress", json::<nimitz_core::restore::Progress>(progress)),
         ("events", "json", "Event", json::<nimitz_core::Event>(event)),

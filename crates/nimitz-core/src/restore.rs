@@ -202,7 +202,7 @@ impl RestoreStep {
                 c.extend(cmd.iter().cloned());
                 vec![Step { id: Some(id.clone()), cmd: c, cwd: Some(cwd.clone()), why: format!("tab {label} in workspace {workspace}: attach{}; detaching (ctrl-z) leaves it running", why_wake(*wakes)) }]
             }
-            RestoreStep::Pin { id, job } => vec![Step { id: Some(id.clone()), cmd: vec!["pin".into(), job.clone()], cwd: None, why: "a lead or an aide stays up: pin its job".into() }],
+            RestoreStep::Pin { id, job } => vec![Step { id: Some(id.clone()), cmd: vec!["pin".into(), job.clone()], cwd: None, why: "a lead stays up: pin its job".into() }],
             RestoreStep::Rename { id, tab_id, label } => vec![Step { id: Some(id.clone()), cmd: vec!["herdr".into(), "tab".into(), "rename".into(), tab_id.clone(), label.clone()], cwd: None, why: format!("the tab shows {id} under another name: give it its full name") }],
             RestoreStep::Split { id, next_to, cmd, cwd, .. } => {
                 let mut c = vec!["herdr".into(), "pane".into(), "split".into(), next_to.pane_id.clone(), "--".into()];
@@ -696,8 +696,8 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
     if explicit && !snap.fleets.iter().any(|f| Some(f.id.fleet()) == fleet) {
         rp.plan.refusals.push(issue("member.unknown", Severity::Error, format!("no fleet {} in the config", fleet.unwrap_or_default()), None, None));
     }
-    // a fleet's or a squadron's start (by the target's role: a ship's or an
-    // aide's is one member's) speaks for the whole
+    // a fleet's or a squadron's start (by the target's role: a ship's is one
+    // member's) speaks for the whole
     let wide = ctx.target.as_ref().is_none_or(|t| t.role().lead());
     if rp.no_active_set && !opts.shape_only && wide {
         rp.plan.warnings.push(issue("active.none", Severity::Info, "no active set recorded (first restore, or NIMITZ_STATE wiped): leads come back; ships stay parked (`--all` wakes every ship)".into(), None, None));
@@ -725,7 +725,7 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
 }
 
 /// `-p --tab`: the named member's line says its pane is its own tab (`F.SQ.SHIP`
-/// in `F.SQ`, a lead's, an aide's `F.@NAME`): new, reused, or shown already.
+/// in `F.SQ`, a lead's): new, reused, or shown already.
 fn own_tab_place(rp: &mut RestorePlan, id: &Id) {
     let steps: Vec<&RestoreStep> = rp.steps.iter().filter(|s| s.id() == id).collect();
     let focused = if steps.iter().any(|s| matches!(s, RestoreStep::Focus { .. })) { ", focused" } else { "" };
@@ -867,7 +867,7 @@ fn dedup(plan: &mut Plan) {
 }
 
 /// Issues the relaunch table (a wake) fixes itself: not a reason to skip a member.
-const TABLE_HANDLED: [&str; 6] = ["name.drift", "labels.missing", "copy.rows", "lead.intruder", "aide.down", "aide.unpinned"];
+const TABLE_HANDLED: [&str; 4] = ["name.drift", "labels.missing", "copy.rows", "lead.intruder"];
 
 fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     let (env, snap) = (ctx.env, ctx.snap);
@@ -913,7 +913,6 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     }
     let before = rep.not_started;
     let mut never: Vec<String> = vec![];
-    let fod = crate::config::load_fleet(env, fleet).ok();
     for m in fleet_members(f) {
         // a commodore's restore: its own ships only (and its own line when its
         // worker would be relaunched: it never is by its own restore)
@@ -928,10 +927,6 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
         }
         // `start <target>`: a squadron is its commodore and ships; a ship itself
         if !in_target(ctx.target.as_ref(), &m.id) || (ctx.opts.only && ctx.named.as_ref() != Some(&m.id)) {
-            continue;
-        }
-        // an aide runs on the one machine its `dirs` names: elsewhere it is not ours
-        if m.role == Role::Aide && ctx.named.as_ref() != Some(&m.id) && !fod.as_ref().is_some_and(|f| crate::config::member_dir(env, f, &m.id).is_some()) {
             continue;
         }
         let n = rep.not_started;
@@ -970,7 +965,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
     let (env, opts) = (ctx.env, ctx.opts);
     let id = &m.id;
     let lead = m.role.lead();
-    // a lead or an aide is wanted up whenever its fleet is (a ship by the active set)
+    // a lead is wanted up whenever its fleet is (a ship by the active set)
     let always_on = m.role.always_on();
     let active = ctx.active.and_then(|a| a.members.get(&id.0));
     let had_tab = active.map(|a| a.attached).unwrap_or(false);
@@ -1009,7 +1004,6 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
     }
     let cwd = m.cwd.clone();
     // the tab the member should have, and whether it should have one at all
-    // (an aide: only with `-p`, then remembered by `had_tab`)
     let wants_tab = match (lead, opts.shape_only, opts.ships) {
         (true, _, _) => true,
         (false, true, ships) => ships && m.role == Role::Ship && live(m),
@@ -1042,7 +1036,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 }
             }
             let live_on = format!("live on {on}");
-            // a live lead or aide the daemon could retire: pinned again
+            // a live lead the daemon could retire: pinned again
             let pin = if !opts.shape_only && repin(env, m, rp) { "; pin its job" } else { "" };
             if !wants_tab {
                 // a live ship gets a tab only when it had one, or with `--ships`
@@ -1077,7 +1071,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 }
                 return;
             }
-            let down = if lead { "down, a lead" } else if always_on { "down, an aide" } else if in_set { "down, it was active" } else { "down (--all)" };
+            let down = if lead { "down, a lead" } else if in_set { "down, it was active" } else { "down (--all)" };
             // a live copy or an impostor holds its name: never a second one (R-26)
             if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
                 found(rp, id, format!("{down}; a live copy holds its name"), "nothing; see the fix");
@@ -1202,8 +1196,6 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                     rep.parked += 1;
                     found(rp, id, "its job row is gone, its transcript is there; not active at the last look", "left (--all resumes it)");
                 }
-                // an aide is always on: its parent's start gives it its first launch
-                _ if m.role == Role::Aide && cwd.is_some() => plan_named(ctx, m, had_tab, rep, rp),
                 _ => rep.not_started += 1, // reported once per fleet (`plan_fleet`)
             }
         }
@@ -1281,7 +1273,6 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
         None => "never run",
     };
     let mut p = crate::sessions::plan_start_with(env, ctx.snap, id, ctx.caller, crate::sessions::StartOpts { force: opts.force, fresh: opts.fresh });
-    // (an aide its parent's start launches: the parent has its own line)
     if ctx.named.as_ref() != Some(id) {
         p.steps.retain(|s| s.id.as_ref() == Some(id));
     }
@@ -1444,15 +1435,6 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
         rp.plan.warnings.push(issue("relaunch.busy", Severity::Info, format!("{id} is {what}: not relaunched now"), Some(format!("{again}  # once it is idle")), Some(id.clone())));
         return;
     }
-    // an aide between turns may still hold an item: relaunched between items,
-    // never under a claim (docs/design/aide.md section 10)
-    if let Some(c) = m.inbox.as_ref().and_then(|q| q.claimed.iter().find(|c| s.short_id.as_deref() == Some(c.by.as_str()) || c.by == s.session_id || c.by == id.0)) {
-        let again = crate::sessions::start_cmd(id, "-f");
-        let item = c.id.trim_start_matches('0');
-        found(rp, id, format!("{why}; busy: it holds item {item}"), format!("left running; {again} after item {item}"));
-        rp.plan.warnings.push(issue("relaunch.busy", Severity::Info, format!("{id} is busy: after item {item} ({}), not now", c.kind), Some(format!("{again}  # after item {item}")), Some(id.clone())));
-        return;
-    }
     let p = crate::sessions::plan_relaunch(env, ctx.snap, id, ctx.caller);
     if !p.ok() {
         found(rp, id, why, "not relaunched; see the fix");
@@ -1518,7 +1500,6 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
     }
     let rank = match m.role {
         Role::Ship => 0,
-        Role::Aide => 1,
         Role::Commodore => 2,
         Role::Admiral => 3,
     };
@@ -1745,7 +1726,7 @@ fn repin(env: &Env, m: &Member, rp: &mut RestorePlan) -> bool {
     rp.steps.len() > n
 }
 
-/// A lead's or an aide's job must be pinned (plan-v4 section 7): a missing
+/// A lead's job must be pinned (plan-v4 section 7): a missing
 /// pin is re-added after it is back (R-02, R-25).
 fn pin_step(env: &Env, m: &Member, rp: &mut RestorePlan) {
     if !m.role.always_on() {

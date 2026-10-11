@@ -604,7 +604,7 @@ fn formats_check(env: &nimitz_core::env::Env, r: &mut Report) {
     }
     for d in due.iter().filter(|d| d.scope == Scope::Shared) {
         let every = d.min_nimitz.map(|m| format!("each one needs nimitz >= {m} first")).unwrap_or_else(|| "update each one first".into());
-        r.warn(&format!("formats: {} {}->{} due on {} ({}); it affects every machine: {every}", d.artifact, d.from, d.to, d.file.display(), d.summary), Some("nimitz migrate --shared --yes"));
+        r.warn(&format!("formats: {} due on {} ({}); it affects every machine: {every}", d.label(), d.file.display(), d.summary), Some("nimitz migrate --shared --yes"));
         quiet = false;
     }
     for f in nimitz_core::config::load_all(env).0 {

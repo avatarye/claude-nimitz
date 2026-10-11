@@ -226,8 +226,6 @@ pub fn folder_issue_in(env: &Env, cache: &mut TrustCache, id: &Id, cwd: &str) ->
             message: format!("{id}'s folder {cwd} does not exist"),
             fix: Some(match id.role() {
                 // a snapshot reader's folder is nimitz's to make
-                Role::Aide if { let p = std::path::Path::new(&cwd); p.ends_with("snapshot") && p.components().any(|c| c.as_os_str() == "aides") } => format!("nimitz aide set {id} --snapshot  # makes its snapshot again"),
-                Role::Aide => format!("mkdir -p {cwd}  # or point {id} elsewhere: nimitz aide set {id} --dir <folder>"),
                 _ => format!("mkdir -p {cwd}  # or point {id} elsewhere with nimitz ship set"),
             }),
             id: Some(id.clone()),
@@ -235,90 +233,6 @@ pub fn folder_issue_in(env: &Env, cache: &mut TrustCache, id: &Id, cwd: &str) ->
     }
     trust_issue(env, cache, id, dir)
 }
-
-/// An aide is always on (docs/design/aide.md section 9): `aide.down` when
-/// the machine that runs it (its `dirs` names this one) has no live job of
-/// it (an error while its parent runs; Info when the parent is down too: a
-/// `stop F` stops both on purpose), `aide.unpinned` when its live job is not pinned (the daemon would
-/// idle-retire it), `aide.model` when, on the machine that runs it, the
-/// account's `availableModels` leave its model out (Claude Code would
-/// silently run the default instead).
-pub fn aide_issues(env: &Env, m: &Member, here: bool, parent_live: bool) -> Vec<Issue> {
-    let mut out = vec![];
-    let id = &m.id;
-    let live = m.session.as_ref().filter(|s| s.pid.is_some());
-    if here && live.is_none() {
-        let why = m.reasons.first().map(String::as_str).unwrap_or("no live job");
-        out.push(Issue {
-            code: "aide.down".into(),
-            severity: if parent_live { Severity::Error } else { Severity::Info },
-            message: if parent_live {
-                format!("{id} is always on but not running ({why})")
-            } else {
-                format!("{id} is down with its parent ({why}); it comes back with the parent's start")
-            },
-            fix: Some(format!("nimitz start {id}")),
-            id: Some(id.clone()),
-        });
-    }
-    if let Some(s) = live.filter(|s| s.short_id.is_some() && !s.pinned) {
-        out.push(Issue {
-            code: "aide.unpinned".into(),
-            severity: Severity::Warn,
-            message: format!("{id}'s job {} is not pinned; the daemon may retire it when idle", s.short_id.as_deref().unwrap_or_default()),
-            fix: Some(format!("nimitz start {id}")),
-            id: Some(id.clone()),
-        });
-    }
-    // (only where it runs: another machine's account is not this one's)
-    if let (true, Some(model), Some(allowed)) = (here, crate::claude::model_for(env, id), crate::claude::available_models(env)) {
-        if !crate::claude::model_allowed(&model, &allowed) {
-            out.push(Issue {
-                code: "aide.model".into(),
-                severity: Severity::Error,
-                message: format!("{id} runs on {model}, which availableModels ({}) leaves out; Claude Code would run the default model instead", allowed.join(", ")),
-                fix: Some(format!("add {model} to availableModels, or set model in [[aide]]")),
-                id: Some(id.clone()),
-            });
-        }
-    }
-    // its inbox (aide.md section 9), where it runs: dead letters, work that
-    // waits while it idles (the doorbell missed), a full inbox
-    if let Some(q) = m.inbox.as_ref().filter(|_| here) {
-        if let Some(d) = q.dead.first() {
-            out.push(Issue {
-                code: "inbox.dead".into(),
-                severity: Severity::Warn,
-                message: format!("{id} has {} dead letter(s): item {} ({}) failed for good: {}", q.dead.len(), d.id.trim_start_matches('0'), d.kind, d.reason),
-                fix: Some(format!("nimitz inbox retry {id} {}  # or: nimitz inbox drop {id} {}", d.id.trim_start_matches('0'), d.id.trim_start_matches('0'))),
-                id: Some(id.clone()),
-            });
-        }
-        let oldest = q.oldest_age_s.unwrap_or(0.0);
-        if q.pending > 0 && oldest > STUCK_S && live.is_some() && m.status == Status::Idle {
-            out.push(Issue {
-                code: "inbox.stuck".into(),
-                severity: Severity::Warn,
-                message: format!("{id} idles while {} item(s) wait, the oldest {}m: its doorbell did not wake it", q.pending, (oldest / 60.0) as i64),
-                fix: Some(format!("nimitz signal {id} \"drain your inbox\"")),
-                id: Some(id.clone()),
-            });
-        }
-        if q.depth_cap > 0 && q.pending + q.claimed.len() >= q.depth_cap {
-            out.push(Issue {
-                code: "inbox.full".into(),
-                severity: Severity::Warn,
-                message: format!("{id}'s inbox is full ({} of {}): posts are refused until it drains", q.pending + q.claimed.len(), q.depth_cap),
-                fix: Some(format!("nimitz aide set {id} --depth <more>  # or let it drain")),
-                id: Some(id.clone()),
-            });
-        }
-    }
-    out
-}
-
-/// An aide idle while its oldest item waited this long is stuck (`inbox.stuck`).
-pub const STUCK_S: f64 = 600.0;
 
 /// `nimitz check [<id>]`: the target, every member under it (a fleet's
 /// squadrons and ships, a squadron's ships), and its parents.
@@ -369,11 +283,6 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
             }
             if let Some(i) = m.cwd.as_deref().and_then(|cwd| folder_issue_in(env, &mut trust, &m.id, cwd)) {
                 out.push(i);
-            }
-            if m.role == Role::Aide {
-                let here = fleets.iter().find(|f| f.config.fleet == m.id.fleet()).is_some_and(|f| crate::config::member_dir(env, f, &m.id).is_some());
-                let parent_live = m.id.parent().and_then(|p| fleet.members().find(|x| x.id == p)).is_some_and(|p| p.session.as_ref().is_some_and(|s| s.pid.is_some()));
-                out.extend(aide_issues(env, m, here, parent_live));
             }
             // Session rules (name.*, labels.*, dup.live, copy.rows, lineage.broken,
             // held, ship.elsewhere) arrive here too: snapshot puts
@@ -537,22 +446,7 @@ pub(crate) mod tests {
             tasks: vec![],
             issues: vec![],
             pane: None,
-            parent: None,
-            inbox: None,
         }
-    }
-
-    /// `aide.model` is the machine's that runs the aide: another machine's
-    /// account (its `availableModels`) says nothing about it.
-    #[test]
-    fn aide_model_is_checked_only_where_the_aide_runs() {
-        let (_td, env) = test_env();
-        std::fs::create_dir_all(&env.claude_home).unwrap();
-        std::fs::write(env.claude_home.join("settings.json"), r#"{"availableModels": ["opus"]}"#).unwrap();
-        let m = member(Id("MAIN/@KB".into()), None);
-        let codes = |here: bool| aide_issues(&env, &m, here, true).into_iter().map(|i| i.code).collect::<Vec<_>>();
-        assert_eq!(codes(true), ["aide.down", "aide.model"]);
-        assert!(codes(false).is_empty(), "{:?}", codes(false));
     }
 
     pub(crate) fn snap_for(env: &Env, ship_cwd: Option<&str>) -> Snapshot {
@@ -567,7 +461,6 @@ pub(crate) mod tests {
                 dir: f.dir.to_string_lossy().into_owned(),
                 machine: Some("test-mac".into()),
                 admiral: member(Id::admiral("MAIN"), admiral_dir.to_str()),
-                aides: vec![],
                 squadrons: vec![Squadron {
                     id: Id::commodore("MAIN", "ARGOS"),
                     commodore: member(Id::commodore("MAIN", "ARGOS"), sq_dir.to_str()),

@@ -54,8 +54,3 @@ the user wants it done.
    terminal they are in; both the user's alone). Never run `/exit`: inside an attach it opens the agent
    view of the whole machine. Your commodores are jobs too: `nimitz start F/SQ -p`
    shows one (the user runs it).
-10. Your aides (`F/@NAME`) are added, changed and removed with `nimitz aide
-    new|set|rm` (plan first; `--snapshot` for a read-only reader). Give them
-    work through their inbox (`nimitz inbox post`, `nimitz ask`); their dead
-    letters reach you as a needs-you: `nimitz inbox retry|drop` once the user
-    agrees.

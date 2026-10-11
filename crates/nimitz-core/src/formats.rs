@@ -7,6 +7,10 @@
 //! data root every machine reads) only on `nimitz migrate --shared --yes`.
 //! The versions of local artifacts that carry none of their own, and the
 //! nimitz that last ran here, are in the manifest `S/formats.json`.
+//!
+//! A feature nimitz dropped leaves files behind: a `Cleanup` (`CLEANUPS`)
+//! removes or archives them, in the same runs and with the same backups and
+//! log, but moves no version up (0.7.0: the aides).
 use crate::env::Env;
 use crate::types::*;
 use serde::{Deserialize, Serialize};
@@ -90,7 +94,7 @@ pub struct Artifact {
     /// the files on this machine (`Kept::Manifest`: the file or the folder, when there)
     pub find: fn(&Env) -> Vec<PathBuf>,
     /// the version a file's content needs, when lower than `current` will do
-    /// (a fleet without aides stays at 1: 0.4.x machines still read it)
+    /// (a fleet stays at 1: 0.4.x machines still read it)
     pub wanted: Option<fn(&[u8]) -> u32>,
     /// a file older than `oldest`, brought to it (one summary, the code)
     pub lift: Option<(&'static str, fn(&Env) -> Result<(), String>)>,
@@ -148,7 +152,6 @@ pub static ARTIFACTS: &[Artifact] = &[
     Artifact { name: "inbox-records", path: "S/inbox/*.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: inbox_dir, wanted: None, lift: None },
     Artifact { name: "needs", path: "S/needs/*.json", scope: Scope::Local, current: 2, oldest: 1, kept: Kept::Manifest, steps: NEEDS_STEPS, find: needs_dir, wanted: None, lift: None },
     Artifact { name: "own-pins", path: "S/pins.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: pins_file, wanted: None, lift: None },
-    Artifact { name: "queues", path: "S/queues/<aide>/queue.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Json("format"), steps: &[], find: queue_files, wanted: None, lift: None },
     Artifact { name: "admiralty-ui", path: "S/admiralty-ui.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Json("format"), steps: &[], find: admiralty_ui, wanted: None, lift: None },
 ];
 
@@ -167,20 +170,22 @@ static FLEET_STEPS: &[Step] = &[Step {
     from: 1,
     to: 2,
     scope: Scope::Shared,
-    summary: "format = 2 and min_nimitz = \"0.5.0\" (the fleet holds [[aide]], which a 0.4.x nimitz cannot read)",
+    summary: "format = 2 and min_nimitz = \"0.5.0\" (0.5 and 0.6: a fleet that held [[aide]]; 0.7 wants no fleet at 2, so it never runs)",
     min_nimitz: Some("0.5.0"),
     apply: Apply::Bytes(fleet_1_2),
 }];
 
-static REGISTRY_STEPS: &[Step] = &[Step {
-    artifact: "registry",
-    from: 2,
-    to: 3,
-    scope: Scope::Local,
-    summary: "version 3 and min_nimitz \"0.5.0\" (role aide; records of an unknown role kept); no record changes",
-    min_nimitz: Some("0.5.0"),
-    apply: Apply::Bytes(registry_2_3),
-}];
+static REGISTRY_STEPS: &[Step] = &[
+    Step {
+        artifact: "registry",
+        from: 2,
+        to: 3,
+        scope: Scope::Local,
+        summary: "version 3 and min_nimitz \"0.5.0\" (role aide; records of an unknown role kept); no record changes",
+        min_nimitz: Some("0.5.0"),
+        apply: Apply::Bytes(registry_2_3),
+    },
+];
 
 static NEEDS_STEPS: &[Step] = &[Step {
     artifact: "needs",
@@ -220,38 +225,336 @@ pub fn stamp_toml(text: &str, format: u32, min_nimitz: Option<&str>) -> String {
     out
 }
 
-/// `fleet`: 2 when it holds `[[aide]]`, else 1.
-fn fleet_wanted(bytes: &[u8]) -> u32 {
-    let t: Option<toml::Table> = std::str::from_utf8(bytes).ok().and_then(|s| toml::from_str(s).ok());
-    match t.and_then(|t| t.get("aide").and_then(toml::Value::as_array).map(|a| !a.is_empty())) {
-        Some(true) => 2,
-        _ => 1,
-    }
+/// `fleet`: 1. Format 2 was a fleet with `[[aide]]` (0.5.0 to 0.6.x); the
+/// aides are gone, and their cleanup (`drop_aides`) takes a fleet back to 1.
+fn fleet_wanted(_bytes: &[u8]) -> u32 {
+    1
 }
 
-/// `registry` 2 -> 3: `version: 3` and `min_nimitz: "0.5.0"` (right after
-/// `version`); every record as it was.
-pub fn registry_2_3(bytes: &[u8]) -> Result<Vec<u8>, String> {
+/// A registry with `version: to` and `min_nimitz` right after it (on top
+/// when it had no version); the other keys as they were, through `keep`.
+fn restamp_registry(bytes: &[u8], to: u32, min_nimitz: &str, keep: impl Fn(&str, Value) -> Value) -> Result<Vec<u8>, String> {
     let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("does not parse: {e}"))?;
     let Value::Object(old) = v else { return Err("not a JSON object".into()) };
     let mut m = serde_json::Map::new();
     if !old.contains_key("version") {
-        m.insert("version".into(), Value::from(3));
-        m.insert("min_nimitz".into(), Value::from(REGISTRY_MIN_NIMITZ));
+        m.insert("version".into(), Value::from(to));
+        m.insert("min_nimitz".into(), Value::from(min_nimitz));
     }
     for (k, v) in old {
         match k.as_str() {
             "version" => {
-                m.insert(k, Value::from(3));
-                m.insert("min_nimitz".into(), Value::from(REGISTRY_MIN_NIMITZ));
+                m.insert(k, Value::from(to));
+                m.insert("min_nimitz".into(), Value::from(min_nimitz));
             }
             "min_nimitz" => {}
             _ => {
+                let v = keep(&k, v);
                 m.insert(k, v);
             }
         }
     }
     serde_json::to_vec_pretty(&Value::Object(m)).map_err(|e| e.to_string())
+}
+
+/// `registry` 2 -> 3: `version: 3` and `min_nimitz: "0.5.0"` (right after
+/// `version`); every record as it was.
+pub fn registry_2_3(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    restamp_registry(bytes, 3, "0.5.0", |_, v| v)
+}
+
+/// `registry` (a cleanup, no version moves): every record of role `aide`
+/// dropped, from `identities` and `retired` (0.7.0 has no such role); every
+/// other record, and every other key, as it was.
+pub fn drop_aide_records(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("does not parse: {e}"))?;
+    let Value::Object(mut m) = v else { return Err("not a JSON object".into()) };
+    for k in ["identities", "retired"] {
+        if let Some(Value::Object(recs)) = m.get_mut(k) {
+            recs.retain(|_, r| !is_aide_record(r));
+        }
+    }
+    serde_json::to_vec_pretty(&Value::Object(m)).map_err(|e| e.to_string())
+}
+
+fn is_aide_record(r: &Value) -> bool {
+    r.get("role").and_then(Value::as_str) == Some("aide")
+}
+
+// ------------------------------------------------------------------ cleanups
+
+/// What a dropped feature left on disk, removed or archived (never a version
+/// up: the file goes back to, or stays at, what every nimitz reads). Local
+/// cleanups run by themselves with the local steps, shared ones on `nimitz
+/// migrate --shared --yes`; each file is backed up first (as a step's) and
+/// logged.
+pub struct Cleanup {
+    /// what it does, as a plan line shows it (`fleet: aides dropped`)
+    pub label: &'static str,
+    pub artifact: &'static str,
+    pub scope: Scope,
+    pub summary: &'static str,
+    /// the files (or folders) it is due on now
+    pub find: fn(&Env) -> Vec<PathBuf>,
+    pub apply: CleanupApply,
+}
+
+#[derive(Clone, Copy)]
+pub enum CleanupApply {
+    /// one file, bytes in, bytes out (atomic write over it)
+    Bytes(fn(&[u8]) -> Result<Vec<u8>, String>),
+    /// moved whole into `S/archive/<folder>/` (never deleted)
+    Archive(&'static str),
+}
+
+impl Cleanup {
+    /// Due on `file`: from its version to the version of what the cleanup
+    /// makes of it (a folder, or a file it cannot read: 0).
+    fn due(&self, file: &Path) -> Due {
+        let a = artifact(self.artifact);
+        let bytes = std::fs::read(file).ok();
+        let version = |b: &[u8]| a.and_then(|a| a.version_of(b)).unwrap_or(0);
+        let from = bytes.as_deref().map(version).unwrap_or(0);
+        let to = match (self.apply, bytes.as_deref()) {
+            (CleanupApply::Bytes(apply), Some(b)) => apply(b).map(|o| version(&o)).unwrap_or(from),
+            _ => from,
+        };
+        Due { artifact: self.artifact, scope: self.scope, file: file.to_path_buf(), from, to, summary: self.summary, min_nimitz: None, silent: false, cleanup: Some(self.label) }
+    }
+}
+
+/// 0.7.0: the aides are gone.
+pub static CLEANUPS: &[Cleanup] = &[
+    Cleanup {
+        label: "aide records dropped",
+        artifact: "registry",
+        scope: Scope::Local,
+        summary: "the records of the aides (role aide, gone in 0.7.0) dropped from the identities and the retired; the rest as it was",
+        find: registry_with_aides,
+        apply: CleanupApply::Bytes(drop_aide_records),
+    },
+    Cleanup {
+        label: "aides dropped",
+        artifact: "fleet",
+        scope: Scope::Shared,
+        summary: "the [[aide]] tables dropped (aides are gone in 0.7.0), and the format 2 / min_nimitz stamp they needed: every nimitz reads it again (an aide job still running: `nimitz check` names it aide.retired, with its stop)",
+        find: fleets_with_aides,
+        apply: CleanupApply::Bytes(drop_aides),
+    },
+    Cleanup {
+        label: "aide state archived",
+        artifact: "aides",
+        scope: Scope::Local,
+        summary: "the 0.6 aides' queues, snapshots, doorbell files and needs-you notices, moved to S/archive/aides-0.6/ (aides are gone in 0.7.0; nothing deleted)",
+        find: aide_state,
+        apply: CleanupApply::Archive("aides-0.6"),
+    },
+];
+
+/// The fleet.toml files that still hold `[[aide]]`, or the format 2 stamp
+/// only an aide asked for (a file too new for this nimitz is left alone).
+fn fleets_with_aides(env: &Env) -> Vec<PathBuf> {
+    fleet_files(env)
+        .into_iter()
+        .filter(|f| {
+            let Ok(raw) = std::fs::read_to_string(f) else { return false };
+            if guard_toml("fleet", f, &raw).is_err() {
+                return false;
+            }
+            let Ok(t) = toml::from_str::<toml::Table>(&raw) else { return false };
+            t.contains_key("aide") || t.get("format").and_then(toml::Value::as_integer) == Some(2)
+        })
+        .collect()
+}
+
+/// The registry, when it holds a record of role `aide` (and this nimitz may read it).
+fn registry_with_aides(env: &Env) -> Vec<PathBuf> {
+    registry_file(env)
+        .into_iter()
+        .filter(|f| {
+            let Ok(bytes) = std::fs::read(f) else { return false };
+            let Some(v) = crate::evidence::first_json(&bytes) else { return false };
+            guard_json("registry", f, &v, "version").is_ok() && ["identities", "retired"].iter().any(|k| v.get(k).and_then(Value::as_object).is_some_and(|m| m.values().any(is_aide_record)))
+        })
+        .collect()
+}
+
+/// What a 0.5 or 0.6 nimitz kept for its aides in this machine's state:
+/// `S/queues`, `S/aides` (snapshots), the doorbell's `ring.lock` and
+/// `ring.stamp`, and the needs-you notices of an aide or a dead letter.
+fn aide_state(env: &Env) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = ["queues", "aides", "ring.lock", "ring.stamp"].iter().map(|n| env.state.join(n)).filter(|p| p.exists()).collect();
+    let mut notices: Vec<PathBuf> = std::fs::read_dir(crate::notify::dir(env))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| {
+            let n = n.to_string_lossy();
+            n.ends_with(".json") && (n.contains("#dead-") || n.contains("%2F@"))
+        }))
+        .collect();
+    notices.sort();
+    out.extend(notices);
+    out
+}
+
+/// `fleet`: every `[[aide]]` table (with its `[aide.*]` sub-tables) taken
+/// out of the text; then `format = 2` and a `min_nimitz` below 0.7.0 (the
+/// stamp the aides needed) go from the top. Comments and the rest of the
+/// file stay as they were, and the result must parse to the same tables,
+/// less those keys, or nothing is written.
+pub fn drop_aides(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    let mut want: toml::Table = toml::from_str(text).map_err(|e| format!("does not parse: {}", e.message().trim()))?;
+    want.remove("aide");
+    let stamp_goes = |k: &str, v: Option<&toml::Value>| match k {
+        "format" => v.and_then(toml::Value::as_integer) == Some(2),
+        "min_nimitz" => v.and_then(toml::Value::as_str).is_some_and(|m| crate::compat::older(m, "0.7.0")),
+        _ => false,
+    };
+    for k in ["format", "min_nimitz"] {
+        if stamp_goes(k, want.get(k)) {
+            want.remove(k);
+        }
+    }
+    let mut out = String::new();
+    let (mut in_table, mut skip) = (false, false);
+    // comments and blank lines inside an aide's tables: held, then kept
+    // when a table that is not an aide's follows (they belong to it)
+    let mut held = String::new();
+    for line in text.split_inclusive('\n') {
+        let t = line.trim_start();
+        if t.starts_with('[') {
+            in_table = true;
+            let name = t.trim_start_matches('[').split(']').next().unwrap_or("").trim();
+            let head = name.split('.').next().unwrap_or("").trim().trim_matches('"');
+            skip = head == "aide";
+            if skip {
+                held.clear();
+            } else {
+                out.push_str(&std::mem::take(&mut held));
+            }
+        }
+        if skip {
+            if t.is_empty() || t.starts_with('#') {
+                held.push_str(line);
+            } else {
+                held.clear();
+            }
+            continue;
+        }
+        if !in_table && t.contains('=') {
+            let (k, v) = t.split_once('=').unwrap_or_default();
+            let k = k.trim();
+            if (k == "format" || k == "min_nimitz") && stamp_goes(k, toml::from_str::<toml::Table>(&format!("v = {}", v.trim())).ok().as_ref().and_then(|t| t.get("v"))) {
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    let got: toml::Table = toml::from_str(&out).map_err(|e| format!("the file without its aides does not parse ({}): left as it was", e.message().trim()))?;
+    if got != want {
+        return Err("taking out the [[aide]] tables would change more than them: left as it was (remove them by hand)".into());
+    }
+    Ok(out.into_bytes())
+}
+
+/// One cleanup on one file or folder: its backup (a file's bytes; an
+/// archived thing is its own copy), then the change, then the log line.
+fn run_cleanup(env: &Env, c: &Cleanup, f: &Path, nimitz: &str, ran: &mut Ran) {
+    let d = c.due(f);
+    let res = match c.apply {
+        CleanupApply::Bytes(apply) => cleanup_bytes(env, c, apply, f, nimitz, ran),
+        CleanupApply::Archive(folder) => archive(env, f, folder).map(|_| true),
+    };
+    match res {
+        Ok(true) => {
+            let backup = backup_path(f, nimitz);
+            log(env, nimitz, &d, None, backup.exists().then_some(backup.as_path()));
+            ran.done.push(d);
+        }
+        Ok(false) => {}
+        Err(e) => fail(env, nimitz, ran, d, e),
+    }
+}
+
+/// A byte cleanup on `f`: read, apply, write under the lock while the file
+/// is still what was read; a file another writer changed meanwhile (a hook
+/// on the registry) is read again, as `run_file` does. The backup is the
+/// first read (as a step's: the file before this nimitz touched it), so a
+/// write that came between is not in it. Ok(false): nothing to do (too new
+/// for this nimitz: said in `ran.too_new`).
+fn cleanup_bytes(env: &Env, c: &Cleanup, apply: fn(&[u8]) -> Result<Vec<u8>, String>, f: &Path, nimitz: &str, ran: &mut Ran) -> Result<bool, String> {
+    for _ in 0..64 {
+        let bytes = std::fs::read(f).map_err(|e| e.to_string())?;
+        if let Some(a) = artifact(c.artifact) {
+            if let Err(t) = a.guard_file(f, &bytes) {
+                ran.too_new.push(t);
+                return Ok(false);
+            }
+        }
+        let out = apply(&bytes)?;
+        if a_version_moved(c, &bytes, &out) {
+            return Err("the cleanup moved the file's version: left as it was".into());
+        }
+        backup_once(f, Some(&bytes), nimitz, ran)?;
+        let write = || -> Result<bool, String> {
+            if std::fs::read(f).map_err(|e| e.to_string())? != bytes {
+                return Ok(false);
+            }
+            write_bytes(f, &out).map(|_| true).map_err(|e| e.to_string())
+        };
+        let wrote = match c.scope {
+            Scope::Local => crate::registry::with_lock(env, None, write).map_err(|e| e.to_string())?,
+            Scope::Shared => write(),
+        }?;
+        if wrote {
+            return Ok(true);
+        }
+    }
+    Err("the file kept changing under the cleanup: left for the next run".into())
+}
+
+/// A cleanup may take a file down to a version every nimitz reads (the
+/// fleet: 2 to 1), never up: that is a step's.
+fn a_version_moved(c: &Cleanup, before: &[u8], after: &[u8]) -> bool {
+    let Some(a) = artifact(c.artifact) else { return false };
+    a.version_of(after).unwrap_or(0) > a.version_of(before).unwrap_or(0)
+}
+
+/// Move `p` (under the state folder) to `S/archive/<folder>/<its path under
+/// S>`; a name already there gets `.2`, `.3`, ... (nothing is replaced).
+fn archive(env: &Env, p: &Path, folder: &str) -> Result<PathBuf, String> {
+    let rel = p.strip_prefix(&env.state).map_err(|_| format!("{} is not under {}", p.display(), env.state.display()))?;
+    let base = env.state.join("archive").join(folder).join(rel);
+    let mut to = base.clone();
+    let mut n = 2;
+    // (a broken link at the name is a name taken too)
+    while std::fs::symlink_metadata(&to).is_ok() {
+        let mut s = base.as_os_str().to_os_string();
+        s.push(format!(".{n}"));
+        to = PathBuf::from(s);
+        n += 1;
+    }
+    std::fs::create_dir_all(to.parent().unwrap_or(&env.state)).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::rename(p, &to) {
+        // a file held open (Windows: a scanner, a leftover process) stops a
+        // rename. A file: copied, then the original removed (all or
+        // nothing: a copy whose original stays is removed again). A folder
+        // is never copied and removed piecemeal (a file that cannot go would
+        // leave the rest half moved): it waits, whole, for the next run
+        if p.is_dir() {
+            return Err(format!("{} -> {}: {e} (left as it was; the next nimitz command tries again)", p.display(), to.display()));
+        }
+        if let Err(e2) = std::fs::copy(p, &to).and_then(|_| std::fs::remove_file(p)) {
+            if p.exists() {
+                let _ = std::fs::remove_file(&to);
+            }
+            return Err(format!("{} -> {}: {e} (and a copy: {e2}; left as it was)", p.display(), to.display()));
+        }
+    }
+    Ok(to)
 }
 
 // ------------------------------------------------------------------ where they live
@@ -331,10 +634,6 @@ fn needs_dir(env: &Env) -> Vec<PathBuf> {
 
 fn pins_file(env: &Env) -> Vec<PathBuf> {
     existing(env.state.join("pins.json"))
-}
-
-fn queue_files(env: &Env) -> Vec<PathBuf> {
-    subdirs(&env.state.join("queues")).into_iter().map(|d| d.join("queue.json")).filter(|p| p.is_file()).collect()
 }
 
 fn admiralty_ui(env: &Env) -> Vec<PathBuf> {
@@ -624,12 +923,12 @@ pub fn record_machine(env: &Env) {
     }
 }
 
-/// The machines of `f` that cannot be trusted to read it, or an aide added
-/// to it (doctor): a listed machine with no record (0.4.x, or no 0.5 run
-/// since), or one older than the fleet's `min_nimitz`.
+/// The machines of `f` that cannot be trusted to read it (doctor): a listed
+/// machine with no record (0.4.x, or no 0.5 run since), or one older than
+/// the fleet's `min_nimitz`.
 pub fn machine_issues(f: &FleetOnDisk) -> Vec<Issue> {
     let need = f.config.min_nimitz.clone().filter(|m| !crate::compat::older(m, RECORDS_SINCE)).unwrap_or_else(|| RECORDS_SINCE.into());
-    let then = if f.config.aide.is_empty() { "update it before adding an aide" } else { "update it: it cannot load this fleet's [[aide]]" };
+    let then = "update it";
     f.config
         .machines
         .keys()
@@ -666,6 +965,19 @@ pub struct Due {
     /// a manifest artifact with nothing on disk: only the manifest changes
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub silent: bool,
+    /// a cleanup (`CLEANUPS`), not a step: what it does to the file
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<&'static str>,
+}
+
+impl Due {
+    /// `registry 3->4`, or a cleanup's `fleet: aides dropped`.
+    pub fn label(&self) -> String {
+        match self.cleanup {
+            Some(c) => format!("{}: {c}", self.artifact),
+            None => format!("{} {}->{}", self.artifact, self.from, self.to),
+        }
+    }
 }
 
 /// Every step due here, in chain order per file (`scope`: one scope, or both).
@@ -689,6 +1001,7 @@ pub fn due(env: &Env, arts: &[Artifact], scope: Option<Scope>) -> Vec<Due> {
             Kept::Own => {}
         }
     }
+    out.extend(CLEANUPS.iter().filter(|c| scope.is_none_or(|s| c.scope == s)).flat_map(|c| (c.find)(env).into_iter().map(|f| c.due(&f))));
     out
 }
 
@@ -697,13 +1010,13 @@ fn chain(a: &Artifact, file: &Path, mut v: u32, to: u32, silent: bool) -> Vec<Du
     let mut out = vec![];
     if v < a.oldest && v < to {
         if let Some((summary, _)) = a.lift {
-            out.push(Due { artifact: a.name, scope: a.scope, file: file.to_path_buf(), from: v, to: a.oldest, summary, min_nimitz: None, silent });
+            out.push(Due { artifact: a.name, scope: a.scope, file: file.to_path_buf(), from: v, to: a.oldest, summary, min_nimitz: None, silent, cleanup: None });
         }
         v = a.oldest;
     }
     while v < to {
         let Some(s) = a.step_from(v) else { break };
-        out.push(Due { artifact: a.name, scope: a.scope, file: file.to_path_buf(), from: s.from, to: s.to, summary: s.summary, min_nimitz: s.min_nimitz, silent });
+        out.push(Due { artifact: a.name, scope: a.scope, file: file.to_path_buf(), from: s.from, to: s.to, summary: s.summary, min_nimitz: s.min_nimitz, silent, cleanup: None });
         v = s.to;
     }
     out
@@ -717,6 +1030,8 @@ pub struct Ran {
     pub backups: Vec<PathBuf>,
     /// files left alone: a newer nimitz wrote them (the guard refuses them)
     pub too_new: Vec<TooNew>,
+    /// `S/migrations.log`, where each step and cleanup is written
+    pub log: Option<PathBuf>,
 }
 
 impl Ran {
@@ -726,14 +1041,9 @@ impl Ran {
         if let Some((d, e)) = self.failed.first() {
             let backup = backup_path(&d.file, NIMITZ);
             let kept = if backup.exists() { format!("; its backup is {}", backup.display()) } else { String::new() };
-            return Some(format!(
-                "[ERROR] nimitz {NIMITZ}: migrating {} {}->{} failed: {} {e} (the file is as it was{kept}; the log is {}; nimitz doctor)",
-                d.artifact,
-                d.from,
-                d.to,
-                d.file.display(),
-                d.file.parent().map(|p| p.join("migrations.log")).unwrap_or_default().display()
-            ));
+            let what = if d.cleanup.is_some() { "cleanup" } else { "migrating" };
+            let log = self.log.as_ref().map(|l| l.display().to_string()).unwrap_or_else(|| "S/migrations.log".into());
+            return Some(format!("[ERROR] nimitz {NIMITZ}: {what} {} failed: {} {e} (the file is as it was{kept}; the log is {log}; nimitz doctor)", d.label(), d.file.display()));
         }
         let moved = moved(&self.done);
         if moved.is_empty() {
@@ -747,7 +1057,14 @@ impl Ran {
 /// `registry 2->3, needs 1->2`: each artifact once, from its lowest to its highest version.
 pub fn moved(done: &[Due]) -> Vec<String> {
     let mut by: Vec<(&str, u32, u32)> = vec![];
+    let mut cleaned: Vec<String> = vec![];
     for d in done.iter().filter(|d| !d.silent) {
+        if d.cleanup.is_some() {
+            if !cleaned.contains(&d.label()) {
+                cleaned.push(d.label());
+            }
+            continue;
+        }
         match by.iter_mut().find(|(a, _, _)| *a == d.artifact) {
             Some(e) => {
                 e.1 = e.1.min(d.from);
@@ -756,7 +1073,7 @@ pub fn moved(done: &[Due]) -> Vec<String> {
             None => by.push((d.artifact, d.from, d.to)),
         }
     }
-    by.into_iter().map(|(a, f, t)| format!("{a} {f}->{t}")).collect()
+    by.into_iter().map(|(a, f, t)| format!("{a} {f}->{t}")).chain(cleaned).collect()
 }
 
 /// `<file>.pre-<nimitz>`: the file as it was before this nimitz migrated it.
@@ -816,12 +1133,12 @@ fn locked(env: &Env) -> std::io::Result<Option<std::fs::File>> {
 }
 
 fn lock_failed(env: &Env, scope: Scope, e: std::io::Error) -> Ran {
-    let d = Due { artifact: "migrate.lock", scope, file: env.state.join("migrate.lock"), from: 0, to: 0, summary: "", min_nimitz: None, silent: false };
-    Ran { failed: vec![(d, e.to_string())], ..Default::default() }
+    let d = Due { artifact: "migrate.lock", scope, file: env.state.join("migrate.lock"), from: 0, to: 0, summary: "", min_nimitz: None, silent: false, cleanup: None };
+    Ran { failed: vec![(d, e.to_string())], log: Some(log_path(env)), ..Default::default() }
 }
 
 fn run_unlocked(env: &Env, arts: &[Artifact], scope: Scope, nimitz: &str) -> Ran {
-    let mut ran = Ran::default();
+    let mut ran = Ran { log: Some(log_path(env)), ..Default::default() };
     let mut man = Manifest::load(env).unwrap_or_default();
     for a in arts.iter().filter(|a| a.scope == scope) {
         match a.kept {
@@ -832,6 +1149,11 @@ fn run_unlocked(env: &Env, arts: &[Artifact], scope: Scope, nimitz: &str) -> Ran
             }
             Kept::Manifest => run_manifest(env, a, &mut man, nimitz, &mut ran),
             Kept::Own => {}
+        }
+    }
+    for c in CLEANUPS.iter().filter(|c| c.scope == scope) {
+        for f in (c.find)(env) {
+            run_cleanup(env, c, &f, nimitz, &mut ran);
         }
     }
     // the mark says every local file is this nimitz's to read: never while a
@@ -847,7 +1169,7 @@ fn run_unlocked(env: &Env, arts: &[Artifact], scope: Scope, nimitz: &str) -> Ran
             man.nimitz = nimitz.to_string();
         }
         if let Err(e) = man.save(env) {
-            let d = Due { artifact: "manifest", scope, file: manifest_path(env), from: 0, to: 0, summary: "", min_nimitz: None, silent: false };
+            let d = Due { artifact: "manifest", scope, file: manifest_path(env), from: 0, to: 0, summary: "", min_nimitz: None, silent: false, cleanup: None };
             ran.failed.push((d, e));
         }
     }
@@ -871,7 +1193,7 @@ fn run_file(env: &Env, a: &Artifact, f: &Path, nimitz: &str, ran: &mut Ran) {
             return;
         }
         let Some(d) = chain(a, f, v, want, false).into_iter().next() else {
-            let d = Due { artifact: a.name, scope: a.scope, file: f.to_path_buf(), from: v, to: want, summary: "", min_nimitz: None, silent: false };
+            let d = Due { artifact: a.name, scope: a.scope, file: f.to_path_buf(), from: v, to: want, summary: "", min_nimitz: None, silent: false, cleanup: None };
             fail(env, nimitz, ran, d, format!("no step from version {v}"));
             return;
         };
@@ -1069,6 +1391,9 @@ fn log(env: &Env, nimitz: &str, d: &Due, error: Option<&str>, backup: Option<&Pa
         "to": d.to,
         "ok": error.is_none(),
     });
+    if let Some(c) = d.cleanup {
+        line["cleanup"] = Value::from(c);
+    }
     if let Some(e) = error {
         line["error"] = Value::from(e);
     }
@@ -1090,6 +1415,8 @@ pub struct Failed {
     pub to: u32,
     pub error: String,
     pub backup: Option<String>,
+    /// a cleanup's label (`CLEANUPS`), when it was one
+    pub cleanup: Option<String>,
     /// the log line as written
     pub line: String,
 }
@@ -1103,7 +1430,10 @@ impl Failed {
         Issue {
             code: "format.failed".into(),
             severity: Severity::Error,
-            message: format!("migrating {} {}->{} failed on {}: {}{restore} (log: {})", self.artifact, self.from, self.to, self.file, self.error, self.line),
+            message: match &self.cleanup {
+                Some(c) => format!("cleanup {}: {c} failed on {}: {}{restore} (log: {})", self.artifact, self.file, self.error, self.line),
+                None => format!("migrating {} {}->{} failed on {}: {}{restore} (log: {})", self.artifact, self.from, self.to, self.file, self.error, self.line),
+            },
             fix: Some("fix what the error names, then nimitz migrate --yes (or restore the backup over the file)".into()),
             id: None,
         }
@@ -1116,14 +1446,31 @@ pub fn failed(env: &Env) -> Vec<Failed> {
     let mut last: Vec<((String, String, u64), (bool, String, Value))> = vec![];
     for l in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
-        let key = (v["artifact"].as_str().unwrap_or("").to_string(), v["file"].as_str().unwrap_or("").to_string(), v["from"].as_u64().unwrap_or(0));
+        // (a cleanup's line is keyed apart from a step's on the same file and version)
+        let art = match v["cleanup"].as_str() {
+            Some(c) => format!("{}#{c}", v["artifact"].as_str().unwrap_or("")),
+            None => v["artifact"].as_str().unwrap_or("").to_string(),
+        };
+        let key = (art, v["file"].as_str().unwrap_or("").to_string(), v["from"].as_u64().unwrap_or(0));
         let ok = v["ok"].as_bool().unwrap_or(false);
+        // a cleanup done on a file supersedes a cleanup that failed on it
+        // before (never a step's failure: that is the step's to clear)
+        if ok && v["cleanup"].is_string() {
+            for e in last.iter_mut().filter(|(k, (_, _, ev))| k.0 == key.0 && k.1 == key.1 && ev["cleanup"].is_string()) {
+                e.1 .0 = true;
+            }
+        }
         match last.iter_mut().find(|(k, _)| *k == key) {
             Some(e) => e.1 = (ok, l.to_string(), v),
             None => last.push((key, (ok, l.to_string(), v))),
         }
     }
-    // a file now past the failed step's `from` was migrated since (by hand or a restore)
+    // a file now past the failed step's `from` was migrated since (by hand or
+    // a restore); a cleanup's, once the cleanup no longer finds it
+    let cleaned = |v: &Value, file: &str| -> Option<bool> {
+        let c = CLEANUPS.iter().find(|c| Some(c.label) == v["cleanup"].as_str())?;
+        Some(!(c.find)(env).iter().any(|f| f.to_string_lossy() == file))
+    };
     let done_since = |art: &str, file: &str, from: u64| -> bool {
         let Some(a) = artifact(art) else { return false };
         match a.kept {
@@ -1133,14 +1480,22 @@ pub fn failed(env: &Env) -> Vec<Failed> {
         }
     };
     last.into_iter()
-        .filter(|(k, (ok, _, _))| !ok && !done_since(&k.0, &k.1, k.2))
+        // (a step of an artifact this nimitz no longer has, on a file gone since
+        // (0.6's queues, archived), can never be done again: dropped)
+        .filter(|(k, (_, _, v))| match v["cleanup"].as_str() {
+            // a cleanup this nimitz no longer has can never run again: dropped
+            Some(c) => CLEANUPS.iter().any(|x| x.label == c),
+            None => artifact(&k.0).is_some() || Path::new(&k.1).exists(),
+        })
+        .filter(|(k, (ok, _, v))| !ok && !cleaned(v, &k.1).unwrap_or_else(|| done_since(&k.0, &k.1, k.2)))
         .map(|(k, (_, line, v))| Failed {
-            artifact: k.0,
+            artifact: k.0.split('#').next().unwrap_or("").to_string(),
             file: k.1,
             from: k.2 as u32,
             to: v["to"].as_u64().unwrap_or(0) as u32,
             error: v["error"].as_str().unwrap_or("").to_string(),
             backup: v["backup"].as_str().map(str::to_string),
+            cleanup: v["cleanup"].as_str().map(str::to_string),
             line,
         })
         .collect()
@@ -1183,8 +1538,8 @@ mod tests {
     fn fleet_1_2_stamps_the_top_and_keeps_the_rest() {
         let v1 = fixture("fleet/v1.aide.toml");
         let a = artifact("fleet").unwrap();
-        assert_eq!((a.version_of(&v1), a.wanted_of(&v1)), (Some(1), 2), "a fleet with an aide wants format 2");
-        assert_eq!(a.wanted_of(&fixture("fleet/v1.toml")), 1, "a fleet without one stays at 1 (0.4.x reads it)");
+        assert_eq!((a.version_of(&v1), a.wanted_of(&v1)), (Some(1), 1), "0.7.0: no fleet wants format 2 (the aides are gone)");
+        assert_eq!(a.wanted_of(&fixture("fleet/v1.toml")), 1, "a fleet stays at 1 (0.4.x reads it)");
         let v2 = fleet_1_2(&v1).unwrap();
         let text = String::from_utf8(v2.clone()).unwrap();
         assert!(text.starts_with("format = 2\nmin_nimitz = \"0.5.0\"\nfleet = \"MAIN\"\n"), "{text}");
@@ -1196,6 +1551,186 @@ mod tests {
         let t = stamp_toml("fleet = \"X\"\nformat = 1\n[admiral]\nformat = 7\n", 2, None);
         assert_eq!(t, "format = 2\nfleet = \"X\"\n[admiral]\nformat = 7\n");
         assert!(fleet_1_2(b"fleet = \"X\"\n[[broken").is_err());
+    }
+
+    #[test]
+    fn the_aide_records_go_from_the_registry_and_nothing_else_moves() {
+        let v3 = fixture("registry/v3.aide.json");
+        let a = artifact("registry").unwrap();
+        assert_eq!(a.version_of(&v3), Some(3));
+        let out = drop_aide_records(&v3).unwrap();
+        let (old, new): (Value, Value) = (serde_json::from_slice(&v3).unwrap(), serde_json::from_slice(&out).unwrap());
+        let mut want = old.clone();
+        want["identities"].as_object_mut().unwrap().remove("MAIN/@KB").expect("the fixture has an aide");
+        want["retired"].as_object_mut().unwrap().remove("MAIN/@REF").expect("and a retired one");
+        assert_eq!(new, want, "the version, the stamp and every other record as they were");
+        let keys: Vec<&String> = new.as_object().unwrap().keys().collect();
+        assert_eq!(keys[..2], [&"version".to_string(), &"min_nimitz".to_string()], "the key order kept");
+        let r = crate::registry::parse(std::str::from_utf8(&out).unwrap()).unwrap();
+        assert!(r.unknown.records.is_empty() && r.unknown.roles.is_empty(), "{:?}", r.unknown);
+        assert_eq!(drop_aide_records(&out).unwrap(), out, "idempotent");
+        // run on this machine: due, done once, backed up, then gone from the plan
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.registry_path(), &v3).unwrap();
+        let d: Vec<(String, u32, u32)> = due(&env, ARTIFACTS, Some(Scope::Local)).iter().filter(|d| d.cleanup.is_some()).map(|d| (d.label(), d.from, d.to)).collect();
+        assert_eq!(d, [("registry: aide records dropped".to_string(), 3, 3)]);
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        assert!(ran.failed.is_empty(), "{ran:?}");
+        assert_eq!(moved(&ran.done), ["registry: aide records dropped"]);
+        assert_eq!(std::fs::read(backup_path(&env.registry_path(), NIMITZ)).unwrap(), v3);
+        assert!(crate::registry::load(&env).unknown.records.is_empty());
+        assert!(due(&env, ARTIFACTS, None).is_empty());
+    }
+
+    #[test]
+    fn the_aides_cleanup_keeps_the_rest_of_the_fleet_file_byte_for_byte() {
+        let v2 = fixture("fleet/v2.aide.toml");
+        let out = String::from_utf8(drop_aides(&v2).unwrap()).unwrap();
+        assert_eq!(out, "# the home fleet (a comment the cleanup keeps)\nfleet = \"MAIN\"\n\n[machines.sandbox]\nhostname = \"sandbox-host\"\nos = \"linux\"\n\n[admiral]\n\n");
+        let c: FleetConfig = toml::from_str(&out).unwrap();
+        assert!(c.aide.is_empty() && c.format.is_none() && c.min_nimitz.is_none(), "{c:?}");
+        assert_eq!(drop_aides(out.as_bytes()).unwrap(), out.as_bytes(), "idempotent");
+        // a fleet at format 1 with aides: only the tables go; a later stamp stays
+        let v1 = fixture("fleet/v1.aide.toml");
+        let o1 = String::from_utf8(drop_aides(&v1).unwrap()).unwrap();
+        assert!(o1.starts_with("fleet = \"MAIN\"\n") && !o1.contains("aide"), "{o1}");
+        let later = "format = 2\nmin_nimitz = \"0.9.0\"\nfleet = \"X\"\n";
+        assert_eq!(String::from_utf8(drop_aides(later.as_bytes()).unwrap()).unwrap(), "min_nimitz = \"0.9.0\"\nfleet = \"X\"\n");
+        // an aide the text cannot take out cleanly: nothing written
+        let inline = "fleet = \"X\"\naide = [{ name = \"KB\" }]\n";
+        assert!(drop_aides(inline.as_bytes()).unwrap_err().contains("remove them by hand"));
+        assert!(drop_aides(b"fleet = \"X\"\n[[broken").is_err());
+    }
+
+    /// An aide between other tables: the comments of the table after it stay.
+    #[test]
+    fn the_aides_cleanup_keeps_the_comments_of_the_table_after_an_aide() {
+        let text = "fleet = \"X\"\n\n[[aide]]\n# the notes keeper\nname = \"KB\"\n\n[aide.dirs]\nm = \"/kb\"\n\n# the machines\n[machines.m]\nhostname = \"h\"\n";
+        let out = String::from_utf8(drop_aides(text.as_bytes()).unwrap()).unwrap();
+        assert_eq!(out, "fleet = \"X\"\n\n\n# the machines\n[machines.m]\nhostname = \"h\"\n");
+    }
+
+    /// A folder that cannot be renamed into the archive is left whole (never
+    /// copied and removed piecemeal).
+    #[cfg(unix)]
+    #[test]
+    fn an_archive_that_cannot_rename_leaves_a_folder_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_td, env) = test_env();
+        let q = env.state.join("queues/MAIN%2F@KB");
+        std::fs::create_dir_all(&q).unwrap();
+        std::fs::write(q.join("queue.json"), "{}").unwrap();
+        // the state folder read-only: no rename out of it, no remove
+        std::fs::create_dir_all(env.state.join("archive/aides-0.6")).unwrap();
+        let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+        mode(&env.state, 0o555);
+        let e = archive(&env, &env.state.join("queues"), "aides-0.6");
+        mode(&env.state, 0o755);
+        if e.is_ok() {
+            return; // running as root: nothing to test
+        }
+        assert!(e.unwrap_err().contains("left as it was"));
+        assert!(q.join("queue.json").is_file() && !env.state.join("archive/aides-0.6/queues").exists());
+    }
+
+    /// A cleanup that fails (here: `S/archive` is a file, so nothing can be
+    /// archived) is an error line naming it and the log, leaves the files,
+    /// keeps the mark unset so the next command tries again, and is in
+    /// `failed()` until a later run does it. A log line of an artifact this
+    /// nimitz no longer has never shows.
+    #[test]
+    fn a_failed_cleanup_is_said_logged_and_retried_until_done() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(env.state.join("queues/MAIN%2F@KB")).unwrap();
+        std::fs::write(env.state.join("archive"), "in the way").unwrap();
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        let line = ran.line().unwrap();
+        assert!(line.starts_with(&format!("[ERROR] nimitz {NIMITZ}: cleanup aides: aide state archived failed: ")), "{line}");
+        assert!(line.contains(&format!("the log is {}", log_path(&env).display())), "{line}");
+        assert!(env.state.join("queues/MAIN%2F@KB").is_dir(), "nothing moved");
+        assert!(!up_to_date(&env), "the next command tries again");
+        let f = failed(&env);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].issue().message.starts_with("cleanup aides: aide state archived failed on "), "{}", f[0].issue().message);
+        // an old line of a step this nimitz no longer has: dropped
+        let mut log = std::fs::read_to_string(log_path(&env)).unwrap();
+        log.push_str("{\"artifact\":\"queues\",\"file\":\"/x/queue.json\",\"from\":1,\"to\":2,\"ok\":false,\"error\":\"old\"}\n");
+        std::fs::write(log_path(&env), log).unwrap();
+        assert_eq!(failed(&env).len(), 1);
+        std::fs::remove_file(env.state.join("archive")).unwrap();
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        assert!(ran.failed.is_empty(), "{ran:?}");
+        assert!(env.state.join("archive/aides-0.6/queues/MAIN%2F@KB").is_dir());
+        assert!(up_to_date(&env));
+        assert!(failed(&env).is_empty(), "{:?}", failed(&env));
+    }
+
+    #[test]
+    fn the_aides_cleanup_is_shared_and_takes_the_fleet_back_to_format_1() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let fleet = env.home.join("main");
+        std::fs::create_dir_all(&fleet).unwrap();
+        std::fs::write(fleet.join("fleet.toml"), fixture("fleet/v2.aide.toml")).unwrap();
+        // it loads as it is (the aides carried, unused), and says what to run
+        let f = crate::config::load_fleet(&env, "MAIN").unwrap();
+        assert_eq!(f.config.aide.len(), 2);
+        let w: Vec<Issue> = crate::config::validate(&env, &f).into_iter().filter(|i| i.code == "aide.legacy").collect();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(w[0].severity, Severity::Warn);
+        assert!(w[0].fix.as_deref().unwrap().contains("nimitz migrate --shared --yes"));
+        // a local run leaves it; the plan lists it as shared
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        assert!(ran.failed.is_empty() && !ran.done.iter().any(|d| d.artifact == "fleet"), "{ran:?}");
+        let d = due(&env, ARTIFACTS, Some(Scope::Shared));
+        assert_eq!(d.iter().map(|d| (d.label(), d.from, d.to)).collect::<Vec<_>>(), [("fleet: aides dropped".to_string(), 2, 1)]);
+        let s = run(&env, ARTIFACTS, Scope::Shared);
+        assert!(s.failed.is_empty(), "{s:?}");
+        assert_eq!(moved(&s.done), ["fleet: aides dropped"]);
+        assert_eq!(std::fs::read(backup_path(&fleet.join("fleet.toml"), NIMITZ)).unwrap(), fixture("fleet/v2.aide.toml"));
+        let f = crate::config::load_fleet(&env, "MAIN").unwrap();
+        assert!(f.config.aide.is_empty() && f.config.format.is_none() && f.config.min_nimitz.is_none());
+        assert!(crate::config::validate(&env, &f).iter().all(|i| i.code != "aide.legacy"));
+        assert!(due(&env, ARTIFACTS, None).is_empty());
+        assert!(run(&env, ARTIFACTS, Scope::Shared).done.is_empty(), "idempotent");
+        assert!(failed(&env).is_empty());
+    }
+
+    #[test]
+    fn the_aides_local_state_is_archived_never_deleted() {
+        let (_td, env) = test_env();
+        let s = &env.state;
+        for (p, body) in [
+            ("queues/MAIN%2F@KB/queue.json", "{}"),
+            ("queues/MAIN%2F@KB/items/000000000001.json", "{}"),
+            ("aides/MAIN%2F@REF/snapshot/page.md", "x"),
+            ("ring.lock", ""),
+            ("ring.stamp", "1"),
+            ("needs/MAIN%2F@KB.json", "{}"),
+            ("needs/MAIN%2F@KB#dead-000000000001.json", "{}"),
+            ("needs/MAIN%2FARGOS%2FS.json", "{}"),
+        ] {
+            std::fs::create_dir_all(s.join(p).parent().unwrap()).unwrap();
+            std::fs::write(s.join(p), body).unwrap();
+        }
+        let local = due(&env, ARTIFACTS, Some(Scope::Local));
+        let cleaned: Vec<String> = local.iter().filter(|d| d.cleanup.is_some()).map(|d| d.file.strip_prefix(s).unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(cleaned, ["queues", "aides", "ring.lock", "ring.stamp", "needs/MAIN%2F@KB#dead-000000000001.json", "needs/MAIN%2F@KB.json"]);
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        assert!(ran.failed.is_empty(), "{ran:?}");
+        assert!(moved(&ran.done).contains(&"aides: aide state archived".to_string()), "{:?}", moved(&ran.done));
+        let arch = s.join("archive/aides-0.6");
+        for p in ["queues/MAIN%2F@KB/items/000000000001.json", "aides/MAIN%2F@REF/snapshot/page.md", "ring.stamp", "needs/MAIN%2F@KB.json", "needs/MAIN%2F@KB#dead-000000000001.json"] {
+            assert!(arch.join(p).is_file(), "{p} archived");
+        }
+        assert!(!s.join("queues").exists() && !s.join("ring.lock").exists());
+        assert!(s.join("needs/MAIN%2FARGOS%2FS.json").is_file(), "a ship's notice stays");
+        assert!(due(&env, ARTIFACTS, None).iter().all(|d| d.cleanup.is_none()));
+        // a second leftover never replaces the first archive
+        std::fs::create_dir_all(s.join("queues/x")).unwrap();
+        assert!(run(&env, ARTIFACTS, Scope::Local).failed.is_empty());
+        assert!(arch.join("queues.2/x").is_dir() && arch.join("queues/MAIN%2F@KB").is_dir());
     }
 
     // ---------------------------------------------------------------- the guard
@@ -1377,14 +1912,15 @@ mod tests {
         let r = crate::registry::parse(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
         let was = crate::registry::parse(std::str::from_utf8(&fixture("registry/v2.json")).unwrap()).unwrap();
         assert_eq!((r.version, &r.identities), (3, &was.identities));
-        // the shared step is due, never run by the local run
+        // the shared cleanup (a 0.5 fleet's aide) is due, never run by the local run
         let shared = due(&env, ARTIFACTS, Some(Scope::Shared));
-        assert_eq!(shared.iter().map(|d| (d.artifact, d.from, d.to)).collect::<Vec<_>>(), [("fleet", 1, 2)]);
+        assert_eq!(shared.iter().map(|d| (d.label(), d.from, d.to)).collect::<Vec<_>>(), [("fleet: aides dropped".to_string(), 1, 1)]);
         assert_eq!(std::fs::read(fleet.join("fleet.toml")).unwrap(), fixture("fleet/v1.aide.toml"));
         let s = run(&env, ARTIFACTS, Scope::Shared);
-        assert_eq!(moved(&s.done), ["fleet 1->2"]);
+        assert_eq!(moved(&s.done), ["fleet: aides dropped"]);
         assert!(due(&env, ARTIFACTS, None).is_empty());
-        assert_eq!(crate::config::load_fleet(&env, "MAIN").unwrap().config.format, Some(2));
+        let c = crate::config::load_fleet(&env, "MAIN").unwrap().config;
+        assert!(c.format.is_none() && c.aide.is_empty());
     }
 
     #[test]
@@ -1394,7 +1930,7 @@ mod tests {
         let mut f = crate::config::load_fleet(&env, "MAIN").unwrap();
         let mine = f.machine.clone().unwrap();
         let p = machine_record_path(&f.dir, &mine);
-        assert!(machine_issues(&f).iter().any(|i| i.message.starts_with(&format!("machine {mine}: no nimitz >= 0.5.0 seen; update it before adding an aide"))));
+        assert!(machine_issues(&f).iter().any(|i| i.message == format!("machine {mine}: no nimitz >= 0.5.0 seen; update it")));
         record_machine(&env);
         let first = machine_record(&f.dir, &mine).unwrap();
         assert_eq!(first.nimitz, NIMITZ);
@@ -1406,9 +1942,8 @@ mod tests {
         f.config.machines.insert("far".into(), MachineDef { hostname: "far-box".into(), os: None });
         f.config.machines.insert("old".into(), MachineDef { hostname: "old-box".into(), os: None });
         write_bytes(&machine_record_path(&f.dir, "old"), br#"{"nimitz": "0.4.9", "seen": 1.0}"#).unwrap();
-        f.config.aide.push(AideDef { name: "KB".into(), ..Default::default() });
         let msgs: Vec<String> = machine_issues(&f).into_iter().map(|i| i.message).collect();
-        assert_eq!(msgs, ["machine far: no nimitz >= 0.5.0 seen; update it: it cannot load this fleet's [[aide]]", "machine old: no nimitz >= 0.5.0 seen (it last ran 0.4.9); update it: it cannot load this fleet's [[aide]]"]);
+        assert_eq!(msgs, ["machine far: no nimitz >= 0.5.0 seen; update it", "machine old: no nimitz >= 0.5.0 seen (it last ran 0.4.9); update it"]);
     }
 
     /// Two first commands at once (B used to pass the backup check before

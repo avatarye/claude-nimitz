@@ -43,7 +43,6 @@ pub fn art_for(n: &Node) -> Art {
             nimitz_core::Role::Admiral => Art::Admiral,
             nimitz_core::Role::Commodore => Art::Commodore,
             nimitz_core::Role::Ship => Art::Ship,
-            nimitz_core::Role::Aide => Art::Aide,
         },
     }
 }
@@ -328,9 +327,6 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
         }
     }
     v.extend(issues_block("ISSUES", &m.issues.iter().collect::<Vec<_>>(), width));
-    if let Some(q) = &m.inbox {
-        v.extend(queue_block(q, now, width));
-    }
     if let Some(s) = &m.session {
         v.push(blank());
         v.push(heading("SESSION"));
@@ -372,106 +368,6 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
         for t in &m.tasks {
             let owner = t.owner.as_ref().map(|o| format!("  ({o})")).unwrap_or_default();
             v.push(Line::styled(format!("  {:>3} {:<11} {}{owner}", t.id, t.status.replace('_', " "), t.subject), st(mono::SOFT)));
-        }
-    }
-    v
-}
-
-/// An aide's inbox: the counts, the claim and its lease, the dead letters
-/// with their reasons, the senders' rate limits, the newest items (with a
-/// reply type's result: Admiralty runs as the user, who may read them).
-fn queue_block(q: &nimitz_core::queue::Status, now: f64, width: usize) -> Vec<Line<'static>> {
-    let short = |id: &str| id.trim_start_matches('0').to_string();
-    let human = nimitz_core::queue::human;
-    // a sender as `Sender::line` says it, without the obvious `member `
-    let who = |s: &str| s.strip_prefix("member ").unwrap_or(s).to_string();
-    let mut v = vec![blank()];
-    v.extend(wrap(vec![Span::styled("INBOX  ", bold(mono::STRONG)), Span::styled(q.line(), st(mono::SOFT))], width, 7));
-    if let Some(e) = &q.error {
-        v.extend(wrap(vec![Span::styled(format!("  {e}"), bold(mono::ERROR))], width, 2));
-        return v;
-    }
-    let backlog = q.pending > crate::view::BACKLOG_PENDING || q.oldest_age_s.is_some_and(|a| a > crate::view::BACKLOG_AGE_S);
-    let oldest = q.oldest_age_s.map(|a| format!("   oldest {}", human(a))).unwrap_or_default();
-    v.push(Line::from(vec![
-        Span::styled(format!("{:<KEY_W$}", "pending"), st(mono::COMMENT)),
-        Span::styled(format!("{}", q.pending), if backlog { bold(mono::WARN) } else { st(mono::FG) }),
-        Span::styled(format!("{oldest}   cap {}", q.depth_cap), st(mono::SOFT)),
-    ]));
-    if q.claimed.is_empty() {
-        v.push(kv("claimed", "none"));
-    }
-    for c in &q.claimed {
-        let lease = if c.until > now { format!("lease ends in {}", human(c.until - now)) } else { "lease ran out".to_string() };
-        v.extend(wrap(
-            vec![
-                Span::styled(format!("{:<KEY_W$}", "claimed"), st(mono::COMMENT)),
-                Span::styled(format!("{} {}", short(&c.id), c.kind), bold(mono::BUSY)),
-                Span::styled(format!("  by {}", c.by), st(mono::SOFT)),
-            ],
-            width,
-            KEY_W,
-        ));
-        v.push(kv("lease", format!("{lease}  (try {})", c.tries)));
-    }
-    v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "done"), st(mono::COMMENT)), Span::styled(format!("{}", q.done), st(mono::FG)), Span::styled(format!("  kept {} (keep_done)", human(q.keep_done_s)), st(mono::SOFT))]));
-    if q.undelivered > 0 {
-        v.push(kv("to pick up", format!("{} answer(s) the asker was gone for", q.undelivered)));
-    }
-    if q.quarantined > 0 {
-        v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "unreadable"), st(mono::COMMENT)), Span::styled(format!("{} file(s) under quarantine/", q.quarantined), bold(mono::ERROR))]));
-    }
-    if q.unreadable > 0 {
-        v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "unreadable"), st(mono::COMMENT)), Span::styled(format!("{} file(s) in the queue that do not read as items", q.unreadable), bold(mono::ERROR))]));
-    }
-    if !q.dead.is_empty() {
-        v.push(blank());
-        v.push(Line::styled(format!("DEAD LETTERS ({})", q.dead.len()), bold(mono::NEEDS)));
-        for d in &q.dead {
-            v.extend(wrap(vec![Span::styled(format!("  {:<5}", short(&d.id)), bold(mono::NEEDS)), Span::styled(format!("{}  {} tries  from {}", d.kind, d.tries, who(&d.sender)), st(mono::FG))], width, 7));
-            v.extend(wrap(vec![Span::raw("       "), Span::styled(d.reason.clone(), st(mono::SOFT))], width, 7));
-        }
-    }
-    if !q.senders.is_empty() {
-        v.push(blank());
-        v.push(heading("SENDERS"));
-        for r in &q.senders {
-            let full = r.used >= r.limit;
-            let frees = if r.used > 0 { format!("   frees in {}", human(r.frees_in_s)) } else { String::new() };
-            v.extend(wrap(
-                vec![
-                    Span::styled(format!("  {}  ", who(&r.sender)), st(mono::FG)),
-                    Span::styled(format!("{}/{} per {}", r.used, r.limit, human(r.window_s)), if full { bold(mono::WARN) } else { st(mono::SOFT) }),
-                    Span::styled(frees, st(mono::COMMENT)),
-                ],
-                width,
-                4,
-            ));
-        }
-    }
-    if !q.recent.is_empty() {
-        v.push(blank());
-        v.push(heading("RECENT"));
-        for r in &q.recent {
-            let hue = match r.state.as_str() {
-                "dead" => mono::NEEDS,
-                "claimed" => mono::BUSY,
-                "done" => mono::SOFT,
-                _ => mono::FG,
-            };
-            v.extend(wrap(
-                vec![
-                    Span::styled(format!("  {:<4}", short(&r.id)), st(hue)),
-                    Span::styled(format!("{:<8}", r.state), st(hue)),
-                    Span::styled(format!("{}  {} ago  {}", r.kind, human(r.age_s), who(&r.sender)), st(mono::SOFT)),
-                ],
-                width,
-                14,
-            ));
-            if let Some(res) = &r.result {
-                let text = res.get("answer").and_then(|a| a.as_str()).map(str::to_string).unwrap_or_else(|| res.to_string());
-                v.extend(wrap(vec![Span::styled("              result  ", st(mono::COMMENT)), Span::styled(text, st(mono::FG))], width, 22));
-            }
         }
     }
     v
@@ -532,10 +428,6 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     };
     line(&mut v, "\u{23ce}", jump);
     let mut acts: Vec<Act> = vec![Act::Start, Act::Open, Act::Stop, Act::Relaunch, Act::Sweep, Act::Rm, Act::Adopt];
-    // an aide's dead letters: offered only while there is one
-    if matches!(n.kind, Kind::Member(nimitz_core::Role::Aide)) {
-        acts.extend([Act::InboxRetry, Act::InboxDrop]);
-    }
     if matches!(n.kind, Kind::FleetBand) {
         acts.insert(0, Act::Up);
         acts.insert(1, Act::Restore);

@@ -219,8 +219,7 @@ impl View {
     }
 }
 
-/// `MAIN`, `MAIN · ARGOS`: the group a member's line is under (an
-/// admiral's aide is in its fleet's).
+/// `MAIN`, `MAIN · ARGOS`: the group a member's line is under.
 fn group(id: &Id) -> String {
     match id.squadron() {
         Some(sq) => format!("{} · {sq}", id.fleet()),
@@ -229,12 +228,12 @@ fn group(id: &Id) -> String {
 }
 
 /// The member's name inside its group: `ADMIRAL`, `COMMODORE`, the ship's
-/// name, an aide's `@NAME`.
+/// name.
 fn short(id: &Id) -> String {
     match id.role() {
         Role::Admiral => "ADMIRAL".into(),
         Role::Commodore => "COMMODORE".into(),
-        Role::Ship | Role::Aide => id.parts().last().copied().unwrap_or_default().to_string(),
+        Role::Ship => id.parts().last().copied().unwrap_or_default().to_string(),
     }
 }
 
