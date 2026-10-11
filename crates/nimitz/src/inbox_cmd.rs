@@ -501,7 +501,8 @@ pub fn ask(ctx: &Ctx) -> Result<i32, String> {
         };
         // until the post's own `waiting_until`, not longer: past it the answer
         // goes as a peer message, and twice would be one too many
-        let got = await_item(&q, &posted.id, (t + wait - now()).max(0.0));
+        // a second before it: from `waiting_until` on the piggyback may push it
+        let got = await_item(&q, &posted.id, (t + wait - 1.0 - now()).max(0.0));
         if matches!(got, Some((State::Done, _))) {
             let _ = q.mark_delivered(&posted.id, "returned to `nimitz ask`", true, now());
         }

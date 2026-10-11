@@ -878,16 +878,16 @@ impl Queue {
         self.all().into_iter().filter(|(s, _)| state.is_none_or(|x| x == *s)).collect()
     }
 
-    /// Record a reply's delivery (or why it was not delivered).
-    /// Take a done request's late delivery (the piggyback): under the lock,
-    /// one whose asker stopped waiting and that was never tried is marked
-    /// `delivering` and returned; any other (tried, delivered, awaited) is
-    /// None. Two passes never push the same answer.
+    /// Take a done request's delivery: under the lock, one never tried,
+    /// never delivered and no longer awaited by `ask --wait` is marked
+    /// `delivering` and returned; any other is None. Every push goes through
+    /// it (`deliver`), so `done`, a piggyback pass and another never push
+    /// the same answer twice.
     pub fn take_delivery(&self, id: &str, now: f64) -> Option<Item> {
         let _l = self.lock().ok()?;
         let mut item = Self::read(&self.path(State::Done, id))?;
         let r = item.reply_to.as_mut()?;
-        if r.waiting_until.is_none_or(|w| w > now) || r.delivered_at.is_some() || r.delivery.is_some() {
+        if r.waiting_until.is_some_and(|w| w > now) || r.delivered_at.is_some() || r.delivery.is_some() {
             return None;
         }
         r.delivery = Some("delivering".into());
@@ -895,6 +895,7 @@ impl Queue {
         Some(item)
     }
 
+    /// Record a reply's delivery (or why it was not delivered).
     pub fn mark_delivered(&self, id: &str, note: &str, delivered: bool, now: f64) -> Result<(), Refusal> {
         let _l = self.lock()?;
         let Some(mut item) = Self::read(&self.path(State::Done, id)) else { return Ok(()) };
@@ -1058,18 +1059,23 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 /// The live session that asked (by its session id, else its job's current
 /// session): (session id, pid).
 fn live_session(env: &Env, s: &Sender) -> Option<(String, i64)> {
+    let mut best: Option<(f64, String, i64)> = None;
     for e in std::fs::read_dir(env.claude_home.join("sessions")).into_iter().flatten().flatten() {
         let Some(v) = std::fs::read(e.path()).ok().and_then(|b| crate::evidence::first_json(&b)) else { continue };
         let sid = v.get("sessionId").and_then(Value::as_str).unwrap_or_default();
         let job = v.get("jobId").and_then(Value::as_str);
         let pid = v.get("pid").and_then(Value::as_i64).unwrap_or(0);
         let same = s.session.as_deref() == Some(sid) || (s.job.is_some() && job == s.job.as_deref());
-        // (a file a crash left at a pid another process has now is not the asker's)
+        // (a file a crash left at a pid another process has now is not the
+        // asker's; of the rest, the newest)
         if same && pid > 1 && crate::evidence::pid_alive(pid) && crate::evidence::session_is_its_process(pid, &v) {
-            return Some((sid.to_string(), pid));
+            let started = v.get("startedAt").and_then(Value::as_f64).unwrap_or(0.0);
+            if best.as_ref().is_none_or(|(t, _, _)| started >= *t) {
+                best = Some((started, sid.to_string(), pid));
+            }
         }
     }
-    None
+    best.map(|(_, sid, pid)| (sid, pid))
 }
 
 /// How much of an answer the reply message carries inline.
@@ -1085,6 +1091,10 @@ pub fn deliver(env: &Env, q: &Queue, item: &Item, now: f64) -> Result<String, St
     if item.reply_to.as_ref().and_then(|r| r.waiting_until).is_some_and(|w| w > now) {
         return Ok("the asker waits for it (`nimitz ask --wait` returns it)".into());
     }
+    // taken under the lock: whoever else would push it (a piggyback pass,
+    // `done`) finds it taken
+    let Some(item) = q.take_delivery(&item.id, now) else { return Ok("already delivered, or being delivered".into()) };
+    let item = &item;
     let r = (|| {
         let (sid, pid) = live_session(env, &item.sender).ok_or("the asker is not live; the answer waits for `nimitz inbox result`")?;
         if !crate::inbox::format_ok(crate::inbox::receiver_version(env, Some(pid), item.sender.job.as_deref()).as_deref()) {

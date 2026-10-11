@@ -137,7 +137,8 @@ pub fn ring(env: &Env, q: &Queue, why: Why, now: f64) -> Result<Option<String>, 
     // a failed ring counts as a ring: a socket that times out costs one
     // post its seconds, not every post of a burst
     let sent = crate::inbox::send(env, &socks, pid, &text);
-    save(q, &RingState { last_ring: Some(now), ..st });
+    // read again: the aide may have drained while this one sent
+    save(q, &RingState { last_ring: Some(now), ..load(q) });
     sent.map_err(|e| format!("{aide}: {e}"))?;
     Ok(Some(format!("rang {aide}")))
 }
@@ -149,9 +150,10 @@ pub fn redeliver(env: &Env, q: &Queue, now: f64) -> Vec<String> {
     let mut out = vec![];
     for (_, item) in q.list(Some(crate::queue::State::Done)) {
         let due = item.reply_to.as_ref().is_some_and(|r| r.waiting_until.is_some_and(|w| w <= now) && r.delivered_at.is_none() && r.delivery.is_none());
-        // taken under the queue's lock first: a second pass finds it taken
-        if let Some(taken) = due.then(|| q.take_delivery(&item.id, now)).flatten() {
-            let note = match crate::queue::deliver(env, q, &taken, now) {
+        // `deliver` takes it under the queue's lock first: a second pass, or
+        // the `done` that raced it, finds it taken
+        if due {
+            let note = match crate::queue::deliver(env, q, &item, now) {
                 Ok(n) | Err(n) => n,
             };
             out.push(format!("{} item {}: {note}", q.aide, item.id));
