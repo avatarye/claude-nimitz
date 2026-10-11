@@ -29,9 +29,11 @@ impl Agent {
     /// The agent a payload's `agent_type` names (`nimitz:kb-scribe` as Claude
     /// Code namespaces a plugin agent, or `kb-scribe`).
     pub fn of(agent_type: &str) -> Option<Agent> {
-        match agent_type.strip_prefix("nimitz:").unwrap_or(agent_type) {
-            "kb-scribe" => Some(Agent::Scribe),
-            "kb-ref" => Some(Agent::Ref),
+        // the plugin's own, as Claude Code names them: a project's or the
+        // user's agent of the same bare name is not ours to allow
+        match agent_type {
+            "nimitz:kb-scribe" => Some(Agent::Scribe),
+            "nimitz:kb-ref" => Some(Agent::Ref),
             _ => None,
         }
     }
@@ -59,8 +61,12 @@ pub fn words(cmd: &str) -> Result<Vec<String>, String> {
     let mut cur: Option<String> = None;
     let mut quote: Option<char> = None;
     for c in cmd.trim().chars() {
-        if c == '$' || c == '`' || c == '\\' || c == '\n' || c == '\r' {
-            return Err(format!("{c:?} is not allowed in the command (one plain `nimitz kb ...` command)"));
+        if c == '\n' || c == '\r' || c == '\0' {
+            return Err("one line: a newline is not allowed in the command".into());
+        }
+        // `$`, backticks and `\` are literal only inside single quotes
+        if (c == '$' || c == '`' || c == '\\') && quote != Some('\'') {
+            return Err(format!("{c:?} is allowed only inside single quotes (one plain `nimitz kb ...` command)"));
         }
         match quote {
             Some(q) if c == q => quote = None,
@@ -113,7 +119,15 @@ fn under(root: &Path, file: &str) -> Result<PathBuf, String> {
             _ => return Err(format!("{file}: no such folder")),
         }
     };
-    let full = rest.into_iter().rev().fold(real, |acc, n| acc.join(n));
+    // a name past what resolves that is there all the same is a link that
+    // leads nowhere yet (a write through it would land wherever it points)
+    let mut full = real;
+    for n in rest.into_iter().rev() {
+        full = full.join(n);
+        if std::fs::symlink_metadata(&full).is_ok() {
+            return Err(format!("{file}: {} is a link that leads nowhere", full.display()));
+        }
+    }
     full.strip_prefix(root).map(Path::to_path_buf).map_err(|_| format!("{file} is outside the knowledge base ({})", root.display()))
 }
 
@@ -138,6 +152,14 @@ pub fn decide(agent: Agent, root: Option<&Path>, tool: &str, input: &Value) -> R
             if !agent.verbs().contains(&verb) {
                 return Err(format!("{name}: `nimitz kb {verb}` is not {name}'s (it runs {})", agent.verbs().join(", ")));
             }
+            // the session's own fleet only: never another one named on the line
+            if w.iter().any(|x| x == "--fleet" || x.starts_with("--fleet=")) {
+                return Err(format!("{name}: no --fleet: the knowledge base is the session's own fleet's"));
+            }
+            // outside a fleet only `path`, which says there is no KB
+            if root.is_none() && verb != "path" {
+                return Err(no_kb());
+            }
             Ok(format!("{name}: nimitz kb {verb}"))
         }
         "Read" => {
@@ -155,7 +177,7 @@ pub fn decide(agent: Agent, root: Option<&Path>, tool: &str, input: &Value) -> R
             if let Some(off) = crate::kb::off_limits(&r) {
                 return Err(format!("{name}: {r} is off limits ({off})"));
             }
-            if r.to_lowercase().starts_with("raw/") && root.join(&rel).exists() {
+            if r.to_lowercase().starts_with("raw/") && std::fs::symlink_metadata(root.join(&rel)).is_ok() {
                 return Err(format!("{name}: {r}: an existing raw/ file is never changed (a capture is always a new file)"));
             }
             Ok(format!("{name}: write {r}"))
@@ -165,9 +187,13 @@ pub fn decide(agent: Agent, root: Option<&Path>, tool: &str, input: &Value) -> R
     }
 }
 
-/// The session's fleet: its `NIMITZ_FLEET` label, else its id's.
+/// The session's fleet, by its labels judged as every nimitz command judges
+/// them (`caller_from_env`: partial or disagreeing labels are no member's).
 fn fleet_of(vars: &HashMap<String, String>) -> Option<String> {
-    vars.get("NIMITZ_FLEET").filter(|f| !f.is_empty()).cloned().or_else(|| vars.get("NIMITZ_ID").map(|id| id.split('/').next().unwrap_or("").to_string()).filter(|f| !f.is_empty()))
+    match crate::sessions::caller_from_env(vars) {
+        crate::types::Caller::Member { id, .. } => Some(id.fleet().to_string()),
+        crate::types::Caller::User => None,
+    }
 }
 
 /// `nimitz hook kb-guard`: the hook's answer for `stdin` (empty: no
@@ -196,14 +222,23 @@ mod tests {
     fn a_command_is_one_plain_nimitz_kb_call() {
         assert_eq!(words("nimitz kb commit --title \"A; b\" --paths raw/c.md,wiki/x.md").unwrap(), ["nimitz", "kb", "commit", "--title", "A; b", "--paths", "raw/c.md,wiki/x.md"]);
         assert_eq!(words("nimitz kb grep 'two words' wiki").unwrap(), ["nimitz", "kb", "grep", "two words", "wiki"]);
-        for bad in ["nimitz kb path; rm -rf /", "nimitz kb path && x", "nimitz kb path | sh", "nimitz kb show $(x)", "nimitz kb show `x`", "nimitz kb grep \"$HOME\"", "nimitz kb path > /tmp/x", "nimitz kb grep *", "nimitz kb path # x", "nimitz kb path\nrm x", "nimitz kb grep 'x", "(nimitz kb path)", "nimitz kb show ~/.ssh/id"] {
+        for bad in ["nimitz kb path; rm -rf /", "nimitz kb path && x", "nimitz kb path | sh", "nimitz kb show $(x)", "nimitz kb show `x`", "nimitz kb grep \"$HOME\"", "nimitz kb grep \"a\\\\b\"", "nimitz kb path > /tmp/x", "nimitz kb grep *", "nimitz kb path # x", "nimitz kb path\nrm x", "nimitz kb grep 'x", "(nimitz kb path)", "nimitz kb show ~/.ssh/id", "nimitz kb grep {a,b}"] {
             assert!(words(bad).is_err(), "{bad}");
         }
+        assert_eq!(words("nimitz kb commit --title 'Costs $5, `x` \\ y'").unwrap()[4], "Costs $5, `x` \\ y", "literal in single quotes");
         let input = |c: &str| json!({"command": c});
-        assert!(decide(Agent::Scribe, None, "Bash", &input("nimitz kb commit --note x")).is_ok());
-        assert!(decide(Agent::Ref, None, "Bash", &input("nimitz kb show wiki/_index.md --at abc123")).is_ok());
+        let td = tempfile::tempdir().unwrap();
+        let r = Some(td.path());
+        assert!(decide(Agent::Scribe, r, "Bash", &input("nimitz kb commit --note x")).is_ok());
+        assert!(decide(Agent::Ref, r, "Bash", &input("nimitz kb show wiki/_index.md --at abc123")).is_ok());
+        // another fleet's KB, or none: only `path` (which says why)
+        for c in ["nimitz kb commit --fleet HOME --paths x", "nimitz kb path --fleet=HOME"] {
+            assert!(decide(Agent::Scribe, r, "Bash", &input(c)).unwrap_err().contains("no --fleet"), "{c}");
+        }
+        assert!(decide(Agent::Scribe, None, "Bash", &input("nimitz kb path")).is_ok());
+        assert!(decide(Agent::Scribe, None, "Bash", &input("nimitz kb restore --paths x")).unwrap_err().contains("no knowledge base"));
         for (a, c) in [(Agent::Ref, "nimitz kb commit --note x"), (Agent::Scribe, "nimitz kb clone --yes"), (Agent::Scribe, "nimitz kb sync"), (Agent::Scribe, "git status"), (Agent::Scribe, "/tmp/nimitz kb path"), (Agent::Scribe, "nimitz status"), (Agent::Ref, "nimitz kb")] {
-            assert!(decide(a, None, "Bash", &input(c)).is_err(), "{a:?} {c}");
+            assert!(decide(a, r, "Bash", &input(c)).is_err(), "{a:?} {c}");
         }
     }
 
@@ -236,6 +271,11 @@ mod tests {
         {
             std::os::unix::fs::symlink(td.path(), root.join("wiki/link")).unwrap();
             assert!(decide(Agent::Scribe, r, "Write", &p("wiki/link/escape.md")).is_err());
+            // a link to a file not there yet (a pushed commit could hold one)
+            std::os::unix::fs::symlink(td.path().join("not-yet.md"), root.join("wiki/dangling.md")).unwrap();
+            assert!(decide(Agent::Scribe, r, "Write", &p("wiki/dangling.md")).unwrap_err().contains("leads nowhere"));
+            std::os::unix::fs::symlink(td.path().join("nope.md"), root.join("raw/cap-link.md")).unwrap();
+            assert!(decide(Agent::Scribe, r, "Write", &p("raw/cap-link.md")).is_err());
         }
         // no KB: nothing but Bash (whose `nimitz kb path` says why)
         assert!(decide(Agent::Scribe, None, "Read", &p("wiki/x.md")).unwrap_err().contains("no knowledge base"));
@@ -255,6 +295,7 @@ mod tests {
         };
         assert_eq!(call(None, "Bash", json!({"command": "rm -rf kb-scribe"})), "", "the session itself: no answer");
         assert_eq!(call(Some("general-purpose"), "Bash", json!({"command": "ls"})), "");
+        assert_eq!(call(Some("kb-scribe"), "Write", json!({"file_path": "/tmp/x"})), "", "a bare name is a project's agent, not the plugin's");
         let a: Value = serde_json::from_str(&call(Some("nimitz:kb-scribe"), "Bash", json!({"command": "nimitz kb path"}))).unwrap();
         assert_eq!(a["hookSpecificOutput"]["permissionDecision"], "allow");
         let d: Value = serde_json::from_str(&call(Some("nimitz:kb-ref"), "Read", json!({"file_path": "/etc/passwd"}))).unwrap();

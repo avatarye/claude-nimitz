@@ -1904,9 +1904,13 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
         write(&plug.join(rel), &std::fs::read_to_string(repo.join(rel)).unwrap());
     }
     write(&plug.join(".claude-plugin/plugin.json"), r#"{"name": "nimitz", "version": "0.0.0-e2e", "description": "nimitz e2e: the KB agents"}"#);
+    // the shipped kb-guard entry, as is, with this build as its command (the
+    // other plugin hooks run from the members' project settings)
     let exe = w.bin.borrow().clone();
-    let hooks = json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": exe, "args": ["hook", "kb-guard"], "timeout": 5}]}]}});
-    write(&plug.join("hooks/hooks.json"), &hooks.to_string());
+    let shipped: Value = serde_json::from_str(&std::fs::read_to_string(repo.join("hooks/hooks.json")).unwrap()).unwrap();
+    let mut guard = shipped["hooks"]["PreToolUse"].as_array().unwrap().iter().find(|e| e["hooks"][0]["args"] == json!(["hook", "kb-guard"])).expect("the shipped kb-guard entry").clone();
+    guard["hooks"][0]["command"] = json!(exe);
+    write(&plug.join("hooks/hooks.json"), &json!({"hooks": {"PreToolUse": [guard]}}).to_string());
     executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --model '{}' --plugin-dir '{}' \"$@\"\n", w.native, cheap_model(), plug.display()));
     let ship = w.ship();
     let marker = format!("e2e-{}-{}", std::process::id(), nimitz_core::evidence::now() as u64);
@@ -1914,10 +1918,10 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
         "body": format!("The nimitz e2e marker {marker}: in this test fleet, pelicans are counted in dozens.")});
     let question = json!({"question": format!("What does the nimitz e2e marker {marker} say about pelicans?"), "length": "short"});
     let prompt = format!(
-        "This is an end-to-end test of the fleet knowledge base. Do these two steps with the Agent tool, each in the foreground (wait for its result), and ask nothing.\n\
-         1. subagent_type nimitz:kb-scribe, prompt: this note, as is:\n{note}\n\
-         2. subagent_type nimitz:kb-ref, prompt: this question, as is:\n{question}\n\
-         Then reply with the two JSON result blocks the subagents returned, and the word DONE."
+        "This is an end-to-end test of the fleet knowledge base. Do these two steps with the Agent tool, and ask nothing.\n\
+         1. subagent_type nimitz:kb-scribe, in the background (run_in_background: true), prompt: this note, as is:\n{note}\n\
+         2. Only once step 1's completion notification has come: subagent_type nimitz:kb-ref, in the foreground, prompt: this question, as is:\n{question}\n\
+         Then end your turn with the two JSON result blocks the subagents returned."
     );
     w.fleet_with_ship(&prompt, "default");
     let kb = w.base.join("kb");
@@ -1946,8 +1950,16 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     assert!(changed.lines().any(|l| l.starts_with("raw/")) && !changed.lines().any(|l| l.eq_ignore_ascii_case("CLAUDE.md") || l.starts_with("agent/")), "{changed}");
     assert!(git(&remote, &["branch", "--contains", &commits[0]]).trim().len() > 0, "pushed to the remote");
     assert!(git(&kb, &["status", "--porcelain"]).trim().is_empty(), "nothing left uncommitted in the clone");
-    // the answer cites the wiki; nothing asked for a permission
-    assert!(text.contains("citations") && text.contains("DONE"), "the answer block:\n{}", text.chars().rev().take(3000).collect::<String>().chars().rev().collect::<String>());
+    // the ship's last reply: kb-ref's answer, from the note, at the note's commit
+    let last = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "assistant")
+        .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
+        .filter_map(|c| c["text"].as_str().map(str::to_string))
+        .last()
+        .unwrap_or_default();
+    assert!(last.contains("citations") && last.to_lowercase().contains("dozen") && last.contains(&commits[0][..12]), "the answer: the marker's fact at the note's commit:\n{last}");
     let ev = w.events();
     assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {:?}", ev.iter().filter(|e| e["event"] == "PermissionRequest").collect::<Vec<_>>());
     assert!(std::fs::read_dir(w.base.join("state").join("needs")).map(|d| d.count() == 0).unwrap_or(true), "a needs-you notice was left");

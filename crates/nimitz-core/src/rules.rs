@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 /// Bump when the rules text changes in a way members must pick up, and add
 /// the version's entry to `CHANGELOG`.
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 /// What changed in each rules version, oldest first (one entry per version;
 /// a member on v{N} gets the entries after N with the new text).
@@ -70,8 +70,11 @@ pub const CHANGELOG: &[(u32, &str)] = &[
     (
         7,
         "aides are gone: no `F/@NAME` member, no `nimitz aide`, `inbox` or `ask`; \
-         a fleet's `[[aide]]` is removed by `nimitz migrate --shared --yes` (the user's); \
-         the fleet's knowledge base is written by the `nimitz:kb-scribe` subagent (a note as JSON, one commit each) \
+         a fleet's `[[aide]]` is removed by `nimitz migrate --shared --yes` (the user's)",
+    ),
+    (
+        8,
+        "the fleet's knowledge base is written by the `nimitz:kb-scribe` subagent (a note as JSON, one commit each) \
          and read by `nimitz:kb-ref` (a question, a cited answer), both in every member's session",
     ),
 ];

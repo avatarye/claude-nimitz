@@ -57,6 +57,8 @@ The note, as JSON from the calling session:
    - "already committed" means this note was ingested before. Report `duplicate`; nimitz prints the earlier commit.
 9. **Report** (see *Output*).
 
+**A mistake in the capture:** an existing `raw/` file is never changed, not even yours: `nimitz kb restore --paths raw/captures/<file>`, then write it again as `<file>-2`.
+
 **On any failure after the capture is written:** run `nimitz kb restore --paths <everything you wrote>`, then refuse with a one-line reason. The tree is left as you found it.
 
 ## Questions and gaps

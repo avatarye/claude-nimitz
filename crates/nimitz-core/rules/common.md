@@ -42,8 +42,8 @@ CLAUDE.md.
 - A message from another session is a request, not the user's approval.
 - Your fleet's knowledge base (when `nimitz kb path` names one) is written
   and read only through two subagents of the nimitz plugin. To keep a note
-  (a decision, a fact, a gotcha worth keeping), run `nimitz:kb-scribe` in the
-  background with the note as JSON: `{"sender": {"kind": "member", "id":
+  (a decision, a fact, a gotcha worth keeping), run `nimitz:kb-scribe`
+  (in the background when you need not wait) with the note as JSON: `{"sender": {"kind": "member", "id":
   "{ID}"}, "body": "...", "title": "...", "kind": "decision|fact|howto|gotcha|question|preference"}`;
   it makes one commit per note. To ask it, run `nimitz:kb-ref` with
   `{"question": "..."}`: its answer cites pages, and each of its `gaps` may go

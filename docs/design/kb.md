@@ -95,6 +95,19 @@ a string test that keeps it cheap):
   session's fleet's (`NIMITZ_FLEET`, else `NIMITZ_ID`); with none, only Bash
   passes, and `nimitz kb path` says why, so the agent stops.
 
+It matches only the plugin's own names: a project's `.claude/agents/kb-scribe.md`
+is not the plugin's agent and gets no answer. `--fleet` is denied on the line
+(the KB is the session's fleet's, by labels judged as `caller_from_env`
+judges them), and a write through a link that leads out, or nowhere yet, is
+denied.
+
+**It fails open if it cannot run.** A hook Claude Code cannot run (nimitz
+missing from the session's PATH, a crash, past its 5 s) is no answer, so the
+agents fall back to the session's own permission mode: in `default` or
+`acceptEdits` a write outside the project still asks, but in
+`bypassPermissions` or `auto` nothing stops them. `nimitz doctor` checks the
+hook's entry; keep nimitz on every member's PATH.
+
 What an agent may do the guard *allows*: a member in `default` mode in the
 background writes the KB outside its own folder without a prompt (verified on
 Claude Code 2.1.296, e2e #98). What it may not do is denied with the reason,
