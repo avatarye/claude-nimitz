@@ -390,7 +390,8 @@ fn post_gaps(ctx: &Ctx, reader: &Id, item: &queue::Item, s: &Sender) -> Vec<Stri
     }
     let mut out = vec![];
     for g in gaps {
-        let payload = json!({"kind": "gap", "body": g, "title": g.chars().take(80).collect::<String>(), "source": {"label": format!("{} {} (asked by {})", reader, item.reference, item.sender.line())}});
+        let label: String = format!("{} {} (asked by {})", reader, item.reference, item.sender.line()).chars().take(500).collect();
+        let payload = json!({"kind": "gap", "body": g, "title": g.chars().take(80).collect::<String>(), "source": {"label": label}});
         let key = format!("gap:{}", nimitz_core::sha256::hex(g.to_lowercase().as_bytes()));
         match kq.post(s, "wiki.note.v1", &payload, Some(&key), None, now()) {
             Ok(p) if p.duplicate => out.push(format!("gap already with {keeper} (item {})", p.id)),

@@ -195,6 +195,8 @@ fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
             if matches!(off, ".git" | ".claude") {
                 deny.push(format!("Edit({root}/**/{off}/**)"));
                 deny.push(format!("Edit({root}/{off}/**)"));
+                // (a worktree's .git is a file)
+                deny.push(format!("Edit({root}/**/{off})"));
             } else {
                 deny.push(format!("Edit({root}/**/{off})"));
             }

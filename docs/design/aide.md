@@ -517,8 +517,11 @@ cites and never writes. "The librarian" below is its role.
     is missing, broken, or a worktree of a repo it no longer reads (its
     `--git-common-dir` is not the repo's, or its top is not itself). Never
     `worktree prune`: in a synced repo it would drop every worktree another
-    machine registered; `add --force` takes back a registered path. `aide rm`
-    unregisters it (`worktree remove --force`);
+    machine registered; `add --force` takes back a registered path. A link
+    is never a snapshot (it could lead into the user's own worktree). `aide
+    rm` unregisters it (`worktree remove --force`); after a `--dir` change, or
+    a broken snapshot removed, the old registration stays until git's own
+    `gc.worktreePruneExpire` drops it (harmless);
   - `inbox claim` (nimitz, not the aide) moves it to the repo's current
     `HEAD` before it hands out a query: `checkout --detach --force <HEAD>`,
     `clean -ffdxq`. A commit is atomic for a reader (`HEAD` moves after its

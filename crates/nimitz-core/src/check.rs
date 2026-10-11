@@ -226,7 +226,7 @@ pub fn folder_issue_in(env: &Env, cache: &mut TrustCache, id: &Id, cwd: &str) ->
             message: format!("{id}'s folder {cwd} does not exist"),
             fix: Some(match id.role() {
                 // a snapshot reader's folder is nimitz's to make
-                Role::Aide if cwd.contains("/aides/") && cwd.ends_with("/snapshot") => format!("nimitz aide set {id} --snapshot  # makes its snapshot again"),
+                Role::Aide if { let p = std::path::Path::new(&cwd); p.ends_with("snapshot") && p.components().any(|c| c.as_os_str() == "aides") } => format!("nimitz aide set {id} --snapshot  # makes its snapshot again"),
                 Role::Aide => format!("mkdir -p {cwd}  # or point {id} elsewhere: nimitz aide set {id} --dir <folder>"),
                 _ => format!("mkdir -p {cwd}  # or point {id} elsewhere with nimitz ship set"),
             }),

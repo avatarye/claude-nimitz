@@ -336,7 +336,9 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) ->
 /// Is `snap` a worktree of `repo`, and its own top (not a folder inside
 /// another repo, not a link to one)? Its `--git-common-dir` is the repo's.
 pub fn snapshot_healthy(repo: &Path, snap: &Path) -> bool {
-    if !snap.join(".git").is_file() {
+    // a link is never the snapshot (it could lead into the user's own worktree,
+    // which a refresh would check out and clean)
+    if std::fs::symlink_metadata(snap).map(|m| m.file_type().is_symlink()).unwrap_or(true) || !snap.join(".git").is_file() {
         return false;
     }
     let ask = |dir: &Path, what: &str| -> Option<String> {
@@ -497,6 +499,19 @@ mod tests {
         assert!(!snapshot_healthy(d, &other_snap));
         ensure_snapshot(d, &other_snap).unwrap();
         assert!(snapshot_healthy(d, &other_snap) && other_snap.join("wiki/new.md").is_file());
+        // a link to a worktree of this repo (the user's own) is no snapshot
+        #[cfg(unix)]
+        {
+            let users = state.path().join("users");
+            Command::new("git").arg("-C").arg(d).args(["worktree", "add", "--detach", users.to_str().unwrap()]).output().unwrap();
+            std::fs::write(users.join("mine.txt"), "the user's\n").unwrap();
+            let linked = state.path().join("linked");
+            std::os::unix::fs::symlink(&users, &linked).unwrap();
+            assert!(!snapshot_healthy(d, &linked));
+            ensure_snapshot(d, &linked).unwrap();
+            assert!(users.join("mine.txt").exists(), "the user's worktree is untouched");
+            assert!(!std::fs::symlink_metadata(&linked).unwrap().file_type().is_symlink(), "the link is replaced by a snapshot of nimitz's own");
+        }
         // ignored files go too
         std::fs::write(other_snap.join("junk.tmp"), "x").unwrap();
         std::fs::write(other_snap.join(".git").parent().unwrap().join(".gitignore-me"), "x").unwrap();
