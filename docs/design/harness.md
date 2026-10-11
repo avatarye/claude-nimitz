@@ -12,7 +12,7 @@ has them.
 | Path | What | When a member has it |
 | --- | --- | --- |
 | `rules/<name>.md` | text after the role rules (`## Fleet F's own rules`, which say they never change who may do what), names in order, at most 4000 characters in all, cut further so the whole context stays under 10,000 | at its next session start; a live member at its next prompt (once per change) |
-| `agents/<name>.md` | a subagent (frontmatter with a description; no `hooks:`, `mcpServers:` or `permissionMode:`, which Claude Code ignores for a plugin agent) | at its next launch; a running one after `/reload-plugins` |
+| `agents/<name>.md` | a subagent (frontmatter with a description; no `hooks:`, `mcpServers:` or `permissionMode:`, which Claude Code ignores for a plugin agent) | at its next launch (`nimitz start F -f`) |
 | `skills/<name>/SKILL.md` (and plain files beside it) | a skill that registers no hooks and runs nothing by itself (no `hooks:`, no `allowed-tools:`, no `` !`...` ``) | as agents |
 | `settings/fleet.json`, `settings/squadrons/<SQ>.json`, `settings/members/<F.SQ.SHIP>.json` (an admiral's `F.json`, a commodore's `F.SQ.json`) | Claude Code settings, merged in that order (objects key by key, arrays joined) under nimitz's own `--settings` (its labels and its allow rule win) | at its next launch |
 
@@ -21,17 +21,28 @@ every launch (a file put in the folder by hand gives no more than `add`
 takes; `check` names what is dropped, `harness.invalid`):
 
 - settings: `model`, `outputStyle`, `permissions.allow|ask|deny`, and `env`
-  names in capitals that steer no program, traffic or credential (not `PATH`,
-  `HOME`, `LD_*`, `DYLD_*`, `NODE_*`, `PYTHON*`, `GIT_*`, `ANTHROPIC_*`,
-  `CLAUDE*`, `NIMITZ_*`, `HERDR_*`, `AWS_*`, `*_PROXY`, ...). A `deny` or
-  `ask` that would stop `nimitz` (`Bash`, `Bash(nimitz *)`, ...) is dropped.
+  names `FLEET_*` only (any other variable could steer what programs run,
+  where traffic goes or credentials). A `deny` or `ask` that would stop a
+  member's `nimitz` (`Bash`, `Bash(nimitz *)`, `Bash(nimitz kb *)`, ...) is
+  dropped. `allow` rules are shown by `harness list`: they are what the
+  harness lets members run without asking (no more than the admiral can
+  already give by a member's permission mode).
   Everything else (a permission mode, more folders, plugins, MCP servers,
   hooks) is the user's own Claude Code settings; a member's mode is
   `ship set --mode` and the like.
-- no file is a link, and none is over 64 KiB.
+- agents and skills: frontmatter of plain `key: value` lines with keys a
+  harness knows (an agent: name, description, tools, model, color; a skill:
+  name, description, when_to_use, version, license), so no `hooks:` or
+  `allowed-tools:` in any spelling; no `` !` `` or ```` ```! ```` anywhere
+  in a skill's files.
+- no file is a link and none is reached through one (a folder of the harness
+  that is a link is never read, written or archived through), and none is
+  over 64 KiB.
 - `add` by the admiral takes a file from its own folder only: never a file of
   the user's it could read (the harness syncs to every machine and reaches
-  every member's context).
+  every member's context). This says where a file came from, not what is in
+  it: an admiral that reads a file elsewhere and writes it into its folder
+  can add that; the harness is the admiral's and the user's to curate.
 
 ## 2. The plugin
 
@@ -41,7 +52,10 @@ Agents and skills reach Claude Code as a plugin nimitz makes on each machine,
 Code keeps the flag in the job's `respawnFlags`, so a wake (a native resume)
 keeps the plugin too (seen on 2.1.296). The plugin is made again only when the
 harness's agents or skills changed (a stamp of their content), made beside the
-old one and swapped in.
+old one and swapped in; when none are left, it is removed (a wake would
+otherwise still load it). It is a local cache: a launch's plan, `--plan`
+included, may refresh it. Whether `/reload-plugins` re-reads a
+`--plugin-dir` folder is not verified yet; `nimitz start F -f` always does.
 
 ## 3. Rules, live
 

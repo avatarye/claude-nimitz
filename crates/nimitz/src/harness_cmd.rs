@@ -57,6 +57,10 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
             let place = (kind == Kind::Settings).then(|| harness::settings_rel(scope.as_ref(), ctx.args.flag("--member"), &fleet)).transpose()?;
             let files = harness::item_files(kind, &name, src, place)?;
             let root = harness::dir(&ctx.env, &fleet);
+            // never written through a link (a folder of the harness that leads elsewhere)
+            if let Some((r, _)) = files.iter().find(|(r, _)| !harness::unlinked(&root, &root.join(r))) {
+                return Err(format!("{}: a link on the way in the harness: nothing is written through one", root.join(r).display()));
+            }
             let mut plan = Plan { summary: format!("harness add {} {name} ({fleet})", kind.folder()), ..Default::default() };
             // a skill added again: its files that are not in the new one go
             if kind == Kind::Skill {
@@ -103,6 +107,9 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
                 }
             };
             let p = root.join(&rel);
+            if !harness::unlinked(&root, &p) {
+                return Err(format!("{}: a link on the way in the harness: nothing is archived through one", p.display()));
+            }
             let mut plan = Plan { summary: format!("harness rm {} {what} ({fleet})", kind.folder()), ..Default::default() };
             if std::fs::symlink_metadata(&p).is_err() {
                 plan.refusals.push(refusal("harness.missing", format!("{} is not there", p.display()), Some(format!("nimitz harness list --fleet {fleet}")), Some(fid.clone())));
@@ -143,7 +150,10 @@ fn list(ctx: &Ctx, fleet: &str) {
     while let Some(d) = stack.pop() {
         for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
             let p = e.path();
-            if p.is_dir() {
+            let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
+            if m.file_type().is_symlink() {
+                continue; // (`issues` names it)
+            } else if m.is_dir() {
                 stack.push(p);
             } else if p.extension().is_some_and(|x| x == "json") {
                 settings.push(p.strip_prefix(&sd).unwrap_or(&p).to_string_lossy().into_owned());
@@ -152,6 +162,13 @@ fn list(ctx: &Ctx, fleet: &str) {
     }
     settings.sort();
     out::line(&format!("  {:<9} {}", "settings", if settings.is_empty() { "-".to_string() } else { settings.join(", ") }));
+    // what the harness lets members run without asking: shown, never quiet
+    for id in [Id::admiral(fleet)] {
+        let allow = harness::settings_for(&ctx.env, &id)["permissions"]["allow"].clone();
+        if allow.as_array().is_some_and(|a| !a.is_empty()) {
+            out::line(&format!("  allowed for every member (fleet.json): {allow}"));
+        }
+    }
     if let Some((body, _)) = harness::rules(&ctx.env, fleet) {
         out::line(&format!("  the rules members get: {} characters (at most {})", body.chars().count(), harness::RULES_MAX));
     }

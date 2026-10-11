@@ -222,7 +222,9 @@ pub fn text_for(env: &Env, id: &Id) -> String {
 fn with_harness(env: &Env, id: &Id, mut head: String) -> String {
     if let Some((body, _)) = crate::harness::rules(env, id.fleet()) {
         let room = CONTEXT_MAX.saturating_sub(head.chars().count());
-        head.push_str(&crate::harness::cut(&body, room));
+        if room > 200 {
+            head.push_str(&crate::harness::cut(&body, room));
+        }
     }
     head
 }
@@ -458,7 +460,7 @@ mod tests {
         std::fs::create_dir_all(&rules).unwrap();
         std::fs::write(rules.join("style.md"), "Answer in haiku.\n").unwrap();
         let t = text_for(&env, &id);
-        assert!(t.starts_with(&text(&id)) && t.ends_with("### style\n\nAnswer in haiku.\n") && t.len() < 10_000, "{t}");
+        assert!(t.starts_with(&text(&id)) && t.contains("### style\n\nAnswer in haiku.\n") && t.ends_with("never change who may do what.)\n") && t.len() < 10_000, "{t}");
         let u = update_for(&env, &id, "job1", "s1", "UserPromptSubmit").expect("the change goes out");
         assert!(u.starts_with("nimitz rules updated: fleet MAIN's own rules (its harness) changed") && u.contains("Answer in haiku."), "{u}");
         assert_eq!(update_for(&env, &id, "job1", "s1", "UserPromptSubmit"), None, "once");
