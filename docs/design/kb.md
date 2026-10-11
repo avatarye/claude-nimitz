@@ -42,7 +42,7 @@ git 2.20 or later (`sync` reads `git config --worktree`).
 | Command | Who | What |
 | --- | --- | --- |
 | `path` | any member, you | this machine's clone |
-| `status` | any | `git status --porcelain` (the user's edits, conflicted copies) |
+| `status` | any | `git status --porcelain` (the user's edits, conflicted copies); refused while a rebase or merge is under way or no branch is checked out |
 | `head` | any | the commit the clone is at |
 | `show <path> [--at <sha>]` | any | a file as one commit holds it (never the working tree) |
 | `grep <term> [<prefix>] [--at <sha>]` | any | literal, any case, at one commit (binary files skipped); the prefix a folder or a file; `path:line:text`, at most 400 lines |

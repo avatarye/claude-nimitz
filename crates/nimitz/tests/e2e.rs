@@ -1951,16 +1951,27 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
             .unwrap_or_default()
     };
     let noted = || git(&kb, &["log", "--format=%H", "-E", "--grep=^note: [0-9a-f]{64}$", &format!("{base_sha}..HEAD")]).lines().next().map(str::to_string);
-    let text = w
+    // the ship's own reply (never a subagent's or a notification's) that holds
+    // kb-ref's block at the note's commit: the scribe's result names the
+    // commit too, so the answer's "citations" goes with it
+    let answer = |text: &str, sha: &str| -> Option<String> {
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["type"] == "assistant" && v["isSidechain"] != true)
+            .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
+            .filter_map(|c| c["text"].as_str().map(str::to_string))
+            .filter(|t| t.contains("citations") && t.contains(&sha[..12]))
+            .last()
+    };
+    let (text, last) = w
         .wait(1500, || {
             let m = w.member(&ship).filter(|m| m["status"] == "Idle")?;
             let sid = m["session"]["session_id"].as_str()?.to_string();
             let text = std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid)?).ok()?;
-            let sha = noted()?;
-            // (any of its replies since: a short one may follow kb-ref's block)
-            text.contains(&sha[..12]).then_some(text)
+            let last = answer(&text, &noted()?)?;
+            Some((text, last))
         })
-        .expect("the ship's turns ended with the note committed and kb-ref's answer at its commit");
+        .unwrap_or_else(|| panic!("the ship's turns did not end with kb-ref's answer at the note's commit; its last reply:\n{}", w.member(&ship).and_then(|m| m["session"]["session_id"].as_str().map(str::to_string)).and_then(|sid| w.transcript(&w.ship_dir(), &sid)).and_then(|p| std::fs::read_to_string(p).ok()).map(|t| last_reply(&t)).unwrap_or_default()));
     // one commit for the note, with its trailers, pushed
     let commits: Vec<String> = git(&kb, &["log", "--format=%H", "-E", "--grep=^note: [0-9a-f]{64}$", &format!("{base_sha}..HEAD")]).lines().map(str::to_string).collect();
     assert_eq!(commits.len(), 1, "one note, one commit: {commits:?}\n{}\n--- the ship's transcript tail:\n{}", git(&kb, &["log", "--oneline", "-5"]), text.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>());
@@ -1968,18 +1979,9 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     assert!(msg.starts_with("ingest(auto): ") && msg.contains(&format!("from: member {ship}")), "{msg}");
     let changed = git(&kb, &["show", "--name-only", "--format=", &commits[0]]);
     assert!(changed.lines().any(|l| l.starts_with("raw/")) && !changed.lines().any(|l| l.eq_ignore_ascii_case("CLAUDE.md") || l.starts_with("agent/")), "{changed}");
-    assert!(git(&remote, &["branch", "--contains", &commits[0]]).trim().len() > 0, "pushed to the remote");
+    assert!(!git(&remote, &["branch", "--contains", &commits[0]]).trim().is_empty(), "pushed to the remote");
     assert!(git(&kb, &["status", "--porcelain"]).trim().is_empty(), "nothing left uncommitted in the clone");
-    // the ship's last reply: kb-ref's answer, from the note, at the note's commit
-    let last = text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|v| v["type"] == "assistant" && v["isSidechain"] != true)
-        .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
-        .filter_map(|c| c["text"].as_str().map(str::to_string))
-        .filter(|t| t.contains("citations"))
-        .last()
-        .unwrap_or_else(|| last_reply(&text));
+    // the ship's own answer: kb-ref's, the marker's fact, at the note's commit
     assert!(last.contains("citations") && last.to_lowercase().contains("dozen") && last.contains(&commits[0][..12]), "the answer: the marker's fact at the note's commit:\n{last}");
     let ev = w.events();
     assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {:?}", ev.iter().filter(|e| e["event"] == "PermissionRequest").collect::<Vec<_>>());

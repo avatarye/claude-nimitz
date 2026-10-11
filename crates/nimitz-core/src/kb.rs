@@ -305,7 +305,8 @@ pub fn stray_attributes(dir: &Path) -> Option<String> {
 }
 
 /// `nimitz kb status`: `git status --porcelain` of the folder (the user's
-/// uncommitted edits, a sync's conflicted copies).
+/// uncommitted edits, a sync's conflicted copies); refused while a rebase or
+/// merge is under way or no branch is checked out.
 pub fn status(dir: &Path) -> Result<String, String> {
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: git is not run until the user looks at it"));
@@ -793,6 +794,7 @@ mod tests {
         assert!(g(d, &["diff", "--cached", "--name-only"]).is_empty(), "nothing left staged");
         std::fs::create_dir_all(d.join(".git/rebase-merge")).unwrap();
         assert!(commit(&env, d, "t", &["raw/a.md".into()], &[], NOTE, "x").unwrap_err().contains("under way"));
+        assert!(status(d).unwrap_err().contains("under way"), "a scribe stops at its first step");
         std::fs::remove_dir_all(d.join(".git/rebase-merge")).unwrap();
         let h = head(d).unwrap();
         g(d, &["branch", "beef"]);
