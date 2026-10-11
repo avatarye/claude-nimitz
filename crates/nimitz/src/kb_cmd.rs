@@ -55,7 +55,7 @@ pub fn kb(ctx: &Ctx) -> Result<i32, String> {
     // the folder is the KB's clone, not another repo the settings point at
     if let Some(remote) = &k.remote {
         let got = kb::origin(dir);
-        if got.as_deref() != Some(remote.as_str()) {
+        if !got.as_deref().is_some_and(|g| kb::same_remote(g, remote)) {
             return Err(format!("{} is no clone of the fleet's kb.remote {remote} (its origin is {}): nimitz works only in the KB's own clone", dir.display(), got.as_deref().unwrap_or("none")));
         }
     }

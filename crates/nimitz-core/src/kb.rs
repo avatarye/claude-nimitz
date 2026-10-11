@@ -39,10 +39,12 @@ fn git(dir: &Path) -> Command {
     for kv in ["core.fsmonitor=false", "core.pager=cat", hooks.as_str(), attrs.as_str(), "diff.external=", "commit.gpgSign=false", "log.showSignature=false", "core.editor=true", "color.ui=false", "core.untrackedCache=false"] {
         c.arg("-c").arg(kv);
     }
-    // none of the caller's `GIT_*` steers it (the ssh pair is the user's transport)
+    // none of the caller's `GIT_*` steers it where it reads or writes (its
+    // transport, TLS, proxies and identity stay the user's)
+    const KEEP: [&str; 9] = ["GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_SSL_", "GIT_PROXY_", "GIT_HTTP_", "GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CURL_"];
     for (k, _) in std::env::vars_os() {
         let k = k.to_string_lossy();
-        if k.starts_with("GIT_") && k != "GIT_SSH_COMMAND" && k != "GIT_SSH" {
+        if k.starts_with("GIT_") && !KEEP.iter().any(|p| k == *p || (p.ends_with('_') && k.starts_with(p))) {
             c.env_remove(k.as_ref());
         }
     }
@@ -62,8 +64,14 @@ fn transport(c: &mut Command, dir: &Path) {
         run(g).is_ok_and(|s| !s.trim().is_empty())
     };
     if !own_env && !own_config() {
-        c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=20");
+        c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4");
     }
+    // an https transfer that stalls ends too (it holds the lock)
+    c.env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "http.lowSpeedLimit")
+        .env("GIT_CONFIG_VALUE_0", "1000")
+        .env("GIT_CONFIG_KEY_1", "http.lowSpeedTime")
+        .env("GIT_CONFIG_VALUE_1", "60");
 }
 
 fn run(mut c: Command) -> Result<String, String> {
@@ -117,7 +125,7 @@ fn inside(dir: &Path, rel: &str) -> Result<(), String> {
 pub fn off_limits(rel: &str) -> Option<String> {
     // a name Windows (or an old Mac) reads as another: a trailing dot or space,
     // a stream (`:`), an 8.3 alias (`~1`), an invisible character
-    if rel.split('/').any(|p| p.ends_with('.') || p.ends_with(' ') || p.contains(':') || p.contains('~') || p.chars().any(|c| c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{feff}' | '\u{2060}'))) {
+    if rel.split('/').any(|p| p.ends_with('.') || p.ends_with(' ') || p.contains(':') || p.contains('~') || p.chars().any(|c| c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}'))) {
         return Some("a name that another file system reads as another (a trailing dot or space, `:`, `~`, an invisible character)".into());
     }
     let low = rel.to_lowercase();
@@ -492,11 +500,29 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
     Ok(format!("in step with {upstream} at {}", head(dir)?))
 }
 
-/// The clone's `origin` URL, if it has one.
+/// The clone's `origin` URL as configured (never rewritten by `insteadOf`).
 pub fn origin(dir: &Path) -> Option<String> {
     let mut c = git(dir);
-    c.args(["remote", "get-url", "origin"]);
+    c.args(["config", "--get", "remote.origin.url"]);
     run(c).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// One remote URL as it compares: no trailing `/` nor `.git`, a local path
+/// made real.
+pub fn same_remote(a: &str, b: &str) -> bool {
+    let norm = |u: &str| -> String {
+        let u = u.trim().trim_end_matches('/');
+        let u = u.strip_suffix(".git").unwrap_or(u);
+        let p = Path::new(u);
+        if p.is_absolute() {
+            if let Ok(c) = crate::os::canonical(p).or_else(|_| crate::os::canonical(Path::new(&format!("{u}.git")))) {
+                let c = c.to_string_lossy().into_owned();
+                return c.strip_suffix(".git").unwrap_or(&c).to_string();
+            }
+        }
+        u.to_string()
+    };
+    norm(a) == norm(b)
 }
 
 /// `nimitz kb clone`: the KB's remote into `dir` (not there yet, or an
@@ -526,6 +552,7 @@ pub fn clone(remote: &str, dir: &Path) -> Result<(), String> {
 /// over a copy kept before, and the line says where.
 pub fn restore(env: &Env, dir: &Path, paths: &[String], backup: &Path) -> Result<Vec<String>, String> {
     let _lock = lock(env, dir)?;
+    busy(dir)?;
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: nothing is restored until the user looks at it"));
     }
@@ -718,6 +745,17 @@ mod tests {
             assert!(off_limits(p).is_some(), "{p}");
         }
         assert!(off_limits("wiki/notes-2026.md").is_none());
+    }
+
+    #[test]
+    fn a_remote_compares_without_its_trailing_slash_or_git_and_by_real_path() {
+        assert!(same_remote("https://github.com/u/kb", "https://github.com/u/kb.git/"));
+        assert!(!same_remote("https://github.com/u/kb", "git@github.com:u/kb.git"), "another transport is another remote as written");
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join("kb.git")).unwrap();
+        let real = td.path().join("kb.git");
+        let via = td.path().join("kb.git/../kb.git");
+        assert!(same_remote(real.to_str().unwrap(), via.to_str().unwrap()));
     }
 
     #[test]

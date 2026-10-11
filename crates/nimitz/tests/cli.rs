@@ -2692,6 +2692,7 @@ fn a_fleets_kb_is_set_cloned_and_written_once_per_note_by_a_member() {
     let r = sb.run_as(ship, &["fleet", "settings", "get", "kb.remote"]);
     assert_eq!((r.code, r.out.trim()), (0, remote.to_str().unwrap()), "{}", r.out);
     assert!(sb.run_as("MAIN/ARGOS", &["fleet", "settings", "set", "kb.remote", "x", "--yes"]).out.contains("(authority)"));
+    assert!(sb.run_as("MAIN", &["fleet", "settings", "set", "kb.remote", "/elsewhere.git", "--yes"]).out.contains("(authority)"), "kb.* is the user's alone");
     // not cloned yet: said; a member may not clone; the user clones
     let r = sb.run_as(ship, &["kb", "path"]);
     assert!(r.code != 0 && r.out.contains("not cloned on this machine"), "{}", r.out);
@@ -2731,6 +2732,12 @@ fn a_fleets_kb_is_set_cloned_and_written_once_per_note_by_a_member() {
     let r = sb.run_as(ship, &["kb", "restore", "--paths", "wiki/half.md"]);
     assert!(r.code == 0 && r.out.contains("wiki/half.md removed (kept: "), "{}", r.out);
     assert!(!here.join("wiki/half.md").exists());
+    // the folder must stay a clone of kb.remote: another origin is refused
+    std::process::Command::new("git").arg("-C").arg(&here).args(["remote", "set-url", "origin", "/somewhere/else.git"]).status().unwrap();
+    let r = sb.run_as(ship, &["kb", "head"]);
+    assert!(r.code != 0 && r.out.contains("is no clone of the fleet's kb.remote"), "{}", r.out);
+    std::process::Command::new("git").arg("-C").arg(&here).args(["remote", "set-url", "origin", &format!("{}/", remote.display())]).status().unwrap();
+    assert_eq!(sb.run_as(ship, &["kb", "head"]).code, 0, "a trailing slash is the same remote");
     // another fleet's KB is not a member's to read
     assert!(sb.run_as(ship, &["kb", "path", "--fleet", "BETA"]).out.contains("(authority)"));
 }

@@ -109,8 +109,12 @@ pub fn problems(m: &Map<String, Value>, machines: &std::collections::BTreeMap<St
         for k in kb.keys().filter(|k| !matches!(k.as_str(), "remote" | "dirs")) {
             out.push(format!("kb.{k}: not a kb key (remote, dirs)"));
         }
-        if kb.get("remote").is_some_and(|r| !r.as_str().is_some_and(|s| !s.trim().is_empty())) {
-            out.push("kb.remote: a git URL (text)".into());
+        // a URL, a scp-like `host:path`, or an absolute folder: never relative
+        // (each clone would read it from its own folder)
+        let drive = |s: &str| s.len() > 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic();
+        let url = |s: &str| s.contains("://") || drive(s) || s.starts_with('/') || (s.contains(':') && !s.starts_with('.') && s.split(':').next().is_some_and(|h| h.len() > 1));
+        if kb.get("remote").is_some_and(|r| !r.as_str().is_some_and(|s| !s.trim().is_empty() && url(s.trim()))) {
+            out.push("kb.remote: a git URL, a host:path, or an absolute folder (never relative)".into());
         }
         match kb.get("dirs") {
             None => {}
@@ -195,7 +199,7 @@ pub fn kb(env: &Env, fleet: &str) -> Result<Kb, String> {
     let f = crate::config::load_fleet(env, fleet).map_err(|i| i.message)?;
     let m = load(&f)?;
     let Some(Value::Object(kb)) = m.get("kb") else {
-        return Err(format!("fleet {fleet} has no knowledge base (no kb in {}): the user or its admiral sets one with `nimitz fleet settings set kb.remote <git url> --fleet {fleet}`", path(&f.dir).display()));
+        return Err(format!("fleet {fleet} has no knowledge base (no kb in {}): the user sets one with `nimitz fleet settings set kb.remote <git url> --fleet {fleet}`", path(&f.dir).display()));
     };
     let Some(label) = f.machine.clone() else {
         return Err(format!("this machine is not in fleet {fleet}'s [machines]"));
@@ -247,6 +251,12 @@ mod tests {
         let p = plan_set(&env, "MAIN", "kb.dirs.elsewhere", Some(json!("/x")), true);
         assert!(p.refusals.iter().any(|r| r.message.contains("no machine elsewhere")), "{p:?}");
         assert!(!plan_set(&env, "MAIN", "kb.remote", Some(json!(3)), true).ok());
+        for bad in ["../kb.git", "kb", "~/kb.git"] {
+            assert!(!plan_set(&env, "MAIN", "kb.remote", Some(json!(bad)), true).ok(), "{bad}");
+        }
+        for good in ["https://github.com/u/kb", "git@github.com:u/kb.git", "/srv/kb.git", "C:/kb.git"] {
+            assert!(plan_set(&env, "MAIN", "kb.remote", Some(json!(good)), true).ok(), "{good}");
+        }
         assert!(!plan_set(&env, "MAIN", "kb.color", Some(json!("x")), true).ok());
         let dir = td.path().join("kb");
         apply(&plan_set(&env, "MAIN", "kb.dirs.test-mac", Some(json!(dir.to_string_lossy())), true));
