@@ -529,9 +529,48 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
             (Some("set"), Some(t)) => may_config(caller, &t).is_ok(),
             _ => false,
         },
+        Some("fleet") if w.get(2) == Some(&"settings") => {
+            let verb = verbs(&w[3..]);
+            fleet_flag(&w).is_none_or(|f| f == me.fleet()) && (verb.first() == Some(&"get") || (verb.first() == Some(&"set") && *role == Role::Admiral && !verb.get(1).is_some_and(|k| *k == "kb" || k.starts_with("kb."))))
+        }
         Some("fleet") => w.get(2) == Some(&"set") && id_at(3).is_some_and(|t| in_fleet(&t)),
+        // the knowledge base: every member's (its own fleet's), but a clone (yours)
+        Some("kb") => fleet_flag(&w).is_none_or(|f| f == me.fleet()) && verbs(&w[2..]).first() != Some(&"clone"),
         _ => false,
     }
+}
+
+/// The flags of `fleet settings` and `kb` that take a value.
+const KB_VALUE_FLAGS: [&str; 7] = ["--fleet", "--at", "--title", "--paths", "--pages", "--note", "--from"];
+
+/// The fleet a command names with `--fleet F` or `--fleet=F` (the last one,
+/// as the command line reads it).
+fn fleet_flag<'a>(w: &[&'a str]) -> Option<&'a str> {
+    let mut out = None;
+    for (i, x) in w.iter().enumerate() {
+        if *x == "--fleet" {
+            out = w.get(i + 1).copied();
+        } else if let Some(f) = x.strip_prefix("--fleet=") {
+            out = Some(f);
+        }
+    }
+    out
+}
+
+/// The words of a command that are no flag nor a flag's value (`--fleet F`).
+fn verbs<'a>(w: &[&'a str]) -> Vec<&'a str> {
+    let mut out = vec![];
+    let mut skip = false;
+    for x in w {
+        if skip {
+            skip = false;
+        } else if x.starts_with("--") {
+            skip = !x.contains('=') && KB_VALUE_FLAGS.contains(x);
+        } else {
+            out.push(*x);
+        }
+    }
+    out
 }
 
 /// May `caller` act on one session row (`stop <short>`, `rm <short>`)? A
@@ -2787,6 +2826,10 @@ mod tests {
         // ships: nothing
         let a_ship = Caller::Member { id: ship.clone(), role: Role::Ship };
         assert!(may_start(&a_ship, &Id::ship("F", "SQ", "T"), "start").is_err());
+        // the KB and the settings: one's own fleet's, however the flag is written
+        assert!(may_run(&a_ship, "nimitz kb path") && !may_run(&a_ship, "nimitz kb path --fleet G") && !may_run(&a_ship, "nimitz kb path --fleet=G"));
+        assert!(!may_run(&a_ship, "nimitz kb --fleet F clone") && !may_run(&a_ship, "nimitz kb path --fleet F --fleet G"));
+        assert!(may_run(&admiral, "nimitz fleet settings set notes.x 1") && !may_run(&admiral, "nimitz fleet settings set kb.remote x"));
         // 0.6's aide verbs are no one's
         for cmd in ["nimitz inbox retry F/@KB 17", "nimitz ask F/@REF q", "nimitz aide new F/@KB --yes"] {
             assert!(!may_run(&admiral, cmd) && !may_run(&a_ship, cmd), "{cmd}");

@@ -26,7 +26,7 @@ fn authority(ctx: &Ctx, plan: &mut Plan, scope: Option<&Id>) {
 }
 
 /// Gate, then apply a config plan.
-fn config_plan(ctx: &Ctx, mut plan: Plan, scope: Option<&Id>) -> i32 {
+pub(crate) fn config_plan(ctx: &Ctx, mut plan: Plan, scope: Option<&Id>) -> i32 {
     authority(ctx, &mut plan, scope);
     match ctx.gate(&plan) {
         out::Go::Exit(c) => c,
@@ -69,7 +69,10 @@ pub fn machine_label(ctx: &Ctx) -> String {
 // ------------------------------------------------------------------ fleet
 
 pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
-    let verb = ctx.args.need(0, "new|set|rm")?;
+    let verb = ctx.args.need(0, "new|set|rm|settings")?;
+    if verb == "settings" {
+        return crate::kb_cmd::settings(ctx);
+    }
     let fleet = ctx.args.need(1, "fleet")?;
     ctx.args.at_most(2)?;
     let id = parse_id(fleet)?;
@@ -88,7 +91,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
             ctx.args.allow(&[])?;
             return Ok(retire(ctx, &id));
         }
-        v => return Err(format!("fleet {v}: use new, set or rm")),
+        v => return Err(format!("fleet {v}: use new, set, rm or settings")),
     };
     Ok(config_plan(ctx, plan, Some(&id)))
 }

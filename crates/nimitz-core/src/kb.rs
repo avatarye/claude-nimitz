@@ -1,13 +1,18 @@
-//! The knowledge base's git, run by nimitz, never by an agent that writes
-//! it: reads (`grep`, `status`) and a commit of exactly the named paths with
-//! a trailer. nimitz runs git with every option that could run a program
-//! turned off, but for the filters the user's own committed attributes name
-//! (git-lfs, say); an attributes file not committed stops nimitz's git
-//! (`stray_attributes`).
-use std::path::{Component, Path};
+//! A fleet's knowledge base and its git, run by nimitz, never by the agents
+//! that read or write it (`nimitz kb`, docs/design/kb.md): reads at one
+//! commit (`head`, `show`, `grep`), the hash of a capture's body, a commit
+//! of exactly the named paths with its `note:` and `from:` trailers (once
+//! per note, under a lock), a restore that keeps a copy, and `sync` (pull
+//! --rebase, push). nimitz runs git with every option that could run a
+//! program turned off, but for the filters the user's own committed
+//! attributes name (git-lfs, say); an attributes file not committed stops
+//! nimitz's git (`stray_attributes`). Fetch and push use the user's own
+//! transport (ssh, a credential helper), never a prompt.
+use crate::env::Env;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-/// What an aide never writes in its repo: the KB's own rules (top level),
+/// What an agent never writes in the KB: its own rules (top level),
 /// and, at any depth, what makes git or Claude Code act on its own (`.git`,
 /// attributes that name a filter program, modules, a CLAUDE.md that becomes
 /// instructions at the next session start). Compared without case: on macOS
@@ -17,14 +22,15 @@ pub const OFF_LIMITS: [&str; 7] = ["agent/", "CLAUDE.md", "START_HERE.md", "SCOP
 pub const OFF_LIMITS_ANYWHERE: [&str; 7] = [".git", ".gitattributes", ".gitmodules", ".gitignore", "CLAUDE.md", ".claude", ".mcp.json"];
 
 /// The most lines `grep` prints, each at most `LINE_MAX` characters: an
-/// aide's context is not a dump.
+/// agent's context is not a dump.
 pub const GREP_MAX_LINES: usize = 400;
 const LINE_MAX: usize = 300;
 
 /// git in `dir` with nothing that runs a program: no fsmonitor, no pager, no
 /// hooks, no external diff or textconv, no signing, no editor, no global
 /// attributes; every path literal (`--literal-pathspecs`: no glob, no `:(magic)`);
-/// none of the caller's `GIT_*` steering it elsewhere.
+/// of the caller's `GIT_*` only the user's transport, TLS, proxy, identity
+/// and global or system config place.
 fn git(dir: &Path) -> Command {
     let mut c = Command::new("git");
     c.arg("--literal-pathspecs").arg("-C").arg(dir);
@@ -34,11 +40,40 @@ fn git(dir: &Path) -> Command {
     for kv in ["core.fsmonitor=false", "core.pager=cat", hooks.as_str(), attrs.as_str(), "diff.external=", "commit.gpgSign=false", "log.showSignature=false", "core.editor=true", "color.ui=false", "core.untrackedCache=false"] {
         c.arg("-c").arg(kv);
     }
-    c.env("GIT_PAGER", "cat").env("GIT_TERMINAL_PROMPT", "0");
-    for v in ["GIT_EXTERNAL_DIFF", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_ATTR_SOURCE", "GIT_OBJECT_DIRECTORY", "GIT_NAMESPACE"] {
-        c.env_remove(v);
+    // none of the caller's `GIT_*` steers it where it reads or writes (its
+    // transport, TLS, proxies and identity stay the user's)
+    // (and where the user keeps their own global config)
+    const KEEP: [&str; 12] = ["GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_SSL_", "GIT_PROXY_", "GIT_HTTP_", "GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CURL_", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"];
+    for (k, _) in std::env::vars_os() {
+        let k = k.to_string_lossy();
+        if k.starts_with("GIT_") && !KEEP.iter().any(|p| k == *p || (p.ends_with('_') && k.starts_with(p))) {
+            c.env_remove(k.as_ref());
+        }
     }
+    c.env("GIT_PAGER", "cat").env("GIT_TERMINAL_PROMPT", "0");
     c
+}
+
+/// A fetch, push or clone: the user's own transport, but never a passphrase
+/// prompt nobody will answer nor a connection that hangs on (it holds the
+/// KB's lock): `ssh -o BatchMode=yes -o ConnectTimeout=20`, unless the user
+/// set an ssh command of their own (`GIT_SSH*`, `core.sshCommand`).
+fn transport(c: &mut Command, dir: &Path) {
+    let own_env = std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some();
+    let own_config = || {
+        let mut g = git(dir);
+        g.args(["config", "--get", "core.sshCommand"]);
+        run(g).is_ok_and(|s| !s.trim().is_empty())
+    };
+    if !own_env && !own_config() {
+        c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=4");
+    }
+    // an https transfer that stalls ends too (it holds the lock)
+    c.env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "http.lowSpeedLimit")
+        .env("GIT_CONFIG_VALUE_0", "1000")
+        .env("GIT_CONFIG_KEY_1", "http.lowSpeedTime")
+        .env("GIT_CONFIG_VALUE_1", "60");
 }
 
 fn run(mut c: Command) -> Result<String, String> {
@@ -50,7 +85,7 @@ fn run(mut c: Command) -> Result<String, String> {
     }
 }
 
-/// A path inside the repo, as the aide names it: relative, no `..`, no
+/// A path inside the repo, as an agent names it: relative, no `..`, no
 /// leading `/`, written with `/`.
 fn clean_rel(p: &str) -> Result<String, String> {
     let p = p.trim().replace('\\', "/");
@@ -90,6 +125,11 @@ fn inside(dir: &Path, rel: &str) -> Result<(), String> {
 
 /// Is `rel` off limits (any case)?
 pub fn off_limits(rel: &str) -> Option<String> {
+    // a name Windows (or an old Mac) reads as another: a trailing dot or space,
+    // a stream (`:`), an 8.3 alias (`~1`), an invisible character
+    if rel.split('/').any(|p| p.ends_with('.') || p.ends_with(' ') || p.contains(':') || p.contains('~') || p.chars().any(|c| c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{00ad}' | '\u{034f}' | '\u{180e}' | '\u{fe00}'..='\u{fe0f}' | '\u{1160}' | '\u{3164}' | '\u{e0000}'..='\u{e007f}'))) {
+        return Some("a name that another file system reads as another (a trailing dot or space, `:`, `~`, an invisible character)".into());
+    }
     let low = rel.to_lowercase();
     if let Some(o) = OFF_LIMITS.iter().find(|o| {
         let o = o.to_lowercase();
@@ -109,14 +149,54 @@ fn clip_lines(text: &str, max: usize) -> String {
     out
 }
 
-/// `nimitz aide grep <term> [<prefix>]`: `git grep -n -i -F` in the folder's
-/// tracked files, under `prefix` when given (at most `GREP_MAX_LINES` lines).
-pub fn grep(dir: &Path, term: &str, prefix: Option<&str>) -> Result<String, String> {
+/// A commit to read at: `HEAD`, or a commit id (4 to 64 hex digits; a
+/// `--at` from `nimitz kb head`), resolved among object ids only (a branch
+/// or tag of that name is never it) to its one full id.
+fn rev(dir: &Path, at: Option<&str>) -> Result<String, String> {
+    let s = match at {
+        None | Some("HEAD") => return Ok("HEAD".into()),
+        Some(s) if (4..=64).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit()) => s.to_lowercase(),
+        Some(s) => return Err(format!("{s:?} is no commit id (HEAD, or the hex sha `nimitz kb head` printed)")),
+    };
+    let mut c = git(dir);
+    c.arg("rev-parse").arg(format!("--disambiguate={s}"));
+    let ids: Vec<String> = run(c).unwrap_or_default().lines().map(str::to_string).collect();
+    let commits: Vec<&String> = ids
+        .iter()
+        .filter(|id| {
+            let mut t = git(dir);
+            t.args(["cat-file", "-t", id]);
+            run(t).is_ok_and(|k| k.trim() == "commit")
+        })
+        .collect();
+    match commits.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(format!("{s}: no commit with that id in the clone")),
+        _ => Err(format!("{s}: more than one commit starts so: give more of the id")),
+    }
+}
+
+/// `nimitz kb head`: the commit the KB is at.
+pub fn head(dir: &Path) -> Result<String, String> {
+    let mut c = git(dir);
+    c.args(["rev-parse", "HEAD"]);
+    Ok(run(c)?.trim().to_string())
+}
+
+/// `nimitz kb grep <term> [<prefix>] [--at <sha>]`: `git grep -n -i -F` in
+/// the files of one commit (never the working tree: a write in progress is
+/// not seen half done), under `prefix` (a folder or a file) when given, as
+/// `path:line:text` (at most `GREP_MAX_LINES` lines).
+pub fn grep(dir: &Path, at: Option<&str>, term: &str, prefix: Option<&str>) -> Result<String, String> {
     if term.trim().is_empty() {
         return Err("grep needs a term".into());
     }
+    if term.chars().any(char::is_control) {
+        return Err("a term is one line, no control characters".into());
+    }
+    let r = rev(dir, at)?;
     let mut c = git(dir);
-    c.args(["grep", "-n", "-i", "-F", "--no-color", "-e", term, "--"]);
+    c.args(["grep", "-n", "-i", "-I", "-F", "--no-color", "-e", term, &r, "--"]);
     if let Some(p) = prefix {
         c.arg(clean_rel(p)?);
     }
@@ -126,7 +206,67 @@ pub fn grep(dir: &Path, term: &str, prefix: Option<&str>) -> Result<String, Stri
         Some(0) | Some(1) => {}
         _ => return Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
     }
-    Ok(clip_lines(&String::from_utf8_lossy(&o.stdout), GREP_MAX_LINES))
+    let lead = format!("{r}:");
+    let text = String::from_utf8_lossy(&o.stdout);
+    let lines: Vec<&str> = text.lines().map(|l| l.strip_prefix(&lead).unwrap_or(l)).collect();
+    Ok(clip_lines(&lines.join("\n"), GREP_MAX_LINES))
+}
+
+/// The most bytes `show` prints.
+pub const SHOW_MAX: usize = 512 * 1024;
+
+/// `nimitz kb show <path> [--at <sha>]`: a file as one commit holds it.
+pub fn show(dir: &Path, at: Option<&str>, path: &str) -> Result<String, String> {
+    let r = rev(dir, at)?;
+    let rel = clean_rel(path)?;
+    let mut c = git(dir);
+    c.args(["show", "--no-textconv", &format!("{r}:{rel}")]);
+    let text = run(c).map_err(|e| format!("{rel} at {r}: {e}"))?;
+    if text.len() > SHOW_MAX {
+        let mut cut = SHOW_MAX;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        return Ok(format!("{}\n... cut at {SHOW_MAX} bytes", &text[..cut]));
+    }
+    Ok(text)
+}
+
+/// The bytes of a page after its frontmatter: after the line `---` that
+/// closes a first line `---`; the whole file when it has none (or never
+/// closes it).
+pub fn body(bytes: &[u8]) -> &[u8] {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
+    let fence = |l: &[u8]| {
+        let l = l.strip_suffix(b"\n").unwrap_or(l);
+        l.strip_suffix(b"\r").unwrap_or(l).trim_ascii_end() == b"---"
+    };
+    let mut at = 0;
+    for (n, l) in bytes.split_inclusive(|b| *b == b'\n').enumerate() {
+        at += l.len();
+        match (n, fence(l)) {
+            (0, false) => return bytes,
+            (0, true) => {}
+            (_, true) => return &bytes[at..],
+            _ => {}
+        }
+    }
+    bytes
+}
+
+/// `nimitz kb hash <path>`: the sha256 (hex) of the file's body as written
+/// in the working tree (`body`): what a note's duplicate check and its
+/// commit's `note:` trailer carry.
+pub fn hash(dir: &Path, path: &str) -> Result<String, String> {
+    let rel = clean_rel(path)?;
+    inside(dir, &rel)?;
+    let bytes = std::fs::read(dir.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
+    // line ends as LF: the same capture written on Windows is the same note
+    let b = String::from_utf8_lossy(body(&bytes)).replace("\r\n", "\n");
+    if b.trim().is_empty() {
+        return Err(format!("{rel}: its body (after the frontmatter) is empty: no note"));
+    }
+    Ok(crate::sha256::hex(b.as_bytes()))
 }
 
 /// An attributes or modules file (any depth) that differs from its last
@@ -164,8 +304,8 @@ pub fn stray_attributes(dir: &Path) -> Option<String> {
     None
 }
 
-/// `nimitz aide status`: `git status --porcelain` of the folder (the user's
-/// uncommitted edits, Dropbox's conflicted copies).
+/// `nimitz kb status`: `git status --porcelain` of the folder (the user's
+/// uncommitted edits, a sync's conflicted copies).
 pub fn status(dir: &Path) -> Result<String, String> {
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: git is not run until the user looks at it"));
@@ -175,12 +315,14 @@ pub fn status(dir: &Path) -> Result<String, String> {
     Ok(clip_lines(&run(c)?, GREP_MAX_LINES))
 }
 
-/// The commit that already carries this item (`inbox-item: <ref>`), if any:
-/// an earlier pass committed and died before `done`.
-pub fn committed(dir: &Path, reference: &str) -> Result<Option<String>, String> {
-    let pat: String = reference.chars().map(|ch| if ch.is_ascii_alphanumeric() || ch == ':' { ch.to_string() } else { format!("\\{ch}") }).collect();
+/// The commit that already carries this note (`note: <sha256>`), if any:
+/// the note was ingested before.
+pub fn note_commit(dir: &Path, note: &str) -> Result<Option<String>, String> {
+    if note.len() != 64 || !note.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("{note:?} is no sha256 (64 hex digits, from `nimitz kb hash`)"));
+    }
     let mut c = git(dir);
-    c.args(["log", "-E", "--format=%H", "-1", &format!("--grep=^inbox-item: {pat}$")]);
+    c.args(["log", "-E", "--format=%H", "-1", &format!("--grep=^note: {}$", note.to_lowercase())]);
     Ok(run(c)?.lines().next().map(str::to_string).filter(|s| !s.is_empty()))
 }
 
@@ -190,11 +332,10 @@ fn tracked(dir: &Path, rel: &str) -> bool {
     c.status().is_ok_and(|s| s.success())
 }
 
-/// Check the paths an aide wants committed (or restored): files inside the
-/// repo, named one by one (a file, or a tracked file it deleted; never a
-/// folder), none off limits, none an existing file under `raw/` (a capture
-/// is always new), none `extra` (its brief).
-pub fn check_paths(dir: &Path, paths: &[String], extra: &[String]) -> Result<Vec<String>, String> {
+/// Check the paths an agent wants committed: files inside the repo, named
+/// one by one (a file, or a tracked file it deleted; never a folder), none
+/// off limits, none an existing file under `raw/` (a capture is always new).
+pub fn check_paths(dir: &Path, paths: &[String]) -> Result<Vec<String>, String> {
     if paths.is_empty() {
         return Err("--paths names nothing".into());
     }
@@ -202,10 +343,7 @@ pub fn check_paths(dir: &Path, paths: &[String], extra: &[String]) -> Result<Vec
     for p in paths {
         let rel = clean_rel(p)?;
         if let Some(off) = off_limits(&rel) {
-            return Err(format!("{rel}: off limits to an aide ({off})"));
-        }
-        if extra.iter().any(|e| e.to_lowercase() == rel.to_lowercase()) {
-            return Err(format!("{rel}: the aide's brief is never its own to write"));
+            return Err(format!("{rel}: off limits ({off})"));
         }
         inside(dir, &rel)?;
         let full = dir.join(&rel);
@@ -224,24 +362,57 @@ pub fn check_paths(dir: &Path, paths: &[String], extra: &[String]) -> Result<Vec
     Ok(out)
 }
 
-/// Stage exactly `paths` and commit only them (`--only`: whatever else the
-/// user staged stays staged, uncommitted), with the item's trailer. The
-/// commit's author is the repo's own; with none set, the aide's id. A failed
-/// commit unstages what it staged.
-pub fn commit(dir: &Path, aide: &str, reference: &str, title: &str, from: &str, paths: &[String], brief: &[String]) -> Result<String, String> {
-    let paths = check_paths(dir, paths, brief)?;
-    // one line each, no control characters: a title or a sender label never
-    // adds a line (a forged `inbox-item:` would make another item look done)
-    let line = |t: &str, n: usize| -> String { t.lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(n).collect() };
-    let title = line(title, 120);
-    let title = if title.trim().is_empty() { "a note".to_string() } else { title };
-    let from = line(from, 120);
+/// What `commit` did.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Committed {
+    New(String),
+    /// the note was committed before, in this commit: nothing new
+    Already(String),
+}
+
+/// One line, no control characters, at most `n` characters: a title or a
+/// sender never adds a line (a forged `note:` would make another note look
+/// ingested).
+fn one_line(t: &str, n: usize) -> String {
+    t.lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(n).collect::<String>().trim().to_string()
+}
+
+/// `nimitz kb commit`: under the KB's lock, a note committed before is that
+/// commit again (`Already`); else stage exactly `paths` and commit only them
+/// (`--only`: whatever else the user staged stays staged, uncommitted), as
+/// `ingest(auto): <title>` with the pages written and the trailers `note:
+/// <sha256>` and `from: <sender>`. The author is the repo's own; with none
+/// set, `nimitz kb`. A failed commit unstages what it staged.
+pub fn commit(env: &Env, dir: &Path, title: &str, paths: &[String], pages: &[String], note: &str, from: &str) -> Result<Committed, String> {
+    let note = note.trim().to_lowercase();
+    let from = one_line(from, 160);
+    if from.is_empty() {
+        return Err("no sender: --from names who gave the note".into());
+    }
+    let _lock = lock(env, dir)?;
+    busy(dir)?;
+    if let Some(sha) = note_commit(dir, &note)? {
+        return Ok(Committed::Already(sha));
+    }
+    let paths = check_paths(dir, paths)?;
+    let title = one_line(title, 120);
+    let title = if title.is_empty() { "a note".to_string() } else { title };
+    let pages: Vec<String> = pages.iter().map(|p| one_line(p, 200)).filter(|p| !p.is_empty()).collect();
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: nothing is committed until the user looks at it"));
     }
     let mut add = git(dir);
     add.args(["add", "--"]).args(&paths);
-    run(add)?;
+    let unstage = || {
+        let mut undo = git(dir);
+        undo.args(["reset", "-q", "--"]).args(&paths);
+        let _ = run(undo);
+    };
+    // (a path git ignores fails the add after the others were staged)
+    if let Err(e) = run(add) {
+        unstage();
+        return Err(e);
+    }
     let mut c = git(dir);
     let unset = |k: &str| {
         let mut who = git(dir);
@@ -249,28 +420,194 @@ pub fn commit(dir: &Path, aide: &str, reference: &str, title: &str, from: &str, 
         run(who).map(|s| s.trim().is_empty()).unwrap_or(true)
     };
     if unset("user.email") || unset("user.name") {
-        let me = aide.replace('/', ".").replace('@', "");
-        c.args(["-c", &format!("user.name={aide}"), "-c", &format!("user.email={me}@nimitz.local")]);
+        c.args(["-c", "user.name=nimitz kb", "-c", "user.email=kb@nimitz.local"]);
     }
-    c.args(["commit", "--only", "--no-verify", "-m", &format!("ingest(auto): {title}"), "-m", &format!("inbox-item: {reference}"), "-m", &format!("from: {from}"), "--"]).args(&paths);
+    c.args(["commit", "--only", "--no-verify", "-m", &format!("ingest(auto): {title}")]);
+    if !pages.is_empty() {
+        c.args(["-m", &format!("pages: {}", pages.join(", "))]);
+    }
+    c.args(["-m", &format!("note: {note}\nfrom: {from}"), "--"]).args(&paths);
     if let Err(e) = run(c) {
-        let mut undo = git(dir);
-        undo.args(["reset", "-q", "--"]).args(&paths);
-        let _ = run(undo);
+        unstage();
         return Err(e);
     }
-    let mut head = git(dir);
-    head.args(["rev-parse", "HEAD"]);
-    Ok(run(head)?.trim().to_string())
+    head(dir).map(Committed::New)
 }
 
-/// `inbox fail --restore <paths>`: undo what a failed pass wrote: a tracked
+/// The clone's git folder.
+fn git_dir(dir: &Path) -> Option<PathBuf> {
+    let mut g = git(dir);
+    g.args(["rev-parse", "--absolute-git-dir"]);
+    run(g).map(|s| PathBuf::from(s.trim())).ok()
+}
+
+/// A rebase, a merge or a cherry-pick under way in the clone (the user's, or
+/// a sync's that died), or no branch checked out: nothing is committed or
+/// synced until the user looks at it.
+fn busy(dir: &Path) -> Result<(), String> {
+    if let Some(g) = git_dir(dir) {
+        if let Some(op) = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"].iter().find(|f| g.join(f).exists()) {
+            return Err(format!("a git operation is under way in the clone ({op}): nothing is committed or synced until the user finishes it"));
+        }
+    }
+    let mut b = git(dir);
+    b.args(["symbolic-ref", "-q", "HEAD"]);
+    run(b).map(|_| ()).map_err(|_| "the clone has no branch checked out (a detached HEAD): nothing is committed or synced until the user checks one out".to_string())
+}
+
+/// The KB's lock on this machine (`S/locks/kb-<hash of its folder>.lock`):
+/// one commit or sync at a time, whichever fleet or session asks.
+pub fn lock(env: &Env, dir: &Path) -> Result<std::fs::File, String> {
+    let canon = crate::os::canonical(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let key = crate::sha256::hex(canon.to_string_lossy().as_bytes());
+    let p = env.state.join("locks").join(format!("kb-{}.lock", &key[..16]));
+    std::fs::create_dir_all(p.parent().unwrap_or(&env.state)).map_err(|e| format!("{}: {e}", p.display()))?;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    f.lock().map_err(|e| format!("{}: {e}", p.display()))?;
+    Ok(f)
+}
+
+/// `nimitz kb sync`: under the lock, `pull --rebase` from the branch's
+/// upstream (no autostash: the user's uncommitted edits are never moved;
+/// a rebase that stops is undone), then `push`. A branch with no upstream
+/// has nothing to sync.
+pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
+    let _lock = lock(env, dir)?;
+    if let Some(stray) = stray_attributes(dir) {
+        return Err(format!("{stray} is changed and not committed: git is not run until the user looks at it"));
+    }
+    busy(dir)?;
+    // the notes go where the KB is, and nowhere else: the branch's own
+    // remote must be `origin` (checked against kb.remote by the caller),
+    // every URL origin fetches or pushes by must be that remote, and the pull
+    // and the push name origin and the branch outright (no `pushRemote`,
+    // `pushDefault` or `@{u}` steers them elsewhere)
+    let get = |k: &str, all: bool| -> Vec<String> {
+        let mut c = git(dir);
+        c.args(["config", if all { "--get-all" } else { "--get" }, k]);
+        run(c).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+    };
+    let mut b = git(dir);
+    b.args(["symbolic-ref", "-q", "HEAD"]);
+    let branch = run(b).ok().and_then(|s| s.trim().strip_prefix("refs/heads/").map(str::to_string)).ok_or("no branch checked out")?;
+    let remote = get(&format!("branch.{branch}.remote"), false);
+    let merge = get(&format!("branch.{branch}.merge"), false);
+    let (Some(remote), Some(merge)) = (remote.first(), merge.first()) else {
+        return Err(format!("{branch} has no upstream: the commits stay in this clone (the user sets one: git push -u origin {branch})"));
+    };
+    if remote != "origin" {
+        return Err(format!("{branch} tracks remote {remote:?}, not origin: nothing is pushed anywhere but the KB's own remote"));
+    }
+    let urls = get("remote.origin.url", true);
+    let Some(first) = urls.first().cloned() else { return Err("origin has no URL".into()) };
+    for u in urls.iter().chain(get("remote.origin.pushurl", true).iter()) {
+        if !same_remote(&first, u) {
+            return Err(format!("origin also fetches or pushes by {u}, not its own URL {first}: nothing is pushed anywhere but the KB's own remote"));
+        }
+    }
+    // no URL rewrite of the clone's own (`url.*.insteadOf` or `pushInsteadOf`
+    // in its .git/config, a file it includes, or its worktree config: a
+    // rewrite there sends fetch and push elsewhere while the configured URL
+    // still matches); the user's global ones are theirs. (The clone's config
+    // is the user's, as git trusts it: this keeps a stray or pasted setting
+    // from moving the notes, not a hostile hand that could write it.)
+    for scope in ["--local", "--worktree"] {
+        let mut c = git(dir);
+        c.args(["config", scope, "--includes", "--name-only", "--get-regexp", r"^url\..*\.(push)?insteadof$"]).env("LC_ALL", "C");
+        let o = c.output().map_err(|e| format!("git: {e}"))?;
+        match o.status.code() {
+            Some(0) => {
+                let r = String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string();
+                return Err(format!("the clone rewrites URLs itself ({r}): nothing is synced while its own config could send the notes elsewhere"));
+            }
+            Some(1) => {}
+            // (no worktree config in this repo: nothing to read there)
+            _ if scope == "--worktree" && String::from_utf8_lossy(&o.stderr).contains("worktreeConfig") => {}
+            _ => return Err(format!("git config {scope}: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        }
+    }
+    // a branch on origin, nothing else (never an option, a tag or a refspec)
+    let well_formed = |r: &str| {
+        let mut c = git(dir);
+        c.args(["check-ref-format", r]);
+        run(c).is_ok()
+    };
+    let Some(on) = merge.strip_prefix("refs/heads/").filter(|b| !b.is_empty() && !b.starts_with('-') && !b.contains(':') && !b.contains(char::is_whitespace) && well_formed(merge)) else {
+        return Err(format!("{branch} merges {merge:?}, not a branch of origin: nothing is synced"));
+    };
+    let upstream = format!("origin/{on}");
+    let mut pull = git(dir);
+    pull.args(["pull", "--rebase", "--no-autostash", "--no-recurse-submodules", "--quiet", "--", "origin", merge]);
+    transport(&mut pull, dir);
+    if let Err(e) = run(pull) {
+        let mut note = "the local commits are kept".to_string();
+        if git_dir(dir).is_some_and(|g| g.join("rebase-merge").exists() || g.join("rebase-apply").exists()) {
+            let mut abort = git(dir);
+            abort.args(["rebase", "--abort"]);
+            if let Err(a) = run(abort) {
+                note = format!("the rebase could not be undone ({a}): the user finishes it by hand");
+            }
+        }
+        return Err(format!("pull --rebase from {upstream} failed (nothing pushed; {note}; a sync needs no uncommitted edits to tracked files): {e}"));
+    }
+    let mut push = git(dir);
+    push.args(["push", "--quiet", "--no-recurse-submodules", "--", "origin", &format!("HEAD:{merge}")]);
+    transport(&mut push, dir);
+    run(push).map_err(|e| format!("push to {upstream} failed (the local commits are kept): {e}"))?;
+    Ok(format!("in step with {upstream} at {}", head(dir)?))
+}
+
+/// The clone's `origin` URL as configured (never rewritten by `insteadOf`).
+pub fn origin(dir: &Path) -> Option<String> {
+    let mut c = git(dir);
+    c.args(["config", "--get", "remote.origin.url"]);
+    run(c).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+/// One remote URL as it compares: no trailing `/` nor `.git`, a local path
+/// made real.
+pub fn same_remote(a: &str, b: &str) -> bool {
+    let norm = |u: &str| -> String {
+        let u = u.trim().trim_end_matches('/');
+        // a local repo as git finds it: the folder as written first, then with `.git`
+        if Path::new(u).is_absolute() {
+            if let Ok(c) = crate::os::canonical(Path::new(u)).or_else(|_| crate::os::canonical(Path::new(&format!("{u}.git")))) {
+                return c.to_string_lossy().into_owned();
+            }
+        }
+        u.strip_suffix(".git").unwrap_or(u).to_string()
+    };
+    norm(a) == norm(b)
+}
+
+/// `nimitz kb clone`: the KB's remote into `dir` (not there yet, or an
+/// empty folder).
+pub fn clone(remote: &str, dir: &Path) -> Result<(), String> {
+    if dir.exists() && std::fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(true) {
+        return Err(format!("{} is there and not empty", dir.display()));
+    }
+    if let Some(p) = dir.parent() {
+        std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+    }
+    if !dir.is_absolute() {
+        return Err(format!("{}: a clone goes to an absolute folder", dir.display()));
+    }
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    let mut c = git(parent);
+    c.args(["clone", "--quiet", "--", remote]).arg(dir);
+    transport(&mut c, parent);
+    run(c).map(|_| ())
+}
+
+/// `nimitz kb restore --paths`: undo what a failed ingest wrote: a tracked
 /// file back to its last commit (index and tree), a new one removed. Every
 /// path is checked first, as a commit's paths are; whatever is there before
 /// it goes (a tracked file that differs from its commit, an untracked file:
 /// the user may have edited or made it) is copied to `backup` first, never
-/// over a copy kept before, and the note says where.
-pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) -> Result<Vec<String>, String> {
+/// over a copy kept before, and the line says where.
+pub fn restore(env: &Env, dir: &Path, paths: &[String], backup: &Path) -> Result<Vec<String>, String> {
+    let _lock = lock(env, dir)?;
+    busy(dir)?;
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: nothing is restored until the user looks at it"));
     }
@@ -278,10 +615,7 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) ->
     for p in paths {
         let rel = clean_rel(p)?;
         if let Some(off) = off_limits(&rel) {
-            return Err(format!("{rel}: off limits to an aide ({off})"));
-        }
-        if brief.iter().any(|e| e.to_lowercase() == rel.to_lowercase()) {
-            return Err(format!("{rel}: the aide's brief is never its own to write"));
+            return Err(format!("{rel}: off limits ({off})"));
         }
         inside(dir, &rel)?;
         if std::fs::symlink_metadata(dir.join(&rel)).is_ok_and(|m| m.is_dir()) {
@@ -333,54 +667,150 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::tests::test_env;
+
+    fn g(d: &Path, args: &[&str]) -> String {
+        let o = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8(o.stdout).unwrap()
+    }
 
     fn repo() -> tempfile::TempDir {
         let td = tempfile::tempdir().unwrap();
-        let g = |args: &[&str]| assert!(Command::new("git").arg("-C").arg(td.path()).args(args).output().unwrap().status.success(), "{args:?}");
-        g(&["init", "-q"]);
-        g(&["config", "user.email", "t@t"]);
-        g(&["config", "user.name", "t"]);
-        std::fs::create_dir_all(td.path().join("wiki")).unwrap();
-        std::fs::create_dir_all(td.path().join("raw")).unwrap();
-        std::fs::write(td.path().join("CLAUDE.md"), "rules\n").unwrap();
-        std::fs::write(td.path().join("raw/old.md"), "old capture\n").unwrap();
-        std::fs::write(td.path().join("wiki/page.md"), "Alpha beta\n").unwrap();
-        g(&["add", "-A"]);
-        g(&["commit", "-qm", "init"]);
+        let d = td.path();
+        g(d, &["init", "-q", "-b", "main"]);
+        g(d, &["config", "user.email", "t@t"]);
+        g(d, &["config", "user.name", "t"]);
+        std::fs::create_dir_all(d.join("wiki")).unwrap();
+        std::fs::create_dir_all(d.join("raw")).unwrap();
+        std::fs::write(d.join("CLAUDE.md"), "rules\n").unwrap();
+        std::fs::write(d.join("raw/old.md"), "old capture\n").unwrap();
+        std::fs::write(d.join("wiki/page.md"), "Alpha beta\n").unwrap();
+        g(d, &["add", "-A"]);
+        g(d, &["commit", "-qm", "init"]);
         td
     }
 
+    const NOTE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     #[test]
-    fn grep_and_status_read_the_folder() {
+    fn reads_go_by_one_commit_never_the_working_tree() {
         let td = repo();
-        assert_eq!(grep(td.path(), "alpha", Some("wiki")).unwrap(), "wiki/page.md:1:Alpha beta");
-        assert_eq!(grep(td.path(), "nothing-here", None).unwrap(), "");
-        assert!(grep(td.path(), "x", Some("../etc")).is_err());
-        std::fs::write(td.path().join("wiki/page.md"), "edited\n").unwrap();
-        assert!(status(td.path()).unwrap().contains(" M wiki/page.md"));
+        let d = td.path();
+        let h = head(d).unwrap();
+        assert_eq!(h.len(), 40);
+        assert_eq!(grep(d, None, "alpha", Some("wiki")).unwrap(), "wiki/page.md:1:Alpha beta");
+        assert_eq!(grep(d, None, "alpha", Some("wiki/page.md")).unwrap(), "wiki/page.md:1:Alpha beta", "a file as the prefix");
+        assert_eq!(grep(d, None, "nothing-here", None).unwrap(), "");
+        assert!(grep(d, None, "x", Some("../etc")).is_err());
+        // an edit not committed is not seen; a later commit is, and `--at` still reads the old one
+        std::fs::write(d.join("wiki/page.md"), "Alpha gamma\n").unwrap();
+        assert_eq!(show(d, None, "wiki/page.md").unwrap(), "Alpha beta\n");
+        g(d, &["commit", "-qam", "two"]);
+        assert_eq!(show(d, None, "wiki/page.md").unwrap(), "Alpha gamma\n");
+        assert_eq!(show(d, Some(&h), "wiki/page.md").unwrap(), "Alpha beta\n");
+        assert_eq!(grep(d, Some(&h[..8]), "beta", None).unwrap(), "wiki/page.md:1:Alpha beta");
+        for bad in ["HEAD~1", "main", "--output=/tmp/x", "zz"] {
+            assert!(show(d, Some(bad), "wiki/page.md").is_err(), "{bad}");
+        }
+        assert!(show(d, None, "wiki/missing.md").is_err());
+        std::fs::write(d.join("wiki/page.md"), "edited\n").unwrap();
+        assert!(status(d).unwrap().contains(" M wiki/page.md"));
     }
 
     #[test]
-    fn a_commit_takes_only_the_named_paths_once_with_the_trailer() {
+    fn the_hash_is_of_the_body_after_the_frontmatter() {
+        assert_eq!(body(b"---\ntitle: x\n---\nthe body\n"), b"the body\n");
+        assert_eq!(body(b"---\r\ntitle: x\r\n---\r\nbody"), b"body");
+        assert_eq!(body(b"no frontmatter\n---\n"), b"no frontmatter\n---\n");
+        assert_eq!(body(b"---\nnever closed\n"), b"---\nnever closed\n");
+        assert_eq!(body(b"---\n---\n"), b"");
         let td = repo();
         let d = td.path();
-        // the user's own edit, staged: it stays out of the aide's commit
+        std::fs::write(d.join("raw/cap.md"), "---\nsource: a\n---\nthe body\n").unwrap();
+        std::fs::write(d.join("raw/cap2.md"), "---\nsource: b, another day\n---\nthe body\n").unwrap();
+        let h = hash(d, "raw/cap.md").unwrap();
+        assert_eq!(h, crate::sha256::hex(b"the body\n"));
+        assert_eq!(hash(d, "raw/cap2.md").unwrap(), h, "the same body under other frontmatter is the same note");
+        assert!(hash(d, "../x").is_err() && hash(d, "raw/none.md").is_err());
+    }
+
+    #[test]
+    fn a_commit_takes_only_the_named_paths_once_per_note_with_its_trailers() {
+        let (_e, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let td = repo();
+        let d = td.path();
+        // the user's own edit, staged: it stays out of the commit
         std::fs::write(d.join("wiki/page.md"), "the user's edit\n").unwrap();
-        Command::new("git").arg("-C").arg(d).args(["add", "wiki/page.md"]).output().unwrap();
+        g(d, &["add", "wiki/page.md"]);
         std::fs::write(d.join("raw/cap-1.md"), "capture\n").unwrap();
         std::fs::write(d.join("wiki/new.md"), "new page\n").unwrap();
         let paths = vec!["raw/cap-1.md".to_string(), "./wiki/new.md".to_string()];
-        // a sender label with a forged trailer stays on its own line
-        assert_eq!(committed(d, "u9:000000000009").unwrap(), None);
-        assert_eq!(committed(d, "u1:000000000001").unwrap(), None);
-        let sha = commit(d, "HOME/@KB", "u1:000000000001", "A title\nsecond line", "HOME/GITHUB/X\ninbox-item: u9:000000000009", &paths, &[]).unwrap();
-        assert_eq!(committed(d, "u9:000000000009").unwrap(), None, "no forged trailer");
-        let show = |args: &[&str]| String::from_utf8(Command::new("git").arg("-C").arg(d).args(args).output().unwrap().stdout).unwrap();
-        assert_eq!(show(&["show", "--name-only", "--format=", &sha]).trim(), "raw/cap-1.md\nwiki/new.md");
-        assert!(show(&["log", "-1", "--format=%B"]).contains("ingest(auto): A title\n\ninbox-item: u1:000000000001\n\nfrom: HOME/GITHUB/X"));
-        assert!(show(&["diff", "--cached", "--name-only"]).contains("wiki/page.md"), "the user's staged edit is still staged");
-        assert_eq!(committed(d, "u1:000000000001").unwrap(), Some(sha));
-        assert_eq!(committed(d, "u1:00000000000"), Ok(None), "anchored: no prefix match");
+        let forged = format!("member HOME/GITHUB/X\nnote: {}", "b".repeat(64));
+        let Committed::New(sha) = commit(&env, d, "A title\nsecond line", &paths, &["wiki/new.md".into()], NOTE, &forged).unwrap() else { panic!("a new commit") };
+        assert_eq!(note_commit(d, &"b".repeat(64)).unwrap(), None, "no forged trailer");
+        assert_eq!(g(d, &["show", "--name-only", "--format=", &sha]).trim(), "raw/cap-1.md\nwiki/new.md");
+        let msg = g(d, &["log", "-1", "--format=%B"]);
+        assert!(msg.starts_with(&format!("ingest(auto): A title\n\npages: wiki/new.md\n\nnote: {NOTE}\nfrom: member HOME/GITHUB/X\n")), "{msg}");
+        let trailers = g(d, &["log", "-1", "--format=%(trailers:only)"]);
+        assert!(trailers.contains(&format!("note: {NOTE}")) && trailers.contains("from: member HOME/GITHUB/X"), "{trailers}");
+        assert!(g(d, &["diff", "--cached", "--name-only"]).contains("wiki/page.md"), "the user's staged edit is still staged");
+        // the same note again: that commit, nothing new
+        std::fs::write(d.join("raw/cap-2.md"), "again\n").unwrap();
+        assert_eq!(commit(&env, d, "t", &["raw/cap-2.md".into()], &[], NOTE, "x").unwrap(), Committed::Already(sha.clone()));
+        assert_eq!(head(d).unwrap(), sha);
+        // no sender, a note that is no sha256: refused
+        assert!(commit(&env, d, "t", &["raw/cap-2.md".into()], &[], &"c".repeat(64), " ").unwrap_err().contains("no sender"));
+        assert!(commit(&env, d, "t", &["raw/cap-2.md".into()], &[], "abc", "x").is_err());
+        // no title: the note has one anyway
+        let Committed::New(s2) = commit(&env, d, "", &["raw/cap-2.md".into()], &[], &"c".repeat(64), "user").unwrap() else { panic!() };
+        assert_eq!(g(d, &["log", "-1", "--format=%s", &s2]).trim(), "ingest(auto): a note");
+    }
+
+    /// The review's edges: a capture's id is the same with a BOM or CRLF; an
+    /// empty body is no note; a path git ignores fails the commit with nothing
+    /// left staged; a commit waits while a rebase is under way; `--at` names a
+    /// commit, never a branch of that name; names another system reads as
+    /// another are off limits.
+    #[test]
+    fn notes_commits_and_reads_hold_at_their_edges() {
+        let (_e, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let td = repo();
+        let d = td.path();
+        std::fs::write(d.join("raw/a.md"), "---\nx: 1\n---\nline one\nline two\n").unwrap();
+        std::fs::write(d.join("raw/b.md"), "\u{feff}--- \r\nx: 2\r\n---\r\nline one\r\nline two\r\n").unwrap();
+        assert_eq!(hash(d, "raw/a.md").unwrap(), hash(d, "raw/b.md").unwrap());
+        std::fs::write(d.join("raw/empty.md"), "---\nx: 1\n---\n\n").unwrap();
+        assert!(hash(d, "raw/empty.md").unwrap_err().contains("empty"));
+        std::fs::write(d.join(".git/info/exclude"), "ignored.md\n").unwrap();
+        std::fs::write(d.join("wiki/ignored.md"), "i").unwrap();
+        assert!(commit(&env, d, "t", &["raw/a.md".into(), "wiki/ignored.md".into()], &[], NOTE, "x").is_err());
+        assert!(g(d, &["diff", "--cached", "--name-only"]).is_empty(), "nothing left staged");
+        std::fs::create_dir_all(d.join(".git/rebase-merge")).unwrap();
+        assert!(commit(&env, d, "t", &["raw/a.md".into()], &[], NOTE, "x").unwrap_err().contains("under way"));
+        std::fs::remove_dir_all(d.join(".git/rebase-merge")).unwrap();
+        let h = head(d).unwrap();
+        g(d, &["branch", "beef"]);
+        assert!(show(d, Some("beef"), "wiki/page.md").is_err(), "a branch is no commit id");
+        assert_eq!(show(d, Some(&h[..8]), "wiki/page.md").unwrap(), "Alpha beta\n");
+        assert!(grep(d, None, "a\nb", None).is_err());
+        for p in ["CLAUDE.md.", "wiki/CLAUDE~1.MD", "wiki/x.md:stream", "wiki/C\u{200c}LAUDE.md", "wiki/x.md "] {
+            assert!(off_limits(p).is_some(), "{p}");
+        }
+        assert!(off_limits("wiki/notes-2026.md").is_none());
+    }
+
+    #[test]
+    fn a_remote_compares_without_its_trailing_slash_or_git_and_by_real_path() {
+        assert!(same_remote("https://github.com/u/kb", "https://github.com/u/kb.git/"));
+        assert!(!same_remote("https://github.com/u/kb", "git@github.com:u/kb.git"), "another transport is another remote as written");
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(td.path().join("kb.git")).unwrap();
+        let real = td.path().join("kb.git");
+        let via = td.path().join("kb.git/../kb.git");
+        assert!(same_remote(real.to_str().unwrap(), via.to_str().unwrap()));
     }
 
     #[test]
@@ -389,26 +819,27 @@ mod tests {
         let d = td.path();
         std::fs::write(d.join("wiki/a.md"), "a\n").unwrap();
         std::fs::write(d.join("raw/new.md"), "n\n").unwrap();
-        for p in ["CLAUDE.md", "claude.md", "agent/skills/x.md", "Agent/x.md", ".git/config", "../outside.md", "/etc/passwd", "C:/x.md", "raw/old.md", ".gitignore", "wiki/.gitattributes", "wiki/sub/CLAUDE.md", "CLAUDE.local.md", ".", "./", "wiki", "raw/", "wiki/missing.md", "AIDE.md"] {
-            assert!(check_paths(d, &[p.to_string()], &["AIDE.md".into()]).is_err(), "{p}");
+        for p in ["CLAUDE.md", "claude.md", "agent/skills/x.md", "Agent/x.md", ".git/config", "../outside.md", "/etc/passwd", "C:/x.md", "raw/old.md", ".gitignore", "wiki/.gitattributes", "wiki/sub/CLAUDE.md", "CLAUDE.local.md", ".", "./", "wiki", "raw/", "wiki/missing.md", "README.md", "wiki/.claude/settings.json"] {
+            assert!(check_paths(d, &[p.to_string()]).is_err(), "{p}");
         }
-        assert!(check_paths(d, &[], &[]).is_err());
-        assert_eq!(check_paths(d, &["wiki/a.md".into(), "raw/new.md".into()], &[]).unwrap(), vec!["wiki/a.md".to_string(), "raw/new.md".into()]);
+        assert!(check_paths(d, &[]).is_err());
+        assert_eq!(check_paths(d, &["wiki/a.md".into(), "raw/new.md".into()]).unwrap(), vec!["wiki/a.md".to_string(), "raw/new.md".into()]);
     }
 
     /// Paths are literal: a glob or a pathspec magic never sweeps in more.
     #[test]
     fn a_commit_path_is_literal_never_a_glob() {
+        let (_e, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
         let td = repo();
         let d = td.path();
         std::fs::write(d.join("CLAUDE.md"), "the user's edit\n").unwrap();
         std::fs::write(d.join("notes.txt"), "untracked\n").unwrap();
         std::fs::write(d.join("wiki/a.md"), "a\n").unwrap();
         for p in ["CLAUDE.m?", "*", ":(icase)claude.md", "r?w/old.md", "wiki/*"] {
-            assert!(commit(d, "HOME/@KB", "u1:000000000005", "t", "x", &[p.to_string()], &[]).is_err(), "{p}");
+            assert!(commit(&env, d, "t", &[p.to_string()], &[], NOTE, "x").is_err(), "{p}");
         }
-        let out = String::from_utf8(Command::new("git").arg("-C").arg(d).args(["diff", "--cached", "--name-only"]).output().unwrap().stdout).unwrap();
-        assert!(out.is_empty(), "nothing left staged: {out}");
+        assert!(g(d, &["diff", "--cached", "--name-only"]).is_empty(), "nothing left staged");
     }
 
     /// A filter named in an attributes file never runs: `.gitattributes` is
@@ -416,27 +847,32 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn an_attributes_filter_never_runs_through_nimitz() {
+        let (_e, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
         let td = repo();
         let d = td.path();
         let flag = d.join("ran");
-        Command::new("git").arg("-C").arg(d).args(["config", "filter.x.clean", &format!("touch {}", flag.display())]).output().unwrap();
+        g(d, &["config", "filter.x.clean", &format!("touch {}", flag.display())]);
         std::fs::write(d.join("wiki/.gitattributes"), "*.md filter=x\n").unwrap();
         std::fs::write(d.join("wiki/b.md"), "b\n").unwrap();
-        assert!(commit(d, "HOME/@KB", "u1:000000000006", "t", "x", &["wiki/.gitattributes".into()], &[]).is_err());
-        let e = commit(d, "HOME/@KB", "u1:000000000006", "t", "x", &["wiki/b.md".into()], &[]).unwrap_err();
+        assert!(commit(&env, d, "t", &["wiki/.gitattributes".into()], &[], NOTE, "x").is_err());
+        let e = commit(&env, d, "t", &["wiki/b.md".into()], &[], NOTE, "x").unwrap_err();
         assert!(e.contains("wiki/.gitattributes is changed"), "{e}");
+        assert!(sync(&env, d).unwrap_err().contains("wiki/.gitattributes is changed"));
         assert!(!flag.exists(), "the filter never ran");
     }
 
-    /// A failed pass's files go back: a tracked one to its commit, a new one away.
+    /// A failed ingest's files go back: a tracked one to its commit, a new one away.
     #[test]
-    fn restore_undoes_what_a_failed_pass_wrote() {
+    fn restore_undoes_what_a_failed_ingest_wrote() {
+        let (_e, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
         let td = repo();
         let d = td.path();
         std::fs::write(d.join("wiki/page.md"), "half written\n").unwrap();
         std::fs::write(d.join("raw/cap-9.md"), "capture\n").unwrap();
         let keep = tempfile::tempdir().unwrap();
-        let done = restore(d, &["wiki/page.md".into(), "raw/cap-9.md".into()], &[], keep.path()).unwrap();
+        let done = restore(&env, d, &["wiki/page.md".into(), "raw/cap-9.md".into()], keep.path()).unwrap();
         assert_eq!(done.len(), 2, "{done:?}");
         assert_eq!(std::fs::read_to_string(d.join("wiki/page.md")).unwrap(), "Alpha beta\n");
         assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md")).unwrap(), "half written\n", "what was there is kept");
@@ -444,14 +880,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(keep.path().join("raw/cap-9.md")).unwrap(), "capture\n", "a new file is kept too");
         // a second restore of the same page never writes over the first copy
         std::fs::write(d.join("wiki/page.md"), "second pass\n").unwrap();
-        restore(d, &["wiki/page.md".into()], &[], keep.path()).unwrap();
+        restore(&env, d, &["wiki/page.md".into()], keep.path()).unwrap();
         assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md")).unwrap(), "half written\n");
         assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md.2")).unwrap(), "second pass\n");
-        assert!(restore(d, &["CLAUDE.md".into()], &[], keep.path()).is_err());
-        assert!(restore(d, &["wiki".into()], &[], keep.path()).is_err());
+        assert!(restore(&env, d, &["CLAUDE.md".into()], keep.path()).is_err());
+        assert!(restore(&env, d, &["wiki".into()], keep.path()).is_err());
         // a refused path anywhere in the list: nothing is restored
         std::fs::write(d.join("wiki/page.md"), "again\n").unwrap();
-        assert!(restore(d, &["wiki/page.md".into(), "CLAUDE.md".into()], &[], keep.path()).is_err());
+        assert!(restore(&env, d, &["wiki/page.md".into(), "CLAUDE.md".into()], keep.path()).is_err());
         assert_eq!(std::fs::read_to_string(d.join("wiki/page.md")).unwrap(), "again\n");
         // a symlinked folder that leads out: refused, nothing outside removed
         #[cfg(unix)]
@@ -459,9 +895,100 @@ mod tests {
             let outside = tempfile::tempdir().unwrap();
             std::fs::write(outside.path().join("victim.md"), "v").unwrap();
             std::os::unix::fs::symlink(outside.path(), d.join("wiki/link")).unwrap();
-            assert!(restore(d, &["wiki/link/victim.md".into()], &[], keep.path()).is_err());
-            assert!(check_paths(d, &["wiki/link/victim.md".into()], &[]).is_err());
+            assert!(restore(&env, d, &["wiki/link/victim.md".into()], keep.path()).is_err());
+            assert!(check_paths(d, &["wiki/link/victim.md".into()]).is_err());
             assert!(outside.path().join("victim.md").exists());
         }
+    }
+
+    /// clone, then sync both ways through a bare remote: a commit here is
+    /// pushed; another clone's commit is pulled (rebased under ours); a
+    /// rebase that conflicts is undone and nothing is pushed.
+    #[test]
+    fn clone_and_sync_through_a_remote() {
+        let (_e, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let src = repo();
+        let bare = tempfile::tempdir().unwrap();
+        let remote = bare.path().join("kb.git");
+        g(bare.path(), &["clone", "-q", "--bare", src.path().to_str().unwrap(), remote.to_str().unwrap()]);
+        let here = tempfile::tempdir().unwrap();
+        let a = here.path().join("a");
+        let b = here.path().join("b");
+        clone(remote.to_str().unwrap(), &a).unwrap();
+        clone(remote.to_str().unwrap(), &b).unwrap();
+        assert!(clone(remote.to_str().unwrap(), &a).unwrap_err().contains("not empty"));
+        for d in [&a, &b] {
+            g(d, &["config", "user.email", "t@t"]);
+            g(d, &["config", "user.name", "t"]);
+        }
+        std::fs::write(a.join("wiki/a.md"), "a\n").unwrap();
+        let Committed::New(sa) = commit(&env, &a, "a", &["wiki/a.md".into()], &[], NOTE, "x").unwrap() else { panic!() };
+        assert!(sync(&env, &a).unwrap().contains(&sa));
+        std::fs::write(b.join("wiki/b.md"), "b\n").unwrap();
+        commit(&env, &b, "b", &["wiki/b.md".into()], &[], &"c".repeat(64), "x").unwrap();
+        sync(&env, &b).unwrap();
+        assert!(b.join("wiki/a.md").is_file(), "a's commit pulled under b's");
+        sync(&env, &a).unwrap();
+        assert!(a.join("wiki/b.md").is_file());
+        assert_eq!(head(&a).unwrap(), head(&b).unwrap());
+        // both change one line: b's rebase stops, is undone, nothing pushed
+        std::fs::write(a.join("wiki/page.md"), "from a\n").unwrap();
+        commit(&env, &a, "a2", &["wiki/page.md".into()], &[], &"d".repeat(64), "x").unwrap();
+        sync(&env, &a).unwrap();
+        std::fs::write(b.join("wiki/page.md"), "from b\n").unwrap();
+        let Committed::New(sb) = commit(&env, &b, "b2", &["wiki/page.md".into()], &[], &"e".repeat(64), "x").unwrap() else { panic!() };
+        let e = sync(&env, &b).unwrap_err();
+        assert!(e.contains("pull --rebase") && e.contains("local commits are kept"), "{e}");
+        assert_eq!(head(&b).unwrap(), sb, "b's commit is kept, no rebase left half done");
+        assert!(status(&b).unwrap().is_empty());
+        // a branch tracking another remote, or a push URL apart: nothing pushed
+        g(&a, &["remote", "add", "mine", remote.to_str().unwrap()]);
+        g(&a, &["fetch", "-q", "mine"]);
+        g(&a, &["branch", "-u", "mine/main"]);
+        assert!(sync(&env, &a).unwrap_err().contains("not origin"));
+        g(&a, &["branch", "-u", "origin/main"]);
+        g(&a, &["config", "--add", "remote.origin.pushurl", "/elsewhere.git"]);
+        g(&a, &["config", "--add", "remote.origin.pushurl", remote.to_str().unwrap()]);
+        assert!(sync(&env, &a).unwrap_err().contains("by /elsewhere.git"), "every push URL, not the last one");
+        g(&a, &["config", "--unset-all", "remote.origin.pushurl"]);
+        g(&a, &["config", "remote.origin.pushurl", remote.to_str().unwrap()]);
+        // a rewrite that leads elsewhere, a merge ref that is no branch: nothing synced
+        // (git rewrites the url, never an explicit pushurl)
+        g(&a, &["config", "--unset-all", "remote.origin.pushurl"]);
+        for k in ["pushInsteadOf", "insteadOf"] {
+            g(&a, &["config", &format!("url./elsewhere.git.{k}"), remote.to_str().unwrap()]);
+            assert!(sync(&env, &a).unwrap_err().contains("rewrites URLs itself"), "{k}");
+            g(&a, &["config", "--remove-section", "url./elsewhere.git"]);
+        }
+        // ... or in a file the clone's config includes, or its worktree config
+        let inc = here.path().join("inc.cfg");
+        std::fs::write(&inc, format!("[url \"/elsewhere.git\"]\n\tinsteadOf = {}\n", remote.display())).unwrap();
+        g(&a, &["config", "include.path", inc.to_str().unwrap()]);
+        assert!(sync(&env, &a).unwrap_err().contains("rewrites URLs itself"), "an include");
+        g(&a, &["config", "--unset", "include.path"]);
+        g(&a, &["config", "extensions.worktreeConfig", "true"]);
+        g(&a, &["config", "--worktree", "url./elsewhere.git.insteadOf", remote.to_str().unwrap()]);
+        assert!(sync(&env, &a).unwrap_err().contains("rewrites URLs itself"), "the worktree config");
+        g(&a, &["config", "--worktree", "--remove-section", "url./elsewhere.git"]);
+        for bad in ["--upload-pack=touch PWNED", "refs/tags/v2", "+refs/heads/main:refs/heads/other"] {
+            g(&a, &["config", "branch.main.merge", bad]);
+            assert!(sync(&env, &a).unwrap_err().contains("not a branch of origin"), "{bad}");
+        }
+        g(&a, &["config", "branch.main.merge", "refs/heads/main"]);
+        // a pushRemote or pushDefault never steers the push: origin, named
+        let elsewhere = here.path().join("elsewhere.git");
+        g(here.path(), &["init", "-q", "--bare", elsewhere.to_str().unwrap()]);
+        g(&a, &["remote", "add", "other", elsewhere.to_str().unwrap()]);
+        g(&a, &["config", "branch.main.pushRemote", "other"]);
+        g(&a, &["config", "remote.pushDefault", "other"]);
+        std::fs::write(a.join("wiki/c.md"), "c\n").unwrap();
+        let Committed::New(sc) = commit(&env, &a, "c", &["wiki/c.md".into()], &[], &"9".repeat(64), "x").unwrap() else { panic!() };
+        sync(&env, &a).unwrap();
+        assert_eq!(g(&remote, &["rev-parse", "main"]).trim(), sc, "pushed to origin");
+        assert!(g(&elsewhere, &["rev-list", "--all"]).trim().is_empty(), "nothing went elsewhere");
+        // no upstream: said, never an OK
+        let td = repo();
+        assert!(sync(&env, td.path()).unwrap_err().contains("no upstream"));
     }
 }

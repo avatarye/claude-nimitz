@@ -227,6 +227,12 @@ work = "plan"
     let shown = [
         ("fleet", "toml", "FleetConfig", toml_of::<nimitz_core::FleetConfig>(fleet)),
         ("squadron", "toml", "SquadronConfig", squadrons),
+        ("fleet-settings", "json", "fleet_settings::render", {
+            let mut m = serde_json::Map::new();
+            nimitz_core::fleet_settings::set(&mut m, "kb.remote", Some(json!("git@github.com:u/kb.git"))).unwrap();
+            nimitz_core::fleet_settings::set(&mut m, "kb.dirs.work", Some(json!("~/kb"))).unwrap();
+            nimitz_core::fleet_settings::render(&m)
+        }),
         ("legacy", "toml", "config::legacy_toml", nimitz_core::config::legacy_toml(&[("[GENERAL]-HOME".to_string(), nimitz_core::Id::ship("MAIN", "GENERAL", "HOME"))].into())),
         ("ship-lock", "json", "sessions::ship_lock_line", nimitz_core::sessions::ship_lock_line("work", &nimitz_core::Id::ship("MAIN", "ARGOS", "CLEAN"), "s1", Some(42), 1.5).to_string() + "\n"),
         ("pending", "json", "sessions::pending_record", nimitz_core::sessions::pending_record(&main, "s1", 1.5).to_string() + "\n"),
