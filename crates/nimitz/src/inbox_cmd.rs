@@ -153,7 +153,21 @@ fn post(ctx: &Ctx) -> Result<i32, Refusal> {
     may_post(&s, &q)?;
     let p = q.post(&s, &kind, &payload(ctx)?, ctx.args.value("--key"), None, now())?;
     posted(&q, &p);
+    if !p.duplicate {
+        doorbell(&ctx.env, &q, &kind, &s);
+    }
     Ok(0)
+}
+
+/// Ring the aide for a new item (coalesced; aide.md 5.1). A ring that cannot
+/// reach it is no failure of the post: the item waits, and its start, its
+/// cron or the piggyback wakes it.
+fn doorbell(env: &nimitz_core::env::Env, q: &Queue, kind: &str, s: &Sender) {
+    match nimitz_core::ring::ring(env, q, nimitz_core::ring::Why::Post { kind, from: &nimitz_core::ring::from_line(s) }, now()) {
+        Ok(Some(n)) if !out::json_mode() => out::line(&n),
+        Err(why) if !out::json_mode() => out::line(&format!("not rung ({why})")),
+        _ => {}
+    }
 }
 
 fn posted(q: &Queue, p: &queue::Posted) {
@@ -478,11 +492,17 @@ pub fn ask(ctx: &Ctx) -> Result<i32, String> {
             let n = posted.id.trim_start_matches('0');
             eprintln!("asked {} item {n}; token {tok}; later: nimitz inbox result {} {n} --token {tok}", q.aide, q.aide);
         }
+        if !posted.duplicate {
+            doorbell(&ctx.env, &q, "wiki.query.v1", &s);
+        }
         let Some(wait) = wait else {
             posted_line(&q, &posted);
             return Ok(5);
         };
-        let got = await_item(&q, &posted.id, wait);
+        // until the post's own `waiting_until`, not longer: past it the answer
+        // goes as a peer message, and twice would be one too many
+        // a second before it: from `waiting_until` on the piggyback may push it
+        let got = await_item(&q, &posted.id, (t + wait - 1.0 - now()).max(0.0));
         if matches!(got, Some((State::Done, _))) {
             let _ = q.mark_delivered(&posted.id, "returned to `nimitz ask`", true, now());
         }

@@ -753,7 +753,11 @@ impl Queue {
         if let Some(id) = self.ids(State::Claimed).first() {
             return Err(no("inbox.busy", 1, format!("item {id} is still claimed; finish it (done or fail) first")));
         }
-        let Some(id) = self.ids(State::Pending).into_iter().next() else { return Ok(None) };
+        let Some(id) = self.ids(State::Pending).into_iter().next() else {
+            // drained, under the lock: a post after this rings at once
+            crate::ring::drained(self, now);
+            return Ok(None);
+        };
         let mut item = Self::read(&self.path(State::Pending, &id)).ok_or_else(|| no("inbox.io", 1, format!("item {id} cannot be read")))?;
         item.tries += 1;
         item.claim = Some(Claim { by: by.into(), at: now, until: now + self.limits.lease_s });
@@ -872,6 +876,23 @@ impl Queue {
     /// Every item, oldest first (optionally one state).
     pub fn list(&self, state: Option<State>) -> Vec<(State, Item)> {
         self.all().into_iter().filter(|(s, _)| state.is_none_or(|x| x == *s)).collect()
+    }
+
+    /// Take a done request's delivery: under the lock, one never tried,
+    /// never delivered and no longer awaited by `ask --wait` is marked
+    /// `delivering` and returned; any other is None. Every push goes through
+    /// it (`deliver`), so `done`, a piggyback pass and another never push
+    /// the same answer twice.
+    pub fn take_delivery(&self, id: &str, now: f64) -> Option<Item> {
+        let _l = self.lock().ok()?;
+        let mut item = Self::read(&self.path(State::Done, id))?;
+        let r = item.reply_to.as_mut()?;
+        if r.waiting_until.is_some_and(|w| w > now) || r.delivered_at.is_some() || r.delivery.is_some() {
+            return None;
+        }
+        r.delivery = Some("delivering".into());
+        self.write(State::Done, &item).ok()?;
+        Some(item)
     }
 
     /// Record a reply's delivery (or why it was not delivered).
@@ -1038,17 +1059,23 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
 /// The live session that asked (by its session id, else its job's current
 /// session): (session id, pid).
 fn live_session(env: &Env, s: &Sender) -> Option<(String, i64)> {
+    let mut best: Option<(f64, String, i64)> = None;
     for e in std::fs::read_dir(env.claude_home.join("sessions")).into_iter().flatten().flatten() {
         let Some(v) = std::fs::read(e.path()).ok().and_then(|b| crate::evidence::first_json(&b)) else { continue };
         let sid = v.get("sessionId").and_then(Value::as_str).unwrap_or_default();
         let job = v.get("jobId").and_then(Value::as_str);
         let pid = v.get("pid").and_then(Value::as_i64).unwrap_or(0);
         let same = s.session.as_deref() == Some(sid) || (s.job.is_some() && job == s.job.as_deref());
-        if same && pid > 1 && crate::evidence::pid_alive(pid) {
-            return Some((sid.to_string(), pid));
+        // (a file a crash left at a pid another process has now is not the
+        // asker's; of the rest, the newest)
+        if same && pid > 1 && crate::evidence::pid_alive(pid) && crate::evidence::session_is_its_process(pid, &v) {
+            let started = v.get("startedAt").and_then(Value::as_f64).unwrap_or(0.0);
+            if best.as_ref().is_none_or(|(t, _, _)| started >= *t) {
+                best = Some((started, sid.to_string(), pid));
+            }
         }
     }
-    None
+    best.map(|(_, sid, pid)| (sid, pid))
 }
 
 /// How much of an answer the reply message carries inline.
@@ -1064,6 +1091,10 @@ pub fn deliver(env: &Env, q: &Queue, item: &Item, now: f64) -> Result<String, St
     if item.reply_to.as_ref().and_then(|r| r.waiting_until).is_some_and(|w| w > now) {
         return Ok("the asker waits for it (`nimitz ask --wait` returns it)".into());
     }
+    // taken under the lock: whoever else would push it (a piggyback pass,
+    // `done`) finds it taken
+    let Some(item) = q.take_delivery(&item.id, now) else { return Ok("already delivered, or being delivered".into()) };
+    let item = &item;
     let r = (|| {
         let (sid, pid) = live_session(env, &item.sender).ok_or("the asker is not live; the answer waits for `nimitz inbox result`")?;
         if !crate::inbox::format_ok(crate::inbox::receiver_version(env, Some(pid), item.sender.job.as_deref()).as_deref()) {
@@ -1495,6 +1526,41 @@ mod tests {
         assert!(now_done.reply_to.as_ref().unwrap().delivered_at.is_some());
         assert_eq!(deliver(&env, &q, &now_done, 102.0).unwrap(), "nothing to deliver");
         assert_eq!(q.status(103.0, false).undelivered, 0);
+    }
+
+    /// The piggyback's late delivery (aide.md 13, from S1): an answer whose
+    /// `ask --wait` gave up (killed, or timed out) gets one push to the live
+    /// asker; one already tried, or still awaited, gets none.
+    #[cfg(unix)]
+    #[test]
+    fn the_piggyback_pushes_an_answer_nobody_waited_for_once() {
+        use std::io::Read;
+        let (td, env) = test_env();
+        let q = Queue::open(&env, &aide_id("HOME/@REF").unwrap(), limits(&["wiki.query.v1"]));
+        let me = std::process::id() as i64;
+        let sock = td.path().join(format!("{me}.sock"));
+        let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let sessions = env.claude_home.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join(format!("{me}.json")), json!({"pid": me, "sessionId": "s-live", "jobId": "jlive001", "version": "2.1.296"}).to_string()).unwrap();
+        crate::inbox::record(&env, "s-live", me, &sock.to_string_lossy());
+        let asker = Sender { kind: "session".into(), session: Some("s-live".into()), job: Some("jlive001".into()), verified: true, ..Default::default() };
+        let t = std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut s = String::new();
+            c.read_to_string(&mut s).unwrap();
+            s
+        });
+        let p = q.post(&asker, "wiki.query.v1", &json!({"question": "q"}), None, Some(100.0), 0.0).unwrap();
+        q.claim("ref", 1.0).unwrap();
+        q.done(&p.id, None, Some(json!({"answer": "late [[page]]"})), 2.0).unwrap();
+        // still awaited: nothing
+        assert!(crate::ring::redeliver(&env, &q, 50.0).is_empty());
+        // the wait is over and nothing returned it: one push
+        let notes = crate::ring::redeliver(&env, &q, 101.0);
+        assert!(notes.len() == 1 && notes[0].contains("delivered"), "{notes:?}");
+        assert!(t.join().unwrap().contains("late [[page]]"));
+        assert!(crate::ring::redeliver(&env, &q, 102.0).is_empty(), "once");
     }
 
     #[test]

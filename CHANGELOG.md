@@ -12,6 +12,18 @@
   run nimitz >= 0.5 (`aide.machines`); removing the last one makes the fleet
   readable by 0.4 again. `aide rm` stops and unpins a live aide, and refuses
   while its inbox holds work.
+- **The aide's loop (S3)**: a post or an ask rings the aide at once through
+  its own messaging socket (`[nimitz inbox]`, coalesced: a burst rings once
+  until it drains); its session start (a launch, a relaunch, a `/clear`, a
+  compact) shows its inbox and asks for its 15-minute cron; the piggyback
+  (`nimitz __ring`, at most every 30 s from any member's hook, `status` or
+  `check`) rings an idle aide whose work has waited two minutes, returns a
+  lapsed lease to the queue or dead-letters it (its admiral hears), and pushes
+  an answer whose `ask --wait` gave up. `check` names `inbox.dead`,
+  `inbox.stuck` and `inbox.full`. Rules v6. A lease is enforced by the
+  piggyback too (every 30 s on a busy machine): an aide that works an item
+  past its lease without `inbox heartbeat` loses it, and on its last try the
+  item is a dead letter.
 
 ## 0.5.1 (2026-10-11)
 

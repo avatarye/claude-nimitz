@@ -173,7 +173,13 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             }
             rules = Some(crate::rules::VERSION);
             crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
-            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
+            // an aide also gets its inbox as it stands and the cron to ask for
+            // (aide.md 5.1, wake 2): a relaunch, a /clear or a compact goes back to work
+            let context = match id.role() {
+                Role::Aide => format!("{}\n\n{}", crate::rules::text(&id), aide_start_context(env, &id, str_at(&session, "jobId").as_deref(), now)),
+                _ => crate::rules::text(&id),
+            };
+            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}).to_string();
             binding = Some(match str_at(&input, "session_id") {
                 // no session file (missing, or caught mid-write): bind nothing
                 // now; `status` replays the line and judges the job from the rows
@@ -481,6 +487,39 @@ fn squadron_comms(env: &Env, from: &Id) -> Comms {
     let strict = Comms::Mode("commodore-only".into());
     let Ok(f) = crate::config::load_fleet(env, from.fleet()) else { return strict };
     f.squadrons.into_iter().find(|(_, s)| Some(s.squadron.as_str()) == from.squadron()).map(|(_, s)| s.comms).unwrap_or(strict)
+}
+
+/// What an aide sees at each session start: its inbox now, and what to do
+/// first (drain it; ask for the 15-minute cron, which a session loses at a
+/// relaunch, a /clear or a compact).
+pub fn aide_start_context(env: &Env, id: &Id, job: Option<&str>, now: f64) -> String {
+    let state = match crate::queue::Queue::of(env, id) {
+        Ok(q) => {
+            let st = q.peek_status(now, false);
+            let mut parts = vec![format!("{} pending", st.pending)];
+            for c in &st.claimed {
+                let n = c.id.trim_start_matches('0');
+                // the lease is the job's, which a /clear or a compact keeps
+                if job.is_some_and(|j| j == c.by) || c.by == id.0 {
+                    parts.push(format!("item {n} is yours, claimed before this session started: finish it first (`nimitz inbox done|fail {id} {n}`; its payload: `nimitz inbox list {id}`)"));
+                } else {
+                    let left = ((c.until - now) / 60.0).ceil().max(0.0) as i64;
+                    parts.push(format!("item {n} claimed by {} (its lease ends in {left}m)", c.by));
+                }
+            }
+            if !st.dead.is_empty() {
+                parts.push(format!("{} dead (your admiral decides: retry or drop)", st.dead.len()));
+            }
+            if let Some(o) = st.oldest_age_s.filter(|_| st.pending > 0) {
+                parts.push(format!("the oldest {}m", (o / 60.0).floor() as i64));
+            }
+            parts.join(", ")
+        }
+        Err(e) => format!("unreadable ({e})"),
+    };
+    format!(
+        "[nimitz inbox] {id}: {state}.\nNow: if this session has no cron for it yet, ask for one (CronCreate, every 15 minutes, prompt \"drain your inbox\"); then drain your inbox (`nimitz inbox claim {id}` until it exits 3). An item claimed by an older session of yours comes back when its lease ends."
+    )
 }
 
 #[cfg(test)]

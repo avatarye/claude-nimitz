@@ -134,7 +134,7 @@ fn main() {
     // Not a hook (it always exits 0, whatever Claude Code does with its
     // pipe) nor the internal fakes: there the write error is ignored instead
     #[cfg(unix)]
-    let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__fake-claude" | "__fake-herdr"));
+    let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__ring" | "__fake-claude" | "__fake-herdr"));
     #[cfg(unix)]
     if quiet_pipe {
         unsafe {
@@ -150,6 +150,7 @@ fn dispatch(argv: Vec<String>) -> i32 {
     match cmd.as_str() {
         "hook" => return hook(argv.get(1).map(String::as_str).unwrap_or("")),
         "__notify" => return notify::deliver_cmd(argv.get(1).map(String::as_str).unwrap_or("")),
+        "__ring" => return notify::piggyback_cmd(),
         "__fake-claude" => {
             return match argv.get(1) {
                 Some(base) => nimitz_core::sandbox::fake_claude(std::path::Path::new(base), &argv[2..]),
@@ -258,7 +259,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
 /// whose env points at the real state), not `migrate` (it shows and runs the
 /// steps itself), and not the hidden helpers.
 fn migrates(cmd: &str) -> bool {
-    !matches!(cmd, "hook" | "__notify" | "sandbox" | "migrate") && !cmd.starts_with("__")
+    !matches!(cmd, "hook" | "__notify" | "__ring" | "sandbox" | "migrate") && !cmd.starts_with("__")
 }
 
 /// The automatic local migration (docs/design/migrations.md section 4): the
@@ -304,6 +305,8 @@ fn hook(event: &str) -> i32 {
     if let Some(n) = notice {
         notify::spawn_delivery(&env, &n);
     }
+    // the aides' fallback timer rides on every member's hooks (aide.md 5.1 3a)
+    notify::spawn_piggyback(&env);
     if !out.is_empty() {
         // a pipe Claude Code already closed is no failure of the hook
         use std::io::Write;

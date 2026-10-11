@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 /// Bump when the rules text changes in a way members must pick up, and add
 /// the version's entry to `CHANGELOG`.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 
 /// What changed in each rules version, oldest first (one entry per version;
 /// a member on v{N} gets the entries after N with the new text).
@@ -57,6 +57,12 @@ pub const CHANGELOG: &[(u32, &str)] = &[
          (`nimitz inbox post|list|status <aide>`, `nimitz ask <aide>`); an aide works its inbox \
          (`inbox claim`, then `done` or `fail`, until exit 3) and signals its parent only, and its parent it; \
          the admiral starts and stops its aides and retries or drops their dead letters",
+    ),
+    (
+        6,
+        "aides are added, changed and removed with `nimitz aide new|set|rm` (you or the fleet's admiral); \
+         an aide is rung when work arrives (a `[nimitz inbox]` line), its session start shows its inbox, \
+         and it asks for its 15-minute cron only when the session has none",
     ),
 ];
 
