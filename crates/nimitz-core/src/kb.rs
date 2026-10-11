@@ -125,7 +125,7 @@ fn inside(dir: &Path, rel: &str) -> Result<(), String> {
 pub fn off_limits(rel: &str) -> Option<String> {
     // a name Windows (or an old Mac) reads as another: a trailing dot or space,
     // a stream (`:`), an 8.3 alias (`~1`), an invisible character
-    if rel.split('/').any(|p| p.ends_with('.') || p.ends_with(' ') || p.contains(':') || p.contains('~') || p.chars().any(|c| c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}'))) {
+    if rel.split('/').any(|p| p.ends_with('.') || p.ends_with(' ') || p.contains(':') || p.contains('~') || p.chars().any(|c| c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{00ad}' | '\u{034f}' | '\u{180e}' | '\u{fe00}'..='\u{fe0f}' | '\u{1160}' | '\u{3164}' | '\u{e0000}'..='\u{e007f}'))) {
         return Some("a name that another file system reads as another (a trailing dot or space, `:`, `~`, an invisible character)".into());
     }
     let low = rel.to_lowercase();
@@ -477,8 +477,20 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
     busy(dir)?;
     let mut up = git(dir);
     up.args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
-    let Ok(upstream) = run(up) else { return Err("the branch has no upstream: the commits stay in this clone (the user sets one: git push -u)".into()) };
+    let Ok(upstream) = run(up) else { return Err("the branch has no upstream: the commits stay in this clone (the user sets one: git push -u origin <branch>)".into()) };
     let upstream = upstream.trim().to_string();
+    // the notes go where the KB is: origin (checked against kb.remote by the
+    // caller), never another remote the branch tracks, nor a push URL apart
+    if !upstream.starts_with("origin/") {
+        return Err(format!("the branch tracks {upstream}, not origin: nothing is pushed anywhere but the KB's own remote"));
+    }
+    let mut pu = git(dir);
+    pu.args(["config", "--get", "remote.origin.pushurl"]);
+    if let Some(p) = run(pu).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        if !origin(dir).is_some_and(|o| same_remote(&o, &p)) {
+            return Err(format!("origin pushes to {p}, not to its own URL: nothing is pushed anywhere but the KB's own remote"));
+        }
+    }
     let mut pull = git(dir);
     pull.args(["pull", "--rebase", "--no-autostash", "--quiet"]);
     transport(&mut pull, dir);
@@ -512,15 +524,13 @@ pub fn origin(dir: &Path) -> Option<String> {
 pub fn same_remote(a: &str, b: &str) -> bool {
     let norm = |u: &str| -> String {
         let u = u.trim().trim_end_matches('/');
-        let u = u.strip_suffix(".git").unwrap_or(u);
-        let p = Path::new(u);
-        if p.is_absolute() {
-            if let Ok(c) = crate::os::canonical(p).or_else(|_| crate::os::canonical(Path::new(&format!("{u}.git")))) {
-                let c = c.to_string_lossy().into_owned();
-                return c.strip_suffix(".git").unwrap_or(&c).to_string();
+        // a local repo as git finds it: the folder as written first, then with `.git`
+        if Path::new(u).is_absolute() {
+            if let Ok(c) = crate::os::canonical(Path::new(u)).or_else(|_| crate::os::canonical(Path::new(&format!("{u}.git")))) {
+                return c.to_string_lossy().into_owned();
             }
         }
-        u.to_string()
+        u.strip_suffix(".git").unwrap_or(u).to_string()
     };
     norm(a) == norm(b)
 }
@@ -887,6 +897,15 @@ mod tests {
         assert!(e.contains("pull --rebase") && e.contains("local commits are kept"), "{e}");
         assert_eq!(head(&b).unwrap(), sb, "b's commit is kept, no rebase left half done");
         assert!(status(&b).unwrap().is_empty());
+        // a branch tracking another remote, or a push URL apart: nothing pushed
+        g(&a, &["remote", "add", "mine", remote.to_str().unwrap()]);
+        g(&a, &["fetch", "-q", "mine"]);
+        g(&a, &["branch", "-u", "mine/main"]);
+        assert!(sync(&env, &a).unwrap_err().contains("not origin"));
+        g(&a, &["branch", "-u", "origin/main"]);
+        g(&a, &["config", "remote.origin.pushurl", "/elsewhere.git"]);
+        assert!(sync(&env, &a).unwrap_err().contains("pushes to /elsewhere.git"));
+        g(&a, &["config", "--unset", "remote.origin.pushurl"]);
         // no upstream: said, never an OK
         let td = repo();
         assert!(sync(&env, td.path()).unwrap_err().contains("no upstream"));

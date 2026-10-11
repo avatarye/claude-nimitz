@@ -54,7 +54,11 @@ commit or sync at a time on this machine, whatever fleet or session asks.
 Fetch and push run the user's own transport: ssh in batch mode with a 20 s
 connect timeout (never a prompt nobody would answer, never a hang that
 holds the lock), unless the user set an ssh command (`GIT_SSH*`,
-`core.sshCommand`). Every other `GIT_*` of the caller is dropped. A name
+`core.sshCommand`), and an https transfer that stalls (under 1000 B/s for
+60 s; git 2.31 or later) ends. `sync` pushes only to `origin`, the clone of
+`kb.remote`: a branch that tracks another remote, or an `origin` push URL
+apart, is refused. Of the caller's `GIT_*`, only the transport, TLS, proxy
+and identity ones stay. A name
 another file system reads as another (a trailing dot or space, `:`, `~`, an
 invisible character) is off limits.
 

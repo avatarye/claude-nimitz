@@ -111,8 +111,10 @@ pub fn problems(m: &Map<String, Value>, machines: &std::collections::BTreeMap<St
         }
         // a URL, a scp-like `host:path`, or an absolute folder: never relative
         // (each clone would read it from its own folder)
-        let drive = |s: &str| s.len() > 2 && s.as_bytes()[1] == b':' && s.as_bytes()[0].is_ascii_alphabetic();
-        let url = |s: &str| s.contains("://") || drive(s) || s.starts_with('/') || (s.contains(':') && !s.starts_with('.') && s.split(':').next().is_some_and(|h| h.len() > 1));
+        let drive = |s: &str| s.len() > 2 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':' && matches!(s.as_bytes()[2], b'/' | b'\\');
+        // `host:path` as git reads it: a `:` before any `/`, a host of two or more
+        let scp = |s: &str| s.split_once(':').is_some_and(|(h, _)| h.len() > 1 && !h.contains('/') && !h.starts_with('.'));
+        let url = |s: &str| s.contains("://") || drive(s) || s.starts_with('/') || s.starts_with("\\\\") || scp(s);
         if kb.get("remote").is_some_and(|r| !r.as_str().is_some_and(|s| !s.trim().is_empty() && url(s.trim()))) {
             out.push("kb.remote: a git URL, a host:path, or an absolute folder (never relative)".into());
         }
@@ -164,6 +166,11 @@ pub fn plan_set(env: &Env, fleet: &str, key: &str, value: Option<Value>, by_user
             return plan;
         }
     };
+    // (a kb value as typed, without the spaces around it)
+    let value = value.map(|v| match v {
+        Value::String(t) if key.starts_with("kb") => Value::String(t.trim().to_string()),
+        v => v,
+    });
     if let Err(e) = set(&mut m, key, value) {
         refuse(&mut plan, "settings.key", e);
         return plan;
@@ -251,10 +258,10 @@ mod tests {
         let p = plan_set(&env, "MAIN", "kb.dirs.elsewhere", Some(json!("/x")), true);
         assert!(p.refusals.iter().any(|r| r.message.contains("no machine elsewhere")), "{p:?}");
         assert!(!plan_set(&env, "MAIN", "kb.remote", Some(json!(3)), true).ok());
-        for bad in ["../kb.git", "kb", "~/kb.git"] {
+        for bad in ["../kb.git", "kb", "~/kb.git", "sub/dir:x", "a:repo"] {
             assert!(!plan_set(&env, "MAIN", "kb.remote", Some(json!(bad)), true).ok(), "{bad}");
         }
-        for good in ["https://github.com/u/kb", "git@github.com:u/kb.git", "/srv/kb.git", "C:/kb.git"] {
+        for good in ["https://github.com/u/kb", "git@github.com:u/kb.git", "/srv/kb.git", "C:/kb.git", "C:\\kb.git", "\\\\server\\share\\kb.git", "ssh://h/kb", "file:///srv/kb.git"] {
             assert!(plan_set(&env, "MAIN", "kb.remote", Some(json!(good)), true).ok(), "{good}");
         }
         assert!(!plan_set(&env, "MAIN", "kb.color", Some(json!("x")), true).ok());
