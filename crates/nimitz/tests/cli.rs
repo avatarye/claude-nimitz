@@ -3242,3 +3242,58 @@ fn done_commit_edges_literal_paths_restore_and_committed_items() {
     let again = claim();
     assert_eq!(again["committed"].as_str(), Some(git(&["rev-parse", "HEAD"]).trim()), "{again}");
 }
+
+/// @REF (aide.md 6.4, S4b): `aide new --snapshot` makes its snapshot (a
+/// detached worktree under NIMITZ_STATE) and plans that folder's trust; it
+/// starts there; `claim` moves the snapshot to the repo's last commit (never
+/// the half-written tree), `aide grep` reads the snapshot, and `done` names
+/// the commit it read.
+#[test]
+fn a_snapshot_reader_reads_the_last_commit_and_names_it() {
+    let sb = Sb::new(false);
+    let repo = sb.base.canonicalize().unwrap().join("dirs").join("kbrepo");
+    std::fs::create_dir_all(repo.join("wiki")).unwrap();
+    let git = |args: &[&str]| {
+        let o = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    std::fs::write(repo.join("wiki/page.md"), "Alpha is committed\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "one"]);
+    let repo_s = repo.to_string_lossy().into_owned();
+    let r = sb.run(&["aide", "new", "MAIN/@REF", "--dir", &repo_s, "--types", "wiki.query.v1", "--snapshot", "--mode", "default", "--plan"]);
+    assert!(r.code == 0 && r.out.contains("snapshot") && r.out.contains("trust"), "{}", r.out);
+    let r = sb.run(&["aide", "new", "MAIN/@REF", "--dir", &repo_s, "--types", "wiki.query.v1", "--snapshot", "--mode", "default", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let snap = sb.base.join("state").join("aides").join("MAIN%2F@REF").join("snapshot");
+    assert!(snap.join("wiki/page.md").is_file(), "the snapshot is made");
+    let r = sb.run(&["start", "MAIN/@REF", "--plan", "-v"]);
+    assert!(r.out.contains(&format!("cd {}", snap.canonicalize().unwrap().display())), "it runs in its snapshot:\n{}", r.out);
+    // a commit, then a half-written page: the claim moves the snapshot to the commit only
+    std::fs::write(repo.join("wiki/beta.md"), "Beta is committed\n").unwrap();
+    git(&["add", "wiki/beta.md"]);
+    git(&["commit", "-qm", "two"]);
+    let head = git(&["rev-parse", "HEAD"]).trim().to_string();
+    std::fs::write(repo.join("wiki/page.md"), "half written\n").unwrap();
+    let r = sb.run(&["ask", "MAIN/@REF", "what is beta?", "--no-wait"]);
+    assert_eq!(r.code, 5, "{}", r.out);
+    let me = [("NIMITZ_ID", "MAIN/@REF"), ("NIMITZ_ROLE", "aide")];
+    let r = raw(&sb.vars, &["inbox", "claim", "MAIN/@REF"], &me, None);
+    let item: Value = serde_json::from_str(&r.out[r.out.find('{').unwrap()..]).unwrap();
+    assert_eq!(item["snapshot"], head.as_str(), "{item}");
+    assert_eq!(std::fs::read_to_string(snap.join("wiki/page.md")).unwrap(), "Alpha is committed\n", "never the working tree");
+    let r = raw(&sb.vars, &["aide", "grep", "beta", "wiki"], &me, None);
+    assert!(r.out.contains("wiki/beta.md:1:Beta is committed"), "{}", r.out);
+    let id = item["id"].as_str().unwrap().to_string();
+    let r = raw(&sb.vars, &["inbox", "done", "MAIN/@REF", &id, "--result", "{\"answer\":\"Beta is committed [[beta]]\",\"citations\":[\"wiki/beta.md\"],\"gaps\":[],\"confidence\":\"high\"}"], &me, None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = sb.run(&["inbox", "result", "MAIN/@REF", &id, "--json"]);
+    assert!(r.out.contains(&head), "the answer names the commit it read: {}", r.out);
+    // a reader commits nothing
+    let r = raw(&sb.vars, &["inbox", "done", "MAIN/@REF", &id, "--commit", "--paths", "wiki/x.md"], &me, None);
+    assert!(r.code != 0, "{}", r.out);
+}

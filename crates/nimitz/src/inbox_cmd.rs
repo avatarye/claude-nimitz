@@ -202,6 +202,15 @@ fn claim(ctx: &Ctx) -> Result<i32, Refusal> {
                     shown["committed"] = json!(sha);
                 }
             }
+            // a snapshot reader's snapshot moves to the repo's last commit
+            // before it reads (failing that, it answers from the one it has)
+            if let Some((repo, snap)) = snapshot_of(ctx, &id) {
+                let at = nimitz_core::kb::ensure_snapshot(&repo, &snap).or_else(|e| nimitz_core::kb::snapshot_at(&snap).ok_or(e));
+                match at {
+                    Ok(sha) => shown["snapshot"] = json!(sha),
+                    Err(e) => eprintln!("[WARN] {id}'s snapshot could not be refreshed: {e}"),
+                }
+            }
             // always JSON: the aide reads it
             println!("{}", serde_json::to_string_pretty(&shown).unwrap_or_default());
             Ok(0)
@@ -275,6 +284,12 @@ fn done(ctx: &Ctx) -> Result<i32, Refusal> {
             out::ok(&format!("{} {sha}", if again { "already committed:" } else { "committed" }));
         }
     }
+    // a reader's answer names the commit it read (a citation is `git show <commit>:<page>`)
+    if let (Some((_, snap)), Some(Value::Object(r))) = (snapshot_of(ctx, &id), result.as_mut()) {
+        if let Some(sha) = nimitz_core::kb::snapshot_at(&snap) {
+            r.insert("snapshot".into(), json!(sha));
+        }
+    }
     let t = now();
     let i = q.done(&item, holder(&s).as_deref(), result, t)?;
     let delivery = if i.reply_to.is_some() { Some(queue::deliver(&ctx.env, &q, &i, t)) } else { None };
@@ -322,8 +337,14 @@ fn no_commit(why: String) -> Refusal {
     Refusal { code: "inbox.commit", exit: 1, message: why }
 }
 
-/// The folder an aide reads on this machine: its repo (a snapshot reader's
-/// snapshot comes in S4b).
+/// A snapshot reader's (repo, snapshot) on this machine; None for a writer.
+fn snapshot_of(ctx: &Ctx, id: &Id) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let (f, def) = queue::find(&ctx.env, id).ok()?;
+    def.snapshot.then(|| Some((nimitz_core::config::aide_repo(&f, id)?, nimitz_core::config::snapshot_dir(&ctx.env, id)))).flatten()
+}
+
+/// The folder an aide reads on this machine: its repo, or a snapshot
+/// reader's snapshot.
 pub fn read_folder(ctx: &Ctx, id: &Id) -> Result<std::path::PathBuf, String> {
     let (f, _) = queue::find(&ctx.env, id)?;
     nimitz_core::config::member_dir(&ctx.env, &f, id).ok_or_else(|| format!("{id} has no folder on this machine"))

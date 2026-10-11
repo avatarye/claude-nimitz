@@ -330,6 +330,52 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) ->
     Ok(done)
 }
 
+/// A snapshot reader's worktree (aide.md 6.4): made when missing or broken
+/// (`worktree prune`, then `worktree add --detach`), then moved to the repo's
+/// current `HEAD`. A commit is atomic for a reader (HEAD moves after its
+/// objects are written), so every query reads one whole commit. Returns the
+/// commit the snapshot is at.
+pub fn ensure_snapshot(repo: &Path, snap: &Path) -> Result<String, String> {
+    let mut head = git(repo);
+    head.args(["rev-parse", "HEAD"]);
+    let sha = run(head)?.trim().to_string();
+    let healthy = snap.join(".git").is_file() && {
+        let mut c = git(snap);
+        c.args(["rev-parse", "--is-inside-work-tree"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        c.status().is_ok_and(|s| s.success())
+    };
+    if !healthy {
+        if snap.exists() {
+            std::fs::remove_dir_all(snap).map_err(|e| format!("{}: {e}", snap.display()))?;
+        }
+        let mut prune = git(repo);
+        prune.args(["worktree", "prune"]);
+        run(prune)?;
+        if let Some(p) = snap.parent() {
+            std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        let mut add = git(repo);
+        add.args(["worktree", "add", "--detach", "--force"]).arg(snap).arg(&sha);
+        run(add)?;
+        return Ok(sha);
+    }
+    // a reader writes nothing, but whatever is there goes: the snapshot is the commit
+    let mut co = git(snap);
+    co.args(["checkout", "--detach", "--force", &sha]);
+    run(co)?;
+    let mut clean = git(snap);
+    clean.args(["clean", "-fdq"]);
+    run(clean)?;
+    Ok(sha)
+}
+
+/// The commit a snapshot is at.
+pub fn snapshot_at(snap: &Path) -> Option<String> {
+    let mut c = git(snap);
+    c.args(["rev-parse", "HEAD"]);
+    run(c).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +427,33 @@ mod tests {
         assert!(show(&["diff", "--cached", "--name-only"]).contains("wiki/page.md"), "the user's staged edit is still staged");
         assert_eq!(committed(d, "u1:000000000001").unwrap(), Some(sha));
         assert_eq!(committed(d, "u1:00000000000"), Ok(None), "anchored: no prefix match");
+    }
+
+    #[test]
+    fn a_snapshot_is_made_then_follows_the_repos_head() {
+        let td = repo();
+        let d = td.path();
+        let state = tempfile::tempdir().unwrap();
+        let snap = state.path().join("aides").join("HOME%2F@REF").join("snapshot");
+        let first = ensure_snapshot(d, &snap).unwrap();
+        assert!(snap.join("wiki/page.md").is_file() && snap.join(".git").is_file());
+        // a new commit in the repo, a stray file in the snapshot: the next refresh is that commit, clean
+        std::fs::write(d.join("wiki/new.md"), "new\n").unwrap();
+        Command::new("git").arg("-C").arg(d).args(["add", "wiki/new.md"]).output().unwrap();
+        Command::new("git").arg("-C").arg(d).args(["commit", "-qm", "two"]).output().unwrap();
+        std::fs::write(snap.join("stray.md"), "x").unwrap();
+        let second = ensure_snapshot(d, &snap).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(snapshot_at(&snap).as_deref(), Some(second.as_str()));
+        assert!(snap.join("wiki/new.md").is_file() && !snap.join("stray.md").exists());
+        // the user's uncommitted edit in the repo never shows in the snapshot
+        std::fs::write(d.join("wiki/page.md"), "half written\n").unwrap();
+        ensure_snapshot(d, &snap).unwrap();
+        assert_eq!(std::fs::read_to_string(snap.join("wiki/page.md")).unwrap(), "Alpha beta\n");
+        // broken (its folder gone): made again
+        std::fs::remove_dir_all(&snap).unwrap();
+        assert_eq!(ensure_snapshot(d, &snap).unwrap(), second);
+        assert!(snap.join("wiki/new.md").is_file());
     }
 
     #[test]
