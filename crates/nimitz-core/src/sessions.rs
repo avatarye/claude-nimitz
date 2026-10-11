@@ -506,6 +506,7 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
         // its own ships (plan-v4 section 13)
         Some("restore") => matches!(role, Role::Admiral | Role::Commodore) && id_at(2).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
         Some("ship") => id_at(3).is_some_and(|t| may_config(caller, &t).is_ok()),
+        Some("aide") => id_at(3).is_some_and(|t| t.role() == Role::Aide && may_config(caller, &t).is_ok()),
         Some("squadron") => match (w.get(2).copied(), id_at(3)) {
             (Some("new"), Some(t)) => in_fleet(&t),
             (Some("rm"), Some(t)) => in_fleet(&t),
@@ -1493,22 +1494,21 @@ fn relabel_to(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str, sid: &
 }
 
 /// How a member gets a folder on this machine: a ship's `ship set --dir`;
-/// an aide's `[[aide]]` dirs (no `aide set` yet).
+/// an aide's `aide set --dir`.
 pub fn dir_fix(id: &Id) -> String {
     match id.role() {
-        Role::Aide => format!("edit {id}'s [[aide]] in fleet.toml: dirs.<this machine's label> = \"<folder>\""),
+        Role::Aide => format!("nimitz aide set {id} --dir <its repo>"),
         _ => format!("nimitz ship set {id} --dir <folder|managed>"),
     }
 }
 
-/// What retires a member for good: its config's `rm` (an aide leaves
-/// fleet.toml by hand; there is no `aide rm` yet).
+/// What retires a member for good: its config's `rm`.
 fn retire_hint(id: &Id) -> String {
     match id.role() {
         Role::Admiral => format!("nimitz fleet rm {id}"),
         Role::Commodore => format!("nimitz squadron rm {id}"),
         Role::Ship => format!("nimitz ship rm {id}"),
-        Role::Aide => "deleting its [[aide]] from fleet.toml".into(),
+        Role::Aide => format!("nimitz aide rm {id}"),
     }
 }
 
@@ -1828,7 +1828,7 @@ pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan
     for (_, m) in members(snap).into_iter().filter(|(_, m)| under(&m.id)) {
         for r in m.session.iter().chain(m.extra_rows.iter()) {
             let live = r.pid.is_some();
-            if live && (r.kind != "background" || id.role() != Role::Ship) {
+            if live && (r.kind != "background" || !matches!(id.role(), Role::Ship | Role::Aide)) {
                 // a fleet or squadron is removed only with nothing live in it
                 refuse(
                     &mut plan,
@@ -2682,6 +2682,21 @@ pub fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `aide new|set|rm` fixes: the fleet's admiral runs them; a commodore,
+    /// a ship and the aide itself do not.
+    #[test]
+    fn aide_fixes_are_the_admirals() {
+        let who = |id: &str, role: Role| Caller::Member { id: Id(id.into()), role };
+        for fix in ["nimitz aide set MAIN/@KB --dir /x", "nimitz aide rm MAIN/@KB"] {
+            assert!(may_run(&Caller::User, fix), "{fix}");
+            assert!(may_run(&who("MAIN", Role::Admiral), fix), "{fix}");
+            assert!(!may_run(&who("OTHER", Role::Admiral), fix), "{fix}");
+            assert!(!may_run(&who("MAIN/ARGOS", Role::Commodore), fix), "{fix}");
+            assert!(!may_run(&who("MAIN/ARGOS/CLEAN", Role::Ship), fix), "{fix}");
+            assert!(!may_run(&who("MAIN/@KB", Role::Aide), fix), "{fix}");
+        }
+    }
 
     /// The sandbox's always-alive pid (1, or 4, System, on Windows) is never
     /// waited on; a live process is waited on to the limit; a dead one is gone.

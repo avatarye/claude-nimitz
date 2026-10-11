@@ -451,6 +451,10 @@ fn every_command_goes_by_the_role_table() {
         ("inbox", &["drop", "MAIN/@KB", "1"], [true, false, false, false]),
         ("inbox", &["list", "MAIN/@KB"], [true, true, true, true]),
         ("inbox", &["result", "MAIN/@REF", "1"], [true, true, true, true]),
+        // aides: you and the fleet's admiral (an allowed row may fail on the machine guard, never on authority)
+        ("aide", &["new", "MAIN/@NEWAIDE", "--dir", "/tmp", "--types", "wiki.note.v1"], [true, false, false, false]),
+        ("aide", &["set", "MAIN/@KB", "--depth", "9"], [true, false, false, false]),
+        ("aide", &["rm", "MAIN/@KB"], [true, false, false, false]),
     ];
     let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN", "MAIN/@KB"];
     let listed = Sb::new(false).run(&["__commands"]);
@@ -2715,4 +2719,188 @@ fn attach_wakes_a_parked_member_by_starts_plan_first() {
     let r = attach_dry(&sb, &["attach", id], &[]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(!r.out.contains("to wake") && r.out.contains("exec "), "{}", r.out);
+}
+
+fn fleet_toml(sb: &Sb) -> String {
+    std::fs::read_to_string(sb.base.join("nimitz").join("main").join("fleet.toml")).unwrap()
+}
+
+/// `aide new|set|rm`: a plan like `ship new|set|rm`; the first aide stamps
+/// fleet.toml format 2, the last one's removal takes the stamp off again.
+#[test]
+fn aide_new_set_rm_write_the_fleet_and_its_format() {
+    let sb = Sb::new(false);
+    // a look writes nothing: no queue folder for an aide that never ran
+    let queues = sb.base.join("state").join("queues");
+    let repo = sb.base.join("dirs").join("kbrepo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let repo_s = repo.to_string_lossy().into_owned();
+    assert!(!fleet_toml(&sb).contains("format"), "a fleet without an aide is format 1");
+    let r = sb.run(&["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("fleet.toml") && r.out.contains("then: nimitz start MAIN/@KB"), "{}", r.out);
+    assert!(!fleet_toml(&sb).contains("[[aide]]"), "--plan writes nothing");
+    let r = sb.run(&["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let t = fleet_toml(&sb);
+    assert!(t.contains("format = 2") && t.contains("min_nimitz = \"0.5.0\"") && t.contains("name = \"KB\"") && t.contains("model = \"sonnet\"") && t.contains("permission_mode = \"acceptEdits\"") && t.contains(&repo_s), "{t}");
+    // it is a member now: start plans its launch
+    let r = sb.run(&["start", "MAIN/@KB", "--plan"]);
+    assert!(r.code == 0 && r.out.contains("@KB"), "{}", r.out);
+    // again: it exists
+    let r = sb.run(&["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(config.exists)"), "{}", r.out);
+    // set: the inbox and the model; the same values again change nothing
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--depth", "50", "--per-sender", "10/m", "--model", "opus", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let t = fleet_toml(&sb);
+    assert!(t.contains("depth_cap = 50") && t.contains("per_sender = \"10/m\"") && t.contains("model = \"opus\""), "{t}");
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--depth", "50", "--plan"]);
+    assert!(r.code == 0 && !r.out.contains("fleet.toml"), "nothing to change:\n{}", r.out);
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!queues.join("MAIN%2F@KB").exists(), "rm --plan made the queue folder");
+    // an aide that runs on another machine is removed there, where its inbox is
+    let t = fleet_toml(&sb).replace("[machines.sandbox]", "[machines.other]\nhostname = \"other-host\"\n\n[machines.sandbox]");
+    std::fs::write(sb.base.join("nimitz").join("main").join("fleet.toml"), &t).unwrap();
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--machine", "other", "--dir", "/srv/kb", "--yes"]);
+    assert_eq!(r.code, 0, "moved (nothing runs here):\n{}", r.out);
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(aide.elsewhere)") && r.out.contains("other"), "{}", r.out);
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--dir", &repo_s, "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(aide.elsewhere)"), "moved back only from where it runs:\n{}", r.out);
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--dir", &repo_s, "--force", "--yes"]);
+    assert_eq!(r.code, 0, "the user's --force:\n{}", r.out);
+    // a second aide keeps the stamp when the first goes
+    sb.run(&["aide", "new", "MAIN/@REF", "--dir", &repo_s, "--types", "wiki.query.v1", "--yes"]);
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let t = fleet_toml(&sb);
+    assert!(!t.contains("name = \"KB\"") && t.contains("name = \"REF\"") && t.contains("format = 2"), "{t}");
+    // the last one: back to format 1, readable by nimitz 0.4 again
+    let r = sb.run(&["aide", "rm", "MAIN/@REF", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let t = fleet_toml(&sb);
+    assert!(!t.contains("[[aide]]") && !t.contains("format") && !t.contains("min_nimitz"), "{t}");
+}
+
+#[test]
+fn aide_new_refusals() {
+    let sb = Sb::new(false);
+    let repo = sb.base.join("dirs").join("kbrepo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let repo_s = repo.to_string_lossy().into_owned();
+    let new = |extra: &[&str]| {
+        let mut a = vec!["aide", "new", "MAIN/@KB", "--dir", repo_s.as_str(), "--types", "wiki.note.v1"];
+        a.extend_from_slice(extra);
+        a.push("--plan");
+        sb.run(&a)
+    };
+    // modes that skip the aide's allow and deny rules
+    for m in ["bypassPermissions", "dontAsk", "auto"] {
+        let r = new(&["--mode", m]);
+        assert!(r.code != 0 && r.out.contains("(config.invalid)") && r.out.contains("skips the aide's allow and deny rules"), "{m}:\n{}", r.out);
+    }
+    let r = new(&["--types", "no.such.v1"]);
+    assert!(r.code != 0 && r.out.contains("unknown inbox type"), "{}", r.out);
+    let r = new(&["--policy", "everyone"]);
+    assert!(r.code != 0 && r.out.contains("inbox policy"), "{}", r.out);
+    let r = sb.run(&["aide", "new", "MAIN/@kb", "--dir", &repo_s, "--types", "wiki.note.v1", "--plan"]);
+    assert!(r.code != 0, "{}", r.out);
+    let r = sb.run(&["aide", "new", "MAIN/@KB", "--types", "wiki.note.v1", "--plan"]);
+    assert_eq!(r.code, 2, "--dir is needed:\n{}", r.out);
+    // availableModels leaves the model out: Claude Code would swap it silently
+    std::fs::write(PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("settings.json"), r#"{"availableModels": ["opus"]}"#).unwrap();
+    let r = new(&[]);
+    assert!(r.code != 0 && r.out.contains("(aide.model)") && r.out.contains("sonnet"), "{}", r.out);
+    let r = new(&["--model", "opus"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    std::fs::remove_file(PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("settings.json")).unwrap();
+    // a machine of the fleet that never ran nimitz 0.5: the first aide would lock it out
+    let f = sb.base.join("nimitz").join("main").join("fleet.toml");
+    let t = std::fs::read_to_string(&f).unwrap();
+    std::fs::write(&f, format!("{t}\n[machines.oldbox]\nhostname = \"old-host\"\n")).unwrap();
+    let r = new(&[]);
+    assert!(r.code != 0 && r.out.contains("(aide.machines)") && r.out.contains("oldbox"), "{}", r.out);
+    let r = new(&["--force"]);
+    assert_eq!(r.code, 0, "the user's --force is the way past it:\n{}", r.out);
+    // the admiral may add an aide, but never --force past the guard (the user's alone)
+    let r = sb.run_as("MAIN", &["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--force", "--yes"]);
+    assert!(r.code != 0 && !r.out.contains("(authority)") && r.out.contains("(aide.machines)"), "{}", r.out);
+    assert!(!fleet_toml(&sb).contains("[[aide]]"), "nothing written");
+    // a mode Claude Code does not know
+    let r = new(&["--force", "--mode", "bogus"]);
+    assert!(r.code != 0 && r.out.contains("is not one of"), "{}", r.out);
+    for who in ["MAIN/ARGOS", "MAIN/ARGOS/CLEAN"] {
+        let r = sb.run_as(who, &["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--plan"]);
+        assert!(r.code != 0 && r.out.contains("(authority)"), "{who}:\n{}", r.out);
+    }
+}
+
+/// `aide rm` of a live aide stops it and removes its row (and pin); an inbox
+/// with work in it is never dropped by a removal.
+#[test]
+fn aide_rm_stops_a_live_aide_and_keeps_work_safe() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", true).unwrap();
+    let r = sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"body\":\"a note\"}", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(config.nonempty)") && r.out.contains("1 pending"), "{}", r.out);
+    // moved to another machine while it runs here, with work here: refused
+    let f = sb.base.join("nimitz").join("main").join("fleet.toml");
+    let t = std::fs::read_to_string(&f).unwrap();
+    std::fs::write(&f, format!("{t}\n[machines.other]\nhostname = \"other-host\"\n")).unwrap();
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--machine", "other", "--dir", "/srv/kb", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(session.live)") && r.out.contains("(config.nonempty)"), "{}", r.out);
+    let r = sb.run(&["inbox", "drop", "MAIN/@KB", "1", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let job = sb.member("MAIN/@KB")["session"]["short_id"].as_str().unwrap().to_string();
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains(&format!("stop {job}")) && r.out.contains(&format!("rm {job}")), "{}", r.out);
+    assert!(!fleet_toml(&sb).contains("[[aide]]"), "{}", fleet_toml(&sb));
+    let pins = std::fs::read_to_string(PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join("pins.json")).unwrap_or_default();
+    assert!(!pins.contains(&job), "unpinned: {pins}");
+}
+
+/// The edges of `aide rm|set` the reviews found: an inbox config that does not
+/// parse still guards the queue; the admiral's `--force` never moves an aide
+/// from another machine; a retired machine leaves its aide runnable nowhere,
+/// so removable anywhere; a hand-written mode Claude Code does not know (or
+/// an empty one) is flagged, and the aide runs in acceptEdits.
+#[test]
+fn aide_edges_bad_inbox_force_and_retired_machine() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let r = sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"body\":\"a note\"}", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let f = sb.base.join("nimitz").join("main").join("fleet.toml");
+    let good = std::fs::read_to_string(&f).unwrap();
+    // a bad lease: the inbox's limits do not parse; the pending item still holds the rm back
+    assert!(good.contains("lease = \"15m\""), "{good}");
+    std::fs::write(&f, good.replace("lease = \"15m\"", "lease = \"forever\"")).unwrap();
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(config.nonempty)"), "{}", r.out);
+    // an unknown or empty mode written by hand: check says so, and start refuses it
+    // (never the user's default mode, which may skip the aide's rules)
+    for m in ["bogus", ""] {
+        std::fs::write(&f, good.replace("model = \"sonnet\"", &format!("model = \"sonnet\"\npermission_mode = \"{m}\""))).unwrap();
+        let r = sb.run(&["check", "MAIN"]);
+        assert!(r.out.contains("is not one of"), "{m:?}:\n{}", r.out);
+        let r = sb.run(&["start", "MAIN/@KB", "--plan", "-v"]);
+        assert!(r.code != 0 && r.out.contains("(config.invalid)") && !r.out.contains("--bg"), "{m:?}:\n{}", r.out);
+    }
+    // on another machine: the admiral's --force does not move it; the user's does
+    std::fs::write(&f, good.replace("[machines.sandbox]", "[machines.other]\nhostname = \"other-host\"\n\n[machines.sandbox]").replace("sandbox = \"", "other = \"")).unwrap();
+    let r = sb.run_as("MAIN", &["aide", "set", "MAIN/@KB", "--dir", "/srv/kb", "--force", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(aide.elsewhere)"), "{}", r.out);
+    // the machine retired: its aide runs nowhere, and goes from here
+    let r = sb.run(&["machine", "rm", "MAIN", "other", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(machine.aide)") && r.out.contains("runs on other: it runs nowhere after this"), "{}", r.out);
+    let t = std::fs::read_to_string(&f).unwrap();
+    assert!(t.contains("name = \"KB\"") && !t.contains("other = \""), "{t}");
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert!(!r.out.contains("aide.elsewhere"), "{}", r.out);
 }

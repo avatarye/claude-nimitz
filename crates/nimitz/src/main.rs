@@ -91,6 +91,8 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)
   squadron new|set|rm <F/SQ>       --brief T --comms open|commodore-only|allow:A,B --mode M
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
+  aide new|set|rm <F/@NAME>        --dir PATH --types T,.. [--machine L --model M --mode M --brief P --policy open|fleet|parent
+                                   --depth N --per-sender N/h --lease 15m --max-tries N --keep-done 7d]; you or its admiral
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine
   rm <id|session>                  remove job rows (never transcripts)
@@ -222,6 +224,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("fleet", crud::fleet),
     ("squadron", crud::squadron),
     ("ship", crud::ship),
+    ("aide", crud::aide),
     ("machine", crud::machine),
     ("migrate", crud::migrate),
     ("up", members::up),

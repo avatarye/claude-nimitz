@@ -703,7 +703,8 @@ From the port's commits (7dd6984 .. 0145dfc):
 | S3 | The doorbell (ring and coalesce), the SessionStart context (with the 15-minute cron request), the piggyback timer | sandbox (rings, coalescing, piggyback), notify tests, Admiralty snapshots |
 | S4 | `HOME/@KB` live: the repo and `ingest-auto` (MYCC_DEV), the brief, the git-commit idempotency | real-CC e2e on a throwaway repo: post -> commit; kill mid-item -> one commit only; `/clear` -> drains again |
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
-| S5 | Other parents (`always_on`, ring-to-start); `aide new\|set\|rm` (moved from S2: until then `[[aide]]` is edited in fleet.toml) | sandbox, the role table |
+| S2.5 | `aide new\|set\|rm` (moved from S5, 0.6.0): plan and `--yes`, the trust step, the model against this machine's `availableModels`, the refused modes, the inbox flags, one machine's folder; the first aide stamps fleet.toml format 2 and is refused while a machine of the fleet has run no nimitz >= 0.5 (`aide.machines`, `--force`); the last one's `rm` takes the stamp off; `rm` stops and unpins a live aide and refuses while its inbox holds work | sandbox, the role table |
+| S5 | Other parents (`always_on`, ring-to-start) | sandbox, the role table |
 
 Carried from the S2 landing review: whether Claude Code lets an
 `acceptEdits` aide edit its repo's `.git/config` (`core.fsmonitor`,

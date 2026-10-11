@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 const VALUE_FLAGS: &[&str] = &[
     "--into", "--dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--brief", "--comms", "--label",
     "--admiral-mode", "--no-dir", "--hostname", "--type", "--payload", "--file", "--key", "--from", "--result", "--result-file",
-    "--reason", "--state", "--token", "--wait", "--scope", "--length",
+    "--reason", "--state", "--token", "--wait", "--scope", "--length", "--model", "--types", "--policy", "--depth", "--per-sender",
+    "--lease", "--max-tries", "--keep-done",
 ];
 
 /// Does flag `name` take a value (`--prompt <text>`)?

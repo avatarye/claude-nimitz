@@ -385,13 +385,18 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         }
         // its allow and deny lists are what hold a hostile payload: a mode
         // that skips the lists (or asks no one) is never an aide's
-        if let Some(m) = a.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
+        if let Some(m) = a.permission_mode.as_deref().filter(|m| !PERMISSION_MODES.contains(m)) {
+            out.push(inv(format!("aide {aid}: permission_mode {m:?} is not one of {}", PERMISSION_MODES.join(", ")), Some(aid.clone())));
+        } else if let Some(m) = a.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
             out.push(inv(format!("aide {aid}: permission_mode {m:?} skips the aide's allow and deny rules; use default, acceptEdits or plan"), Some(aid.clone())));
         }
         for label in a.dirs.keys() {
             if !c.machines.contains_key(label) {
                 out.push(inv(format!("aide {aid}: machine label {label:?} is not in fleet.toml [machines]"), Some(aid.clone())));
             }
+        }
+        if a.dirs.len() > 1 {
+            out.push(inv(format!("aide {aid} has folders on {} machines ({}); one machine runs an aide", a.dirs.len(), a.dirs.keys().cloned().collect::<Vec<_>>().join(", ")), Some(aid.clone())));
         }
     }
 
@@ -630,7 +635,7 @@ pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
             .or_else(squadron_mode)
             .unwrap_or(fallback),
         // its own mode, else acceptEdits: never the user's default (which may skip the rules)
-        Role::Aide => find_aide(f, id).and_then(|a| a.permission_mode.clone()).filter(|m| !AIDE_MODES_REFUSED.contains(&m.as_str())).unwrap_or_else(|| "acceptEdits".into()),
+        Role::Aide => find_aide(f, id).and_then(|a| a.permission_mode.clone()).filter(|m| PERMISSION_MODES.contains(&m.as_str()) && !AIDE_MODES_REFUSED.contains(&m.as_str())).unwrap_or_else(|| "acceptEdits".into()),
     }
 }
 
@@ -1009,14 +1014,158 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
                 }
             }
         }
-        // (no `aide rm` yet: an aide leaves fleet.toml by hand)
-        Role::Aide => refuse(
-            &mut plan,
-            "config.aide",
-            format!("{id} is an aide; nimitz does not remove aides yet"),
-            Some(format!("delete its [[aide]] from {}", f.dir.join("fleet.toml").display())),
-            Some(id.clone()),
-        ),
+        // an aide: its [[aide]] goes; its queue stays (dead letters and done
+        // items are kept), but never with items still to work
+        Role::Aide => match find_aide(&f, id) {
+            None => refuse(&mut plan, "config.missing", format!("no aide {id}"), None, Some(id.clone())),
+            Some(def) => {
+                // its queue and its job are on the machine that runs it: removed from another, they are not seen
+                let here = f.machine.as_deref().is_some_and(|m| def.dirs.contains_key(m));
+                if let Some(label) = def.dirs.keys().next().filter(|_| !here) {
+                    refuse(
+                        &mut plan,
+                        "aide.elsewhere",
+                        format!("{id} runs on {label}: its job and its inbox are there, and this machine sees neither"),
+                        Some(format!("run nimitz aide rm {id} on {label}")),
+                        Some(id.clone()),
+                    );
+                    return plan;
+                }
+                {
+                    let limits = crate::queue::Limits::from_def(&def.inbox).unwrap_or_else(|_| crate::queue::Limits::from_def(&InboxDef::default()).expect("the default inbox"));
+                    // a look: never the locked status (it makes the folder and housekeeps)
+                    let st = crate::queue::Queue::open(env, id, limits).peek_status(crate::evidence::now(), false);
+                    if st.pending + st.claimed.len() > 0 {
+                        refuse(
+                            &mut plan,
+                            "config.nonempty",
+                            format!("{id}'s inbox still has {} pending and {} claimed item(s)", st.pending, st.claimed.len()),
+                            Some(format!("let it drain, or `nimitz inbox list {id}` and drop them, then nimitz aide rm {id}")),
+                            Some(id.clone()),
+                        );
+                        return plan;
+                    }
+                }
+                let mut c = f.config.clone();
+                c.aide.retain(|a| a.name != def.name);
+                // the lowest format that holds what is left: with no aide, a
+                // 0.4 machine reads the fleet again
+                if c.aide.is_empty() {
+                    (c.format, c.min_nimitz) = (None, None);
+                }
+                plan.steps.push(step_write(Some(id.clone()), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings without the aide"));
+            }
+        },
+    }
+    plan
+}
+
+/// `nimitz aide new|set F/@NAME` (aide.md section 3): the definition checked
+/// as `validate` checks one (its name, inbox, mode), with one machine's
+/// folder (one machine runs an aide), its model against this machine's
+/// `availableModels` when it runs here, and fleet.toml stamped format 2 with
+/// it (a machine on 0.4 is told to update instead of failing to load the
+/// fleet). The first aide of a fleet is refused while a machine of the fleet
+/// has not run nimitz >= 0.5 (it would stop loading the fleet), unless
+/// `force` (the user's: the caller passes it only for them).
+pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool) -> Plan {
+    let verb = if new { "add aide" } else { "update aide" };
+    let mut plan = Plan { summary: format!("{verb} {id}"), ..Default::default() };
+    let parent = id.parent();
+    if id.role() != Role::Aide || parent.as_ref().map(Id::role) != Some(Role::Admiral) || def.name != id.parts().last().map(|p| p.trim_start_matches('@')).unwrap_or_default() {
+        refuse(&mut plan, "config.invalid", format!("{id}: an aide id is F/@NAME (an admiral's aide; other parents come later)"), None, Some(id.clone()));
+        return plan;
+    }
+    if !valid_name(&def.name) {
+        refuse(&mut plan, "config.invalid", format!("aide name {:?} is not [A-Z0-9_]+ (the id adds the @)", def.name), None, Some(id.clone()));
+        return plan;
+    }
+    let f = match load_fleet_for_write(env, id.fleet()) {
+        Ok(f) => f,
+        Err(i) => {
+            plan.refusals.push(i);
+            return plan;
+        }
+    };
+    let exists = find_aide(&f, id).is_some();
+    if new && exists {
+        refuse(&mut plan, "config.exists", format!("aide {id} already exists"), Some(format!("nimitz aide set {id} ...")), Some(id.clone()));
+        return plan;
+    }
+    if !new && !exists {
+        refuse(&mut plan, "config.missing", format!("no aide {id}"), Some(format!("nimitz aide new {id} --dir <folder> --types <type>")), Some(id.clone()));
+        return plan;
+    }
+    if def.inbox.types.is_empty() {
+        refuse(&mut plan, "config.invalid", format!("{id}: an inbox takes at least one type (--types; known: {})", crate::queue::TYPES.iter().map(|t| t.name).collect::<Vec<_>>().join(", ")), None, Some(id.clone()));
+    }
+    if let Err(e) = crate::queue::Limits::from_def(&def.inbox) {
+        refuse(&mut plan, "config.invalid", format!("{id}: [aide.inbox] {e}"), None, Some(id.clone()));
+    }
+    if def.snapshot {
+        refuse(&mut plan, "config.invalid", format!("{id}: the read-only snapshot aide comes in S4b; leave snapshot unset for now"), None, Some(id.clone()));
+    }
+    if let Some(m) = def.permission_mode.as_deref().filter(|m| !PERMISSION_MODES.contains(m)) {
+        refuse(&mut plan, "config.invalid", format!("{id}: permission mode {m:?} is not one of {}", PERMISSION_MODES.join(", ")), None, Some(id.clone()));
+    } else if let Some(m) = def.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
+        refuse(&mut plan, "config.invalid", format!("{id}: permission mode {m:?} skips the aide's allow and deny rules; use default, acceptEdits or plan"), None, Some(id.clone()));
+    }
+    // one machine runs it, in a folder of its own choosing (never managed)
+    match def.dirs.iter().collect::<Vec<_>>().as_slice() {
+        [(label, d)] => {
+            if !f.config.machines.contains_key(*label) {
+                refuse(&mut plan, "config.missing", format!("machine label {label:?} is not in {}'s fleet.toml [machines]", id.fleet()), Some(format!("nimitz machine add {} {label}", id.fleet())), Some(id.clone()));
+            }
+            if !is_absolute_dir(d) {
+                refuse(&mut plan, "config.invalid", format!("{id} on {label}: folder {d:?} is not absolute (an aide's folder is its repo, never managed)"), None, Some(id.clone()));
+            }
+            // the model is this machine's account's to allow: another machine's is checked there by `check`
+            if f.machine.as_deref() == Some(label.as_str()) {
+                let model = def.model.clone().unwrap_or_else(|| "sonnet".into());
+                if let Some(allowed) = crate::claude::available_models(env).filter(|a| !crate::claude::model_allowed(&model, a)) {
+                    refuse(
+                        &mut plan,
+                        "aide.model",
+                        format!("{id} would run on {model}, which availableModels ({}) leaves out; Claude Code would run the default model instead", allowed.join(", ")),
+                        Some(format!("add {model} to availableModels, or --model <one it lists>")),
+                        Some(id.clone()),
+                    );
+                }
+            }
+        }
+        [] => refuse(&mut plan, "config.invalid", format!("{id} has no folder: --dir <its repo> (on this machine, or --machine <label>)"), None, Some(id.clone())),
+        _ => refuse(&mut plan, "config.invalid", format!("{id} has folders on {} machines; one machine runs an aide", def.dirs.len()), None, Some(id.clone())),
+    }
+    // the first aide makes the fleet unreadable to nimitz 0.4: every machine first
+    if f.config.aide.is_empty() {
+        let behind = crate::formats::machine_issues(&f);
+        if !behind.is_empty() && !force {
+            let names: Vec<String> = behind.iter().map(|i| i.message.split(':').next().unwrap_or("").trim_start_matches("machine ").to_string()).collect();
+            refuse(
+                &mut plan,
+                "aide.machines",
+                format!("{}'s first aide makes its fleet.toml unreadable to nimitz before 0.5.0, and {} of its machines ({}) has not run nimitz >= 0.5.0 here", id.fleet(), names.len(), names.join(", ")),
+                Some("update nimitz on each and run any nimitz command there (nimitz doctor lists them); --force is the user's alone, when they know those machines will not load this fleet".into()),
+                Some(id.clone()),
+            );
+        }
+    }
+    if !plan.ok() {
+        return plan;
+    }
+    let mut c = f.config.clone();
+    match c.aide.iter_mut().find(|a| a.name == def.name) {
+        Some(a) => *a = def,
+        None => c.aide.push(def),
+    }
+    // the format that holds an aide, with the nimitz that reads it
+    let step = crate::formats::artifact("fleet").and_then(|a| a.steps.iter().find(|s| s.to == 2));
+    c.format = Some(c.format.unwrap_or(1).max(2));
+    if c.min_nimitz.is_none() {
+        c.min_nimitz = step.and_then(|s| s.min_nimitz).map(str::to_string);
+    }
+    if c != f.config {
+        plan.steps.push(step_write(Some(id.clone()), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings with the aide (format 2)"));
     }
     plan
 }
@@ -1290,6 +1439,25 @@ fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &s
     }
     let mut c = f.config.clone();
     c.machines.remove(label);
+    // an aide that ran there runs nowhere now: removable from any machine.
+    // Its inbox stays in that machine's state: say so (seen here only when
+    // that machine is this one)
+    for a in &mut c.aide {
+        if a.dirs.remove(label).is_some() {
+            let aid = Id::aide(&fid, &a.name);
+            let work = (f.machine.as_deref() == Some(label))
+                .then(|| crate::queue::Limits::from_def(&a.inbox).ok())
+                .flatten()
+                .map(|l| crate::queue::Queue::open(env, &aid, l).peek_status(crate::evidence::now(), false))
+                .map(|st| st.pending + st.claimed.len());
+            let message = match work {
+                Some(n) if n > 0 => format!("{aid} runs on {label}: it runs nowhere after this, and the {n} item(s) in its inbox here are left unworked"),
+                Some(_) => format!("{aid} runs on {label}: it runs nowhere after this (its inbox here is empty)"),
+                None => format!("{aid} runs on {label}: it runs nowhere after this, and whatever its inbox there holds is left behind"),
+            };
+            plan.warnings.push(issue("machine.aide", Severity::Warn, message, Some(format!("nimitz aide set {aid} --dir <its repo>  # on the machine that runs it next")), Some(aid)));
+        }
+    }
     plan.steps.push(step_write(Some(fid), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings without the machine"));
     for (dir, s) in &f.squadrons {
         let mut ns = s.clone();

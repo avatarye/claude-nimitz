@@ -106,8 +106,9 @@ time, does the work and marks each one done; a crash, a reboot or a `/clear`
 loses nothing. A dead letter (an item that failed for good) and a question
 the aide asks reach its admiral as a `[nimitz needs-you]`.
 
-Declare one in the fleet's `fleet.toml`; one machine runs it, the one its
-`dirs` names:
+Add one with `nimitz aide new F/@KB --dir <its repo> --types wiki.note.v1`
+(the model defaults to sonnet, the mode to acceptEdits); one machine runs it,
+the one its folder is on. It lands in the fleet's `fleet.toml` as:
 
 ```toml
 [[aide]]
@@ -128,15 +129,16 @@ policy = "open"                  # open | fleet | parent
 
 | You want to | Run |
 | --- | --- |
+| Add, change or remove an aide | `nimitz aide new F/@KB --dir <its repo> --types wiki.note.v1` · `nimitz aide set F/@KB --depth 200` · `nimitz aide rm F/@KB` (you or its admiral; `nimitz help` for the flags) |
 | Give an aide work | `nimitz inbox post F/@KB --type wiki.note.v1 --payload '{"body": "..."}'` |
 | Ask an aide and wait for the answer | `nimitz ask F/@REF "question"` (its item and token print at once; `--wait 5m`) |
 | See its queue | `nimitz inbox status F/@KB` · `nimitz inbox list F/@KB` |
 | Read an answer later | `nimitz inbox result F/@REF <id> [--token T]` |
 | Retry or drop a dead letter | `nimitz inbox retry F/@KB <id>` · `nimitz inbox drop F/@KB <id>` |
 
-Limits in 0.5.1: no doorbell yet, so an aide wakes on its 15-minute cron, a
-message or a start; no `aide new|set|rm`, so edit `[[aide]]` in fleet.toml by
-hand; no read-only snapshot aide yet (`snapshot = true` is refused). An aide
+Limits for now: no doorbell yet, so an aide wakes on its 15-minute cron, a
+message or a start; no read-only snapshot aide yet (`snapshot = true` is
+refused). An aide
 runs in its own permission mode (default `acceptEdits`; `bypassPermissions`,
 `dontAsk` and `auto` are refused: they would skip its rules), with git only in
 its folder and never `push`.
@@ -148,10 +150,13 @@ that holds an aide as corrupt (it moves it aside). Update every machine to
 a 0.4.x on the migrated registry moves it aside when it holds an aide, and
 otherwise rewrites it without the `min_nimitz` stamp (an early 0.4.0 build
 also without each lineage entry's `home`, which keeps two homes' bindings apart).
-`nimitz doctor` names each machine of the fleet no 0.5.0 was seen on. Once
-the aide is in, `nimitz migrate --shared --yes` stamps fleet.toml
-(`format = 2`, `min_nimitz = "0.5.0"`): a later nimitz that needs more is
-then refused with "update nimitz here" instead of misreading the file.
+`nimitz doctor` names each machine of the fleet no 0.5.0 was seen on, and
+`aide new` refuses a fleet's first aide while there is one (`aide.machines`;
+`--force` is yours alone). It sees only the machines `[machines]` lists: a
+machine that reads the fleet folder without a label there is not checked. `aide new` stamps fleet.toml (`format = 2`, `min_nimitz =
+"0.5.0"`): a later nimitz that needs more is then refused with "update nimitz
+here" instead of misreading the file. `aide rm` of the last aide takes the
+stamp off again (format 1, readable by 0.4).
 
 ### Two rules
 
