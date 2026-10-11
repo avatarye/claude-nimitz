@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "admiralty"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "libc",
  "nimitz-core",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "nimitz"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "libc",
  "nimitz-core",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "nimitz-core"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "libc",
  "serde",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "nimitz-mux"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "libc",
  "nimitz-core",
