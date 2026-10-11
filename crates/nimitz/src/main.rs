@@ -77,6 +77,9 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
                                    --fresh: a new conversation; --all: parked ships too; --jobs-only: no tabs;
                                    --only: the target's own member alone (a lead without its fleet or squadron)
   stop <id|session>                stop a member (or one session); start's opposite
+  attach <id>                      attach to a member in this terminal (claude attach <its exact job>);
+                                   one that is down is woken first by start's plan (--plan, --yes);
+                                   ctrl-z detaches. Yours alone, never from inside a Claude Code session
   init [--label L]                 data root, machine label, Claude Code's trust of the data root, doctor
   trust <folder>                   Claude Code's trust for the folder's git root (or the folder): yours alone,
                                    it lets the folder's .claude settings, hooks and MCP servers run
@@ -230,6 +233,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("adopt", members::adopt),
     ("signal", members::signal),
     ("open", members::open),
+    ("attach", members::attach),
     ("restore", restore::restore),
     ("layout", members::layout),
     ("sandbox", sandbox_cmd::sandbox),

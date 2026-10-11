@@ -1,5 +1,5 @@
 //! Commands on running members: status, check, up, start, stop, relaunch, rm,
-//! sweep, adopt, signal, open, layout. The plans come from core.
+//! sweep, adopt, signal, open, attach, layout. The plans come from core.
 use crate::run::{self, refusal};
 use crate::{out, Ctx};
 use nimitz_core::sessions as ses;
@@ -633,6 +633,101 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
         crate::restore::record_active(ctx, &snap, mux.as_ref(), None);
     }
     code
+}
+
+// ------------------------------------------------------------------ attach
+
+/// `nimitz attach <id>`: attach to a member in this terminal. Its exact job
+/// from the snapshot (`claude attach` matches a name by part, so `DEV` could
+/// be `NIMITZ_DEV` or `MYCC_DEV`: always the job's short id). A member that
+/// is down (parked, stopped) is woken first by start's own plan, gated like
+/// any other (`--plan`, `--yes`); a live one attaches at once. Then this
+/// process becomes `claude attach <job>` (exec; Windows: it waits and exits
+/// with its code). Yours alone, and never from inside a Claude Code session
+/// (an attach in an attach).
+pub fn attach(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&[])?;
+    ctx.args.at_most(1)?;
+    let id = parse_id(ctx.args.need(0, "id")?)?;
+    let mut plan = Plan { summary: format!("attach {id}"), ..Default::default() };
+    if ctx.caller != Caller::User {
+        plan.refusals.push(refusal("authority", "`nimitz attach` is yours alone (it attaches your terminal)".into(), None, Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    let nested = if ctx.vars.get("CLAUDECODE").is_some_and(|v| !v.is_empty()) {
+        Some("CLAUDECODE is set".to_string())
+    } else {
+        nimitz_core::queue::session_above_id(&ctx.env, &ctx.vars).map(|sid| format!("session {} is above this process", &sid[..sid.len().min(8)]))
+    };
+    if let Some(why) = nested {
+        plan.refusals.push(refusal("attach.nested", format!("this runs inside a Claude Code session ({why}); an attach inside it nests one Claude Code in another"), Some(format!("nimitz attach {id}  # from a plain terminal; or nimitz start {id} -p")), Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    let snap = ctx.snap();
+    let Some(m) = member(&snap, &id) else {
+        plan.refusals.push(refusal("member.unknown", format!("{id} is not in any fleet config"), None, Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    };
+    let snap = if live(m) {
+        snap
+    } else {
+        // down: start's own plan wakes it (by its exact id; jobs only, no tab),
+        // with its gate; then the attach
+        let opts = nimitz_core::restore::RestoreOpts { jobs_only: true, only: true, ..Default::default() };
+        let code = crate::restore::run_start(ctx, Some(&id), opts);
+        if ctx.plan_only() {
+            if code == 0 {
+                out::line(&format!("then: attach to {id} in this terminal (`claude attach <its job>`)"));
+            }
+            return Ok(code);
+        }
+        if code != 0 {
+            return Ok(code);
+        }
+        ctx.snap()
+    };
+    let m = member(&snap, &id).filter(|m| live(m));
+    let Some(job) = m.and_then(|m| m.session.as_ref()).and_then(|s| s.short_id.clone()) else {
+        let what = if m.is_some() { "runs in a process with no job; nothing to attach to" } else { "is not live" };
+        plan.refusals.push(refusal("session.none", format!("{id} {what}"), Some(format!("nimitz status {id}")), Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    };
+    let argv = nimitz_core::claude::attach(&ctx.env, &job);
+    if ctx.plan_only() {
+        plan.steps.push(Step { id: Some(id.clone()), cmd: argv, cwd: None, why: format!("attach to job {job} in this terminal; ctrl-z detaches") });
+        return Ok(finish_plan(ctx, &plan));
+    }
+    out::line(&format!("attaching to {id} (job {job}); ctrl-z detaches, \u{2190} opens the agent view"));
+    Ok(exec_attach(ctx, &argv))
+}
+
+/// Become `argv` (`claude attach <job>`): exec on Unix; elsewhere spawn, wait
+/// and exit with its code. `NIMITZ_ATTACH_DRY=1` prints the argv instead and
+/// exits 0: for the tests only (they never hand the terminal to a claude).
+fn exec_attach(ctx: &Ctx, argv: &[String]) -> i32 {
+    use std::io::Write;
+    if ctx.vars.get("NIMITZ_ATTACH_DRY").is_some_and(|v| v == "1") {
+        out::line(&format!("exec {}", argv.join(" ")));
+        return 0;
+    }
+    let _ = std::io::stdout().flush();
+    let mut c = std::process::Command::new(&argv[0]);
+    c.args(&argv[1..]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = c.exec();
+        out::error(&format!("cannot run {}: {e}", argv.join(" ")));
+        1
+    }
+    #[cfg(not(unix))]
+    match c.status() {
+        Ok(st) => st.code().unwrap_or(1),
+        Err(e) => {
+            out::error(&format!("cannot run {}: {e}", argv.join(" ")));
+            1
+        }
+    }
 }
 
 fn attached_pane(a: &nimitz_mux::Attached) -> nimitz_mux::PaneRef {

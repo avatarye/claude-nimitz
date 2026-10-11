@@ -1133,6 +1133,13 @@ fn detached() -> bool {
     parent == 1 || std::fs::read_to_string(format!("/proc/{parent}/comm")).is_ok_and(|c| c.trim() == "systemd")
 }
 
+/// The Claude Code session this process runs inside, when one is above it
+/// (its session file, as `sender_of` reads the ancestry): its session id,
+/// or `?` when the file names none.
+pub fn session_above_id(env: &Env, vars: &std::collections::HashMap<String, String>) -> Option<String> {
+    session_above(env, vars).map(|v| v.get("sessionId").and_then(Value::as_str).unwrap_or("?").to_string())
+}
+
 /// The session file of the nearest Claude Code process above this one.
 fn session_above(env: &Env, vars: &std::collections::HashMap<String, String>) -> Option<Value> {
     // tests only (a debug build): the ancestry is given, a sandbox has no
