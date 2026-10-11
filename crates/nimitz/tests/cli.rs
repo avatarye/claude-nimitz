@@ -2863,3 +2863,43 @@ fn aide_rm_stops_a_live_aide_and_keeps_work_safe() {
     let pins = std::fs::read_to_string(PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join("pins.json")).unwrap_or_default();
     assert!(!pins.contains(&job), "unpinned: {pins}");
 }
+
+/// The edges of `aide rm|set` the reviews found: an inbox config that does not
+/// parse still guards the queue; the admiral's `--force` never moves an aide
+/// from another machine; a retired machine leaves its aide runnable nowhere,
+/// so removable anywhere; a hand-written mode Claude Code does not know (or
+/// an empty one) is flagged, and the aide runs in acceptEdits.
+#[test]
+fn aide_edges_bad_inbox_force_and_retired_machine() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let r = sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"body\":\"a note\"}", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let f = sb.base.join("nimitz").join("main").join("fleet.toml");
+    let good = std::fs::read_to_string(&f).unwrap();
+    // a bad lease: the inbox's limits do not parse; the pending item still holds the rm back
+    assert!(good.contains("lease = \"15m\""), "{good}");
+    std::fs::write(&f, good.replace("lease = \"15m\"", "lease = \"forever\"")).unwrap();
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(config.nonempty)"), "{}", r.out);
+    // an unknown or empty mode written by hand: check says so, and start refuses it
+    // (never the user's default mode, which may skip the aide's rules)
+    for m in ["bogus", ""] {
+        std::fs::write(&f, good.replace("model = \"sonnet\"", &format!("model = \"sonnet\"\npermission_mode = \"{m}\""))).unwrap();
+        let r = sb.run(&["check", "MAIN"]);
+        assert!(r.out.contains("is not one of"), "{m:?}:\n{}", r.out);
+        let r = sb.run(&["start", "MAIN/@KB", "--plan", "-v"]);
+        assert!(r.code != 0 && r.out.contains("(config.invalid)") && !r.out.contains("--bg"), "{m:?}:\n{}", r.out);
+    }
+    // on another machine: the admiral's --force does not move it; the user's does
+    std::fs::write(&f, good.replace("[machines.sandbox]", "[machines.other]\nhostname = \"other-host\"\n\n[machines.sandbox]").replace("sandbox = \"", "other = \"")).unwrap();
+    let r = sb.run_as("MAIN", &["aide", "set", "MAIN/@KB", "--dir", "/srv/kb", "--force", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(aide.elsewhere)"), "{}", r.out);
+    // the machine retired: its aide runs nowhere, and goes from here
+    let r = sb.run(&["machine", "rm", "MAIN", "other", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let t = std::fs::read_to_string(&f).unwrap();
+    assert!(t.contains("name = \"KB\"") && !t.contains("other = \""), "{t}");
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert!(!r.out.contains("aide.elsewhere"), "{}", r.out);
+}

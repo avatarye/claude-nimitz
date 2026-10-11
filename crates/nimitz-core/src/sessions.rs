@@ -2683,6 +2683,21 @@ pub fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {
 mod tests {
     use super::*;
 
+    /// `aide new|set|rm` fixes: the fleet's admiral runs them; a commodore,
+    /// a ship and the aide itself do not.
+    #[test]
+    fn aide_fixes_are_the_admirals() {
+        let who = |id: &str, role: Role| Caller::Member { id: Id(id.into()), role };
+        for fix in ["nimitz aide set MAIN/@KB --dir /x", "nimitz aide rm MAIN/@KB"] {
+            assert!(may_run(&Caller::User, fix), "{fix}");
+            assert!(may_run(&who("MAIN", Role::Admiral), fix), "{fix}");
+            assert!(!may_run(&who("OTHER", Role::Admiral), fix), "{fix}");
+            assert!(!may_run(&who("MAIN/ARGOS", Role::Commodore), fix), "{fix}");
+            assert!(!may_run(&who("MAIN/ARGOS/CLEAN", Role::Ship), fix), "{fix}");
+            assert!(!may_run(&who("MAIN/@KB", Role::Aide), fix), "{fix}");
+        }
+    }
+
     /// The sandbox's always-alive pid (1, or 4, System, on Windows) is never
     /// waited on; a live process is waited on to the limit; a dead one is gone.
     #[test]

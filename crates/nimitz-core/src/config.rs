@@ -395,6 +395,9 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
                 out.push(inv(format!("aide {aid}: machine label {label:?} is not in fleet.toml [machines]"), Some(aid.clone())));
             }
         }
+        if a.dirs.len() > 1 {
+            out.push(inv(format!("aide {aid} has folders on {} machines ({}); one machine runs an aide", a.dirs.len(), a.dirs.keys().cloned().collect::<Vec<_>>().join(", ")), Some(aid.clone())));
+        }
     }
 
     // Layout: a session folder inside another session folder (on this machine),
@@ -632,7 +635,7 @@ pub fn permission_mode(f: &FleetOnDisk, id: &Id) -> String {
             .or_else(squadron_mode)
             .unwrap_or(fallback),
         // its own mode, else acceptEdits: never the user's default (which may skip the rules)
-        Role::Aide => find_aide(f, id).and_then(|a| a.permission_mode.clone()).filter(|m| !AIDE_MODES_REFUSED.contains(&m.as_str())).unwrap_or_else(|| "acceptEdits".into()),
+        Role::Aide => find_aide(f, id).and_then(|a| a.permission_mode.clone()).filter(|m| PERMISSION_MODES.contains(&m.as_str()) && !AIDE_MODES_REFUSED.contains(&m.as_str())).unwrap_or_else(|| "acceptEdits".into()),
     }
 }
 
@@ -1017,7 +1020,8 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
             None => refuse(&mut plan, "config.missing", format!("no aide {id}"), None, Some(id.clone())),
             Some(def) => {
                 // its queue and its job are on the machine that runs it: removed from another, they are not seen
-                if let Some(label) = def.dirs.keys().next().filter(|l| f.machine.as_deref() != Some(l.as_str())) {
+                let here = f.machine.as_deref().is_some_and(|m| def.dirs.contains_key(m));
+                if let Some(label) = def.dirs.keys().next().filter(|_| !here) {
                     refuse(
                         &mut plan,
                         "aide.elsewhere",
@@ -1435,6 +1439,10 @@ fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &s
     }
     let mut c = f.config.clone();
     c.machines.remove(label);
+    // an aide that ran there runs nowhere now: removable from any machine
+    for a in &mut c.aide {
+        a.dirs.remove(label);
+    }
     plan.steps.push(step_write(Some(fid), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings without the machine"));
     for (dir, s) in &f.squadrons {
         let mut ns = s.clone();

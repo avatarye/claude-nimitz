@@ -419,14 +419,18 @@ pub fn aide(ctx: &Ctx) -> Result<i32, String> {
     let (was, now) = (before.dirs.keys().next().cloned(), def.dirs.keys().next().cloned());
     if !new && plan.ok() && was.is_some() && was != now {
         let was = was.unwrap_or_default();
-        if f.machine.as_deref() != Some(was.as_str()) {
+        let here = f.machine.as_deref().is_some_and(|m| before.dirs.contains_key(m));
+        if !here {
             if !force {
                 plan.refusals.push(refusal("aide.elsewhere", format!("{id} runs on {was}: its job and its inbox are there, and this machine sees neither"), Some(format!("move it from {was} (nimitz aide set {id} --machine <label> --dir <folder> there)")), Some(id.clone())));
             }
         } else {
             let snap = ctx.snap();
-            let live = snap.fleets.iter().flat_map(|f| f.members()).find(|m| m.id == id).and_then(|m| m.session.as_ref()).is_some_and(|s| s.pid.is_some());
-            let work = snap.fleets.iter().flat_map(|f| f.members()).find(|m| m.id == id).and_then(|m| m.inbox.as_ref()).map(|q| q.pending + q.claimed.len()).unwrap_or(0);
+            let live = snap.fleets.iter().flat_map(|f| f.members()).find(|m| m.id == id).is_some_and(|m| m.session.iter().chain(m.extra_rows.iter()).any(|s| s.pid.is_some()));
+            // its queue as `aide rm` reads it (an inbox config that does not parse: the default limits)
+            let limits = nimitz_core::queue::Limits::from_def(&before.inbox).unwrap_or_else(|_| nimitz_core::queue::Limits::from_def(&Default::default()).expect("the default inbox"));
+            let st = nimitz_core::queue::Queue::open(&ctx.env, &id, limits).peek_status(nimitz_core::evidence::now(), false);
+            let work = st.pending + st.claimed.len();
             if live {
                 plan.refusals.push(refusal("session.live", format!("{id} runs here; moved, it would keep running here beside its new machine's"), Some(format!("nimitz stop {id}, then move it")), Some(id.clone())));
             }
