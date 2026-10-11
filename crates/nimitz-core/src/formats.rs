@@ -530,7 +530,8 @@ fn archive(env: &Env, p: &Path, folder: &str) -> Result<PathBuf, String> {
     let base = env.state.join("archive").join(folder).join(rel);
     let mut to = base.clone();
     let mut n = 2;
-    while to.exists() {
+    // (a broken link at the name is a name taken too)
+    while std::fs::symlink_metadata(&to).is_ok() {
         let mut s = base.as_os_str().to_os_string();
         s.push(format!(".{n}"));
         to = PathBuf::from(s);
@@ -1455,7 +1456,7 @@ pub fn failed(env: &Env) -> Vec<Failed> {
         // a cleanup done on a file supersedes a cleanup that failed on it
         // before (never a step's failure: that is the step's to clear)
         if ok && v["cleanup"].is_string() {
-            for e in last.iter_mut().filter(|(k, (_, _, ev))| k.1 == key.1 && ev["cleanup"].is_string()) {
+            for e in last.iter_mut().filter(|(k, (_, _, ev))| k.0 == key.0 && k.1 == key.1 && ev["cleanup"].is_string()) {
                 e.1 .0 = true;
             }
         }
@@ -1481,7 +1482,11 @@ pub fn failed(env: &Env) -> Vec<Failed> {
     last.into_iter()
         // (a step of an artifact this nimitz no longer has, on a file gone since
         // (0.6's queues, archived), can never be done again: dropped)
-        .filter(|(k, (_, _, v))| v["cleanup"].is_string() || artifact(&k.0).is_some() || Path::new(&k.1).exists())
+        .filter(|(k, (_, _, v))| match v["cleanup"].as_str() {
+            // a cleanup this nimitz no longer has can never run again: dropped
+            Some(c) => CLEANUPS.iter().any(|x| x.label == c),
+            None => artifact(&k.0).is_some() || Path::new(&k.1).exists(),
+        })
         .filter(|(k, (ok, _, v))| !ok && !cleaned(v, &k.1).unwrap_or_else(|| done_since(&k.0, &k.1, k.2)))
         .map(|(k, (_, line, v))| Failed {
             artifact: k.0.split('#').next().unwrap_or("").to_string(),
@@ -1607,7 +1612,7 @@ mod tests {
     }
 
     /// A folder that cannot be renamed into the archive is left whole (never
-    /// copied and removed piecemeal); a file is copied, then removed.
+    /// copied and removed piecemeal).
     #[cfg(unix)]
     #[test]
     fn an_archive_that_cannot_rename_leaves_a_folder_whole() {
