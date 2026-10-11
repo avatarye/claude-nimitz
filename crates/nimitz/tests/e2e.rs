@@ -1874,16 +1874,16 @@ fn e2e_trust_lets_a_background_job_start_in_an_untrusted_repo() {
     w.finish();
 }
 
-/// 96. A fleet's harness on real Claude Code: a rule the user adds reaches a
+/// 89. A fleet's harness on real Claude Code: a rule the user adds reaches a
 /// running ship at its next prompt (the whole text once, the hash
 /// recorded); an agent added to the harness is the ship's after `start -f`
 /// (its job's flags carry the fleet's plugin) and answers as itself.
 #[test]
-fn e2e_96_a_harness_rule_reaches_a_live_ship_and_its_agent_comes_with_a_relaunch() {
+fn e2e_89_a_harness_rule_reaches_a_live_ship_and_its_agent_comes_with_a_relaunch() {
     if !gated() {
         return;
     }
-    let w = E2e::new(96);
+    let w = E2e::new(89);
     w.fleet_with_ship(OK_PROMPT, "default");
     let m = w.start_ship_idle();
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
@@ -1931,15 +1931,15 @@ fn e2e_96_a_harness_rule_reaches_a_live_ship_and_its_agent_comes_with_a_relaunch
     w.finish();
 }
 
-/// 95. The 0.6 -> 0.7 upgrade (`NIMITZ_E2E_OLD06_BIN`: a 0.6.0 build): 0.6
+/// 88. The 0.6 -> 0.7 upgrade (`NIMITZ_E2E_OLD06_BIN`: a 0.6.0 build): 0.6
 /// makes a fleet with an aide, HOME's `@KB`, and starts it; then this build:
 /// its first command archives the aide state and drops its records, `check`
 /// names the fleet's `[[aide]]` (`aide.legacy`) and the job left running
 /// (`aide.retired`), the user stops and removes it by its short id, and
-/// `migrate --shared --yes` takes the `[[aide]]` and its stamp out; the 0.6
-/// binary still reads the fleet after.
+/// `migrate --shared --yes` takes the `[[aide]]` and its stamp out; another
+/// machine still on 0.6 (its own state folder) reads the fleet after.
 #[test]
-fn e2e_95_an_update_from_0_6_takes_the_aide_out() {
+fn e2e_88_an_update_from_0_6_takes_the_aide_out() {
     if !gated() {
         return;
     }
@@ -1947,7 +1947,7 @@ fn e2e_95_an_update_from_0_6_takes_the_aide_out() {
         println!("[OK] skipped: set NIMITZ_E2E_OLD06_BIN to a 0.6.0 nimitz build");
         return;
     };
-    let w = E2e::new(95);
+    let w = E2e::new(88);
     w.use_bin(&old);
     let (_, v) = w.nz(&["--version"]);
     assert!(v.trim().starts_with("nimitz 0.6."), "NIMITZ_E2E_OLD06_BIN is not a 0.6 build: {v}");
@@ -1980,10 +1980,14 @@ fn e2e_95_an_update_from_0_6_takes_the_aide_out() {
     assert!(!toml.contains("aide") && !toml.contains("format = 2"), "{toml}");
     let check = w.nz(&["check"]).1;
     assert!(!check.contains("aide."), "{check}");
-    // the 0.6 binary reads the fleet as it is now
-    let (_, st) = { w.use_bin(&old); w.nz(&["status"]) };
-    assert!(st.contains(&w.fleet) && !st.contains("config.invalid") && !st.contains("config.too_new"), "{st}");
-    w.use_bin(EXE);
+    // another machine still on 0.6 reads the fleet as it is now (its own
+    // state: this machine's is 0.7's, and 0.6 never reads it again)
+    let other = w.base.join("other-state");
+    std::fs::create_dir_all(&other).unwrap();
+    let mut c = w.scrubbed(&old);
+    c.env("NIMITZ_HOME", w.base.join("nimitz")).env("NIMITZ_STATE", &other).env("NIMITZ_MUX", "none").args(["check", &w.fleet]);
+    let (_, st) = E2e::run(c);
+    assert!(!st.contains("config.invalid") && !st.contains("config.too_new") && !st.contains("aide"), "{st}");
     w.finish();
 }
 
