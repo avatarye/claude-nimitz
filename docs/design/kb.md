@@ -33,8 +33,11 @@ key>`); the ones nimitz reads are checked on a write:
 Inside a member's session the fleet is the member's own (`--fleet` may only
 repeat it); the user names it with `--fleet F`. Every git call is
 `kb::git`: no hooks, no fsmonitor, no pager, no external diff or textconv,
-no global attributes, literal pathspecs, none of the caller's `GIT_*`; a
-changed or uncommitted `.gitattributes`/`.gitmodules` stops it.
+no global attributes, literal pathspecs; of the caller's `GIT_*` only the
+transport, TLS, proxy and identity ones and where the user's global and
+system config are (`GIT_CONFIG_GLOBAL`, `_SYSTEM`, `_NOSYSTEM`) stay; a
+changed or uncommitted `.gitattributes`/`.gitmodules` stops it. It needs
+git 2.20 or later (`sync` reads `git config --worktree`).
 
 | Command | Who | What |
 | --- | --- | --- |
@@ -63,8 +66,7 @@ its worktree config (`url.*.insteadOf`, `pushInsteadOf`), or a merge ref
 that is no branch, is refused; the user's global rewrites stay theirs. The
 clone's git config is the user's, as git trusts it (a hand that can write
 it can already run code through `core.sshCommand`): these checks keep a
-stray setting from moving the notes, not a hostile one. Of the caller's `GIT_*`, only the transport, TLS, proxy
-and identity ones stay. A name
+stray setting from moving the notes, not a hostile one. A name
 another file system reads as another (a trailing dot or space, `:`, `~`, an
 invisible character) is off limits.
 

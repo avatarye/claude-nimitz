@@ -29,7 +29,8 @@ const LINE_MAX: usize = 300;
 /// git in `dir` with nothing that runs a program: no fsmonitor, no pager, no
 /// hooks, no external diff or textconv, no signing, no editor, no global
 /// attributes; every path literal (`--literal-pathspecs`: no glob, no `:(magic)`);
-/// none of the caller's `GIT_*` steering it elsewhere.
+/// of the caller's `GIT_*` only the user's transport, TLS, proxy, identity
+/// and global or system config place.
 fn git(dir: &Path) -> Command {
     let mut c = Command::new("git");
     c.arg("--literal-pathspecs").arg("-C").arg(dir);
@@ -512,7 +513,7 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
     // from moving the notes, not a hostile hand that could write it.)
     for scope in ["--local", "--worktree"] {
         let mut c = git(dir);
-        c.args(["config", scope, "--includes", "--name-only", "--get-regexp", r"^url\..*\.(push)?insteadof$"]);
+        c.args(["config", scope, "--includes", "--name-only", "--get-regexp", r"^url\..*\.(push)?insteadof$"]).env("LC_ALL", "C");
         let o = c.output().map_err(|e| format!("git: {e}"))?;
         match o.status.code() {
             Some(0) => {
