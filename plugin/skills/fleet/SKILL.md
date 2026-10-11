@@ -16,6 +16,7 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 | admiral | Commands one fleet. A background job, attached in its Herdr tab. | `F` | `[F]-ADMIRAL` |
 | commodore | Commands one squadron. A background job, attached in its Herdr tab. | `F/SQ` | `[F.SQ]-COMMODORE` |
 | ship | Long-term work in one folder. A background job that parks and wakes on demand. | `F/SQ/SHIP` | `[F.SQ]-SHIP` |
+| aide | Always on, attached to the admiral, with a durable inbox (`nimitz inbox post <aide>`, `nimitz ask <aide>`): a notes keeper (`@KB`) or a read-only reference desk (`@REF`). | `F/@NAME` | `[F]-@NAME` |
 
 One-off work is a subagent in the lead's own session, or a ship. Every member
 is a Claude Code background job (`claude --bg`); a lead's job is pinned, so it

@@ -1,6 +1,25 @@
 # Changelog
 
-## 0.6.0 (unreleased)
+## 0.6.0 (2026-10-11)
+
+The aide system, complete: `@KB` keeps notes in a git knowledge base, `@REF`
+answers from it read-only. Read **Upgrading** first.
+
+### Upgrading
+
+- From 0.5.x nothing migrates (no file format changed). Rules move to **v6**
+  (live members get the change at their next prompt). Update the plugin
+  (`claude plugin update nimitz@claude-nimitz`).
+- **Before a fleet gets its first aide, update every machine of the fleet to
+  0.6.0** and run any nimitz command there: a nimitz before 0.5 cannot load a
+  fleet.toml that holds `[[aide]]`. `aide new` refuses until each machine of
+  `[machines]` has (`aide.machines`; `nimitz doctor` lists them).
+- To give HOME its two aides (once every machine is on 0.6.0):
+  `nimitz aide new HOME/@KB --dir /mnt/data/shared/nimitz-knowledge-base
+  --types wiki.note.v1 --plan`, then `--yes`; `nimitz aide new HOME/@REF
+  --dir /mnt/data/shared/nimitz-knowledge-base --types wiki.query.v1
+  --snapshot --mode default --plan`, then `--yes`; then `nimitz start HOME`.
+  docs/test/aide-checklist.md walks a throwaway fleet through it first.
 
 ### New
 
@@ -45,6 +64,19 @@
   `aide rm` unregisters it. A post or an ask on a machine that does not run
   the aide is refused (`inbox.elsewhere`). Tested on real Claude Code with
   both aides on a copy of the KB.
+
+### Known limits
+
+- Aides on Windows were never run end to end (the `//c/...` permission
+  rules, `NUL`, the named-pipe doorbell are built and checked by `cargo
+  check`, not used).
+- No relay between machines: an aide's inbox is on the machine that runs it,
+  and a post elsewhere is refused (`inbox.elsewhere`).
+- A reader's snapshot is a worktree of the repo, so each claim's checkout
+  touches that worktree's files under the repo's `.git` (in Dropbox: a little
+  sync traffic).
+- The 15-minute cron, a reboot, the Admiralty queue panel and the other items
+  of docs/test/aide-checklist.md are checked by hand.
 
 ## 0.5.1 (2026-10-11)
 
