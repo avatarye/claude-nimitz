@@ -164,7 +164,7 @@ fn list(ctx: &Ctx, fleet: &str) {
     out::line(&format!("  {:<9} {}", "settings", if settings.is_empty() { "-".to_string() } else { settings.join(", ") }));
     // what the harness lets members run without asking: shown, never quiet
     for rel in &settings {
-        let v = std::fs::read(sd.join(rel)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).map(|v| harness::filter_settings(&v).0);
+        let v = harness::read_plain(&root, &sd.join(rel)).and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).map(|v| harness::filter_settings(&v).0);
         if let Some(allow) = v.as_ref().map(|v| v["permissions"]["allow"].clone()).filter(|a| a.as_array().is_some_and(|a| !a.is_empty())) {
             out::line(&format!("  allowed without asking ({rel}): {allow}"));
         }

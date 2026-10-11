@@ -309,7 +309,7 @@ pub fn unlinked(root: &Path, p: &Path) -> bool {
 
 /// A harness file's bytes, when it is a plain file of at most `FILE_MAX`
 /// reached through no link.
-fn read_plain(root: &Path, p: &Path) -> Option<Vec<u8>> {
+pub fn read_plain(root: &Path, p: &Path) -> Option<Vec<u8>> {
     if !unlinked(root, p) {
         return None;
     }
@@ -343,13 +343,14 @@ pub fn read_frontmatter(text: &str, allowed: &[&str]) -> Result<(Vec<(String, St
     }
     let t = text.replace("\r\n", "\n");
     let mut lines = t.split_inclusive('\n');
-    if lines.next().map(|l| l.trim_end()) != Some("---") {
+    let first = lines.next().unwrap_or("");
+    if first.trim_end() != "---" {
         return Err("no frontmatter (a first line ---)".into());
     }
     let mut pairs: Vec<(String, String)> = vec![];
     let mut block: Option<(String, bool, Option<usize>, Vec<String>)> = None;
     let mut body_at = None;
-    let mut used = 4;
+    let mut used = first.len();
     for l in lines {
         used += l.len();
         let line = l.trim_end_matches('\n');
@@ -397,8 +398,23 @@ pub fn read_frontmatter(text: &str, allowed: &[&str]) -> Result<(Vec<(String, St
             "|" | "|-" => block = Some((k.to_string(), false, None, vec![])),
             ">" | ">-" => block = Some((k.to_string(), true, None, vec![])),
             _ => {
-                let v = v.strip_prefix('"').and_then(|x| x.strip_suffix('"')).or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\''))).unwrap_or(v);
-                pairs.push((k.to_string(), v.to_string()));
+                // a value as plain text: a list (`[a, b]`, tools only, as `a, b`),
+                // or a string; never a YAML form nimitz would turn into a different one
+                let v = if let Some(list) = v.strip_prefix('[').and_then(|x| x.strip_suffix(']')).filter(|_| k == "tools") {
+                    list.split(',').map(|x| x.trim().trim_matches('"').trim_matches('\'')).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(", ")
+                } else if let Some(q) = v.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+                    if q.contains('\\') || q.contains('"') {
+                        return Err(format!("{k}: an escape in a quoted value (write it plain)"));
+                    }
+                    q.to_string()
+                } else if let Some(q) = v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')) {
+                    q.replace("''", "'")
+                } else if v.starts_with(['[', '{', '&', '*', '!', '%', '@', '`']) || v.contains(" #") {
+                    return Err(format!("{k}: {v:?} is no plain value (a list, a mapping, an anchor, a tag or a comment)"));
+                } else {
+                    v.to_string()
+                };
+                pairs.push((k.to_string(), v));
             }
         }
     }
@@ -865,6 +881,13 @@ mod tests {
         let (pairs, body) = read_frontmatter("---\r\nname: x\r\ndescription: >\r\n  two\r\n  lines\r\n---\r\nThe body.\r\n", &SKILL_KEYS).unwrap();
         assert_eq!(pairs, [("name".to_string(), "x".to_string()), ("description".to_string(), "two lines".to_string())]);
         assert_eq!(body, "The body.\n");
+        let (pairs, _) = read_frontmatter("---\nname: a\ndescription: d\ntools: [Bash, \"Read\"]\nmodel: 'it''s'\n---\nb\n", &AGENT_KEYS).unwrap();
+        assert_eq!(pairs[2], ("tools".to_string(), "Bash, Read".to_string()));
+        assert_eq!(pairs[3], ("model".to_string(), "it's".to_string()));
+        for bad in ["model: sonnet # fast", "model: {a: 1}", "model: &x y", "model: !!str y", "description: \"say \\\"hi\\\"\"", "description: [a]"] {
+            assert!(read_frontmatter(&format!("---\nname: a\n{bad}\n---\nb\n"), &AGENT_KEYS).is_err(), "{bad}");
+        }
+        assert_eq!(read_frontmatter("---  \nname: a\n---\nbody\n", &AGENT_KEYS).unwrap().1, "body\n");
         let out = write_frontmatter(&[("description".into(), "a --- \"b\"\nc é".into())], "x\n");
         assert_eq!(out, "---\ndescription: \"a \\u002d\\u002d\\u002d \\\"b\\\"\\nc \\u00e9\"\n---\nx\n");
         assert_eq!(out.matches("---").count(), 2, "only the fences");

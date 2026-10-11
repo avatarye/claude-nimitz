@@ -24,7 +24,8 @@ takes; `check` names what is dropped, `harness.invalid`):
   names `FLEET_*` only (any other variable could steer what programs run,
   where traffic goes or credentials). A `deny` or `ask` that could match a
   member's `nimitz` at all (`Bash`, a pattern whose fixed start is `nimitz`
-  or a prefix of it, or that starts with a wildcard) is dropped. `allow` rules are shown by `harness list`: they are what the
+  or a prefix of it, or that starts with a wildcard) is dropped (Bash rules;
+  a harness has no other way to stop nimitz's own tools). `allow` rules are shown by `harness list`: they are what the
   harness lets members run without asking (no more than the admiral can
   already give by a member's permission mode).
   Everything else (a permission mode, more folders, plugins, MCP servers,
