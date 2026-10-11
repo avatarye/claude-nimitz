@@ -23,6 +23,7 @@ Exit: 0 pass or already tested; 1 a stage failed; 2 the checkout is not
 ready (nothing ran).
 """
 import argparse
+import calendar
 import json
 import os
 import re
@@ -71,6 +72,7 @@ RGB = {True: (0xa6, 0xe2, 0x2e), False: (0xfd, 0x97, 0x1f), None: (0x8a, 0x86, 0
 
 # ---------------------------------------------------------------- helpers
 
+IDLE_REASONS = ("settled,", "idle-prompt")
 RETIRE_RX = re.compile(r"^\[(\S+)\] \[bg\] bg retire ([0-9a-f]+): (.*)$")
 
 
@@ -86,10 +88,11 @@ def idle_retired(log, job, since, until, pad=5.0):
         return False
     for line in text.splitlines():
         m = RETIRE_RX.match(line)
-        if not m or m.group(2) != job or "idle" not in m.group(3):
+        # an idle member's retire only (not a stale worker's, nor a spare's)
+        if not m or m.group(2) != job or not m.group(3).startswith(IDLE_REASONS):
             continue
         try:
-            t = time.mktime(time.strptime(m.group(1)[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+            t = calendar.timegm(time.strptime(m.group(1)[:19], "%Y-%m-%dT%H:%M:%S"))
         except ValueError:
             continue
         if since - pad <= t <= until + pad:

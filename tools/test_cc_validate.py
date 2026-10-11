@@ -331,6 +331,12 @@ class PassAndFail(Base):
         sh, code, out = self.guard_runs(retired)
         self.assertEqual(code, 0, out)
         self.assertIn("1 retired idle", out)
+        # a stale worker's retire (a version mismatch) is no idle retire
+        self.tearDown(); self.setUp()
+        self.cfg.claude_home.mkdir(parents=True, exist_ok=True)
+        (self.cfg.claude_home / "daemon.log").write_text(f"[{now}.000Z] [bg] bg retire 2a2a2a2a: abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)\n")
+        sh, code, out = self.guard_runs(retired)
+        self.assertEqual(code, 1, out)
         # an old retire line (before the run) explains nothing
         self.tearDown(); self.setUp()
         self.cfg.claude_home.mkdir(parents=True, exist_ok=True)
