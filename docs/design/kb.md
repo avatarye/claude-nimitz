@@ -42,7 +42,7 @@ git 2.20 or later (`sync` reads `git config --worktree`).
 | Command | Who | What |
 | --- | --- | --- |
 | `path` | any member, you | this machine's clone |
-| `status` | any | `git status --porcelain` (the user's edits, conflicted copies) |
+| `status` | any | `git status --porcelain` (the user's edits, conflicted copies); refused while a rebase or merge is under way or no branch is checked out |
 | `head` | any | the commit the clone is at |
 | `show <path> [--at <sha>]` | any | a file as one commit holds it (never the working tree) |
 | `grep <term> [<prefix>] [--at <sha>]` | any | literal, any case, at one commit (binary files skipped); the prefix a folder or a file; `path:line:text`, at most 400 lines |
@@ -70,7 +70,46 @@ stray setting from moving the notes, not a hostile one. A name
 another file system reads as another (a trailing dot or space, `:`, `~`, an
 invisible character) is off limits.
 
-## 3. Who writes it
+## 3. Who writes it: the plugin's subagents
 
-The `kb-scribe` and `kb-ref` subagents (P3) run in any member's session and
-call only these commands; a plugin-level PreToolUse hook holds them to it.
+`plugin/agents/kb-scribe.md` and `kb-ref.md` (Sonnet), with their procedures
+preloaded as the skills `kb-ingest` and `kb-query` (`user-invocable: false`).
+Claude Code namespaces them: a member runs `nimitz:kb-scribe` with a note's
+JSON (its `sender` the member) and `nimitz:kb-ref` with a question; the
+rules (v7) say so. kb-ref reads one commit: `kb head`, then `--at <sha>` on
+every `show` and `grep`.
+
+Plugin subagents ignore a `hooks:` in their frontmatter, so the limits are
+a plugin-level PreToolUse hook on every tool, `nimitz hook kb-guard`
+(`nimitz_core::kb_guard`), keyed on the payload's `agent_type`
+(`nimitz:kb-scribe`, `nimitz:kb-ref`; any other caller gets no answer, after
+a string test that keeps it cheap):
+
+- kb-scribe: Bash only one `nimitz kb path|status|grep|hash|commit|restore`
+  (no `;`, `&`, `|`, redirects, unquoted globs or comments; `$`, backticks
+  and `\` only inside single quotes; no `--fleet`); Read in the KB but `.git`; Edit and Write in the KB, never what
+  `kb::off_limits` names or an existing `raw/` file.
+- kb-ref: Bash only one `nimitz kb path|status|head|show|grep`; Read in the
+  KB but `.git`; nothing else.
+- Paths are judged real (links followed as far as they exist). The KB is the
+  session's fleet's (its labels judged as `caller_from_env` judges them);
+  with none, only `nimitz kb path`
+  passes, and `nimitz kb path` says why, so the agent stops.
+
+It matches only the plugin's own names: a project's `.claude/agents/kb-scribe.md`
+is not the plugin's agent and gets no answer. `--fleet` is denied on the line
+(the KB is the session's fleet's, by labels judged as `caller_from_env`
+judges them), and a write through a link that leads out, or nowhere yet, is
+denied.
+
+**It fails open if it cannot run.** A hook Claude Code cannot run (nimitz
+missing from the session's PATH, a crash, past its 5 s) is no answer, so the
+agents fall back to the session's own permission mode: in `default` or
+`acceptEdits` a write outside the project still asks, but in
+`bypassPermissions` or `auto` nothing stops them. `nimitz doctor` checks the
+hook's entry; keep nimitz on every member's PATH.
+
+What an agent may do the guard *allows*: a member in `default` mode in the
+background writes the KB outside its own folder without a prompt (verified on
+Claude Code 2.1.296, e2e #98). What it may not do is denied with the reason,
+whatever the mode.

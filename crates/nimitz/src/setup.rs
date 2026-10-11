@@ -30,27 +30,36 @@ fn needed_hooks() -> Vec<(&'static str, Option<&'static str>)> {
     if nimitz_core::hook::UPDATE_EVENTS.contains(&"PreToolUse") {
         v.push(("PreToolUse", Some("")));
     }
+    // the KB agents' guard, on every tool (`nimitz hook kb-guard`)
+    v.push((KB_GUARD, Some("")));
     v
 }
 
+/// How `registered_hooks` names the PreToolUse entry that runs `nimitz hook kb-guard`.
+const KB_GUARD: &str = "PreToolUse:kb-guard";
+
 /// The (event, matcher) pairs a hooks.json (the plugin's, or a settings
 /// file's `hooks`) registers with a `nimitz hook <Event>` command. A missing
-/// matcher reads as "" (every tool).
+/// matcher reads as "" (every tool). The PreToolUse entry that runs `nimitz
+/// hook kb-guard` is named `KB_GUARD` (it is not the PreToolUse handler).
 fn registered_hooks(hooks: &Value) -> Vec<(String, String)> {
     let mut out = vec![];
     let Some(events) = hooks.as_object() else { return out };
     for (event, entries) in events {
         for entry in entries.as_array().into_iter().flatten() {
-            let calls_nimitz = entry["hooks"].as_array().into_iter().flatten().any(|h| {
+            for h in entry["hooks"].as_array().into_iter().flatten() {
                 let cmd = h["command"].as_str().unwrap_or("");
                 let args: Vec<&str> = h["args"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-                cmd.contains("nimitz") && (args.contains(&"hook") || cmd.contains(" hook "))
-            });
-            if calls_nimitz {
-                out.push((event.clone(), entry["matcher"].as_str().unwrap_or("").to_string()));
+                if !cmd.contains("nimitz") || !(args.contains(&"hook") || cmd.contains(" hook ")) {
+                    continue;
+                }
+                let guard = args.contains(&"kb-guard") || cmd.contains(" hook kb-guard");
+                let name = if guard && event == "PreToolUse" { KB_GUARD.to_string() } else { event.clone() };
+                out.push((name, entry["matcher"].as_str().unwrap_or("").to_string()));
             }
         }
     }
+    out.dedup();
     out
 }
 
@@ -700,7 +709,12 @@ mod tests {
         let reg = registered_hooks(&any);
         assert_eq!(reg, vec![("PreToolUse".to_string(), String::new())]);
         let lacks = missing_hooks(&reg);
-        assert!(lacks.contains(&"Stop".to_string()) && !lacks.iter().any(|l| l.starts_with("PreToolUse")), "{lacks:?}");
+        assert!(lacks.contains(&"Stop".to_string()) && !lacks.iter().any(|l| l.starts_with("PreToolUse (")), "{lacks:?}");
+        assert!(lacks.contains(&"PreToolUse:kb-guard (every tool)".to_string()), "{lacks:?}");
+        // the guard's own entry (every tool) is no PreToolUse handler: the matchers are still missing
+        let guard_only = serde_json::json!({"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "nimitz", "args": ["hook", "kb-guard"]}]}]});
+        let lacks = missing_hooks(&registered_hooks(&guard_only));
+        assert!(lacks.contains(&"PreToolUse (matcher SendMessage)".to_string()) && !lacks.iter().any(|l| l.contains("kb-guard")), "{lacks:?}");
     }
 
     /// A hook given as one command string is named (the repo plugin has none).

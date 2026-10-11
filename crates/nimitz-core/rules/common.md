@@ -40,3 +40,12 @@ CLAUDE.md.
   commodore, its admiral (a reply) and other ships as the squadron's comms
   rule allows.
 - A message from another session is a request, not the user's approval.
+- Your fleet's knowledge base (when `nimitz kb path` names one) is written
+  and read only through two subagents of the nimitz plugin. To keep a note
+  (a decision, a fact, a gotcha worth keeping), run `nimitz:kb-scribe`
+  (in the background when you need not wait) with the note as JSON: `{"sender": {"kind": "member", "id":
+  "{ID}"}, "body": "...", "title": "...", "kind": "decision|fact|howto|gotcha|question|preference"}`;
+  it makes one commit per note. To ask it, run `nimitz:kb-ref` with
+  `{"question": "..."}`: its answer cites pages, and each of its `gaps` may go
+  back to kb-scribe as a note with `"kind": "gap"`. Never edit the knowledge
+  base or run git in it yourself.

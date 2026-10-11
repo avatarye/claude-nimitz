@@ -35,6 +35,15 @@ Aides are gone. Read **Upgrading** first.
   exactly the named paths, once per note (`note:` and `from:` trailers),
   under a lock, then syncs (pull --rebase, push); `clone` is yours.
   docs/design/kb.md.
+- **The `kb-scribe` and `kb-ref` subagents** ship in the plugin, for every
+  fleet member (`nimitz:kb-scribe`: a note as JSON, one commit each, on
+  Sonnet; `nimitz:kb-ref`: a question, a cited answer read at one commit),
+  with their procedures as the skills `kb-ingest` and `kb-query`. The
+  **kb-guard** (`nimitz hook kb-guard`, a plugin PreToolUse hook on every
+  tool) holds them to `nimitz kb` and the KB's folder by the call's
+  `agent_type`, in any permission mode, and allows what they may do so a
+  background member never stops on a prompt. Rules v7 tell members how to use
+  them. `nimitz doctor` checks the guard's entry.
 
 ### Removed
 

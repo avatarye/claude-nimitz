@@ -114,7 +114,10 @@ lockstep):
 
 `nimitz kb path|status|head|show|grep|hash|commit|restore|sync` is the KB's
 git, run by nimitz (no hooks, literal paths, one commit per note under a
-lock, then a sync); docs/design/kb.md.
+lock, then a sync). Every member writes and reads it through the plugin's
+subagents `nimitz:kb-scribe` (a note, one commit) and `nimitz:kb-ref` (a
+question, a cited answer), held to the KB by the kb-guard hook;
+docs/design/kb.md.
 
 ### Aides (gone in 0.7.0)
 
