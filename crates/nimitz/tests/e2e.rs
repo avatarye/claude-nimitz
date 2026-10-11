@@ -1666,7 +1666,9 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
     assert_eq!(code, 0, "{out}");
     let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();
-    let rec = read_json(&w.base.join("state").join("inbox").join(format!("{sid}.json")));
+    // The SessionStart hook writes the record; under load the job can show Idle first.
+    let path = w.base.join("state").join("inbox").join(format!("{sid}.json"));
+    let rec = w.wait(30, || Some(read_json(&path)).filter(|r| r["socket"].is_string())).unwrap_or_else(|| read_json(&path));
     let sock = rec["socket"].as_str().unwrap_or_else(|| panic!("no inbox recorded for {sid}: {rec}")).to_string();
     assert!(Path::new(&sock).exists() && rec["pid"] == m["session"]["pid"], "{rec}");
     let ups = w.events().iter().filter(|e| e["event"] == "UserPromptSubmit").count();
