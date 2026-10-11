@@ -13,8 +13,7 @@ use crate::types::*;
 use std::collections::HashMap;
 
 /// Parse a session name (address) back into an identity (contracts.md section 4):
-/// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-SHIP`
-/// (`[F.SQ]-@NAME` for a commodore's).
+/// `[F]-ADMIRAL`, `[F.SQ]-COMMODORE`, `[F.SQ]-SHIP`.
 /// None for names that are not fleet addresses (teammates, ad-hoc sessions).
 /// A trailing ` [ref]` (how `SendMessage` disambiguates two sessions with one
 /// name) is not part of the address, so it cannot hide a target from the rules.
@@ -2656,7 +2655,6 @@ fn release_folder(env: &Env, id: Option<&Id>, cwd: Option<&str>) {
     }
 }
 
-/// The job row running `sid` now (or born as it), if any.
 /// The job row `target` (job or session id) when its labels name a 0.5/0.6
 /// aide (`F/@NAME`), with that id.
 fn retired_aide_row(env: &Env, target: &str) -> Option<(String, SessionInfo)> {
@@ -2667,6 +2665,7 @@ fn retired_aide_row(env: &Env, target: &str) -> Option<(String, SessionInfo)> {
     Some((owner, r.info(Default::default())))
 }
 
+/// The job row running `sid` now (or born as it), if any.
 pub fn find_row_by_session(env: &Env, sid: &str) -> Option<crate::evidence::SessionRow> {
     let mut cache = crate::evidence::FileCache::default();
     crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.short_id.is_some() && r.session_ids().any(|s| s == sid))

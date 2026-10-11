@@ -14,7 +14,8 @@ Aides are gone. Read **Upgrading** first.
   queues, snapshots, doorbell files and needs-you notices) under
   `NIMITZ_STATE/archive/aides-0.6/`, nothing deleted, and drops the aides'
   records from the registry (the registry stays version 3: no downgrade
-  barrier).
+  barrier). A snapshot reader's folder was a git worktree of the KB: its repo
+  lists it as prunable afterwards (`git worktree prune` there).
 - Once, from any machine: `nimitz migrate --plan`, then `nimitz migrate
   --shared --yes`. It drops each fleet's `[[aide]]` tables and the
   `format = 2` / `min_nimitz` stamp they needed, so every nimitz (0.4 too)

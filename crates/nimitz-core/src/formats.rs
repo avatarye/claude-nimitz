@@ -481,8 +481,10 @@ fn run_cleanup(env: &Env, c: &Cleanup, f: &Path, nimitz: &str, ran: &mut Ran) {
 
 /// A byte cleanup on `f`: read, apply, write under the lock while the file
 /// is still what was read; a file another writer changed meanwhile (a hook
-/// on the registry) is read again, as `run_file` does. Ok(false): nothing
-/// to do (too new for this nimitz: said in `ran.too_new`).
+/// on the registry) is read again, as `run_file` does. The backup is the
+/// first read (as a step's: the file before this nimitz touched it), so a
+/// write that came between is not in it. Ok(false): nothing to do (too new
+/// for this nimitz: said in `ran.too_new`).
 fn cleanup_bytes(env: &Env, c: &Cleanup, apply: fn(&[u8]) -> Result<Vec<u8>, String>, f: &Path, nimitz: &str, ran: &mut Ran) -> Result<bool, String> {
     for _ in 0..64 {
         let bytes = std::fs::read(f).map_err(|e| e.to_string())?;
@@ -537,15 +539,18 @@ fn archive(env: &Env, p: &Path, folder: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(to.parent().unwrap_or(&env.state)).map_err(|e| e.to_string())?;
     if let Err(e) = std::fs::rename(p, &to) {
         // a file held open (Windows: a scanner, a leftover process) stops a
-        // rename: a copy, then the original removed; a copy whose original
-        // cannot go is removed again, and the next run tries once more
-        let copied = if p.is_dir() { copy_tree(p, &to) } else { std::fs::copy(p, &to).map(|_| ()) };
-        let gone = copied.and_then(|_| if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) });
-        if let Err(e2) = gone {
+        // rename. A file: copied, then the original removed (all or
+        // nothing: a copy whose original stays is removed again). A folder
+        // is never copied and removed piecemeal (a file that cannot go would
+        // leave the rest half moved): it waits, whole, for the next run
+        if p.is_dir() {
+            return Err(format!("{} -> {}: {e} (left as it was; the next nimitz command tries again)", p.display(), to.display()));
+        }
+        if let Err(e2) = std::fs::copy(p, &to).and_then(|_| std::fs::remove_file(p)) {
             if p.exists() {
-                let _ = if to.is_dir() { std::fs::remove_dir_all(&to) } else { std::fs::remove_file(&to) };
+                let _ = std::fs::remove_file(&to);
             }
-            return Err(format!("{} -> {}: {e} (and a copy: {e2})", p.display(), to.display()));
+            return Err(format!("{} -> {}: {e} (and a copy: {e2}; left as it was)", p.display(), to.display()));
         }
     }
     Ok(to)
@@ -1440,11 +1445,17 @@ pub fn failed(env: &Env) -> Vec<Failed> {
     let mut last: Vec<((String, String, u64), (bool, String, Value))> = vec![];
     for l in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
-        let key = (v["artifact"].as_str().unwrap_or("").to_string(), v["file"].as_str().unwrap_or("").to_string(), v["from"].as_u64().unwrap_or(0));
+        // (a cleanup's line is keyed apart from a step's on the same file and version)
+        let art = match v["cleanup"].as_str() {
+            Some(c) => format!("{}#{c}", v["artifact"].as_str().unwrap_or("")),
+            None => v["artifact"].as_str().unwrap_or("").to_string(),
+        };
+        let key = (art, v["file"].as_str().unwrap_or("").to_string(), v["from"].as_u64().unwrap_or(0));
         let ok = v["ok"].as_bool().unwrap_or(false);
-        // a cleanup done on a file supersedes what failed on it before
+        // a cleanup done on a file supersedes a cleanup that failed on it
+        // before (never a step's failure: that is the step's to clear)
         if ok && v["cleanup"].is_string() {
-            for e in last.iter_mut().filter(|(k, _)| k.1 == key.1) {
+            for e in last.iter_mut().filter(|(k, (_, _, ev))| k.1 == key.1 && ev["cleanup"].is_string()) {
                 e.1 .0 = true;
             }
         }
@@ -1473,7 +1484,7 @@ pub fn failed(env: &Env) -> Vec<Failed> {
         .filter(|(k, (_, _, v))| v["cleanup"].is_string() || artifact(&k.0).is_some() || Path::new(&k.1).exists())
         .filter(|(k, (ok, _, v))| !ok && !cleaned(v, &k.1).unwrap_or_else(|| done_since(&k.0, &k.1, k.2)))
         .map(|(k, (_, line, v))| Failed {
-            artifact: k.0,
+            artifact: k.0.split('#').next().unwrap_or("").to_string(),
             file: k.1,
             from: k.2 as u32,
             to: v["to"].as_u64().unwrap_or(0) as u32,
@@ -1593,6 +1604,29 @@ mod tests {
         let text = "fleet = \"X\"\n\n[[aide]]\n# the notes keeper\nname = \"KB\"\n\n[aide.dirs]\nm = \"/kb\"\n\n# the machines\n[machines.m]\nhostname = \"h\"\n";
         let out = String::from_utf8(drop_aides(text.as_bytes()).unwrap()).unwrap();
         assert_eq!(out, "fleet = \"X\"\n\n\n# the machines\n[machines.m]\nhostname = \"h\"\n");
+    }
+
+    /// A folder that cannot be renamed into the archive is left whole (never
+    /// copied and removed piecemeal); a file is copied, then removed.
+    #[cfg(unix)]
+    #[test]
+    fn an_archive_that_cannot_rename_leaves_a_folder_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_td, env) = test_env();
+        let q = env.state.join("queues/MAIN%2F@KB");
+        std::fs::create_dir_all(&q).unwrap();
+        std::fs::write(q.join("queue.json"), "{}").unwrap();
+        // the state folder read-only: no rename out of it, no remove
+        std::fs::create_dir_all(env.state.join("archive/aides-0.6")).unwrap();
+        let mode = |p: &Path, m: u32| std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+        mode(&env.state, 0o555);
+        let e = archive(&env, &env.state.join("queues"), "aides-0.6");
+        mode(&env.state, 0o755);
+        if e.is_ok() {
+            return; // running as root: nothing to test
+        }
+        assert!(e.unwrap_err().contains("left as it was"));
+        assert!(q.join("queue.json").is_file() && !env.state.join("archive/aides-0.6/queues").exists());
     }
 
     /// A cleanup that fails (here: `S/archive` is a file, so nothing can be

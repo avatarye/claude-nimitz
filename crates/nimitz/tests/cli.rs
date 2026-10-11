@@ -963,6 +963,11 @@ fn a_0_6_aide_job_left_running_is_stopped_and_removed_by_its_short_id() {
     let f = fix(&sb.run(&["check"]));
     let short = f.strip_prefix("nimitz stop ").and_then(|t| t.split_whitespace().next()).unwrap_or_else(|| panic!("{f}")).to_string();
     assert!(f.ends_with(&format!("# then nimitz rm {short}")), "{f}");
+    // the user's alone: a member (its admiral too) is refused
+    for who in ["MAIN", "MAIN/ARGOS"] {
+        let r = sb.run_as(who, &["stop", &short, "--yes"]);
+        assert!(r.code != 0 && r.out.contains("(authority)"), "{who}: {}", r.out);
+    }
     let r = sb.run(&["stop", &short, "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert_eq!(fix(&sb.run(&["check"])), format!("nimitz rm {short}"));
