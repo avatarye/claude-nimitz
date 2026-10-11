@@ -1984,7 +1984,7 @@ fn e2e_100_the_reference_desk_answers_from_its_snapshot_and_posts_its_gaps() {
     let (code, out) = w.nz(&["ask", &rf, "How is a nimitz aide woken when an item is posted?", "--wait", "8m", "--json"]);
     println!("{out}");
     assert_eq!(code, 0, "answered: {out}");
-    let ans: Value = serde_json::from_str(&out[out.find('{').unwrap()..]).unwrap();
+    let ans: Value = serde_json::Deserializer::from_str(&out[out.find('{').unwrap()..]).into_iter::<Value>().next().unwrap().unwrap();
     let r = if ans["result"].is_object() { ans["result"].clone() } else { ans.clone() };
     assert_eq!(r["snapshot"].as_str(), Some(head.as_str()), "read at the KB's last commit: {r}");
     assert!(r["citations"].as_array().is_some_and(|c| !c.is_empty()) && r["answer"].as_str().is_some_and(|a| a.to_lowercase().contains("doorbell") || a.to_lowercase().contains("socket")), "a cited answer: {r}");
