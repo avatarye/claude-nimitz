@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 (unreleased)
+
+### New
+
+- **`nimitz aide new|set|rm F/@NAME`**: an aide is added, changed and
+  removed like a ship (plan, `--yes`; you or the fleet's admiral), with its
+  folder's trust planned, its model checked against `availableModels`, the
+  modes that skip its rules refused and its inbox set by flags. The first aide
+  stamps fleet.toml format 2 and waits until every machine of the fleet has
+  run nimitz >= 0.5 (`aide.machines`); removing the last one makes the fleet
+  readable by 0.4 again. `aide rm` stops and unpins a live aide, and refuses
+  while its inbox holds work.
+
 ## 0.5.1 (2026-10-11)
 
 ### Upgrading

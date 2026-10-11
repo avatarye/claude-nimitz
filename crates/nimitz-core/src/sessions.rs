@@ -1493,22 +1493,21 @@ fn relabel_to(env: &Env, id: &Id, mode: &str, p: &SessionInfo, cwd: &str, sid: &
 }
 
 /// How a member gets a folder on this machine: a ship's `ship set --dir`;
-/// an aide's `[[aide]]` dirs (no `aide set` yet).
+/// an aide's `aide set --dir`.
 pub fn dir_fix(id: &Id) -> String {
     match id.role() {
-        Role::Aide => format!("edit {id}'s [[aide]] in fleet.toml: dirs.<this machine's label> = \"<folder>\""),
+        Role::Aide => format!("nimitz aide set {id} --dir <its repo>"),
         _ => format!("nimitz ship set {id} --dir <folder|managed>"),
     }
 }
 
-/// What retires a member for good: its config's `rm` (an aide leaves
-/// fleet.toml by hand; there is no `aide rm` yet).
+/// What retires a member for good: its config's `rm`.
 fn retire_hint(id: &Id) -> String {
     match id.role() {
         Role::Admiral => format!("nimitz fleet rm {id}"),
         Role::Commodore => format!("nimitz squadron rm {id}"),
         Role::Ship => format!("nimitz ship rm {id}"),
-        Role::Aide => "deleting its [[aide]] from fleet.toml".into(),
+        Role::Aide => format!("nimitz aide rm {id}"),
     }
 }
 
@@ -1828,7 +1827,7 @@ pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan
     for (_, m) in members(snap).into_iter().filter(|(_, m)| under(&m.id)) {
         for r in m.session.iter().chain(m.extra_rows.iter()) {
             let live = r.pid.is_some();
-            if live && (r.kind != "background" || id.role() != Role::Ship) {
+            if live && (r.kind != "background" || !matches!(id.role(), Role::Ship | Role::Aide)) {
                 // a fleet or squadron is removed only with nothing live in it
                 refuse(
                     &mut plan,

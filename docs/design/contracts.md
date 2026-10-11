@@ -496,6 +496,8 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `mux.nopane` | the mux cannot open a pane here |
 | `tab.taken` | the member's tab is open but its pane runs something else (another agent, a copy, the agent view, yazi): nothing is typed into it; fix: ctrl-z or quit it in that pane, then `nimitz open` |
 | `mux.failed` | the mux returned an error |
+| `aide.machines` | `aide new` of a fleet's first aide while a machine of its `[machines]` has run no nimitz >= 0.5.0 (it would stop loading the fleet); fix: update it and run any nimitz there, or `--force` (the user's) |
+| `aide.model` | the aide's model is not in this machine's `availableModels` (Claude Code would run the default): `aide new|set` refuses, `check` reports it on the machine that runs it |
 | `attach.nested` | `nimitz attach` from inside a Claude Code session: a live Claude Code process above it (its session file, whose `procStart` matches the process: a stale file is no session), fix: a plain terminal or `nimitz start <id> -p`; or `CLAUDECODE` set with none above (a terminal started from one inherits it), fix: `env -u CLAUDECODE nimitz attach <id>` |
 | `comms.denied` | a signal the chain of command or `comms` rule forbids |
 | `config.pending` | a config change is waiting for a relaunch |

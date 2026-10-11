@@ -331,6 +331,101 @@ fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, label: Option<&str>, dir: Opt
 /// Stop the ship, remove its job rows (transcripts stay), then drop it from the config.
 /// `ship rm`, `squadron rm`, `fleet rm`: core's retire plan (stop, rm the job
 /// rows, then the config), applied and verified in one go.
+const AIDE_FLAGS: &[&str] = &["--dir", "--machine", "--model", "--mode", "--brief", "--types", "--policy", "--depth", "--per-sender", "--lease", "--max-tries", "--keep-done"];
+
+/// `nimitz aide new|set|rm F/@NAME` (aide.md section 3): like `ship
+/// new|set|rm`. You, or the fleet's admiral. `new` needs `--dir` (its repo,
+/// on this machine or `--machine`) and `--types`; the model defaults to
+/// sonnet, the mode to acceptEdits.
+pub fn aide(ctx: &Ctx) -> Result<i32, String> {
+    let verb = ctx.args.need(0, "new|set|rm")?;
+    let id = parse_id(ctx.args.need(1, "aide id F/@NAME")?)?;
+    ctx.args.at_most(2)?;
+    split(&id, Role::Aide, "aide")?;
+    if verb == "rm" {
+        ctx.args.allow(&[])?;
+        return Ok(retire(ctx, &id));
+    }
+    ctx.args.allow(AIDE_FLAGS)?;
+    if nimitz_core::sessions::may_config(&ctx.caller, &id).is_err() {
+        return Ok(config_plan(ctx, Plan { summary: format!("aide {verb} {id}"), ..Default::default() }, Some(&id)));
+    }
+    let f = match load(ctx, id.fleet()) {
+        Ok(f) => f,
+        Err(p) => return Ok(config_plan(ctx, p, Some(&id))),
+    };
+    let name = id.parts().last().map(|p| p.trim_start_matches('@').to_string()).unwrap_or_default();
+    let (new, mut def) = match verb {
+        "new" => {
+            if ctx.args.value("--dir").is_none() || ctx.args.value("--types").is_none() {
+                return Err("aide new needs --dir <its repo> and --types <type,...>".into());
+            }
+            (true, nimitz_core::AideDef { name, model: Some("sonnet".into()), permission_mode: Some("acceptEdits".into()), ..Default::default() })
+        }
+        "set" => match config::find_aide(&f, &id) {
+            Some(d) => (false, d.clone()),
+            None => (false, nimitz_core::AideDef { name, ..Default::default() }), // core refuses: no aide
+        },
+        v => return Err(format!("aide {v}: use new, set or rm")),
+    };
+    let before = def.clone();
+    if let Some(d) = ctx.args.value("--dir") {
+        let label = match ctx.args.value("--machine").map(str::to_string).or(f.machine.clone()) {
+            Some(l) => l,
+            None => return Err(format!("this machine has no label in fleet {}; pass --machine <label>", id.fleet())),
+        };
+        let d = d.trim();
+        let dir = if config::is_absolute_dir(d) { d.to_string() } else { absolute_dir(d) };
+        def.dirs = [(label, dir)].into(); // one machine runs an aide
+    } else if ctx.args.value("--machine").is_some() {
+        return Err("--machine goes with --dir (the aide's folder on that machine)".into());
+    }
+    let opt = |v: &str| if v.is_empty() { None } else { Some(v.to_string()) };
+    if let Some(m) = ctx.args.value("--model") {
+        def.model = opt(m);
+    }
+    if let Some(m) = ctx.args.value("--mode") {
+        def.permission_mode = opt(m);
+    }
+    if let Some(b) = ctx.args.value("--brief") {
+        def.brief = opt(b);
+    }
+    if let Some(t) = ctx.args.value("--types") {
+        def.inbox.types = t.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect();
+    }
+    if let Some(p) = ctx.args.value("--policy") {
+        def.inbox.policy = p.into();
+    }
+    if let Some(n) = ctx.args.value("--depth") {
+        def.inbox.depth_cap = n.parse().map_err(|_| format!("--depth {n:?}: a number of items"))?;
+    }
+    if let Some(r) = ctx.args.value("--per-sender") {
+        def.inbox.per_sender = r.into();
+    }
+    if let Some(l) = ctx.args.value("--lease") {
+        def.inbox.lease = l.into();
+    }
+    if let Some(n) = ctx.args.value("--max-tries") {
+        def.inbox.max_tries = n.parse().map_err(|_| format!("--max-tries {n:?}: a number"))?;
+    }
+    if let Some(k) = ctx.args.value("--keep-done") {
+        def.inbox.keep_done = k.into();
+    }
+    let dir = def.dirs.iter().next().map(|(l, d)| (l.clone(), d.clone()));
+    let mut plan = config::plan_aide_write(&ctx.env, &id, def.clone(), new, ctx.force());
+    if !new && def == before {
+        plan.steps.clear();
+    } else if plan.ok() {
+        if let Some((label, d)) = dir.filter(|_| new || def.dirs != before.dirs) {
+            trust_step(ctx, &mut plan, &id, Some(&label), Some(&d));
+        }
+        let (code, then) = if new { ("aide.new", format!("then: nimitz start {id}  # launches it, pinned, on {}", def.model.as_deref().unwrap_or("sonnet"))) } else { ("config.pending", "the change takes effect at the aide's next relaunch".to_string()) };
+        let fix = (!new).then(|| nimitz_core::sessions::start_cmd(&id, "-f"));
+        plan.warnings.push(nimitz_core::Issue { code: code.into(), severity: nimitz_core::Severity::Info, message: then, fix, id: Some(id.clone()) });
+    }
+    Ok(config_plan(ctx, plan, Some(&id)))
+}
+
 fn retire(ctx: &Ctx, id: &Id) -> i32 {
     let plan = nimitz_core::sessions::plan_retire(&ctx.env, &ctx.snap(), &ctx.caller, id);
     match ctx.gate(&plan) {
