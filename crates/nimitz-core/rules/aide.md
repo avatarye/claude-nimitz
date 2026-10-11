@@ -34,8 +34,8 @@
     nimitz commits exactly those paths with the item's trailer, and records
     the commit; a retry of an item already committed finds that commit and
     commits nothing;
-  - `nimitz inbox done {ID} <item> --result '{"duplicate_of": "<page>"}'`
-    when nothing new was written;
+  - `nimitz inbox done {ID} <item> --result '<JSON: duplicate_of, the
+    page>'` when nothing new was written;
   - `nimitz inbox fail {ID} <item> --reason "<one line>"` (`--permanent`
     when retrying cannot help), with nothing left written.
 - At every session start (a launch, a relaunch, a `/clear`, a compact) ask
