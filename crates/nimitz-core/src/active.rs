@@ -446,7 +446,7 @@ mod tests {
             copy: None,
             terminal: None,
         };
-        Member { id: id.clone(), role: id.role(), expected_name: id.name(), cwd: Some("/f".into()), status, reasons: reasons.iter().map(|r| r.to_string()).collect(), session: Some(s), extra_rows: vec![], crew: vec![], tasks: vec![], issues: vec![], pane: None, parent: None, inbox: None }
+        Member { id: id.clone(), role: id.role(), expected_name: id.name(), cwd: Some("/f".into()), status, reasons: reasons.iter().map(|r| r.to_string()).collect(), session: Some(s), extra_rows: vec![], crew: vec![], tasks: vec![], issues: vec![], pane: None }
     }
 
     #[test]
@@ -464,7 +464,6 @@ mod tests {
             dir: "/f".into(),
             machine: Some("m1".into()),
             admiral: snap_member(&adm, Status::Idle, &["session file: status idle"], "j0", "x0", true),
-            aides: vec![],
             squadrons: vec![Squadron {
                 id: Id::commodore("F", "SQ"),
                 commodore: snap_member(&Id::commodore("F", "SQ"), Status::NotStarted, &[], "j9", "x9", false),

@@ -243,7 +243,7 @@ pub struct Node {
     /// band only: the counts, laid out by `frames` to fit the band
     pub counts: Vec<Count>,
     /// per DETAIL span, its rank when the cell is too narrow: spans go whole,
-    /// the highest rank first (an aide's queue summary); empty: cut the end
+    /// the highest rank first; empty: cut the end
     pub drop_rank: Vec<u8>,
     pub children: Vec<Node>,
 }
@@ -680,105 +680,6 @@ fn member_node(m: &Member, v: &View) -> Node {
     n
 }
 
-/// An aide's queue is backed up past either: its row turns the warning yellow.
-pub const BACKLOG_PENDING: usize = 10;
-pub const BACKLOG_AGE_S: f64 = 10.0 * 60.0;
-
-/// The colour an aide's queue gives its row, worst first: a dead letter
-/// (needs you: the pink chip, pulsing), a backlog (`BACKLOG_*`: warning
-/// yellow), an item claimed (busy green, spinning); None: its own status.
-/// (`aide_node` lets a dead letter show on an aide that is down; a backlog
-/// or a claim, never: the aide's own state says more then.)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QueueMood {
-    Dead,
-    Backlog,
-    Working,
-}
-
-pub fn queue_mood(q: &nimitz_core::queue::Status) -> Option<QueueMood> {
-    if !q.dead.is_empty() {
-        Some(QueueMood::Dead)
-    } else if q.pending > BACKLOG_PENDING || q.oldest_age_s.is_some_and(|a| a > BACKLOG_AGE_S) {
-        Some(QueueMood::Backlog)
-    } else if !q.claimed.is_empty() {
-        Some(QueueMood::Working)
-    } else {
-        None
-    }
-}
-
-/// An aide's queue as DETAIL spans in `Status::line` order (`· 3 pending
-/// · oldest 4m · 1 dead`), each with the rank it is dropped by when the cell
-/// is narrow: the dead count and the pending count stay longest.
-pub fn queue_spans(q: &nimitz_core::queue::Status) -> Vec<(Span<'static>, u8)> {
-    let c = |hue| st(hue);
-    if let Some(e) = &q.error {
-        return vec![(Span::styled(format!("cannot read its queue: {e}"), c(mono::ERROR)), 1)];
-    }
-    let mut v = vec![];
-    let part = |t: String, style: Style, rank: u8| (Span::styled(format!("\u{b7} {t} "), style), rank);
-    if q.pending == 0 && q.claimed.is_empty() {
-        v.push(part("empty".into(), c(mono::COMMENT), 2));
-    } else {
-        v.push(part(format!("{} pending", q.pending), c(if q.pending > BACKLOG_PENDING { mono::WARN } else { mono::FG }), 2));
-    }
-    if !q.claimed.is_empty() {
-        v.push(part(format!("{} claimed", q.claimed.len()), c(mono::BUSY), 3));
-    }
-    if let Some(o) = q.oldest_age_s {
-        v.push(part(format!("oldest {}", nimitz_core::queue::human(o)), c(if o > BACKLOG_AGE_S { mono::WARN } else { mono::COMMENT }), 4));
-    }
-    if !q.dead.is_empty() {
-        v.push(part(format!("{} dead", q.dead.len()), bold(mono::NEEDS), 1));
-    }
-    if q.quarantined + q.unreadable > 0 {
-        v.push(part(format!("{} unreadable", q.quarantined + q.unreadable), c(mono::ERROR), 5));
-    }
-    if q.undelivered > 0 {
-        v.push(part(format!("{} to pick up", q.undelivered), c(mono::COMMENT), 6));
-    }
-    v
-}
-
-/// An aide's row: a member row whose DETAIL is its queue, coloured by it.
-fn aide_node(m: &Member, v: &View) -> Node {
-    let mut n = member_node(m, v);
-    n.icon = v.icons.aide;
-    let Some(q) = &m.inbox else { return n };
-    if m.status != Status::NeedsYou {
-        let glyph = v.icons.status(m.status);
-        // a backlog or a claim says nothing of an aide that is not running
-        let mood = queue_mood(q).filter(|md| *md == QueueMood::Dead || member_live(m));
-        match mood {
-            Some(QueueMood::Dead) => {
-                n.status = (format!("{glyph} {}", status_word(m.status)), status_style(Status::NeedsYou));
-                n.anim = Anim::Pulse;
-                n.name_style = bold(mono::NEEDS);
-            }
-            Some(QueueMood::Backlog) => {
-                n.status.1 = bold(mono::WARN);
-                n.anim = Anim::None;
-            }
-            Some(QueueMood::Working) => {
-                n.status.1 = st(mono::BUSY);
-                n.anim = Anim::Spin;
-            }
-            None => {}
-        }
-        n.icon_style = n.name_style;
-    }
-    // its issues first (kept), then the queue
-    let issues = issue_spans(&m.issues, v.icons);
-    n.drop_rank = vec![0; issues.len()];
-    n.detail = issues;
-    for (sp, rank) in queue_spans(q) {
-        n.detail.push(sp);
-        n.drop_rank.push(rank);
-    }
-    n
-}
-
 /// One count on a band's right side: `icon n`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Count {
@@ -1111,10 +1012,6 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
         n.children = error_notes(&f.id, &load_errors);
         if matches(&f.admiral) {
             n.children.push(member_node(&f.admiral, v));
-        }
-        // its aides: in the admiral's box, right after it
-        for a in f.aides.iter().filter(|a| matches(a)) {
-            n.children.push(aide_node(a, v));
         }
         let mut hidden = 0;
         for sq in &f.squadrons {

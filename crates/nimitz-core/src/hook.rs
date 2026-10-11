@@ -173,13 +173,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             }
             rules = Some(crate::rules::VERSION);
             crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
-            // an aide also gets its inbox as it stands and the cron to ask for
-            // (aide.md 5.1, wake 2): a relaunch, a /clear or a compact goes back to work
-            let context = match id.role() {
-                Role::Aide => format!("{}\n\n{}", crate::rules::text(&id), aide_start_context(env, &id, str_at(&session, "jobId").as_deref(), now)),
-                _ => crate::rules::text(&id),
-            };
-            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}).to_string();
+            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
             binding = Some(match str_at(&input, "session_id") {
                 // no session file (missing, or caught mid-write): bind nothing
                 // now; `status` replays the line and judges the job from the rows
@@ -409,7 +403,7 @@ fn resolve_socket(env: &Env, to: &str) -> Option<String> {
 /// The chain-of-command signal table (plan-v4 section 12): an admiral, every
 /// member of its own fleet; a commodore, its admiral and its ships; a ship,
 /// its commodore, its admiral (a reply) and other ships as the squadron's
-/// comms rule allows; an aide, its parent only (and a parent its aide). Targets that are not fleet names (teammates of an agent
+/// comms rule allows. Targets that are not fleet names (teammates of an agent
 /// team, other sessions) are not ours to rule, except an address nimitz
 /// cannot resolve (a socket, BUG-22): a ship under a closed comms rule may
 /// not signal what it cannot name.
@@ -421,15 +415,13 @@ pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
         }
         let closed = match from.role() {
             Role::Ship => !matches!(squadron_comms(env, from), Comms::Mode(m) if m == "open"),
-            // an aide signals its parent only: never what nimitz cannot name
-            Role::Aide => true,
             Role::Admiral | Role::Commodore => false,
         };
         return if closed {
             Err(format!(
                 "{to_name} is not a fleet address nimitz can resolve{}; {} signals only named members (nimitz chain of command; sender {})",
                 resolved.map(|n| format!(" (it is {n:?})")).unwrap_or_default(),
-                if from.role() == Role::Aide { "an aide" } else { "a ship under this squadron's comms rule" },
+                "a ship under this squadron's comms rule",
                 from.name()
             ))
         } else {
@@ -454,14 +446,12 @@ pub fn signal_table(from: &Id, to: &Id, comms: &dyn Fn() -> Comms) -> Result<(),
         Role::Commodore => match to.role() {
             Role::Admiral if to.fleet() == from.fleet() => Ok(()),
             Role::Ship if same_sq => Ok(()),
-            Role::Aide if to.parent().as_ref() == Some(from) => Ok(()),
             _ => deny(format!("a commodore signals its admiral and its ships, not {to_name}")),
         },
         Role::Ship => match to.role() {
             Role::Commodore if same_sq => Ok(()),
             // a reply: the admiral may signal a ship, and the ship answers it
             Role::Admiral if to.fleet() == from.fleet() => Ok(()),
-            Role::Aide if to.parent().as_ref() == Some(from) => Ok(()),
             Role::Ship => match comms() {
                 Comms::Mode(m) if m == "open" && same_sq => Ok(()),
                 Comms::Mode(m) if m == "open" => deny(format!("comms is open within the squadron only; {to_name} is in another squadron")),
@@ -474,11 +464,6 @@ pub fn signal_table(from: &Id, to: &Id, comms: &dyn Fn() -> Comms) -> Result<(),
             },
             _ => deny(format!("a ship signals its commodore, its admiral (a reply) and, by the comms rule, other ships; not {to_name}")),
         },
-        // an aide reports to its parent and to nobody else (docs/design/aide.md section 7)
-        Role::Aide => match from.parent() {
-            Some(p) if *to == p => Ok(()),
-            _ => deny(format!("an aide signals its parent only, not {to_name}")),
-        },
     }
 }
 
@@ -487,55 +472,6 @@ fn squadron_comms(env: &Env, from: &Id) -> Comms {
     let strict = Comms::Mode("commodore-only".into());
     let Ok(f) = crate::config::load_fleet(env, from.fleet()) else { return strict };
     f.squadrons.into_iter().find(|(_, s)| Some(s.squadron.as_str()) == from.squadron()).map(|(_, s)| s.comms).unwrap_or(strict)
-}
-
-/// What an aide sees at each session start: its inbox now, and what to do
-/// first (drain it; ask for the 15-minute cron, which a session loses at a
-/// relaunch, a /clear or a compact).
-pub fn aide_start_context(env: &Env, id: &Id, job: Option<&str>, now: f64) -> String {
-    let state = match crate::queue::Queue::of(env, id) {
-        Ok(q) => {
-            let st = q.peek_status(now, false);
-            let mut parts = vec![format!("{} pending", st.pending)];
-            for c in &st.claimed {
-                let n = c.id.trim_start_matches('0');
-                // the lease is the job's, which a /clear or a compact keeps
-                if job.is_some_and(|j| j == c.by) || c.by == id.0 {
-                    parts.push(format!("item {n} is yours, claimed before this session started: finish it first (`nimitz inbox done|fail {id} {n}`; its payload: `nimitz inbox list {id}`)"));
-                } else {
-                    let left = ((c.until - now) / 60.0).ceil().max(0.0) as i64;
-                    parts.push(format!("item {n} claimed by {} (its lease ends in {left}m)", c.by));
-                }
-            }
-            if !st.dead.is_empty() {
-                parts.push(format!("{} dead (your admiral decides: retry or drop)", st.dead.len()));
-            }
-            if let Some(o) = st.oldest_age_s.filter(|_| st.pending > 0) {
-                parts.push(format!("the oldest {}m", (o / 60.0).floor() as i64));
-            }
-            parts.join(", ")
-        }
-        Err(e) => format!("unreadable ({e})"),
-    };
-    // its brief (`[[aide]] brief`, a file in its folder or a path): its own
-    // standing instructions, after the rules
-    let brief = crate::queue::find(env, id)
-        .ok()
-        .and_then(|(f, def)| {
-            let b = def.brief?;
-            let p = std::path::Path::new(&b);
-            // (relative to its repo, where its config points; a reader's snapshot has only what is committed)
-            let p = if p.is_absolute() { p.to_path_buf() } else { crate::config::aide_repo(&f, id)?.join(p) };
-            // at most 16 KiB read (a hook never reads without end)
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(p).ok()?, 16 * 1024), &mut buf).ok()?;
-            Some(String::from_utf8_lossy(&buf).into_owned())
-        })
-        .map(|t| format!("\n\n## Your brief\n\n{t}"))
-        .unwrap_or_default();
-    format!(
-        "[nimitz inbox] {id}: {state}.\nNow: if this session has no cron for it yet, ask for one (CronCreate, every 15 minutes, prompt \"drain your inbox\"); then drain your inbox (`nimitz inbox claim {id}` until it exits 3). An item claimed by an older session of yours comes back when its lease ends.{brief}"
-    )
 }
 
 #[cfg(test)]
@@ -624,18 +560,6 @@ mod tests {
         // a `[ref]` suffix (two sessions with one name) does not get around the table
         assert!(denied(&send(&env, &ship, &format!("{} [3fa9c1]", Id::commodore("MAIN", "BOREAL").name()))));
         assert!(!denied(&send(&env, &ship, &format!("{} [3fa9c1]", argos.name()))));
-        // an aide: its parent, both ways, and nobody else (aide.md section 7)
-        let kb = Id("MAIN/@KB".into());
-        assert!(!denied(&send(&env, &kb, &adm.name())));
-        assert!(!denied(&send(&env, &adm, &kb.name())));
-        for to in [argos.name(), ship.name(), Id::admiral("OTHER").name(), Id("MAIN/@REF".into()).name(), "sock:/tmp/x".to_string()] {
-            assert!(denied(&send(&env, &kb, &to)), "{to}");
-        }
-        assert!(denied(&send(&env, &argos, &kb.name())) && denied(&send(&env, &ship, &kb.name())), "not its parent");
-        // a commodore's aide (later): its commodore, both ways
-        let x = Id("MAIN/ARGOS/@X".into());
-        assert!(signal_table(&x, &argos, &|| Comms::default()).is_ok() && signal_table(&argos, &x, &|| Comms::default()).is_ok());
-        assert!(signal_table(&ship, &x, &|| Comms::default()).is_err() && signal_table(&x, &ship, &|| Comms::default()).is_err());
     }
 
     /// A SessionStart delivers the rules and records it; a prompt in a session

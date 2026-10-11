@@ -52,10 +52,6 @@ pub enum Act {
     LayoutShips,
     /// `nimitz restore F`, run by the CLI: the fleet back from the Herdr shape
     Restore,
-    /// an aide's oldest dead letter back to pending: `nimitz inbox retry <aide> <id>`
-    InboxRetry,
-    /// an aide's oldest dead letter dropped for good: `nimitz inbox drop <aide> <id>`
-    InboxDrop,
 }
 
 impl Act {
@@ -77,8 +73,6 @@ impl Act {
             Act::Layout => 'L',
             Act::LayoutShips => 'S',
             Act::Restore => 'R',
-            Act::InboxRetry => 'T',
-            Act::InboxDrop => 'X',
         }
     }
 
@@ -97,8 +91,6 @@ impl Act {
             Act::Layout => "layout herdr: workspaces and tabs for this fleet",
             Act::LayoutShips => "layout herdr --ships: and a tab attaching each live ship",
             Act::Restore => "start the fleet: after a Claude Code update, a Herdr closure or a reboot (nimitz start F)",
-            Act::InboxRetry => "retry its oldest dead letter (back to pending)",
-            Act::InboxDrop => "drop its oldest dead letter (kept under dead/dropped/)",
         }
     }
 
@@ -116,8 +108,6 @@ impl Act {
             Act::Save => "save",
             Act::Layout | Act::LayoutShips => "layout",
             Act::Restore => "restore",
-            Act::InboxRetry => "retry",
-            Act::InboxDrop => "drop",
         }
     }
 
@@ -231,15 +221,6 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
             None => Err("not in the snapshot".into()),
         },
         (Act::Restore, _) => Err("restore is for a fleet (select its band)".into()),
-        (Act::InboxRetry | Act::InboxDrop, Target::Member(id)) if id.role() == Role::Aide => {
-            let m = find_member(snap, id).ok_or("not in the snapshot")?;
-            match &m.inbox {
-                Some(q) if !q.dead.is_empty() => Ok(()),
-                Some(_) => Err("no dead letters".into()),
-                None => Err("its queue was not read".into()),
-            }
-        }
-        (Act::InboxRetry | Act::InboxDrop, _) => Err("retry and drop are for an aide's dead letters".into()),
         (_, Target::None) => Err("nothing to act on here".into()),
         (Act::Start, Target::Member(id)) => {
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
@@ -405,12 +386,9 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
                 Role::Admiral => "fleet",
                 Role::Commodore => "squadron",
                 Role::Ship => "ship",
-                // (no `aide rm` yet: core's retire refuses it too)
-                Role::Aide => return Err(format!("{id} is an aide: delete its [[aide]] from fleet.toml to retire it (no `nimitz aide rm` yet)")),
             };
             with_panes(act, format!("nimitz {what} rm {id}"), nimitz_core::sessions::plan_retire(env, snap, &user, &id))
         }
-        (Act::InboxRetry | Act::InboxDrop, Target::Member(id)) => prepare_inbox(snap, id, act)?,
         _ => return Err(format!("{} does not apply here", act.word())),
     };
     let mut p = p;
@@ -418,37 +396,6 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
         only_own_legacy(&mut p, member_id(target).as_ref());
     }
     Ok(p)
-}
-
-/// `x T` / `x X` on an aide: `nimitz inbox retry|drop <aide> <id>` for its
-/// oldest dead letter, run through the CLI as the user (the repair is the
-/// user's or the parent's; Admiralty runs as the user).
-fn prepare_inbox(snap: &Snapshot, id: &Id, act: Act) -> Result<Pending, String> {
-    let q = find_member(snap, id).and_then(|m| m.inbox.as_ref()).ok_or("its queue was not read")?;
-    let d = q.dead.first().ok_or("no dead letters")?;
-    let item = d.id.trim_start_matches('0').to_string();
-    let verb = act.word();
-    let cmd: Vec<String> = ["nimitz", "inbox", verb, &id.0, &item].iter().map(|s| s.to_string()).collect();
-    let why = match act {
-        Act::InboxRetry => format!("back to pending (tries start over): {} from {}, dead after {} tries: {}", d.kind, d.sender, d.tries, d.reason),
-        _ => format!("dropped for good (kept under dead/dropped/): {} from {}: {}", d.kind, d.sender, d.reason),
-    };
-    let plan = Plan { summary: format!("{verb} {id} item {item}"), steps: vec![Step { id: Some(id.clone()), cmd: cmd.clone(), cwd: None, why }], ..Default::default() };
-    Ok(Pending { act, command: shell(&cmd), plan, config: false, panes: vec![], layout: None })
-}
-
-/// Run `nimitz inbox ...` (a retry or drop) as the user; its exit code is the verdict.
-fn run_inbox(env: &Env, p: &Pending) -> Outcome {
-    let bin = nimitz_bin();
-    let Some(step) = p.plan.steps.first() else { return Outcome::default() };
-    match cli_command(env, &bin).args(&step.cmd[1..]).output() {
-        Ok(o) => {
-            let code = o.status.code().unwrap_or(-1);
-            let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-            Outcome { ran: vec![(step.clone(), code, text)], verified: code == 0, issues: vec![] }
-        }
-        Err(e) => Outcome { ran: vec![], verified: false, issues: vec![nimitz_core::Issue { code: "step.failed".into(), severity: nimitz_core::Severity::Error, message: format!("{bin}: {e}"), fix: None, id: None }] },
-    }
 }
 
 /// `layout herdr F [--ships]`: core's layout for the fleet, minus tabs whose
@@ -649,9 +596,6 @@ pub fn apply(env: &Env, p: &Pending) -> Outcome {
     if p.act == Act::Open || p.layout.is_some() {
         return Outcome { verified: true, ..Default::default() };
     }
-    if matches!(p.act, Act::InboxRetry | Act::InboxDrop) {
-        return run_inbox(env, p);
-    }
     if p.command.starts_with("nimitz start") {
         return run_restore(env, &p.command);
     }
@@ -741,8 +685,7 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     };
     let m = find_member(snap, id).ok_or("not in the snapshot")?;
     let (via_m, relay) = match m.role {
-        // an aide, always on as a lead is, is typed into directly
-        Role::Admiral | Role::Commodore | Role::Aide => (m, false),
+        Role::Admiral | Role::Commodore => (m, false),
         Role::Ship => {
             let sq = id.parent().ok_or("no squadron")?;
             (find_member(snap, &sq).ok_or("its commodore is not in the snapshot")?, true)

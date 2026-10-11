@@ -97,12 +97,12 @@ fleet names it; otherwise `--hostname H`.
 | admiral | `F` | `[F]-ADMIRAL` |
 | commodore | `F/SQ` | `[F.SQ]-COMMODORE` |
 | ship | `F/SQ/SHIP` | `[F.SQ]-SHIP` |
-| aide | `<parent>/@NAME` (`F/@KB`) | `[<parent's parts joined by .>]-@NAME` (`[F]-@KB`) |
 
-An aide (docs/design/aide.md) is an always-on member attached to its parent:
-a last part `@NAME` makes the role `aide` whatever the count, `Id::parent`
-drops that part, and `Id::squadron` is never an `@` part. Only an admiral's
-aides exist (`[[aide]]` in `fleet.toml`); one machine runs each (its `dirs`).
+The aide role of 0.5 and 0.6 (`F/@NAME`, docs/design/aide.md) was removed in
+0.7.0: an `@` id is no member's (`Id::well_formed` refuses it), a registry
+record of role `aide` is dropped by the local cleanup, and a fleet.toml's
+`[[aide]]` is carried unread (`aide.legacy`) until `nimitz migrate --shared
+--yes` drops it (docs/design/migrations.md, cleanups).
 
 The tender role of 0.3.x (`F/SQ/~task`, one job for a commodore) was removed
 in 0.4.0: a v1 registry's tender identities move to the registry's `retired`
@@ -111,9 +111,7 @@ map on load (history only, never members), a job row with tender labels is
 while it is live).
 
 Labels (in `--settings '{"env":{...}}'`): `NIMITZ_FLEET`, `NIMITZ_SQUADRON`,
-`NIMITZ_ROLE` (`admiral|commodore|ship|aide`), `NIMITZ_ID`, `NIMITZ_HOME`;
-an aide also `NIMITZ_PARENT`, its launch `--model` (`[[aide]] model`, else
-`sonnet`), its own permissions and `claude::aide_prompt`. Every
+`NIMITZ_ROLE` (`admiral|commodore|ship`), `NIMITZ_ID`, `NIMITZ_HOME`. Every
 `nimitz` launch is `claude --bg` and sets all of them, plus
 `"worktree":{"bgIsolation":"none"}` and the `Bash(nimitz *)` allow
 (`claude::settings_json`). A lead's cold launch carries `claude::lead_prompt`
@@ -476,9 +474,7 @@ Each finding is an `Issue` with a stable `code`:
 | `held` | a member's conversation (any role; the one it runs now) runs in a live process with no job (`jobId` null: an SDK host, an interactive or Remote Control `--resume`, a 0.3.x interactive lead); nimitz can neither stop nor resume it there, and `start` of that member refuses until it ends (a resume would start a copy); a held parent is live for the chain (its ships start, the warning rides along) (Warn in `check`; fix: end that process in its host, then `nimitz start`; for a 0.3.x lead: "end the interactive lead with /exit, then run nimitz start <id> again", which brings the same conversation back as a job, lineage `via migrate`) (M13). Such a row is never a copy or a second live session of the member; a process with no job on an older lineage conversation is a `copy` |
 | `lead.intruder` | a lead's folder is exclusive: a live session there that is not the lead's own (its registry job, a held process on its conversation, a live copy) is an intruder, a `/fork` of the lead or a hand launch with its labels included (never `dup.live` or `copy.rows` for the lead; its own job is never the target, and the ships under it still start) (Error; one issue per row: an intruder is never the lead's `name.taken` as well (cli-L8, K1); one fix per kind: a background job `nimitz stop <short>` then `nimitz rm <short>`; an interactive or SDK process "end it in its terminal (tmux ...): /exit, or close the host", with the session file's terminal when it says). A retired tender's row stays `tender.retired` only; `check` lists such a row as the lead's intruder, not as a stowaway as well; it rides along a start as a warning (the lead's own job is apart from it) |
 | `history.lost` | a resume would run with no history: the member's job row is there but its conversation has no transcript in any project dir, or its registry session has no job row and no transcript (acceptance env E9: one word, one flag); a transcript with no message line within the first 4 MB (the stub `claude stop` writes after the file was moved away, env F5; a `/branch` copy hoists many 4 KB snapshot lines above its first message and is still one) counts as none (`evidence::has_message`, the `transcript_root` scanner). No launch; fix `nimitz start <id> --fresh`: a cold launch that starts a new lineage entry and drops the old rows (the `--fresh` plan does not repeat the error). Also a resume that came back with SessionStart `startup` instead of `resume` (Claude Code found no history; the start is never verified) (M5, E8). A lead with no transcript and no row gets a cold launch, never a fleet-wide issue (M11) |
-| `aide.down` | an aide whose `dirs` names this machine has no live job (Error; fix `nimitz start <id>`; a start is its fix, so it never refuses one) |
-| `aide.unpinned` | an aide's live job is not in `pins.json` (Warn; fix `nimitz start <id>`, which pins it again) |
-| `aide.model` | the aide's model is not in `availableModels` (managed settings, else `<claude_home>/settings.json`): Claude Code would run the default instead (Error; fix: add the model to availableModels, or set model in `[[aide]]`) |
+| `aide.legacy` | a fleet.toml holds `[[aide]]` tables of nimitz 0.5 or 0.6 (aides are gone in 0.7.0; carried, never used): Warn, fix `nimitz migrate --plan`, then `nimitz migrate --shared --yes` |
 | `pin.failed` | a lead's job could not be pinned (`pins.json.lock` held); the start stands (Warn; fix `nimitz relaunch`) |
 | `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
@@ -496,14 +492,6 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `mux.nopane` | the mux cannot open a pane here |
 | `tab.taken` | the member's tab is open but its pane runs something else (another agent, a copy, the agent view, yazi): nothing is typed into it; fix: ctrl-z or quit it in that pane, then `nimitz open` |
 | `mux.failed` | the mux returned an error |
-| `aide.machines` | `aide new` of a fleet's first aide while a machine of its `[machines]` has run no nimitz >= 0.5.0 (it would stop loading the fleet); fix: update it and run any nimitz there, or `--force` (the user's) |
-| `aide.model` | the aide's model is not in this machine's `availableModels` (Claude Code would run the default): `aide new|set` refuses, `check` reports it on the machine that runs it |
-| `inbox.dead` | (check, Warn) an aide's dead letters; fix `nimitz inbox retry|drop <aide> <item>` |
-| `inbox.stuck` | (check, Warn) a live, idle aide whose oldest pending item has waited over 10 minutes (its doorbell missed); fix `nimitz signal <aide> "drain your inbox"` |
-| `inbox.full` | (check, Warn) pending plus claimed at the inbox's `depth_cap`: posts are refused (exit 4) until it drains |
-| `machine.aide` | (`machine rm`, Warn) an aide runs on the machine removed: it runs nowhere after, and its inbox there is left |
-| `inbox.commit` | `inbox done --commit` committed nothing: a path off limits, outside the repo or an existing `raw/` file, or git failed; the item stays claimed |
-| `inbox.elsewhere` | `inbox post` or `ask` on a machine that is not the one the aide runs on: the item would wait in this machine's queue with no one to work it (no relay) |
 | `attach.nested` | `nimitz attach` from inside a Claude Code session: a live Claude Code process above it (its session file, whose `procStart` matches the process: a stale file is no session), fix: a plain terminal or `nimitz start <id> -p`; or `CLAUDECODE` set with none above (a terminal started from one inherits it), fix: `env -u CLAUDECODE nimitz attach <id>` |
 | `comms.denied` | a signal the chain of command or `comms` rule forbids |
 | `config.pending` | a config change is waiting for a relaunch |

@@ -8,22 +8,3 @@ os = "macos"
 
 [admiral]
 permission_mode = "plan"
-
-[[aide]]
-name = "KB"
-brief = "keeps the wiki"
-model = "sonnet"
-permission_mode = "acceptEdits"
-snapshot = true
-
-[aide.dirs]
-work = "~/kb"
-
-[aide.inbox]
-types = ["wiki.note.v1"]
-policy = "fleet"
-depth_cap = 50
-per_sender = "10/m"
-lease = "5m"
-max_tries = 2
-keep_done = "1d"

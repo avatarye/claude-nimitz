@@ -156,7 +156,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         .iter()
         .flat_map(|(id, rec)| rec.lineage.iter().map(move |l| (l.session_id.as_str(), id.as_str())))
         .collect();
-    // Every configured member's folder on this machine; ships and aides work
+    // Every configured member's folder on this machine; ships work
     // in folders the user may share (the shared-folder rule below), a lead's
     // folder is exclusive (`lead.intruder`).
     let mut dir_of: HashMap<String, String> = HashMap::new();
@@ -166,14 +166,11 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             if let Some(d) = crate::config::member_dir(env, fc, &id) {
                 dir_of.insert(id.0.clone(), norm_dir(&d.to_string_lossy()));
             }
-            if matches!(id.role(), Role::Ship | Role::Aide) {
+            if id.role() == Role::Ship {
                 shared_ids.push(id);
             }
         };
         put(Id::admiral(&fc.config.fleet));
-        for a in &fc.config.aide {
-            put(Id::aide(&Id::admiral(&fc.config.fleet), &a.name));
-        }
         for (_, sq) in &fc.squadrons {
             put(Id::commodore(&fc.config.fleet, &sq.squadron));
             for sh in &sq.ships {
@@ -245,7 +242,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             claimed.insert(r.session_id.clone());
         }
     }
-    // The stowaway rule in ship (and aide) folders (plan-v4 section 6). A ship
+    // The stowaway rule in ship folders (plan-v4 section 6). A ship
     // folder may be shared by several ships and by the user's own work: an unlabelled,
     // unclaimed row there is the user's own and is not shown, unless it is a
     // copy of a ship in that folder: (a) its transcript shares the root of a
@@ -335,17 +332,9 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             dir: fc.dir.to_string_lossy().into_owned(),
             machine: fc.machine.clone(),
             admiral: build_member(env, cache, fc, &fid, &reg, &mut by_identity, &labels, &events, &copies),
-            aides: vec![],
             squadrons: vec![],
             issues: vec![],
         };
-        for a in &fc.config.aide {
-            let aid = Id::aide(&fid, &a.name);
-            let mut m = build_member(env, cache, fc, &aid, &reg, &mut by_identity, &labels, &events, &copies);
-            m.parent = Some(fid.clone());
-            m.inbox = Some(inbox_of(env, &aid, &a.inbox, now));
-            fleet.aides.push(m);
-        }
         for (_, sq) in &fc.squadrons {
             let sqid = Id::commodore(&fc.config.fleet, &sq.squadron);
             let mut squadron = Squadron {
@@ -406,17 +395,9 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         let unread = |m: &mut Member| m.reasons.insert(0, format!("config unreadable: {}", err.message));
         let mut admiral = build_member(env, cache, &fc, &fid, &reg, &mut by_identity, &labels, &events, &copies);
         unread(&mut admiral);
-        let mut fleet = Fleet { id: fid.clone(), dir: dir.to_string_lossy().into_owned(), machine: None, admiral, aides: vec![], squadrons: vec![], issues: vec![err.clone()] };
+        let mut fleet = Fleet { id: fid.clone(), dir: dir.to_string_lossy().into_owned(), machine: None, admiral, squadrons: vec![], issues: vec![err.clone()] };
         for k in under {
             let id = Id(k);
-            // the admiral's aide, known by the registry or its labels (its config is in the broken file)
-            if id.role() == Role::Aide && id.parent().as_ref() == Some(&fid) {
-                let mut m = build_member(env, cache, &fc, &id, &reg, &mut by_identity, &labels, &events, &copies);
-                m.parent = Some(fid.clone());
-                unread(&mut m);
-                fleet.aides.push(m);
-                continue;
-            }
             let Some(sq) = id.squadron() else { continue };
             let sqid = Id::commodore(fid.fleet(), sq);
             if !fleet.squadrons.iter().any(|s| s.id == sqid) {
@@ -624,15 +605,6 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     snap
 }
 
-/// An aide's inbox as a look sees it: read only (`Queue::peek_status`), so
-/// a snapshot never writes state; a config nimitz cannot run says why.
-fn inbox_of(env: &Env, aide: &Id, def: &InboxDef, now: f64) -> crate::queue::Status {
-    match crate::queue::Limits::from_def(def) {
-        Ok(l) => crate::queue::Queue::open(env, aide, l).peek_status(now, false),
-        Err(e) => crate::queue::Status { aide: aide.0.clone(), error: Some(e), ..Default::default() },
-    }
-}
-
 /// Claude Code's own idle hint in a job row ("send a prompt to start") is not
 /// a question for you (BUG-07).
 fn idle_hint(needs: &str) -> bool {
@@ -767,7 +739,7 @@ fn build_member(
                 })
                 .map(|(i, _)| i)
         });
-    // A lead's (or an aide's) row is its registry job (a hand rm + resume binds the new job
+    // A lead's row is its registry job (a hand rm + resume binds the new job
     // beside an older labelled stray: the registry job stays, the stray is the
     // intruder; a /branch or /rename of the real job changes nothing). Two
     // cases hand the lead to another own live job: (i) the registry has no
@@ -945,8 +917,6 @@ fn build_member(
         tasks,
         issues: vec![],
         pane: None,
-        parent: None,
-        inbox: None,
     };
     // Every member carries its own issues: the session rules, then what needs
     // the registry (name.taken is added by the caller once every member's rows

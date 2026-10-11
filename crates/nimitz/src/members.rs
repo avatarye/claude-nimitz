@@ -11,7 +11,7 @@ pub fn parse_id(s: &str) -> Result<Id, String> {
     if id.well_formed() {
         Ok(id)
     } else {
-        Err(format!("{s:?} is not an id (F, F/SQ, F/SQ/SHIP or an aide's F/@NAME; names are [A-Z0-9_]+)"))
+        Err(format!("{s:?} is not an id (F, F/SQ or F/SQ/SHIP; names are [A-Z0-9_]+)"))
     }
 }
 
@@ -48,7 +48,6 @@ fn status_word(s: Status) -> &'static str {
 pub fn status(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(0)?;
-    crate::notify::spawn_piggyback(&ctx.env);
     let mut snap = ctx.snap();
     let mux = ctx.mux();
     // the shape once: the panes that show members, and the active set
@@ -83,7 +82,7 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         .fleets
         .iter()
         .flat_map(|f| f.members())
-        .map(|m| if matches!(m.role, nimitz_core::Role::Ship | nimitz_core::Role::Aide) { 4 } else { 2 } + m.id.0.len())
+        .map(|m| if matches!(m.role, nimitz_core::Role::Ship) { 4 } else { 2 } + m.id.0.len())
         .max()
         .unwrap_or(0)
         .max(26);
@@ -94,13 +93,6 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
             out::issue(i);
         }
         member_line(&ctx.env, &f.admiral, 1, col);
-        // its aides under it, each with its inbox
-        for a in &f.aides {
-            member_line(&ctx.env, a, 2, col);
-            if let Some(q) = &a.inbox {
-                out::line(&format!("        inbox: {}", q.line()));
-            }
-        }
         for sq in &f.squadrons {
             member_line(&ctx.env, &sq.commodore, 1, col);
             for i in &sq.issues {
@@ -156,7 +148,6 @@ fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize
 pub fn check(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
-    crate::notify::spawn_piggyback(&ctx.env);
     let id = ctx.args.pos.first().map(|s| parse_id(s)).transpose()?;
     let snap = ctx.snap();
     let mut issues = nimitz_core::check::check_tree(&ctx.env, &snap, id.as_ref());
@@ -662,7 +653,7 @@ pub fn attach(ctx: &Ctx) -> Result<i32, String> {
     // a live Claude Code process above this one (its session file, checked
     // to be that process); else CLAUDECODE alone, which a terminal or a Herdr
     // server started from a Claude Code tool inherits: said so, with the way out
-    let nested = match nimitz_core::queue::session_above_id(&ctx.env, &ctx.vars) {
+    let nested = match nimitz_core::sessions::session_above_id(&ctx.env, &ctx.vars) {
         Some(sid) => Some((format!("this runs inside a Claude Code session (session {} is above this process)", &sid[..sid.len().min(8)]), format!("nimitz attach {id}  # from a plain terminal; or nimitz start {id} -p"))),
         None if ctx.vars.get("CLAUDECODE").is_some_and(|v| !v.is_empty()) => {
             let unset = if cfg!(windows) { format!("$env:CLAUDECODE = $null; nimitz attach {id}  # PowerShell") } else { format!("env -u CLAUDECODE nimitz attach {id}") };

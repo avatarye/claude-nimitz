@@ -1272,9 +1272,9 @@ mod tests {
         assert_eq!(r.identities["MAIN"].role, Role::Admiral, "the rest loads");
         assert_eq!(r.identities["MAIN/ARGOS/X"].role, Role::Ship, "the role its id spells");
         assert_eq!(r.retired["MAIN/ARGOS/OLD"].role, Role::Ship);
-        assert_eq!(r.identities["MAIN/@KB"].role, Role::Aide);
+        assert!(!r.identities.contains_key("MAIN/@KB"), "a 0.6 aide's record is set aside (the 0.7 cleanup drops it)");
         assert!(!r.identities.contains_key("MAIN/ARGOS/X/Y/@Z") && !r.retired.contains_key("MAIN/ARGOS/X/Y/@Z"));
-        assert_eq!(r.unknown.records.len(), 2, "one per map, the same key in both: {:?}", r.unknown.records);
+        assert_eq!(r.unknown.records.len(), 3, "one per map, the same key in both, and the aide: {:?}", r.unknown.records);
         let h = health(&env);
         let w = h.iter().find(|i| i.code == "registry.unknown").expect("a warning");
         assert!(w.severity == Severity::Warn && w.message.contains("MAIN/ARGOS/X/Y/@Z"), "{w:?}");
@@ -1291,7 +1291,7 @@ mod tests {
         assert!(back.get("unparsed").is_none(), "no map of its own");
         // and the next load reads the same
         let again = load(&env);
-        assert_eq!((again.identities["MAIN/ARGOS/X"].role, again.unknown.records.len(), again.unknown.roles.len()), (Role::Ship, 2, 2));
+        assert_eq!((again.identities["MAIN/ARGOS/X"].role, again.unknown.records.len(), again.unknown.roles.len()), (Role::Ship, 3, 2));
     }
 
     #[test]

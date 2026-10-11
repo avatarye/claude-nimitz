@@ -1,5 +1,11 @@
 # Aides: always-on members with a durable inbox
 
+> **Superseded in 0.7.0.** Aides were removed (the user's redesign,
+> 2026-10-11): the knowledge base is kept by the `kb-scribe` and `kb-ref`
+> subagents every fleet member runs, and `nimitz kb` does its git. This
+> document records the 0.5 and 0.6 design only; `nimitz migrate --shared
+> --yes` drops a fleet's `[[aide]]` (README, "Aides (gone in 0.7.0)").
+
 Status: revised after the user's review (2026-10-10): the answers in section
 14 (settled), MYCC_DEV's six changes, and a second aide, `@REF`,
 with request and reply (sections 4.6 and 6.4). Nothing is built; S1 starts

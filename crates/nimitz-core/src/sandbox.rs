@@ -11,7 +11,7 @@
 //!
 //! - a job is a folder `jobs/<short>/state.json` with `sessionId` (the birth
 //!   id), `resumeSessionId` (the conversation now), `respawnFlags` (`--name`,
-//!   `--permission-mode`, `--settings`, an aide's `--model`: what every wake
+//!   `--permission-mode`, `--settings`, a `--model`: what every wake
 //!   replays), `name`,
 //!   `nameSource` and `state`; a live job also has a session file with
 //!   `jobId`, `kind bg`, `status`, `entrypoint` and `bridgeSessionId`;
@@ -212,8 +212,8 @@ fn respawn_flags(name: &str, mode: &str, settings: Option<&str>) -> Value {
     json!(f)
 }
 
-/// `--model M` added to a job's `respawnFlags` (a launch that named one: an
-/// aide's); nothing without one.
+/// `--model M` added to a job's `respawnFlags` (a launch that named one);
+/// nothing without one.
 fn note_model(base: &Path, short: &str, model: Option<&str>) {
     let Some(m) = model else { return };
     if let Some(mut j) = job_state(base, short) {
@@ -709,54 +709,18 @@ pub fn live_session(base: &Path, id: &Id, cwd: &str, bind: bool) -> String {
     live_job(base, id, cwd, bind).1
 }
 
-/// `live_session`: (its job, its session id). An aide's job keeps its model.
+/// `live_session`: (its job, its session id).
 fn live_job(base: &Path, id: &Id, cwd: &str, bind: bool) -> (String, String) {
     let base = crate::os::canonical(&base).unwrap_or_else(|_| base.to_path_buf());
     let e = env(&base);
     let settings = crate::claude::settings_json(&e, id, true);
     let short = start(&base, cwd, &id.name(), "bypassPermissions", Some(&settings), "startup", true);
-    note_model(&base, &short, crate::claude::model_for(&e, id).as_deref());
     let sid = job_state(&base, &short).and_then(|j| j.get("sessionId").and_then(|v| v.as_str()).map(str::to_string)).unwrap_or_default();
     if bind {
         let now = crate::evidence::now();
         let _ = crate::registry::update(&e, |r| crate::registry::bind_job(r, id, id.role(), &id.name(), cwd, Some(&short), &sid, "launch", now));
     }
     (short, sid)
-}
-
-/// Add an admiral's aide `F/@NAME` to `fleet`: an `[[aide]]` (Sonnet, a
-/// `wiki.note.v1` inbox) whose `dirs.sandbox` is `dirs/<f>/<name>`, made and
-/// trusted here; when `live`, a live labelled job of it, bound and pinned.
-pub fn add_aide(base: &Path, fleet: &str, name: &str, live: bool) -> Result<Id, String> {
-    let base = base.canonicalize().map_err(|e| e.to_string())?;
-    let e = env(&base);
-    let id = Id::aide(&Id::admiral(fleet), name);
-    let dir = base.join("dirs").join(fleet.to_lowercase()).join(name.to_lowercase());
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let dir_s = dir.to_string_lossy().into_owned();
-    // trusted beside every folder the world trusts already
-    for f in trust_files(&base) {
-        let mut v = read_json(&f).unwrap_or(json!({"projects": {}}));
-        v["projects"][&dir_s] = json!({"hasTrustDialogAccepted": true});
-        write_json(&f, &v);
-    }
-    let mut fod = crate::config::load_fleet(&e, fleet).map_err(|i| i.message)?;
-    fod.config.aide.push(AideDef {
-        name: name.to_string(),
-        model: Some("sonnet".into()),
-        dirs: [("sandbox".to_string(), dir_s.clone())].into(),
-        inbox: InboxDef { types: vec!["wiki.note.v1".into()], ..Default::default() },
-        ..Default::default()
-    });
-    // stamped as `nimitz migrate --shared --yes` stamps a fleet with an aide
-    fod.config.format = Some(2);
-    fod.config.min_nimitz = Some("0.5.0".into());
-    fs::write(fod.dir.join("fleet.toml"), crate::config::toml_out(&fod.config)).map_err(|e| e.to_string())?;
-    if live {
-        let (short, _) = live_job(&base, &id, &dir_s, true);
-        crate::pins::pin(&e, &short).map_err(|e| e.to_string())?;
-    }
-    Ok(id)
 }
 
 fn apply_cfg(e: &crate::env::Env, plan: &Plan) -> Result<(), String> {

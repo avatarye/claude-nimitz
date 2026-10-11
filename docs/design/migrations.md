@@ -15,12 +15,12 @@ its fixture, or when a type's shape moves without a version.
 
 | Artifact | Where | Scope | Version kept in | 0.4.0 | 0.5.0 |
 | --- | --- | --- | --- | --- | --- |
-| `fleet` | `H/<fleet>/fleet.toml` | shared | `format = N` (absent = 1) | 1 | 2 when it holds `[[aide]]` (else 1) |
+| `fleet` | `H/<fleet>/fleet.toml` | shared | `format = N` (absent = 1) | 1 | 2 when it holds `[[aide]]` (else 1); 0.7.0: 1 (the aides cleanup takes a format 2 back) |
 | `squadron` | `H/<fleet>/squadrons/<sq>/squadron.toml` | shared | `format = N` (absent = 1) | 1 | 1 |
 | `legacy` | `H/<fleet>/legacy.toml` | shared | `format = N` (absent = 1) | 1 | 1 |
 | `brief` | lead `CLAUDE.md` | shared | the rules version marker | (text) | (unchanged mechanism: `rules::briefs`) |
 | `ship-lock` | `.nimitz-ship.lock` | shared | `format` key (absent = 1) | 1 | 1 |
-| `registry` | `S/registry.json` | local | `version` | 2 | 3 (role `aide`, unknown records kept) |
+| `registry` | `S/registry.json` | local | `version` | 2 | 3 (role `aide`, unknown records kept; 0.7.0: still 3, the aide records dropped by a cleanup) |
 | `active` | `S/active.json` | local | `version` | 1 | 1 (now checked) |
 | `rules-delivered` | `S/rules-delivered.json` | local | manifest | 1 | 1 |
 | `events` | `S/events.jsonl` | local | manifest | 1 | 1 |
@@ -29,7 +29,6 @@ its fixture, or when a type's shape moves without a version.
 | `inbox-records` | `S/inbox/*.json` | local | manifest | 1 | 1 |
 | `needs` | `S/needs/*.json` | local | manifest | 1 | 2 (`item`, dead-letter keys) |
 | `own-pins` | `S/pins.json` | local | manifest | 1 | 1 |
-| `queues` | `S/queues/<aide>/` | local | `queue.json` `format` | (none) | 1 |
 | `admiralty-ui` | `S/admiralty-ui.json` | local | `format` key (absent = 1) | 1 | 1 |
 | CC-owned | `~/.claude.json` trust, `C/jobs/pins.json`, settings | Claude Code's | pinned formats (doctor) | n/a | n/a |
 
@@ -59,6 +58,28 @@ from a real 0.4.0 install for N = the 0.4.0 version).
 - `fleet` 1 -> 2: **shared**, never automatic: `format = 2` and
   `min_nimitz = "0.5.0"`, needed only when a fleet holds `[[aide]]`
   (section 4).
+
+### Cleanups (0.7.0: the aides are gone)
+
+A feature nimitz drops leaves files behind. A `formats::Cleanup`
+(`CLEANUPS`) removes or archives them in the same runs as the steps (local
+ones automatic, shared ones on `migrate --shared --yes`), with the same
+backup and log line (`cleanup` names it), and shows in `migrate --plan` and
+doctor as `<artifact>: <what>`. It never moves a version up (that is a
+step's); it may take a file down to a version every nimitz reads.
+
+- `registry: aide records dropped` (local): every record of role `aide`, in
+  `identities` and `retired`; the version and every other key as they were.
+- `aides: aide state archived` (local): `S/queues`, `S/aides` (snapshots),
+  `S/ring.lock`, `S/ring.stamp` and the needs-you notices of an aide or a
+  dead letter, moved to `S/archive/aides-0.6/` (a name already there gets
+  `.2`; nothing deleted).
+- `fleet: aides dropped` (shared): the `[[aide]]` tables (with their
+  `[aide.*]` sub-tables) taken out of the text, then `format = 2` and a
+  `min_nimitz` below 0.7.0; the rest, comments included, as it was. The
+  result must parse to the same tables less those keys, or nothing is
+  written. Until it runs, 0.7 still loads the fleet (`FleetConfig.aide` is
+  carried unread) and `check` warns `aide.legacy`.
 
 ## 4. Automatic, local; explicit, shared
 
@@ -99,15 +120,15 @@ from a real 0.4.0 install for N = the 0.4.0 version).
   same way (`registry`, `active`); never rewritten, never "recovered" as
   corrupt.
 - nimitz writes a shared file at the lowest format that holds its content:
-  a fleet with no aides stays format 1 (0.4.x machines can still read it);
-  adding `[[aide]]` makes it format 2, and `config::validate` asks for the
-  stamp (`format.shared`: `nimitz migrate --shared --yes`).
+  a fleet is format 1 (0.4.x machines can still read it); a file below the
+  format its content needs gets `format.shared` from `config::validate`
+  (`nimitz migrate --shared --yes`).
 - **Machines in the fleet.** Each nimitz >= 0.5.0 records itself in the shared
   root: `H/<fleet>/machines/<label>.json` `{nimitz: "0.5.0", seen: <time>}`
   (written only when it changes). `doctor` warns when the fleet's format
   needs a newer nimitz than a listed machine last reported, or when a machine
   of `fleet.toml [machines]` has no record (it runs 0.4.x or has not run
-  0.5): "machine X: no nimitz >= 0.5.0 seen; update it before adding an aide".
+  0.5): "machine X: no nimitz >= 0.5.0 seen; update it".
 - **0.4.x machines** predate the guard: 0.4.x refuses a fleet.toml that holds
   `[[aide]]` (its parser rejects unknown fields: the fleet stops loading
   there), and reads a registry that holds an aide as corrupt (it renames it
@@ -169,7 +190,7 @@ Where the build differs from, or adds to, the sections above:
   nimitz's formats (its manifest and machine record are written by `create`).
 - **A newer nimitz ran here.** The runner never lowers the manifest's
   `nimitz`, so an older nimitz checks on every run; a local file too new for
-  it (`registry`, `active`, `queues`, `admiralty-ui`, or a manifest entry
+  it (`registry`, `active`, `admiralty-ui`, or a manifest entry
   above what it knows) stops every command but `doctor` with
   `[ERROR] <file> needs nimitz >= X (this machine runs Y): update nimitz here`.
 - **The guard** also refuses a `format` above the artifact's current one
@@ -214,21 +235,20 @@ Where the build differs from, or adds to, the sections above:
 - **Pinned shapes** include one registry record of every `Role` and a
   squadron of every `Comms` form (exhaustive matches in the test, so a new
   variant fails to compile there), and the files nimitz writes untyped:
-  `pending`, `inbox-records`, `own-pins`, `ship-lock`, `queues`' queue.json,
-  `legacy` (each through the function that writes it). `REGISTRY_VERSION`
+  `pending`, `inbox-records`, `own-pins`, `ship-lock`, `legacy` (each through the function that writes it). `REGISTRY_VERSION`
   and `active::VERSION` are asserted equal to their artifacts' current.
 - **`migrate fleet-skill`** loads the target fleet as every config writer
   does: refused while a squadron.toml or legacy.toml does not read here.
   The warning's version is the fleet's `min_nimitz`, or 0.5.0 (the first
-  nimitz that records itself); its tail is "update it before adding an aide",
-  or, for a fleet that holds one, "update it: it cannot load this fleet's
-  [[aide]]".
+  nimitz that records itself); its tail is "update it".
 - **migrate.** `nimitz migrate --plan` lists every step, `--json` gives
   `{nimitz, due, too_new}`; with neither `--plan` nor `--yes` it asks for
   `--yes`. Members are refused before anything runs (both forms).
 - **Fixtures and shapes.** `fleet/v1.toml` (the 0.4.0 install's) and
   `fleet/v1.aide.toml` (a dev-era fleet with an aide, unstamped),
-  `registry/v2.json` (the 0.4.0 install's), `needs/v1.json` (written by the
+  `fleet/v2.aide.toml` (a 0.6 fleet with two aides, stamped), `registry/v2.json`
+  (the 0.4.0 install's), `registry/v3.aide.json` (a 0.6 registry with an aide
+  and a retired one), `needs/v1.json` (written by the
   0.4.0 binary's hook in a sandbox). The pinned shapes are
   `tests/fixtures/formats/shapes/<artifact>.v<N>.{json,toml}`; Admiralty's
   `Saved` is pinned by `crates/admiralty/tests/formats.rs` into the same
