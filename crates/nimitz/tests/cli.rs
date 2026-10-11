@@ -2776,12 +2776,24 @@ fn a_fleets_harness_reaches_the_members_rules_settings_and_launch() {
     add(&["agent", src.join("reviewer.md").to_str().unwrap()]);
     add(&["settings", src.join("argos.json").to_str().unwrap(), "--for", "MAIN/ARGOS"]);
     let bad = sb.run(&["harness", "add", "settings", src.join("bad.json").to_str().unwrap(), "--fleet", "MAIN", "--yes"]);
-    assert!(bad.code != 0 && bad.out.contains("hooks: a harness never sets it"), "{}", bad.out);
+    assert!(bad.code != 0 && bad.out.contains("hooks: not a harness's to set"), "{}", bad.out);
+    // the admiral adds from its own folder only (never a file of the user's it can read)
+    let secret = sb.base.join("secret.md");
+    std::fs::write(&secret, "s3cret").unwrap();
+    let r = sb.run_as("MAIN", &["harness", "add", "rule", secret.to_str().unwrap(), "--yes"]);
+    assert!(r.code != 0 && r.out.contains("(authority)") && r.out.contains("only from its own folder"), "{}", r.out);
+    let adm = nimitz_core::config::load_fleet(&nimitz_core::env::Env::from_vars(&sb.vars.clone().into_iter().collect()), "MAIN").unwrap().dir.join("admiral");
+    std::fs::write(adm.join("tone.md"), "Be brief.\n").unwrap();
+    let r = sb.run_as("MAIN", &["harness", "add", "rule", adm.join("tone.md").to_str().unwrap(), "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    // rm takes a name, never a path
+    let r = sb.run(&["harness", "rm", "skill", "../../fleet.toml", "--fleet", "MAIN", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("a name is"), "{}", r.out);
     // a member: its rules carry it; it lists, never changes
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["rules"]);
     assert!(r.out.contains("## Fleet MAIN's own rules") && r.out.contains("Answer in haiku."), "{}", r.out);
     let l = sb.run_as("MAIN/ARGOS/CLEAN", &["harness", "list"]);
-    assert!(l.code == 0 && l.out.contains("style") && l.out.contains("reviewer") && l.out.contains("ARGOS.json"), "{}", l.out);
+    assert!(l.code == 0 && l.out.contains("style") && l.out.contains("reviewer") && l.out.contains("squadrons/ARGOS.json"), "{}", l.out);
     assert!(sb.run_as("MAIN/ARGOS", &["harness", "rm", "rule", "style", "--yes"]).out.contains("(authority)"));
     assert!(!sb.run_as("BETA", &["rules"]).out.contains("Answer in haiku."), "another fleet's members");
     // a launch: the settings merged under nimitz's own, the plugin given

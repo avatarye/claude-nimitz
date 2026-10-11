@@ -102,9 +102,10 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   kb sync                          pull --rebase, then push
   kb clone                         clone kb.remote into this machine's folder (yours alone; --plan|--yes)
   harness list                     the fleet's harness: its rules, agents, skills and settings (a member: its own)
-  harness add rule|agent|skill|settings <file|folder> [--name N] [--for F/SQ|F/SQ/SHIP]
-                                   into the fleet's harness (--plan|--yes; the admiral's or yours)
-  harness rm rule|agent|skill|settings <name|id>   out of it (kept as .archived)
+  harness add rule|agent|skill|settings <file|folder> [--name N] [--for F/SQ|F/SQ/SHIP [--member]]
+                                   into the fleet's harness (--plan|--yes; the admiral's, from its own
+                                   folder, or yours); settings: model, outputStyle, permissions, env only
+  harness rm rule|agent|skill <name> | harness rm settings [--for ID [--member]]   out of it (kept as .archived)
   harness push                     make this machine's harness plugin again; say what is live and what needs start -f
   squadron new|set|rm <F/SQ>       --brief T --comms open|commodore-only|allow:A,B --mode M
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B

@@ -32,45 +32,82 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
             Ok(0)
         }
         "add" => {
-            ctx.args.allow(&["--fleet", "--name", "--for"])?;
+            ctx.args.allow(&["--fleet", "--name", "--for", "--member"])?;
             ctx.args.at_most(3)?;
             let kind = Kind::parse(ctx.args.need(1, "rule|agent|skill|settings")?).ok_or("harness add: rule, agent, skill or settings")?;
             let src = Path::new(ctx.args.need(2, "the file (a skill: its folder)")?);
+            // an admiral takes from its own folder only: never a file of the
+            // user's it can read (it would sync to every machine and reach every
+            // member's context)
+            if let Caller::Member { id, .. } = &ctx.caller {
+                let own = nimitz_core::config::load_fleet(&ctx.env, &fleet).ok().and_then(|f| nimitz_core::config::member_dir(&ctx.env, &f, id));
+                // (a source that is not there is said by the add itself)
+                let outside = nimitz_core::os::canonical(src).is_ok_and(|s| !own.and_then(|o| nimitz_core::os::canonical(&o).ok()).is_some_and(|o| s.starts_with(&o)));
+                if outside {
+                    out::issue(&refusal("authority", format!("{} adds to the harness only from its own folder; {} is not in it", id.name(), src.display()), None, Some(fid)));
+                    return Ok(1);
+                }
+            }
             let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let name = ctx.args.value("--name").map(str::to_string).unwrap_or(stem);
             let scope = ctx.args.value("--for").map(|s| Id(s.to_string()));
-            if scope.is_some() && kind != Kind::Settings {
-                return Err("--for goes with settings (a squadron's, a member's)".into());
+            if (scope.is_some() || ctx.args.flag("--member")) && kind != Kind::Settings {
+                return Err("--for and --member go with settings (a squadron's, a member's)".into());
             }
-            let files = harness::item_files(kind, &name, src, scope.as_ref(), &fleet)?;
+            let place = (kind == Kind::Settings).then(|| harness::settings_rel(scope.as_ref(), ctx.args.flag("--member"), &fleet)).transpose()?;
+            let files = harness::item_files(kind, &name, src, place)?;
             let root = harness::dir(&ctx.env, &fleet);
             let mut plan = Plan { summary: format!("harness add {} {name} ({fleet})", kind.folder()), ..Default::default() };
+            // a skill added again: its files that are not in the new one go
+            if kind == Kind::Skill {
+                let keep: Vec<std::path::PathBuf> = files.iter().map(|(r, _)| root.join(r)).collect();
+                for e in std::fs::read_dir(root.join("skills").join(&name)).into_iter().flatten().flatten() {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    if !keep.contains(&e.path()) && !n.contains(".archived") {
+                        plan.steps.push(Step { id: Some(fid.clone()), cmd: vec!["archive".into(), e.path().to_string_lossy().into_owned()], cwd: None, why: format!("not in the skill {name} any more (kept as .archived)") });
+                    }
+                }
+            }
             for (rel, text) in files {
                 let p = root.join(&rel);
                 if std::fs::read_to_string(&p).ok().as_deref() == Some(text.as_str()) {
                     continue;
                 }
-                let why = format!("the fleet's harness ({}): {}", kind.folder(), live_when(kind));
+                let why = format!("{} ({} bytes from {}): {}", rel.display(), text.len(), src.display(), live_when(kind));
                 plan.steps.push(Step { id: Some(fid.clone()), cmd: vec!["write".into(), p.to_string_lossy().into_owned(), text], cwd: None, why });
             }
             Ok(crate::crud::config_plan(ctx, plan, Some(&fid)))
         }
         "rm" => {
-            ctx.args.allow(&["--fleet"])?;
+            ctx.args.allow(&["--fleet", "--for", "--member"])?;
             ctx.args.at_most(3)?;
             let kind = Kind::parse(ctx.args.need(1, "rule|agent|skill|settings")?).ok_or("harness rm: rule, agent, skill or settings")?;
-            let what = ctx.args.need(2, "the name (settings: F, F/SQ or F/SQ/SHIP)")?;
             let root = harness::dir(&ctx.env, &fleet);
-            let p = match kind {
-                Kind::Settings => root.join(harness::settings_rel(Some(&Id(what.to_string())), &fleet)?),
-                Kind::Skill => root.join("skills").join(what),
-                _ => root.join(kind.folder()).join(format!("{what}.md")),
+            let (what, rel) = match kind {
+                Kind::Settings => {
+                    ctx.args.at_most(2)?;
+                    let scope = ctx.args.value("--for").map(|s| Id(s.to_string()));
+                    let rel = harness::settings_rel(scope.as_ref(), ctx.args.flag("--member"), &fleet)?;
+                    (scope.map(|s| s.0).unwrap_or_else(|| fleet.clone()), rel)
+                }
+                _ => {
+                    let what = ctx.args.need(2, "the name")?;
+                    if !harness::valid_name(what) {
+                        return Err(format!("{what:?}: a name is 1 to 64 of A-Z a-z 0-9 _ -"));
+                    }
+                    let rel = match kind {
+                        Kind::Skill => Path::new("skills").join(what),
+                        _ => Path::new(kind.folder()).join(format!("{what}.md")),
+                    };
+                    (what.to_string(), rel)
+                }
             };
+            let p = root.join(&rel);
             let mut plan = Plan { summary: format!("harness rm {} {what} ({fleet})", kind.folder()), ..Default::default() };
-            if !p.exists() {
+            if std::fs::symlink_metadata(&p).is_err() {
                 plan.refusals.push(refusal("harness.missing", format!("{} is not there", p.display()), Some(format!("nimitz harness list --fleet {fleet}")), Some(fid.clone())));
             } else {
-                plan.steps.push(Step { id: Some(fid.clone()), cmd: vec!["archive".into(), p.to_string_lossy().into_owned()], cwd: None, why: format!("out of the fleet's harness (kept as .archived): {}", live_when(kind)) });
+                plan.steps.push(Step { id: Some(fid.clone()), cmd: vec!["archive".into(), p.to_string_lossy().into_owned()], cwd: None, why: format!("{} out of the fleet's harness (kept as .archived): {}", rel.display(), live_when(kind)) });
             }
             Ok(crate::crud::config_plan(ctx, plan, Some(&fid)))
         }

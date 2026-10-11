@@ -201,20 +201,30 @@ pub fn update_for(env: &Env, id: &Id, key: &str, session_id: &str, via: &str) ->
     if (had >= VERSION && had_harness == now) || !record_delivery(env, key, session_id, via, now.as_deref()) {
         return None;
     }
-    Some(if had < VERSION {
-        format!("nimitz rules updated v{had}\u{2192}v{VERSION}\n\nWhat changed:\n{}\nThe full rules now:\n\n{}", changelog_since(had), text_for(env, id))
+    let head = if had < VERSION {
+        format!("nimitz rules updated v{had}\u{2192}v{VERSION}\n\nWhat changed:\n{}\nThe full rules now:\n\n{}", changelog_since(had), text(id))
     } else {
-        format!("nimitz rules updated: fleet {}'s own rules (its harness) changed\n\nThe full rules now:\n\n{}", id.fleet(), text_for(env, id))
-    })
+        format!("nimitz rules updated: fleet {}'s own rules (its harness) changed\n\nThe full rules now:\n\n{}", id.fleet(), text(id))
+    };
+    Some(with_harness(env, id, head))
 }
+
+/// The most characters nimitz hands a session as context (Claude Code
+/// shows a hook's context whole up to 10,000).
+pub const CONTEXT_MAX: usize = 9_800;
 
 /// The rules `id` is given: its role's (`text`), then its fleet's harness rules.
 pub fn text_for(env: &Env, id: &Id) -> String {
-    let mut t = text(id);
+    with_harness(env, id, text(id))
+}
+
+/// `head`, then the fleet's harness rules, cut to stay within `CONTEXT_MAX`.
+fn with_harness(env: &Env, id: &Id, mut head: String) -> String {
     if let Some((body, _)) = crate::harness::rules(env, id.fleet()) {
-        t.push_str(&body);
+        let room = CONTEXT_MAX.saturating_sub(head.chars().count());
+        head.push_str(&crate::harness::cut(&body, room));
     }
-    t
+    head
 }
 
 const COMMON: &str = include_str!("../rules/common.md");
