@@ -52,6 +52,13 @@ pub fn kb(ctx: &Ctx) -> Result<i32, String> {
     if !dir.join(".git").exists() {
         return Err(format!("fleet {fleet}'s knowledge base is not cloned on this machine ({}); the user runs: nimitz kb clone --fleet {fleet} --yes", dir.display()));
     }
+    // the folder is the KB's clone, not another repo the settings point at
+    if let Some(remote) = &k.remote {
+        let got = kb::origin(dir);
+        if got.as_deref() != Some(remote.as_str()) {
+            return Err(format!("{} is no clone of the fleet's kb.remote {remote} (its origin is {}): nimitz works only in the KB's own clone", dir.display(), got.as_deref().unwrap_or("none")));
+        }
+    }
     let res: Result<String, String> = match verb.as_str() {
         "path" => {
             ctx.args.allow(&["--fleet"])?;
@@ -104,7 +111,7 @@ pub fn kb(ctx: &Ctx) -> Result<i32, String> {
             ctx.args.allow(&["--fleet", "--paths"])?;
             ctx.args.at_most(1)?;
             let backup = ctx.env.state.join("kb-restore").join(&fleet).join(format!("{:.0}-{}", nimitz_core::evidence::now(), std::process::id()));
-            kb::restore(dir, &list(ctx.args.value("--paths")), &backup).map(|done| done.join("\n"))
+            kb::restore(&ctx.env, dir, &list(ctx.args.value("--paths")), &backup).map(|done| done.join("\n"))
         }
         "sync" => {
             ctx.args.allow(&["--fleet"])?;
@@ -196,7 +203,7 @@ pub fn settings(ctx: &Ctx) -> Result<i32, String> {
             ctx.args.at_most(4)?;
             let key = ctx.args.need(2, "the key (e.g. kb.remote)")?;
             let value = fleet_settings::parse_value(ctx.args.need(3, "the value (JSON, or text; null removes the key)")?);
-            let plan = fleet_settings::plan_set(&ctx.env, &fleet, key, (!value.is_null()).then_some(value));
+            let plan = fleet_settings::plan_set(&ctx.env, &fleet, key, (!value.is_null()).then_some(value), ctx.caller == Caller::User);
             Ok(crate::crud::config_plan(ctx, plan, Some(&nimitz_core::Id::admiral(&fleet))))
         }
         v => Err(format!("fleet settings {v}: use get or set")),

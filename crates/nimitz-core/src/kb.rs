@@ -39,15 +39,31 @@ fn git(dir: &Path) -> Command {
     for kv in ["core.fsmonitor=false", "core.pager=cat", hooks.as_str(), attrs.as_str(), "diff.external=", "commit.gpgSign=false", "log.showSignature=false", "core.editor=true", "color.ui=false", "core.untrackedCache=false"] {
         c.arg("-c").arg(kv);
     }
+    // none of the caller's `GIT_*` steers it (the ssh pair is the user's transport)
+    for (k, _) in std::env::vars_os() {
+        let k = k.to_string_lossy();
+        if k.starts_with("GIT_") && k != "GIT_SSH_COMMAND" && k != "GIT_SSH" {
+            c.env_remove(k.as_ref());
+        }
+    }
     c.env("GIT_PAGER", "cat").env("GIT_TERMINAL_PROMPT", "0");
-    // a fetch or push never waits for a passphrase nobody will type
-    if std::env::var_os("GIT_SSH_COMMAND").is_none() && std::env::var_os("GIT_SSH").is_none() {
-        c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
-    }
-    for v in ["GIT_EXTERNAL_DIFF", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_ATTR_SOURCE", "GIT_OBJECT_DIRECTORY", "GIT_NAMESPACE"] {
-        c.env_remove(v);
-    }
     c
+}
+
+/// A fetch, push or clone: the user's own transport, but never a passphrase
+/// prompt nobody will answer nor a connection that hangs on (it holds the
+/// KB's lock): `ssh -o BatchMode=yes -o ConnectTimeout=20`, unless the user
+/// set an ssh command of their own (`GIT_SSH*`, `core.sshCommand`).
+fn transport(c: &mut Command, dir: &Path) {
+    let own_env = std::env::var_os("GIT_SSH_COMMAND").is_some() || std::env::var_os("GIT_SSH").is_some();
+    let own_config = || {
+        let mut g = git(dir);
+        g.args(["config", "--get", "core.sshCommand"]);
+        run(g).is_ok_and(|s| !s.trim().is_empty())
+    };
+    if !own_env && !own_config() {
+        c.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=20");
+    }
 }
 
 fn run(mut c: Command) -> Result<String, String> {
@@ -99,6 +115,11 @@ fn inside(dir: &Path, rel: &str) -> Result<(), String> {
 
 /// Is `rel` off limits (any case)?
 pub fn off_limits(rel: &str) -> Option<String> {
+    // a name Windows (or an old Mac) reads as another: a trailing dot or space,
+    // a stream (`:`), an 8.3 alias (`~1`), an invisible character
+    if rel.split('/').any(|p| p.ends_with('.') || p.ends_with(' ') || p.contains(':') || p.contains('~') || p.chars().any(|c| c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{feff}' | '\u{2060}'))) {
+        return Some("a name that another file system reads as another (a trailing dot or space, `:`, `~`, an invisible character)".into());
+    }
     let low = rel.to_lowercase();
     if let Some(o) = OFF_LIMITS.iter().find(|o| {
         let o = o.to_lowercase();
@@ -118,13 +139,30 @@ fn clip_lines(text: &str, max: usize) -> String {
     out
 }
 
-/// A commit to read at: `HEAD`, or a commit id (4 to 40 hex digits; a
-/// `--at` from `nimitz kb head`).
-fn rev(at: Option<&str>) -> Result<String, String> {
-    match at {
-        None | Some("HEAD") => Ok("HEAD".into()),
-        Some(s) if (4..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit()) => Ok(s.to_lowercase()),
-        Some(s) => Err(format!("{s:?} is no commit id (HEAD, or the hex sha `nimitz kb head` printed)")),
+/// A commit to read at: `HEAD`, or a commit id (4 to 64 hex digits; a
+/// `--at` from `nimitz kb head`), resolved among object ids only (a branch
+/// or tag of that name is never it) to its one full id.
+fn rev(dir: &Path, at: Option<&str>) -> Result<String, String> {
+    let s = match at {
+        None | Some("HEAD") => return Ok("HEAD".into()),
+        Some(s) if (4..=64).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit()) => s.to_lowercase(),
+        Some(s) => return Err(format!("{s:?} is no commit id (HEAD, or the hex sha `nimitz kb head` printed)")),
+    };
+    let mut c = git(dir);
+    c.arg("rev-parse").arg(format!("--disambiguate={s}"));
+    let ids: Vec<String> = run(c).unwrap_or_default().lines().map(str::to_string).collect();
+    let commits: Vec<&String> = ids
+        .iter()
+        .filter(|id| {
+            let mut t = git(dir);
+            t.args(["cat-file", "-t", id]);
+            run(t).is_ok_and(|k| k.trim() == "commit")
+        })
+        .collect();
+    match commits.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(format!("{s}: no commit with that id in the clone")),
+        _ => Err(format!("{s}: more than one commit starts so: give more of the id")),
     }
 }
 
@@ -143,9 +181,12 @@ pub fn grep(dir: &Path, at: Option<&str>, term: &str, prefix: Option<&str>) -> R
     if term.trim().is_empty() {
         return Err("grep needs a term".into());
     }
-    let r = rev(at)?;
+    if term.chars().any(char::is_control) {
+        return Err("a term is one line, no control characters".into());
+    }
+    let r = rev(dir, at)?;
     let mut c = git(dir);
-    c.args(["grep", "-n", "-i", "-F", "--no-color", "-e", term, &r, "--"]);
+    c.args(["grep", "-n", "-i", "-I", "-F", "--no-color", "-e", term, &r, "--"]);
     if let Some(p) = prefix {
         c.arg(clean_rel(p)?);
     }
@@ -166,7 +207,7 @@ pub const SHOW_MAX: usize = 512 * 1024;
 
 /// `nimitz kb show <path> [--at <sha>]`: a file as one commit holds it.
 pub fn show(dir: &Path, at: Option<&str>, path: &str) -> Result<String, String> {
-    let r = rev(at)?;
+    let r = rev(dir, at)?;
     let rel = clean_rel(path)?;
     let mut c = git(dir);
     c.args(["show", "--no-textconv", &format!("{r}:{rel}")]);
@@ -185,9 +226,10 @@ pub fn show(dir: &Path, at: Option<&str>, path: &str) -> Result<String, String> 
 /// closes a first line `---`; the whole file when it has none (or never
 /// closes it).
 pub fn body(bytes: &[u8]) -> &[u8] {
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
     let fence = |l: &[u8]| {
         let l = l.strip_suffix(b"\n").unwrap_or(l);
-        l.strip_suffix(b"\r").unwrap_or(l) == b"---"
+        l.strip_suffix(b"\r").unwrap_or(l).trim_ascii_end() == b"---"
     };
     let mut at = 0;
     for (n, l) in bytes.split_inclusive(|b| *b == b'\n').enumerate() {
@@ -209,7 +251,12 @@ pub fn hash(dir: &Path, path: &str) -> Result<String, String> {
     let rel = clean_rel(path)?;
     inside(dir, &rel)?;
     let bytes = std::fs::read(dir.join(&rel)).map_err(|e| format!("{rel}: {e}"))?;
-    Ok(crate::sha256::hex(body(&bytes)))
+    // line ends as LF: the same capture written on Windows is the same note
+    let b = String::from_utf8_lossy(body(&bytes)).replace("\r\n", "\n");
+    if b.trim().is_empty() {
+        return Err(format!("{rel}: its body (after the frontmatter) is empty: no note"));
+    }
+    Ok(crate::sha256::hex(b.as_bytes()))
 }
 
 /// An attributes or modules file (any depth) that differs from its last
@@ -333,6 +380,7 @@ pub fn commit(env: &Env, dir: &Path, title: &str, paths: &[String], pages: &[Str
         return Err("no sender: --from names who gave the note".into());
     }
     let _lock = lock(env, dir)?;
+    busy(dir)?;
     if let Some(sha) = note_commit(dir, &note)? {
         return Ok(Committed::Already(sha));
     }
@@ -345,7 +393,16 @@ pub fn commit(env: &Env, dir: &Path, title: &str, paths: &[String], pages: &[Str
     }
     let mut add = git(dir);
     add.args(["add", "--"]).args(&paths);
-    run(add)?;
+    let unstage = || {
+        let mut undo = git(dir);
+        undo.args(["reset", "-q", "--"]).args(&paths);
+        let _ = run(undo);
+    };
+    // (a path git ignores fails the add after the others were staged)
+    if let Err(e) = run(add) {
+        unstage();
+        return Err(e);
+    }
     let mut c = git(dir);
     let unset = |k: &str| {
         let mut who = git(dir);
@@ -361,12 +418,31 @@ pub fn commit(env: &Env, dir: &Path, title: &str, paths: &[String], pages: &[Str
     }
     c.args(["-m", &format!("note: {note}\nfrom: {from}"), "--"]).args(&paths);
     if let Err(e) = run(c) {
-        let mut undo = git(dir);
-        undo.args(["reset", "-q", "--"]).args(&paths);
-        let _ = run(undo);
+        unstage();
         return Err(e);
     }
     head(dir).map(Committed::New)
+}
+
+/// The clone's git folder.
+fn git_dir(dir: &Path) -> Option<PathBuf> {
+    let mut g = git(dir);
+    g.args(["rev-parse", "--absolute-git-dir"]);
+    run(g).map(|s| PathBuf::from(s.trim())).ok()
+}
+
+/// A rebase, a merge or a cherry-pick under way in the clone (the user's, or
+/// a sync's that died), or no branch checked out: nothing is committed or
+/// synced until the user looks at it.
+fn busy(dir: &Path) -> Result<(), String> {
+    if let Some(g) = git_dir(dir) {
+        if let Some(op) = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"].iter().find(|f| g.join(f).exists()) {
+            return Err(format!("a git operation is under way in the clone ({op}): nothing is committed or synced until the user finishes it"));
+        }
+    }
+    let mut b = git(dir);
+    b.args(["symbolic-ref", "-q", "HEAD"]);
+    run(b).map(|_| ()).map_err(|_| "the clone has no branch checked out (a detached HEAD): nothing is committed or synced until the user checks one out".to_string())
 }
 
 /// The KB's lock on this machine (`S/locks/kb-<hash of its folder>.lock`):
@@ -390,29 +466,37 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: git is not run until the user looks at it"));
     }
+    busy(dir)?;
     let mut up = git(dir);
     up.args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
-    let Ok(upstream) = run(up) else { return Ok("no upstream branch: nothing to sync".into()) };
+    let Ok(upstream) = run(up) else { return Err("the branch has no upstream: the commits stay in this clone (the user sets one: git push -u)".into()) };
     let upstream = upstream.trim().to_string();
     let mut pull = git(dir);
     pull.args(["pull", "--rebase", "--no-autostash", "--quiet"]);
+    transport(&mut pull, dir);
     if let Err(e) = run(pull) {
-        let git_dir = {
-            let mut g = git(dir);
-            g.args(["rev-parse", "--absolute-git-dir"]);
-            run(g).map(|s| PathBuf::from(s.trim())).ok()
-        };
-        if git_dir.is_some_and(|g| g.join("rebase-merge").exists() || g.join("rebase-apply").exists()) {
+        let mut note = "the local commits are kept".to_string();
+        if git_dir(dir).is_some_and(|g| g.join("rebase-merge").exists() || g.join("rebase-apply").exists()) {
             let mut abort = git(dir);
             abort.args(["rebase", "--abort"]);
-            let _ = run(abort);
+            if let Err(a) = run(abort) {
+                note = format!("the rebase could not be undone ({a}): the user finishes it by hand");
+            }
         }
-        return Err(format!("pull --rebase from {upstream} failed (nothing pushed; the local commits are kept): {e}"));
+        return Err(format!("pull --rebase from {upstream} failed (nothing pushed; {note}; a sync needs no uncommitted edits to tracked files): {e}"));
     }
     let mut push = git(dir);
     push.args(["push", "--quiet"]);
+    transport(&mut push, dir);
     run(push).map_err(|e| format!("push to {upstream} failed (the local commits are kept): {e}"))?;
     Ok(format!("in step with {upstream} at {}", head(dir)?))
+}
+
+/// The clone's `origin` URL, if it has one.
+pub fn origin(dir: &Path) -> Option<String> {
+    let mut c = git(dir);
+    c.args(["remote", "get-url", "origin"]);
+    run(c).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// `nimitz kb clone`: the KB's remote into `dir` (not there yet, or an
@@ -424,8 +508,13 @@ pub fn clone(remote: &str, dir: &Path) -> Result<(), String> {
     if let Some(p) = dir.parent() {
         std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
     }
-    let mut c = git(dir.parent().unwrap_or(Path::new(".")));
+    if !dir.is_absolute() {
+        return Err(format!("{}: a clone goes to an absolute folder", dir.display()));
+    }
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    let mut c = git(parent);
     c.args(["clone", "--quiet", "--", remote]).arg(dir);
+    transport(&mut c, parent);
     run(c).map(|_| ())
 }
 
@@ -435,7 +524,8 @@ pub fn clone(remote: &str, dir: &Path) -> Result<(), String> {
 /// it goes (a tracked file that differs from its commit, an untracked file:
 /// the user may have edited or made it) is copied to `backup` first, never
 /// over a copy kept before, and the line says where.
-pub fn restore(dir: &Path, paths: &[String], backup: &Path) -> Result<Vec<String>, String> {
+pub fn restore(env: &Env, dir: &Path, paths: &[String], backup: &Path) -> Result<Vec<String>, String> {
+    let _lock = lock(env, dir)?;
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: nothing is restored until the user looks at it"));
     }
@@ -596,6 +686,40 @@ mod tests {
         assert_eq!(g(d, &["log", "-1", "--format=%s", &s2]).trim(), "ingest(auto): a note");
     }
 
+    /// The review's edges: a capture's id is the same with a BOM or CRLF; an
+    /// empty body is no note; a path git ignores fails the commit with nothing
+    /// left staged; a commit waits while a rebase is under way; `--at` names a
+    /// commit, never a branch of that name; names another system reads as
+    /// another are off limits.
+    #[test]
+    fn notes_commits_and_reads_hold_at_their_edges() {
+        let (_e, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let td = repo();
+        let d = td.path();
+        std::fs::write(d.join("raw/a.md"), "---\nx: 1\n---\nline one\nline two\n").unwrap();
+        std::fs::write(d.join("raw/b.md"), "\u{feff}--- \r\nx: 2\r\n---\r\nline one\r\nline two\r\n").unwrap();
+        assert_eq!(hash(d, "raw/a.md").unwrap(), hash(d, "raw/b.md").unwrap());
+        std::fs::write(d.join("raw/empty.md"), "---\nx: 1\n---\n\n").unwrap();
+        assert!(hash(d, "raw/empty.md").unwrap_err().contains("empty"));
+        std::fs::write(d.join(".git/info/exclude"), "ignored.md\n").unwrap();
+        std::fs::write(d.join("wiki/ignored.md"), "i").unwrap();
+        assert!(commit(&env, d, "t", &["raw/a.md".into(), "wiki/ignored.md".into()], &[], NOTE, "x").is_err());
+        assert!(g(d, &["diff", "--cached", "--name-only"]).is_empty(), "nothing left staged");
+        std::fs::create_dir_all(d.join(".git/rebase-merge")).unwrap();
+        assert!(commit(&env, d, "t", &["raw/a.md".into()], &[], NOTE, "x").unwrap_err().contains("under way"));
+        std::fs::remove_dir_all(d.join(".git/rebase-merge")).unwrap();
+        let h = head(d).unwrap();
+        g(d, &["branch", "beef"]);
+        assert!(show(d, Some("beef"), "wiki/page.md").is_err(), "a branch is no commit id");
+        assert_eq!(show(d, Some(&h[..8]), "wiki/page.md").unwrap(), "Alpha beta\n");
+        assert!(grep(d, None, "a\nb", None).is_err());
+        for p in ["CLAUDE.md.", "wiki/CLAUDE~1.MD", "wiki/x.md:stream", "wiki/C\u{200c}LAUDE.md", "wiki/x.md "] {
+            assert!(off_limits(p).is_some(), "{p}");
+        }
+        assert!(off_limits("wiki/notes-2026.md").is_none());
+    }
+
     #[test]
     fn off_limits_and_existing_raw_paths_are_refused() {
         let td = repo();
@@ -648,12 +772,14 @@ mod tests {
     /// A failed ingest's files go back: a tracked one to its commit, a new one away.
     #[test]
     fn restore_undoes_what_a_failed_ingest_wrote() {
+        let (_e, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
         let td = repo();
         let d = td.path();
         std::fs::write(d.join("wiki/page.md"), "half written\n").unwrap();
         std::fs::write(d.join("raw/cap-9.md"), "capture\n").unwrap();
         let keep = tempfile::tempdir().unwrap();
-        let done = restore(d, &["wiki/page.md".into(), "raw/cap-9.md".into()], keep.path()).unwrap();
+        let done = restore(&env, d, &["wiki/page.md".into(), "raw/cap-9.md".into()], keep.path()).unwrap();
         assert_eq!(done.len(), 2, "{done:?}");
         assert_eq!(std::fs::read_to_string(d.join("wiki/page.md")).unwrap(), "Alpha beta\n");
         assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md")).unwrap(), "half written\n", "what was there is kept");
@@ -661,14 +787,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(keep.path().join("raw/cap-9.md")).unwrap(), "capture\n", "a new file is kept too");
         // a second restore of the same page never writes over the first copy
         std::fs::write(d.join("wiki/page.md"), "second pass\n").unwrap();
-        restore(d, &["wiki/page.md".into()], keep.path()).unwrap();
+        restore(&env, d, &["wiki/page.md".into()], keep.path()).unwrap();
         assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md")).unwrap(), "half written\n");
         assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md.2")).unwrap(), "second pass\n");
-        assert!(restore(d, &["CLAUDE.md".into()], keep.path()).is_err());
-        assert!(restore(d, &["wiki".into()], keep.path()).is_err());
+        assert!(restore(&env, d, &["CLAUDE.md".into()], keep.path()).is_err());
+        assert!(restore(&env, d, &["wiki".into()], keep.path()).is_err());
         // a refused path anywhere in the list: nothing is restored
         std::fs::write(d.join("wiki/page.md"), "again\n").unwrap();
-        assert!(restore(d, &["wiki/page.md".into(), "CLAUDE.md".into()], keep.path()).is_err());
+        assert!(restore(&env, d, &["wiki/page.md".into(), "CLAUDE.md".into()], keep.path()).is_err());
         assert_eq!(std::fs::read_to_string(d.join("wiki/page.md")).unwrap(), "again\n");
         // a symlinked folder that leads out: refused, nothing outside removed
         #[cfg(unix)]
@@ -676,7 +802,7 @@ mod tests {
             let outside = tempfile::tempdir().unwrap();
             std::fs::write(outside.path().join("victim.md"), "v").unwrap();
             std::os::unix::fs::symlink(outside.path(), d.join("wiki/link")).unwrap();
-            assert!(restore(d, &["wiki/link/victim.md".into()], keep.path()).is_err());
+            assert!(restore(&env, d, &["wiki/link/victim.md".into()], keep.path()).is_err());
             assert!(check_paths(d, &["wiki/link/victim.md".into()]).is_err());
             assert!(outside.path().join("victim.md").exists());
         }
@@ -723,8 +849,8 @@ mod tests {
         assert!(e.contains("pull --rebase") && e.contains("local commits are kept"), "{e}");
         assert_eq!(head(&b).unwrap(), sb, "b's commit is kept, no rebase left half done");
         assert!(status(&b).unwrap().is_empty());
-        // no upstream: nothing to sync
+        // no upstream: said, never an OK
         let td = repo();
-        assert!(sync(&env, td.path()).unwrap().contains("no upstream"));
+        assert!(sync(&env, td.path()).unwrap_err().contains("no upstream"));
     }
 }
