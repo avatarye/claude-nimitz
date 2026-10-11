@@ -502,6 +502,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `inbox.stuck` | (check, Warn) a live, idle aide whose oldest pending item has waited over 10 minutes (its doorbell missed); fix `nimitz signal <aide> "drain your inbox"` |
 | `inbox.full` | (check, Warn) pending plus claimed at the inbox's `depth_cap`: posts are refused (exit 4) until it drains |
 | `machine.aide` | (`machine rm`, Warn) an aide runs on the machine removed: it runs nowhere after, and its inbox there is left |
+| `inbox.commit` | `inbox done --commit` committed nothing: a path off limits, outside the repo or an existing `raw/` file, or git failed; the item stays claimed |
 | `attach.nested` | `nimitz attach` from inside a Claude Code session: a live Claude Code process above it (its session file, whose `procStart` matches the process: a stale file is no session), fix: a plain terminal or `nimitz start <id> -p`; or `CLAUDECODE` set with none above (a terminal started from one inherits it), fix: `env -u CLAUDECODE nimitz attach <id>` |
 | `comms.denied` | a signal the chain of command or `comms` rule forbids |
 | `config.pending` | a config change is waiting for a relaunch |
