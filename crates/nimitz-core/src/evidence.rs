@@ -509,8 +509,9 @@ pub fn proc_started_ms(d: &Value) -> Option<i64> {
 /// `procStart` against the creation time. Unknown on either side proves
 /// nothing: kept.
 pub fn session_is_its_process(pid: i64, d: &Value) -> bool {
+    // (an ancestor is alive by construction: only its start is compared)
     if cfg!(windows) {
-        return crate::os::is_same_process(pid, proc_started_ms(d));
+        return crate::os::started_in_time(crate::os::process_started_ms(pid), proc_started_ms(d));
     }
     let recorded = match d.get("procStart") {
         Some(Value::String(x)) => x.trim().parse::<u64>().ok(),

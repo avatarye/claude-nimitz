@@ -730,18 +730,28 @@ fn exec_attach(ctx: &Ctx, argv: &[String]) -> i32 {
         out::error(&format!("cannot run {}: {e}", argv.join(" ")));
         1
     }
-    // ctrl-c reaches every process on the console: nimitz ignores it while
-    // it waits, so the attach (which handles it) keeps the console
-    #[cfg(windows)]
-    unsafe {
-        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
-    }
     #[cfg(not(unix))]
-    match c.status() {
-        Ok(st) => st.code().unwrap_or(1),
-        Err(e) => {
-            out::error(&format!("cannot run {}: {e}", argv.join(" ")));
-            1
+    {
+        let mut child = match c.spawn() {
+            Ok(ch) => ch,
+            Err(e) => {
+                out::error(&format!("cannot run {}: {e}", argv.join(" ")));
+                return 1;
+            }
+        };
+        // ctrl-c reaches every process on the console: nimitz ignores it while
+        // it waits, so the attach (which handles it) keeps the console. Set
+        // after the spawn: a child inherits the ignore it is created under.
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
+        }
+        match child.wait() {
+            Ok(st) => st.code().unwrap_or(1),
+            Err(e) => {
+                out::error(&format!("cannot wait for {}: {e}", argv.join(" ")));
+                1
+            }
         }
     }
 }
