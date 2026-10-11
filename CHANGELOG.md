@@ -12,8 +12,11 @@ answers from it read-only. Read **Upgrading** first.
   (`claude plugin update nimitz@claude-nimitz`).
 - **Before a fleet gets its first aide, update every machine of the fleet to
   0.6.0** and run any nimitz command there: a nimitz before 0.5 cannot load a
-  fleet.toml that holds `[[aide]]`. `aide new` refuses until each machine of
-  `[machines]` has (`aide.machines`; `nimitz doctor` lists them).
+  fleet.toml that holds `[[aide]]`, and 0.5 refuses a read-only reader
+  (`snapshot = true`). `aide new` refuses a fleet's first aide until each
+  machine of `[machines]` has run 0.5, and its first reader until each has run
+  0.6 (`aide.machines`; `nimitz doctor` lists them); a fleet with a reader is
+  stamped `min_nimitz = "0.6.0"`, so an older nimitz says "update nimitz here".
 - To give HOME its two aides (once every machine is on 0.6.0):
   `nimitz aide new HOME/@KB --dir /mnt/data/shared/nimitz-knowledge-base
   --types wiki.note.v1 --plan`, then `--yes`; `nimitz aide new HOME/@REF
@@ -64,6 +67,9 @@ answers from it read-only. Read **Upgrading** first.
   `aide rm` unregisters it. A post or an ask on a machine that does not run
   the aide is refused (`inbox.elsewhere`). Tested on real Claude Code with
   both aides on a copy of the KB.
+- `machine rm` warns of an aide that runs on the machine removed
+  (`machine.aide`); `check` flags an aide with folders on more than one
+  machine (one machine runs an aide; a hand-edited fleet.toml could say two).
 
 ### Known limits
 

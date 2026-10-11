@@ -3368,3 +3368,41 @@ fn a_readers_edges_gaps_rebuild_and_removal() {
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(!snap.exists() && !git(&["worktree", "list"]).contains("snapshot"), "{}", git(&["worktree", "list"]));
 }
+
+/// A snapshot reader needs nimitz 0.6 on every machine (0.5 refuses
+/// `snapshot = true`): the first one waits for it (`aide.machines`), and a
+/// fleet with one is stamped `min_nimitz = "0.6.0"` (a 0.5 machine is told to
+/// update instead of refusing the fleet as invalid); without one it is 0.5.0 again.
+#[test]
+fn a_snapshot_reader_needs_nimitz_06_on_every_machine() {
+    let sb = Sb::new(false);
+    let repo = sb.base.canonicalize().unwrap().join("dirs").join("kbrepo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(Command::new("git").arg("-C").arg(&repo).args(["init", "-q"]).status().unwrap().success());
+    Command::new("git").arg("-C").arg(&repo).args(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "one"]).status().unwrap();
+    let repo_s = repo.to_string_lossy().into_owned();
+    let fdir = sb.base.join("nimitz").join("main");
+    let f = fdir.join("fleet.toml");
+    std::fs::write(&f, format!("{}\n[machines.oldbox]\nhostname = \"old-host\"\n", std::fs::read_to_string(&f).unwrap())).unwrap();
+    std::fs::create_dir_all(fdir.join("machines")).unwrap();
+    std::fs::write(fdir.join("machines").join("oldbox.json"), "{\"nimitz\": \"0.5.1\", \"seen\": 1.0}").unwrap();
+    // a writer: 0.5 suffices
+    let r = sb.run(&["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(std::fs::read_to_string(&f).unwrap().contains("min_nimitz = \"0.5.0\""));
+    // the first reader: oldbox runs 0.5.1
+    let reader = ["aide", "new", "MAIN/@REF", "--dir", repo_s.as_str(), "--types", "wiki.query.v1", "--snapshot", "--mode", "default"];
+    let mut a = reader.to_vec();
+    a.push("--plan");
+    let r = sb.run(&a);
+    assert!(r.code != 0 && r.out.contains("(aide.machines)") && r.out.contains("0.6.0") && r.out.contains("oldbox"), "{}", r.out);
+    let mut a = reader.to_vec();
+    a.extend(["--force", "--yes"]);
+    let r = sb.run(&a);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(std::fs::read_to_string(&f).unwrap().contains("min_nimitz = \"0.6.0\""), "{}", std::fs::read_to_string(&f).unwrap());
+    // the reader gone: 0.5.0 again
+    let r = sb.run(&["aide", "rm", "MAIN/@REF", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(std::fs::read_to_string(&f).unwrap().contains("min_nimitz = \"0.5.0\""));
+}

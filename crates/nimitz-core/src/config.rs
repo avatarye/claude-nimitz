@@ -1065,6 +1065,9 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
                 // 0.4 machine reads the fleet again
                 if c.aide.is_empty() {
                     (c.format, c.min_nimitz) = (None, None);
+                } else {
+                    let step = crate::formats::artifact("fleet").and_then(|a| a.steps.iter().find(|s| s.to == 2));
+                    c.min_nimitz = Some(fleet_min_nimitz(&c, step.and_then(|s| s.min_nimitz)));
                 }
                 plan.steps.push(step_write(Some(id.clone()), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings without the aide"));
                 if def.snapshot {
@@ -1079,6 +1082,20 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
         },
     }
     plan
+}
+
+/// The nimitz a snapshot reader needs: 0.5 refuses `snapshot = true`.
+pub const READER_MIN_NIMITZ: &str = "0.6.0";
+
+/// The `min_nimitz` a fleet with aides is stamped with: the format's (0.5.0),
+/// or `READER_MIN_NIMITZ` while it has a snapshot reader; a higher one already
+/// there (a later nimitz's) stays.
+fn fleet_min_nimitz(c: &FleetConfig, format_min: Option<&str>) -> String {
+    let need = if c.aide.iter().any(|a| a.snapshot) { READER_MIN_NIMITZ } else { format_min.unwrap_or("0.5.0") };
+    match c.min_nimitz.as_deref() {
+        Some(had) if crate::compat::older(need, had) && crate::compat::older(READER_MIN_NIMITZ, had) => had.to_string(),
+        _ => need.to_string(),
+    }
 }
 
 /// `nimitz aide new|set F/@NAME` (aide.md section 3): the definition checked
@@ -1160,15 +1177,19 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
         [] => refuse(&mut plan, "config.invalid", format!("{id} has no folder: --dir <its repo> (on this machine, or --machine <label>)"), None, Some(id.clone())),
         _ => refuse(&mut plan, "config.invalid", format!("{id} has folders on {} machines; one machine runs an aide", def.dirs.len()), None, Some(id.clone())),
     }
-    // the first aide makes the fleet unreadable to nimitz 0.4: every machine first
-    if f.config.aide.is_empty() {
-        let behind = crate::formats::machine_issues(&f);
+    // the first aide makes the fleet unreadable to nimitz 0.4, the first
+    // reader to nimitz 0.5 (it refuses `snapshot`): every machine first
+    let first_reader = def.snapshot && !f.config.aide.iter().any(|a| a.snapshot);
+    if f.config.aide.is_empty() || first_reader {
+        let need = if first_reader { READER_MIN_NIMITZ } else { "0.5.0" };
+        let judged = FleetOnDisk { config: FleetConfig { min_nimitz: Some(need.into()), ..f.config.clone() }, ..f.clone() };
+        let behind = crate::formats::machine_issues(&judged);
         if !behind.is_empty() && !force {
             let names: Vec<String> = behind.iter().map(|i| i.message.split(':').next().unwrap_or("").trim_start_matches("machine ").to_string()).collect();
             refuse(
                 &mut plan,
                 "aide.machines",
-                format!("{}'s first aide makes its fleet.toml unreadable to nimitz before 0.5.0, and {} of its machines ({}) has not run nimitz >= 0.5.0 here", id.fleet(), names.len(), names.join(", ")),
+                format!("{}'s first {} makes its fleet.toml unreadable to nimitz before {need}, and {} of its machines ({}) has not run nimitz >= {need} here", id.fleet(), if first_reader { "snapshot reader" } else { "aide" }, names.len(), names.join(", ")),
                 Some("update nimitz on each and run any nimitz command there (nimitz doctor lists them); --force is the user's alone, when they know those machines will not load this fleet".into()),
                 Some(id.clone()),
             );
@@ -1185,9 +1206,7 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
     // the format that holds an aide, with the nimitz that reads it
     let step = crate::formats::artifact("fleet").and_then(|a| a.steps.iter().find(|s| s.to == 2));
     c.format = Some(c.format.unwrap_or(1).max(2));
-    if c.min_nimitz.is_none() {
-        c.min_nimitz = step.and_then(|s| s.min_nimitz).map(str::to_string);
-    }
+    c.min_nimitz = Some(fleet_min_nimitz(&c, step.and_then(|s| s.min_nimitz)));
     if c != f.config {
         plan.steps.push(step_write(Some(id.clone()), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings with the aide (format 2)"));
     }

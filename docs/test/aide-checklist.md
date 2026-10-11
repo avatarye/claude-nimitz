@@ -9,12 +9,14 @@ fleet migrates. Each line: what to do, what you should see.
 
 1. `nimitz fleet new TRIAL --machine <this machine> --yes`, then
    `git clone /mnt/data/shared/nimitz-knowledge-base ~/trial-kb`.
-2. `nimitz aide new TRIAL/@KB --dir ~/trial-kb --types wiki.note.v1 --brief
-   AIDE-KB.md --plan`: the plan shows one write (format 2) and one trust;
-   `--yes`.
+2. `nimitz aide new TRIAL/@KB --dir ~/trial-kb --types wiki.note.v1
+   --plan`: the plan shows one write (format 2) and one trust; `--yes`. (The
+   KB's own CLAUDE.md tells each aide its skill; a `--brief <file>` in the
+   repo is for standing instructions of your own.)
 3. `nimitz aide new TRIAL/@REF --dir ~/trial-kb --types wiki.query.v1
-   --snapshot --mode default --brief AIDE-REF.md --yes`: the snapshot under
-   `~/.local/state/nimitz/aides/TRIAL%2F@REF/snapshot`, and its trust.
+   --snapshot --mode default --plan -v`: the write, the snapshot step and its
+   trust; `--yes` makes the snapshot under
+   `~/.local/state/nimitz/aides/TRIAL%2F@REF/snapshot`.
 4. `nimitz start TRIAL --plan`, then `--yes`: the admiral, then both aides,
    pinned, on sonnet.
 
@@ -67,5 +69,6 @@ fleet migrates. Each line: what to do, what you should see.
 
 18. `nimitz stop TRIAL --yes`; `nimitz aide rm TRIAL/@REF --yes`,
     `nimitz aide rm TRIAL/@KB --yes` (format 1 again); `nimitz fleet rm TRIAL`;
-    `nimitz trust` forget of `~/trial-kb` and the snapshot (or leave them);
+    the trust entries of `~/trial-kb` and of the snapshot stay in
+    `~/.claude.json` (remove them by hand if you like: nimitz only adds trust);
     `rm -rf ~/trial-kb`.

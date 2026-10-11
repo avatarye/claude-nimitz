@@ -161,17 +161,19 @@ follows its rules at every session start.
 
 **Update every machine first.** A nimitz before 0.5.0 that shares the fleet
 folder cannot load a fleet.toml holding `[[aide]]`, and reads a registry
-that holds an aide as corrupt (it moves it aside). Update every machine to
-0.5.0 before you add an aide, and do not go back below 0.5.0 after one ran:
+that holds an aide as corrupt (it moves it aside); a nimitz 0.5 refuses a
+read-only reader (`snapshot = true`). Update every machine to 0.6.0 before you
+add an aide, and do not go back below 0.5.0 after one ran:
 a 0.4.x on the migrated registry moves it aside when it holds an aide, and
 otherwise rewrites it without the `min_nimitz` stamp (an early 0.4.0 build
 also without each lineage entry's `home`, which keeps two homes' bindings apart).
-`nimitz doctor` names each machine of the fleet no 0.5.0 was seen on, and
-`aide new` refuses a fleet's first aide while there is one (`aide.machines`;
-`--force` is yours alone). It sees only the machines `[machines]` lists: a
+`nimitz doctor` names each machine of the fleet that runs too old a nimitz,
+and `aide new` refuses a fleet's first aide while a machine has not run 0.5,
+and its first reader while one has not run 0.6 (`aide.machines`; `--force` is
+yours alone). It sees only the machines `[machines]` lists: a
 machine that reads the fleet folder without a label there is not checked. `aide new` stamps fleet.toml (`format = 2`, `min_nimitz =
-"0.5.0"`): a later nimitz that needs more is then refused with "update nimitz
-here" instead of misreading the file. `aide rm` of the last aide takes the
+"0.5.0"`, or `"0.6.0"` while it has a reader): an older nimitz is then
+refused with "update nimitz here" instead of misreading the file. `aide rm` of the last aide takes the
 stamp off again (format 1, readable by 0.4).
 
 ### Two rules
