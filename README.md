@@ -136,9 +136,14 @@ policy = "open"                  # open | fleet | parent
 | Read an answer later | `nimitz inbox result F/@REF <id> [--token T]` |
 | Retry or drop a dead letter | `nimitz inbox retry F/@KB <id>` · `nimitz inbox drop F/@KB <id>` |
 
-Limits for now: no doorbell yet, so an aide wakes on its 15-minute cron, a
-message or a start; no read-only snapshot aide yet (`snapshot = true` is
-refused). An aide
+An aide wakes four ways: a post rings it (a `[nimitz inbox]` line through
+its own socket, once per burst until it drains); its session start shows its
+inbox; its own 15-minute cron; and the piggyback, which every member's hooks
+and `status`/`check` run at most every 30 s: it rings an idle aide whose work
+has waited two minutes, returns a lapsed lease's item to the queue (or makes
+it a dead letter its admiral hears of), and pushes an answer whose `ask
+--wait` gave up. `check` names `inbox.dead`, `inbox.stuck` and `inbox.full`.
+No read-only snapshot aide yet (`snapshot = true` is refused). An aide
 runs in its own permission mode (default `acceptEdits`; `bypassPermissions`,
 `dontAsk` and `auto` are refused: they would skip its rules), with git only in
 its folder and never `push`.

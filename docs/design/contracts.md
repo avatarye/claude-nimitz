@@ -498,6 +498,10 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `mux.failed` | the mux returned an error |
 | `aide.machines` | `aide new` of a fleet's first aide while a machine of its `[machines]` has run no nimitz >= 0.5.0 (it would stop loading the fleet); fix: update it and run any nimitz there, or `--force` (the user's) |
 | `aide.model` | the aide's model is not in this machine's `availableModels` (Claude Code would run the default): `aide new|set` refuses, `check` reports it on the machine that runs it |
+| `inbox.dead` | (check, Warn) an aide's dead letters; fix `nimitz inbox retry|drop <aide> <item>` |
+| `inbox.stuck` | (check, Warn) a live, idle aide whose oldest pending item has waited over 10 minutes (its doorbell missed); fix `nimitz signal <aide> "drain your inbox"` |
+| `inbox.full` | (check, Warn) pending plus claimed at the inbox's `depth_cap`: posts are refused (exit 4) until it drains |
+| `machine.aide` | (`machine rm`, Warn) an aide runs on the machine removed: it runs nowhere after, and its inbox there is left |
 | `attach.nested` | `nimitz attach` from inside a Claude Code session: a live Claude Code process above it (its session file, whose `procStart` matches the process: a stale file is no session), fix: a plain terminal or `nimitz start <id> -p`; or `CLAUDECODE` set with none above (a terminal started from one inherits it), fix: `env -u CLAUDECODE nimitz attach <id>` |
 | `comms.denied` | a signal the chain of command or `comms` rule forbids |
 | `config.pending` | a config change is waiting for a relaunch |
