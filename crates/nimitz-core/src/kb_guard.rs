@@ -308,6 +308,11 @@ mod tests {
         let read = json!({"hook_event_name": "PreToolUse", "agent_type": "nimitz:kb-ref", "tool_name": "Read", "tool_input": {"file_path": kb.join("wiki/x.md").to_string_lossy()}}).to_string();
         assert!(hook(&env, &read, &whole).contains("\"allow\""), "{}", hook(&env, &read, &whole));
         assert!(hook(&env, &read, &partial).contains("no knowledge base"));
+        // labels that disagree (an id with no role, or another role): unverified, no KB
+        for bad in [vec![("NIMITZ_ID", "MAIN/ARGOS/ARGOS")], vec![("NIMITZ_ID", "MAIN/ARGOS/ARGOS"), ("NIMITZ_ROLE", "admiral")]] {
+            let v: HashMap<String, String> = bad.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            assert!(hook(&env, &read, &v).contains("no knowledge base"), "{bad:?}");
+        }
         assert_eq!(call(Some("general-purpose"), "Bash", json!({"command": "ls"})), "");
         assert_eq!(call(Some("kb-scribe"), "Write", json!({"file_path": "/tmp/x"})), "", "a bare name is a project's agent, not the plugin's");
         let a: Value = serde_json::from_str(&call(Some("nimitz:kb-scribe"), "Bash", json!({"command": "nimitz kb path"}))).unwrap();

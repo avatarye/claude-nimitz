@@ -93,7 +93,7 @@ a string test that keeps it cheap):
   KB but `.git`; nothing else.
 - Paths are judged real (links followed as far as they exist). The KB is the
   session's fleet's (its labels judged as `caller_from_env` judges them);
-  with none, only Bash
+  with none, only `nimitz kb path`
   passes, and `nimitz kb path` says why, so the agent stops.
 
 It matches only the plugin's own names: a project's `.claude/agents/kb-scribe.md`

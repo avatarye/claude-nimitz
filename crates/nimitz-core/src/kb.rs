@@ -310,6 +310,9 @@ pub fn status(dir: &Path) -> Result<String, String> {
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: git is not run until the user looks at it"));
     }
+    // a rebase or merge under way, or no branch: a writer stops here, before
+    // it writes anything into the user's operation
+    busy(dir)?;
     let mut c = git(dir);
     c.args(["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]);
     Ok(clip_lines(&run(c)?, GREP_MAX_LINES))

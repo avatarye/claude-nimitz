@@ -30,7 +30,7 @@ The note, as JSON from the calling session:
 
 ## Procedure
 
-1. **The tree.** Run `nimitz kb status` (`git status --porcelain`).
+1. **The tree.** Run `nimitz kb status` (`git status --porcelain`). If it fails (a rebase or merge under way in the clone, no branch checked out), write nothing and refuse with its reason.
    - A `*conflicted copy*` file anywhere, from a Dropbox conflict: refuse with "dropbox conflict: <files>".
    - Remember which paths are already dirty: they are the user's hand edits. If a page this note must change is among them, refuse with "repo dirty: <files>".
 2. **Secret check.** If the body, title, tags or links hold anything secret-shaped (API keys and tokens, `AKIA...`, JWTs, PEM blocks, `Authorization:` headers, `KEY=value` credentials, long high-entropy strings), write nothing and refuse with "secret-shaped content". Never quote the secret.
@@ -55,9 +55,10 @@ The note, as JSON from the calling session:
    - `title` is the note's title, else the body's first line, at most 72 characters.
    - **`--paths` must be complete:** the capture file, every page written, `wiki/_index.md` and `wiki/_log.md`. A file left out stays uncommitted.
    - "already committed" means this note was ingested before. Report `duplicate`; nimitz prints the earlier commit.
+   - `committed <sha>` followed by `[WARN] not synced: ...` is still `ingested`: the commit stands and is pushed later. Put the warning in `reason`; never restore after it.
 9. **Report** (see *Output*).
 
-**A mistake in the capture:** an existing `raw/` file is never changed, not even yours: `nimitz kb restore --paths raw/captures/<file>`, then write it again as `<file>-2`.
+**A mistake in the capture:** an existing `raw/` file is never changed, not even yours: `nimitz kb restore --paths raw/captures/<name>.md`, then write it again as `<name>-2.md`. Capture names are `YYYY-MM-DD-<kebab-title>.md`, of `a-z`, `0-9` and `-` only (nimitz refuses a name another file system would read as another).
 
 **On any failure after the capture is written:** run `nimitz kb restore --paths <everything you wrote>`, then refuse with a one-line reason. The tree is left as you found it.
 

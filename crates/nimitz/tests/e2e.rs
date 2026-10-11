@@ -1944,22 +1944,23 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     let last_reply = |text: &str| -> String {
         text.lines()
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|v| v["type"] == "assistant" && v["isSidechain"] != true && v["parent_tool_use_id"].is_null())
+            .filter(|v| v["type"] == "assistant" && v["isSidechain"] != true)
             .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
             .filter_map(|c| c["text"].as_str().map(str::to_string))
             .last()
             .unwrap_or_default()
     };
-    let noted = || !git(&kb, &["log", "--format=%H", "-E", "--grep=^note: [0-9a-f]{64}$", &format!("{base_sha}..HEAD")]).trim().is_empty();
-    let (sid, text) = w
+    let noted = || git(&kb, &["log", "--format=%H", "-E", "--grep=^note: [0-9a-f]{64}$", &format!("{base_sha}..HEAD")]).lines().next().map(str::to_string);
+    let text = w
         .wait(1500, || {
             let m = w.member(&ship).filter(|m| m["status"] == "Idle")?;
             let sid = m["session"]["session_id"].as_str()?.to_string();
             let text = std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid)?).ok()?;
-            (noted() && last_reply(&text).contains("citations")).then_some((sid, text))
+            let sha = noted()?;
+            // (any of its replies since: a short one may follow kb-ref's block)
+            text.contains(&sha[..12]).then_some(text)
         })
-        .expect("the ship's turns ended with the note committed and kb-ref's answer");
-    let _ = sid;
+        .expect("the ship's turns ended with the note committed and kb-ref's answer at its commit");
     // one commit for the note, with its trailers, pushed
     let commits: Vec<String> = git(&kb, &["log", "--format=%H", "-E", "--grep=^note: [0-9a-f]{64}$", &format!("{base_sha}..HEAD")]).lines().map(str::to_string).collect();
     assert_eq!(commits.len(), 1, "one note, one commit: {commits:?}\n{}\n--- the ship's transcript tail:\n{}", git(&kb, &["log", "--oneline", "-5"]), text.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>());
@@ -1970,7 +1971,15 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     assert!(git(&remote, &["branch", "--contains", &commits[0]]).trim().len() > 0, "pushed to the remote");
     assert!(git(&kb, &["status", "--porcelain"]).trim().is_empty(), "nothing left uncommitted in the clone");
     // the ship's last reply: kb-ref's answer, from the note, at the note's commit
-    let last = last_reply(&text);
+    let last = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["type"] == "assistant" && v["isSidechain"] != true)
+        .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
+        .filter_map(|c| c["text"].as_str().map(str::to_string))
+        .filter(|t| t.contains("citations"))
+        .last()
+        .unwrap_or_else(|| last_reply(&text));
     assert!(last.contains("citations") && last.to_lowercase().contains("dozen") && last.contains(&commits[0][..12]), "the answer: the marker's fact at the note's commit:\n{last}");
     let ev = w.events();
     assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {:?}", ev.iter().filter(|e| e["event"] == "PermissionRequest").collect::<Vec<_>>());
