@@ -400,17 +400,28 @@ pub fn read_frontmatter(text: &str, allowed: &[&str]) -> Result<(Vec<(String, St
             _ => {
                 // a value as plain text: a list (`[a, b]`, tools only, as `a, b`),
                 // or a string; never a YAML form nimitz would turn into a different one
+                // (plain: no YAML form at its start, no comment, not empty or null)
+                let plain = |x: &str| !x.is_empty() && !x.starts_with(['[', '{', '&', '*', '!', '%', '@', '`', '#', '|', '>', '-', '?', ',', ']', '}', '"', '\'', '~']) && !x.contains(" #") && !matches!(x, "null" | "Null" | "NULL");
                 let v = if let Some(list) = v.strip_prefix('[').and_then(|x| x.strip_suffix(']')).filter(|_| k == "tools") {
-                    list.split(',').map(|x| x.trim().trim_matches('"').trim_matches('\'')).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(", ")
-                } else if let Some(q) = v.strip_prefix('"').and_then(|x| x.strip_suffix('"')) {
+                    let unquote = |x: &str| -> String {
+                        let x = x.trim();
+                        x.strip_prefix('"').and_then(|y| y.strip_suffix('"')).or_else(|| x.strip_prefix('\'').and_then(|y| y.strip_suffix('\''))).unwrap_or(x).to_string()
+                    };
+                    let items: Vec<String> = list.split(',').map(unquote).collect();
+                    let items: Vec<&str> = items.iter().map(String::as_str).collect();
+                    if items.iter().any(|x| !plain(x)) {
+                        return Err(format!("tools: {v:?} is no plain list of tool names"));
+                    }
+                    items.join(", ")
+                } else if let Some(q) = v.strip_prefix('"').and_then(|x| x.strip_suffix('"')).filter(|q| !q.is_empty()) {
                     if q.contains('\\') || q.contains('"') {
                         return Err(format!("{k}: an escape in a quoted value (write it plain)"));
                     }
                     q.to_string()
-                } else if let Some(q) = v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')) {
+                } else if let Some(q) = v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')).filter(|q| !q.is_empty() && !q.replace("''", "").contains('\'')) {
                     q.replace("''", "'")
-                } else if v.starts_with(['[', '{', '&', '*', '!', '%', '@', '`']) || v.contains(" #") {
-                    return Err(format!("{k}: {v:?} is no plain value (a list, a mapping, an anchor, a tag or a comment)"));
+                } else if !plain(v) {
+                    return Err(format!("{k}: {v:?} is no plain value (empty, a list, a mapping, an anchor, a tag, a comment, a quote left open)"));
                 } else {
                     v.to_string()
                 };
@@ -884,7 +895,7 @@ mod tests {
         let (pairs, _) = read_frontmatter("---\nname: a\ndescription: d\ntools: [Bash, \"Read\"]\nmodel: 'it''s'\n---\nb\n", &AGENT_KEYS).unwrap();
         assert_eq!(pairs[2], ("tools".to_string(), "Bash, Read".to_string()));
         assert_eq!(pairs[3], ("model".to_string(), "it's".to_string()));
-        for bad in ["model: sonnet # fast", "model: {a: 1}", "model: &x y", "model: !!str y", "description: \"say \\\"hi\\\"\"", "description: [a]"] {
+        for bad in ["model: sonnet # fast", "model: {a: 1}", "model: &x y", "model: !!str y", "description: \"say \\\"hi\\\"\"", "description: [a]", "model: # inherit", "tools: []", "tools: [a # c]", "model: \"abc", "model: 'it's'", "model: ~", "model: null", "model:", "model: - a", "model: > text"] {
             assert!(read_frontmatter(&format!("---\nname: a\n{bad}\n---\nb\n"), &AGENT_KEYS).is_err(), "{bad}");
         }
         assert_eq!(read_frontmatter("---  \nname: a\n---\nbody\n", &AGENT_KEYS).unwrap().1, "body\n");
