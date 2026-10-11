@@ -2117,6 +2117,44 @@ fn s13_p_tab_takes_its_legacy_tab_as_its_own_and_never_a_default_tab() {
 }
 
 #[test]
+fn s14_p_tab_for_an_admiral_a_taken_tab_and_under_f() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    // an admiral: its own tab MAIN.ADMIRAL
+    let r = sb.run(&["start", "MAIN", "--only", "-p", "--tab", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("its own tab MAIN.ADMIRAL")), "{}", r.out);
+    // a split beside its commodore, then -f --tab: the relaunch ends the split's
+    // attach (said so), nothing is typed into it, its own tab is made
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--yes"]);
+    sb.attach_all();
+    let split = sb.pane_attaching("MAIN/ARGOS/CLEAN");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-f", "-p", "--tab", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(tab.elsewhere)") && r.out.contains("its attach there ends with the relaunch"), "{}", r.out);
+    let n = sb.runs().len();
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-f", "-p", "--tab", "--yes"]);
+    assert!(!sb.runs()[n..].iter().any(|(p, _)| p == &split), "nothing typed into the split:\n{}", sb.calls());
+    assert_eq!(sb.tabs("MAIN.ARGOS.CLEAN").len(), 1, "{}", sb.world());
+    // its own tab taken (yazi in its only pane): tab.taken, nothing typed, no second tab
+    let tab = sb.tabs("MAIN.ARGOS.CLEAN")[0]["tab_id"].clone();
+    sb.herdr_world(|w| {
+        for p in w["panes"].as_array_mut().unwrap().iter_mut().filter(|p| p["tab_id"] == tab) {
+            p["foreground"] = json!(["yazi"]);
+            p["session_id"] = Value::Null;
+        }
+    });
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert!(r.out.contains("(tab.taken)") && r.out.contains("yazi"), "{}", r.out);
+    let (tabs, n) = (sb.creates("tab"), sb.runs().len());
+    let _ = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    assert_eq!((sb.creates("tab"), sb.runs().len()), (tabs, n), "{}", sb.calls());
+}
+
+#[test]
 fn s12_tab_goes_with_p_and_is_yours() {
     let sb = Sb::new(true);
     lay(&sb);
