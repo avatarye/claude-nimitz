@@ -782,6 +782,13 @@ impl Queue {
         Ok(item)
     }
 
+    /// The item `by` holds now (claimed, its lease not run out): what `done
+    /// --commit` checks before it commits anything.
+    pub fn holding(&self, id: &str, by: Option<&str>, now: f64) -> Result<Item, Refusal> {
+        let _l = self.lock()?;
+        self.claimed(id, by, now)
+    }
+
     /// Extend the lease of a claimed item.
     pub fn heartbeat(&self, id: &str, by: Option<&str>, now: f64) -> Result<Item, Refusal> {
         let _l = self.lock()?;

@@ -229,18 +229,41 @@ fn heartbeat(ctx: &Ctx) -> Result<i32, Refusal> {
 }
 
 fn done(ctx: &Ctx) -> Result<i32, Refusal> {
-    ctx.args.allow(&["--result", "--result-file"]).map_err(usage)?;
+    ctx.args.allow(&["--result", "--result-file", "--commit", "--title", "--paths", "--pages"]).map_err(usage)?;
     let (id, item) = item_arg(ctx)?;
     let s = me(ctx);
     the_aide(&s, &id, "done")?;
     let q = open(ctx, &id)?;
+    // a writer's commit, made by nimitz (aide.md 6.3): the item's trailer
+    // first (an earlier pass committed and died before `done`), else the
+    // named paths staged and committed, then `done` with {commit, pages}
+    let commit = if ctx.args.flag("--commit") { Some(commit_item(ctx, &q, &id, &item, &s)?) } else { None };
     let result = match (ctx.args.value("--result"), ctx.args.value("--result-file")) {
         (Some(r), None) => Some(r.to_string()),
         (None, Some(f)) => Some(std::fs::read_to_string(f).map_err(|e| usage(format!("--result-file {f}: {e}")))?),
         (None, None) => None,
         _ => return Err(usage("give the result once: --result JSON or --result-file F".into())),
     };
-    let result = result.map(|r| serde_json::from_str::<Value>(&r).map_err(|e| usage(format!("the result is not JSON: {e}")))).transpose()?;
+    let mut result = result.map(|r| serde_json::from_str::<Value>(&r).map_err(|e| usage(format!("the result is not JSON: {e}")))).transpose()?;
+    if let Some((sha, again)) = commit {
+        let pages: Vec<String> = ctx.args.value("--pages").map(|p| p.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default();
+        let mut r = match result.take() {
+            Some(Value::Object(m)) => m,
+            Some(_) => return Err(usage("with --commit, --result is a JSON object (commit and pages are added to it)".into())),
+            None => Default::default(),
+        };
+        r.insert("commit".into(), json!(sha));
+        if !pages.is_empty() {
+            r.insert("pages".into(), json!(pages));
+        }
+        if again {
+            r.insert("already_committed".into(), json!(true));
+        }
+        result = Some(Value::Object(r));
+        if !out::json_mode() {
+            out::ok(&format!("{} {sha}", if again { "already committed:" } else { "committed" }));
+        }
+    }
     let t = now();
     let i = q.done(&item, holder(&s).as_deref(), result, t)?;
     let delivery = if i.reply_to.is_some() { Some(queue::deliver(&ctx.env, &q, &i, t)) } else { None };
@@ -255,6 +278,40 @@ fn done(ctx: &Ctx) -> Result<i32, Refusal> {
         }
     }
     Ok(0)
+}
+
+/// `done --commit`: the item still held by the caller, then its commit:
+/// (sha, whether an earlier pass had made it).
+fn commit_item(ctx: &Ctx, q: &Queue, id: &Id, item: &str, s: &Sender) -> Result<(String, bool), Refusal> {
+    let held = q.holding(item, holder(s).as_deref(), now())?;
+    let dir = aide_folder(ctx, id).map_err(|e| no_commit(format!("{id}: {e}")))?;
+    if let Some(sha) = nimitz_core::kb::committed(&dir, &held.reference).map_err(|e| no_commit(format!("git log in {}: {e}", dir.display())))? {
+        return Ok((sha, true));
+    }
+    let paths: Vec<String> = ctx.args.value("--paths").map(|p| p.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default();
+    let title = ctx.args.value("--title").map(str::to_string).or_else(|| held.payload.get("title").and_then(Value::as_str).map(str::to_string)).unwrap_or_else(|| "a note".into());
+    let sha = nimitz_core::kb::commit(&dir, &id.0, &held.reference, &title, &held.sender.line(), &paths).map_err(|e| no_commit(format!("nothing committed: {e}")))?;
+    Ok((sha, false))
+}
+
+fn no_commit(why: String) -> Refusal {
+    Refusal { code: "inbox.commit", exit: 1, message: why }
+}
+
+/// The folder an aide reads on this machine: its repo (a snapshot reader's
+/// snapshot comes in S4b).
+pub fn read_folder(ctx: &Ctx, id: &Id) -> Result<std::path::PathBuf, String> {
+    let (f, _) = queue::find(&ctx.env, id)?;
+    nimitz_core::config::member_dir(&ctx.env, &f, id).ok_or_else(|| format!("{id} has no folder on this machine"))
+}
+
+/// The aide's own folder on this machine (a writer's repo).
+pub fn aide_folder(ctx: &Ctx, id: &Id) -> Result<std::path::PathBuf, String> {
+    let (f, def) = queue::find(&ctx.env, id)?;
+    if def.snapshot {
+        return Err("a snapshot reader commits nothing".into());
+    }
+    nimitz_core::config::member_dir(&ctx.env, &f, id).ok_or_else(|| "it has no folder on this machine".to_string())
 }
 
 fn fail(ctx: &Ctx) -> Result<i32, Refusal> {
