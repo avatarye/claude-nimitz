@@ -280,8 +280,43 @@ pub fn aide_issues(env: &Env, m: &Member, here: bool, parent_live: bool) -> Vec<
             });
         }
     }
+    // its inbox (aide.md section 9), where it runs: dead letters, work that
+    // waits while it idles (the doorbell missed), a full inbox
+    if let Some(q) = m.inbox.as_ref().filter(|_| here) {
+        if let Some(d) = q.dead.first() {
+            out.push(Issue {
+                code: "inbox.dead".into(),
+                severity: Severity::Warn,
+                message: format!("{id} has {} dead letter(s): item {} ({}) failed for good: {}", q.dead.len(), d.id.trim_start_matches('0'), d.kind, d.reason),
+                fix: Some(format!("nimitz inbox retry {id} {}  # or: nimitz inbox drop {id} {}", d.id.trim_start_matches('0'), d.id.trim_start_matches('0'))),
+                id: Some(id.clone()),
+            });
+        }
+        let oldest = q.oldest_age_s.unwrap_or(0.0);
+        if q.pending > 0 && oldest > STUCK_S && live.is_some() && m.status == Status::Idle {
+            out.push(Issue {
+                code: "inbox.stuck".into(),
+                severity: Severity::Warn,
+                message: format!("{id} idles while {} item(s) wait, the oldest {}m: its doorbell did not wake it", q.pending, (oldest / 60.0) as i64),
+                fix: Some(format!("nimitz signal {id} \"drain your inbox\"")),
+                id: Some(id.clone()),
+            });
+        }
+        if q.depth_cap > 0 && q.pending + q.claimed.len() >= q.depth_cap {
+            out.push(Issue {
+                code: "inbox.full".into(),
+                severity: Severity::Warn,
+                message: format!("{id}'s inbox is full ({} of {}): posts are refused until it drains", q.pending + q.claimed.len(), q.depth_cap),
+                fix: Some(format!("nimitz aide set {id} --depth <more>  # or let it drain")),
+                id: Some(id.clone()),
+            });
+        }
+    }
     out
 }
+
+/// An aide idle while its oldest item waited this long is stuck (`inbox.stuck`).
+pub const STUCK_S: f64 = 600.0;
 
 /// `nimitz check [<id>]`: the target, every member under it (a fleet's
 /// squadrons and ships, a squadron's ships), and its parents.

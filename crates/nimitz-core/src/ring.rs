@@ -53,9 +53,9 @@ pub fn drained(q: &Queue, now: f64) {
     save(q, &s);
 }
 
-/// The aide's live session on this machine: (session id, pid, status), by
-/// the registry's job and the session file that runs it.
-pub fn aide_session(env: &Env, aide: &Id) -> Option<(String, i64, String)> {
+/// The aide's live session on this machine: (session id, pid, status, job),
+/// by the registry's job and the session file that runs it.
+pub fn aide_session(env: &Env, aide: &Id) -> Option<(String, i64, String, String)> {
     let job = crate::registry::load(env).identities.get(&aide.0)?.job.clone()?;
     for e in std::fs::read_dir(env.claude_home.join("sessions")).into_iter().flatten().flatten() {
         let Some(v) = std::fs::read(e.path()).ok().and_then(|b| crate::evidence::first_json(&b)) else { continue };
@@ -63,7 +63,7 @@ pub fn aide_session(env: &Env, aide: &Id) -> Option<(String, i64, String)> {
         if v.get("jobId").and_then(Value::as_str) == Some(job.as_str()) && pid > 1 && crate::evidence::pid_alive(pid) {
             let sid = v.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_string();
             let status = if v.get("waitingFor").is_some_and(|w| !w.is_null()) { "waiting".to_string() } else { v.get("status").and_then(Value::as_str).unwrap_or("?").to_string() };
-            return Some((sid, pid, status));
+            return Some((sid, pid, status, job));
         }
     }
     None
@@ -91,7 +91,7 @@ pub fn ring(env: &Env, q: &Queue, why: Why, now: f64) -> Result<Option<String>, 
         (None, Some(_)) => false,
     };
     let aide = q.aide.clone();
-    let (sid, pid, status) = aide_session(env, &aide).ok_or_else(|| format!("{aide} is not live here: it wakes at its start"))?;
+    let (sid, pid, status, job) = aide_session(env, &aide).ok_or_else(|| format!("{aide} is not live here: it wakes at its start"))?;
     let text = match why {
         Why::Post { kind, from } => {
             if since.is_some_and(|s| s < COALESCE_S) && !drained_since {
@@ -106,7 +106,7 @@ pub fn ring(env: &Env, q: &Queue, why: Why, now: f64) -> Result<Option<String>, 
             format!("[nimitz inbox] {aide}: {pending} item(s) waiting, the oldest {}m. Drain your inbox.", (oldest_s / 60.0).floor() as i64)
         }
     };
-    if !crate::inbox::format_ok(crate::inbox::receiver_version(env, Some(pid), None).as_deref()) {
+    if !crate::inbox::format_ok(crate::inbox::receiver_version(env, Some(pid), Some(&job)).as_deref()) {
         return Err(format!("{aide}'s Claude Code predates the message line"));
     }
     let socks = crate::inbox::candidates(env, &sid, pid);
@@ -150,7 +150,9 @@ pub fn piggyback(env: &Env, now: f64) -> Vec<String> {
             if !q.dir.is_dir() {
                 continue; // never ran here: nothing waits
             }
-            let st = q.peek_status(now, false);
+            // the locked status housekeeps: a crashed aide's expired lease goes
+            // back to pending (or, out of tries, to a dead letter) here too
+            let st = q.status(now, false);
             match ring(env, &q, Why::Waiting { pending: st.pending, oldest_s: st.oldest_age_s.unwrap_or(0.0) }, now) {
                 Ok(Some(n)) => out.push(n),
                 Ok(None) | Err(_) => {}

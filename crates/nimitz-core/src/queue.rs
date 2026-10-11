@@ -1497,6 +1497,41 @@ mod tests {
         assert_eq!(q.status(103.0, false).undelivered, 0);
     }
 
+    /// The piggyback's late delivery (aide.md 13, from S1): an answer whose
+    /// `ask --wait` gave up (killed, or timed out) gets one push to the live
+    /// asker; one already tried, or still awaited, gets none.
+    #[cfg(unix)]
+    #[test]
+    fn the_piggyback_pushes_an_answer_nobody_waited_for_once() {
+        use std::io::Read;
+        let (td, env) = test_env();
+        let q = Queue::open(&env, &aide_id("HOME/@REF").unwrap(), limits(&["wiki.query.v1"]));
+        let me = std::process::id() as i64;
+        let sock = td.path().join(format!("{me}.sock"));
+        let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let sessions = env.claude_home.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join(format!("{me}.json")), json!({"pid": me, "sessionId": "s-live", "jobId": "jlive001", "version": "2.1.296"}).to_string()).unwrap();
+        crate::inbox::record(&env, "s-live", me, &sock.to_string_lossy());
+        let asker = Sender { kind: "session".into(), session: Some("s-live".into()), job: Some("jlive001".into()), verified: true, ..Default::default() };
+        let t = std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut s = String::new();
+            c.read_to_string(&mut s).unwrap();
+            s
+        });
+        let p = q.post(&asker, "wiki.query.v1", &json!({"question": "q"}), None, Some(100.0), 0.0).unwrap();
+        q.claim("ref", 1.0).unwrap();
+        q.done(&p.id, None, Some(json!({"answer": "late [[page]]"})), 2.0).unwrap();
+        // still awaited: nothing
+        assert!(crate::ring::redeliver(&env, &q, 50.0).is_empty());
+        // the wait is over and nothing returned it: one push
+        let notes = crate::ring::redeliver(&env, &q, 101.0);
+        assert!(notes.len() == 1 && notes[0].contains("delivered"), "{notes:?}");
+        assert!(t.join().unwrap().contains("late [[page]]"));
+        assert!(crate::ring::redeliver(&env, &q, 102.0).is_empty(), "once");
+    }
+
     #[test]
     fn limits_parse_durations_and_rates() {
         assert_eq!(duration("15m").unwrap(), 900.0);
