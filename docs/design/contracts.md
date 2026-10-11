@@ -496,6 +496,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `mux.nopane` | the mux cannot open a pane here |
 | `tab.taken` | the member's tab is open but its pane runs something else (another agent, a copy, the agent view, yazi): nothing is typed into it; fix: ctrl-z or quit it in that pane, then `nimitz open` |
 | `mux.failed` | the mux returned an error |
+| `attach.nested` | `nimitz attach` from inside a Claude Code session: a live Claude Code process above it (its session file, whose `procStart` matches the process: a stale file is no session), fix: a plain terminal or `nimitz start <id> -p`; or `CLAUDECODE` set with none above (a terminal started from one inherits it), fix: `env -u CLAUDECODE nimitz attach <id>` |
 | `comms.denied` | a signal the chain of command or `comms` rule forbids |
 | `config.pending` | a config change is waiting for a relaunch |
 | `layout.skip` | a member has no place in the layout |
@@ -823,6 +824,7 @@ chain order:
 | live, current worker, a pane shows it by an attach client on an older version (argv0 or the pane's foreground pid) | nothing typed; `attach.old` Info (fix: ctrl-z in pane P, then restore) |
 | live, a pane shows its job (any session of the job, or the exact `claude attach <job>` with no other agent in the pane) | nothing (`tab.renamed` / `tab.moved` Info when the label or workspace differ); with `--rename`, a `herdr tab rename <tab> <full label>` step for a tab under another name |
 | live, its full-label tab (loosely, `F.ADMIRAL` / `F.SQ.COMMODORE` / `F.SQ.SHIP`) has a shell pane, in its workspace first, else anywhere | `pane run claude attach <job>` there; a legacy short label (`COMMODORE`) or a default label (`1`) whose shell sits in the member's folder is renamed first; other tabs with the name: `tab.dup` Info |
+| `-p --tab`, the named member | only its own tab counts: a pane that shows it in another tab is left alone, nothing typed (`tab.elsewhere` Info), its legacy short-label tab in its workspace is its own (renamed); no split beside its commodore, no default-labelled tab claimed; else its full-label tab's shell, else a new tab |
 | live, its tab has no shell pane | `tab.taken` Error (fix: ctrl-z / quit X in pane P, then restore); the exact attach with another agent in the pane is `tab.agentview` (fix: close that pane); a foreground that could not be read is `tab.unreadable`; `--force` opens a second tab (`tab.dup` Warn), never for the agent view |
 | live, no tab | a new tab in its workspace (the workspace made when missing, its root tab claimed); a ship only when its recorded place says it was attached (`layout --ships`: every live ship) |
 | parked or stopped, a lead; a ship in the active set and not stopped; any ship with a row under `--all` | its shell tab's attach wakes it (one step; the SessionStart `resume` is verified, a `startup` is `history.lost`, a copy `lineage.broken`; the crash window first); else `sessions::wake_steps` (resume by exact id, or rm + relaunch for a drifted name or missing labels), then the tab as above. A lost transcript is `history.lost` (no tab). `turn.interrupted` / `prompt.lost` Info from the recorded status |

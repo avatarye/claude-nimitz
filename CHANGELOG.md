@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.1 (unreleased)
+
+### New
+
+- **`nimitz start <id> -p --tab`**: the member always in its own tab
+  (`F.SQ.SHIP` in workspace `F.SQ`, a lead's own tab), reused or created, then
+  attached and focused; a pane that shows it elsewhere is left alone
+  (`tab.elsewhere`), its 0.3.0 short-label tab is renamed. Plain `-p` keeps
+  its order. Yours alone.
+- **`nimitz attach <id>`**: this terminal attached to the member's exact job
+  (`claude attach <short id>`, never a name), woken first by start's plan when
+  it is down. ctrl-z detaches, ← opens the agent view. Yours alone; refused
+  inside a Claude Code session (`attach.nested`).
+
+### Fixed
+
+- A session file left by a crash whose pid another process now has is no
+  longer read as the Claude Code session above a command (Linux and Windows:
+  its `procStart` must match the process).
+
 ## 0.5.0
 
 Read **Upgrading** first: 0.5.0 migrates this machine's files on its first

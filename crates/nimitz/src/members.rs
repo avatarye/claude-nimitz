@@ -649,18 +649,27 @@ pub fn attach(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
     let id = parse_id(ctx.args.need(0, "id")?)?;
+    if ctx.force() {
+        return Err("--force does nothing for attach (a wake goes by start's plan: nimitz start <id> --only first)".into());
+    }
     let mut plan = Plan { summary: format!("attach {id}"), ..Default::default() };
     if ctx.caller != Caller::User {
         plan.refusals.push(refusal("authority", "`nimitz attach` is yours alone (it attaches your terminal)".into(), None, Some(id)));
         return Ok(finish_plan(ctx, &plan));
     }
-    let nested = if ctx.vars.get("CLAUDECODE").is_some_and(|v| !v.is_empty()) {
-        Some("CLAUDECODE is set".to_string())
-    } else {
-        nimitz_core::queue::session_above_id(&ctx.env, &ctx.vars).map(|sid| format!("session {} is above this process", &sid[..sid.len().min(8)]))
+    // a live Claude Code process above this one (its session file, checked
+    // to be that process); else CLAUDECODE alone, which a terminal or a Herdr
+    // server started from a Claude Code tool inherits: said so, with the way out
+    let nested = match nimitz_core::queue::session_above_id(&ctx.env, &ctx.vars) {
+        Some(sid) => Some((format!("this runs inside a Claude Code session (session {} is above this process)", &sid[..sid.len().min(8)]), format!("nimitz attach {id}  # from a plain terminal; or nimitz start {id} -p"))),
+        None if ctx.vars.get("CLAUDECODE").is_some_and(|v| !v.is_empty()) => {
+            let unset = if cfg!(windows) { format!("$env:CLAUDECODE = $null; nimitz attach {id}  # PowerShell") } else { format!("env -u CLAUDECODE nimitz attach {id}") };
+            Some(("CLAUDECODE is set, so this may run inside a Claude Code session, though none is above this process (a terminal started from one inherits it)".to_string(), format!("{unset}  # when this terminal is not inside Claude Code")))
+        }
+        None => None,
     };
-    if let Some(why) = nested {
-        plan.refusals.push(refusal("attach.nested", format!("this runs inside a Claude Code session ({why}); an attach inside it nests one Claude Code in another"), Some(format!("nimitz attach {id}  # from a plain terminal; or nimitz start {id} -p")), Some(id)));
+    if let Some((why, fix)) = nested {
+        plan.refusals.push(refusal("attach.nested", format!("{why}; an attach inside it nests one Claude Code in another"), Some(fix), Some(id)));
         return Ok(finish_plan(ctx, &plan));
     }
     let snap = ctx.snap();
@@ -703,10 +712,11 @@ pub fn attach(ctx: &Ctx) -> Result<i32, String> {
 
 /// Become `argv` (`claude attach <job>`): exec on Unix; elsewhere spawn, wait
 /// and exit with its code. `NIMITZ_ATTACH_DRY=1` prints the argv instead and
-/// exits 0: for the tests only (they never hand the terminal to a claude).
+/// exits 0: for the tests only (they never hand the terminal to a claude); a
+/// release build never reads it.
 fn exec_attach(ctx: &Ctx, argv: &[String]) -> i32 {
     use std::io::Write;
-    if ctx.vars.get("NIMITZ_ATTACH_DRY").is_some_and(|v| v == "1") {
+    if cfg!(debug_assertions) && ctx.vars.get("NIMITZ_ATTACH_DRY").is_some_and(|v| v == "1") {
         out::line(&format!("exec {}", argv.join(" ")));
         return 0;
     }
@@ -719,6 +729,12 @@ fn exec_attach(ctx: &Ctx, argv: &[String]) -> i32 {
         let e = c.exec();
         out::error(&format!("cannot run {}: {e}", argv.join(" ")));
         1
+    }
+    // ctrl-c reaches every process on the console: nimitz ignores it while
+    // it waits, so the attach (which handles it) keeps the console
+    #[cfg(windows)]
+    unsafe {
+        windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
     }
     #[cfg(not(unix))]
     match c.status() {

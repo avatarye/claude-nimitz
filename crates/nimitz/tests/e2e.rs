@@ -584,16 +584,18 @@ impl Drop for E2e {
             let _ = self.claude(&self.base, &["rm", job]);
         }
         // the daemon removes a stopped row a moment after `rm` returns: wait for
-        // it (up to 20 s); a row still live gets one more stop and rm, once
+        // it (up to 20 s); a row still live gets one more stop and rm at once,
+        // a stopped row still there after 10 s one more rm (each once)
         let mut retried: Vec<String> = vec![];
-        let until = std::time::Instant::now() + secs(20);
+        let start = std::time::Instant::now();
+        let until = start + secs(20);
         loop {
             let rows = self.rows();
             if rows.is_empty() || std::time::Instant::now() >= until {
                 break;
             }
             for (job, _, live, _) in &rows {
-                if *live && !job.is_empty() && !retried.contains(job) {
+                if (*live || start.elapsed() >= secs(10)) && !job.is_empty() && !retried.contains(job) {
                     let _ = self.claude(&self.base, &["stop", job]);
                     let _ = self.claude(&self.base, &["rm", job]);
                     retried.push(job.clone());

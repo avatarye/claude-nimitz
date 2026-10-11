@@ -2667,15 +2667,27 @@ fn attach_is_yours_and_never_nests_in_a_claude_session() {
         let r = sb.run_as(who, &["attach", "MAIN/ARGOS/CLEAN", "--yes"]);
         assert!(r.code != 0 && r.out.contains("(authority)") && !r.out.contains("exec "), "{who}:\n{}", r.out);
     }
+    // CLAUDECODE alone (a terminal started from a Claude Code tool inherits it): the way out is said
     let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN"], &[("CLAUDECODE", "1")]);
     assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("(attach.nested)") && !r.out.contains("exec "), "{}", r.out);
+    assert!(r.out.contains("(attach.nested)") && r.out.contains("env -u CLAUDECODE nimitz attach MAIN/ARGOS/CLEAN") && !r.out.contains("exec "), "{}", r.out);
+    // --force means nothing here: a usage error, not silently dropped
+    let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN", "--force"], &[]);
+    assert_eq!(r.code, 2, "{}", r.out);
     // a Claude Code session above this process (its session file, by pid), no CLAUDECODE
     let d = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions");
     std::fs::write(d.join("424242.json"), serde_json::json!({"pid": 424242, "sessionId": "abcdef12-0000", "cwd": "/tmp", "status": "idle", "kind": "interactive"}).to_string()).unwrap();
     let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN"], &[("NIMITZ_TEST_ANCESTORS", "424242")]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(r.out.contains("(attach.nested)") && r.out.contains("session abcdef12") && !r.out.contains("exec "), "{}", r.out);
+    // a stale file whose pid is now another process (this test's own, a different procStart): no session above
+    if cfg!(target_os = "linux") {
+        let me = std::process::id();
+        std::fs::write(d.join(format!("{me}.json")), serde_json::json!({"pid": me, "sessionId": "deadbeef-0000", "cwd": "/tmp", "kind": "interactive", "procStart": "1"}).to_string()).unwrap();
+        let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN"], &[("NIMITZ_TEST_ANCESTORS", &me.to_string())]);
+        assert_eq!(r.code, 0, "{}", r.out);
+        assert!(!r.out.contains("attach.nested") && r.out.contains("exec "), "{}", r.out);
+    }
 }
 
 #[test]

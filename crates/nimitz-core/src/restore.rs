@@ -203,7 +203,7 @@ impl RestoreStep {
                 vec![Step { id: Some(id.clone()), cmd: c, cwd: Some(cwd.clone()), why: format!("tab {label} in workspace {workspace}: attach{}; detaching (ctrl-z) leaves it running", why_wake(*wakes)) }]
             }
             RestoreStep::Pin { id, job } => vec![Step { id: Some(id.clone()), cmd: vec!["pin".into(), job.clone()], cwd: None, why: "a lead or an aide stays up: pin its job".into() }],
-            RestoreStep::Rename { id, tab_id, label } => vec![Step { id: Some(id.clone()), cmd: vec!["herdr".into(), "tab".into(), "rename".into(), tab_id.clone(), label.clone()], cwd: None, why: format!("the tab shows {id} under another name; --rename gives it its full name") }],
+            RestoreStep::Rename { id, tab_id, label } => vec![Step { id: Some(id.clone()), cmd: vec!["herdr".into(), "tab".into(), "rename".into(), tab_id.clone(), label.clone()], cwd: None, why: format!("the tab shows {id} under another name: give it its full name") }],
             RestoreStep::Split { id, next_to, cmd, cwd, .. } => {
                 let mut c = vec!["herdr".into(), "pane".into(), "split".into(), next_to.pane_id.clone(), "--".into()];
                 c.extend(cmd.iter().cloned());
@@ -433,9 +433,17 @@ impl Ctx<'_> {
         // of its own tab counts (one elsewhere is left as it is, never typed into)
         let shown: Vec<&ShapePane> = self.shape.panes.iter().filter(|p| self.pane_is(p, m, cmd) == Some(true)).collect();
         let shown: Vec<&ShapePane> = if self.own_tab(m) {
-            let (own, elsewhere): (Vec<&ShapePane>, Vec<&ShapePane>) = shown.into_iter().partition(|p| norm_label(&self.shape.tab_label(&p.tab_id)) == want_tab);
+            // its own tab: its full name, or the legacy short name of 0.3.0 in
+            // its workspace (renamed to the full one: `tab_step`)
+            let legacy = norm_label(&legacy_tab_of(id));
+            let own_label = |p: &ShapePane| {
+                let l = norm_label(&self.shape.tab_label(&p.tab_id));
+                l == want_tab || (l == legacy && norm_label(&self.shape.workspace_label(&p.workspace_id)) == want_ws)
+            };
+            let (own, elsewhere): (Vec<&ShapePane>, Vec<&ShapePane>) = shown.into_iter().partition(|p| own_label(p));
+            let ends = if self.opts.restart { " (-f: its attach there ends with the relaunch, leaving a shell)" } else { "" };
             for p in &elsewhere {
-                extra.push(issue("tab.elsewhere", Severity::Info, format!("it shows in pane {} (tab {}) too; --tab attaches it in its own tab {} and leaves that pane as it is", p.pane_id, self.shape.tab_label(&p.tab_id), tab_of(id)), None, Some(id.clone())));
+                extra.push(issue("tab.elsewhere", Severity::Info, format!("it shows in pane {} (tab {}) too; --tab attaches it in its own tab {} and types nothing into that pane{ends}", p.pane_id, self.shape.tab_label(&p.tab_id), tab_of(id)), None, Some(id.clone())));
             }
             own
         } else {
@@ -487,7 +495,11 @@ impl Ctx<'_> {
                 }
             }
         }
-        // (e) a default-named tab (`1`) of the workspace, a shell in the member's folder
+        // (e) a default-named tab (`1`) of the workspace, a shell in the
+        // member's folder; never under `-p --tab` (a tab of its own name, or a new one)
+        if self.own_tab(m) {
+            return TabMatch::Missing;
+        }
         let folder = m.cwd.as_deref().map(crate::snapshot::norm_dir);
         for (tab_id, ws_id, label) in self.shape.tabs.iter().filter(|(_, ws, l)| in_ws(ws) && (l.is_empty() || l.chars().all(|c| c.is_ascii_digit()))) {
             let _ = label;
@@ -1590,7 +1602,12 @@ fn tab_after_wake(ctx: &Ctx, m: &Member, cmd: Vec<String>, cwd: &str, session: &
     let found = ctx.find_tab(m, &cmd, &mut extra);
     rp.plan.warnings.extend(extra);
     match found {
-        TabMatch::Shown { pane, .. } => then_focus(ctx, m, Some(pane), rp).to_string(),
+        TabMatch::Shown { pane, tab_label, .. } => {
+            if ctx.own_tab(m) && norm_label(&tab_label) != norm_label(&tab_of(id)) {
+                rp.steps.push(RestoreStep::Rename { id: id.clone(), tab_id: pane.tab_id.clone(), label: tab_of(id) });
+            }
+            then_focus(ctx, m, Some(pane), rp).to_string()
+        }
         TabMatch::Shell { pane, rename, .. } => {
             let then = format!(", then attach in its tab's shell (pane {})", pane.pane_id);
             rp.steps.push(RestoreStep::Claim { id: id.clone(), pane, rename, cmd, cwd: cwd.to_string(), session: session.to_string(), wakes: false });
@@ -1647,7 +1664,8 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
             // (a ship in a split of its commodore's tab is where `-p` puts it)
             let beside_commodore = m.role == Role::Ship && id.parent().is_some_and(|sq| norm_label(&tab_label) == norm_label(&tab_of(&sq)));
             if norm_label(&tab_label) != norm_label(&tab_of(id)) && !beside_commodore {
-                if opts.rename {
+                // `-p --tab` shows it only in its own tab: a legacy label gets the full name
+                if opts.rename || ctx.own_tab(m) {
                     count(rep, lead);
                     action = format!("rename its tab to {}", tab_of(id));
                     rp.steps.push(RestoreStep::Rename { id: id.clone(), tab_id: pane.tab_id.clone(), label: tab_of(id) });

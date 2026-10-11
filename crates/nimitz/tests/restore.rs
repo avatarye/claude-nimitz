@@ -2080,6 +2080,43 @@ fn s11_p_tab_with_the_member_shown_elsewhere_still_uses_its_own_tab() {
 }
 
 #[test]
+fn s13_p_tab_takes_its_legacy_tab_as_its_own_and_never_a_default_tab() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    // a default-named tab `1` in the squadron's workspace, a shell in CLEAN's folder: plain -p
+    // would claim it; --tab makes its own tab
+    let dir = sb.cwd_of("MAIN/ARGOS/CLEAN").to_string_lossy().into_owned();
+    sb.herdr_world(|w| {
+        let ws = w["workspaces"].as_array().unwrap().iter().find(|x| x["label"] == "MAIN.ARGOS").unwrap()["workspace_id"].clone();
+        w["tabs"].as_array_mut().unwrap().push(json!({"tab_id": "w3:t8", "workspace_id": ws, "label": "1", "focused": false}));
+        w["panes"].as_array_mut().unwrap().push(json!({"pane_id": "w3:p8", "tab_id": "w3:t8", "workspace_id": ws, "cwd": dir, "foreground": ["zsh"]}));
+    });
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("its own tab MAIN.ARGOS.CLEAN, new in MAIN.ARGOS")), "{}", r.out);
+    assert!(!r.out.contains("w3:p8"), "the default tab is not taken:\n{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    assert!(!sb.runs().iter().any(|(p, _)| p == "w3:p8"), "{}", sb.calls());
+    // its tab under the 0.3.0 short name CLEAN: its own, focused and renamed (no tab.elsewhere, no new tab)
+    sb.attach_all();
+    let tab = sb.tabs("MAIN.ARGOS.CLEAN")[0]["tab_id"].clone();
+    sb.herdr_world(|w| {
+        for t in w["tabs"].as_array_mut().unwrap().iter_mut().filter(|t| t["tab_id"] == tab) {
+            t["label"] = json!("CLEAN");
+        }
+    });
+    let tabs = sb.creates("tab");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("tab.elsewhere") && !r.out.contains("tab.taken") && r.out.contains("herdr tab rename w3:") && r.out.contains("live on 2.1.288, shown"), "{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    assert_eq!(sb.creates("tab"), tabs, "no new tab:\n{}", sb.calls());
+    assert_eq!(sb.tabs("MAIN.ARGOS.CLEAN").len(), 1, "renamed:\n{}", sb.world());
+}
+
+#[test]
 fn s12_tab_goes_with_p_and_is_yours() {
     let sb = Sb::new(true);
     lay(&sb);

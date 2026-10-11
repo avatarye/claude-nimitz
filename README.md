@@ -337,8 +337,9 @@ you, or the one running the command is left alone, with a fix line.
 becomes `claude attach <job>` with the member's exact job (its short id, never
 a name: `claude attach` matches names by part, so `DEV` could be `NIMITZ_DEV`
 or `MYCC_DEV`). A member that is parked or stopped is woken first, by start's
-own plan: the plan shows, and `--yes` (or the question) runs it; a live member
-attaches at once. ctrl-z detaches; ← opens the agent view. It is yours alone,
+own plan: the plan shows, and `--yes` (or the question) runs it; a member
+that never ran gets its first launch there (and its folder's trust, when due),
+as `start` would; a live member attaches at once. ctrl-z detaches; ← opens the agent view. It is yours alone,
 and refused from inside a Claude Code session (an attach in an attach).
 
 Start reads what Herdr has (`herdr api snapshot`, each pane's foreground),

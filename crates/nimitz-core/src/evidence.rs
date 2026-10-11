@@ -503,6 +503,26 @@ pub fn proc_started_ms(d: &Value) -> Option<i64> {
     ft.filter(|t| *t > FT_1970 && *t < 2 * FT_1970).map(|t| ((t - FT_1970) / 10_000) as i64)
 }
 
+/// Is a session file named for live `pid` still that process's, and not a
+/// file left by a crash whose pid is now another process's? Linux: its
+/// `procStart` against the process's start ticks; Windows: a FILETIME
+/// `procStart` against the creation time. Unknown on either side proves
+/// nothing: kept.
+pub fn session_is_its_process(pid: i64, d: &Value) -> bool {
+    if cfg!(windows) {
+        return crate::os::is_same_process(pid, proc_started_ms(d));
+    }
+    let recorded = match d.get("procStart") {
+        Some(Value::String(x)) => x.trim().parse::<u64>().ok(),
+        Some(Value::Number(n)) => n.as_u64(),
+        _ => None,
+    };
+    match (recorded, crate::os::start_ticks(pid)) {
+        (Some(r), Some(t)) => r == t,
+        _ => true,
+    }
+}
+
 fn norm_kind(k: &str) -> String {
     match k {
         "bg" | "background" => "background".into(),
@@ -1172,6 +1192,21 @@ mod tests {
         };
         assert!(live(now_ms), "this process started before its file says");
         assert_eq!(live(1_000_000_000_000), !cfg!(windows), "a file from 2001: on Windows another process has the pid");
+    }
+
+    /// A session file left by a crash, whose pid another process now has (a
+    /// reboot reuses low pids): its `procStart` names another process.
+    #[test]
+    fn a_session_file_is_its_process_only_when_its_proc_start_matches() {
+        use serde_json::json;
+        let me = std::process::id() as i64;
+        assert!(session_is_its_process(me, &json!({})), "no procStart: kept");
+        if cfg!(target_os = "linux") {
+            let ticks = crate::os::start_ticks(me).expect("this process's start");
+            assert!(session_is_its_process(me, &json!({"procStart": ticks.to_string()})));
+            assert!(session_is_its_process(me, &json!({"procStart": ticks})));
+            assert!(!session_is_its_process(me, &json!({"procStart": (ticks + 1).to_string()})), "another process's file");
+        }
     }
 
     #[test]
