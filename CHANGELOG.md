@@ -15,7 +15,8 @@ answers from it read-only. Read **Upgrading** first.
   fleet.toml that holds `[[aide]]`, and 0.5 refuses a read-only reader
   (`snapshot = true`). `aide new` refuses a fleet's first aide until each
   machine of `[machines]` has run 0.5, and its first reader until each has run
-  0.6 (`aide.machines`; `nimitz doctor` lists them); a fleet with a reader is
+  0.6 (`aide.machines`: the refusal names them; `nimitz doctor` names a machine
+  below 0.6 once the fleet has a reader); a fleet with a reader is
   stamped `min_nimitz = "0.6.0"`, so an older nimitz says "update nimitz here".
 - To give HOME its two aides (once every machine is on 0.6.0):
   `nimitz aide new HOME/@KB --dir /mnt/data/shared/nimitz-knowledge-base

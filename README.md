@@ -167,8 +167,8 @@ add an aide, and do not go back below 0.5.0 after one ran:
 a 0.4.x on the migrated registry moves it aside when it holds an aide, and
 otherwise rewrites it without the `min_nimitz` stamp (an early 0.4.0 build
 also without each lineage entry's `home`, which keeps two homes' bindings apart).
-`nimitz doctor` names each machine of the fleet that runs too old a nimitz,
-and `aide new` refuses a fleet's first aide while a machine has not run 0.5,
+`nimitz doctor` names each machine of the fleet that runs too old a nimitz for
+what the fleet holds now, and `aide new` refuses a fleet's first aide while a machine has not run 0.5,
 and its first reader while one has not run 0.6 (`aide.machines`; `--force` is
 yours alone). It sees only the machines `[machines]` lists: a
 machine that reads the fleet folder without a label there is not checked. `aide new` stamps fleet.toml (`format = 2`, `min_nimitz =

@@ -57,7 +57,9 @@ fleet migrates. Each line: what to do, what you should see.
     TRIAL/@KB ...` is refused ("TRIAL/@KB runs on <label>"); `nimitz aide rm
     TRIAL/@KB` there is refused (`aide.elsewhere`).
 16. A machine still on 0.4.x listed in the fleet: `aide new` of a fleet with
-    no aide yet is refused (`aide.machines`) until it is updated.
+    no aide yet is refused (`aide.machines`) until it is updated; a machine
+    on 0.5.x: the fleet's first `--snapshot` reader is refused the same way,
+    and after one is added (`--force`) 0.5.x says "update nimitz here".
 
 ## Windows (not run here)
 
