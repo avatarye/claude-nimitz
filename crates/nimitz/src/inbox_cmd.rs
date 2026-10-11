@@ -163,7 +163,7 @@ fn post(ctx: &Ctx) -> Result<i32, Refusal> {
 /// reach it is no failure of the post: the item waits, and its start, its
 /// cron or the piggyback wakes it.
 fn doorbell(env: &nimitz_core::env::Env, q: &Queue, kind: &str, s: &Sender) {
-    match nimitz_core::ring::ring(env, q, nimitz_core::ring::Why::Post { kind, from: &s.line() }, now()) {
+    match nimitz_core::ring::ring(env, q, nimitz_core::ring::Why::Post { kind, from: &nimitz_core::ring::from_line(s) }, now()) {
         Ok(Some(n)) if !out::json_mode() => out::line(&n),
         Err(why) if !out::json_mode() => out::line(&format!("not rung ({why})")),
         _ => {}
@@ -200,7 +200,6 @@ fn claim(ctx: &Ctx) -> Result<i32, Refusal> {
             Ok(0)
         }
         None => {
-            nimitz_core::ring::drained(&q, now());
             if out::json_mode() {
                 out::json(&json!({"ok": true, "empty": true}));
             } else {
@@ -487,20 +486,22 @@ pub fn ask(ctx: &Ctx) -> Result<i32, String> {
         let t = now();
         // while `ask` waits, the answer comes back here, not as a peer message too
         let posted = q.post(&s, "wiki.query.v1", &p, None, wait.map(|w| t + w), t)?;
-        if !posted.duplicate {
-            doorbell(&ctx.env, &q, "wiki.query.v1", &s);
-        }
         // the handle first, on stderr: a caller killed while it waits (a Bash
         // timeout) still has its item and its token
         if let Some(tok) = &posted.token {
             let n = posted.id.trim_start_matches('0');
             eprintln!("asked {} item {n}; token {tok}; later: nimitz inbox result {} {n} --token {tok}", q.aide, q.aide);
         }
+        if !posted.duplicate {
+            doorbell(&ctx.env, &q, "wiki.query.v1", &s);
+        }
         let Some(wait) = wait else {
             posted_line(&q, &posted);
             return Ok(5);
         };
-        let got = await_item(&q, &posted.id, wait);
+        // until the post's own `waiting_until`, not longer: past it the answer
+        // goes as a peer message, and twice would be one too many
+        let got = await_item(&q, &posted.id, (t + wait - now()).max(0.0));
         if matches!(got, Some((State::Done, _))) {
             let _ = q.mark_delivered(&posted.id, "returned to `nimitz ask`", true, now());
         }

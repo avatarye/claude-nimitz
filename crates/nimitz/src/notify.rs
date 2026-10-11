@@ -55,6 +55,8 @@ pub fn piggyback_cmd() -> i32 {
     let vars: HashMap<String, String> = nimitz_core::os::env_vars();
     let env = Env::from_vars(&vars);
     let now = nimitz_core::evidence::now();
+    // one pass at a time
+    let Some(_pass) = nimitz_core::ring::piggyback_lock(&env) else { return 0 };
     let _ = nimitz_core::ring::piggyback(&env, now);
     let (fleets, _) = nimitz_core::config::load_all(&env);
     for f in &fleets {

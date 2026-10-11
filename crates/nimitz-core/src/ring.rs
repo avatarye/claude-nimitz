@@ -57,16 +57,37 @@ pub fn drained(q: &Queue, now: f64) {
 /// by the registry's job and the session file that runs it.
 pub fn aide_session(env: &Env, aide: &Id) -> Option<(String, i64, String, String)> {
     let job = crate::registry::load(env).identities.get(&aide.0)?.job.clone()?;
+    let mut best: Option<(f64, (String, i64, String, String))> = None;
     for e in std::fs::read_dir(env.claude_home.join("sessions")).into_iter().flatten().flatten() {
         let Some(v) = std::fs::read(e.path()).ok().and_then(|b| crate::evidence::first_json(&b)) else { continue };
         let pid = v.get("pid").and_then(Value::as_i64).unwrap_or(0);
-        if v.get("jobId").and_then(Value::as_str) == Some(job.as_str()) && pid > 1 && crate::evidence::pid_alive(pid) {
-            let sid = v.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_string();
-            let status = if v.get("waitingFor").is_some_and(|w| !w.is_null()) { "waiting".to_string() } else { v.get("status").and_then(Value::as_str).unwrap_or("?").to_string() };
-            return Some((sid, pid, status, job));
+        if v.get("jobId").and_then(Value::as_str) != Some(job.as_str()) || pid <= 1 || !crate::evidence::pid_alive(pid) {
+            continue;
+        }
+        // a file a crash left at a pid another process has now is not this job's
+        if !crate::evidence::session_is_its_process(pid, &v) {
+            continue;
+        }
+        let started = v.get("startedAt").and_then(Value::as_f64).unwrap_or(0.0);
+        let sid = v.get("sessionId").and_then(Value::as_str).unwrap_or_default().to_string();
+        let status = if v.get("waitingFor").is_some_and(|w| !w.is_null()) { "waiting".to_string() } else { v.get("status").and_then(Value::as_str).unwrap_or("?").to_string() };
+        if best.as_ref().is_none_or(|(t, _)| started >= *t) {
+            best = Some((started, (sid, pid, status, job.clone())));
         }
     }
-    None
+    best.map(|(_, b)| b)
+}
+
+/// Who posted, as the doorbell names them: a member by its id; anyone else
+/// by kind only. A process label (`--from`) or a forged label is the
+/// caller's own text, and the doorbell is nimitz's voice.
+pub fn from_line(s: &crate::queue::Sender) -> String {
+    match s.kind.as_str() {
+        "member" if s.verified => s.id.clone().unwrap_or_else(|| "a member".into()),
+        "session" => "a Claude Code session".into(),
+        "user" => "the user".into(),
+        _ => "a process (unverified)".into(),
+    }
 }
 
 /// Why it rings.
@@ -113,8 +134,11 @@ pub fn ring(env: &Env, q: &Queue, why: Why, now: f64) -> Result<Option<String>, 
     if socks.is_empty() {
         return Err(format!("no messaging socket for {aide}"));
     }
-    crate::inbox::send(env, &socks, pid, &text).map_err(|e| format!("{aide}: {e}"))?;
+    // a failed ring counts as a ring: a socket that times out costs one
+    // post its seconds, not every post of a burst
+    let sent = crate::inbox::send(env, &socks, pid, &text);
     save(q, &RingState { last_ring: Some(now), ..st });
+    sent.map_err(|e| format!("{aide}: {e}"))?;
     Ok(Some(format!("rang {aide}")))
 }
 
@@ -124,12 +148,13 @@ pub fn ring(env: &Env, q: &Queue, why: Why, now: f64) -> Result<Option<String>, 
 pub fn redeliver(env: &Env, q: &Queue, now: f64) -> Vec<String> {
     let mut out = vec![];
     for (_, item) in q.list(Some(crate::queue::State::Done)) {
-        let Some(r) = item.reply_to.as_ref() else { continue };
-        let stopped_waiting = r.waiting_until.is_some_and(|w| w <= now);
-        if stopped_waiting && r.delivered_at.is_none() && r.delivery.is_none() {
-            if let Ok(note) = crate::queue::deliver(env, q, &item, now) {
-                out.push(format!("{} item {}: {note}", q.aide, item.id));
-            }
+        let due = item.reply_to.as_ref().is_some_and(|r| r.waiting_until.is_some_and(|w| w <= now) && r.delivered_at.is_none() && r.delivery.is_none());
+        // taken under the queue's lock first: a second pass finds it taken
+        if let Some(taken) = due.then(|| q.take_delivery(&item.id, now)).flatten() {
+            let note = match crate::queue::deliver(env, q, &taken, now) {
+                Ok(n) | Err(n) => n,
+            };
+            out.push(format!("{} item {}: {note}", q.aide, item.id));
         }
     }
     out
@@ -166,13 +191,24 @@ pub fn piggyback(env: &Env, now: f64) -> Vec<String> {
 /// The piggyback runs at most this often per machine.
 pub const PIGGYBACK_EVERY_S: u64 = 30;
 
-/// Is a piggyback due (its stamp older than `PIGGYBACK_EVERY_S`)? Takes the
-/// turn: the stamp is touched, so a burst of hooks starts one pass.
+/// Is a piggyback due (the last one started `PIGGYBACK_EVERY_S` ago or
+/// more)? Takes the turn: the stamp gets the time, so a burst of hooks
+/// starts one pass (and `piggyback_lock` keeps a second from running beside
+/// it when two read the stamp at once).
 pub fn piggyback_due(env: &Env) -> bool {
     let stamp = env.state.join("ring.stamp");
-    let fresh = std::fs::metadata(&stamp).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|e| e.as_secs() < PIGGYBACK_EVERY_S);
-    if fresh || !env.state.is_dir() {
+    let now = crate::evidence::now();
+    let last = std::fs::read_to_string(&stamp).ok().and_then(|t| t.trim().parse::<f64>().ok());
+    if last.is_some_and(|t| now - t < PIGGYBACK_EVERY_S as f64 && t <= now) || !env.state.is_dir() {
         return false;
     }
-    std::fs::write(&stamp, b"").is_ok()
+    std::fs::write(&stamp, format!("{now}")).is_ok()
+}
+
+/// The piggyback's own lock (`ring.lock`, held for the pass): None when
+/// another pass holds it (this one then does nothing).
+pub fn piggyback_lock(env: &Env) -> Option<std::fs::File> {
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(env.state.join("ring.lock")).ok()?;
+    f.try_lock().ok()?;
+    Some(f)
 }

@@ -176,7 +176,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             // an aide also gets its inbox as it stands and the cron to ask for
             // (aide.md 5.1, wake 2): a relaunch, a /clear or a compact goes back to work
             let context = match id.role() {
-                Role::Aide => format!("{}\n\n{}", crate::rules::text(&id), aide_start_context(env, &id, now)),
+                Role::Aide => format!("{}\n\n{}", crate::rules::text(&id), aide_start_context(env, &id, str_at(&session, "jobId").as_deref(), now)),
                 _ => crate::rules::text(&id),
             };
             out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}).to_string();
@@ -492,14 +492,20 @@ fn squadron_comms(env: &Env, from: &Id) -> Comms {
 /// What an aide sees at each session start: its inbox now, and what to do
 /// first (drain it; ask for the 15-minute cron, which a session loses at a
 /// relaunch, a /clear or a compact).
-pub fn aide_start_context(env: &Env, id: &Id, now: f64) -> String {
+pub fn aide_start_context(env: &Env, id: &Id, job: Option<&str>, now: f64) -> String {
     let state = match crate::queue::Queue::of(env, id) {
         Ok(q) => {
             let st = q.peek_status(now, false);
             let mut parts = vec![format!("{} pending", st.pending)];
             for c in &st.claimed {
-                let left = ((c.until - now) / 60.0).ceil().max(0.0) as i64;
-                parts.push(format!("item {} claimed by {} (its lease ends in {left}m)", c.id.trim_start_matches('0'), c.by));
+                let n = c.id.trim_start_matches('0');
+                // the lease is the job's, which a /clear or a compact keeps
+                if job.is_some_and(|j| j == c.by) || c.by == id.0 {
+                    parts.push(format!("item {n} is yours, claimed before this session started: finish it first (`nimitz inbox done|fail {id} {n}`; its payload: `nimitz inbox list {id}`)"));
+                } else {
+                    let left = ((c.until - now) / 60.0).ceil().max(0.0) as i64;
+                    parts.push(format!("item {n} claimed by {} (its lease ends in {left}m)", c.by));
+                }
             }
             if !st.dead.is_empty() {
                 parts.push(format!("{} dead (your admiral decides: retry or drop)", st.dead.len()));

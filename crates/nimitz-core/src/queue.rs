@@ -753,7 +753,11 @@ impl Queue {
         if let Some(id) = self.ids(State::Claimed).first() {
             return Err(no("inbox.busy", 1, format!("item {id} is still claimed; finish it (done or fail) first")));
         }
-        let Some(id) = self.ids(State::Pending).into_iter().next() else { return Ok(None) };
+        let Some(id) = self.ids(State::Pending).into_iter().next() else {
+            // drained, under the lock: a post after this rings at once
+            crate::ring::drained(self, now);
+            return Ok(None);
+        };
         let mut item = Self::read(&self.path(State::Pending, &id)).ok_or_else(|| no("inbox.io", 1, format!("item {id} cannot be read")))?;
         item.tries += 1;
         item.claim = Some(Claim { by: by.into(), at: now, until: now + self.limits.lease_s });
@@ -875,6 +879,22 @@ impl Queue {
     }
 
     /// Record a reply's delivery (or why it was not delivered).
+    /// Take a done request's late delivery (the piggyback): under the lock,
+    /// one whose asker stopped waiting and that was never tried is marked
+    /// `delivering` and returned; any other (tried, delivered, awaited) is
+    /// None. Two passes never push the same answer.
+    pub fn take_delivery(&self, id: &str, now: f64) -> Option<Item> {
+        let _l = self.lock().ok()?;
+        let mut item = Self::read(&self.path(State::Done, id))?;
+        let r = item.reply_to.as_mut()?;
+        if r.waiting_until.is_none_or(|w| w > now) || r.delivered_at.is_some() || r.delivery.is_some() {
+            return None;
+        }
+        r.delivery = Some("delivering".into());
+        self.write(State::Done, &item).ok()?;
+        Some(item)
+    }
+
     pub fn mark_delivered(&self, id: &str, note: &str, delivered: bool, now: f64) -> Result<(), Refusal> {
         let _l = self.lock()?;
         let Some(mut item) = Self::read(&self.path(State::Done, id)) else { return Ok(()) };
@@ -1044,7 +1064,8 @@ fn live_session(env: &Env, s: &Sender) -> Option<(String, i64)> {
         let job = v.get("jobId").and_then(Value::as_str);
         let pid = v.get("pid").and_then(Value::as_i64).unwrap_or(0);
         let same = s.session.as_deref() == Some(sid) || (s.job.is_some() && job == s.job.as_deref());
-        if same && pid > 1 && crate::evidence::pid_alive(pid) {
+        // (a file a crash left at a pid another process has now is not the asker's)
+        if same && pid > 1 && crate::evidence::pid_alive(pid) && crate::evidence::session_is_its_process(pid, &v) {
             return Some((sid.to_string(), pid));
         }
     }

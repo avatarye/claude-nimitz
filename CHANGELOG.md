@@ -20,7 +20,10 @@
   `check`) rings an idle aide whose work has waited two minutes, returns a
   lapsed lease to the queue or dead-letters it (its admiral hears), and pushes
   an answer whose `ask --wait` gave up. `check` names `inbox.dead`,
-  `inbox.stuck` and `inbox.full`. Rules v6.
+  `inbox.stuck` and `inbox.full`. Rules v6. A lease is enforced by the
+  piggyback too (every 30 s on a busy machine): an aide that works an item
+  past its lease without `inbox heartbeat` loses it, and on its last try the
+  item is a dead letter.
 
 ## 0.5.1 (2026-10-11)
 
