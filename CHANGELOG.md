@@ -7,7 +7,9 @@ Aides are gone. Read **Upgrading** first.
 ### Upgrading
 
 - **Stop every aide with 0.6 before you install 0.7.0** (`nimitz stop
-  F/@NAME`): 0.7.0 no longer knows the `F/@NAME` ids, so it cannot stop one.
+  F/@NAME`). An aide job still running afterwards (pinned, so the daemon
+  never retires it) is `aide.retired` in `nimitz check`, with its fix:
+  `nimitz stop <short>`, then `nimitz rm <short>` (yours).
 - On each machine, the first 0.7 command archives the aides' state (their
   queues, snapshots, doorbell files and needs-you notices) under
   `NIMITZ_STATE/archive/aides-0.6/`, nothing deleted, and drops the aides'

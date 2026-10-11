@@ -194,7 +194,6 @@ impl Notice {
     }
 }
 
-
 /// Atomic write (temp + rename): the delivery process and the hook share the file.
 pub fn write(env: &Env, n: &Notice) -> std::io::Result<()> {
     let p = path(env, &n.key());
@@ -204,52 +203,8 @@ pub fn write(env: &Env, n: &Notice) -> std::io::Result<()> {
     crate::os::replace(&tmp, &p)
 }
 
-/// Write `n`'s file only if there is none: the whole file under a temp name,
-/// then a hard link to its own (fails when the file exists: O_EXCL's rule,
-/// with no half-written file ever seen). Where the file system has no hard
-/// links (exFAT, some SMB shares): `create_new` (O_EXCL itself) and a write.
-fn create(env: &Env, n: &Notice) -> std::io::Result<()> {
-    let p = path(env, &n.key());
-    std::fs::create_dir_all(dir(env))?;
-    let body = serde_json::to_vec_pretty(n).unwrap_or_default();
-    let mut salt = [0u8; 8];
-    let _ = crate::os::random(&mut salt);
-    let tmp = p.with_extension(format!("new{}-{}", std::process::id(), u64::from_le_bytes(salt)));
-    std::fs::write(&tmp, &body)?;
-    let r = std::fs::hard_link(&tmp, &p);
-    let _ = std::fs::remove_file(&tmp);
-    match r {
-        Err(e) if no_hard_links(&e) => create_new(&p, &body),
-        r => r,
-    }
-}
-
-/// A hard link the file system does not support (not one that exists already).
-fn no_hard_links(e: &std::io::Error) -> bool {
-    e.kind() == std::io::ErrorKind::Unsupported || matches!(e.raw_os_error(), Some(code) if UNSUPPORTED_LINK.contains(&code))
-}
-
-/// EPERM, ENOTSUP/EOPNOTSUPP, EXDEV, EMLINK (Linux, macOS), and Windows'
-/// ERROR_NOT_SUPPORTED, ERROR_INVALID_FUNCTION: no hard link here.
-#[cfg(unix)]
-const UNSUPPORTED_LINK: [i32; 6] = [libc::EPERM, libc::ENOTSUP, libc::EOPNOTSUPP, libc::EXDEV, libc::EMLINK, libc::ENOSYS];
-#[cfg(windows)]
-const UNSUPPORTED_LINK: [i32; 2] = [50, 1];
-
-/// `body` into a file that must not exist yet (O_EXCL).
-fn create_new(p: &std::path::Path, body: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(p)?;
-    f.write_all(body)
-}
-
 /// Record a notice unless it repeats the one on file. Returns the notice to deliver.
 pub fn record(env: &Env, n: Notice) -> Option<Notice> {
-    if n.item.is_some() {
-        // a dead letter is told once, whoever finds it first (two commands
-        // at once: one link wins); its file stays until a retry or drop
-        return create(env, &n).ok().map(|()| n);
-    }
     if let Some(old) = read(env, &n.id).filter(|o| o.session_id == n.session_id && n.ts - o.ts < DUP_WINDOW_S) {
         let same_call = n.tool_use_id.is_some() && n.tool_use_id == old.tool_use_id;
         // a Notification (or a permission prompt for AskUserQuestion itself) right

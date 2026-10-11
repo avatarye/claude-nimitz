@@ -71,8 +71,8 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
                                    gets a first launch when it never ran. -f (--relaunch): relaunch the
                                    live ones too (a pane they had is reattached); -p (--pane): a pane for
                                    it, focused (its pane, its tab, a split beside its commodore, a new tab);
-                                   -p --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL, F.SQ.COMMODORE,
-                                   F.@NAME), reused or created, a pane showing it elsewhere left as it is;
+                                   -p --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL, F.SQ.COMMODORE),
+                                   reused or created, a pane showing it elsewhere left as it is;
                                    --fresh: a new conversation; --all: parked ships too; --jobs-only: no tabs;
                                    --only: the target's own member alone (a lead without its fleet or squadron)
   stop <id|session>                stop a member (or one session); start's opposite

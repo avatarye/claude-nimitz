@@ -101,7 +101,8 @@ create, edit, remove, `?` all keys, `q` quit.
 
 nimitz 0.5 and 0.6 had aides (`F/@NAME`): always-on members with a durable
 inbox. 0.7.0 removes them. To upgrade a fleet that has one: stop each aide
-with 0.6 first (`nimitz stop F/@NAME`), install 0.7.0 on every machine, then
+with 0.6 first (`nimitz stop F/@NAME`; one left running is `aide.retired` in
+`nimitz check`, stopped by its short id), install 0.7.0 on every machine, then
 run `nimitz migrate --plan` and `nimitz migrate --shared --yes` once. That
 drops the `[[aide]]` tables and their format stamp from fleet.toml, so every
 nimitz reads it again. Each machine's first 0.7 command moves its aides'

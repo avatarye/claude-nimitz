@@ -945,6 +945,32 @@ fn a_retired_tender_row_is_checked_once_and_removed_by_rm() {
     assert!(!sb.run(&["check"]).out.contains("tender.retired"));
 }
 
+/// A 0.6 aide's job still running after the upgrade (pinned, so the daemon
+/// never retires it): `check` names it `aide.retired` with `nimitz stop
+/// <short>`, which the user runs on the row; then `nimitz rm <short>`.
+#[test]
+fn a_0_6_aide_job_left_running_is_stopped_and_removed_by_its_short_id() {
+    let sb = Sb::new(false);
+    let kb = sb.base.join("dirs/main/kb");
+    std::fs::create_dir_all(&kb).unwrap();
+    nimitz_core::sandbox::live_session(&sb.base, &nimitz_core::Id("MAIN/@KB".into()), kb.to_str().unwrap(), false);
+    let fix = |r: &Run| -> String {
+        let lines: Vec<&str> = r.out.lines().collect();
+        let at = lines.iter().position(|l| l.contains("aide.retired")).unwrap_or_else(|| panic!("{}", r.out));
+        assert!(lines[at].starts_with("[WARN]") && lines[at].contains("MAIN/@KB"), "{}", lines[at]);
+        lines[at + 1].trim().strip_prefix("fix: ").unwrap().to_string()
+    };
+    let f = fix(&sb.run(&["check"]));
+    let short = f.strip_prefix("nimitz stop ").and_then(|t| t.split_whitespace().next()).unwrap_or_else(|| panic!("{f}")).to_string();
+    assert!(f.ends_with(&format!("# then nimitz rm {short}")), "{f}");
+    let r = sb.run(&["stop", &short, "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(fix(&sb.run(&["check"])), format!("nimitz rm {short}"));
+    let r = sb.run(&["rm", &short, "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!sb.run(&["check"]).out.contains("aide.retired"));
+}
+
 #[test]
 fn a_notice_that_cannot_be_delivered_is_a_check_issue() {
     let sb = Sb::new(true);

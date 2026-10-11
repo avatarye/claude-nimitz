@@ -438,6 +438,16 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
                     fix: Some(if r.live() { format!("nimitz stop {short}  # then nimitz rm {short}") } else { format!("nimitz rm {short}") }),
                     id: Some(Id(owner.clone())),
                 }
+            } else if owner.contains("/@") {
+                // a job of a 0.5/0.6 aide: the role is gone (0.7.0); pinned, so
+                // the daemon never retires it by itself
+                Issue {
+                    code: "aide.retired".into(),
+                    severity: Severity::Warn,
+                    message: format!("job row {short} is the 0.6 aide {owner}; aides were removed in 0.7.0, the row is history{}", if r.live() { " (still running, pinned)" } else { "" }),
+                    fix: Some(if r.live() { format!("nimitz stop {short}  # then nimitz rm {short}") } else { format!("nimitz rm {short}") }),
+                    id: Some(Id(owner.clone())),
+                }
             } else {
                 Issue {
                     code: "config.invalid".into(),

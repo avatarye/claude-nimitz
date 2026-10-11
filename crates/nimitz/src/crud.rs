@@ -441,9 +441,17 @@ fn formats(ctx: &Ctx) -> Result<i32, String> {
     for (d, e) in &ran.failed {
         out::error(&format!("{} {}: {e} (the file is as it was; log: {})", d.label(), d.file.display(), formats::log_path(&ctx.env).display()));
     }
-    let left = formats::due(&ctx.env, formats::ARTIFACTS, None).into_iter().filter(|d| !d.silent).count();
+    let left = formats::due(&ctx.env, formats::ARTIFACTS, None).into_iter().filter(|d| !d.silent).collect::<Vec<_>>();
+    let (local, shared) = (left.iter().filter(|d| d.scope == Scope::Local).count(), left.iter().filter(|d| d.scope == Scope::Shared).count());
     if ran.failed.is_empty() {
-        out::ok(&format!("migrate: done{}", if left > 0 { format!(" ({left} shared step(s) left for `nimitz migrate --shared --yes`)") } else { String::new() }));
+        let mut more = vec![];
+        if shared > 0 {
+            more.push(format!("{shared} shared step(s) left for `nimitz migrate --shared --yes`"));
+        }
+        if local > 0 {
+            more.push(format!("{local} local step(s) still due: run it again"));
+        }
+        out::ok(&format!("migrate: done{}", if more.is_empty() { String::new() } else { format!(" ({})", more.join("; ")) }));
         Ok(0)
     } else {
         Ok(1)

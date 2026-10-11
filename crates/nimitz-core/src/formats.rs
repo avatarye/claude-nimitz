@@ -170,7 +170,7 @@ static FLEET_STEPS: &[Step] = &[Step {
     from: 1,
     to: 2,
     scope: Scope::Shared,
-    summary: "format = 2 and min_nimitz = \"0.5.0\" (the fleet holds [[aide]], which a 0.4.x nimitz cannot read)",
+    summary: "format = 2 and min_nimitz = \"0.5.0\" (0.5 and 0.6: a fleet that held [[aide]]; 0.7 wants no fleet at 2, so it never runs)",
     min_nimitz: Some("0.5.0"),
     apply: Apply::Bytes(fleet_1_2),
 }];
@@ -337,7 +337,7 @@ pub static CLEANUPS: &[Cleanup] = &[
         label: "aides dropped",
         artifact: "fleet",
         scope: Scope::Shared,
-        summary: "the [[aide]] tables dropped (aides are gone in 0.7.0), and the format 2 / min_nimitz stamp they needed: every nimitz reads it again (stop a live aide's job first: nimitz 0.6's `nimitz stop F/@NAME`)",
+        summary: "the [[aide]] tables dropped (aides are gone in 0.7.0), and the format 2 / min_nimitz stamp they needed: every nimitz reads it again (an aide job still running: `nimitz check` names it aide.retired, with its stop)",
         find: fleets_with_aides,
         apply: CleanupApply::Bytes(drop_aides),
     },
@@ -420,6 +420,9 @@ pub fn drop_aides(bytes: &[u8]) -> Result<Vec<u8>, String> {
     }
     let mut out = String::new();
     let (mut in_table, mut skip) = (false, false);
+    // comments and blank lines inside an aide's tables: held, then kept
+    // when a table that is not an aide's follows (they belong to it)
+    let mut held = String::new();
     for line in text.split_inclusive('\n') {
         let t = line.trim_start();
         if t.starts_with('[') {
@@ -427,8 +430,18 @@ pub fn drop_aides(bytes: &[u8]) -> Result<Vec<u8>, String> {
             let name = t.trim_start_matches('[').split(']').next().unwrap_or("").trim();
             let head = name.split('.').next().unwrap_or("").trim().trim_matches('"');
             skip = head == "aide";
+            if skip {
+                held.clear();
+            } else {
+                out.push_str(&std::mem::take(&mut held));
+            }
         }
         if skip {
+            if t.is_empty() || t.starts_with('#') {
+                held.push_str(line);
+            } else {
+                held.clear();
+            }
             continue;
         }
         if !in_table && t.contains('=') {
@@ -452,30 +465,7 @@ pub fn drop_aides(bytes: &[u8]) -> Result<Vec<u8>, String> {
 fn run_cleanup(env: &Env, c: &Cleanup, f: &Path, nimitz: &str, ran: &mut Ran) {
     let d = c.due(f);
     let res = match c.apply {
-        CleanupApply::Bytes(apply) => (|| {
-            let bytes = std::fs::read(f).map_err(|e| e.to_string())?;
-            if let Some(a) = artifact(c.artifact) {
-                if let Err(t) = a.guard_file(f, &bytes) {
-                    ran.too_new.push(t);
-                    return Ok(false);
-                }
-            }
-            let out = apply(&bytes)?;
-            if a_version_moved(c, &bytes, &out) {
-                return Err("the cleanup moved the file's version: left as it was".into());
-            }
-            backup_once(f, Some(&bytes), nimitz, ran)?;
-            let write = || -> Result<bool, String> {
-                if std::fs::read(f).map_err(|e| e.to_string())? != bytes {
-                    return Ok(false);
-                }
-                write_bytes(f, &out).map(|_| true).map_err(|e| e.to_string())
-            };
-            match c.scope {
-                Scope::Local => crate::registry::with_lock(env, None, write).map_err(|e| e.to_string())?,
-                Scope::Shared => write(),
-            }
-        })(),
+        CleanupApply::Bytes(apply) => cleanup_bytes(env, c, apply, f, nimitz, ran),
         CleanupApply::Archive(folder) => archive(env, f, folder).map(|_| true),
     };
     match res {
@@ -487,6 +477,41 @@ fn run_cleanup(env: &Env, c: &Cleanup, f: &Path, nimitz: &str, ran: &mut Ran) {
         Ok(false) => {}
         Err(e) => fail(env, nimitz, ran, d, e),
     }
+}
+
+/// A byte cleanup on `f`: read, apply, write under the lock while the file
+/// is still what was read; a file another writer changed meanwhile (a hook
+/// on the registry) is read again, as `run_file` does. Ok(false): nothing
+/// to do (too new for this nimitz: said in `ran.too_new`).
+fn cleanup_bytes(env: &Env, c: &Cleanup, apply: fn(&[u8]) -> Result<Vec<u8>, String>, f: &Path, nimitz: &str, ran: &mut Ran) -> Result<bool, String> {
+    for _ in 0..64 {
+        let bytes = std::fs::read(f).map_err(|e| e.to_string())?;
+        if let Some(a) = artifact(c.artifact) {
+            if let Err(t) = a.guard_file(f, &bytes) {
+                ran.too_new.push(t);
+                return Ok(false);
+            }
+        }
+        let out = apply(&bytes)?;
+        if a_version_moved(c, &bytes, &out) {
+            return Err("the cleanup moved the file's version: left as it was".into());
+        }
+        backup_once(f, Some(&bytes), nimitz, ran)?;
+        let write = || -> Result<bool, String> {
+            if std::fs::read(f).map_err(|e| e.to_string())? != bytes {
+                return Ok(false);
+            }
+            write_bytes(f, &out).map(|_| true).map_err(|e| e.to_string())
+        };
+        let wrote = match c.scope {
+            Scope::Local => crate::registry::with_lock(env, None, write).map_err(|e| e.to_string())?,
+            Scope::Shared => write(),
+        }?;
+        if wrote {
+            return Ok(true);
+        }
+    }
+    Err("the file kept changing under the cleanup: left for the next run".into())
 }
 
 /// A cleanup may take a file down to a version every nimitz reads (the
@@ -510,7 +535,19 @@ fn archive(env: &Env, p: &Path, folder: &str) -> Result<PathBuf, String> {
         n += 1;
     }
     std::fs::create_dir_all(to.parent().unwrap_or(&env.state)).map_err(|e| e.to_string())?;
-    std::fs::rename(p, &to).map_err(|e| format!("{} -> {}: {e}", p.display(), to.display()))?;
+    if let Err(e) = std::fs::rename(p, &to) {
+        // a file held open (Windows: a scanner, a leftover process) stops a
+        // rename: a copy, then the original removed; a copy whose original
+        // cannot go is removed again, and the next run tries once more
+        let copied = if p.is_dir() { copy_tree(p, &to) } else { std::fs::copy(p, &to).map(|_| ()) };
+        let gone = copied.and_then(|_| if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) });
+        if let Err(e2) = gone {
+            if p.exists() {
+                let _ = if to.is_dir() { std::fs::remove_dir_all(&to) } else { std::fs::remove_file(&to) };
+            }
+            return Err(format!("{} -> {}: {e} (and a copy: {e2})", p.display(), to.display()));
+        }
+    }
     Ok(to)
 }
 
@@ -987,6 +1024,8 @@ pub struct Ran {
     pub backups: Vec<PathBuf>,
     /// files left alone: a newer nimitz wrote them (the guard refuses them)
     pub too_new: Vec<TooNew>,
+    /// `S/migrations.log`, where each step and cleanup is written
+    pub log: Option<PathBuf>,
 }
 
 impl Ran {
@@ -996,14 +1035,9 @@ impl Ran {
         if let Some((d, e)) = self.failed.first() {
             let backup = backup_path(&d.file, NIMITZ);
             let kept = if backup.exists() { format!("; its backup is {}", backup.display()) } else { String::new() };
-            return Some(format!(
-                "[ERROR] nimitz {NIMITZ}: migrating {} {}->{} failed: {} {e} (the file is as it was{kept}; the log is {}; nimitz doctor)",
-                d.artifact,
-                d.from,
-                d.to,
-                d.file.display(),
-                d.file.parent().map(|p| p.join("migrations.log")).unwrap_or_default().display()
-            ));
+            let what = if d.cleanup.is_some() { "cleanup" } else { "migrating" };
+            let log = self.log.as_ref().map(|l| l.display().to_string()).unwrap_or_else(|| "S/migrations.log".into());
+            return Some(format!("[ERROR] nimitz {NIMITZ}: {what} {} failed: {} {e} (the file is as it was{kept}; the log is {log}; nimitz doctor)", d.label(), d.file.display()));
         }
         let moved = moved(&self.done);
         if moved.is_empty() {
@@ -1094,11 +1128,11 @@ fn locked(env: &Env) -> std::io::Result<Option<std::fs::File>> {
 
 fn lock_failed(env: &Env, scope: Scope, e: std::io::Error) -> Ran {
     let d = Due { artifact: "migrate.lock", scope, file: env.state.join("migrate.lock"), from: 0, to: 0, summary: "", min_nimitz: None, silent: false, cleanup: None };
-    Ran { failed: vec![(d, e.to_string())], ..Default::default() }
+    Ran { failed: vec![(d, e.to_string())], log: Some(log_path(env)), ..Default::default() }
 }
 
 fn run_unlocked(env: &Env, arts: &[Artifact], scope: Scope, nimitz: &str) -> Ran {
-    let mut ran = Ran::default();
+    let mut ran = Ran { log: Some(log_path(env)), ..Default::default() };
     let mut man = Manifest::load(env).unwrap_or_default();
     for a in arts.iter().filter(|a| a.scope == scope) {
         match a.kept {
@@ -1375,6 +1409,8 @@ pub struct Failed {
     pub to: u32,
     pub error: String,
     pub backup: Option<String>,
+    /// a cleanup's label (`CLEANUPS`), when it was one
+    pub cleanup: Option<String>,
     /// the log line as written
     pub line: String,
 }
@@ -1388,7 +1424,10 @@ impl Failed {
         Issue {
             code: "format.failed".into(),
             severity: Severity::Error,
-            message: format!("migrating {} {}->{} failed on {}: {}{restore} (log: {})", self.artifact, self.from, self.to, self.file, self.error, self.line),
+            message: match &self.cleanup {
+                Some(c) => format!("cleanup {}: {c} failed on {}: {}{restore} (log: {})", self.artifact, self.file, self.error, self.line),
+                None => format!("migrating {} {}->{} failed on {}: {}{restore} (log: {})", self.artifact, self.from, self.to, self.file, self.error, self.line),
+            },
             fix: Some("fix what the error names, then nimitz migrate --yes (or restore the backup over the file)".into()),
             id: None,
         }
@@ -1403,6 +1442,12 @@ pub fn failed(env: &Env) -> Vec<Failed> {
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
         let key = (v["artifact"].as_str().unwrap_or("").to_string(), v["file"].as_str().unwrap_or("").to_string(), v["from"].as_u64().unwrap_or(0));
         let ok = v["ok"].as_bool().unwrap_or(false);
+        // a cleanup done on a file supersedes what failed on it before
+        if ok && v["cleanup"].is_string() {
+            for e in last.iter_mut().filter(|(k, _)| k.1 == key.1) {
+                e.1 .0 = true;
+            }
+        }
         match last.iter_mut().find(|(k, _)| *k == key) {
             Some(e) => e.1 = (ok, l.to_string(), v),
             None => last.push((key, (ok, l.to_string(), v))),
@@ -1423,6 +1468,9 @@ pub fn failed(env: &Env) -> Vec<Failed> {
         }
     };
     last.into_iter()
+        // (a step of an artifact this nimitz no longer has, on a file gone since
+        // (0.6's queues, archived), can never be done again: dropped)
+        .filter(|(k, (_, _, v))| v["cleanup"].is_string() || artifact(&k.0).is_some() || Path::new(&k.1).exists())
         .filter(|(k, (ok, _, v))| !ok && !cleaned(v, &k.1).unwrap_or_else(|| done_since(&k.0, &k.1, k.2)))
         .map(|(k, (_, line, v))| Failed {
             artifact: k.0,
@@ -1431,6 +1479,7 @@ pub fn failed(env: &Env) -> Vec<Failed> {
             to: v["to"].as_u64().unwrap_or(0) as u32,
             error: v["error"].as_str().unwrap_or("").to_string(),
             backup: v["backup"].as_str().map(str::to_string),
+            cleanup: v["cleanup"].as_str().map(str::to_string),
             line,
         })
         .collect()
@@ -1536,6 +1585,46 @@ mod tests {
         let inline = "fleet = \"X\"\naide = [{ name = \"KB\" }]\n";
         assert!(drop_aides(inline.as_bytes()).unwrap_err().contains("remove them by hand"));
         assert!(drop_aides(b"fleet = \"X\"\n[[broken").is_err());
+    }
+
+    /// An aide between other tables: the comments of the table after it stay.
+    #[test]
+    fn the_aides_cleanup_keeps_the_comments_of_the_table_after_an_aide() {
+        let text = "fleet = \"X\"\n\n[[aide]]\n# the notes keeper\nname = \"KB\"\n\n[aide.dirs]\nm = \"/kb\"\n\n# the machines\n[machines.m]\nhostname = \"h\"\n";
+        let out = String::from_utf8(drop_aides(text.as_bytes()).unwrap()).unwrap();
+        assert_eq!(out, "fleet = \"X\"\n\n\n# the machines\n[machines.m]\nhostname = \"h\"\n");
+    }
+
+    /// A cleanup that fails (here: `S/archive` is a file, so nothing can be
+    /// archived) is an error line naming it and the log, leaves the files,
+    /// keeps the mark unset so the next command tries again, and is in
+    /// `failed()` until a later run does it. A log line of an artifact this
+    /// nimitz no longer has never shows.
+    #[test]
+    fn a_failed_cleanup_is_said_logged_and_retried_until_done() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(env.state.join("queues/MAIN%2F@KB")).unwrap();
+        std::fs::write(env.state.join("archive"), "in the way").unwrap();
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        let line = ran.line().unwrap();
+        assert!(line.starts_with(&format!("[ERROR] nimitz {NIMITZ}: cleanup aides: aide state archived failed: ")), "{line}");
+        assert!(line.contains(&format!("the log is {}", log_path(&env).display())), "{line}");
+        assert!(env.state.join("queues/MAIN%2F@KB").is_dir(), "nothing moved");
+        assert!(!up_to_date(&env), "the next command tries again");
+        let f = failed(&env);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].issue().message.starts_with("cleanup aides: aide state archived failed on "), "{}", f[0].issue().message);
+        // an old line of a step this nimitz no longer has: dropped
+        let mut log = std::fs::read_to_string(log_path(&env)).unwrap();
+        log.push_str("{\"artifact\":\"queues\",\"file\":\"/x/queue.json\",\"from\":1,\"to\":2,\"ok\":false,\"error\":\"old\"}\n");
+        std::fs::write(log_path(&env), log).unwrap();
+        assert_eq!(failed(&env).len(), 1);
+        std::fs::remove_file(env.state.join("archive")).unwrap();
+        let ran = run(&env, ARTIFACTS, Scope::Local);
+        assert!(ran.failed.is_empty(), "{ran:?}");
+        assert!(env.state.join("archive/aides-0.6/queues/MAIN%2F@KB").is_dir());
+        assert!(up_to_date(&env));
+        assert!(failed(&env).is_empty(), "{:?}", failed(&env));
     }
 
     #[test]

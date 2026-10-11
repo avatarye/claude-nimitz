@@ -29,10 +29,6 @@ pub fn id_from_name(name: &str) -> Option<Id> {
     let close = rest.find(']')?;
     let tag = &rest[..close];
     let role = rest[close + 1..].strip_prefix('-')?;
-    if role.starts_with('@') {
-        let id = Id(format!("{}/{role}", tag.replace('.', "/")));
-        return id.well_formed().then_some(id);
-    }
     let (fleet, sq) = match tag.split_once('.') {
         Some((f, s)) => (f, Some(s)),
         None => (tag, None),
@@ -1351,6 +1347,13 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
             hit = Some((Some(owner.clone()), r, format!("stop the row of the 0.3.x tender {owner}; the role was removed in 0.4.0")));
         }
     }
+    if hit.is_none() {
+        // a job a 0.5/0.6 aide left running (pinned): its labels name an `@`
+        // id, a role removed in 0.7.0 (`aide.retired`); the user's to stop
+        if let Some((owner, r)) = retired_aide_row(env, target) {
+            hit = Some((None, r, format!("stop the row of the 0.6 aide {owner}; aides were removed in 0.7.0")));
+        }
+    }
     let Some((owner, row, why)) = hit else {
         let msg = format!("{target} names no fleet member's session, no stowaway and no holder of a fleet name");
         // a member learns nothing about sessions that are not its business
@@ -1538,7 +1541,9 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
     };
     // a job row a 0.3.x tender left: history only, removed by its short id
     let retired = retired_tender_row(env, target);
-    let Some(row) = all.iter().copied().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target).or(misplaced.as_ref()).or(retired.as_ref().map(|(_, r)| r)) else {
+    // and one a 0.5/0.6 aide left (`aide.retired`): the user's
+    let aide = retired_aide_row(env, target);
+    let Some(row) = all.iter().copied().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target).or(misplaced.as_ref()).or(retired.as_ref().map(|(_, r)| r)).or(aide.as_ref().map(|(_, r)| r)) else {
         refuse(&mut plan, if *caller == Caller::User { "session.unknown" } else { "authority" }, format!("{target} names no identity and no job row"), None, None);
         return plan;
     };
@@ -1856,7 +1861,7 @@ fn classify(step: &Step) -> Kind {
     let c: Vec<&str> = step.cmd.iter().map(String::as_str).collect();
     match c.as_slice() {
         ["bind", ..] => Kind::Bind,
-        ["mkdir", _] | ["write", _, _] | ["archive", _] | ["trust", _] | ["snapshot", _, _] | ["unsnapshot", _, _] => Kind::Config,
+        ["mkdir", _] | ["write", _, _] | ["archive", _] | ["trust", _] => Kind::Config,
         [_, "stop", short] => Kind::Stop { short: short.to_string() },
         [_, "rm", short] => Kind::Rm { short: short.to_string() },
         _ if !step.cmd.contains(&"--bg".to_string()) => Kind::Other,
@@ -2652,6 +2657,16 @@ fn release_folder(env: &Env, id: Option<&Id>, cwd: Option<&str>) {
 }
 
 /// The job row running `sid` now (or born as it), if any.
+/// The job row `target` (job or session id) when its labels name a 0.5/0.6
+/// aide (`F/@NAME`), with that id.
+fn retired_aide_row(env: &Env, target: &str) -> Option<(String, SessionInfo)> {
+    let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
+    let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
+    let r = rows.iter().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target)?;
+    let owner = labels.get(&crate::evidence::row_key(r)).and_then(|l| l.get("NIMITZ_ID")).filter(|i| i.contains("/@"))?.clone();
+    Some((owner, r.info(Default::default())))
+}
+
 pub fn find_row_by_session(env: &Env, sid: &str) -> Option<crate::evidence::SessionRow> {
     let mut cache = crate::evidence::FileCache::default();
     crate::evidence::rows_from_files(env, &mut cache).unwrap_or_default().into_iter().find(|r| r.short_id.is_some() && r.session_ids().any(|s| s == sid))
