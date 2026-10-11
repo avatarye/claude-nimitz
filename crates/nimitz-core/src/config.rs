@@ -1439,9 +1439,24 @@ fn plan_machine_rm_on(env: &Env, snap: Option<&Snapshot>, fleet: &str, label: &s
     }
     let mut c = f.config.clone();
     c.machines.remove(label);
-    // an aide that ran there runs nowhere now: removable from any machine
+    // an aide that ran there runs nowhere now: removable from any machine.
+    // Its inbox stays in that machine's state: say so (seen here only when
+    // that machine is this one)
     for a in &mut c.aide {
-        a.dirs.remove(label);
+        if a.dirs.remove(label).is_some() {
+            let aid = Id::aide(&fid, &a.name);
+            let work = (f.machine.as_deref() == Some(label))
+                .then(|| crate::queue::Limits::from_def(&a.inbox).ok())
+                .flatten()
+                .map(|l| crate::queue::Queue::open(env, &aid, l).peek_status(crate::evidence::now(), false))
+                .map(|st| st.pending + st.claimed.len());
+            let message = match work {
+                Some(n) if n > 0 => format!("{aid} runs on {label}: it runs nowhere after this, and the {n} item(s) in its inbox here are left unworked"),
+                Some(_) => format!("{aid} runs on {label}: it runs nowhere after this (its inbox here is empty)"),
+                None => format!("{aid} runs on {label}: it runs nowhere after this, and whatever its inbox there holds is left behind"),
+            };
+            plan.warnings.push(issue("machine.aide", Severity::Warn, message, Some(format!("nimitz aide set {aid} --dir <its repo>  # on the machine that runs it next")), Some(aid)));
+        }
     }
     plan.steps.push(step_write(Some(fid), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings without the machine"));
     for (dir, s) in &f.squadrons {

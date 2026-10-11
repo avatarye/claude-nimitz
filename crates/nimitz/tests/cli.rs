@@ -2898,6 +2898,7 @@ fn aide_edges_bad_inbox_force_and_retired_machine() {
     // the machine retired: its aide runs nowhere, and goes from here
     let r = sb.run(&["machine", "rm", "MAIN", "other", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(machine.aide)") && r.out.contains("runs on other: it runs nowhere after this"), "{}", r.out);
     let t = std::fs::read_to_string(&f).unwrap();
     assert!(t.contains("name = \"KB\"") && !t.contains("other = \""), "{t}");
     let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);

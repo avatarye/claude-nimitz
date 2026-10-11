@@ -416,8 +416,8 @@ pub fn aide(ctx: &Ctx) -> Result<i32, String> {
     let force = ctx.force() && ctx.caller == Caller::User;
     let mut plan = config::plan_aide_write(&ctx.env, &id, def.clone(), new, force);
     // moved to another machine: what runs here (its job, its inbox) stays here
-    let (was, now) = (before.dirs.keys().next().cloned(), def.dirs.keys().next().cloned());
-    if !new && plan.ok() && was.is_some() && was != now {
+    let was = before.dirs.keys().next().cloned();
+    if !new && plan.ok() && !before.dirs.is_empty() && before.dirs.keys().ne(def.dirs.keys()) {
         let was = was.unwrap_or_default();
         let here = f.machine.as_deref().is_some_and(|m| before.dirs.contains_key(m));
         if !here {
