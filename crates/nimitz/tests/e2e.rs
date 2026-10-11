@@ -583,7 +583,25 @@ impl Drop for E2e {
             let _ = self.claude(&self.base, &["stop", job]);
             let _ = self.claude(&self.base, &["rm", job]);
         }
-        let jobs: Vec<String> = jobs.into_iter().chain(late).collect();
+        // the daemon removes a stopped row a moment after `rm` returns: wait for
+        // it (up to 20 s); a row still live gets one more stop and rm, once
+        let mut retried: Vec<String> = vec![];
+        let until = std::time::Instant::now() + secs(20);
+        loop {
+            let rows = self.rows();
+            if rows.is_empty() || std::time::Instant::now() >= until {
+                break;
+            }
+            for (job, _, live, _) in &rows {
+                if *live && !job.is_empty() && !retried.contains(job) {
+                    let _ = self.claude(&self.base, &["stop", job]);
+                    let _ = self.claude(&self.base, &["rm", job]);
+                    retried.push(job.clone());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let jobs: Vec<String> = jobs.into_iter().chain(late).chain(retried).collect();
         // a process with no job (none expected): end it so nothing of ours lives on
         for _ in self.rows().iter().filter(|(j, _, live, _)| *live && j.is_empty()) {
             println!("[WARN] e2e #{}: a live process with no job under {} is left", self.n, self.base.display());
