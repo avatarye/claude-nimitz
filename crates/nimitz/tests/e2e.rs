@@ -358,6 +358,9 @@ impl E2e {
             if f["admiral"]["id"] == id {
                 return Some(f["admiral"].clone());
             }
+            if let Some(a) = f["aides"].as_array().and_then(|a| a.iter().find(|m| m["id"] == id)) {
+                return Some(a.clone());
+            }
             for q in f["squadrons"].as_array().cloned().unwrap_or_default() {
                 if q["commodore"]["id"] == id {
                     return Some(q["commodore"].clone());
