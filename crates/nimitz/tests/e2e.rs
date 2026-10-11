@@ -131,6 +131,8 @@ struct E2e {
     tmux_used: Cell<bool>,
     /// every fleet-named session that is not ours: name|id -> (session, pid, kind)
     live_before: BTreeMap<String, (String, Option<i64>, String)>,
+    /// when the test started (epoch s): an idle retire the daemon logged since is no change
+    started: f64,
     pins_before: Vec<String>,
     /// set at the end of a passing test: the folder is removed
     done: Cell<bool>,
@@ -175,6 +177,7 @@ impl E2e {
             tmux: format!("nz-e2e-{}-{n}", std::process::id()),
             tmux_used: Cell::new(false),
             live_before: BTreeMap::new(),
+            started: nimitz_core::evidence::now(),
             pins_before: vec![],
             done: Cell::new(false),
             bin: std::cell::RefCell::new(EXE.to_string()),
@@ -632,8 +635,12 @@ impl Drop for E2e {
             errors.push(format!("pin of our job {p} left in pins.json: {:?} -> {pins_now:?}", self.pins_before));
         }
         let live_now = self.live_fleet();
+        let mut retired = 0;
         for k in self.live_before.keys().chain(live_now.keys()).collect::<std::collections::BTreeSet<_>>() {
             match (self.live_before.get(k), live_now.get(k)) {
+                // the daemon retiring an idle member: the same session, no process, and its
+                // own `bg retire <job>: ... idle` line since the test started
+                (Some(a), Some(b)) if a.0 == b.0 && a.2 == b.2 && a.1.is_some() && b.1.is_none() && k.rsplit('|').next().is_some_and(|job| idle_retired(&self.env.claude_home.join("daemon.log"), job, self.started)) => retired += 1,
                 (Some(a), Some(b)) if a != b => errors.push(format!("live fleet changed: {k}: {a:?} -> {b:?}")),
                 (None, Some(b)) => errors.push(format!("live fleet: NEW {k} {b:?}")),
                 (Some(a), None) => errors.push(format!("live fleet: GONE {k} {a:?}")),
@@ -644,7 +651,8 @@ impl Drop for E2e {
             if self.done.get() {
                 let _ = std::fs::remove_dir_all(&self.base);
             }
-            println!("[OK] e2e #{}: cleanup done ({} rows stopped and removed); live fleet unchanged", self.n, jobs.len());
+            let note = if retired > 0 { format!(" ({retired} retired idle by the daemon)") } else { String::new() };
+            println!("[OK] e2e #{}: cleanup done ({} rows stopped and removed); live fleet unchanged{note}", self.n, jobs.len());
         } else {
             println!("[ERROR] e2e #{}: cleanup (folder kept: {}):\n  {}", self.n, self.base.display(), errors.join("\n  "));
             if !std::thread::panicking() {
@@ -652,6 +660,57 @@ impl Drop for E2e {
             }
         }
     }
+}
+
+/// Did Claude Code's daemon log an idle retire of `job` since `since` (epoch
+/// s, a few seconds of slack)? Its line: `[<iso>] [bg] bg retire <job>: settled, idle 77m`.
+fn idle_retired(log: &Path, job: &str, since: f64) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(log) else { return false };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(4 * 1024 * 1024)));
+    let mut buf = vec![];
+    if f.read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    String::from_utf8_lossy(&buf).lines().any(|l| {
+        let Some((stamp, rest)) = l.strip_prefix('[').and_then(|l| l.split_once("] [bg] bg retire ")) else { return false };
+        let Some((j, why)) = rest.split_once(": ") else { return false };
+        // an idle member's retire only (not a stale worker's, nor a spare's)
+        j == job && (why.starts_with("settled,") || why.starts_with("idle-prompt")) && iso_secs(stamp).is_some_and(|t| t >= since - 5.0)
+    })
+}
+
+/// `2026-10-11T05:35:57.616Z` as epoch seconds (UTC).
+fn iso_secs(s: &str) -> Option<f64> {
+    let (date, time) = s.trim_end_matches('Z').split_once('T')?;
+    let d: Vec<i64> = date.split('-').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let (hms, frac) = time.split_once('.').unwrap_or((time, "0"));
+    let t: Vec<i64> = hms.split(':').map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    let [y, m, dd] = d[..] else { return None };
+    let [hh, mm, ss] = t[..] else { return None };
+    // days from the civil date (Howard Hinnant's algorithm)
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + dd - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some((days * 86400 + hh * 3600 + mm * 60 + ss) as f64 + format!("0.{frac}").parse::<f64>().unwrap_or(0.0))
+}
+
+#[test]
+fn an_idle_retire_line_is_read_from_the_daemon_log() {
+    assert_eq!(iso_secs("1970-01-01T00:00:00.000Z"), Some(0.0));
+    assert_eq!(iso_secs("2026-10-11T05:35:57.500Z"), Some(1791696957.5));
+    let td = tempfile::tempdir().unwrap();
+    let log = td.path().join("daemon.log");
+    std::fs::write(&log, "[2026-10-11T05:35:57.616Z] [bg] bg retire 58d53965: settled, idle 77m\n[2026-10-11T05:40:00.000Z] [bg] bg retire aaaa0000: stopped\n[2026-10-11T05:41:00.000Z] [bg] bg retire bbbb0000: abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)\n").unwrap();
+    assert!(idle_retired(&log, "58d53965", 1791696950.0));
+    assert!(!idle_retired(&log, "58d53965", 1791697000.0), "before the test: no");
+    assert!(!idle_retired(&log, "aaaa0000", 0.0), "not an idle retire");
+    assert!(!idle_retired(&log, "bbbb0000", 0.0), "a stale worker's retire");
+    assert!(!idle_retired(&log, "ffff0000", 0.0));
 }
 
 const OK_PROMPT: &str = "Reply with the single word OK.";
