@@ -211,11 +211,11 @@ pub fn kb(env: &Env, fleet: &str) -> Result<Kb, String> {
     let Some(label) = f.machine.clone() else {
         return Err(format!("this machine is not in fleet {fleet}'s [machines]"));
     };
-    let remote = kb.get("remote").and_then(Value::as_str).map(str::to_string);
+    let remote = kb.get("remote").and_then(Value::as_str).map(|r| r.trim().to_string());
     let Some(dir) = kb.get("dirs").and_then(|d| d.get(&label)).and_then(Value::as_str) else {
         return Err(format!("fleet {fleet}'s knowledge base has no folder on this machine ({label}): the user sets one with `nimitz fleet settings set kb.dirs '{{\"{label}\": \"<folder>\"}}' --fleet {fleet}` (with the other machines' folders too), then `nimitz kb clone --fleet {fleet}`"));
     };
-    Ok(Kb { fleet: f.config.fleet.clone(), label, dir: crate::config::expand_dir(dir), remote })
+    Ok(Kb { fleet: f.config.fleet.clone(), label, dir: crate::config::expand_dir(dir.trim()), remote })
 }
 
 #[cfg(test)]

@@ -475,24 +475,37 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
         return Err(format!("{stray} is changed and not committed: git is not run until the user looks at it"));
     }
     busy(dir)?;
-    let mut up = git(dir);
-    up.args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
-    let Ok(upstream) = run(up) else { return Err("the branch has no upstream: the commits stay in this clone (the user sets one: git push -u origin <branch>)".into()) };
-    let upstream = upstream.trim().to_string();
-    // the notes go where the KB is: origin (checked against kb.remote by the
-    // caller), never another remote the branch tracks, nor a push URL apart
-    if !upstream.starts_with("origin/") {
-        return Err(format!("the branch tracks {upstream}, not origin: nothing is pushed anywhere but the KB's own remote"));
+    // the notes go where the KB is, and nowhere else: the branch's own
+    // remote must be `origin` (checked against kb.remote by the caller),
+    // every URL origin fetches or pushes by must be that remote, and the pull
+    // and the push name origin and the branch outright (no `pushRemote`,
+    // `pushDefault` or `@{u}` steers them elsewhere)
+    let get = |k: &str, all: bool| -> Vec<String> {
+        let mut c = git(dir);
+        c.args(["config", if all { "--get-all" } else { "--get" }, k]);
+        run(c).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+    };
+    let mut b = git(dir);
+    b.args(["symbolic-ref", "--short", "-q", "HEAD"]);
+    let branch = run(b).map(|s| s.trim().to_string()).map_err(|_| "no branch checked out".to_string())?;
+    let remote = get(&format!("branch.{branch}.remote"), false);
+    let merge = get(&format!("branch.{branch}.merge"), false);
+    let (Some(remote), Some(merge)) = (remote.first(), merge.first()) else {
+        return Err(format!("{branch} has no upstream: the commits stay in this clone (the user sets one: git push -u origin {branch})"));
+    };
+    if remote != "origin" {
+        return Err(format!("{branch} tracks remote {remote:?}, not origin: nothing is pushed anywhere but the KB's own remote"));
     }
-    let mut pu = git(dir);
-    pu.args(["config", "--get", "remote.origin.pushurl"]);
-    if let Some(p) = run(pu).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        if !origin(dir).is_some_and(|o| same_remote(&o, &p)) {
-            return Err(format!("origin pushes to {p}, not to its own URL: nothing is pushed anywhere but the KB's own remote"));
+    let urls = get("remote.origin.url", true);
+    let Some(first) = urls.first().cloned() else { return Err("origin has no URL".into()) };
+    for u in urls.iter().chain(get("remote.origin.pushurl", true).iter()) {
+        if !same_remote(&first, u) {
+            return Err(format!("origin also fetches or pushes by {u}, not its own URL {first}: nothing is pushed anywhere but the KB's own remote"));
         }
     }
+    let upstream = format!("origin {merge}");
     let mut pull = git(dir);
-    pull.args(["pull", "--rebase", "--no-autostash", "--quiet"]);
+    pull.args(["pull", "--rebase", "--no-autostash", "--quiet", "origin", merge]);
     transport(&mut pull, dir);
     if let Err(e) = run(pull) {
         let mut note = "the local commits are kept".to_string();
@@ -506,7 +519,7 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
         return Err(format!("pull --rebase from {upstream} failed (nothing pushed; {note}; a sync needs no uncommitted edits to tracked files): {e}"));
     }
     let mut push = git(dir);
-    push.args(["push", "--quiet"]);
+    push.args(["push", "--quiet", "origin", &format!("HEAD:{merge}")]);
     transport(&mut push, dir);
     run(push).map_err(|e| format!("push to {upstream} failed (the local commits are kept): {e}"))?;
     Ok(format!("in step with {upstream} at {}", head(dir)?))
@@ -903,9 +916,22 @@ mod tests {
         g(&a, &["branch", "-u", "mine/main"]);
         assert!(sync(&env, &a).unwrap_err().contains("not origin"));
         g(&a, &["branch", "-u", "origin/main"]);
-        g(&a, &["config", "remote.origin.pushurl", "/elsewhere.git"]);
-        assert!(sync(&env, &a).unwrap_err().contains("pushes to /elsewhere.git"));
-        g(&a, &["config", "--unset", "remote.origin.pushurl"]);
+        g(&a, &["config", "--add", "remote.origin.pushurl", "/elsewhere.git"]);
+        g(&a, &["config", "--add", "remote.origin.pushurl", remote.to_str().unwrap()]);
+        assert!(sync(&env, &a).unwrap_err().contains("by /elsewhere.git"), "every push URL, not the last one");
+        g(&a, &["config", "--unset-all", "remote.origin.pushurl"]);
+        g(&a, &["config", "remote.origin.pushurl", remote.to_str().unwrap()]);
+        // a pushRemote or pushDefault never steers the push: origin, named
+        let elsewhere = here.path().join("elsewhere.git");
+        g(here.path(), &["init", "-q", "--bare", elsewhere.to_str().unwrap()]);
+        g(&a, &["remote", "add", "other", elsewhere.to_str().unwrap()]);
+        g(&a, &["config", "branch.main.pushRemote", "other"]);
+        g(&a, &["config", "remote.pushDefault", "other"]);
+        std::fs::write(a.join("wiki/c.md"), "c\n").unwrap();
+        let Committed::New(sc) = commit(&env, &a, "c", &["wiki/c.md".into()], &[], &"9".repeat(64), "x").unwrap() else { panic!() };
+        sync(&env, &a).unwrap();
+        assert_eq!(g(&remote, &["rev-parse", "main"]).trim(), sc, "pushed to origin");
+        assert!(g(&elsewhere, &["rev-list", "--all"]).trim().is_empty(), "nothing went elsewhere");
         // no upstream: said, never an OK
         let td = repo();
         assert!(sync(&env, td.path()).unwrap_err().contains("no upstream"));
