@@ -543,7 +543,7 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
 }
 
 /// The flags of `fleet settings` and `kb` that take a value.
-const KB_VALUE_FLAGS: [&str; 7] = ["--fleet", "--at", "--title", "--paths", "--pages", "--note", "--from"];
+const KB_VALUE_FLAGS: [&str; 9] = ["--fleet", "--at", "--title", "--paths", "--pages", "--note", "--from", "--name", "--for"];
 
 /// The fleet a command names with `--fleet F` or `--fleet=F` (the last one,
 /// as the command line reads it).

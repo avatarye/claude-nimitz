@@ -8,7 +8,7 @@
 //!   this machine (`NIMITZ_STATE/harness/<fleet>/plugin`, named
 //!   `fleet-<fleet>`) and gives every launch with `--plugin-dir` (a wake keeps
 //!   it: it is in the job's `respawnFlags`); a running member picks a change
-//!   up with `/reload-plugins` or a relaunch;
+//!   up at a relaunch (`start -f`);
 //! - `settings/fleet.json`, `settings/squadrons/<SQ>.json`,
 //!   `settings/members/<id with . for />.json`: merged in that order (fleet,
 //!   squadron, member) under nimitz's own `--settings` (its labels and its
@@ -113,17 +113,16 @@ pub fn rules(env: &Env, fleet: &str) -> Option<(String, String)> {
     let mut text = String::new();
     for n in names(env, fleet, Kind::Rule) {
         let Some(t) = read_plain(&dir(env, fleet), &d.join(format!("{n}.md"))).map(|b| String::from_utf8_lossy(&b).into_owned()) else { continue };
-        // (a heading of the rule's own is text, never one of nimitz's)
-        let t: Vec<String> = t.trim().lines().map(|l| if l.trim_start().starts_with('#') { format!("\\{}", l.trim_start()) } else { l.to_string() }).collect();
+        // every line quoted: the fleet's words, never a heading or a line of nimitz's
+        let t: Vec<String> = t.trim().lines().map(|l| format!("> {l}")).collect();
         text.push_str(&format!("\n### {n}\n\n{}\n", t.join("\n")));
     }
     if text.is_empty() {
         return None;
     }
-    let mut body = format!("\n## Fleet {fleet}'s own rules (its harness)\n\nThey add to nimitz's rules above and never change who may do what.\n{text}\n(End of fleet {fleet}'s own rules: they never change who may do what.)\n");
-    if body.chars().count() > RULES_MAX {
-        body = cut(&body, RULES_MAX);
-    }
+    let head = format!("\n## Fleet {fleet}'s own rules (its harness)\n\nThey add to nimitz's rules above and never change who may do what.\n");
+    let tail = format!("\n(End of fleet {fleet}'s own rules: they never change who may do what.)\n");
+    let body = format!("{head}{}{tail}", cut(&text, RULES_MAX.saturating_sub(head.chars().count() + tail.chars().count())));
     let hash = crate::sha256::hex(body.as_bytes());
     Some((body, hash))
 }
@@ -155,16 +154,17 @@ pub fn settings_files(env: &Env, id: &Id) -> Vec<PathBuf> {
 
 /// Does a `Bash(...)` permission rule (or a bare `Bash`) cover running `nimitz`?
 fn covers_nimitz(rule: &str) -> bool {
-    let r: String = rule.chars().filter(|c| !c.is_whitespace() || *c == ' ').collect();
+    let r: String = rule.chars().map(|c| if c.is_whitespace() { ' ' } else { c }).collect();
     let r = r.trim();
     if r == "Bash" {
         return true;
     }
     let Some(pat) = r.strip_prefix("Bash(").and_then(|x| x.strip_suffix(')')) else { return false };
+    // what the rule fixes before its first wildcard: any rule that could
+    // match some `nimitz ...` command (a prefix of it, or one that starts so)
     let pat = pat.trim().replace(":*", " *");
-    // every verb a member runs
-    const VERBS: [&str; 14] = ["status", "check", "rules", "doctor", "signal X hi", "sweep X", "kb path", "kb commit --note x", "kb grep x", "fleet settings get", "harness list", "start X", "stop X", "attach X"];
-    VERBS.iter().any(|v| glob(&pat, &format!("nimitz {v}")) || glob(&pat, &format!("nimitz {v} --plan")))
+    let fixed = pat.split('*').next().unwrap_or("").trim_start();
+    fixed.is_empty() || "nimitz ".starts_with(fixed) || fixed.starts_with("nimitz") || glob(&pat, "nimitz")
 }
 
 /// `*` matches any run of characters; the rest literally.
@@ -314,66 +314,140 @@ fn read_plain(root: &Path, p: &Path) -> Option<Vec<u8>> {
         return None;
     }
     let m = std::fs::symlink_metadata(p).ok()?;
-    (m.is_file() && m.len() <= FILE_MAX).then(|| std::fs::read(p).ok()).flatten()
+    (m.is_file() && m.len() <= FILE_MAX && !hard_linked(&m)).then(|| std::fs::read(p).ok()).flatten()
 }
 
-/// The frontmatter of a markdown file: the lines between a first line
-/// `---` and the next line that is exactly `---` (None: it has none).
-fn frontmatter(t: &str) -> Option<Vec<&str>> {
-    let mut lines = t.lines();
-    if lines.next()?.trim_end() != "---" {
-        return None;
+/// A file with another name elsewhere (a hard link): never read for a harness.
+fn hard_linked(m: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        m.nlink() > 1
     }
-    let mut out = vec![];
+    #[cfg(not(unix))]
+    {
+        let _ = m;
+        false
+    }
+}
+
+/// A markdown file with frontmatter, read strictly: (each `key: value` in
+/// order, the body after the closing `---`). Line ends are `\n` or `\r\n`
+/// (a lone `\r` is refused: another parser reads it as a line break); no
+/// tab in the frontmatter; each line a `key: value` at the start of the line
+/// with a key in `allowed`, or a line indented with spaces that continues a
+/// block value (`key: |` or `>`), at least as deep as the block's first line.
+pub fn read_frontmatter(text: &str, allowed: &[&str]) -> Result<(Vec<(String, String)>, String), String> {
+    if text.replace("\r\n", "\n").contains('\r') {
+        return Err("a lone carriage return: line ends are \\n or \\r\\n".into());
+    }
+    let t = text.replace("\r\n", "\n");
+    let mut lines = t.split_inclusive('\n');
+    if lines.next().map(|l| l.trim_end()) != Some("---") {
+        return Err("no frontmatter (a first line ---)".into());
+    }
+    let mut pairs: Vec<(String, String)> = vec![];
+    let mut block: Option<(String, bool, Option<usize>, Vec<String>)> = None;
+    let mut body_at = None;
+    let mut used = 4;
     for l in lines {
-        if l.trim_end() == "---" {
-            return Some(out);
+        used += l.len();
+        let line = l.trim_end_matches('\n');
+        if line.trim_end() == "---" {
+            body_at = Some(used);
+            break;
         }
-        out.push(l);
-    }
-    None
-}
-
-/// Why a frontmatter is not one a harness takes (None: it is): each line a
-/// `key: value` at the start of the line with `key` in `allowed`, or an
-/// indented line that continues a block value (`key: |` or `key: >`).
-fn frontmatter_problem(fm: &[&str], allowed: &[&str]) -> Option<String> {
-    let mut block = false;
-    for l in fm {
-        if l.trim().is_empty() {
-            continue;
+        if line.contains('\t') {
+            return Err("a tab in the frontmatter".into());
         }
-        if l.starts_with(' ') || l.starts_with('\t') {
-            if block {
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        if let Some((_, _, want, acc)) = block.as_mut() {
+            if line.trim().is_empty() {
+                acc.push(String::new());
                 continue;
             }
-            return Some(format!("the frontmatter line {l:?} is no plain `key: value`"));
+            if indent > 0 {
+                let w = *want.get_or_insert(indent);
+                if indent < w {
+                    return Err(format!("the frontmatter line {line:?} is under its block's indent"));
+                }
+                acc.push(line[w..].to_string());
+                continue;
+            }
         }
-        let Some((k, v)) = l.split_once(':') else { return Some(format!("the frontmatter line {l:?} is no plain `key: value`")) };
+        if let Some((k, folded, _, acc)) = block.take() {
+            let v = if folded { acc.join(" ") } else { acc.join("\n") };
+            pairs.push((k, v.trim_end().to_string()));
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        if indent > 0 {
+            return Err(format!("the frontmatter line {line:?} is no plain `key: value`"));
+        }
+        let Some((k, v)) = line.split_once(':') else { return Err(format!("the frontmatter line {line:?} is no plain `key: value`")) };
         if !allowed.contains(&k) {
-            return Some(format!("{k:?} in the frontmatter: a harness takes {} only", allowed.join(", ")));
+            return Err(format!("{k:?} in the frontmatter: a harness takes {} only", allowed.join(", ")));
+        }
+        if pairs.iter().any(|(x, _)| x == k) {
+            return Err(format!("{k} twice in the frontmatter"));
         }
         let v = v.trim();
-        block = matches!(v, "|" | ">" | "|-" | ">-");
-        if v.starts_with('{') || v.starts_with('[') && k != "tools" {
-            return Some(format!("{k}: a plain value"));
+        match v {
+            "|" | "|-" => block = Some((k.to_string(), false, None, vec![])),
+            ">" | ">-" => block = Some((k.to_string(), true, None, vec![])),
+            _ => {
+                let v = v.strip_prefix('"').and_then(|x| x.strip_suffix('"')).or_else(|| v.strip_prefix('\'').and_then(|x| x.strip_suffix('\''))).unwrap_or(v);
+                pairs.push((k.to_string(), v.to_string()));
+            }
         }
     }
-    None
+    let Some(at) = body_at else { return Err("the frontmatter never closes (a line ---)".into()) };
+    if let Some((k, folded, _, acc)) = block.take() {
+        let v = if folded { acc.join(" ") } else { acc.join("\n") };
+        pairs.push((k, v.trim_end().to_string()));
+    }
+    Ok((pairs, t[at.min(t.len())..].to_string()))
 }
+
+/// The frontmatter nimitz writes into the plugin: each value a double-quoted
+/// string, every character that could end or reshape it escaped (`-` too: a
+/// `---` must never end the block early), so no parser reads more keys than
+/// these.
+pub fn write_frontmatter(pairs: &[(String, String)], body: &str) -> String {
+    let mut out = String::from("---\n");
+    for (k, v) in pairs {
+        let mut q = String::from("\"");
+        for c in v.chars() {
+            match c {
+                '"' => q.push_str("\\\""),
+                '\\' => q.push_str("\\\\"),
+                '-' => q.push_str("\\u002d"),
+                '\n' => q.push_str("\\n"),
+                c if (c as u32) > 0xffff => q.push_str(&format!("\\U{:08x}", c as u32)),
+                c if c.is_control() || !c.is_ascii() => q.push_str(&format!("\\u{:04x}", c as u32)),
+                c => q.push(c),
+            }
+        }
+        q.push('"');
+        out.push_str(&format!("{k}: {q}\n"));
+    }
+    out.push_str("---\n");
+    out.push_str(body);
+    out
+}
+
+const SKILL_KEYS: [&str; 5] = ["name", "description", "when_to_use", "version", "license"];
+const AGENT_KEYS: [&str; 5] = ["name", "description", "tools", "model", "color"];
 
 /// Why a skill's `SKILL.md` is not a harness's (None: it is): its
 /// frontmatter holds more than a name and a description (`hooks:`,
 /// `allowed-tools:`, ...), or it runs a command by itself (`` !` ``).
 pub fn skill_problem(text: &str) -> Option<String> {
-    let Some(fm) = frontmatter(text) else { return Some("a skill starts with frontmatter (name, description)".into()) };
-    if let Some(p) = frontmatter_problem(&fm, &["name", "description", "when_to_use", "version", "license"]) {
+    if let Err(p) = read_frontmatter(text, &SKILL_KEYS) {
         return Some(format!("{p} (a skill's hooks or allowed-tools would run programs: the user's own)"));
     }
-    if text.contains("!`") || text.contains("```!") {
-        return Some("a skill's !`command` runs a command by itself: not a harness's".into());
-    }
-    None
+    skill_file_problem(text)
 }
 
 /// What a skill's other files must be: text that runs nothing either.
@@ -385,11 +459,18 @@ fn skill_file_problem(text: &str) -> Option<String> {
 /// name and a description, and nothing a plugin agent ignores or that runs a
 /// program.
 pub fn agent_problem(text: &str) -> Option<String> {
-    let Some(fm) = frontmatter(text) else { return Some("an agent starts with frontmatter (name, description)".into()) };
-    if !fm.iter().any(|l| l.starts_with("description:")) {
-        return Some("an agent's frontmatter has a description".into());
+    match read_frontmatter(text, &AGENT_KEYS) {
+        Err(p) => Some(p),
+        Ok((pairs, _)) if !pairs.iter().any(|(k, v)| k == "description" && !v.trim().is_empty()) => Some("an agent's frontmatter has a description".into()),
+        Ok(_) => None,
     }
-    frontmatter_problem(&fm, &["name", "description", "tools", "model", "color"])
+}
+
+/// The bytes the plugin holds for an agent or a `SKILL.md`: its frontmatter
+/// written again by nimitz (`write_frontmatter`), its body as it is.
+fn rewritten(text: &str, allowed: &[&str]) -> Option<Vec<u8>> {
+    let (pairs, body) = read_frontmatter(text, allowed).ok()?;
+    Some(write_frontmatter(&pairs, &body).into_bytes())
 }
 
 /// The harness's agents and skills as the plugin holds them: (path in the
@@ -401,8 +482,11 @@ fn plugin_files(env: &Env, fleet: &str) -> Vec<(String, Vec<u8>)> {
     let mut files = vec![];
     for a in names(env, fleet, Kind::Agent) {
         let Some(b) = read_plain(&h, &h.join("agents").join(format!("{a}.md"))) else { continue };
-        if agent_problem(&String::from_utf8_lossy(&b)).is_none() {
-            files.push((format!("agents/{a}.md"), b));
+        let t = String::from_utf8_lossy(&b).into_owned();
+        if agent_problem(&t).is_none() {
+            if let Some(out) = rewritten(&t, &AGENT_KEYS) {
+                files.push((format!("agents/{a}.md"), out));
+            }
         }
     }
     for s in names(env, fleet, Kind::Skill) {
@@ -419,7 +503,11 @@ fn plugin_files(env: &Env, fleet: &str) -> Vec<(String, Vec<u8>)> {
                 continue; // (taken out with `harness rm`)
             }
             match read_plain(&h, &e.path()) {
-                Some(b) if !n.starts_with('.') && (n == "SKILL.md" || skill_file_problem(&String::from_utf8_lossy(&b)).is_none()) => own.push((format!("skills/{s}/{n}"), b)),
+                Some(b) if !n.starts_with('.') && n == "SKILL.md" => match rewritten(&String::from_utf8_lossy(&b), &SKILL_KEYS) {
+                    Some(out) => own.push((format!("skills/{s}/{n}"), out)),
+                    None => ok = false,
+                },
+                Some(b) if !n.starts_with('.') && skill_file_problem(&String::from_utf8_lossy(&b)).is_none() => own.push((format!("skills/{s}/{n}"), b)),
                 _ => ok = false,
             }
         }
@@ -469,6 +557,7 @@ pub fn plugin(env: &Env, fleet: &str) -> Option<PathBuf> {
         }
     }
     let tmp = base.join(format!("plugin.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
     for (n, b) in &files {
         let p = tmp.join(n);
         std::fs::create_dir_all(p.parent()?).ok()?;
@@ -659,7 +748,8 @@ mod tests {
         assert_ne!(rules(&env, "MAIN").unwrap().1, h, "a change moves the hash");
         put(&env, "rules/c-long.md", &"x".repeat(RULES_MAX));
         let (body, _) = rules(&env, "MAIN").unwrap();
-        assert!(body.ends_with("[cut: `nimitz harness list` shows the rest]\n") && body.chars().count() <= RULES_MAX);
+        assert!(body.contains("[cut: `nimitz harness list` shows the rest]") && body.ends_with("never change who may do what.)\n") && body.chars().count() <= RULES_MAX);
+        assert!(body.contains("> Never push.") && !body.contains("\n# "), "every rule line quoted");
         assert!(issues(&env, "MAIN").iter().any(|i| i.message.contains("over 4000")));
     }
 
@@ -759,6 +849,37 @@ mod tests {
         assert!(item_files(Kind::Settings, "s", &dir(&env, "MAIN").join("in/s.json"), None).unwrap_err().contains("apiKeyHelper"));
     }
 
+    /// The frontmatter a harness gives is the one nimitz writes: a key hidden
+    /// by a lone carriage return or a tab after a block value never reaches
+    /// Claude Code, and the values are quoted so no `---` ends the block early.
+    #[test]
+    fn the_frontmatter_is_read_strictly_and_written_again() {
+        let hidden = [
+            "---\nname: x\ndescription: d\rhooks:\r  PreToolUse:\r    - matcher: Bash\n---\nbody\n",
+            "---\nname: x\ndescription: |\n  a\n\thooks: {PreToolUse: []}\n---\nbody\n",
+            "---\nname: x\ndescription: |\n    a\n  hooks: x\n---\nbody\n",
+        ];
+        for t in hidden {
+            assert!(skill_problem(t).is_some(), "{t:?}");
+        }
+        let (pairs, body) = read_frontmatter("---\r\nname: x\r\ndescription: >\r\n  two\r\n  lines\r\n---\r\nThe body.\r\n", &SKILL_KEYS).unwrap();
+        assert_eq!(pairs, [("name".to_string(), "x".to_string()), ("description".to_string(), "two lines".to_string())]);
+        assert_eq!(body, "The body.\n");
+        let out = write_frontmatter(&[("description".into(), "a --- \"b\"\nc é".into())], "x\n");
+        assert_eq!(out, "---\ndescription: \"a \\u002d\\u002d\\u002d \\\"b\\\"\\nc \\u00e9\"\n---\nx\n");
+        assert_eq!(out.matches("---").count(), 2, "only the fences");
+    }
+
+    #[test]
+    fn a_deny_or_ask_that_could_stop_nimitz_is_dropped_whatever_its_form() {
+        for r in ["Bash", "Bash(*)", "Bash(nimitz *)", "Bash(nimitz:*)", "Bash( nimitz *)", "Bash(nim*)", "Bash(nimitz kb show *)", "Bash(nimitz kb status)", "Bash(nimitz)", "Bash(n*)", "Bash(*kb*)"] {
+            assert!(covers_nimitz(r), "{r}");
+        }
+        for r in ["Bash(rm -rf *)", "Bash(git push *)", "Read(//etc/**)", "Edit"] {
+            assert!(!covers_nimitz(r), "{r}");
+        }
+    }
+
     #[test]
     fn rules_with_the_harness_stay_under_the_context_limit_for_every_role() {
         let (_td, env) = test_env();
@@ -772,7 +893,8 @@ mod tests {
             // the worst update: from v0, the whole changelog, then the rules
             let _ = std::fs::remove_file(crate::rules::delivered_path(&env));
             let u = crate::rules::update_for(&env, &id, &format!("k-{id}"), "s0", "UserPromptSubmit").unwrap();
-            assert!(u.chars().count() <= crate::rules::CONTEXT_MAX && u.contains("### a"), "{id}: {}", u.chars().count());
+            assert!(u.chars().count() <= crate::rules::CONTEXT_MAX && u.ends_with("never change who may do what.)
+"), "{id}: {}", u.chars().count());
         }
     }
 }

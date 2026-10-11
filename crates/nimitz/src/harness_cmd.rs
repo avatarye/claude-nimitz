@@ -132,7 +132,7 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
 fn live_when(kind: Kind) -> &'static str {
     match kind {
         Kind::Rule => "every member gets it at its next prompt",
-        Kind::Agent | Kind::Skill => "a member launched from now on has it; a running one after /reload-plugins in its session, or nimitz start F -f",
+        Kind::Agent | Kind::Skill => "a member launched from now on has it (a running one: nimitz start F -f)",
         Kind::Settings => "at each member's next launch (nimitz start F -f)",
     }
 }
@@ -163,10 +163,10 @@ fn list(ctx: &Ctx, fleet: &str) {
     settings.sort();
     out::line(&format!("  {:<9} {}", "settings", if settings.is_empty() { "-".to_string() } else { settings.join(", ") }));
     // what the harness lets members run without asking: shown, never quiet
-    for id in [Id::admiral(fleet)] {
-        let allow = harness::settings_for(&ctx.env, &id)["permissions"]["allow"].clone();
-        if allow.as_array().is_some_and(|a| !a.is_empty()) {
-            out::line(&format!("  allowed for every member (fleet.json): {allow}"));
+    for rel in &settings {
+        let v = std::fs::read(sd.join(rel)).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).map(|v| harness::filter_settings(&v).0);
+        if let Some(allow) = v.as_ref().map(|v| v["permissions"]["allow"].clone()).filter(|a| a.as_array().is_some_and(|a| !a.is_empty())) {
+            out::line(&format!("  allowed without asking ({rel}): {allow}"));
         }
     }
     if let Some((body, _)) = harness::rules(&ctx.env, fleet) {
@@ -187,7 +187,7 @@ fn push(ctx: &Ctx, fleet: &str) {
         out::issue(&i);
     }
     out::line(&format!("  rules: live, every member gets them at its next prompt"));
-    out::line("  agents, skills: in members launched from now on; a running member: /reload-plugins in its session");
+    out::line("  agents, skills: in members launched from now on");
     out::line(&format!("  settings: at each member's next launch"));
     out::line(&format!("  to relaunch every live member of the fleet now: nimitz start {fleet} -f --plan  # then --yes (the user's or the admiral's)"));
 }

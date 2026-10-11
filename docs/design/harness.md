@@ -11,7 +11,7 @@ has them.
 
 | Path | What | When a member has it |
 | --- | --- | --- |
-| `rules/<name>.md` | text after the role rules (`## Fleet F's own rules`, which say they never change who may do what), names in order, at most 4000 characters in all, cut further so the whole context stays under 10,000 | at its next session start; a live member at its next prompt (once per change) |
+| `rules/<name>.md` | text after the role rules (`## Fleet F's own rules`, every line quoted, opened and closed by a line that says they never change who may do what), names in order, at most 4000 characters in all, cut further so the whole context stays under 10,000 | at its next session start; a live member at its next prompt (once per change) |
 | `agents/<name>.md` | a subagent (frontmatter with a description; no `hooks:`, `mcpServers:` or `permissionMode:`, which Claude Code ignores for a plugin agent) | at its next launch (`nimitz start F -f`) |
 | `skills/<name>/SKILL.md` (and plain files beside it) | a skill that registers no hooks and runs nothing by itself (no `hooks:`, no `allowed-tools:`, no `` !`...` ``) | as agents |
 | `settings/fleet.json`, `settings/squadrons/<SQ>.json`, `settings/members/<F.SQ.SHIP>.json` (an admiral's `F.json`, a commodore's `F.SQ.json`) | Claude Code settings, merged in that order (objects key by key, arrays joined) under nimitz's own `--settings` (its labels and its allow rule win) | at its next launch |
@@ -22,19 +22,22 @@ takes; `check` names what is dropped, `harness.invalid`):
 
 - settings: `model`, `outputStyle`, `permissions.allow|ask|deny`, and `env`
   names `FLEET_*` only (any other variable could steer what programs run,
-  where traffic goes or credentials). A `deny` or `ask` that would stop a
-  member's `nimitz` (`Bash`, `Bash(nimitz *)`, `Bash(nimitz kb *)`, ...) is
-  dropped. `allow` rules are shown by `harness list`: they are what the
+  where traffic goes or credentials). A `deny` or `ask` that could match a
+  member's `nimitz` at all (`Bash`, a pattern whose fixed start is `nimitz`
+  or a prefix of it, or that starts with a wildcard) is dropped. `allow` rules are shown by `harness list`: they are what the
   harness lets members run without asking (no more than the admiral can
   already give by a member's permission mode).
   Everything else (a permission mode, more folders, plugins, MCP servers,
   hooks) is the user's own Claude Code settings; a member's mode is
   `ship set --mode` and the like.
-- agents and skills: frontmatter of plain `key: value` lines with keys a
-  harness knows (an agent: name, description, tools, model, color; a skill:
-  name, description, when_to_use, version, license), so no `hooks:` or
-  `allowed-tools:` in any spelling; no `` !` `` or ```` ```! ```` anywhere
-  in a skill's files.
+- agents and skills: frontmatter read strictly (plain `key: value` lines
+  with keys a harness knows: an agent's name, description, tools, model,
+  color; a skill's name, description, when_to_use, version, license; block
+  values indented with spaces; no tab, no lone carriage return) and written
+  again by nimitz into the plugin, each value a quoted string with every
+  character that could reshape it escaped, so no other parser reads a
+  `hooks:` or an `allowed-tools:` into it; no `` !` `` or ```` ```! ````
+  anywhere in a skill's files.
 - no file is a link and none is reached through one (a folder of the harness
   that is a link is never read, written or archived through), and none is
   over 64 KiB.
