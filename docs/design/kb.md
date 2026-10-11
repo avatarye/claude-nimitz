@@ -58,10 +58,12 @@ holds the lock), unless the user set an ssh command (`GIT_SSH*`,
 60 s; git 2.31 or later) ends. `sync` pulls and pushes only `origin` and the branch's own branch there, by
 name (no `pushRemote` or `pushDefault`), origin being the clone of
 `kb.remote`: a branch that tracks another remote, an `origin` URL or push
-URL apart, a URL rewrite in the clone's own config (`url.*.insteadOf`,
-`pushInsteadOf`), or a merge ref that is no branch, is refused. (A setup
-that fetches over https and pushes over ssh by `pushInsteadOf` is refused
-too: use one URL.) Of the caller's `GIT_*`, only the transport, TLS, proxy
+URL apart, a URL rewrite in the clone's own config, a file it includes or
+its worktree config (`url.*.insteadOf`, `pushInsteadOf`), or a merge ref
+that is no branch, is refused; the user's global rewrites stay theirs. The
+clone's git config is the user's, as git trusts it (a hand that can write
+it can already run code through `core.sshCommand`): these checks keep a
+stray setting from moving the notes, not a hostile one. Of the caller's `GIT_*`, only the transport, TLS, proxy
 and identity ones stay. A name
 another file system reads as another (a trailing dot or space, `:`, `~`, an
 invisible character) is off limits.

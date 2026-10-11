@@ -41,7 +41,8 @@ fn git(dir: &Path) -> Command {
     }
     // none of the caller's `GIT_*` steers it where it reads or writes (its
     // transport, TLS, proxies and identity stay the user's)
-    const KEEP: [&str; 9] = ["GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_SSL_", "GIT_PROXY_", "GIT_HTTP_", "GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CURL_"];
+    // (and where the user keeps their own global config)
+    const KEEP: [&str; 12] = ["GIT_SSH", "GIT_SSH_COMMAND", "GIT_SSH_VARIANT", "GIT_SSL_", "GIT_PROXY_", "GIT_HTTP_", "GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CURL_", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"];
     for (k, _) in std::env::vars_os() {
         let k = k.to_string_lossy();
         if k.starts_with("GIT_") && !KEEP.iter().any(|p| k == *p || (p.ends_with('_') && k.starts_with(p))) {
@@ -504,27 +505,24 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
         }
     }
     // no URL rewrite of the clone's own (`url.*.insteadOf` or `pushInsteadOf`
-    // in its .git/config: a rewrite there sends fetch and push elsewhere
-    // while the configured URL still matches); the user's global ones are
-    // theirs, and the rewritten push URLs must still be where the fetch goes
-    let mut local = git(dir);
-    local.args(["config", "--local", "--name-only", "--get-regexp", r"^url\..*\.(push)?insteadof$"]);
-    if let Some(r) = run(local).ok().and_then(|o| o.lines().next().map(str::to_string)) {
-        return Err(format!("the clone rewrites URLs itself ({r}): nothing is synced while its own config could send the notes elsewhere"));
-    }
-    let rewritten = |args: &[&str]| -> Result<Vec<String>, String> {
+    // in its .git/config, a file it includes, or its worktree config: a
+    // rewrite there sends fetch and push elsewhere while the configured URL
+    // still matches); the user's global ones are theirs. (The clone's config
+    // is the user's, as git trusts it: this keeps a stray or pasted setting
+    // from moving the notes, not a hostile hand that could write it.)
+    for scope in ["--local", "--worktree"] {
         let mut c = git(dir);
-        c.args(args);
-        let v: Vec<String> = run(c)?.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
-        if v.is_empty() {
-            return Err(format!("git {} named no URL", args.join(" ")));
-        }
-        Ok(v)
-    };
-    let target = rewritten(&["ls-remote", "--get-url", "--", &first])?.remove(0);
-    for u in rewritten(&["remote", "get-url", "--all", "origin"])?.iter().chain(rewritten(&["remote", "get-url", "--push", "--all", "origin"])?.iter()) {
-        if !same_remote(&target, u) {
-            return Err(format!("origin is rewritten to {u} (url.*.insteadOf or pushInsteadOf), not {target}: nothing is pushed anywhere but the KB's own remote"));
+        c.args(["config", scope, "--includes", "--name-only", "--get-regexp", r"^url\..*\.(push)?insteadof$"]);
+        let o = c.output().map_err(|e| format!("git: {e}"))?;
+        match o.status.code() {
+            Some(0) => {
+                let r = String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string();
+                return Err(format!("the clone rewrites URLs itself ({r}): nothing is synced while its own config could send the notes elsewhere"));
+            }
+            Some(1) => {}
+            // (no worktree config in this repo: nothing to read there)
+            _ if scope == "--worktree" && String::from_utf8_lossy(&o.stderr).contains("worktreeConfig") => {}
+            _ => return Err(format!("git config {scope}: {}", String::from_utf8_lossy(&o.stderr).trim())),
         }
     }
     // a branch on origin, nothing else (never an option, a tag or a refspec)
@@ -962,6 +960,16 @@ mod tests {
             assert!(sync(&env, &a).unwrap_err().contains("rewrites URLs itself"), "{k}");
             g(&a, &["config", "--remove-section", "url./elsewhere.git"]);
         }
+        // ... or in a file the clone's config includes, or its worktree config
+        let inc = here.path().join("inc.cfg");
+        std::fs::write(&inc, format!("[url \"/elsewhere.git\"]\n\tinsteadOf = {}\n", remote.display())).unwrap();
+        g(&a, &["config", "include.path", inc.to_str().unwrap()]);
+        assert!(sync(&env, &a).unwrap_err().contains("rewrites URLs itself"), "an include");
+        g(&a, &["config", "--unset", "include.path"]);
+        g(&a, &["config", "extensions.worktreeConfig", "true"]);
+        g(&a, &["config", "--worktree", "url./elsewhere.git.insteadOf", remote.to_str().unwrap()]);
+        assert!(sync(&env, &a).unwrap_err().contains("rewrites URLs itself"), "the worktree config");
+        g(&a, &["config", "--worktree", "--remove-section", "url./elsewhere.git"]);
         for bad in ["--upload-pack=touch PWNED", "refs/tags/v2", "+refs/heads/main:refs/heads/other"] {
             g(&a, &["config", "branch.main.merge", bad]);
             assert!(sync(&env, &a).unwrap_err().contains("not a branch of origin"), "{bad}");
