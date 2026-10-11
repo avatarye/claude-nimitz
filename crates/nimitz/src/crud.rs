@@ -331,7 +331,7 @@ fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, label: Option<&str>, dir: Opt
 /// Stop the ship, remove its job rows (transcripts stay), then drop it from the config.
 /// `ship rm`, `squadron rm`, `fleet rm`: core's retire plan (stop, rm the job
 /// rows, then the config), applied and verified in one go.
-const AIDE_FLAGS: &[&str] = &["--dir", "--machine", "--model", "--mode", "--brief", "--types", "--policy", "--depth", "--per-sender", "--lease", "--max-tries", "--keep-done"];
+const AIDE_FLAGS: &[&str] = &["--dir", "--machine", "--model", "--mode", "--brief", "--types", "--policy", "--depth", "--per-sender", "--lease", "--max-tries", "--keep-done", "--snapshot"];
 
 /// `nimitz aide new|set|rm F/@NAME` (aide.md section 3): like `ship
 /// new|set|rm`. You, or the fleet's admiral. `new` needs `--dir` (its repo,
@@ -414,6 +414,10 @@ pub fn aide(ctx: &Ctx) -> Result<i32, String> {
     if let Some(k) = ctx.args.value("--keep-done") {
         def.inbox.keep_done = k.into();
     }
+    // a read-only reader in a snapshot of its repo (aide.md 6.4)
+    if ctx.args.flag("--snapshot") {
+        def.snapshot = true;
+    }
     let dir = def.dirs.iter().next().map(|(l, d)| (l.clone(), d.clone()));
     // `--force` past the machine guard is the user's alone (rules: never unless the user names it)
     let force = ctx.force() && ctx.caller == Caller::User;
@@ -443,9 +447,24 @@ pub fn aide(ctx: &Ctx) -> Result<i32, String> {
         }
     }
     if !new && def == before {
-        plan.steps.clear();
-    } else if plan.ok() {
-        if let Some((label, d)) = dir.filter(|_| new || def.dirs != before.dirs) {
+        // nothing in the config changes; a reader's broken snapshot is still made again
+        plan.steps.retain(|s| s.cmd.first().map(String::as_str) == Some("snapshot"));
+    }
+    if plan.ok() && !(def == before && plan.steps.is_empty()) {
+        if def.snapshot {
+            // it runs in its snapshot, a git root of its own: that folder's trust
+            let here = f.machine.as_ref().is_some_and(|m| def.dirs.contains_key(m));
+            let snap = config::snapshot_dir(&ctx.env, &id);
+            if here && !nimitz_core::trust::is_written(&ctx.env, &snap) {
+                if ctx.caller == Caller::User {
+                    // the snapshot's own path: its target is found when the step runs,
+                    // once the worktree is there (planned now, a parent repo would be taken)
+                    plan.steps.push(nimitz_core::Step { id: Some(id.clone()), cmd: vec!["trust".into(), snap.to_string_lossy().into_owned()], cwd: None, why: format!("trust {} (writes ~/.claude.json): its snapshot, where it runs", snap.display()) });
+                } else {
+                    plan.warnings.push(nimitz_core::Issue { code: "folder.untrusted".into(), severity: nimitz_core::Severity::Warn, message: format!("{id}'s snapshot {} is not trusted by Claude Code; trusting it is the user's", snap.display()), fix: Some(format!("nimitz trust {}", snap.display())), id: Some(id.clone()) });
+                }
+            }
+        } else if let Some((label, d)) = dir.filter(|_| new || def.dirs != before.dirs) {
             trust_step(ctx, &mut plan, &id, Some(&label), Some(&d));
         }
         let (code, then) = if new { ("aide.new", format!("then: nimitz start {id}  # launches it, pinned, on {}", def.model.as_deref().unwrap_or("sonnet"))) } else { ("config.pending", "the change takes effect at the aide's next relaunch".to_string()) };

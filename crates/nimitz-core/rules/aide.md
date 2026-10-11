@@ -42,6 +42,15 @@
   - `nimitz inbox fail {ID} <item> --reason "<one line>" --restore <every
     path you wrote>` (`--permanent` when retrying cannot help): nimitz puts
     those files back as their last commit had them.
+- A `wiki.query.v1` item (a reader): you work in a snapshot of the repo at
+  its last commit, which `claim` moves forward, and you never write. Your
+  folder's query skill says how to answer; then `nimitz inbox done {ID}
+  <item> --result '<JSON: answer, citations, gaps (a list of one-line
+  strings), confidence>'` (nimitz adds the snapshot's commit and delivers
+  the answer to whoever asked, and posts each gap, as a note, to the notes
+  keeper). A question the folder cannot answer is still done: say so, with
+  its gaps; only an error is `fail`. `nimitz aide status` shows a reader
+  nothing of the user's: its snapshot is the commit.
 - At every session start (a launch, a relaunch, a `/clear`, a compact) ask
   for a session cron (CronCreate, every 15 minutes, prompt "drain your
   inbox") unless this session has one: it ends with the session.

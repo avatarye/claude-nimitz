@@ -379,10 +379,6 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         if let Err(e) = crate::queue::Limits::from_def(&a.inbox) {
             out.push(inv(format!("aide {aid}: [aide.inbox] {e}"), Some(aid.clone())));
         }
-        // (no worktree yet: a reader would work in the writer's live folder)
-        if a.snapshot {
-            out.push(inv(format!("aide {aid}: the read-only snapshot aide comes in S4b; leave snapshot unset for now"), Some(aid.clone())));
-        }
         // its allow and deny lists are what hold a hostile payload: a mode
         // that skips the lists (or asks no one) is never an aide's
         if let Some(m) = a.permission_mode.as_deref().filter(|m| !PERMISSION_MODES.contains(m)) {
@@ -576,7 +572,7 @@ pub fn expand_dir(p: &str) -> PathBuf {
 }
 
 /// The folder of a member on this machine (resolves "managed"); None if not deployed here.
-pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
+pub fn member_dir(env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
     if id.fleet() != f.config.fleet {
         return None; // ids of another fleet never resolve here
     }
@@ -597,13 +593,30 @@ pub fn member_dir(_env: &Env, f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
                 d => Some(expand_dir(d)).map(|p| crate::os::canonical(&p).unwrap_or(p)),
             }
         }
-        // one machine runs an aide: the one its `dirs` names
+        // one machine runs an aide: the one its `dirs` names; a snapshot
+        // reader works in its snapshot of that repo (aide.md 6.4)
         Role::Aide => {
-            let label = f.machine.as_ref()?;
-            let d = find_aide(f, id)?.dirs.get(label)?;
-            Some(expand_dir(d)).map(|p| crate::os::canonical(&p).unwrap_or(p))
+            let repo = aide_repo(f, id)?;
+            if find_aide(f, id)?.snapshot {
+                let s = snapshot_dir(env, id);
+                return Some(crate::os::canonical(&s).unwrap_or(s));
+            }
+            Some(repo)
         }
     }
+}
+
+/// An aide's repo on this machine (its `dirs` folder, the real path).
+pub fn aide_repo(f: &FleetOnDisk, id: &Id) -> Option<PathBuf> {
+    let label = f.machine.as_ref()?;
+    let d = find_aide(f, id)?.dirs.get(label)?;
+    Some(expand_dir(d)).map(|p| crate::os::canonical(&p).unwrap_or(p))
+}
+
+/// A snapshot reader's folder: a detached worktree of its repo under
+/// NIMITZ_STATE (outside Dropbox: a synced worktree would race the sync).
+pub fn snapshot_dir(env: &Env, id: &Id) -> PathBuf {
+    env.state.join("aides").join(crate::queue::escape(id)).join("snapshot")
 }
 
 /// The launch prompt for a ship (prompt, or prompt_file relative to the squadron folder).
@@ -1054,6 +1067,14 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
                     (c.format, c.min_nimitz) = (None, None);
                 }
                 plan.steps.push(step_write(Some(id.clone()), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings without the aide"));
+                if def.snapshot {
+                    if let Some(repo) = aide_repo(&f, id) {
+                        let snap = snapshot_dir(env, id);
+                        if snap.exists() {
+                            plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["unsnapshot".into(), repo.to_string_lossy().into_owned(), snap.to_string_lossy().into_owned()], cwd: None, why: "its snapshot unregistered from the repo and removed".into() });
+                        }
+                    }
+                }
             }
         },
     }
@@ -1088,6 +1109,12 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
         }
     };
     let exists = find_aide(&f, id).is_some();
+    // a writer and a reader differ in folder, permissions and loop: a new aide, not a change
+    if let Some(cur) = find_aide(&f, id).filter(|c| !new && c.snapshot != def.snapshot) {
+        let (was, is) = if cur.snapshot { ("a snapshot reader", "a writer") } else { ("a writer", "a snapshot reader") };
+        refuse(&mut plan, "config.invalid", format!("{id} is {was}; it does not become {is} in place"), Some(format!("nimitz aide rm {id}, then nimitz aide new {id} ...")), Some(id.clone()));
+        return plan;
+    }
     if new && exists {
         refuse(&mut plan, "config.exists", format!("aide {id} already exists"), Some(format!("nimitz aide set {id} ...")), Some(id.clone()));
         return plan;
@@ -1101,9 +1128,6 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
     }
     if let Err(e) = crate::queue::Limits::from_def(&def.inbox) {
         refuse(&mut plan, "config.invalid", format!("{id}: [aide.inbox] {e}"), None, Some(id.clone()));
-    }
-    if def.snapshot {
-        refuse(&mut plan, "config.invalid", format!("{id}: the read-only snapshot aide comes in S4b; leave snapshot unset for now"), None, Some(id.clone()));
     }
     if let Some(m) = def.permission_mode.as_deref().filter(|m| !PERMISSION_MODES.contains(m)) {
         refuse(&mut plan, "config.invalid", format!("{id}: permission mode {m:?} is not one of {}", PERMISSION_MODES.join(", ")), None, Some(id.clone()));
@@ -1166,6 +1190,18 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
     }
     if c != f.config {
         plan.steps.push(step_write(Some(id.clone()), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings with the aide (format 2)"));
+    }
+    // a snapshot reader's worktree, made here (this machine runs it)
+    let reader = c.aide.iter().find(|a| id.parts().last().map(|p| p.trim_start_matches('@')) == Some(a.name.as_str())).is_some_and(|a| a.snapshot && f.machine.as_ref().is_some_and(|m| a.dirs.contains_key(m)));
+    if reader && plan.ok() {
+        let fod = FleetOnDisk { config: c.clone(), ..f.clone() };
+        if let Some(repo) = aide_repo(&fod, id) {
+            let snap = snapshot_dir(env, id);
+            // missing, broken, or a worktree of a repo it no longer reads
+            if !crate::kb::snapshot_healthy(&repo, &snap) {
+                plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["snapshot".into(), repo.to_string_lossy().into_owned(), snap.to_string_lossy().into_owned()], cwd: None, why: "its snapshot: a detached worktree of the repo at its last commit".into() });
+            }
+        }
     }
     plan
 }
@@ -1494,6 +1530,8 @@ pub fn apply_config_plan(env: &Env, plan: &Plan) -> Outcome {
         Some("write") => std::fs::read_to_string(&s.cmd[1]).map(|got| got == s.cmd[2]).unwrap_or(false),
         Some("archive") => !Path::new(&s.cmd[1]).exists(),
         Some("trust") => crate::trust::is_written(env, Path::new(&s.cmd[1])),
+        Some("snapshot") => s.cmd.get(2).is_some_and(|d| Path::new(d).join(".git").exists()),
+        Some("unsnapshot") => s.cmd.get(2).is_some_and(|d| !Path::new(d).exists()),
         _ => false,
     });
     if !out.verified {
@@ -1522,6 +1560,20 @@ fn run_step(env: &Env, step: &Step) -> (i32, String) {
             match std::fs::rename(path, &to) {
                 Ok(()) => (0, format!("[OK] archive {path} -> {to}")),
                 Err(e) => (1, format!("[ERROR] archive {path}: {e}")),
+            }
+        }
+        (Some("snapshot"), Some(repo)) => {
+            let Some(snap) = step.cmd.get(2) else { return (1, format!("[ERROR] snapshot {repo}: no folder in the step")) };
+            match crate::kb::ensure_snapshot(Path::new(repo), Path::new(snap)) {
+                Ok(sha) => (0, format!("[OK] snapshot {snap} at {}", &sha[..sha.len().min(8)])),
+                Err(e) => (1, format!("[ERROR] snapshot {snap}: {e}")),
+            }
+        }
+        (Some("unsnapshot"), Some(repo)) => {
+            let Some(snap) = step.cmd.get(2) else { return (1, format!("[ERROR] unsnapshot {repo}: no folder in the step")) };
+            match crate::kb::drop_snapshot(Path::new(repo), Path::new(snap)) {
+                Ok(()) => (0, format!("[OK] snapshot {snap} removed")),
+                Err(e) => (1, format!("[ERROR] snapshot {snap}: {e}")),
             }
         }
         (Some("trust"), Some(dir)) => match crate::trust::write(env, Path::new(dir)) {
@@ -1692,7 +1744,7 @@ pub(crate) mod tests {
         let mut snap = f.clone();
         snap.config.aide[0].snapshot = true;
         let s = validate(&env, &snap);
-        assert!(s.iter().any(|i| i.code == "config.invalid" && i.severity == Severity::Error && i.message.contains("snapshot aide comes in S4b; leave snapshot unset")), "{s:?}");
+        assert!(s.is_empty(), "a snapshot reader is valid since S4b: {s:?}");
         for want in ["aide name \"kb\"", "aide \"KB\" is defined twice", "unknown inbox type \"no.such.v1\"", "\"nowhere\" is not in fleet.toml", "per_sender \"lots\""] {
             assert!(msgs.contains(want), "missing {want:?} in {msgs}");
         }

@@ -36,6 +36,15 @@
   `inbox list` shows each item's ref. Tested on real Claude Code with a copy of
   the KB: one commit per note through a kill, a `/clear` and a relaunch; a
   hostile note refused.
+- **The reference desk (S4b)**: `aide new F/@REF --snapshot` makes a
+  read-only reader that works in a snapshot of its repo (a detached worktree
+  under NIMITZ_STATE, trusted on its own), moved to the repo's last commit at
+  each claim; it edits nothing and runs no git; its answers name the commit
+  they read, and nimitz posts each gap of an answer to the notes keeper (one
+  note per gap text). `aide set --snapshot` makes a lost snapshot again;
+  `aide rm` unregisters it. A post or an ask on a machine that does not run
+  the aide is refused (`inbox.elsewhere`). Tested on real Claude Code with
+  both aides on a copy of the KB.
 
 ## 0.5.1 (2026-10-11)
 
