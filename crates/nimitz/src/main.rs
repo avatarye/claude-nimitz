@@ -5,6 +5,7 @@
 //! tabs (core never depends on the mux).
 mod args;
 mod crud;
+mod harness_cmd;
 mod kb_cmd;
 mod members;
 mod notify;
@@ -100,6 +101,11 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   kb restore --paths A,B           undo a failed ingest (what was there is kept under NIMITZ_STATE/kb-restore)
   kb sync                          pull --rebase, then push
   kb clone                         clone kb.remote into this machine's folder (yours alone; --plan|--yes)
+  harness list                     the fleet's harness: its rules, agents, skills and settings (a member: its own)
+  harness add rule|agent|skill|settings <file|folder> [--name N] [--for F/SQ|F/SQ/SHIP]
+                                   into the fleet's harness (--plan|--yes; the admiral's or yours)
+  harness rm rule|agent|skill|settings <name|id>   out of it (kept as .archived)
+  harness push                     make this machine's harness plugin again; say what is live and what needs start -f
   squadron new|set|rm <F/SQ>       --brief T --comms open|commodore-only|allow:A,B --mode M
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
@@ -226,6 +232,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("ship", crud::ship),
     ("machine", crud::machine),
     ("kb", kb_cmd::kb),
+    ("harness", harness_cmd::harness),
     ("migrate", crud::migrate),
     ("up", members::up),
     ("start", members::start),

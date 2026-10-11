@@ -23,7 +23,7 @@ its fixture, or when a type's shape moves without a version.
 | `ship-lock` | `.nimitz-ship.lock` | shared | `format` key (absent = 1) | 1 | 1 |
 | `registry` | `S/registry.json` | local | `version` | 2 | 3 (role `aide`, unknown records kept; 0.7.0: still 3, the aide records dropped by a cleanup) |
 | `active` | `S/active.json` | local | `version` | 1 | 1 (now checked) |
-| `rules-delivered` | `S/rules-delivered.json` | local | manifest | 1 | 1 |
+| `rules-delivered` | `S/rules-delivered.json` | local | manifest | 1 | 1; 0.7.0: 2 (a delivery's optional `harness` hash; nothing to rewrite) |
 | `events` | `S/events.jsonl` | local | manifest | 1 | 1 |
 | `restore` | `S/restore.json` | local | manifest | 1 | 1 |
 | `pending` | `S/pending/*.json` | local | manifest | 1 | 1 |

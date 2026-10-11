@@ -534,6 +534,11 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
             fleet_flag(&w).is_none_or(|f| f == me.fleet()) && (verb.first() == Some(&"get") || (verb.first() == Some(&"set") && *role == Role::Admiral && !verb.get(1).is_some_and(|k| *k == "kb" || k.starts_with("kb."))))
         }
         Some("fleet") => w.get(2) == Some(&"set") && id_at(3).is_some_and(|t| in_fleet(&t)),
+        // the harness: every member lists its own fleet's; its admiral changes and pushes it
+        Some("harness") => {
+            let own = w.iter().position(|x| *x == "--fleet").and_then(|i| w.get(i + 1)).is_none_or(|f| *f == me.fleet());
+            own && (w.get(2) == Some(&"list") || *role == Role::Admiral)
+        }
         // the knowledge base: every member's (its own fleet's), but a clone (yours)
         Some("kb") => fleet_flag(&w).is_none_or(|f| f == me.fleet()) && verbs(&w[2..]).first() != Some(&"clone"),
         _ => false,

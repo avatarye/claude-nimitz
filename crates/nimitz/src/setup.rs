@@ -275,7 +275,7 @@ pub fn rules(ctx: &Ctx) -> Result<i32, String> {
         (None, nimitz_core::Caller::Member { id, .. }) => id.clone(),
         (None, nimitz_core::Caller::User) => return Err("missing id (F, F/SQ or F/SQ/SHIP)".into()),
     };
-    print!("{}", nimitz_core::rules::text(&id));
+    print!("{}", nimitz_core::rules::text_for(&ctx.env, &id));
     Ok(0)
 }
 

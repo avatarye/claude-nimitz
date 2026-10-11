@@ -187,11 +187,20 @@ pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
     for k in HERDR_PANE_VARS {
         vars.insert(k.to_string(), String::new());
     }
-    let mut v = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
+    let mut own = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
     if background {
-        v["worktree"] = serde_json::json!({ "bgIsolation": "none" });
+        own["worktree"] = serde_json::json!({ "bgIsolation": "none" });
     }
+    // the fleet's harness settings (fleet, squadron, member) under nimitz's own
+    let mut v = crate::harness::settings_for(env, id);
+    crate::harness::merge(&mut v, &own);
     v.to_string()
+}
+
+/// `--plugin-dir <the fleet's harness plugin>` when its harness has agents
+/// or skills (the plugin made again first when they changed).
+fn harness_args(env: &Env, id: &Id) -> Vec<String> {
+    crate::harness::plugin(env, id.fleet()).map(|p| vec!["--plugin-dir".to_string(), p.to_string_lossy().into_owned()]).unwrap_or_default()
 }
 
 /// The models the account may use (`availableModels`): managed settings
@@ -262,6 +271,7 @@ pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<St
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--name".into(), id.name()];
     c.extend(mode_args(mode));
     c.extend(["--settings".into(), settings_json(env, id, true)]);
+    c.extend(harness_args(env, id));
     if let Some(p) = prompt.filter(|p| !p.is_empty()) {
         c.push(p.to_string());
     }
@@ -274,6 +284,7 @@ pub fn relaunch_bg(env: &Env, id: &Id, mode: &str, from_session: &str) -> Vec<St
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--resume".into(), from_session.into(), "--name".into(), id.name()];
     c.extend(mode_args(mode));
     c.extend(["--settings".into(), settings_json(env, id, true)]);
+    c.extend(harness_args(env, id));
     c
 }
 

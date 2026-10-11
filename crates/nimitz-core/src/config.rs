@@ -437,6 +437,7 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         }));
     }
     out.extend(format_issues(f));
+    out.extend(crate::harness::issues(env, &c.fleet));
     out
 }
 

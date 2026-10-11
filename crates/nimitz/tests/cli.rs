@@ -445,6 +445,12 @@ fn every_command_goes_by_the_role_table() {
         ("kb", &["sync"], [true, true, true]),
         ("kb", &["path", "--fleet", "BETA"], [false, false, false]),
         ("kb", &["clone", "--fleet", "MAIN"], [false, false, false]),
+        // the fleet's harness: every member lists its own fleet's; its admiral (and you) change and push it
+        ("harness", &["list"], [true, true, true]),
+        ("harness", &["list", "--fleet", "BETA"], [false, false, false]),
+        ("harness", &["add", "rule", "/nonexistent-nimitz/rule.md"], [true, false, false]),
+        ("harness", &["rm", "rule", "style"], [true, false, false]),
+        ("harness", &["push"], [true, false, false]),
     ];
     let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];
     let listed = Sb::new(false).run(&["__commands"]);
@@ -2740,4 +2746,61 @@ fn a_fleets_kb_is_set_cloned_and_written_once_per_note_by_a_member() {
     assert_eq!(sb.run_as(ship, &["kb", "head"]).code, 0, "a trailing slash is the same remote");
     // another fleet's KB is not a member's to read
     assert!(sb.run_as(ship, &["kb", "path", "--fleet", "BETA"]).out.contains("(authority)"));
+}
+
+// ------------------------------------------------------------------ the harness
+
+/// A fleet's harness: a rule the user adds (planned) is in every member's
+/// rules; settings merge under nimitz's own at a launch; an agent makes the
+/// fleet's plugin, given to the launch with `--plugin-dir`; a member lists it
+/// and may not change it; rm keeps the file as .archived.
+#[test]
+fn a_fleets_harness_reaches_the_members_rules_settings_and_launch() {
+    let sb = Sb::new(false);
+    let src = sb.base.join("harness-src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("style.md"), "Answer in haiku.\n").unwrap();
+    std::fs::write(src.join("reviewer.md"), "---\nname: reviewer\ndescription: reviews a diff\n---\nReview it.\n").unwrap();
+    std::fs::write(src.join("argos.json"), r#"{"model": "haiku", "permissions": {"allow": ["Bash(make *)"]}}"#).unwrap();
+    std::fs::write(src.join("bad.json"), r#"{"hooks": {"Stop": []}}"#).unwrap();
+    let add = |args: &[&str]| {
+        let mut a = vec!["harness", "add"];
+        a.extend_from_slice(args);
+        a.extend(["--fleet", "MAIN"]);
+        let p = sb.run(&[a.clone(), vec!["--plan"]].concat());
+        assert_eq!(p.code, 0, "{}", p.out);
+        let y = sb.run(&[a, vec!["--yes"]].concat());
+        assert_eq!(y.code, 0, "{}", y.out);
+    };
+    add(&["rule", src.join("style.md").to_str().unwrap()]);
+    add(&["agent", src.join("reviewer.md").to_str().unwrap()]);
+    add(&["settings", src.join("argos.json").to_str().unwrap(), "--for", "MAIN/ARGOS"]);
+    let bad = sb.run(&["harness", "add", "settings", src.join("bad.json").to_str().unwrap(), "--fleet", "MAIN", "--yes"]);
+    assert!(bad.code != 0 && bad.out.contains("hooks: a harness never sets it"), "{}", bad.out);
+    // a member: its rules carry it; it lists, never changes
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["rules"]);
+    assert!(r.out.contains("## Fleet MAIN's own rules") && r.out.contains("Answer in haiku."), "{}", r.out);
+    let l = sb.run_as("MAIN/ARGOS/CLEAN", &["harness", "list"]);
+    assert!(l.code == 0 && l.out.contains("style") && l.out.contains("reviewer") && l.out.contains("ARGOS.json"), "{}", l.out);
+    assert!(sb.run_as("MAIN/ARGOS", &["harness", "rm", "rule", "style", "--yes"]).out.contains("(authority)"));
+    assert!(!sb.run_as("BETA", &["rules"]).out.contains("Answer in haiku."), "another fleet's members");
+    // a launch: the settings merged under nimitz's own, the plugin given
+    let env = nimitz_core::env::Env::from_vars(&sb.vars.clone().into_iter().collect());
+    let ship = nimitz_core::Id::ship("MAIN", "ARGOS", "CLEAN");
+    let cmd = nimitz_core::claude::launch_bg(&env, &ship, "default", Some("go"));
+    let at = cmd.iter().position(|a| a == "--settings").unwrap();
+    let s: Value = serde_json::from_str(&cmd[at + 1]).unwrap();
+    assert_eq!(s["model"], "haiku");
+    assert_eq!(s["permissions"]["allow"], serde_json::json!(["Bash(make *)", "Bash(nimitz *)"]));
+    assert_eq!(s["env"]["NIMITZ_ID"], "MAIN/ARGOS/CLEAN", "nimitz's labels win");
+    let pd = cmd.iter().position(|a| a == "--plugin-dir").map(|i| std::path::PathBuf::from(&cmd[i + 1])).expect("the plugin");
+    assert!(pd.join("agents/reviewer.md").is_file() && pd.join(".claude-plugin/plugin.json").is_file());
+    assert!(nimitz_core::claude::launch_bg(&env, &nimitz_core::Id::admiral("BETA"), "default", None).iter().all(|a| a != "--plugin-dir"));
+    let push = sb.run(&["harness", "push", "--fleet", "MAIN"]);
+    assert!(push.code == 0 && push.out.contains("plugin fleet-main") && push.out.contains("nimitz start MAIN -f"), "{}", push.out);
+    // rm: kept as .archived, out of the rules
+    let rm = sb.run(&["harness", "rm", "rule", "style", "--fleet", "MAIN", "--yes"]);
+    assert_eq!(rm.code, 0, "{}", rm.out);
+    assert!(!sb.run_as("MAIN/ARGOS/CLEAN", &["rules"]).out.contains("Answer in haiku."));
+    assert!(nimitz_core::harness::dir(&env, "MAIN").join("rules/style.md.archived").is_file());
 }

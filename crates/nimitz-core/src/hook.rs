@@ -172,8 +172,9 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
                 crate::inbox::record(env, &sid, pid, sock.strip_prefix("uds:").unwrap_or(sock));
             }
             rules = Some(crate::rules::VERSION);
-            crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
-            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
+            let harness = crate::harness::rules(env, id.fleet()).map(|(_, h)| h);
+            crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event, harness.as_deref());
+            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text_for(env, &id)}}).to_string();
             binding = Some(match str_at(&input, "session_id") {
                 // no session file (missing, or caught mid-write): bind nothing
                 // now; `status` replays the line and judges the job from the rows

@@ -100,6 +100,9 @@ pub struct Delivery {
     pub session_id: String,
     /// the hook event that delivered it (SessionStart, UserPromptSubmit, ...)
     pub via: String,
+    /// the hash of the fleet's harness rules it got (`harness::rules`; none: none)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
 }
 
 /// `NIMITZ_STATE/rules-delivered.json`.
@@ -150,10 +153,11 @@ pub fn delivered_version(env: &Env, key: &str, session_id: &str) -> u32 {
 /// hook must stay fast, and an update it cannot record is not handed out).
 const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Record that `key` now has `VERSION`: read-modify-write under
-/// `rules-delivered.lock` (tried for `LOCK_WAIT`), written as a temp file and
-/// renamed. False when the record could not be written.
-pub fn record_delivery(env: &Env, key: &str, session_id: &str, via: &str) -> bool {
+/// Record that `key` now has `VERSION` (and the harness rules of hash
+/// `harness`): read-modify-write under `rules-delivered.lock` (tried for
+/// `LOCK_WAIT`), written as a temp file and renamed. False when the record
+/// could not be written.
+pub fn record_delivery(env: &Env, key: &str, session_id: &str, via: &str, harness: Option<&str>) -> bool {
     let path = delivered_path(env);
     let Some(dir) = path.parent() else { return false };
     let _ = std::fs::create_dir_all(dir);
@@ -174,7 +178,7 @@ pub fn record_delivery(env: &Env, key: &str, session_id: &str, via: &str) -> boo
         return false;
     }
     let mut all = read_deliveries(env);
-    all.insert(key.to_string(), Delivery { version: VERSION, at: crate::evidence::now(), session_id: session_id.to_string(), via: via.to_string() });
+    all.insert(key.to_string(), Delivery { version: VERSION, at: crate::evidence::now(), session_id: session_id.to_string(), via: via.to_string(), harness: harness.map(str::to_string) });
     let tmp = path.with_extension("json.tmp");
     serde_json::to_vec_pretty(&all).ok().and_then(|b| std::fs::write(&tmp, b).ok()).is_some() && std::fs::rename(&tmp, &path).is_ok()
 }
@@ -186,12 +190,31 @@ pub fn record_delivery(env: &Env, key: &str, session_id: &str, via: &str) -> boo
 /// cannot be written (the state folder is read-only, the lock is held) would
 /// hand the same text out at every prompt; `check` shows `rules.old` (and
 /// `registry.readonly`) instead.
+///
+/// The fleet's harness rules count too: a session that got other ones (or
+/// none) gets the whole text again, once per change.
 pub fn update_for(env: &Env, id: &Id, key: &str, session_id: &str, via: &str) -> Option<String> {
     let had = delivered_version(env, key, session_id);
-    if had >= VERSION || !record_delivery(env, key, session_id, via) {
+    let all = read_deliveries(env);
+    let had_harness = all.get(key).or_else(|| all.get(&format!("session:{session_id}"))).and_then(|d| d.harness.clone());
+    let now = crate::harness::rules(env, id.fleet()).map(|(_, h)| h);
+    if (had >= VERSION && had_harness == now) || !record_delivery(env, key, session_id, via, now.as_deref()) {
         return None;
     }
-    Some(update_text(id, had))
+    Some(if had < VERSION {
+        format!("nimitz rules updated v{had}\u{2192}v{VERSION}\n\nWhat changed:\n{}\nThe full rules now:\n\n{}", changelog_since(had), text_for(env, id))
+    } else {
+        format!("nimitz rules updated: fleet {}'s own rules (its harness) changed\n\nThe full rules now:\n\n{}", id.fleet(), text_for(env, id))
+    })
+}
+
+/// The rules `id` is given: its role's (`text`), then its fleet's harness rules.
+pub fn text_for(env: &Env, id: &Id) -> String {
+    let mut t = text(id);
+    if let Some((body, _)) = crate::harness::rules(env, id.fleet()) {
+        t.push_str(&body);
+    }
+    t
 }
 
 const COMMON: &str = include_str!("../rules/common.md");
@@ -411,6 +434,30 @@ mod tests {
         assert!(u.contains(&since1) && u.ends_with(&text(&id)), "the changelog, then the full text");
     }
 
+    /// The fleet's harness rules come after the role rules, and a change of
+    /// them reaches a member at its next prompt, once (as a version does).
+    #[test]
+    fn harness_rules_follow_the_role_rules_and_a_change_is_delivered_once() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        assert_eq!(text_for(&env, &id), text(&id), "no harness: the role rules alone");
+        assert!(update_for(&env, &id, "job1", "s1", "SessionStart").is_some());
+        assert_eq!(update_for(&env, &id, "job1", "s1", "UserPromptSubmit"), None);
+        let rules = crate::harness::dir(&env, "MAIN").join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        std::fs::write(rules.join("style.md"), "Answer in haiku.\n").unwrap();
+        let t = text_for(&env, &id);
+        assert!(t.starts_with(&text(&id)) && t.ends_with("### style\n\nAnswer in haiku.\n") && t.len() < 10_000, "{t}");
+        let u = update_for(&env, &id, "job1", "s1", "UserPromptSubmit").expect("the change goes out");
+        assert!(u.starts_with("nimitz rules updated: fleet MAIN's own rules (its harness) changed") && u.contains("Answer in haiku."), "{u}");
+        assert_eq!(update_for(&env, &id, "job1", "s1", "UserPromptSubmit"), None, "once");
+        std::fs::remove_file(rules.join("style.md")).unwrap();
+        assert!(update_for(&env, &id, "job1", "s1", "UserPromptSubmit").is_some(), "a rule taken away is a change too");
+        // another fleet's member is not touched by MAIN's harness
+        assert_eq!(text_for(&env, &Id::ship("BETA", "S", "X")), text(&Id::ship("BETA", "S", "X")));
+    }
+
     #[test]
     fn a_delivery_is_recorded_once_per_version_and_read_back() {
         let (td, env) = test_env();
@@ -425,7 +472,7 @@ mod tests {
         assert!(d.at > 0.0);
         assert_eq!(update_for(&env, &id, "job1", "s1", "UserPromptSubmit"), None);
         // a second key does not touch the first; the file is one JSON object
-        record_delivery(&env, "session:s2", "s2", "SessionStart");
+        record_delivery(&env, "session:s2", "s2", "SessionStart", None);
         let raw: serde_json::Value = serde_json::from_slice(&std::fs::read(delivered_path(&env)).unwrap()).unwrap();
         assert_eq!(raw["job1"]["version"], VERSION);
         assert_eq!(raw["session:s2"]["via"], "SessionStart");
@@ -440,7 +487,7 @@ mod tests {
         let file = td.path().join("a-file");
         std::fs::write(&file, "").unwrap();
         let bad = Env { state: file.join("nope"), ..env.clone() };
-        assert!(!record_delivery(&bad, "job1", "s1", "UserPromptSubmit"));
+        assert!(!record_delivery(&bad, "job1", "s1", "UserPromptSubmit", None));
         assert_eq!(update_for(&bad, &id, "job2", "s2", "UserPromptSubmit"), None);
         // a lock another hook holds: tried for a moment, then skipped, never a hang
         let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(delivered_path(&env).with_extension("lock")).unwrap();
@@ -471,12 +518,12 @@ mod tests {
         assert_eq!(o[0].severity, Severity::Info);
         assert!(o[0].message.contains("v1") && o[0].message.contains("next prompt") && o[0].fix.is_none(), "{:?}", o[0]);
         // the hook delivered at its next prompt, keyed by its job: gone
-        record_delivery(&env, s.short_id.as_deref().unwrap(), &s.session_id, "UserPromptSubmit");
+        record_delivery(&env, s.short_id.as_deref().unwrap(), &s.session_id, "UserPromptSubmit", None);
         assert!(old(&env).is_empty());
         // keyed by the session id (the hook read no job id): gone too
         let _ = std::fs::remove_file(delivered_path(&env));
         assert_eq!(old(&env).len(), 1);
-        record_delivery(&env, &format!("session:{}", s.session_id), &s.session_id, "SessionStart");
+        record_delivery(&env, &format!("session:{}", s.session_id), &s.session_id, "SessionStart", None);
         assert!(old(&env).is_empty());
     }
 

@@ -119,6 +119,22 @@ subagents `nimitz:kb-scribe` (a note, one commit) and `nimitz:kb-ref` (a
 question, a cited answer), held to the KB by the kb-guard hook;
 docs/design/kb.md.
 
+### A fleet's harness
+
+What every member of one fleet gets beyond nimitz's role rules lives in
+`<NIMITZ_HOME>/<fleet>/harness/` (docs/design/harness.md):
+
+| You want to | Run |
+| --- | --- |
+| A rule every member follows | `nimitz harness add rule style.md --fleet F` (`--plan`, then `--yes`): live at each member's next prompt |
+| A subagent or a skill for the fleet | `nimitz harness add agent reviewer.md --fleet F` · `nimitz harness add skill ./deploy --fleet F`: at the next launch (`fleet-f:reviewer`), or `/reload-plugins` |
+| Settings for the fleet, a squadron or one ship | `nimitz harness add settings perms.json --for F/SQ --fleet F`: at the next launch |
+| See it, take something out | `nimitz harness list --fleet F` · `nimitz harness rm rule style --fleet F` |
+| Bring the running members up to date | `nimitz harness push --fleet F`, then `nimitz start F -f --plan` |
+
+The fleet's admiral may change the harness too; a harness never sets hooks or
+other settings that run programs.
+
 ### Aides (gone in 0.7.0)
 
 nimitz 0.5 and 0.6 had aides (`F/@NAME`): always-on members with a durable

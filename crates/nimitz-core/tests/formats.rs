@@ -209,7 +209,7 @@ work = "plan"
             "place": {"workspace_id": "w1", "workspace": "MAIN", "tab_id": "t1", "tab": "MAIN", "pane_id": "p1"}}}});
     let notice = json!({"ts": 1.5, "id": "MAIN/@KB", "session_id": "s1", "kind": "dead", "event": "inbox", "tool_use_id": "t1", "detail": "d",
         "delivery": "delivered", "delivery_note": "n", "delivered_at": 2.0, "item": "000000000017"});
-    let delivered = json!({"ab12cd34": {"version": 5, "at": 1.5, "session_id": "s1", "via": "SessionStart"}});
+    let delivered = json!({"ab12cd34": {"version": 5, "at": 1.5, "session_id": "s1", "via": "SessionStart", "harness": "ff"}});
     let progress = json!({"run": "r1", "started": 1.5, "fleets": ["MAIN"], "total": 3, "done": 1, "steps": ["a", "b", "c"]});
     let event = json!({"ts": 1.5, "event": "SessionStart", "session_id": "s1", "source": "startup", "reason": "r", "agent_id": "a", "agent_type": "t",
         "tool_name": "SendMessage", "to": "x", "pid": 42, "labels": {"NIMITZ_ID": "MAIN"}, "rules": 5, "job": "ab12cd34", "kind": "bg", "entrypoint": "cli",
