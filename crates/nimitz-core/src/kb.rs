@@ -503,7 +503,11 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
             return Err(format!("origin also fetches or pushes by {u}, not its own URL {first}: nothing is pushed anywhere but the KB's own remote"));
         }
     }
-    let upstream = format!("origin {merge}");
+    // a branch on origin, nothing else (never an option, a tag or a refspec)
+    let Some(on) = merge.strip_prefix("refs/heads/").filter(|b| !b.is_empty() && !b.starts_with('-') && !b.contains(':') && !b.contains(char::is_whitespace)) else {
+        return Err(format!("{branch} merges {merge:?}, not a branch of origin: nothing is synced"));
+    };
+    let upstream = format!("origin/{on}");
     let mut pull = git(dir);
     pull.args(["pull", "--rebase", "--no-autostash", "--quiet", "origin", merge]);
     transport(&mut pull, dir);
