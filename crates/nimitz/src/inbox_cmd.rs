@@ -46,6 +46,17 @@ fn open(ctx: &Ctx, id: &Id) -> Result<Queue, Refusal> {
     Queue::of(&ctx.env, id).map_err(|e| Refusal { code: "inbox.unknown", message: e, exit: 1 })
 }
 
+/// A post here reaches only this machine's queue: refused when another
+/// machine runs the aide (aide.md 12: no cross-machine relay).
+fn runs_here(ctx: &Ctx, id: &Id) -> Result<(), Refusal> {
+    let Ok((f, def)) = queue::find(&ctx.env, id) else { return Ok(()) };
+    if def.dirs.is_empty() || f.machine.as_ref().is_some_and(|m| def.dirs.contains_key(m)) {
+        return Ok(());
+    }
+    let there = def.dirs.keys().cloned().collect::<Vec<_>>().join(", ");
+    Err(Refusal { code: "inbox.elsewhere", message: format!("{id} runs on {there}, not here: a post here would wait in this machine's queue with no one to work it (there is no relay between machines)"), exit: 1 })
+}
+
 fn me(ctx: &Ctx) -> Sender {
     queue::sender_of(&ctx.env, &ctx.vars, ctx.args.value("--from"))
 }
@@ -151,6 +162,7 @@ fn post(ctx: &Ctx) -> Result<i32, Refusal> {
     let q = open(ctx, &id)?;
     let s = me(ctx);
     may_post(&s, &q)?;
+    runs_here(ctx, &id)?;
     let p = q.post(&s, &kind, &payload(ctx)?, ctx.args.value("--key"), None, now())?;
     posted(&q, &p);
     if !p.duplicate {
@@ -596,6 +608,7 @@ pub fn ask(ctx: &Ctx) -> Result<i32, String> {
         let q = open(ctx, &id)?;
         let s = me(ctx);
         may_post(&s, &q)?;
+        runs_here(ctx, &id)?;
         let wait = if ctx.args.flag("--no-wait") { None } else { Some(wait_secs(ctx)?.unwrap_or(WAIT_DEFAULT)) };
         let t = now();
         // while `ask` waits, the answer comes back here, not as a peer message too

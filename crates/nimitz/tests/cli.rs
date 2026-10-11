@@ -3297,3 +3297,18 @@ fn a_snapshot_reader_reads_the_last_commit_and_names_it() {
     let r = raw(&sb.vars, &["inbox", "done", "MAIN/@REF", &id, "--commit", "--paths", "wiki/x.md"], &me, None);
     assert!(r.code != 0, "{}", r.out);
 }
+
+/// A post or an ask on a machine that does not run the aide is refused: it
+/// would wait in this machine's queue with no one to work it (no relay).
+#[test]
+fn a_post_where_the_aide_does_not_run_is_refused() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let f = sb.base.join("nimitz").join("main").join("fleet.toml");
+    let t = std::fs::read_to_string(&f).unwrap();
+    std::fs::write(&f, t.replace("[machines.sandbox]", "[machines.far]\nhostname = \"far-host\"\n\n[machines.sandbox]").replace("sandbox = \"", "far = \"")).unwrap();
+    let r = sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"body\":\"x\"}", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("(inbox.elsewhere)") && r.out.contains("runs on far"), "{}", r.out);
+    let r = sb.run(&["ask", "MAIN/@KB", "q", "--no-wait"]);
+    assert!(r.code != 0 && r.out.contains("(inbox.elsewhere)"), "{}", r.out);
+}
