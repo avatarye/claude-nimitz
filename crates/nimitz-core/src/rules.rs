@@ -70,7 +70,9 @@ pub const CHANGELOG: &[(u32, &str)] = &[
     (
         7,
         "aides are gone: no `F/@NAME` member, no `nimitz aide`, `inbox` or `ask`; \
-         a fleet's `[[aide]]` is removed by `nimitz migrate --shared --yes` (the user's)",
+         a fleet's `[[aide]]` is removed by `nimitz migrate --shared --yes` (the user's); \
+         the fleet's knowledge base is written by the `nimitz:kb-scribe` subagent (a note as JSON, one commit each) \
+         and read by `nimitz:kb-ref` (a question, a cited answer), both in every member's session",
     ),
 ];
 
@@ -359,13 +361,18 @@ mod tests {
     use super::*;
     use crate::config::tests::{make_fleet, test_env};
 
+    /// A `{NAME}` placeholder (capitals) still in the text; JSON braces are not one.
+    fn placeholder_left(t: &str) -> bool {
+        t.split('{').skip(1).any(|r| r.split_once('}').is_some_and(|(w, _)| !w.is_empty() && w.chars().all(|c| c.is_ascii_uppercase() || c == '_')))
+    }
+
     #[test]
     fn each_role_gets_its_rules_filled_in() {
         let t = text(&Id::commodore("HOME", "GITHUB"));
         assert!(t.starts_with(&format!("# nimitz fleet rules (rules v{VERSION}) for HOME/GITHUB")), "{t}");
         assert!(t.contains("You are [HOME.GITHUB]-COMMODORE, the commodore of squadron GITHUB in fleet HOME"));
         assert!(t.contains("`ship new|set|rm HOME/GITHUB/<SHIP>`") && t.contains("[nimitz needs-you]"));
-        assert!(!t.contains('{'), "every placeholder filled: {t}");
+        assert!(!placeholder_left(&t), "every placeholder filled: {t}");
         let a = text(&Id::admiral("HOME"));
         assert!(a.contains("## Admiral of HOME") && a.contains("Never another fleet"));
         let s = text(&Id::ship("HOME", "GITHUB", "DEV"));
@@ -379,6 +386,11 @@ mod tests {
         assert!(a.contains("signal a ship of your fleet directly"), "{a}");
         assert!(s.contains("[HOME]-ADMIRAL` only to reply") && s.contains("`sweep HOME/GITHUB/DEV`"), "{s}");
         assert!(t.contains("Every member may run `nimitz`"), "{t}");
+        // 0.7: the knowledge base through its two subagents, in every role
+        for r in [&t, &a, &s] {
+            assert!(r.contains("`nimitz:kb-scribe`") && r.contains("`nimitz:kb-ref`"), "{r}");
+        }
+        assert!(s.contains("\"id\":\n  \"HOME/GITHUB/DEV\"") || s.contains("\"HOME/GITHUB/DEV\"}"), "{s}");
         // 0.7: aides are gone
         assert!(!t.contains("aide") && !a.contains("aide") && !s.contains("aide"), "{a}");
     }

@@ -27,6 +27,7 @@ pub mod fleet_settings;
 pub mod hook;
 pub mod inbox;
 pub mod kb;
+pub mod kb_guard;
 pub mod layout;
 pub mod notify;
 pub mod pins;

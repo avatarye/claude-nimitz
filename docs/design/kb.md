@@ -70,7 +70,32 @@ stray setting from moving the notes, not a hostile one. A name
 another file system reads as another (a trailing dot or space, `:`, `~`, an
 invisible character) is off limits.
 
-## 3. Who writes it
+## 3. Who writes it: the plugin's subagents
 
-The `kb-scribe` and `kb-ref` subagents (P3) run in any member's session and
-call only these commands; a plugin-level PreToolUse hook holds them to it.
+`plugin/agents/kb-scribe.md` and `kb-ref.md` (Sonnet), with their procedures
+preloaded as the skills `kb-ingest` and `kb-query` (`user-invocable: false`).
+Claude Code namespaces them: a member runs `nimitz:kb-scribe` with a note's
+JSON (its `sender` the member) and `nimitz:kb-ref` with a question; the
+rules (v7) say so. kb-ref reads one commit: `kb head`, then `--at <sha>` on
+every `show` and `grep`.
+
+Plugin subagents ignore a `hooks:` in their frontmatter, so the limits are
+a plugin-level PreToolUse hook on every tool, `nimitz hook kb-guard`
+(`nimitz_core::kb_guard`), keyed on the payload's `agent_type`
+(`nimitz:kb-scribe`, `nimitz:kb-ref`; any other caller gets no answer, after
+a string test that keeps it cheap):
+
+- kb-scribe: Bash only one `nimitz kb path|status|grep|hash|commit|restore`
+  (no `;`, `&`, `|`, redirects, `$`, backticks, `\`, unquoted globs or
+  comments); Read in the KB but `.git`; Edit and Write in the KB, never what
+  `kb::off_limits` names or an existing `raw/` file.
+- kb-ref: Bash only one `nimitz kb path|status|head|show|grep`; Read in the
+  KB but `.git`; nothing else.
+- Paths are judged real (links followed as far as they exist). The KB is the
+  session's fleet's (`NIMITZ_FLEET`, else `NIMITZ_ID`); with none, only Bash
+  passes, and `nimitz kb path` says why, so the agent stops.
+
+What an agent may do the guard *allows*: a member in `default` mode in the
+background writes the KB outside its own folder without a prompt (verified on
+Claude Code 2.1.296, e2e #98). What it may not do is denied with the reason,
+whatever the mode.

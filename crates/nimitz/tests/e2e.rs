@@ -1874,6 +1874,86 @@ fn e2e_trust_lets_a_background_job_start_in_an_untrusted_repo() {
     w.finish();
 }
 
+/// 98. The fleet's knowledge base through its two subagents (0.7.0): the
+/// KB (a bare copy of the real one as its remote) is named in the fleet's
+/// settings and cloned by `nimitz kb clone`; a ship in `default` mode hands a
+/// note to `nimitz:kb-scribe` and a question to `nimitz:kb-ref` (this build's
+/// agents, skills and kb-guard, loaded as plugin `nimitz` by `--plugin-dir`).
+/// The note is one commit with its `note:` and `from:` trailers, pushed to
+/// the remote; the answer cites pages; nothing asked for a permission (the
+/// guard allows what each agent may do outside the ship's folder).
+#[test]
+fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
+    if !gated() {
+        return;
+    }
+    let src = std::env::var("NIMITZ_E2E_KB").unwrap_or_else(|_| "/mnt/data/shared/nimitz-knowledge-base".into());
+    if !Path::new(&src).join(".git").is_dir() {
+        println!("[WARN] e2e #98: no KB repo at {src} (NIMITZ_E2E_KB): skipped");
+        return;
+    }
+    let w = E2e::new(98);
+    let remote = w.base.join("remote.git");
+    let mut c = w.scrubbed("git");
+    c.args(["clone", "-q", "--bare", &src, remote.to_str().unwrap()]);
+    assert_eq!(E2e::run(c).0, 0, "a bare copy of the KB");
+    // the plugin under test: this build's KB agents, skills and guard, as plugin `nimitz`
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+    let plug = w.base.join("plugin");
+    for rel in ["agents/kb-scribe.md", "agents/kb-ref.md", "skills/kb-ingest/SKILL.md", "skills/kb-query/SKILL.md"] {
+        write(&plug.join(rel), &std::fs::read_to_string(repo.join(rel)).unwrap());
+    }
+    write(&plug.join(".claude-plugin/plugin.json"), r#"{"name": "nimitz", "version": "0.0.0-e2e", "description": "nimitz e2e: the KB agents"}"#);
+    let exe = w.bin.borrow().clone();
+    let hooks = json!({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": exe, "args": ["hook", "kb-guard"], "timeout": 5}]}]}});
+    write(&plug.join("hooks/hooks.json"), &hooks.to_string());
+    executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --model '{}' --plugin-dir '{}' \"$@\"\n", w.native, cheap_model(), plug.display()));
+    let ship = w.ship();
+    let marker = format!("e2e-{}-{}", std::process::id(), nimitz_core::evidence::now() as u64);
+    let note = json!({"sender": {"kind": "member", "id": ship}, "title": format!("Nimitz e2e marker {marker}"), "kind": "fact", "domain": "misc",
+        "body": format!("The nimitz e2e marker {marker}: in this test fleet, pelicans are counted in dozens.")});
+    let question = json!({"question": format!("What does the nimitz e2e marker {marker} say about pelicans?"), "length": "short"});
+    let prompt = format!(
+        "This is an end-to-end test of the fleet knowledge base. Do these two steps with the Agent tool, each in the foreground (wait for its result), and ask nothing.\n\
+         1. subagent_type nimitz:kb-scribe, prompt: this note, as is:\n{note}\n\
+         2. subagent_type nimitz:kb-ref, prompt: this question, as is:\n{question}\n\
+         Then reply with the two JSON result blocks the subagents returned, and the word DONE."
+    );
+    w.fleet_with_ship(&prompt, "default");
+    let kb = w.base.join("kb");
+    w.ok(&["fleet", "settings", "set", "kb.remote", remote.to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
+    w.ok(&["fleet", "settings", "set", "kb.dirs.e2e", kb.to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
+    println!("{}", w.ok(&["kb", "clone", "--fleet", &w.fleet, "--yes"]));
+    let git = |dir: &Path, args: &[&str]| -> String {
+        let mut c = w.scrubbed("git");
+        c.arg("-C").arg(dir).args(args);
+        E2e::run(c).1
+    };
+    git(&kb, &["config", "user.email", "e2e@nimitz.local"]);
+    git(&kb, &["config", "user.name", "nimitz e2e"]);
+    let base_sha = git(&kb, &["rev-parse", "HEAD"]).trim().to_string();
+    println!("{}", w.ok(&["start", &ship, "--yes"]));
+    w.wait(45, || w.member(&ship).filter(|m| !m["session"]["pid"].is_null())).expect("ship live");
+    let m = w.wait(1500, || w.member(&ship).filter(|m| m["status"] == "Idle")).expect("the ship's turn ended");
+    let sid = m["session"]["session_id"].as_str().unwrap().to_string();
+    let text = std::fs::read_to_string(w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript")).unwrap();
+    // one commit for the note, with its trailers, pushed
+    let commits: Vec<String> = git(&kb, &["log", "--format=%H", "-E", "--grep=^note: [0-9a-f]{64}$", &format!("{base_sha}..HEAD")]).lines().map(str::to_string).collect();
+    assert_eq!(commits.len(), 1, "one note, one commit: {commits:?}\n{}\n--- the ship's transcript tail:\n{}", git(&kb, &["log", "--oneline", "-5"]), text.chars().rev().take(4000).collect::<String>().chars().rev().collect::<String>());
+    let msg = git(&kb, &["log", "-1", "--format=%B", &commits[0]]);
+    assert!(msg.starts_with("ingest(auto): ") && msg.contains(&format!("from: member {ship}")), "{msg}");
+    let changed = git(&kb, &["show", "--name-only", "--format=", &commits[0]]);
+    assert!(changed.lines().any(|l| l.starts_with("raw/")) && !changed.lines().any(|l| l.eq_ignore_ascii_case("CLAUDE.md") || l.starts_with("agent/")), "{changed}");
+    assert!(git(&remote, &["branch", "--contains", &commits[0]]).trim().len() > 0, "pushed to the remote");
+    assert!(git(&kb, &["status", "--porcelain"]).trim().is_empty(), "nothing left uncommitted in the clone");
+    // the answer cites the wiki; nothing asked for a permission
+    assert!(text.contains("citations") && text.contains("DONE"), "the answer block:\n{}", text.chars().rev().take(3000).collect::<String>().chars().rev().collect::<String>());
+    let ev = w.events();
+    assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {:?}", ev.iter().filter(|e| e["event"] == "PermissionRequest").collect::<Vec<_>>());
+    assert!(std::fs::read_dir(w.base.join("state").join("needs")).map(|d| d.count() == 0).unwrap_or(true), "a needs-you notice was left");
+    w.finish();
+}
+
 /// An update from nimitz 0.4 (`NIMITZ_E2E_OLD_BIN`: a 0.4.0 build; gated on
 /// it as well as `NIMITZ_E2E=1`): the old binary creates the fleet and the
 /// ship, and starts it (its hooks bind it); then this build, as if the user

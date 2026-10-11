@@ -298,6 +298,15 @@ fn hook(event: &str) -> i32 {
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let vars: HashMap<String, String> = nimitz_core::os::env_vars();
     let env = Env::from_vars(&vars);
+    // the KB agents' guard (on every tool call): an answer for them, nothing else
+    if event == "kb-guard" {
+        let out = nimitz_core::kb_guard::hook(&env, &stdin, &vars);
+        if !out.is_empty() {
+            use std::io::Write;
+            let _ = writeln!(std::io::stdout(), "{out}");
+        }
+        return 0;
+    }
     let (out, notice) = nimitz_core::hook::handle_full(&env, event, &stdin, &vars);
     if let Some(n) = notice {
         notify::spawn_delivery(&env, &n);
