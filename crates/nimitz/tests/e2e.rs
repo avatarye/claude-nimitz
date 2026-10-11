@@ -1874,6 +1874,119 @@ fn e2e_trust_lets_a_background_job_start_in_an_untrusted_repo() {
     w.finish();
 }
 
+/// 96. A fleet's harness on real Claude Code: a rule the user adds reaches a
+/// running ship at its next prompt (the whole text once, the hash
+/// recorded); an agent added to the harness is the ship's after `start -f`
+/// (its job's flags carry the fleet's plugin) and answers as itself.
+#[test]
+fn e2e_96_a_harness_rule_reaches_a_live_ship_and_its_agent_comes_with_a_relaunch() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(96);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let m = w.start_ship_idle();
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let marker = format!("{}", std::process::id());
+    let src = w.base.join("harness-src");
+    write(&src.join("word.md"), &format!("When anyone asks for the fleet's word, the answer is ZEBRA{marker}.\n"));
+    write(&src.join("echo.md"), &format!("---\nname: echo\ndescription: Replies with exactly the word it is given.\nmodel: {}\n---\nReply with exactly the word you were given, nothing else.\n", cheap_model()));
+    w.ok(&["harness", "add", "rule", src.join("word.md").to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
+    // 1. the rule, live: at the ship's next prompt, once
+    let ups = |w: &E2e| w.events().iter().filter(|e| e["event"] == "UserPromptSubmit" && e["session_id"] == sid.as_str()).count();
+    let before = ups(&w);
+    w.attach(&w.ship_dir(), &job, &format!("[{}.SQ]-SHIP", w.fleet));
+    w.type_line("What is the fleet's word? Reply with it alone.");
+    w.wait(120, || Some(()).filter(|_| ups(&w) > before)).expect("a UserPromptSubmit");
+    w.wait(180, || w.member(&w.ship()).filter(|m| m["status"] == "Idle")).expect("the turn ended");
+    w.detach();
+    let text = std::fs::read_to_string(w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript")).unwrap();
+    assert!(text.contains(&format!("fleet {}'s own rules (its harness) changed", w.fleet)), "the update reached the transcript");
+    let replies: Vec<String> = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["type"] == "assistant").flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default()).filter_map(|c| c["text"].as_str().map(str::to_string)).collect();
+    assert!(replies.iter().any(|r| r.contains(&format!("ZEBRA{marker}"))), "the ship answered by the harness rule: {replies:?}");
+    assert!(w.deliveries()[&job]["harness"].as_str().is_some_and(|h| h.len() == 64), "the hash delivered is recorded: {}", w.deliveries());
+    // 2. an agent: after `start -f`, from the fleet's plugin
+    w.ok(&["harness", "add", "agent", src.join("echo.md").to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
+    println!("{}", w.ok(&["start", &w.ship(), "-f", "--yes"]));
+    // (a relaunch keeps the job id: its flags now carry the fleet's plugin)
+    let flags_of = |j: &str| -> Vec<String> { serde_json::from_value(read_json(&w.env.claude_home.join("jobs").join(j).join("state.json"))["respawnFlags"].clone()).unwrap_or_default() };
+    let m = w
+        .wait(180, || w.member(&w.ship()).filter(|m| m["status"] == "Idle" && !m["session"]["pid"].is_null() && m["session"]["short_id"].as_str().is_some_and(|j| flags_of(j).iter().any(|f| f == "--plugin-dir"))))
+        .expect("relaunched with the plugin, and idle");
+    let (job2, sid2) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    let plugin_name = nimitz_core::harness::plugin_name(&w.fleet);
+    let flags = flags_of(&job2);
+    let pd = flags.iter().position(|f| f == "--plugin-dir").map(|i| PathBuf::from(&flags[i + 1])).expect("the job's flags carry the fleet's plugin");
+    assert!(pd.join("agents/echo.md").is_file(), "{}", pd.display());
+    w.attach(&w.ship_dir(), &job2, &format!("[{}.SQ]-SHIP", w.fleet));
+    w.type_line(&format!("Use the Agent tool with subagent_type {plugin_name}:echo and the prompt OKAPI{marker}, then reply with its answer alone."));
+    let text = w
+        .wait(240, || {
+            let t = std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid2)?).ok()?;
+            (w.member(&w.ship())?["status"] == "Idle" && t.contains(&format!("\"subagent_type\":\"{plugin_name}:echo\""))).then_some(t)
+        })
+        .expect("the ship ran the harness agent");
+    w.detach();
+    assert!(text.matches(&format!("OKAPI{marker}")).count() >= 2, "the agent's answer came back");
+    w.finish();
+}
+
+/// 95. The 0.6 -> 0.7 upgrade (`NIMITZ_E2E_OLD06_BIN`: a 0.6.0 build): 0.6
+/// makes a fleet with an aide, HOME's `@KB`, and starts it; then this build:
+/// its first command archives the aide state and drops its records, `check`
+/// names the fleet's `[[aide]]` (`aide.legacy`) and the job left running
+/// (`aide.retired`), the user stops and removes it by its short id, and
+/// `migrate --shared --yes` takes the `[[aide]]` and its stamp out; the 0.6
+/// binary still reads the fleet after.
+#[test]
+fn e2e_95_an_update_from_0_6_takes_the_aide_out() {
+    if !gated() {
+        return;
+    }
+    let Some(old) = std::env::var("NIMITZ_E2E_OLD06_BIN").ok().filter(|p| !p.is_empty()) else {
+        println!("[OK] skipped: set NIMITZ_E2E_OLD06_BIN to a 0.6.0 nimitz build");
+        return;
+    };
+    let w = E2e::new(95);
+    w.use_bin(&old);
+    let (_, v) = w.nz(&["--version"]);
+    assert!(v.trim().starts_with("nimitz 0.6."), "NIMITZ_E2E_OLD06_BIN is not a 0.6 build: {v}");
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let kb = w.base.join("kb");
+    std::fs::create_dir_all(&kb).unwrap();
+    w.settings(&kb);
+    let aide = format!("{}/@KB", w.fleet);
+    println!("{}", w.ok(&["aide", "new", &aide, "--dir", kb.to_str().unwrap(), "--types", "wiki.note.v1", "--model", &cheap_model(), "--yes"]));
+    println!("{}", w.ok(&["start", &aide, "--yes"]));
+    let short = w
+        .wait(90, || w.rows().into_iter().find(|(j, _, live, cwd)| *live && !j.is_empty() && Path::new(cwd) == kb).map(|(j, ..)| j))
+        .expect("the 0.6 aide's job is live");
+    // the update: this build on PATH and in the member folders' hooks
+    w.use_bin(EXE);
+    for d in [w.ship_dir(), w.fleet_dir().join("admiral"), w.fleet_dir().join("squadrons").join("sq"), kb.clone()] {
+        w.settings(&d);
+    }
+    let (_, out) = w.nz(&["status"]);
+    assert!(out.contains("registry: aide records dropped") && out.contains("aides: aide state archived"), "the first command's migration:\n{out}");
+    assert!(w.registry()["identities"].get(&aide).is_none(), "the aide's record is gone");
+    let check = w.nz(&["check"]).1;
+    assert!(check.contains("aide.legacy") && check.contains("aide.retired") && check.contains(&format!("nimitz stop {short}")), "{check}");
+    println!("{}", w.ok(&["stop", &short, "--yes"]));
+    println!("{}", w.ok(&["rm", &short, "--yes"]));
+    let plan = w.ok(&["migrate", "--plan"]);
+    assert!(plan.contains("fleet: aides dropped"), "{plan}");
+    println!("{}", w.ok(&["migrate", "--shared", "--yes"]));
+    let toml = std::fs::read_to_string(w.fleet_dir().join("fleet.toml")).unwrap();
+    assert!(!toml.contains("aide") && !toml.contains("format = 2"), "{toml}");
+    let check = w.nz(&["check"]).1;
+    assert!(!check.contains("aide."), "{check}");
+    // the 0.6 binary reads the fleet as it is now
+    let (_, st) = { w.use_bin(&old); w.nz(&["status"]) };
+    assert!(st.contains(&w.fleet) && !st.contains("config.invalid") && !st.contains("config.too_new"), "{st}");
+    w.use_bin(EXE);
+    w.finish();
+}
+
 /// 98. The fleet's knowledge base through its two subagents (0.7.0): the
 /// KB (a bare copy of the real one as its remote) is named in the fleet's
 /// settings and cloned by `nimitz kb clone`; a ship in `default` mode hands a

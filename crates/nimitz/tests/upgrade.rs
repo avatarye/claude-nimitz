@@ -135,16 +135,17 @@ fn a_0_4_0_install_migrates_on_its_first_command_then_runs() {
 
     let s = w.run(&["status", "--json"]);
     assert_eq!(s.code, 0, "{}{}", s.out, s.err);
-    assert_eq!(s.err.lines().filter(|l| l.contains("migrated")).collect::<Vec<_>>(), [format!("[OK] nimitz {V}: migrated registry 2->3 (backups *.pre-{V}; nimitz migrate --plan)")], "{}", s.err);
+    assert_eq!(s.err.lines().filter(|l| l.contains("migrated")).collect::<Vec<_>>(), [format!("[OK] nimitz {V}: migrated registry 2->3, rules-delivered 1->2 (backups *.pre-{V}; nimitz migrate --plan)")], "{}", s.err);
     // the manifest: this nimitz ran here, every manifest artifact at its version
     let m = w.json(&w.state("formats.json"));
     assert_eq!(m["nimitz"], V);
     assert_eq!(m["artifacts"]["needs"], 2);
+    assert_eq!(m["artifacts"]["rules-delivered"], 2);
     // the backup is the 0.4.0 file, word for word; the log says what ran
     assert_eq!(std::fs::read(w.state(&format!("registry.json.pre-{V}"))).unwrap(), before);
     let log = std::fs::read_to_string(w.state("migrations.log")).unwrap();
     let lines: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    assert_eq!(lines.iter().map(|l| (l["artifact"].as_str().unwrap(), l["from"].as_u64().unwrap(), l["to"].as_u64().unwrap(), l["ok"].as_bool().unwrap())).collect::<Vec<_>>(), [("registry", 2, 3, true)]);
+    assert_eq!(lines.iter().map(|l| (l["artifact"].as_str().unwrap(), l["from"].as_u64().unwrap(), l["to"].as_u64().unwrap(), l["ok"].as_bool().unwrap())).collect::<Vec<_>>(), [("registry", 2, 3, true), ("rules-delivered", 1, 2, true)]);
     // the registry: stamped, every identity and its lineage as it was
     let now = w.json(&reg);
     assert_eq!((now["version"].as_u64(), now["min_nimitz"].as_str()), (Some(3), Some("0.5.0")));

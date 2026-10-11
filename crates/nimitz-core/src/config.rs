@@ -437,6 +437,7 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         }));
     }
     out.extend(format_issues(f));
+    out.extend(crate::harness::issues(env, &c.fleet));
     out
 }
 
@@ -1302,7 +1303,13 @@ fn run_step(env: &Env, step: &Step) -> (i32, String) {
             }
         }
         (Some("archive"), Some(path)) => {
-            let to = format!("{path}.archived");
+            // (an earlier archive of the same name stays: the next free name)
+            let mut to = format!("{path}.archived");
+            let mut n = 2;
+            while std::fs::symlink_metadata(&to).is_ok() {
+                to = format!("{path}.archived-{n}");
+                n += 1;
+            }
             match std::fs::rename(path, &to) {
                 Ok(()) => (0, format!("[OK] archive {path} -> {to}")),
                 Err(e) => (1, format!("[ERROR] archive {path}: {e}")),

@@ -45,6 +45,16 @@ Aides are gone. Read **Upgrading** first.
   background member never stops on a prompt. Rules v7 tell members how to use
   them. `nimitz doctor` checks the guard's entry.
 
+- **A fleet's harness** (`<NIMITZ_HOME>/<fleet>/harness/`): rules after the
+  role rules (live: every member gets a change at its next prompt), agents and
+  skills (a plugin nimitz makes on each machine, `fleet-<fleet>`, given to
+  every launch with `--plugin-dir`, which a wake keeps), and settings merged
+  fleet, squadron, member under nimitz's own `--settings` (never hooks or
+  other programs, never nimitz's env). `nimitz harness list|add|rm|push`
+  (the admiral and you change it; every member lists its own).
+  docs/design/harness.md. `rules-delivered` moves to format 2 (by itself:
+  nothing to rewrite).
+
 ### Removed
 
 - The aide role (`F/@NAME`), `nimitz aide new|set|rm|grep|status`, `nimitz

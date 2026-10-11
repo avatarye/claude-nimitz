@@ -146,7 +146,7 @@ pub static ARTIFACTS: &[Artifact] = &[
     Artifact { name: "ship-lock", path: "<ship folder>/.nimitz-ship.lock", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Json("format"), steps: &[], find: ship_locks, wanted: None, lift: None },
     Artifact { name: "registry", path: "S/registry.json", scope: Scope::Local, current: 3, oldest: 2, kept: Kept::Json("version"), steps: REGISTRY_STEPS, find: registry_file, wanted: None, lift: Some(("the 0.3.x registry, read and saved as version 2 (the old file kept as registry.json.v1)", crate::registry::lift_v1)) },
     Artifact { name: "active", path: "S/active.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Json("version"), steps: &[], find: active_file, wanted: None, lift: None },
-    Artifact { name: "rules-delivered", path: "S/rules-delivered.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: rules_delivered, wanted: None, lift: None },
+    Artifact { name: "rules-delivered", path: "S/rules-delivered.json", scope: Scope::Local, current: 2, oldest: 1, kept: Kept::Manifest, steps: RULES_DELIVERED_STEPS, find: rules_delivered, wanted: None, lift: None },
     Artifact { name: "events", path: "S/events.jsonl", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: events_file, wanted: None, lift: None },
     Artifact { name: "restore", path: "S/restore.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: restore_file, wanted: None, lift: None },
     Artifact { name: "pending", path: "S/pending/*.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: pending_dir, wanted: None, lift: None },
@@ -187,6 +187,16 @@ static REGISTRY_STEPS: &[Step] = &[
         apply: Apply::Bytes(registry_2_3),
     },
 ];
+
+static RULES_DELIVERED_STEPS: &[Step] = &[Step {
+    artifact: "rules-delivered",
+    from: 1,
+    to: 2,
+    scope: Scope::Local,
+    summary: "nothing to rewrite (a delivery's optional `harness`: the hash of the fleet's harness rules it got); the manifest records 2",
+    min_nimitz: None,
+    apply: Apply::Nothing,
+}];
 
 static NEEDS_STEPS: &[Step] = &[Step {
     artifact: "needs",
