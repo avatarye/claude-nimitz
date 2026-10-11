@@ -24,6 +24,18 @@
   piggyback too (every 30 s on a busy machine): an aide that works an item
   past its lease without `inbox heartbeat` loses it, and on its last try the
   item is a dead letter.
+- **The KB's aide (S4)**: an aide runs no git (every git command denied);
+  `nimitz aide grep <term> [<path>]` and `nimitz aide status` read its folder,
+  and `nimitz inbox done <aide> <item> --commit --title --paths --pages`
+  commits exactly the named paths with the item's `inbox-item: <ref>` trailer,
+  once (a retry finds the commit; `claim` says so), paths taken literally,
+  file by file; `inbox fail --restore <paths>` puts back what a failed pass
+  wrote. Edits are denied on the repo's own rules, its brief, and at any depth
+  on `.git`, `.gitattributes`, `.gitmodules`, `.gitignore` and CLAUDE.md; a
+  changed attributes file stops nimitz's git until the user looks. `[[aide]] brief` follows the rules at each session start.
+  `inbox list` shows each item's ref. Tested on real Claude Code with a copy of
+  the KB: one commit per note through a kill, a `/clear` and a relaunch; a
+  hostile note refused.
 
 ## 0.5.1 (2026-10-11)
 

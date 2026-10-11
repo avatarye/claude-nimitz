@@ -439,33 +439,55 @@ answer and nimitz delivers it (4.6).
   set model in [[aide]]". Today's list allows it (`opus`, `sonnet`, `fable`).
 - **Permissions** (in `--settings`, so `respawnFlags` keep them):
   - `Bash(nimitz *)`, as every member has;
-  - git only as `git -C <its folder> <sub>`, for the subcommands an ingest
-    needs (status, add, commit, log, diff, show, rev-parse, ls-files, grep,
-    `restore --staged`); push, remote, fetch, pull, clone, config and
-    submodule denied in any form (`claude::AIDE_GIT_ALLOW`, `AIDE_GIT_DENY`:
-    a user's own `Bash(git *)` does not reach an aide). **A decision by
-    NIMITZ_DEV, pending the user's word (2026-10-10):** the KB is never
-    pushed by its aide; a push is the user's. (A commit message holding a
-    denied word, e.g. "config", can be refused by the deny patterns: the item
-    fails, safely);
-  - Edit and Write within the repo (`acceptEdits` in its folder).
+  - **no git at all** (S4, agreed with MYCC_DEV, 2026-10-11): `Bash(git)` and
+    `Bash(git *)` denied, so a user's own `Bash(git *)` allow does not reach
+    an aide. nimitz runs its git (`kb.rs`), with every option that could run a
+    program off (no fsmonitor, pager, hooks, external diff, signing, editor):
+    `nimitz aide grep <term> [<path>]` (`git grep -n -i -F`, tracked files,
+    400 lines at most), `nimitz aide status` (`git status --porcelain`), and
+    the commit at `inbox done --commit` (6.3). `git grep -O` and `rg --pre`
+    run programs, which is why the aide gets neither. The KB is never pushed
+    by its aide (a decision by NIMITZ_DEV, pending the user's word,
+    2026-10-10);
+  - Edit and Write within the repo (`acceptEdits` in its folder), denied (an
+    `Edit(//<folder>/<path>)` rule covers every editing tool; `//c/...` on
+    Windows) on the repo's own rules (`kb::OFF_LIMITS`: agent/, CLAUDE.md,
+    START_HERE.md, SCOPE.md, DESIGN-NOTES.md, README.md, CLAUDE.local.md), at
+    any depth on `.git`, `.gitattributes` (a filter it names runs inside git),
+    `.gitmodules`, `.gitignore` and CLAUDE.md (instructions at the next session
+    start), and on its own brief.
   - Nothing else is pre-allowed: a payload that talks it into `curl` or a write
     outside the repo hits a prompt, and the prompt becomes a needs-you, not an
     action.
 
 ### 6.3 `wiki.note.v1`, idempotent
 
-1. `git log -E --grep '^inbox-item: <ref>$'` (anchored: item 42 never
-   matches item 420). `<ref>` is the item's `ref`, `<queue uid>:<id>`: ids
-   restart when a queue is reset, refs never repeat. If a commit has it,
-   `done` with that commit (an earlier pass did the work and crashed before
-   `done`).
-2. Run the auto-ingest procedure on the payload: the capture file, then search
-   existing pages, update or create, cross-link.
-3. Stage **the paths it wrote, by name** (never `git add -A`: the user may
-   have other changes in the tree), then
-   `git commit -m "ingest(auto): <title>" -m "inbox-item: <ref>" -m "from: <sender>"`.
-4. `inbox done ... --result {"commit": "<sha>", "pages": [...]}`.
+1. The aide runs the KB's `ingest-auto` skill on the payload (the capture
+   file under `raw/captures/`, then search existing pages, update or
+   create, cross-link); the skill ends with the paths it wrote, or
+   `duplicate`, or `refused`.
+2. `nimitz inbox done <aide> <item> --commit --title <title> --paths <paths>
+   --pages <pages>`; nimitz, holding the item's claim:
+   - looks for `git log -E --grep '^inbox-item: <ref>$'` (anchored: item 42
+     never matches item 420; `<ref>` is `<queue uid>:<id>`, which never
+     repeats). Found: that commit is the item's (an earlier pass committed
+     and died before `done`), and nothing is committed;
+   - checks the paths: each a file named literally (`--literal-pathspecs`:
+     never `.`, a folder or a glob), relative, inside the repo, none off
+     limits (any case), none its brief, none an existing `raw/` file (a
+     capture is always new); and no `.gitattributes`/`.gitmodules` in the
+     tree that differs from its commit (found by `hash-object --no-filters`,
+     no git that runs filters: `status` and `add` clean what they compare);
+   - stages **those paths, by name**, and `git commit --only --no-verify`
+     them (whatever the user staged stays staged) with `ingest(auto):
+     <title>`, `inbox-item: <ref>`, `from: <sender>` (each one line, no
+     control characters: no forged trailer);
+   - records `{"commit": "<sha>", "pages": [...]}` with `done`.
+3. A duplicate: `done --result {"duplicate_of": ...}`; refused: `fail
+   --reason --restore <paths>` (nimitz puts the files back: a tracked one as
+   its last commit had it, a new one removed; `--permanent` for a secret or a
+   payload with no knowledge). A pass that finds the item committed already
+   (`claim` shows `committed`) writes nothing and runs `done --commit`.
 
 Rollback is `git revert <sha>`; `inbox list --state done` maps items to commits.
 
@@ -701,16 +723,15 @@ From the port's commits (7dd6984 .. 0145dfc):
 | S1 | `queue.rs` and the CLI: post, claim, heartbeat, done, fail, list, status, retry, drop; types registry with `wiki.note.v1` and `wiki.query.v1`; locks, leases, dead letters, depth and rate limits, sender detection; request and reply: the reply address, tokens, `inbox result`, `nimitz ask --wait`, delivery at `done`; `inbox status --json`, the structured summary Admiralty and `status` read | unit (FIFO under concurrency, lease expiry, at-least-once, caps, rate, who may read a result), sandbox CLI, the role table |
 | S2 | The aide: `@` ids, `Role::Aide`, `[[aide]]` config (edited by hand: `brief` is accepted but unused until S4; `snapshot = true` refused until S4b: a decision by NIMITZ_DEV, pending the user's word, 2026-10-10), labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (aide text and the loop); needs-you for an aide's prompts and its dead letters (from S3); **Admiralty aide rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the aide exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
 | S3 | The doorbell (ring and coalesce; `ring.json`, drained at an empty claim), the SessionStart context (with the 15-minute cron request), the piggyback (`nimitz __ring`, at most every 30 s per machine: rings, housekeeping, late delivery, dead-letter notices), `check`'s `inbox.dead\|stuck\|full` (0.6.0) | sandbox with a socket listener (rings, coalescing, piggyback), the session start context, late delivery, a dead letter from a lapsed lease |
-| S4 | `HOME/@KB` live: the repo and `ingest-auto` (MYCC_DEV), the brief, the git-commit idempotency | real-CC e2e on a throwaway repo: post -> commit; kill mid-item -> one commit only; `/clear` -> drains again |
+| S4 | `HOME/@KB` live: the KB's `ingest-auto` (MYCC_DEV, KB 1608a8a), the brief (`[[aide]] brief`, at each session start), nimitz's git (`aide grep\|status`, `inbox done --commit`, the trailer idempotency), no git for the aide, Edit/Write denied on `.git` and the repo's rules (0.6.0) | real-CC e2e_99 on a copy of the KB: notes -> one commit each; `kill -9` mid-item -> one commit; `/clear` and a relaunch -> drains again; a hostile note -> refused, `.git/config` untouched |
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
 | S2.5 | `aide new\|set\|rm` (moved from S5, 0.6.0): plan and `--yes`, the trust step, the model against this machine's `availableModels`, the refused modes, the inbox flags, one machine's folder; the first aide stamps fleet.toml format 2 and is refused while a machine of the fleet has run no nimitz >= 0.5 (`aide.machines`, `--force`); the last one's `rm` takes the stamp off; `rm` stops and unpins a live aide and refuses while its inbox holds work | sandbox, the role table |
 | S5 | Other parents (`always_on`, ring-to-start) | sandbox, the role table |
 
-Carried from the S2 landing review: whether Claude Code lets an
-`acceptEdits` aide edit its repo's `.git/config` (`core.fsmonitor`,
-`core.pager`, a diff driver would make an allowed `git status|diff|log` run a
-program). Check it in S4's real-Claude Code e2e; if it does, deny
-`Edit`/`Write` of `.git/**` for a writer aide.
+Carried from the S2 landing review, settled in S4: an aide never edits
+`.git` (`Edit(//<folder>/.git/**)` denied), and runs no git; nimitz's own git
+turns fsmonitor, the pager, hooks and external diff off whatever `.git/config`
+says. e2e_99's hostile note left `.git/config` as it was.
 
 Carried from the S1 review into later phases:
 

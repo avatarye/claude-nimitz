@@ -338,7 +338,10 @@ const AIDE_FLAGS: &[&str] = &["--dir", "--machine", "--model", "--mode", "--brie
 /// on this machine or `--machine`) and `--types`; the model defaults to
 /// sonnet, the mode to acceptEdits.
 pub fn aide(ctx: &Ctx) -> Result<i32, String> {
-    let verb = ctx.args.need(0, "new|set|rm")?;
+    let verb = ctx.args.need(0, "new|set|rm|grep|status")?;
+    if matches!(verb, "grep" | "status") {
+        return aide_read(ctx, verb);
+    }
     let id = parse_id(ctx.args.need(1, "aide id F/@NAME")?)?;
     ctx.args.at_most(2)?;
     split(&id, Role::Aide, "aide")?;
@@ -450,6 +453,48 @@ pub fn aide(ctx: &Ctx) -> Result<i32, String> {
         plan.warnings.push(nimitz_core::Issue { code: code.into(), severity: nimitz_core::Severity::Info, message: then, fix, id: Some(id.clone()) });
     }
     Ok(config_plan(ctx, plan, Some(&id)))
+}
+
+/// `nimitz aide grep <term> [<path>]` and `nimitz aide status`: an aide's
+/// look at its own folder, through nimitz's git (`kb`), since an aide runs no
+/// git itself. An aide's own (by its labels); the user names one with
+/// `--aide F/@NAME`.
+fn aide_read(ctx: &Ctx, verb: &str) -> Result<i32, String> {
+    ctx.args.allow(&["--aide"])?;
+    let id = match (&ctx.caller, ctx.args.value("--aide")) {
+        (Caller::Member { id, role: Role::Aide }, None) => id.clone(),
+        (Caller::User, Some(a)) => parse_id(a)?,
+        (Caller::User, None) => return Err(format!("aide {verb}: name the aide with --aide F/@NAME")),
+        (Caller::Member { id, .. }, _) => {
+            out::error(&format!("`nimitz aide {verb}` is an aide's own look at its folder; {} runs git itself", id.name()));
+            return Ok(1);
+        }
+    };
+    split(&id, Role::Aide, "aide")?;
+    let dir = crate::inbox_cmd::read_folder(ctx, &id)?;
+    let text = match verb {
+        "grep" => {
+            ctx.args.at_most(3)?;
+            let term = ctx.args.need(1, "the term")?;
+            nimitz_core::kb::grep(&dir, term, ctx.args.pos.get(2).map(String::as_str))
+        }
+        _ => {
+            ctx.args.at_most(1)?;
+            nimitz_core::kb::status(&dir)
+        }
+    };
+    match text {
+        Ok(t) => {
+            if !t.is_empty() {
+                println!("{}", t.trim_end());
+            }
+            Ok(0)
+        }
+        Err(e) => {
+            out::error(&format!("{id}: {e}"));
+            Ok(1)
+        }
+    }
 }
 
 fn retire(ctx: &Ctx, id: &Id) -> i32 {

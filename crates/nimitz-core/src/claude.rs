@@ -167,36 +167,56 @@ pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 /// every member's `--settings`, so no member's worker claims a pane.
 pub const HERDR_PANE_VARS: [&str; 3] = ["HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"];
 
-/// The git subcommands a writer aide runs in its folder (`git -C <folder>
-/// <sub>`) with no prompt: what an ingest needs, nothing that leaves the machine.
-/// (No `grep`: `git grep -O<cmd>` runs a program; the Grep tool covers it.)
-pub const AIDE_GIT_ALLOW: [&str; 9] = ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "restore --staged"];
-/// Options of the allowed subcommands that write a file or run a program:
-/// denied wherever they appear (`show --output=<file>`, `grep -O<cmd>`).
-pub const AIDE_GIT_DENY_OPTS: [&str; 3] = ["--output", "-O", "--open-files-in-pager"];
-/// Git that reaches another machine or rewrites the repo's setup: denied in
-/// any form (a user's own `Bash(git *)` allow does not reach an aide).
-pub const AIDE_GIT_DENY: [&str; 7] = ["push", "remote", "fetch", "pull", "clone", "config", "submodule"];
-
-/// An aide's permissions (docs/design/aide.md 6.2, 6.4): (allow, deny).
-/// Every aide may run `nimitz`; a writer the `AIDE_GIT_ALLOW` subcommands as
-/// `git -C <its folder> ...` (its edits come from its permission mode), never
-/// the `AIDE_GIT_DENY` ones; a snapshot reader may not edit at all. Anything
-/// else prompts, and a prompt is a needs-you, not an action.
+/// An aide's permissions (docs/design/aide.md 6.2, 6.4, and the S4 decision):
+/// (allow, deny). Every aide may run `nimitz`, and nothing else is
+/// pre-allowed. It runs no git at all (denied in any form, so a user's own
+/// `Bash(git *)` allow does not reach it): nimitz searches, reads the tree and
+/// commits for it (`aide grep|status`, `inbox done --commit`). A writer edits
+/// its folder by its permission mode, but never `.git` nor the repo's own
+/// rules (`kb::OFF_LIMITS`); a snapshot reader edits nothing. Anything else
+/// prompts, and a prompt is a needs-you, not an action.
 fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
-    let mut allow = vec![NIMITZ_ALLOW.to_string()];
-    let mut deny: Vec<String> = AIDE_GIT_DENY.iter().flat_map(|s| [format!("Bash(git {s})"), format!("Bash(git {s} *)"), format!("Bash(git -C * {s})"), format!("Bash(git -C * {s} *)")]).collect();
-    deny.extend(AIDE_GIT_DENY_OPTS.iter().map(|o| format!("Bash(git * {o}*)")));
+    let allow = vec![NIMITZ_ALLOW.to_string()];
+    let mut deny: Vec<String> = vec!["Bash(git)".into(), "Bash(git *)".into()];
     let Ok((f, def)) = crate::queue::find(env, id) else { return (allow, deny) };
     if def.snapshot {
         deny.extend(["Edit", "Write", "NotebookEdit"].map(String::from));
         return (allow, deny);
     }
     if let Some(dir) = crate::config::member_dir(env, &f, id) {
-        let dir = dir.display();
-        allow.extend(AIDE_GIT_ALLOW.iter().flat_map(|s| [format!("Bash(git -C {dir} {s})"), format!("Bash(git -C {dir} {s} *)")]));
+        let root = rule_root(&dir);
+        // (an Edit rule covers every tool that edits a file)
+        for off in crate::kb::OFF_LIMITS {
+            let pat = if off.ends_with('/') { format!("{root}/{off}**") } else { format!("{root}/{off}") };
+            deny.push(format!("Edit({pat})"));
+        }
+        for off in crate::kb::OFF_LIMITS_ANYWHERE {
+            let pat = if off == ".git" { format!("{root}/**/.git/**") } else { format!("{root}/**/{off}") };
+            deny.push(format!("Edit({pat})"));
+            if off == ".git" {
+                deny.push(format!("Edit({root}/.git/**)"));
+            }
+        }
+        // its brief: standing instructions it never writes itself
+        if let Some(b) = def.brief.as_deref().filter(|b| !b.is_empty()) {
+            let p = std::path::Path::new(b);
+            let p = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+            deny.push(format!("Edit({})", rule_root(&p)));
+        }
     }
     (allow, deny)
+}
+
+/// A path as a permission rule anchors it at the filesystem root: `//abs`
+/// (`//c/abs` for `C:\abs` on Windows).
+fn rule_root(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    let s = s.trim_start_matches("//?/").trim_end_matches('/').to_string();
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        return format!("//{}{}", (b[0] as char).to_ascii_lowercase(), &s[2..]);
+    }
+    format!("/{s}")
 }
 
 /// `--settings` JSON: the labels as env, the Herdr pane env blank
@@ -494,30 +514,25 @@ mod tests {
         assert_eq!(&r[4..8], &["--name", "[MAIN]-@REF", "--model", "haiku"]);
         assert!(!launch_bg(&env, &Id::ship("MAIN", "ARGOS", "ARGOS"), "", Some("go")).contains(&"--model".to_string()));
         assert_eq!(model_for(&env, &Id("MAIN/@NONE".into())).as_deref(), Some("sonnet"), "no config: still sonnet");
-        // permissions: a writer may run git in its folder; a snapshot reader may not edit
+        // permissions: an aide runs no git (nimitz does it for it); a writer
+        // never edits .git or the repo's own rules; a snapshot reader edits nothing
         let perms = |id: &Id| serde_json::from_str::<serde_json::Value>(&settings_json(&env, id, true)).unwrap()["permissions"].clone();
         let real = repo.canonicalize().unwrap();
         let p = perms(&kb);
         let list = |k: &str| p[k].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect::<Vec<_>>();
         let (allow, deny) = (list("allow"), list("deny"));
-        assert_eq!(allow[0], NIMITZ_ALLOW);
-        for sub in ["status", "add", "commit", "log", "diff", "show", "rev-parse", "ls-files", "restore --staged"] {
-            assert!(allow.contains(&format!("Bash(git -C {} {sub})", real.display())) && allow.contains(&format!("Bash(git -C {} {sub} *)", real.display())), "{sub}: {allow:?}");
+        assert_eq!(allow, vec![NIMITZ_ALLOW.to_string()], "nothing but nimitz");
+        assert!(deny.contains(&"Bash(git)".to_string()) && deny.contains(&"Bash(git *)".to_string()), "{deny:?}");
+        let root = format!("/{}", real.display());
+        for pat in [format!("{root}/.git/**"), format!("{root}/**/.git/**"), format!("{root}/agent/**"), format!("{root}/CLAUDE.md"), format!("{root}/**/CLAUDE.md"), format!("{root}/**/.gitattributes"), format!("{root}/**/.gitignore"), format!("{root}/CLAUDE.local.md")] {
+            assert!(deny.contains(&format!("Edit({pat})")), "Edit({pat}): {deny:?}");
         }
-        assert_eq!(allow.len(), 19, "nothing else: {allow:?}");
-        assert!(!allow.iter().any(|a| a.contains(" grep")), "no git grep (-O runs a program): {allow:?}");
-        for o in ["--output", "-O", "--open-files-in-pager"] {
-            assert!(deny.contains(&format!("Bash(git * {o}*)")), "{o}: {deny:?}");
-        }
-        assert!(!allow.iter().any(|a| a == "Bash(git *)" || a.contains("push")), "no git outside the list: {allow:?}");
-        for sub in ["push", "remote", "fetch", "pull", "clone", "config", "submodule"] {
-            for form in [format!("Bash(git {sub})"), format!("Bash(git {sub} *)"), format!("Bash(git -C * {sub})"), format!("Bash(git -C * {sub} *)")] {
-                assert!(deny.contains(&form), "{form}: {deny:?}");
-            }
-        }
+        assert!(!deny.iter().any(|d| d.starts_with("Write(") || d.starts_with("NotebookEdit(")), "an Edit rule covers them: {deny:?}");
+        assert_eq!(rule_root(std::path::Path::new(r"C:\Users\x\kb")), "//c/Users/x/kb");
+        assert_eq!(rule_root(std::path::Path::new("/srv/kb/")), "//srv/kb");
         let r = perms(&Id("MAIN/@REF".into()));
         assert_eq!(r["allow"], serde_json::json!([NIMITZ_ALLOW]));
-        assert!(["Edit", "Write", "NotebookEdit", "Bash(git push *)"].iter().all(|d| r["deny"].as_array().unwrap().iter().any(|x| x == d)), "{r}");
+        assert!(["Edit", "Write", "NotebookEdit", "Bash(git *)"].iter().all(|d| r["deny"].as_array().unwrap().iter().any(|x| x == d)), "{r}");
         assert_eq!(perms(&Id::admiral("MAIN")), serde_json::json!({"allow": [NIMITZ_ALLOW]}));
     }
 

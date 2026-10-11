@@ -145,8 +145,14 @@ it a dead letter its admiral hears of), and pushes an answer whose `ask
 --wait` gave up. `check` names `inbox.dead`, `inbox.stuck` and `inbox.full`.
 No read-only snapshot aide yet (`snapshot = true` is refused). An aide
 runs in its own permission mode (default `acceptEdits`; `bypassPermissions`,
-`dontAsk` and `auto` are refused: they would skip its rules), with git only in
-its folder and never `push`.
+`dontAsk` and `auto` are refused: they would skip its rules) and runs no git at
+all: `nimitz aide grep <term> [<path>]` and `nimitz aide status` read its
+folder, and a note ends in `nimitz inbox done <aide> <item> --commit --title T
+--paths A,B --pages A`, which commits exactly those paths with the item's
+`inbox-item: <ref>` trailer (a retry finds that commit and makes no second).
+It never edits `.git` nor its repo's own rules (CLAUDE.md, agent/ and the files
+the KB names), and never pushes. `[[aide]] brief = "<file>"` (in its folder)
+follows its rules at every session start.
 
 **Update every machine first.** A nimitz before 0.5.0 that shares the fleet
 folder cannot load a fleet.toml holding `[[aide]]`, and reads a registry

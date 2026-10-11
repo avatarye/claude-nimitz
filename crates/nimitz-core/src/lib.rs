@@ -25,6 +25,7 @@ pub mod claude;
 pub mod evidence;
 pub mod hook;
 pub mod inbox;
+pub mod kb;
 pub mod layout;
 pub mod notify;
 pub mod pins;

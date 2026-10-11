@@ -517,8 +517,23 @@ pub fn aide_start_context(env: &Env, id: &Id, job: Option<&str>, now: f64) -> St
         }
         Err(e) => format!("unreadable ({e})"),
     };
+    // its brief (`[[aide]] brief`, a file in its folder or a path): its own
+    // standing instructions, after the rules
+    let brief = crate::queue::find(env, id)
+        .ok()
+        .and_then(|(f, def)| {
+            let b = def.brief?;
+            let p = std::path::Path::new(&b);
+            let p = if p.is_absolute() { p.to_path_buf() } else { crate::config::member_dir(env, &f, id)?.join(p) };
+            // at most 16 KiB read (a hook never reads without end)
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(p).ok()?, 16 * 1024), &mut buf).ok()?;
+            Some(String::from_utf8_lossy(&buf).into_owned())
+        })
+        .map(|t| format!("\n\n## Your brief\n\n{t}"))
+        .unwrap_or_default();
     format!(
-        "[nimitz inbox] {id}: {state}.\nNow: if this session has no cron for it yet, ask for one (CronCreate, every 15 minutes, prompt \"drain your inbox\"); then drain your inbox (`nimitz inbox claim {id}` until it exits 3). An item claimed by an older session of yours comes back when its lease ends."
+        "[nimitz inbox] {id}: {state}.\nNow: if this session has no cron for it yet, ask for one (CronCreate, every 15 minutes, prompt \"drain your inbox\"); then drain your inbox (`nimitz inbox claim {id}` until it exits 3). An item claimed by an older session of yours comes back when its lease ends.{brief}"
     )
 }
 
