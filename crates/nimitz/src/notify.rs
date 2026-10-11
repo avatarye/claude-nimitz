@@ -35,6 +35,40 @@ pub fn spawn_delivery(env: &Env, n: &Notice) {
     }
 }
 
+/// Start the aides' piggyback pass (`nimitz __ring`) when one is due (at
+/// most every `ring::PIGGYBACK_EVERY_S` per machine) and return at once.
+pub fn spawn_piggyback(env: &Env) {
+    if !nimitz_core::ring::piggyback_due(env) {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else { return };
+    let mut c = Command::new(exe);
+    c.arg("__ring").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    nimitz_core::os::detach(&mut c);
+    let _ = c.spawn();
+}
+
+/// `nimitz __ring`: one piggyback pass (`ring::piggyback`: idle aides with
+/// work waiting are rung, answers nobody waited for pushed) and each aide's
+/// new dead letters told to its parent. Always exit 0.
+pub fn piggyback_cmd() -> i32 {
+    let vars: HashMap<String, String> = nimitz_core::os::env_vars();
+    let env = Env::from_vars(&vars);
+    let now = nimitz_core::evidence::now();
+    let _ = nimitz_core::ring::piggyback(&env, now);
+    let (fleets, _) = nimitz_core::config::load_all(&env);
+    for f in &fleets {
+        for a in f.config.aide.iter().filter(|a| f.machine.as_ref().is_some_and(|m| a.dirs.contains_key(m))) {
+            if let Ok(q) = nimitz_core::queue::Queue::of(&env, &Id::aide(&Id::admiral(&f.config.fleet), &a.name)) {
+                if q.dir.is_dir() {
+                    dead_letters(&env, &q);
+                }
+            }
+        }
+    }
+    0
+}
+
 /// `nimitz __notify <key>`: only the member itself (its labels) delivers its
 /// notice; a dead letter's (`<aide>#dead-<item>`), whoever's command found
 /// it dead (the text is nimitz's own, from the queue, never the caller's).

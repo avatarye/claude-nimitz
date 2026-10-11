@@ -48,6 +48,7 @@ fn status_word(s: Status) -> &'static str {
 pub fn status(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(0)?;
+    crate::notify::spawn_piggyback(&ctx.env);
     let mut snap = ctx.snap();
     let mux = ctx.mux();
     // the shape once: the panes that show members, and the active set
@@ -155,6 +156,7 @@ fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize
 pub fn check(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
+    crate::notify::spawn_piggyback(&ctx.env);
     let id = ctx.args.pos.first().map(|s| parse_id(s)).transpose()?;
     let snap = ctx.snap();
     let mut issues = nimitz_core::check::check_tree(&ctx.env, &snap, id.as_ref());

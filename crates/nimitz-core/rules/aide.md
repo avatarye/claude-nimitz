@@ -6,8 +6,10 @@
   keeps for {ID}: an item survives a crash, a reboot, a `/clear` and a
   relaunch, so your conversation is disposable. Your CLAUDE.md says how to
   do each item type.
-- Work the inbox whenever you are woken (a session start, your cron, a
-  message), one item at a time, oldest first:
+- Work the inbox whenever you are woken, one item at a time, oldest first.
+  You are woken by a session start (its context shows your inbox), your
+  cron, a `[nimitz inbox]` line (the doorbell: a new item, or work that
+  waits while you idle) or any message:
   1. `nimitz inbox claim {ID}` prints the next item as JSON; exit 3 means
      the inbox is empty: stop until you are woken again (your cron, a
      message, a start).
@@ -25,7 +27,7 @@
   prompt; push, remote, fetch, pull, clone, config and submodule never run.
 - At every session start (a launch, a relaunch, a `/clear`, a compact) ask
   for a session cron (CronCreate, every 15 minutes, prompt "drain your
-  inbox"): it ends with the session.
+  inbox") unless this session has one: it ends with the session.
 - Signal your parent `{PARENT_NAME}` only: a report, or a block. Never
   answer a requester yourself (`done` does). A dead letter reaches your
   parent as a needs-you; so does a question or a permission prompt, which

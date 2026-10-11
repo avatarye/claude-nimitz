@@ -153,7 +153,21 @@ fn post(ctx: &Ctx) -> Result<i32, Refusal> {
     may_post(&s, &q)?;
     let p = q.post(&s, &kind, &payload(ctx)?, ctx.args.value("--key"), None, now())?;
     posted(&q, &p);
+    if !p.duplicate {
+        doorbell(&ctx.env, &q, &kind, &s);
+    }
     Ok(0)
+}
+
+/// Ring the aide for a new item (coalesced; aide.md 5.1). A ring that cannot
+/// reach it is no failure of the post: the item waits, and its start, its
+/// cron or the piggyback wakes it.
+fn doorbell(env: &nimitz_core::env::Env, q: &Queue, kind: &str, s: &Sender) {
+    match nimitz_core::ring::ring(env, q, nimitz_core::ring::Why::Post { kind, from: &s.line() }, now()) {
+        Ok(Some(n)) if !out::json_mode() => out::line(&n),
+        Err(why) if !out::json_mode() => out::line(&format!("not rung ({why})")),
+        _ => {}
+    }
 }
 
 fn posted(q: &Queue, p: &queue::Posted) {
@@ -186,6 +200,7 @@ fn claim(ctx: &Ctx) -> Result<i32, Refusal> {
             Ok(0)
         }
         None => {
+            nimitz_core::ring::drained(&q, now());
             if out::json_mode() {
                 out::json(&json!({"ok": true, "empty": true}));
             } else {
@@ -472,6 +487,9 @@ pub fn ask(ctx: &Ctx) -> Result<i32, String> {
         let t = now();
         // while `ask` waits, the answer comes back here, not as a peer message too
         let posted = q.post(&s, "wiki.query.v1", &p, None, wait.map(|w| t + w), t)?;
+        if !posted.duplicate {
+            doorbell(&ctx.env, &q, "wiki.query.v1", &s);
+        }
         // the handle first, on stderr: a caller killed while it waits (a Bash
         // timeout) still has its item and its token
         if let Some(tok) = &posted.token {
