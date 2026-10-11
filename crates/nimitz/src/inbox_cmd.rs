@@ -307,7 +307,15 @@ fn commit_item(ctx: &Ctx, q: &Queue, id: &Id, item: &str, s: &Sender) -> Result<
 
 /// The aide's brief, as a path in its repo (never its own to write or commit).
 fn brief_of(ctx: &Ctx, id: &Id) -> Vec<String> {
-    queue::find(&ctx.env, id).ok().and_then(|(_, d)| d.brief).filter(|b| !b.is_empty()).map(|b| vec![b.trim_start_matches("./").to_string()]).unwrap_or_default()
+    let Ok((f, d)) = queue::find(&ctx.env, id) else { return vec![] };
+    let Some(b) = d.brief.filter(|b| !b.is_empty()) else { return vec![] };
+    let p = std::path::Path::new(&b);
+    if p.is_absolute() {
+        // inside its repo: that path, relative
+        let repo = nimitz_core::config::member_dir(&ctx.env, &f, id);
+        return repo.and_then(|r| nimitz_core::os::canonical(p).ok().and_then(|c| c.strip_prefix(&r).ok().map(|x| x.to_string_lossy().replace('\\', "/")))).into_iter().collect();
+    }
+    vec![b.trim_start_matches("./").to_string()]
 }
 
 fn no_commit(why: String) -> Refusal {
@@ -342,7 +350,9 @@ fn fail(ctx: &Ctx) -> Result<i32, Refusal> {
         q.holding(&item, holder(&s).as_deref(), now())?;
         let dir = aide_folder(ctx, &id).map_err(|e| no_commit(format!("{id}: {e}")))?;
         let paths: Vec<String> = list.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect();
-        let done = nimitz_core::kb::restore(&dir, &paths, &brief_of(ctx, &id)).map_err(|e| no_commit(format!("nothing failed, nothing restored: {e}")))?;
+        // what the files held before (a page the user edited too) is kept in this machine's state
+        let backup = ctx.env.state.join("aides").join(queue::escape(&id)).join("restored").join(item.trim_start_matches('0'));
+        let done = nimitz_core::kb::restore(&dir, &paths, &brief_of(ctx, &id), &backup).map_err(|e| no_commit(format!("nothing failed, nothing restored: {e}")))?;
         for d in done {
             out::line(&d);
         }

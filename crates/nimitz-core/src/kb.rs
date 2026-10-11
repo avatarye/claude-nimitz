@@ -14,7 +14,7 @@ use std::process::Command;
 /// and Windows `claude.md` is `CLAUDE.md`.
 pub const OFF_LIMITS: [&str; 7] = ["agent/", "CLAUDE.md", "START_HERE.md", "SCOPE.md", "DESIGN-NOTES.md", "README.md", "CLAUDE.local.md"];
 /// Never written at any depth.
-pub const OFF_LIMITS_ANYWHERE: [&str; 5] = [".git", ".gitattributes", ".gitmodules", ".gitignore", "CLAUDE.md"];
+pub const OFF_LIMITS_ANYWHERE: [&str; 7] = [".git", ".gitattributes", ".gitmodules", ".gitignore", "CLAUDE.md", ".claude", ".mcp.json"];
 
 /// The most lines `grep` prints, each at most `LINE_MAX` characters: an
 /// aide's context is not a dump.
@@ -69,6 +69,23 @@ fn clean_rel(p: &str) -> Result<String, String> {
         return Err("the repo itself is no path to commit: name each file".into());
     }
     Ok(rel)
+}
+
+/// Does `rel`'s folder lie inside the repo (no symlinked folder leads out)?
+fn inside(dir: &Path, rel: &str) -> Result<(), String> {
+    let root = crate::os::canonical(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let parent = dir.join(rel).parent().map(Path::to_path_buf).unwrap_or_else(|| dir.to_path_buf());
+    // a folder not made yet is inside when its nearest existing one is
+    let mut p = parent.as_path();
+    loop {
+        if let Ok(c) = crate::os::canonical(p) {
+            return if c.starts_with(&root) { Ok(()) } else { Err(format!("{rel}: its folder leads out of the repo")) };
+        }
+        match p.parent() {
+            Some(up) => p = up,
+            None => return Err(format!("{rel}: no folder")),
+        }
+    }
 }
 
 /// Is `rel` off limits (any case)?
@@ -190,6 +207,7 @@ pub fn check_paths(dir: &Path, paths: &[String], extra: &[String]) -> Result<Vec
         if extra.iter().any(|e| e.to_lowercase() == rel.to_lowercase()) {
             return Err(format!("{rel}: the aide's brief is never its own to write"));
         }
+        inside(dir, &rel)?;
         let full = dir.join(&rel);
         let meta = std::fs::symlink_metadata(&full);
         match meta {
@@ -247,13 +265,15 @@ pub fn commit(dir: &Path, aide: &str, reference: &str, title: &str, from: &str, 
 }
 
 /// `inbox fail --restore <paths>`: undo what a failed pass wrote: a tracked
-/// file back to its last commit (index and tree), a new one removed. The
-/// same checks as a commit's paths.
-pub fn restore(dir: &Path, paths: &[String], brief: &[String]) -> Result<Vec<String>, String> {
+/// file back to its last commit (index and tree), a new one removed. Every
+/// path is checked first, as a commit's paths are; a tracked file that
+/// differs from its commit is copied to `backup` before it goes back (the
+/// user may have edited it too), and the note says where.
+pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) -> Result<Vec<String>, String> {
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: nothing is restored until the user looks at it"));
     }
-    let mut done = vec![];
+    let mut checked = vec![];
     for p in paths {
         let rel = clean_rel(p)?;
         if let Some(off) = off_limits(&rel) {
@@ -262,15 +282,31 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String]) -> Result<Vec<Str
         if brief.iter().any(|e| e.to_lowercase() == rel.to_lowercase()) {
             return Err(format!("{rel}: the aide's brief is never its own to write"));
         }
-        let full = dir.join(&rel);
-        if std::fs::symlink_metadata(&full).is_ok_and(|m| m.is_dir()) {
+        inside(dir, &rel)?;
+        if std::fs::symlink_metadata(dir.join(&rel)).is_ok_and(|m| m.is_dir()) {
             return Err(format!("{rel} is a folder: name each file"));
         }
+        checked.push(rel);
+    }
+    let mut done = vec![];
+    for rel in checked {
+        let full = dir.join(&rel);
         if tracked(dir, &rel) {
+            // its content as it is now, if it is not its commit's: kept
+            let mut diff = git(dir);
+            diff.args(["diff", "--quiet", "HEAD", "--"]).arg(&rel).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            let changed = !diff.status().is_ok_and(|s| s.success());
+            if changed && full.is_file() {
+                let to = backup.join(&rel);
+                if let Some(p) = to.parent() {
+                    std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+                }
+                std::fs::copy(&full, &to).map_err(|e| format!("{rel}: keeping a copy: {e}"))?;
+            }
             let mut c = git(dir);
             c.args(["checkout", "HEAD", "--"]).arg(&rel);
             run(c)?;
-            done.push(format!("{rel} restored"));
+            done.push(if changed { format!("{rel} restored (as it was: {})", backup.join(&rel).display()) } else { format!("{rel} restored") });
         } else if full.exists() {
             let mut c = git(dir);
             c.args(["reset", "-q", "--"]).arg(&rel);
@@ -387,11 +423,27 @@ mod tests {
         let d = td.path();
         std::fs::write(d.join("wiki/page.md"), "half written\n").unwrap();
         std::fs::write(d.join("raw/cap-9.md"), "capture\n").unwrap();
-        let done = restore(d, &["wiki/page.md".into(), "raw/cap-9.md".into()], &[]).unwrap();
+        let keep = tempfile::tempdir().unwrap();
+        let done = restore(d, &["wiki/page.md".into(), "raw/cap-9.md".into()], &[], keep.path()).unwrap();
         assert_eq!(done.len(), 2, "{done:?}");
         assert_eq!(std::fs::read_to_string(d.join("wiki/page.md")).unwrap(), "Alpha beta\n");
+        assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md")).unwrap(), "half written\n", "what was there is kept");
         assert!(!d.join("raw/cap-9.md").exists());
-        assert!(restore(d, &["CLAUDE.md".into()], &[]).is_err());
-        assert!(restore(d, &["wiki".into()], &[]).is_err());
+        assert!(restore(d, &["CLAUDE.md".into()], &[], keep.path()).is_err());
+        assert!(restore(d, &["wiki".into()], &[], keep.path()).is_err());
+        // a refused path anywhere in the list: nothing is restored
+        std::fs::write(d.join("wiki/page.md"), "again\n").unwrap();
+        assert!(restore(d, &["wiki/page.md".into(), "CLAUDE.md".into()], &[], keep.path()).is_err());
+        assert_eq!(std::fs::read_to_string(d.join("wiki/page.md")).unwrap(), "again\n");
+        // a symlinked folder that leads out: refused, nothing outside removed
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            std::fs::write(outside.path().join("victim.md"), "v").unwrap();
+            std::os::unix::fs::symlink(outside.path(), d.join("wiki/link")).unwrap();
+            assert!(restore(d, &["wiki/link/victim.md".into()], &[], keep.path()).is_err());
+            assert!(check_paths(d, &["wiki/link/victim.md".into()], &[]).is_err());
+            assert!(outside.path().join("victim.md").exists());
+        }
     }
 }
