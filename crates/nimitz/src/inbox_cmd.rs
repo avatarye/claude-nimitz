@@ -364,7 +364,7 @@ fn list(ctx: &Ctx) -> Result<i32, Refusal> {
         .map(|(st, i)| {
             let mine = queue::may_read(&i, &s, None) || is(&s, &id);
             json!({
-                "id": i.id, "state": st.dir(), "type": i.kind, "sender": i.sender.line(), "age_s": (t - i.posted_at).round(),
+                "id": i.id, "ref": i.reference, "state": st.dir(), "type": i.kind, "sender": i.sender.line(), "age_s": (t - i.posted_at).round(),
                 "tries": i.tries, "reason": i.reason,
                 "payload": if mine { i.payload.clone() } else { Value::Null },
                 "result": if mine { i.result.clone().unwrap_or(Value::Null) } else { Value::Null },

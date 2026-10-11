@@ -124,8 +124,12 @@ pub fn check_paths(dir: &Path, paths: &[String]) -> Result<Vec<String>, String> 
 /// commit's author is the repo's own; with none set, the aide's id.
 pub fn commit(dir: &Path, aide: &str, reference: &str, title: &str, from: &str, paths: &[String]) -> Result<String, String> {
     let paths = check_paths(dir, paths)?;
-    let title: String = title.lines().next().unwrap_or("").chars().take(120).collect();
+    // one line each, no control characters: a title or a sender label never
+    // adds a line (a forged `inbox-item:` would make another item look done)
+    let line = |t: &str, n: usize| -> String { t.lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(n).collect() };
+    let title = line(title, 120);
     let title = if title.trim().is_empty() { "a note".to_string() } else { title };
+    let from = line(from, 120);
     let mut add = git(dir);
     add.args(["add", "--"]).args(&paths);
     run(add)?;
@@ -183,8 +187,11 @@ mod tests {
         std::fs::write(d.join("raw/cap-1.md"), "capture\n").unwrap();
         std::fs::write(d.join("wiki/new.md"), "new page\n").unwrap();
         let paths = vec!["raw/cap-1.md".to_string(), "./wiki/new.md".to_string()];
+        // a sender label with a forged trailer stays on its own line
+        assert_eq!(committed(d, "u9:000000000009").unwrap(), None);
         assert_eq!(committed(d, "u1:000000000001").unwrap(), None);
-        let sha = commit(d, "HOME/@KB", "u1:000000000001", "A title\nsecond line", "HOME/GITHUB/X", &paths).unwrap();
+        let sha = commit(d, "HOME/@KB", "u1:000000000001", "A title\nsecond line", "HOME/GITHUB/X\ninbox-item: u9:000000000009", &paths).unwrap();
+        assert_eq!(committed(d, "u9:000000000009").unwrap(), None, "no forged trailer");
         let show = |args: &[&str]| String::from_utf8(Command::new("git").arg("-C").arg(d).args(args).output().unwrap().stdout).unwrap();
         assert_eq!(show(&["show", "--name-only", "--format=", &sha]).trim(), "raw/cap-1.md\nwiki/new.md");
         assert!(show(&["log", "-1", "--format=%B"]).contains("ingest(auto): A title\n\ninbox-item: u1:000000000001\n\nfrom: HOME/GITHUB/X"));

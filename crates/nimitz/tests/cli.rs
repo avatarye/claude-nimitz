@@ -3098,3 +3098,89 @@ fn a_session_start_after_a_clear_mid_item_says_the_item_is_its_own() {
     let c = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     assert!(c.contains("item 1 is yours") && c.contains(&format!("nimitz inbox done|fail MAIN/@KB 1")), "job {job}: {c}");
 }
+
+/// @KB's pipeline as nimitz runs it (aide.md 6.3, S4): the aide writes, then
+/// `inbox done --commit` stages exactly the paths it names and commits them
+/// with the item's trailer; a retry of a committed item records that commit;
+/// a path off limits is refused and nothing is committed. `aide grep|status`
+/// read the folder for an aide that runs no git.
+#[test]
+fn done_commit_makes_one_commit_per_item_and_aide_grep_reads_the_repo() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let repo = sb.base.canonicalize().unwrap().join("dirs").join("main").join("kb");
+    let git = |args: &[&str]| {
+        let o = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    std::fs::create_dir_all(repo.join("wiki")).unwrap();
+    std::fs::write(repo.join("wiki/_index.md"), "# Index\nAlpha topic\n").unwrap();
+    std::fs::write(repo.join("CLAUDE.md"), "rules\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+    let aide = [("NIMITZ_ID", "MAIN/@KB"), ("NIMITZ_ROLE", "aide")];
+    // aide grep and status: the aide's own folder, no git of its own
+    let r = raw(&sb.vars, &["aide", "grep", "alpha", "wiki"], &aide, None);
+    assert!(r.code == 0 && r.out.contains("wiki/_index.md:2:Alpha topic"), "{}", r.out);
+    let r = raw(&sb.vars, &["aide", "grep", "alpha"], &[("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_ROLE", "ship")], None);
+    assert!(r.code != 0, "a ship runs its own git: {}", r.out);
+    std::fs::write(repo.join("wiki/_index.md"), "# Index\nAlpha topic\nthe user's edit\n").unwrap();
+    let r = raw(&sb.vars, &["aide", "status"], &aide, None);
+    assert!(r.code == 0 && r.out.contains(" M wiki/_index.md"), "{}", r.out);
+    let r = sb.run(&["aide", "status", "--aide", "MAIN/@KB"]);
+    assert!(r.code == 0 && r.out.contains(" M wiki/_index.md"), "the user names the aide: {}", r.out);
+    // a note: claimed, written, committed by nimitz
+    sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"title\":\"Beta\",\"body\":\"beta facts\"}", "--yes"]);
+    let r = raw(&sb.vars, &["inbox", "claim", "MAIN/@KB"], &aide, None);
+    let item: Value = serde_json::from_str(&r.out[r.out.find('{').unwrap()..]).unwrap();
+    let (id, reference) = (item["id"].as_str().unwrap().to_string(), item["ref"].as_str().unwrap().to_string());
+    std::fs::create_dir_all(repo.join("raw/captures")).unwrap();
+    std::fs::write(repo.join("raw/captures/beta.md"), "beta facts\n").unwrap();
+    std::fs::write(repo.join("wiki/beta.md"), "# Beta\n").unwrap();
+    // off limits: refused, nothing committed, the item still held
+    let r = raw(&sb.vars, &["inbox", "done", "MAIN/@KB", &id, "--commit", "--paths", "wiki/beta.md,CLAUDE.md"], &aide, None);
+    assert!(r.code != 0 && r.out.contains("off limits") && r.out.contains("(inbox.commit)"), "{}", r.out);
+    assert_eq!(git(&["rev-list", "--count", "HEAD"]).trim(), "1");
+    let r = raw(&sb.vars, &["inbox", "done", "MAIN/@KB", &id, "--commit", "--title", "Beta", "--paths", "raw/captures/beta.md,wiki/beta.md", "--pages", "wiki/beta.md"], &aide, None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let sha = git(&["rev-parse", "HEAD"]).trim().to_string();
+    let msg = git(&["log", "-1", "--format=%B"]);
+    assert!(msg.contains("ingest(auto): Beta") && msg.contains(&format!("inbox-item: {reference}")) && msg.contains("from: the user"), "{msg}");
+    assert_eq!(git(&["show", "--name-only", "--format=", "HEAD"]).trim(), "raw/captures/beta.md\nwiki/beta.md", "only the named paths");
+    assert!(git(&["status", "--porcelain"]).contains(" M wiki/_index.md"), "the user's edit is left alone");
+    let r = sb.run(&["inbox", "list", "MAIN/@KB", "--state", "done", "--json"]);
+    assert!(r.out.contains(&sha) && r.out.contains("wiki/beta.md"), "{}", r.out);
+    // the same item again (a crash after the commit, before done): no second commit
+    sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"title\":\"Gamma\",\"body\":\"gamma\"}", "--yes"]);
+    let r = raw(&sb.vars, &["inbox", "claim", "MAIN/@KB"], &aide, None);
+    let item: Value = serde_json::from_str(&r.out[r.out.find('{').unwrap()..]).unwrap();
+    let (id2, ref2) = (item["id"].as_str().unwrap().to_string(), item["ref"].as_str().unwrap().to_string());
+    std::fs::write(repo.join("wiki/gamma.md"), "# Gamma\n").unwrap();
+    git(&["add", "wiki/gamma.md"]);
+    git(&["commit", "-qm", "ingest(auto): Gamma", "-m", &format!("inbox-item: {ref2}")]);
+    let before = git(&["rev-list", "--count", "HEAD"]);
+    let r = raw(&sb.vars, &["inbox", "done", "MAIN/@KB", &id2, "--commit", "--paths", "wiki/gamma.md"], &aide, None);
+    assert!(r.code == 0 && r.out.contains("already committed"), "{}", r.out);
+    assert_eq!(git(&["rev-list", "--count", "HEAD"]), before, "no second commit");
+}
+
+/// An aide's brief (`[[aide]] brief`, in its folder) follows the rules in its session start.
+#[test]
+fn an_aides_brief_is_in_its_session_start() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", true).unwrap();
+    let repo = sb.base.canonicalize().unwrap().join("dirs").join("main").join("kb");
+    std::fs::write(repo.join("AIDE.md"), "Use agent/skills/ingest-auto.md for every note.\n").unwrap();
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--brief", "AIDE.md", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let sid = sb.member("MAIN/@KB")["session"]["session_id"].as_str().unwrap().to_string();
+    let labels = [("NIMITZ_ID", "MAIN/@KB"), ("NIMITZ_ROLE", "aide"), ("NIMITZ_FLEET", "MAIN"), ("NIMITZ_PARENT", "MAIN")];
+    let r = raw(&sb.vars, &["hook", "SessionStart"], &labels, Some(&format!("{{\"session_id\":\"{sid}\",\"source\":\"startup\"}}")));
+    let v: Value = serde_json::from_str(r.out.trim()).unwrap_or_else(|_| panic!("{}", r.out));
+    let c = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+    assert!(c.contains("## Your brief") && c.contains("Use agent/skills/ingest-auto.md for every note."), "{c}");
+}
