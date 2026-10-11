@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Version 0.5.0 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.296).
+Version 0.5.1 ([CHANGELOG](CHANGELOG.md); from 0.4, read 0.5.0's "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.296).
 
 ## User manual
 
@@ -134,7 +134,7 @@ policy = "open"                  # open | fleet | parent
 | Read an answer later | `nimitz inbox result F/@REF <id> [--token T]` |
 | Retry or drop a dead letter | `nimitz inbox retry F/@KB <id>` · `nimitz inbox drop F/@KB <id>` |
 
-Limits in 0.5.0: no doorbell yet, so an aide wakes on its 15-minute cron, a
+Limits in 0.5.1: no doorbell yet, so an aide wakes on its 15-minute cron, a
 message or a start; no `aide new|set|rm`, so edit `[[aide]]` in fleet.toml by
 hand; no read-only snapshot aide yet (`snapshot = true` is refused). An aide
 runs in its own permission mode (default `acceptEdits`; `bypassPermissions`,

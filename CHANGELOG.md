@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.5.1 (unreleased)
+## 0.5.1 (2026-10-11)
+
+### Upgrading
+
+- From 0.5.0: nothing migrates (no file format changed); update the plugin
+  (`claude plugin update nimitz@claude-nimitz`) for the skills' new lines.
+  From 0.4: read 0.5.0's **Upgrading** below first.
 
 ### New
 
@@ -12,13 +18,25 @@
 - **`nimitz attach <id>`**: this terminal attached to the member's exact job
   (`claude attach <short id>`, never a name), woken first by start's plan when
   it is down. ctrl-z detaches, ← opens the agent view. Yours alone; refused
-  inside a Claude Code session (`attach.nested`).
+  inside a Claude Code session (`attach.nested`). On Windows, ctrl-c and
+  ctrl-break go to the attach while nimitz waits for it.
+- The fleet, admiral and commodore skills name `nimitz attach` and
+  `start -p --tab`.
 
 ### Fixed
 
 - A session file left by a crash whose pid another process now has is no
   longer read as the Claude Code session above a command (Linux and Windows:
-  its `procStart` must match the process).
+  its `procStart` must match the process): an inbox post's sender is no
+  longer named after that dead session.
+
+### Known limits
+
+- macOS: the stale session file check is not made (nimitz does not read a
+  process's start there), so a file left by a crash at a reused pid can still
+  refuse `nimitz attach` (`attach.nested`) and name an inbox post's sender
+  after it, as in 0.5.0; deleting that `~/.claude/sessions/<pid>.json` gets
+  past it.
 
 ## 0.5.0
 
