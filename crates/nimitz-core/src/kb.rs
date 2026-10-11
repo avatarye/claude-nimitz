@@ -486,8 +486,8 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
         run(c).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
     };
     let mut b = git(dir);
-    b.args(["symbolic-ref", "--short", "-q", "HEAD"]);
-    let branch = run(b).map(|s| s.trim().to_string()).map_err(|_| "no branch checked out".to_string())?;
+    b.args(["symbolic-ref", "-q", "HEAD"]);
+    let branch = run(b).ok().and_then(|s| s.trim().strip_prefix("refs/heads/").map(str::to_string)).ok_or("no branch checked out")?;
     let remote = get(&format!("branch.{branch}.remote"), false);
     let merge = get(&format!("branch.{branch}.merge"), false);
     let (Some(remote), Some(merge)) = (remote.first(), merge.first()) else {
@@ -503,13 +503,31 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
             return Err(format!("origin also fetches or pushes by {u}, not its own URL {first}: nothing is pushed anywhere but the KB's own remote"));
         }
     }
+    // and as git will use them (an `insteadOf` or `pushInsteadOf` rewrite
+    // that leads elsewhere is refused: the rewritten URLs must be the first's)
+    let rewritten = |args: &[&str]| -> Vec<String> {
+        let mut c = git(dir);
+        c.args(args);
+        run(c).unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect()
+    };
+    let target = rewritten(&["ls-remote", "--get-url", &first]).into_iter().next().unwrap_or(first.clone());
+    for u in rewritten(&["remote", "get-url", "--all", "origin"]).iter().chain(rewritten(&["remote", "get-url", "--push", "--all", "origin"]).iter()) {
+        if !same_remote(&target, u) {
+            return Err(format!("origin is rewritten to {u} (url.*.insteadOf or pushInsteadOf), not {target}: nothing is pushed anywhere but the KB's own remote"));
+        }
+    }
     // a branch on origin, nothing else (never an option, a tag or a refspec)
-    let Some(on) = merge.strip_prefix("refs/heads/").filter(|b| !b.is_empty() && !b.starts_with('-') && !b.contains(':') && !b.contains(char::is_whitespace)) else {
+    let well_formed = |r: &str| {
+        let mut c = git(dir);
+        c.args(["check-ref-format", r]);
+        run(c).is_ok()
+    };
+    let Some(on) = merge.strip_prefix("refs/heads/").filter(|b| !b.is_empty() && !b.starts_with('-') && !b.contains(':') && !b.contains(char::is_whitespace) && well_formed(merge)) else {
         return Err(format!("{branch} merges {merge:?}, not a branch of origin: nothing is synced"));
     };
     let upstream = format!("origin/{on}");
     let mut pull = git(dir);
-    pull.args(["pull", "--rebase", "--no-autostash", "--quiet", "origin", merge]);
+    pull.args(["pull", "--rebase", "--no-autostash", "--no-recurse-submodules", "--quiet", "--", "origin", merge]);
     transport(&mut pull, dir);
     if let Err(e) = run(pull) {
         let mut note = "the local commits are kept".to_string();
@@ -523,7 +541,7 @@ pub fn sync(env: &Env, dir: &Path) -> Result<String, String> {
         return Err(format!("pull --rebase from {upstream} failed (nothing pushed; {note}; a sync needs no uncommitted edits to tracked files): {e}"));
     }
     let mut push = git(dir);
-    push.args(["push", "--quiet", "origin", &format!("HEAD:{merge}")]);
+    push.args(["push", "--quiet", "--no-recurse-submodules", "--", "origin", &format!("HEAD:{merge}")]);
     transport(&mut push, dir);
     run(push).map_err(|e| format!("push to {upstream} failed (the local commits are kept): {e}"))?;
     Ok(format!("in step with {upstream} at {}", head(dir)?))
@@ -925,6 +943,17 @@ mod tests {
         assert!(sync(&env, &a).unwrap_err().contains("by /elsewhere.git"), "every push URL, not the last one");
         g(&a, &["config", "--unset-all", "remote.origin.pushurl"]);
         g(&a, &["config", "remote.origin.pushurl", remote.to_str().unwrap()]);
+        // a rewrite that leads elsewhere, a merge ref that is no branch: nothing synced
+        // (git rewrites the url, never an explicit pushurl)
+        g(&a, &["config", "--unset-all", "remote.origin.pushurl"]);
+        g(&a, &["config", "url./elsewhere.git.pushInsteadOf", remote.to_str().unwrap()]);
+        assert!(sync(&env, &a).unwrap_err().contains("is rewritten to"));
+        g(&a, &["config", "--remove-section", "url./elsewhere.git"]);
+        for bad in ["--upload-pack=touch PWNED", "refs/tags/v2", "+refs/heads/main:refs/heads/other"] {
+            g(&a, &["config", "branch.main.merge", bad]);
+            assert!(sync(&env, &a).unwrap_err().contains("not a branch of origin"), "{bad}");
+        }
+        g(&a, &["config", "branch.main.merge", "refs/heads/main"]);
         // a pushRemote or pushDefault never steers the push: origin, named
         let elsewhere = here.path().join("elsewhere.git");
         g(here.path(), &["init", "-q", "--bare", elsewhere.to_str().unwrap()]);
