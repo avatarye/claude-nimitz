@@ -50,6 +50,7 @@ the user wants it done.
    a new nimitz changed the rules; read the changes and go on by them.
 9. You run as a Claude Code background job, pinned, attached in your Herdr
    tab (`F.ADMIRAL`). The user detaches with ctrl-z and comes back with
-   `nimitz start F -p`. Never run `/exit`: inside an attach it opens the agent
+   `nimitz start F -p` (`-p --tab`: always its own tab; `nimitz attach F`: the
+   terminal they are in; both the user's alone). Never run `/exit`: inside an attach it opens the agent
    view of the whole machine. Your commodores are jobs too: `nimitz start F/SQ -p`
    shows one (the user runs it).

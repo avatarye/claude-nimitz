@@ -20,7 +20,9 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 One-off work is a subagent in the lead's own session, or a ship. Every member
 is a Claude Code background job (`claude --bg`); a lead's job is pinned, so it
 is never idle-retired. You talk to a lead in its tab: `nimitz start <id> -p` runs
-`claude attach <job>` there; detach with ctrl-z. Never type `/exit` inside an
+`claude attach <job>` there (`-p --tab`: always in its own tab), and `nimitz
+attach <id>` attaches the user's current terminal (both the user's alone);
+detach with ctrl-z. Never type `/exit` inside an
 attach: it opens the agent view of the whole machine instead of ending the
 member (`nimitz stop <id>` stops one).
 
