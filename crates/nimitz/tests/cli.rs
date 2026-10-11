@@ -3312,3 +3312,59 @@ fn a_post_where_the_aide_does_not_run_is_refused() {
     let r = sb.run(&["ask", "MAIN/@KB", "q", "--no-wait"]);
     assert!(r.code != 0 && r.out.contains("(inbox.elsewhere)"), "{}", r.out);
 }
+
+/// The S4b review's edges: a reader commits and restores nothing, even while
+/// it holds an item; its gaps go to the notes keeper from nimitz (one note
+/// per gap text); a lost snapshot is made again by `aide set --snapshot`; a
+/// writer does not become a reader in place; `aide rm` takes the snapshot away.
+#[test]
+fn a_readers_edges_gaps_rebuild_and_removal() {
+    let sb = Sb::new(false);
+    let repo = sb.base.canonicalize().unwrap().join("dirs").join("kbrepo");
+    std::fs::create_dir_all(repo.join("wiki")).unwrap();
+    let git = |args: &[&str]| {
+        let o = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    std::fs::write(repo.join("wiki/page.md"), "Alpha\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "one"]);
+    let repo_s = repo.to_string_lossy().into_owned();
+    assert_eq!(sb.run(&["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--yes"]).code, 0);
+    let r = sb.run(&["aide", "new", "MAIN/@REF", "--dir", &repo_s, "--types", "wiki.query.v1", "--snapshot", "--mode", "default", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    // a writer does not become a reader in place
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--snapshot", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("does not become"), "{}", r.out);
+    let me = [("NIMITZ_ID", "MAIN/@REF"), ("NIMITZ_ROLE", "aide")];
+    sb.run(&["ask", "MAIN/@REF", "what is beta?", "--no-wait"]);
+    let r = raw(&sb.vars, &["inbox", "claim", "MAIN/@REF"], &me, None);
+    let item: Value = serde_json::from_str(&r.out[r.out.find('{').unwrap()..]).unwrap();
+    let id = item["id"].as_str().unwrap().to_string();
+    // while it holds the item: no commit, no restore
+    let r = raw(&sb.vars, &["inbox", "done", "MAIN/@REF", &id, "--commit", "--paths", "wiki/page.md"], &me, None);
+    assert!(r.code != 0 && r.out.contains("commits nothing"), "{}", r.out);
+    let r = raw(&sb.vars, &["inbox", "fail", "MAIN/@REF", &id, "--reason", "x", "--restore", "wiki/page.md"], &me, None);
+    assert!(r.code != 0 && r.out.contains("commits nothing"), "{}", r.out);
+    // done: its gaps reach the keeper from nimitz, once per text
+    let res = "{\"answer\":\"unknown\",\"citations\":[],\"gaps\":[\"What beta is\",\"what BETA is\",\"Who made alpha\"],\"confidence\":\"low\"}";
+    let r = raw(&sb.vars, &["inbox", "done", "MAIN/@REF", &id, "--result", res], &me, None);
+    assert!(r.code == 0 && r.out.matches("gap posted to MAIN/@KB").count() == 2 && r.out.contains("gap already with MAIN/@KB"), "{}", r.out);
+    let r = sb.run(&["inbox", "list", "MAIN/@KB", "--json"]);
+    assert!(r.out.contains("\"sender\": \"MAIN/@REF\"") && r.out.contains("What beta is") && r.out.contains("\"kind\": \"gap\""), "{}", r.out);
+    // the snapshot lost: start would refuse; aide set --snapshot makes it again
+    let snap = sb.base.join("state").join("aides").join("MAIN%2F@REF").join("snapshot");
+    std::fs::remove_dir_all(&snap).unwrap();
+    let r = sb.run(&["check", "MAIN"]);
+    assert!(r.out.contains("nimitz aide set MAIN/@REF --snapshot"), "{}", r.out);
+    let r = sb.run(&["aide", "set", "MAIN/@REF", "--snapshot", "--yes"]);
+    assert!(r.code == 0 && snap.join("wiki/page.md").is_file(), "{}", r.out);
+    // removed: the snapshot goes, and the repo no longer lists it
+    let r = sb.run(&["aide", "rm", "MAIN/@REF", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!snap.exists() && !git(&["worktree", "list"]).contains("snapshot"), "{}", git(&["worktree", "list"]));
+}

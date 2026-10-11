@@ -511,13 +511,20 @@ cites and never writes. "The librarian" below is its role.
 - **A consistent snapshot, never the working tree mid-write.** `@KB` writes
   files, then commits; a reader of the working tree could see half an ingest.
   So the librarian works in a **detached worktree at the last commit**:
-  - `NIMITZ_STATE/aides/HOME%2F@REF/snapshot`, made once with
-    `git -C <repo> worktree add --detach <snapshot> HEAD` (outside Dropbox: a
-    synced worktree would race the sync);
+  - `NIMITZ_STATE/aides/HOME%2F@REF/snapshot` (outside Dropbox: a synced
+    worktree would race the sync), made by `aide new|set --snapshot` with
+    `git -C <repo> worktree add --detach --force <snapshot> <HEAD>` whenever it
+    is missing, broken, or a worktree of a repo it no longer reads (its
+    `--git-common-dir` is not the repo's, or its top is not itself). Never
+    `worktree prune`: in a synced repo it would drop every worktree another
+    machine registered; `add --force` takes back a registered path. `aide rm`
+    unregisters it (`worktree remove --force`);
   - `inbox claim` (nimitz, not the aide) moves it to the repo's current
-    `HEAD` before it hands out a query: `git -C <snapshot> checkout --detach
-    <HEAD>`. A commit is atomic for a reader (`HEAD` moves after its objects
-    are written), so every query reads one whole commit;
+    `HEAD` before it hands out a query: `checkout --detach --force <HEAD>`,
+    `clean -ffdxq`. A commit is atomic for a reader (`HEAD` moves after its
+    objects are written), so every query reads one whole commit. A refresh
+    that fails is said every time (stderr, and `snapshot_stale` in the
+    claim) and the answer names the commit it did read;
   - the answer's `snapshot` names that commit; a citation is reproducible
     with `git show <commit>:<page>`;
   - its job's folder is the snapshot, which `nimitz trust` (the trust
@@ -526,13 +533,14 @@ cites and never writes. "The librarian" below is its role.
   within `length`, then `inbox done --result {answer, citations, gaps,
   confidence, snapshot}`. A question the wiki cannot answer is still `done`:
   an answer that says so, with `gaps`. Only an error is `fail`.
-- **Gaps go to `@KB`** (the user, 2026-10-10). A gap it finds while
-  answering (the wiki does not say, or says it two ways) it posts with
-  `nimitz inbox post HOME/@KB --type wiki.note.v1`, `kind: "gap"` (nothing
-  known yet) or `kind: "question"` (an open question), the query's item id in
-  `source.label`. It goes through the inbox like any post: `@KB`'s policy,
-  the per-sender rate limit (the librarian is a sender like everyone else),
-  dedupe by `key = sha256(body)`. It still never writes the repo itself.
+- **Gaps go to `@KB`** (the user, 2026-10-10), posted by nimitz at the
+  reader's `done` (S4b: a post the session might not live to make is not left
+  to it): each line of `result.gaps` (5 at most, 300 characters each) as a
+  `wiki.note.v1` with `kind: "gap"`, `source.label` the query's ref and its
+  asker, to the one writer aide of the fleet on this machine that takes
+  notes; as the reader, so `@KB`'s policy and its per-sender rate hold; keyed
+  `gap:<sha256 of the line, lower case>`, so the same gap from many askers is
+  one note. The reader never writes the repo itself.
 
 ## 7. Authority and comms
 

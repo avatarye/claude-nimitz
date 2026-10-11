@@ -143,7 +143,12 @@ and `status`/`check` run at most every 30 s: it rings an idle aide whose work
 has waited two minutes, returns a lapsed lease's item to the queue (or makes
 it a dead letter its admiral hears of), and pushes an answer whose `ask
 --wait` gave up. `check` names `inbox.dead`, `inbox.stuck` and `inbox.full`.
-No read-only snapshot aide yet (`snapshot = true` is refused). An aide
+A read-only reader (`aide new F/@REF --dir <repo> --types wiki.query.v1
+--snapshot --mode default`) works in a snapshot of its repo (a detached
+worktree under NIMITZ_STATE, trusted on its own) that each `claim` moves to
+the repo's last commit; its answers name that commit, and nimitz posts each
+gap of an answer to the fleet's notes keeper. `aide set F/@REF --snapshot`
+makes a lost snapshot again. An aide
 runs in its own permission mode (default `acceptEdits`; `bypassPermissions`,
 `dontAsk` and `auto` are refused: they would skip its rules) and runs no git at
 all: `nimitz aide grep <term> [<path>]` and `nimitz aide status` read its

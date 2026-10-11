@@ -1873,7 +1873,7 @@ fn classify(step: &Step) -> Kind {
     let c: Vec<&str> = step.cmd.iter().map(String::as_str).collect();
     match c.as_slice() {
         ["bind", ..] => Kind::Bind,
-        ["mkdir", _] | ["write", _, _] | ["archive", _] | ["trust", _] => Kind::Config,
+        ["mkdir", _] | ["write", _, _] | ["archive", _] | ["trust", _] | ["snapshot", _, _] | ["unsnapshot", _, _] => Kind::Config,
         [_, "stop", short] => Kind::Stop { short: short.to_string() },
         [_, "rm", short] => Kind::Rm { short: short.to_string() },
         _ if !step.cmd.contains(&"--bg".to_string()) => Kind::Other,

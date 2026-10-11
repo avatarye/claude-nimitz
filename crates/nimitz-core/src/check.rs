@@ -225,7 +225,9 @@ pub fn folder_issue_in(env: &Env, cache: &mut TrustCache, id: &Id, cwd: &str) ->
             severity: Severity::Error,
             message: format!("{id}'s folder {cwd} does not exist"),
             fix: Some(match id.role() {
-                Role::Aide => format!("mkdir -p {cwd}  # or point {id} elsewhere in its [[aide]] dirs"),
+                // a snapshot reader's folder is nimitz's to make
+                Role::Aide if cwd.contains("/aides/") && cwd.ends_with("/snapshot") => format!("nimitz aide set {id} --snapshot  # makes its snapshot again"),
+                Role::Aide => format!("mkdir -p {cwd}  # or point {id} elsewhere: nimitz aide set {id} --dir <folder>"),
                 _ => format!("mkdir -p {cwd}  # or point {id} elsewhere with nimitz ship set"),
             }),
             id: Some(id.clone()),

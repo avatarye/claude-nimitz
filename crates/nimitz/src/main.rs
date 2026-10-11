@@ -92,7 +92,7 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   squadron new|set|rm <F/SQ>       --brief T --comms open|commodore-only|allow:A,B --mode M
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
   aide grep <term> [<path>] | aide status   an aide's look at its own folder (it runs no git); you: --aide F/@NAME
-  aide new|set|rm <F/@NAME>        --dir PATH --types T,.. [--machine L --model M --mode M --brief P --policy open|fleet|parent
+  aide new|set|rm <F/@NAME>        --dir PATH --types T,.. [--snapshot (a read-only reader) --machine L --model M --mode M --brief P --policy open|fleet|parent
                                    --depth N --per-sender N/h --lease 15m --max-tries N --keep-done 7d]; you or its admiral
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine

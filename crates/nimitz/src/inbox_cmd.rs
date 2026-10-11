@@ -217,10 +217,16 @@ fn claim(ctx: &Ctx) -> Result<i32, Refusal> {
             // a snapshot reader's snapshot moves to the repo's last commit
             // before it reads (failing that, it answers from the one it has)
             if let Some((repo, snap)) = snapshot_of(ctx, &id) {
-                let at = nimitz_core::kb::ensure_snapshot(&repo, &snap).or_else(|e| nimitz_core::kb::snapshot_at(&snap).ok_or(e));
-                match at {
+                match nimitz_core::kb::ensure_snapshot(&repo, &snap) {
                     Ok(sha) => shown["snapshot"] = json!(sha),
-                    Err(e) => eprintln!("[WARN] {id}'s snapshot could not be refreshed: {e}"),
+                    Err(e) => {
+                        // said every time: an answer from an old commit is no current answer
+                        eprintln!("[WARN] {id}'s snapshot could not be moved to the repo's last commit: {e}");
+                        shown["snapshot_stale"] = json!(e);
+                        if let Some(sha) = nimitz_core::kb::snapshot_at(&snap) {
+                            shown["snapshot"] = json!(sha);
+                        }
+                    }
                 }
             }
             // always JSON: the aide reads it
@@ -304,6 +310,14 @@ fn done(ctx: &Ctx) -> Result<i32, Refusal> {
     }
     let t = now();
     let i = q.done(&item, holder(&s).as_deref(), result, t)?;
+    // a reader's gaps go to the notes keeper, posted by nimitz (aide.md 6.4)
+    if snapshot_of(ctx, &id).is_some() {
+        for note in post_gaps(ctx, &id, &i, &s) {
+            if !out::json_mode() {
+                out::line(&note);
+            }
+        }
+    }
     let delivery = if i.reply_to.is_some() { Some(queue::deliver(&ctx.env, &q, &i, t)) } else { None };
     if out::json_mode() {
         out::json(&json!({"ok": true, "id": i.id, "delivered": delivery.as_ref().map(|d| d.is_ok()), "delivery": delivery.as_ref().map(|d| match d { Ok(s) | Err(s) => s.clone() })}));
@@ -347,6 +361,47 @@ fn brief_of(ctx: &Ctx, id: &Id) -> Vec<String> {
 
 fn no_commit(why: String) -> Refusal {
     Refusal { code: "inbox.commit", exit: 1, message: why }
+}
+
+/// The most gaps one answer posts, and the longest gap line.
+const GAPS_MAX: usize = 5;
+const GAP_CHARS: usize = 300;
+
+/// Post a reader's gaps (`result.gaps`) to the fleet's notes keeper: the
+/// one writer aide here that takes `wiki.note.v1`. Each as `kind: gap`, its
+/// source the query's ref and asker, keyed by its text (the same gap from
+/// many askers is one note); at most `GAPS_MAX`. Posted as the reader (its
+/// rate limit at the keeper holds). What happened, one line each.
+fn post_gaps(ctx: &Ctx, reader: &Id, item: &queue::Item, s: &Sender) -> Vec<String> {
+    let gaps: Vec<String> = item.result.as_ref().and_then(|r| r.get("gaps")).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(|g| g.trim().chars().take(GAP_CHARS).collect::<String>()).filter(|g| !g.is_empty()).take(GAPS_MAX).collect()).unwrap_or_default();
+    if gaps.is_empty() {
+        return vec![];
+    }
+    let Ok((f, _)) = queue::find(&ctx.env, reader) else { return vec![] };
+    let here = f.machine.clone();
+    let keepers: Vec<Id> = f.config.aide.iter().filter(|a| !a.snapshot && a.inbox.types.iter().any(|t| t == "wiki.note.v1") && here.as_ref().is_some_and(|m| a.dirs.contains_key(m))).map(|a| Id::aide(&Id::admiral(&f.config.fleet), &a.name)).collect();
+    let [keeper] = keepers.as_slice() else {
+        return vec![format!("{} gap(s) not posted: {} notes keepers run here (one is needed)", gaps.len(), keepers.len())];
+    };
+    let Ok(kq) = Queue::of(&ctx.env, keeper) else { return vec![] };
+    // the keeper's inbox policy holds for the reader as for any sender
+    if let Err(e) = may_post(s, &kq) {
+        return vec![format!("gaps not posted to {keeper}: {}", e.message)];
+    }
+    let mut out = vec![];
+    for g in gaps {
+        let payload = json!({"kind": "gap", "body": g, "title": g.chars().take(80).collect::<String>(), "source": {"label": format!("{} {} (asked by {})", reader, item.reference, item.sender.line())}});
+        let key = format!("gap:{}", nimitz_core::sha256::hex(g.to_lowercase().as_bytes()));
+        match kq.post(s, "wiki.note.v1", &payload, Some(&key), None, now()) {
+            Ok(p) if p.duplicate => out.push(format!("gap already with {keeper} (item {})", p.id)),
+            Ok(p) => {
+                out.push(format!("gap posted to {keeper} (item {})", p.id));
+                doorbell(&ctx.env, &kq, "wiki.note.v1", s);
+            }
+            Err(e) => out.push(format!("gap not posted to {keeper}: {}", e.message)),
+        }
+    }
+    out
 }
 
 /// A snapshot reader's (repo, snapshot) on this machine; None for a writer.

@@ -3,7 +3,10 @@
 //! status` read its folder; `nimitz inbox done --commit` stages the paths the
 //! aide names and commits them with the item's trailer. The aide's own
 //! settings deny every git command, so a payload cannot talk it into one, and
-//! nimitz runs git with every option that could run a program turned off.
+//! nimitz runs git with every option that could run a program turned off,
+//! but for the filters the user's own committed attributes name (git-lfs, say:
+//! a checkout of a reader's snapshot runs them, as any checkout would; an
+//! attributes file not committed stops nimitz's git, `stray_attributes`).
 use std::path::{Component, Path};
 use std::process::Command;
 
@@ -330,27 +333,41 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) ->
     Ok(done)
 }
 
-/// A snapshot reader's worktree (aide.md 6.4): made when missing or broken
-/// (`worktree prune`, then `worktree add --detach`), then moved to the repo's
-/// current `HEAD`. A commit is atomic for a reader (HEAD moves after its
-/// objects are written), so every query reads one whole commit. Returns the
-/// commit the snapshot is at.
+/// Is `snap` a worktree of `repo`, and its own top (not a folder inside
+/// another repo, not a link to one)? Its `--git-common-dir` is the repo's.
+pub fn snapshot_healthy(repo: &Path, snap: &Path) -> bool {
+    if !snap.join(".git").is_file() {
+        return false;
+    }
+    let ask = |dir: &Path, what: &str| -> Option<String> {
+        let mut c = git(dir);
+        c.args(["rev-parse", "--path-format=absolute", what]);
+        run(c).ok().map(|s| s.trim().to_string())
+    };
+    let canon = |s: &str| crate::os::canonical(Path::new(s)).ok();
+    let same_repo = ask(repo, "--git-common-dir").and_then(|a| canon(&a)).is_some_and(|a| ask(snap, "--git-common-dir").and_then(|b| canon(&b)) == Some(a));
+    let own_top = ask(snap, "--show-toplevel").and_then(|t| canon(&t)) == crate::os::canonical(snap).ok();
+    same_repo && own_top
+}
+
+/// A snapshot reader's worktree (aide.md 6.4): made when missing, broken or
+/// another repo's (`worktree add --detach --force`, which takes back a path
+/// still registered; never `worktree prune`, which would drop every worktree
+/// registered from another machine of a synced repo), then moved to the
+/// repo's current `HEAD`. A commit is atomic for a reader (HEAD moves after
+/// its objects are written), so every query reads one whole commit. Returns
+/// the commit the snapshot is at.
 pub fn ensure_snapshot(repo: &Path, snap: &Path) -> Result<String, String> {
     let mut head = git(repo);
     head.args(["rev-parse", "HEAD"]);
     let sha = run(head)?.trim().to_string();
-    let healthy = snap.join(".git").is_file() && {
-        let mut c = git(snap);
-        c.args(["rev-parse", "--is-inside-work-tree"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        c.status().is_ok_and(|s| s.success())
-    };
-    if !healthy {
-        if snap.exists() {
+    if !snapshot_healthy(repo, snap) {
+        // the folder is nimitz's own (under NIMITZ_STATE): whatever is there goes
+        if std::fs::symlink_metadata(snap).is_ok_and(|m| m.file_type().is_symlink()) {
+            std::fs::remove_file(snap).map_err(|e| format!("{}: {e}", snap.display()))?;
+        } else if snap.exists() {
             std::fs::remove_dir_all(snap).map_err(|e| format!("{}: {e}", snap.display()))?;
         }
-        let mut prune = git(repo);
-        prune.args(["worktree", "prune"]);
-        run(prune)?;
         if let Some(p) = snap.parent() {
             std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
         }
@@ -364,9 +381,22 @@ pub fn ensure_snapshot(repo: &Path, snap: &Path) -> Result<String, String> {
     co.args(["checkout", "--detach", "--force", &sha]);
     run(co)?;
     let mut clean = git(snap);
-    clean.args(["clean", "-fdq"]);
+    clean.args(["clean", "-ffdxq"]);
     run(clean)?;
     Ok(sha)
+}
+
+/// An aide's snapshot unregistered from its repo and gone (`aide rm`).
+pub fn drop_snapshot(repo: &Path, snap: &Path) -> Result<(), String> {
+    if snapshot_healthy(repo, snap) {
+        let mut c = git(repo);
+        c.args(["worktree", "remove", "--force"]).arg(snap);
+        run(c)?;
+    }
+    if snap.exists() {
+        std::fs::remove_dir_all(snap).map_err(|e| format!("{}: {e}", snap.display()))?;
+    }
+    Ok(())
 }
 
 /// The commit a snapshot is at.
@@ -450,10 +480,28 @@ mod tests {
         std::fs::write(d.join("wiki/page.md"), "half written\n").unwrap();
         ensure_snapshot(d, &snap).unwrap();
         assert_eq!(std::fs::read_to_string(snap.join("wiki/page.md")).unwrap(), "Alpha beta\n");
-        // broken (its folder gone): made again
+        // broken (its folder gone): made again; a sibling worktree whose folder is
+        // away (another machine's, a drive unmounted) is never pruned
+        let away = state.path().join("away");
+        Command::new("git").arg("-C").arg(d).args(["worktree", "add", "--detach", away.to_str().unwrap()]).output().unwrap();
+        std::fs::rename(&away, state.path().join("moved")).unwrap();
         std::fs::remove_dir_all(&snap).unwrap();
         assert_eq!(ensure_snapshot(d, &snap).unwrap(), second);
         assert!(snap.join("wiki/new.md").is_file());
+        let list = String::from_utf8(Command::new("git").arg("-C").arg(d).args(["worktree", "list"]).output().unwrap().stdout).unwrap();
+        assert!(list.contains("away"), "the away worktree is still registered: {list}");
+        // a snapshot of another repo is not this repo's: made again from this one
+        let other = repo();
+        let other_snap = state.path().join("o");
+        ensure_snapshot(other.path(), &other_snap).unwrap();
+        assert!(!snapshot_healthy(d, &other_snap));
+        ensure_snapshot(d, &other_snap).unwrap();
+        assert!(snapshot_healthy(d, &other_snap) && other_snap.join("wiki/new.md").is_file());
+        // ignored files go too
+        std::fs::write(other_snap.join("junk.tmp"), "x").unwrap();
+        std::fs::write(other_snap.join(".git").parent().unwrap().join(".gitignore-me"), "x").unwrap();
+        drop_snapshot(d, &other_snap).unwrap();
+        assert!(!other_snap.exists());
     }
 
     #[test]

@@ -1067,6 +1067,14 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
                     (c.format, c.min_nimitz) = (None, None);
                 }
                 plan.steps.push(step_write(Some(id.clone()), &f.dir.join("fleet.toml"), toml_out(&c), "fleet settings without the aide"));
+                if def.snapshot {
+                    if let Some(repo) = aide_repo(&f, id) {
+                        let snap = snapshot_dir(env, id);
+                        if snap.exists() {
+                            plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["unsnapshot".into(), repo.to_string_lossy().into_owned(), snap.to_string_lossy().into_owned()], cwd: None, why: "its snapshot unregistered from the repo and removed".into() });
+                        }
+                    }
+                }
             }
         },
     }
@@ -1101,6 +1109,12 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
         }
     };
     let exists = find_aide(&f, id).is_some();
+    // a writer and a reader differ in folder, permissions and loop: a new aide, not a change
+    if let Some(cur) = find_aide(&f, id).filter(|c| !new && c.snapshot != def.snapshot) {
+        let (was, is) = if cur.snapshot { ("a snapshot reader", "a writer") } else { ("a writer", "a snapshot reader") };
+        refuse(&mut plan, "config.invalid", format!("{id} is {was}; it does not become {is} in place"), Some(format!("nimitz aide rm {id}, then nimitz aide new {id} ...")), Some(id.clone()));
+        return plan;
+    }
     if new && exists {
         refuse(&mut plan, "config.exists", format!("aide {id} already exists"), Some(format!("nimitz aide set {id} ...")), Some(id.clone()));
         return plan;
@@ -1183,7 +1197,8 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
         let fod = FleetOnDisk { config: c.clone(), ..f.clone() };
         if let Some(repo) = aide_repo(&fod, id) {
             let snap = snapshot_dir(env, id);
-            if !snap.join(".git").exists() {
+            // missing, broken, or a worktree of a repo it no longer reads
+            if !crate::kb::snapshot_healthy(&repo, &snap) {
                 plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["snapshot".into(), repo.to_string_lossy().into_owned(), snap.to_string_lossy().into_owned()], cwd: None, why: "its snapshot: a detached worktree of the repo at its last commit".into() });
             }
         }
@@ -1516,6 +1531,7 @@ pub fn apply_config_plan(env: &Env, plan: &Plan) -> Outcome {
         Some("archive") => !Path::new(&s.cmd[1]).exists(),
         Some("trust") => crate::trust::is_written(env, Path::new(&s.cmd[1])),
         Some("snapshot") => s.cmd.get(2).is_some_and(|d| Path::new(d).join(".git").exists()),
+        Some("unsnapshot") => s.cmd.get(2).is_some_and(|d| !Path::new(d).exists()),
         _ => false,
     });
     if !out.verified {
@@ -1550,6 +1566,13 @@ fn run_step(env: &Env, step: &Step) -> (i32, String) {
             let Some(snap) = step.cmd.get(2) else { return (1, format!("[ERROR] snapshot {repo}: no folder in the step")) };
             match crate::kb::ensure_snapshot(Path::new(repo), Path::new(snap)) {
                 Ok(sha) => (0, format!("[OK] snapshot {snap} at {}", &sha[..sha.len().min(8)])),
+                Err(e) => (1, format!("[ERROR] snapshot {snap}: {e}")),
+            }
+        }
+        (Some("unsnapshot"), Some(repo)) => {
+            let Some(snap) = step.cmd.get(2) else { return (1, format!("[ERROR] unsnapshot {repo}: no folder in the step")) };
+            match crate::kb::drop_snapshot(Path::new(repo), Path::new(snap)) {
+                Ok(()) => (0, format!("[OK] snapshot {snap} removed")),
                 Err(e) => (1, format!("[ERROR] snapshot {snap}: {e}")),
             }
         }

@@ -65,7 +65,7 @@ pub const CHANGELOG: &[(u32, &str)] = &[
          and it asks for its 15-minute cron only when the session has none; \
          an aide runs no git: `nimitz aide grep|status` read its folder, and a note ends in `nimitz inbox done ... --commit --title --paths --pages`, \
          which commits exactly those paths; a reader answers a `wiki.query.v1` from a snapshot `claim` moves to the repo's last commit, \
-         and posts each gap to the notes keeper",
+         and nimitz posts each gap of its answer to the notes keeper",
     ),
 ];
 
