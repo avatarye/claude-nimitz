@@ -97,6 +97,25 @@ create, edit, remove, `?` all keys, `q` quit.
 | Remove a ship, a squadron, a fleet | `nimitz ship rm F/SQ/SHIP` · `nimitz squadron rm F/SQ` · `nimitz fleet rm F` |
 | Run a fleet on another machine too | `nimitz machine add F <label> --hostname <host>` |
 
+### The knowledge base
+
+A fleet's knowledge base is a git repo every machine of the fleet clones.
+Its place is in the fleet's settings (`<NIMITZ_HOME>/<fleet>/settings.json`,
+beside fleet.toml but with its own format, so machines need not update in
+lockstep):
+
+| You want to | Run |
+| --- | --- |
+| Name the fleet's KB | `nimitz fleet settings set kb.remote <git url> --fleet F` (`--plan`, then `--yes`; you or its admiral) |
+| Say where it is on a machine | `nimitz fleet settings set kb.dirs.<machine label> <folder> --fleet F` |
+| Clone it on this machine | `nimitz kb clone --fleet F --yes` (yours alone) |
+| Read the settings | `nimitz fleet settings get [kb.remote] --fleet F` |
+| Push and pull by hand | `nimitz kb sync --fleet F` |
+
+`nimitz kb path|status|head|show|grep|hash|commit|restore|sync` is the KB's
+git, run by nimitz (no hooks, literal paths, one commit per note under a
+lock, then a sync); docs/design/kb.md.
+
 ### Aides (gone in 0.7.0)
 
 nimitz 0.5 and 0.6 had aides (`F/@NAME`): always-on members with a durable

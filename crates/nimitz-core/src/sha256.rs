@@ -1,6 +1,6 @@
-//! SHA-256 (FIPS 180-4), for reply tokens: the queue stores a token's hash,
-//! never the token. Small and dependency-free; checked against the standard
-//! test vectors.
+//! SHA-256 (FIPS 180-4): a KB note's body hash (`kb::hash`) and the KB's
+//! lock name. Small and dependency-free; checked against the standard test
+//! vectors.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,

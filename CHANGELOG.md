@@ -24,6 +24,18 @@ Aides are gone. Read **Upgrading** first.
   loads, and `check` warns (`aide.legacy`).
 - Rules move to **v7** (live members get the change at their next prompt).
 
+### New
+
+- **A fleet's settings**: `<NIMITZ_HOME>/<fleet>/settings.json`, its own
+  format beside fleet.toml (no lockstep). `nimitz fleet settings get [<key>]`
+  (every member, its own fleet) and `set <key> <value>` (the admiral, you;
+  planned). `kb.remote` and `kb.dirs.<machine>` name the fleet's knowledge base.
+- **`nimitz kb path|status|head|show|grep|hash|commit|restore|sync|clone`**:
+  the knowledge base's git, run by nimitz. Reads at one commit; `commit` takes
+  exactly the named paths, once per note (`note:` and `from:` trailers),
+  under a lock, then syncs (pull --rebase, push); `clone` is yours.
+  docs/design/kb.md.
+
 ### Removed
 
 - The aide role (`F/@NAME`), `nimitz aide new|set|rm|grep|status`, `nimitz

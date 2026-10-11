@@ -429,6 +429,22 @@ fn every_command_goes_by_the_role_table() {
         ("layout", &["herdr", "MAIN"], [true, false, false]),
         ("restore", &["MAIN"], [true, true, false]),
         ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false]),
+        // the fleet's settings: every member reads its own fleet's; its admiral (and you) change them
+        ("fleet", &["settings", "get", "--fleet", "MAIN"], [true, true, true]),
+        ("fleet", &["settings", "get", "--fleet", "BETA"], [false, false, false]),
+        ("fleet", &["settings", "set", "notes.channel", "x", "--fleet", "MAIN"], [true, false, false]),
+        // the knowledge base: every member's own fleet's (its subagents run in it); a clone is yours
+        ("kb", &["path"], [true, true, true]),
+        ("kb", &["status", "--fleet", "MAIN"], [true, true, true]),
+        ("kb", &["head"], [true, true, true]),
+        ("kb", &["show", "wiki/_index.md"], [true, true, true]),
+        ("kb", &["grep", "term", "wiki"], [true, true, true]),
+        ("kb", &["hash", "raw/x.md"], [true, true, true]),
+        ("kb", &["commit", "--title", "t", "--paths", "raw/x.md", "--note", "0", "--from", "x"], [true, true, true]),
+        ("kb", &["restore", "--paths", "raw/x.md"], [true, true, true]),
+        ("kb", &["sync"], [true, true, true]),
+        ("kb", &["path", "--fleet", "BETA"], [false, false, false]),
+        ("kb", &["clone", "--fleet", "MAIN"], [false, false, false]),
     ];
     let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];
     let listed = Sb::new(false).run(&["__commands"]);
@@ -2626,3 +2642,95 @@ fn attach_wakes_a_parked_member_by_starts_plan_first() {
     assert!(!r.out.contains("to wake") && r.out.contains("exec "), "{}", r.out);
 }
 
+
+// ------------------------------------------------------------------ the knowledge base
+
+/// A git repo with one commit: a wiki index and a CLAUDE.md, at `dir`.
+fn kb_seed(dir: &std::path::Path) {
+    let g = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "{args:?}");
+    std::fs::create_dir_all(dir.join("wiki")).unwrap();
+    std::fs::create_dir_all(dir.join("raw/captures")).unwrap();
+    g(&["init", "-q", "-b", "main"]);
+    g(&["config", "user.email", "t@t"]);
+    g(&["config", "user.name", "t"]);
+    std::fs::write(dir.join("wiki/_index.md"), "# Index\n- [[leases]]: how leases work\n").unwrap();
+    std::fs::write(dir.join("wiki/_log.md"), "# Log\n").unwrap();
+    std::fs::write(dir.join("CLAUDE.md"), "the KB's rules\n").unwrap();
+    std::fs::write(dir.join("raw/captures/.keep"), "").unwrap();
+    g(&["add", "-A"]);
+    g(&["commit", "-qm", "init"]);
+}
+
+/// The fleet's settings name its KB (the user's `fleet settings set`, planned);
+/// `kb clone` (the user's) puts it in this machine's folder; a ship then
+/// reads at one commit, hashes a capture's body, commits it once (a second
+/// commit of the same note is that commit), and the commit is pushed.
+#[test]
+fn a_fleets_kb_is_set_cloned_and_written_once_per_note_by_a_member() {
+    let sb = Sb::new(false);
+    let seed = sb.base.join("seed");
+    kb_seed(&seed);
+    let remote = sb.base.join("remote/kb.git");
+    std::fs::create_dir_all(remote.parent().unwrap()).unwrap();
+    assert!(std::process::Command::new("git").args(["clone", "-q", "--bare"]).arg(&seed).arg(&remote).status().unwrap().success());
+    let here = sb.base.join("dirs/main/kb");
+    let ship = "MAIN/ARGOS/CLEAN";
+    // no KB yet: said, with how to set one
+    let r = sb.run_as(ship, &["kb", "path"]);
+    assert!(r.code != 0 && r.out.contains("has no knowledge base") && r.out.contains("fleet settings set kb.remote"), "{}", r.out);
+    let r = sb.run(&["kb", "path"]);
+    assert!(r.code != 0 && r.out.contains("name the fleet: --fleet F"), "{}", r.out);
+    // the settings: planned, then written; a member reads them
+    let set = |k: &str, v: &str| {
+        let p = sb.run(&["fleet", "settings", "set", k, v, "--fleet", "MAIN", "--plan"]);
+        assert!(p.code == 0 && p.out.contains("settings.json"), "{}", p.out);
+        let y = sb.run(&["fleet", "settings", "set", k, v, "--fleet", "MAIN", "--yes"]);
+        assert_eq!(y.code, 0, "{}", y.out);
+    };
+    set("kb.remote", remote.to_str().unwrap());
+    set("kb.dirs.sandbox", here.to_str().unwrap());
+    let r = sb.run_as(ship, &["fleet", "settings", "get", "kb.remote"]);
+    assert_eq!((r.code, r.out.trim()), (0, remote.to_str().unwrap()), "{}", r.out);
+    assert!(sb.run_as("MAIN/ARGOS", &["fleet", "settings", "set", "kb.remote", "x", "--yes"]).out.contains("(authority)"));
+    // not cloned yet: said; a member may not clone; the user clones
+    let r = sb.run_as(ship, &["kb", "path"]);
+    assert!(r.code != 0 && r.out.contains("not cloned on this machine"), "{}", r.out);
+    assert!(sb.run_as(ship, &["kb", "clone", "--yes"]).out.contains("(authority)"));
+    let r = sb.run(&["kb", "clone", "--fleet", "MAIN", "--plan"]);
+    assert!(r.code == 0 && r.out.contains(&format!("clone {}", remote.display())) && !here.exists(), "{}", r.out);
+    let r = sb.run(&["kb", "clone", "--fleet", "MAIN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    for k in [("user.email", "t@t"), ("user.name", "t")] {
+        std::process::Command::new("git").arg("-C").arg(&here).args(["config", k.0, k.1]).status().unwrap();
+    }
+    // the ship's reads
+    let r = sb.run_as(ship, &["kb", "path"]);
+    assert_eq!((r.code, r.out.trim()), (0, here.to_str().unwrap()), "{}", r.out);
+    let head = sb.run_as(ship, &["kb", "head"]).out.trim().to_string();
+    assert_eq!(head.len(), 40, "{head}");
+    assert_eq!(sb.run_as(ship, &["kb", "grep", "leases", "wiki/_index.md"]).out.trim(), "wiki/_index.md:2:- [[leases]]: how leases work");
+    assert!(sb.run_as(ship, &["kb", "show", "wiki/_index.md", "--at", &head]).out.starts_with("# Index"));
+    // a capture, its hash, one commit, pushed
+    std::fs::write(here.join("raw/captures/c1.md"), "---\nsender: x\n---\nLeases are 15 minutes.\n").unwrap();
+    let note = sb.run_as(ship, &["kb", "hash", "raw/captures/c1.md"]).out.trim().to_string();
+    assert_eq!(note.len(), 64, "{note}");
+    let commit = |title: &str| sb.run_as(ship, &["kb", "commit", "--title", title, "--paths", "raw/captures/c1.md", "--pages", "wiki/leases.md", "--note", &note, "--from", "member MAIN/ARGOS/CLEAN"]);
+    let r = commit("Leases");
+    assert_eq!(r.code, 0, "{}", r.out);
+    let sha = r.out.lines().find_map(|l| l.strip_prefix("committed ")).unwrap_or_else(|| panic!("{}", r.out)).to_string();
+    assert!(r.out.contains("[OK] in step with origin/main"), "pushed: {}", r.out);
+    let remote_head = std::process::Command::new("git").arg("-C").arg(&remote).args(["rev-parse", "main"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&remote_head.stdout).trim(), sha);
+    let r = commit("Leases again");
+    assert_eq!((r.code, r.out.trim().to_string()), (0, format!("already committed {sha}")), "{}", r.out);
+    // the kb's own rules are never committed; a failed ingest is restored, its file kept
+    std::fs::write(here.join("CLAUDE.md"), "steered\n").unwrap();
+    let r = sb.run_as(ship, &["kb", "commit", "--title", "t", "--paths", "CLAUDE.md", "--note", &"f".repeat(64), "--from", "x"]);
+    assert!(r.code != 0 && r.out.contains("off limits"), "{}", r.out);
+    std::fs::write(here.join("wiki/half.md"), "half\n").unwrap();
+    let r = sb.run_as(ship, &["kb", "restore", "--paths", "wiki/half.md"]);
+    assert!(r.code == 0 && r.out.contains("wiki/half.md removed (kept: "), "{}", r.out);
+    assert!(!here.join("wiki/half.md").exists());
+    // another fleet's KB is not a member's to read
+    assert!(sb.run_as(ship, &["kb", "path", "--fleet", "BETA"]).out.contains("(authority)"));
+}

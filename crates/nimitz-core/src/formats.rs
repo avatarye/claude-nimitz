@@ -140,6 +140,7 @@ impl Artifact {
 pub static ARTIFACTS: &[Artifact] = &[
     Artifact { name: "fleet", path: "H/<fleet>/fleet.toml", scope: Scope::Shared, current: 2, oldest: 1, kept: Kept::Toml("format"), steps: FLEET_STEPS, find: fleet_files, wanted: Some(fleet_wanted), lift: None },
     Artifact { name: "squadron", path: "H/<fleet>/squadrons/<sq>/squadron.toml", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Toml("format"), steps: &[], find: squadron_files, wanted: None, lift: None },
+    Artifact { name: "fleet-settings", path: "H/<fleet>/settings.json", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Json("format"), steps: &[], find: settings_files, wanted: None, lift: None },
     Artifact { name: "legacy", path: "H/<fleet>/legacy.toml", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Toml("format"), steps: &[], find: legacy_files, wanted: None, lift: None },
     Artifact { name: "brief", path: "lead CLAUDE.md", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Own, steps: &[], find: nothing, wanted: None, lift: None },
     Artifact { name: "ship-lock", path: "<ship folder>/.nimitz-ship.lock", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Json("format"), steps: &[], find: ship_locks, wanted: None, lift: None },
@@ -584,6 +585,10 @@ fn fleet_files(env: &Env) -> Vec<PathBuf> {
 
 fn squadron_files(env: &Env) -> Vec<PathBuf> {
     fleet_dirs(env).iter().flat_map(|d| subdirs(&d.join("squadrons"))).map(|d| d.join("squadron.toml")).filter(|p| p.is_file()).collect()
+}
+
+fn settings_files(env: &Env) -> Vec<PathBuf> {
+    fleet_dirs(env).into_iter().map(|d| crate::fleet_settings::path(&d)).filter(|p| p.is_file()).collect()
 }
 
 fn legacy_files(env: &Env) -> Vec<PathBuf> {

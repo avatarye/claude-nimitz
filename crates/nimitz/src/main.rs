@@ -5,6 +5,7 @@
 //! tabs (core never depends on the mux).
 mod args;
 mod crud;
+mod kb_cmd;
 mod members;
 mod notify;
 mod out;
@@ -88,6 +89,17 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
   status [--json]                  the fleets, their members and issues
   check [<id>]                     integrity check of <id>, its parents and everything under it
   fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)
+  fleet settings get [<key>]       the fleet's settings.json (a dotted key: kb.remote); a member reads its own
+  fleet settings set <key> <value> JSON or text, null removes it (--plan|--yes); the fleet's admiral or you
+                                   (--fleet F: yours; a member's is its own fleet)
+  kb path|status|head              the fleet's knowledge base on this machine (settings kb.dirs.<this machine>)
+  kb show <path> | kb grep <term> [<prefix>]   read one commit (HEAD, or --at <sha>); grep is literal, any case
+  kb hash <path>                   sha256 of a file's body after its frontmatter (a note's id)
+  kb commit --title T --paths A,B --pages X,Y --note <sha256> --from \"<kind> <id>\"
+                                   commit exactly those paths, once per note, then sync (--no-sync: not)
+  kb restore --paths A,B           undo a failed ingest (what was there is kept under NIMITZ_STATE/kb-restore)
+  kb sync                          pull --rebase, then push
+  kb clone                         clone kb.remote into this machine's folder (yours alone; --plan|--yes)
   squadron new|set|rm <F/SQ>       --brief T --comms open|commodore-only|allow:A,B --mode M
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
@@ -213,6 +225,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("squadron", crud::squadron),
     ("ship", crud::ship),
     ("machine", crud::machine),
+    ("kb", kb_cmd::kb),
     ("migrate", crud::migrate),
     ("up", members::up),
     ("start", members::start),

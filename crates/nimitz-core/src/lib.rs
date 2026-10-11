@@ -23,6 +23,7 @@ pub mod registry;
 pub mod active;
 pub mod claude;
 pub mod evidence;
+pub mod fleet_settings;
 pub mod hook;
 pub mod inbox;
 pub mod kb;

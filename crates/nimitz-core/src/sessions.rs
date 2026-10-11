@@ -529,7 +529,13 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
             (Some("set"), Some(t)) => may_config(caller, &t).is_ok(),
             _ => false,
         },
+        Some("fleet") if w.get(2) == Some(&"settings") => {
+            let own = w.iter().position(|x| *x == "--fleet").and_then(|i| w.get(i + 1)).is_none_or(|f| *f == me.fleet());
+            own && (w.get(3) == Some(&"get") || (w.get(3) == Some(&"set") && *role == Role::Admiral))
+        }
         Some("fleet") => w.get(2) == Some(&"set") && id_at(3).is_some_and(|t| in_fleet(&t)),
+        // the knowledge base: every member's (its own fleet's), but a clone (yours)
+        Some("kb") => w.get(2) != Some(&"clone") && w.iter().position(|x| *x == "--fleet").and_then(|i| w.get(i + 1)).is_none_or(|f| *f == me.fleet()),
         _ => false,
     }
 }

@@ -17,6 +17,7 @@ its fixture, or when a type's shape moves without a version.
 | --- | --- | --- | --- | --- | --- |
 | `fleet` | `H/<fleet>/fleet.toml` | shared | `format = N` (absent = 1) | 1 | 2 when it holds `[[aide]]` (else 1); 0.7.0: 1 (the aides cleanup takes a format 2 back) |
 | `squadron` | `H/<fleet>/squadrons/<sq>/squadron.toml` | shared | `format = N` (absent = 1) | 1 | 1 |
+| `fleet-settings` | `H/<fleet>/settings.json` | shared | `format` key (absent = 1) | (none) | (0.7.0: born at 1) |
 | `legacy` | `H/<fleet>/legacy.toml` | shared | `format = N` (absent = 1) | 1 | 1 |
 | `brief` | lead `CLAUDE.md` | shared | the rules version marker | (text) | (unchanged mechanism: `rules::briefs`) |
 | `ship-lock` | `.nimitz-ship.lock` | shared | `format` key (absent = 1) | 1 | 1 |
