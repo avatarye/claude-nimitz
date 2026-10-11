@@ -506,6 +506,7 @@ pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
         // its own ships (plan-v4 section 13)
         Some("restore") => matches!(role, Role::Admiral | Role::Commodore) && id_at(2).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
         Some("ship") => id_at(3).is_some_and(|t| may_config(caller, &t).is_ok()),
+        Some("aide") => id_at(3).is_some_and(|t| t.role() == Role::Aide && may_config(caller, &t).is_ok()),
         Some("squadron") => match (w.get(2).copied(), id_at(3)) {
             (Some("new"), Some(t)) => in_fleet(&t),
             (Some("rm"), Some(t)) => in_fleet(&t),

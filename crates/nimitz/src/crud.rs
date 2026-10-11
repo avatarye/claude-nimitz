@@ -412,7 +412,29 @@ pub fn aide(ctx: &Ctx) -> Result<i32, String> {
         def.inbox.keep_done = k.into();
     }
     let dir = def.dirs.iter().next().map(|(l, d)| (l.clone(), d.clone()));
-    let mut plan = config::plan_aide_write(&ctx.env, &id, def.clone(), new, ctx.force());
+    // `--force` past the machine guard is the user's alone (rules: never unless the user names it)
+    let force = ctx.force() && ctx.caller == Caller::User;
+    let mut plan = config::plan_aide_write(&ctx.env, &id, def.clone(), new, force);
+    // moved to another machine: what runs here (its job, its inbox) stays here
+    let (was, now) = (before.dirs.keys().next().cloned(), def.dirs.keys().next().cloned());
+    if !new && plan.ok() && was.is_some() && was != now {
+        let was = was.unwrap_or_default();
+        if f.machine.as_deref() != Some(was.as_str()) {
+            if !force {
+                plan.refusals.push(refusal("aide.elsewhere", format!("{id} runs on {was}: its job and its inbox are there, and this machine sees neither"), Some(format!("move it from {was} (nimitz aide set {id} --machine <label> --dir <folder> there)")), Some(id.clone())));
+            }
+        } else {
+            let snap = ctx.snap();
+            let live = snap.fleets.iter().flat_map(|f| f.members()).find(|m| m.id == id).and_then(|m| m.session.as_ref()).is_some_and(|s| s.pid.is_some());
+            let work = snap.fleets.iter().flat_map(|f| f.members()).find(|m| m.id == id).and_then(|m| m.inbox.as_ref()).map(|q| q.pending + q.claimed.len()).unwrap_or(0);
+            if live {
+                plan.refusals.push(refusal("session.live", format!("{id} runs here; moved, it would keep running here beside its new machine's"), Some(format!("nimitz stop {id}, then move it")), Some(id.clone())));
+            }
+            if work > 0 {
+                plan.refusals.push(refusal("config.nonempty", format!("{id}'s inbox here still has {work} item(s) to work; the new machine's inbox starts empty"), Some(format!("let it drain (or drop them), then move it")), Some(id.clone())));
+            }
+        }
+    }
     if !new && def == before {
         plan.steps.clear();
     } else if plan.ok() {

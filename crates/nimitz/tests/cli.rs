@@ -2730,6 +2730,8 @@ fn fleet_toml(sb: &Sb) -> String {
 #[test]
 fn aide_new_set_rm_write_the_fleet_and_its_format() {
     let sb = Sb::new(false);
+    // a look writes nothing: no queue folder for an aide that never ran
+    let queues = sb.base.join("state").join("queues");
     let repo = sb.base.join("dirs").join("kbrepo");
     std::fs::create_dir_all(&repo).unwrap();
     let repo_s = repo.to_string_lossy().into_owned();
@@ -2755,6 +2757,20 @@ fn aide_new_set_rm_write_the_fleet_and_its_format() {
     assert!(t.contains("depth_cap = 50") && t.contains("per_sender = \"10/m\"") && t.contains("model = \"opus\""), "{t}");
     let r = sb.run(&["aide", "set", "MAIN/@KB", "--depth", "50", "--plan"]);
     assert!(r.code == 0 && !r.out.contains("fleet.toml"), "nothing to change:\n{}", r.out);
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!queues.join("MAIN%2F@KB").exists(), "rm --plan made the queue folder");
+    // an aide that runs on another machine is removed there, where its inbox is
+    let t = fleet_toml(&sb).replace("[machines.sandbox]", "[machines.other]\nhostname = \"other-host\"\n\n[machines.sandbox]");
+    std::fs::write(sb.base.join("nimitz").join("main").join("fleet.toml"), &t).unwrap();
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--machine", "other", "--dir", "/srv/kb", "--yes"]);
+    assert_eq!(r.code, 0, "moved (nothing runs here):\n{}", r.out);
+    let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(aide.elsewhere)") && r.out.contains("other"), "{}", r.out);
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--dir", &repo_s, "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(aide.elsewhere)"), "moved back only from where it runs:\n{}", r.out);
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--dir", &repo_s, "--force", "--yes"]);
+    assert_eq!(r.code, 0, "the user's --force:\n{}", r.out);
     // a second aide keeps the stamp when the first goes
     sb.run(&["aide", "new", "MAIN/@REF", "--dir", &repo_s, "--types", "wiki.query.v1", "--yes"]);
     let r = sb.run(&["aide", "rm", "MAIN/@KB", "--yes"]);
@@ -2807,10 +2823,14 @@ fn aide_new_refusals() {
     let r = new(&[]);
     assert!(r.code != 0 && r.out.contains("(aide.machines)") && r.out.contains("oldbox"), "{}", r.out);
     let r = new(&["--force"]);
-    assert_eq!(r.code, 0, "--force is the way past it:\n{}", r.out);
-    // authority: the fleet's admiral may; its commodore, a ship and the aide may not
-    let r = sb.run_as("MAIN", &["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--force", "--plan"]);
-    assert!(r.code == 0 && !r.out.contains("(authority)"), "{}", r.out);
+    assert_eq!(r.code, 0, "the user's --force is the way past it:\n{}", r.out);
+    // the admiral may add an aide, but never --force past the guard (the user's alone)
+    let r = sb.run_as("MAIN", &["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--force", "--yes"]);
+    assert!(r.code != 0 && !r.out.contains("(authority)") && r.out.contains("(aide.machines)"), "{}", r.out);
+    assert!(!fleet_toml(&sb).contains("[[aide]]"), "nothing written");
+    // a mode Claude Code does not know
+    let r = new(&["--force", "--mode", "bogus"]);
+    assert!(r.code != 0 && r.out.contains("is not one of"), "{}", r.out);
     for who in ["MAIN/ARGOS", "MAIN/ARGOS/CLEAN"] {
         let r = sb.run_as(who, &["aide", "new", "MAIN/@KB", "--dir", &repo_s, "--types", "wiki.note.v1", "--plan"]);
         assert!(r.code != 0 && r.out.contains("(authority)"), "{who}:\n{}", r.out);
@@ -2827,6 +2847,12 @@ fn aide_rm_stops_a_live_aide_and_keeps_work_safe() {
     assert_eq!(r.code, 0, "{}", r.out);
     let r = sb.run(&["aide", "rm", "MAIN/@KB", "--plan"]);
     assert!(r.code != 0 && r.out.contains("(config.nonempty)") && r.out.contains("1 pending"), "{}", r.out);
+    // moved to another machine while it runs here, with work here: refused
+    let f = sb.base.join("nimitz").join("main").join("fleet.toml");
+    let t = std::fs::read_to_string(&f).unwrap();
+    std::fs::write(&f, format!("{t}\n[machines.other]\nhostname = \"other-host\"\n")).unwrap();
+    let r = sb.run(&["aide", "set", "MAIN/@KB", "--machine", "other", "--dir", "/srv/kb", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(session.live)") && r.out.contains("(config.nonempty)"), "{}", r.out);
     let r = sb.run(&["inbox", "drop", "MAIN/@KB", "1", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     let job = sb.member("MAIN/@KB")["session"]["short_id"].as_str().unwrap().to_string();

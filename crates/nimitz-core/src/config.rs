@@ -385,7 +385,9 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         }
         // its allow and deny lists are what hold a hostile payload: a mode
         // that skips the lists (or asks no one) is never an aide's
-        if let Some(m) = a.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
+        if let Some(m) = a.permission_mode.as_deref().filter(|m| !PERMISSION_MODES.contains(m)) {
+            out.push(inv(format!("aide {aid}: permission_mode {m:?} is not one of {}", PERMISSION_MODES.join(", ")), Some(aid.clone())));
+        } else if let Some(m) = a.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
             out.push(inv(format!("aide {aid}: permission_mode {m:?} skips the aide's allow and deny rules; use default, acceptEdits or plan"), Some(aid.clone())));
         }
         for label in a.dirs.keys() {
@@ -1014,8 +1016,21 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
         Role::Aide => match find_aide(&f, id) {
             None => refuse(&mut plan, "config.missing", format!("no aide {id}"), None, Some(id.clone())),
             Some(def) => {
-                if let Ok(limits) = crate::queue::Limits::from_def(&def.inbox) {
-                    let st = crate::queue::Queue::open(env, id, limits).status(crate::evidence::now(), false);
+                // its queue and its job are on the machine that runs it: removed from another, they are not seen
+                if let Some(label) = def.dirs.keys().next().filter(|l| f.machine.as_deref() != Some(l.as_str())) {
+                    refuse(
+                        &mut plan,
+                        "aide.elsewhere",
+                        format!("{id} runs on {label}: its job and its inbox are there, and this machine sees neither"),
+                        Some(format!("run nimitz aide rm {id} on {label}")),
+                        Some(id.clone()),
+                    );
+                    return plan;
+                }
+                {
+                    let limits = crate::queue::Limits::from_def(&def.inbox).unwrap_or_else(|_| crate::queue::Limits::from_def(&InboxDef::default()).expect("the default inbox"));
+                    // a look: never the locked status (it makes the folder and housekeeps)
+                    let st = crate::queue::Queue::open(env, id, limits).peek_status(crate::evidence::now(), false);
                     if st.pending + st.claimed.len() > 0 {
                         refuse(
                             &mut plan,
@@ -1048,7 +1063,7 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
 /// it (a machine on 0.4 is told to update instead of failing to load the
 /// fleet). The first aide of a fleet is refused while a machine of the fleet
 /// has not run nimitz >= 0.5 (it would stop loading the fleet), unless
-/// `force`.
+/// `force` (the user's: the caller passes it only for them).
 pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool) -> Plan {
     let verb = if new { "add aide" } else { "update aide" };
     let mut plan = Plan { summary: format!("{verb} {id}"), ..Default::default() };
@@ -1086,7 +1101,9 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
     if def.snapshot {
         refuse(&mut plan, "config.invalid", format!("{id}: the read-only snapshot aide comes in S4b; leave snapshot unset for now"), None, Some(id.clone()));
     }
-    if let Some(m) = def.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
+    if let Some(m) = def.permission_mode.as_deref().filter(|m| !PERMISSION_MODES.contains(m)) {
+        refuse(&mut plan, "config.invalid", format!("{id}: permission mode {m:?} is not one of {}", PERMISSION_MODES.join(", ")), None, Some(id.clone()));
+    } else if let Some(m) = def.permission_mode.as_deref().filter(|m| AIDE_MODES_REFUSED.contains(m)) {
         refuse(&mut plan, "config.invalid", format!("{id}: permission mode {m:?} skips the aide's allow and deny rules; use default, acceptEdits or plan"), None, Some(id.clone()));
     }
     // one machine runs it, in a folder of its own choosing (never managed)
@@ -1124,7 +1141,7 @@ pub fn plan_aide_write(env: &Env, id: &Id, def: AideDef, new: bool, force: bool)
                 &mut plan,
                 "aide.machines",
                 format!("{}'s first aide makes its fleet.toml unreadable to nimitz before 0.5.0, and {} of its machines ({}) has not run nimitz >= 0.5.0 here", id.fleet(), names.len(), names.join(", ")),
-                Some("update nimitz on each and run any nimitz command there (nimitz doctor lists them); or --force when you know they will not load this fleet".into()),
+                Some("update nimitz on each and run any nimitz command there (nimitz doctor lists them); --force is the user's alone, when they know those machines will not load this fleet".into()),
                 Some(id.clone()),
             );
         }

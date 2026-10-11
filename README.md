@@ -129,7 +129,7 @@ policy = "open"                  # open | fleet | parent
 
 | You want to | Run |
 | --- | --- |
-| Add, change or remove an aide | `nimitz aide new F/@KB --dir <its repo> --types wiki.note.v1` · `nimitz aide set F/@KB --depth 200` · `nimitz aide rm F/@KB` (you or its admiral; `aide --help` for the flags) |
+| Add, change or remove an aide | `nimitz aide new F/@KB --dir <its repo> --types wiki.note.v1` · `nimitz aide set F/@KB --depth 200` · `nimitz aide rm F/@KB` (you or its admiral; `nimitz help` for the flags) |
 | Give an aide work | `nimitz inbox post F/@KB --type wiki.note.v1 --payload '{"body": "..."}'` |
 | Ask an aide and wait for the answer | `nimitz ask F/@REF "question"` (its item and token print at once; `--wait 5m`) |
 | See its queue | `nimitz inbox status F/@KB` · `nimitz inbox list F/@KB` |
@@ -152,7 +152,8 @@ otherwise rewrites it without the `min_nimitz` stamp (an early 0.4.0 build
 also without each lineage entry's `home`, which keeps two homes' bindings apart).
 `nimitz doctor` names each machine of the fleet no 0.5.0 was seen on, and
 `aide new` refuses a fleet's first aide while there is one (`aide.machines`;
-`--force` is yours). `aide new` stamps fleet.toml (`format = 2`, `min_nimitz =
+`--force` is yours alone). It sees only the machines `[machines]` lists: a
+machine that reads the fleet folder without a label there is not checked. `aide new` stamps fleet.toml (`format = 2`, `min_nimitz =
 "0.5.0"`): a later nimitz that needs more is then refused with "update nimitz
 here" instead of misreading the file. `aide rm` of the last aide takes the
 stamp off again (format 1, readable by 0.4).
