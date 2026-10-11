@@ -191,10 +191,12 @@ fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
             deny.push(format!("Edit({pat})"));
         }
         for off in crate::kb::OFF_LIMITS_ANYWHERE {
-            let pat = if off == ".git" { format!("{root}/**/.git/**") } else { format!("{root}/**/{off}") };
-            deny.push(format!("Edit({pat})"));
-            if off == ".git" {
-                deny.push(format!("Edit({root}/.git/**)"));
+            // a folder's rule takes what is in it, at any depth and at the top
+            if matches!(off, ".git" | ".claude") {
+                deny.push(format!("Edit({root}/**/{off}/**)"));
+                deny.push(format!("Edit({root}/{off}/**)"));
+            } else {
+                deny.push(format!("Edit({root}/**/{off})"));
             }
         }
         // its brief: standing instructions it never writes itself
@@ -524,7 +526,7 @@ mod tests {
         assert_eq!(allow, vec![NIMITZ_ALLOW.to_string()], "nothing but nimitz");
         assert!(deny.contains(&"Bash(git)".to_string()) && deny.contains(&"Bash(git *)".to_string()), "{deny:?}");
         let root = format!("/{}", real.display());
-        for pat in [format!("{root}/.git/**"), format!("{root}/**/.git/**"), format!("{root}/agent/**"), format!("{root}/CLAUDE.md"), format!("{root}/**/CLAUDE.md"), format!("{root}/**/.gitattributes"), format!("{root}/**/.gitignore"), format!("{root}/CLAUDE.local.md")] {
+        for pat in [format!("{root}/.git/**"), format!("{root}/**/.git/**"), format!("{root}/.claude/**"), format!("{root}/**/.claude/**"), format!("{root}/agent/**"), format!("{root}/CLAUDE.md"), format!("{root}/**/CLAUDE.md"), format!("{root}/**/.gitattributes"), format!("{root}/**/.gitignore"), format!("{root}/CLAUDE.local.md")] {
             assert!(deny.contains(&format!("Edit({pat})")), "Edit({pat}): {deny:?}");
         }
         assert!(!deny.iter().any(|d| d.starts_with("Write(") || d.starts_with("NotebookEdit(")), "an Edit rule covers them: {deny:?}");
