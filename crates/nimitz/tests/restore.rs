@@ -1986,3 +1986,181 @@ fn s09_a_member_skipped_under_start_f_says_f() {
     let r = sb.run(&["restore", "MAIN", "--restart", "--plan"]);
     assert!(r.out.contains("on 2.1.288 (--restart)"), "restore keeps its own flag:\n{}", r.out);
 }
+
+/// Every pane whose foreground runs the member's `claude attach <job>`.
+fn panes_attaching(sb: &Sb, id: &str) -> Vec<String> {
+    let short = sb.short(id);
+    sb.world()["panes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["foreground"].as_array().is_some_and(|fg| fg.len() == 3 && fg[1] == "attach" && fg[2] == short.as_str()))
+        .map(|p| p["pane_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn s10_p_tab_creates_the_ships_own_tab_and_reuses_it() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    // no tab of its own, its commodore's tab is there: --tab makes MAIN.ARGOS.CLEAN, never a split
+    let before = panes_of_tab(&sb, "MAIN.ARGOS.COMMODORE");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("open pane") && l.contains("its own tab MAIN.ARGOS.CLEAN, new in MAIN.ARGOS, focused")), "{}", r.out);
+    assert!(!r.out.contains("beside its commodore"), "{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    assert_eq!(sb.tabs("MAIN.ARGOS.CLEAN").len(), 1, "its own tab:\n{}", sb.world());
+    assert_eq!(sb.tabs("MAIN.ARGOS.CLEAN")[0]["workspace_id"], sb.workspaces("MAIN.ARGOS")[0]["workspace_id"], "in the squadron's workspace");
+    assert_eq!(panes_of_tab(&sb, "MAIN.ARGOS.COMMODORE"), before, "no split beside the commodore");
+    let pane = sb.pane_attaching("MAIN/ARGOS/CLEAN");
+    assert_eq!(panes_of_tab(&sb, "MAIN.ARGOS.CLEAN"), vec![pane.clone()]);
+    assert!(sb.calls().contains(&format!("[\"agent\",\"focus\",\"{pane}\"")), "focused:\n{}", sb.calls());
+    // again: its own tab shows it, so it is focused, nothing is made
+    sb.attach_all();
+    let (tabs, runs) = (sb.creates("tab"), sb.n_runs());
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("focus") && l.contains(&format!("its own tab MAIN.ARGOS.CLEAN, pane {pane}"))), "{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    assert_eq!((sb.creates("tab"), sb.n_runs()), (tabs, runs), "reused, nothing typed:\n{}", sb.calls());
+    // its own tab as a plain shell: claimed, not a second tab
+    sb.herdr_world(|w| {
+        let ws = w["workspaces"].as_array().unwrap().iter().find(|x| x["label"] == "MAIN.ARGOS").unwrap()["workspace_id"].clone();
+        w["tabs"].as_array_mut().unwrap().push(json!({"tab_id": "w3:t7", "workspace_id": ws, "label": "MAIN.ARGOS.TWIN", "focused": false}));
+        w["panes"].as_array_mut().unwrap().push(json!({"pane_id": "w3:p7", "tab_id": "w3:t7", "workspace_id": ws, "cwd": "/tmp", "foreground": ["zsh"]}));
+    });
+    let tabs = sb.creates("tab");
+    let r = sb.run(&["start", "MAIN/ARGOS/TWIN", "-p", "--tab", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("TWIN") && l.contains("reattach") && l.contains("its own tab MAIN.ARGOS.TWIN, pane w3:p7, focused")), "{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/TWIN", "-p", "--tab", "--yes"]);
+    assert_eq!(sb.creates("tab"), tabs, "no new tab:\n{}", sb.calls());
+    assert!(sb.runs().iter().any(|(p, line)| p == "w3:p7" && line.contains("attach")), "attached in its shell:\n{}", sb.calls());
+    // a lead: its own tab F.SQ.COMMODORE, shown there already
+    let r = sb.run(&["start", "MAIN/ARGOS", "--only", "-p", "--tab", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("COMMODORE") && l.contains("focus") && l.contains("its own tab MAIN.ARGOS.COMMODORE")), "{}", r.out);
+}
+
+#[test]
+fn s11_p_tab_with_the_member_shown_elsewhere_still_uses_its_own_tab() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    // plain -p, unchanged: a split beside its commodore
+    let com = sb.pane_attaching("MAIN/ARGOS");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("open pane") && l.contains(&format!("beside its commodore (pane {com}), focused"))), "{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--yes"]);
+    sb.attach_all();
+    let split = sb.pane_attaching("MAIN/ARGOS/CLEAN");
+    assert!(panes_of_tab(&sb, "MAIN.ARGOS.COMMODORE").contains(&split));
+    // plain -p again: the pane that shows it, focused
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("focus") && l.contains(&format!("pane {split}"))), "{}", r.out);
+    // --tab: its own tab all the same; the split is left as it is
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("open pane") && l.contains("its own tab MAIN.ARGOS.CLEAN, new in MAIN.ARGOS, focused")), "{}", r.out);
+    assert!(r.out.contains("(tab.elsewhere)") && r.out.contains(&format!("shows in pane {split}")), "{}", r.out);
+    let runs_before: Vec<(String, String)> = sb.runs();
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    let own = panes_of_tab(&sb, "MAIN.ARGOS.CLEAN");
+    assert_eq!(own.len(), 1, "{}", sb.world());
+    let mut both = panes_attaching(&sb, "MAIN/ARGOS/CLEAN");
+    both.sort();
+    let mut want = vec![split.clone(), own[0].clone()];
+    want.sort();
+    assert_eq!(both, want, "the split still runs its attach, the new tab runs one too");
+    assert!(!sb.runs()[runs_before.len()..].iter().any(|(p, _)| p == &split), "nothing typed into the split:\n{}", sb.calls());
+    assert!(sb.calls().contains(&format!("[\"agent\",\"focus\",\"{}\"", own[0])), "its own tab focused:\n{}", sb.calls());
+}
+
+#[test]
+fn s13_p_tab_takes_its_legacy_tab_as_its_own_and_never_a_default_tab() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    // a default-named tab `1` in the squadron's workspace, a shell in CLEAN's folder: plain -p
+    // would claim it; --tab makes its own tab
+    let dir = sb.cwd_of("MAIN/ARGOS/CLEAN").to_string_lossy().into_owned();
+    sb.herdr_world(|w| {
+        let ws = w["workspaces"].as_array().unwrap().iter().find(|x| x["label"] == "MAIN.ARGOS").unwrap()["workspace_id"].clone();
+        w["tabs"].as_array_mut().unwrap().push(json!({"tab_id": "w3:t8", "workspace_id": ws, "label": "1", "focused": false}));
+        w["panes"].as_array_mut().unwrap().push(json!({"pane_id": "w3:p8", "tab_id": "w3:t8", "workspace_id": ws, "cwd": dir, "foreground": ["zsh"]}));
+    });
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("its own tab MAIN.ARGOS.CLEAN, new in MAIN.ARGOS")), "{}", r.out);
+    assert!(!r.out.contains("w3:p8"), "the default tab is not taken:\n{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    assert!(!sb.runs().iter().any(|(p, _)| p == "w3:p8"), "{}", sb.calls());
+    // its tab under the 0.3.0 short name CLEAN: its own, focused and renamed (no tab.elsewhere, no new tab)
+    sb.attach_all();
+    let tab = sb.tabs("MAIN.ARGOS.CLEAN")[0]["tab_id"].clone();
+    sb.herdr_world(|w| {
+        for t in w["tabs"].as_array_mut().unwrap().iter_mut().filter(|t| t["tab_id"] == tab) {
+            t["label"] = json!("CLEAN");
+        }
+    });
+    let tabs = sb.creates("tab");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("tab.elsewhere") && !r.out.contains("tab.taken") && r.out.contains("herdr tab rename w3:") && r.out.contains("live on 2.1.288, shown"), "{}", r.out);
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    assert_eq!(sb.creates("tab"), tabs, "no new tab:\n{}", sb.calls());
+    assert_eq!(sb.tabs("MAIN.ARGOS.CLEAN").len(), 1, "renamed:\n{}", sb.world());
+}
+
+#[test]
+fn s14_p_tab_for_an_admiral_a_taken_tab_and_under_f() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.attach_all();
+    idle_all(&sb);
+    // an admiral: its own tab MAIN.ADMIRAL
+    let r = sb.run(&["start", "MAIN", "--only", "-p", "--tab", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("its own tab MAIN.ADMIRAL")), "{}", r.out);
+    // a split beside its commodore, then -f --tab: the relaunch ends the split's
+    // attach (said so), nothing is typed into it, its own tab is made
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-p", "--yes"]);
+    sb.attach_all();
+    let split = sb.pane_attaching("MAIN/ARGOS/CLEAN");
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-f", "-p", "--tab", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(tab.elsewhere)") && r.out.contains("its attach there ends with the relaunch"), "{}", r.out);
+    let n = sb.runs().len();
+    sb.ok(&["start", "MAIN/ARGOS/CLEAN", "-f", "-p", "--tab", "--yes"]);
+    assert!(!sb.runs()[n..].iter().any(|(p, _)| p == &split), "nothing typed into the split:\n{}", sb.calls());
+    assert_eq!(sb.tabs("MAIN.ARGOS.CLEAN").len(), 1, "{}", sb.world());
+    // its own tab taken (yazi in its only pane): tab.taken, nothing typed, no second tab
+    let tab = sb.tabs("MAIN.ARGOS.CLEAN")[0]["tab_id"].clone();
+    sb.herdr_world(|w| {
+        for p in w["panes"].as_array_mut().unwrap().iter_mut().filter(|p| p["tab_id"] == tab) {
+            p["foreground"] = json!(["yazi"]);
+            p["session_id"] = Value::Null;
+        }
+    });
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert!(r.out.contains("(tab.taken)") && r.out.contains("yazi"), "{}", r.out);
+    let (tabs, n) = (sb.creates("tab"), sb.runs().len());
+    let _ = sb.run(&["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--yes"]);
+    assert_eq!((sb.creates("tab"), sb.runs().len()), (tabs, n), "{}", sb.calls());
+}
+
+#[test]
+fn s12_tab_goes_with_p_and_is_yours() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--tab", "--plan"]);
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert!(r.out.contains("--tab goes with -p"), "{}", r.out);
+    let r = sb.run_as("MAIN", &["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(authority)"), "{}", r.out);
+}

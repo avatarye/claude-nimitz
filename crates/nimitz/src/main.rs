@@ -63,7 +63,7 @@ const USAGE: &str = "\
 usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
        nimitz --version
 
-  start [<target>] [-f] [-p] [--fresh] [--all]
+  start [<target>] [-f] [-p [--tab]] [--fresh] [--all]
                                    bring any member up and ready; the one command after a Claude Code
                                    update, a Herdr closure or a reboot. <target>: a ship F/SQ/SHIP, a
                                    squadron F/SQ (its commodore and ships), a fleet F, or none (every
@@ -72,9 +72,14 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
                                    gets a first launch when it never ran. -f (--relaunch): relaunch the
                                    live ones too (a pane they had is reattached); -p (--pane): a pane for
                                    it, focused (its pane, its tab, a split beside its commodore, a new tab);
+                                   -p --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL, F.SQ.COMMODORE,
+                                   F.@NAME), reused or created, a pane showing it elsewhere left as it is;
                                    --fresh: a new conversation; --all: parked ships too; --jobs-only: no tabs;
                                    --only: the target's own member alone (a lead without its fleet or squadron)
   stop <id|session>                stop a member (or one session); start's opposite
+  attach <id>                      attach to a member in this terminal (claude attach <its exact job>);
+                                   one that is down is woken first by start's plan (--plan, --yes);
+                                   ctrl-z detaches. Yours alone, never from inside a Claude Code session
   init [--label L]                 data root, machine label, Claude Code's trust of the data root, doctor
   trust <folder>                   Claude Code's trust for the folder's git root (or the folder): yours alone,
                                    it lets the folder's .claude settings, hooks and MCP servers run
@@ -228,6 +233,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("adopt", members::adopt),
     ("signal", members::signal),
     ("open", members::open),
+    ("attach", members::attach),
     ("restore", restore::restore),
     ("layout", members::layout),
     ("sandbox", sandbox_cmd::sandbox),

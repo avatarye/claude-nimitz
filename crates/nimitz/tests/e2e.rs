@@ -583,7 +583,27 @@ impl Drop for E2e {
             let _ = self.claude(&self.base, &["stop", job]);
             let _ = self.claude(&self.base, &["rm", job]);
         }
-        let jobs: Vec<String> = jobs.into_iter().chain(late).collect();
+        // the daemon removes a stopped row a moment after `rm` returns: wait for
+        // it (up to 20 s); a row still live gets one more stop and rm at once,
+        // a stopped row still there after 10 s one more rm (each once)
+        let mut retried: Vec<String> = vec![];
+        let start = std::time::Instant::now();
+        let until = start + secs(20);
+        loop {
+            let rows = self.rows();
+            if rows.is_empty() || std::time::Instant::now() >= until {
+                break;
+            }
+            for (job, _, live, _) in &rows {
+                if (*live || start.elapsed() >= secs(10)) && !job.is_empty() && !retried.contains(job) {
+                    let _ = self.claude(&self.base, &["stop", job]);
+                    let _ = self.claude(&self.base, &["rm", job]);
+                    retried.push(job.clone());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let jobs: Vec<String> = jobs.into_iter().chain(late).chain(retried).collect();
         // a process with no job (none expected): end it so nothing of ours lives on
         for _ in self.rows().iter().filter(|(j, _, live, _)| *live && j.is_empty()) {
             println!("[WARN] e2e #{}: a live process with no job under {} is left", self.n, self.base.display());
@@ -1648,7 +1668,9 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
     assert_eq!(code, 0, "{out}");
     let m = w.wait(240, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("admiral idle");
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();
-    let rec = read_json(&w.base.join("state").join("inbox").join(format!("{sid}.json")));
+    // The SessionStart hook writes the record; under load the job can show Idle first.
+    let path = w.base.join("state").join("inbox").join(format!("{sid}.json"));
+    let rec = w.wait(30, || Some(read_json(&path)).filter(|r| r["socket"].is_string())).unwrap_or_else(|| read_json(&path));
     let sock = rec["socket"].as_str().unwrap_or_else(|| panic!("no inbox recorded for {sid}: {rec}")).to_string();
     assert!(Path::new(&sock).exists() && rec["pid"] == m["session"]["pid"], "{rec}");
     let ups = w.events().iter().filter(|e| e["event"] == "UserPromptSubmit").count();

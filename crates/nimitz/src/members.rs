@@ -1,5 +1,5 @@
 //! Commands on running members: status, check, up, start, stop, relaunch, rm,
-//! sweep, adopt, signal, open, layout. The plans come from core.
+//! sweep, adopt, signal, open, attach, layout. The plans come from core.
 use crate::run::{self, refusal};
 use crate::{out, Ctx};
 use nimitz_core::sessions as ses;
@@ -210,18 +210,19 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
     Ok(crate::restore::run_shape(ctx, Some(fleet), opts, true))
 }
 
-/// `nimitz start [<target>] [-f] [-p] [--fresh] [--all] [--force]`: one verb
+/// `nimitz start [<target>] [-f] [-p [--tab]] [--fresh] [--all] [--force]`: one verb
 /// brings any member up and ready (`restore::plan_start`). The target is a
 /// ship, a squadron (its commodore and ships), a fleet, or nothing (every
 /// fleet here). `-f` (`--relaunch`) relaunches the live ones too; `-p`
-/// (`--pane`) gives the named member a pane and focuses it; `--fresh` starts
+/// (`--pane`) gives the named member a pane and focuses it (`--tab`: always
+/// its own tab, reused or created); `--fresh` starts
 /// its new conversation; `--all` wakes parked ships; `--force` keeps its old
 /// meaning (a cold launch over a broken lineage or an untested Claude Code).
 /// The short flags are start's own (read from the positionals, so no other
 /// command, `signal`'s text least of all, ever reads them). With no
 /// multiplexer it brings up the jobs only.
 pub fn start(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--fresh", "--all", "--relaunch", "--pane", "--jobs-only", "--here", "--rename", "--only"])?;
+    ctx.args.allow(&["--fresh", "--all", "--relaunch", "--pane", "--tab", "--jobs-only", "--here", "--rename", "--only"])?;
     let (mut relaunch, mut pane) = (ctx.args.flag("--relaunch"), ctx.args.flag("--pane"));
     let mut pos: Vec<&str> = vec![];
     for a in &ctx.args.pos {
@@ -237,6 +238,10 @@ pub fn start(ctx: &Ctx) -> Result<i32, String> {
     if pos.len() > 1 {
         return Err(format!("start takes one target (a fleet, a squadron or a ship), not {}", pos.len()));
     }
+    let tab = ctx.args.flag("--tab");
+    if tab && !pane {
+        return Err("--tab goes with -p (`nimitz start <id> -p --tab`)".into());
+    }
     let target = pos.first().map(|t| parse_id(t)).transpose()?;
     let jobs_only = ctx.args.flag("--jobs-only") || (!ctx.mux().caps().open && !pane);
     let opts = nimitz_core::restore::RestoreOpts {
@@ -247,6 +252,7 @@ pub fn start(ctx: &Ctx) -> Result<i32, String> {
         rename: ctx.args.flag("--rename"),
         restart: relaunch,
         pane,
+        tab,
         fresh: ctx.args.flag("--fresh"),
         only: ctx.args.flag("--only"),
         ..Default::default()
@@ -627,6 +633,134 @@ pub fn open(ctx: &Ctx) -> Result<i32, String> {
         crate::restore::record_active(ctx, &snap, mux.as_ref(), None);
     }
     code
+}
+
+// ------------------------------------------------------------------ attach
+
+/// `nimitz attach <id>`: attach to a member in this terminal. Its exact job
+/// from the snapshot (`claude attach` matches a name by part, so `DEV` could
+/// be `NIMITZ_DEV` or `MYCC_DEV`: always the job's short id). A member that
+/// is down (parked, stopped) is woken first by start's own plan, gated like
+/// any other (`--plan`, `--yes`); a live one attaches at once. Then this
+/// process becomes `claude attach <job>` (exec; Windows: it waits and exits
+/// with its code). Yours alone, and never from inside a Claude Code session
+/// (an attach in an attach).
+pub fn attach(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&[])?;
+    ctx.args.at_most(1)?;
+    let id = parse_id(ctx.args.need(0, "id")?)?;
+    if ctx.force() {
+        return Err("--force does nothing for attach (a wake goes by start's plan: nimitz start <id> --only first)".into());
+    }
+    let mut plan = Plan { summary: format!("attach {id}"), ..Default::default() };
+    if ctx.caller != Caller::User {
+        plan.refusals.push(refusal("authority", "`nimitz attach` is yours alone (it attaches your terminal)".into(), None, Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    // a live Claude Code process above this one (its session file, checked
+    // to be that process); else CLAUDECODE alone, which a terminal or a Herdr
+    // server started from a Claude Code tool inherits: said so, with the way out
+    let nested = match nimitz_core::queue::session_above_id(&ctx.env, &ctx.vars) {
+        Some(sid) => Some((format!("this runs inside a Claude Code session (session {} is above this process)", &sid[..sid.len().min(8)]), format!("nimitz attach {id}  # from a plain terminal; or nimitz start {id} -p"))),
+        None if ctx.vars.get("CLAUDECODE").is_some_and(|v| !v.is_empty()) => {
+            let unset = if cfg!(windows) { format!("$env:CLAUDECODE = $null; nimitz attach {id}  # PowerShell") } else { format!("env -u CLAUDECODE nimitz attach {id}") };
+            Some(("CLAUDECODE is set, so this may run inside a Claude Code session, though none is above this process (a terminal started from one inherits it)".to_string(), format!("{unset}  # when this terminal is not inside Claude Code")))
+        }
+        None => None,
+    };
+    if let Some((why, fix)) = nested {
+        plan.refusals.push(refusal("attach.nested", format!("{why}; an attach inside it nests one Claude Code in another"), Some(fix), Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    let snap = ctx.snap();
+    let Some(m) = member(&snap, &id) else {
+        plan.refusals.push(refusal("member.unknown", format!("{id} is not in any fleet config"), None, Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    };
+    let snap = if live(m) {
+        snap
+    } else {
+        // down: start's own plan wakes it (by its exact id; jobs only, no tab),
+        // with its gate; then the attach
+        let opts = nimitz_core::restore::RestoreOpts { jobs_only: true, only: true, ..Default::default() };
+        let code = crate::restore::run_start(ctx, Some(&id), opts);
+        if ctx.plan_only() {
+            if code == 0 {
+                out::line(&format!("then: attach to {id} in this terminal (`claude attach <its job>`)"));
+            }
+            return Ok(code);
+        }
+        if code != 0 {
+            return Ok(code);
+        }
+        ctx.snap()
+    };
+    let m = member(&snap, &id).filter(|m| live(m));
+    let Some(job) = m.and_then(|m| m.session.as_ref()).and_then(|s| s.short_id.clone()) else {
+        let what = if m.is_some() { "runs in a process with no job; nothing to attach to" } else { "is not live" };
+        plan.refusals.push(refusal("session.none", format!("{id} {what}"), Some(format!("nimitz status {id}")), Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    };
+    let argv = nimitz_core::claude::attach(&ctx.env, &job);
+    if ctx.plan_only() {
+        plan.steps.push(Step { id: Some(id.clone()), cmd: argv, cwd: None, why: format!("attach to job {job} in this terminal; ctrl-z detaches") });
+        return Ok(finish_plan(ctx, &plan));
+    }
+    out::line(&format!("attaching to {id} (job {job}); ctrl-z detaches, \u{2190} opens the agent view"));
+    Ok(exec_attach(ctx, &argv))
+}
+
+/// Become `argv` (`claude attach <job>`): exec on Unix; elsewhere spawn, wait
+/// and exit with its code. `NIMITZ_ATTACH_DRY=1` prints the argv instead and
+/// exits 0: for the tests only (they never hand the terminal to a claude); a
+/// release build never reads it.
+fn exec_attach(ctx: &Ctx, argv: &[String]) -> i32 {
+    use std::io::Write;
+    if cfg!(debug_assertions) && ctx.vars.get("NIMITZ_ATTACH_DRY").is_some_and(|v| v == "1") {
+        out::line(&format!("exec {}", argv.join(" ")));
+        return 0;
+    }
+    let _ = std::io::stdout().flush();
+    let mut c = std::process::Command::new(&argv[0]);
+    c.args(&argv[1..]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = c.exec();
+        out::error(&format!("cannot run {}: {e}", argv.join(" ")));
+        1
+    }
+    // ctrl-c and ctrl-break reach every process on the console: nimitz
+    // swallows them while it waits, so the attach (which handles them) keeps
+    // the console. A handler function, set before the spawn: a child never
+    // inherits one (only the ignore flag of `SetConsoleCtrlHandler(None, 1)`)
+    #[cfg(windows)]
+    {
+        unsafe extern "system" fn swallow(kind: u32) -> windows_sys::core::BOOL {
+            use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+            (kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT) as windows_sys::core::BOOL
+        }
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(swallow), 1);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let mut child = match c.spawn() {
+            Ok(ch) => ch,
+            Err(e) => {
+                out::error(&format!("cannot run {}: {e}", argv.join(" ")));
+                return 1;
+            }
+        };
+        match child.wait() {
+            Ok(st) => st.code().unwrap_or(1),
+            Err(e) => {
+                out::error(&format!("cannot wait for {}: {e}", argv.join(" ")));
+                1
+            }
+        }
+    }
 }
 
 fn attached_pane(a: &nimitz_mux::Attached) -> nimitz_mux::PaneRef {

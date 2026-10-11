@@ -105,6 +105,23 @@ pub fn process_started_ms(pid: i64) -> Option<i64> {
     }
 }
 
+/// When process `pid` started, in clock ticks since boot (`/proc/<pid>/stat`
+/// field 22, what Claude Code writes as a session file's `procStart` on
+/// Linux). None elsewhere and for a pid that cannot be read.
+pub fn start_ticks(pid: i64) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // the name (field 2) is in parentheses and may hold spaces: count from after it
+        stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// How much later than a session file says its process started the process
 /// may have been created and still be that process (clock steps, rounding).
 const SAME_PROCESS_SLACK_MS: i64 = 2000;

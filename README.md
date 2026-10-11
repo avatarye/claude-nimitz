@@ -51,6 +51,8 @@ only look, `--yes` to run without the question.
 | Restart a member (same conversation, a new process) | `nimitz start F/SQ/SHIP -f` |
 | Restart one lead alone (`F` and `F/SQ` mean the whole fleet or squadron) | `nimitz start F --only -f` · `nimitz start F/SQ --only -f` |
 | Open a member's pane and focus it | `nimitz start F/SQ/SHIP -p` (a lead: `nimitz start F --only -p`) |
+| Open it in its own tab `F.SQ.SHIP`, never a split | `nimitz start F/SQ/SHIP -p --tab` |
+| Attach to a member in this terminal | `nimitz attach F/SQ/SHIP` (a member that is down wakes first; ctrl-z detaches) |
 | Start a member's conversation over (drops its history) | `nimitz start F/SQ/SHIP --fresh` |
 | Stop a member | `nimitz stop F/SQ/SHIP` |
 | See everything | `nimitz status`, or `admiralty` (keys below) |
@@ -295,7 +297,7 @@ and the plan says, member by member, what it found and why it acts (`worker on
   order, same rules). A member that had a pane, lead or ship, gets that pane
   attached again after the relaunch.
 
-`nimitz start [<target>] [-f] [-p] [--fresh] [--all] [--only] [--jobs-only]` is the one
+`nimitz start [<target>] [-f] [-p [--tab]] [--fresh] [--all] [--only] [--jobs-only]` is the one
 verb that brings a member up and ready. The target is a ship `F/SQ/SHIP`, a
 squadron `F/SQ` (its commodore and its ships), a fleet `F`, or nothing (every
 fleet on this machine). `nimitz stop` is its opposite. With no flags it is
@@ -316,6 +318,13 @@ you, or the one running the command is left alone, with a fix line.
   `F.SQ`. `-p` is yours alone, since it opens a pane in your terminal;
   members get an authority refusal. With no multiplexer, `start` brings up
   the jobs only and `-p` is refused.
+- `-p --tab` always puts the member in its own tab, named as above (`F.SQ.SHIP`
+  in workspace `F.SQ`, a lead's own tab, an aide's `F.@NAME` in `F`), then
+  attaches and focuses it. It skips the shown pane and the split: its tab is
+  reused when it is there (its shell pane claimed; a tab that runs something
+  else is `tab.taken`, as always) and created when it is not. A pane that
+  shows the member somewhere else is left as it is, never typed into; the plan
+  notes it (`tab.elsewhere`). `--tab` without `-p` is a usage error.
 - `--only` acts on the target's own member alone: `F` and `F/SQ` name a whole
   fleet or squadron, so `nimitz start F --only -f` relaunches the admiral and
   nothing else. Every fix for a lead that nimitz prints uses it.
@@ -323,6 +332,15 @@ you, or the one running the command is left alone, with a fix line.
   confirm).
 - `--force` is separate and unchanged: a cold launch over a broken lineage or
   an untested Claude Code. Never use it unless you name it.
+
+`nimitz attach <id>` attaches to a member in the terminal you run it from: it
+becomes `claude attach <job>` with the member's exact job (its short id, never
+a name: `claude attach` matches names by part, so `DEV` could be `NIMITZ_DEV`
+or `MYCC_DEV`). A member that is parked or stopped is woken first, by start's
+own plan: the plan shows, and `--yes` (or the question) runs it; a member
+that never ran gets its first launch there (and its folder's trust, when due),
+as `start` would; a live member attaches at once. ctrl-z detaches; ← opens the agent view. It is yours alone,
+and refused from inside a Claude Code session (an attach in an attach).
 
 Start reads what Herdr has (`herdr api snapshot`, each pane's foreground),
 reuses a tab found by the session it shows or by its full name (`F.ADMIRAL`,
@@ -377,8 +395,8 @@ labels is you):
 | Caller | May run |
 | --- | --- |
 | you | everything |
-| admiral | every command inside its own fleet, on any member but itself: start (`-f`, `--all`), stop, rm, sweep, adopt, fleet set, squadron new/set/rm, ship new/set/rm; not `start -p` (yours alone) |
-| commodore | inside its own squadron: start (`start F/SQ` covers its ships), stop, rm, sweep, adopt for its ships, not `start -p`; squadron set; ship new/set/rm |
+| admiral | every command inside its own fleet, on any member but itself: start (`-f`, `--all`), stop, rm, sweep, adopt, fleet set, squadron new/set/rm, ship new/set/rm; not `start -p` or `attach` (yours alone) |
+| commodore | inside its own squadron: start (`start F/SQ` covers its ships), stop, rm, sweep, adopt for its ships, not `start -p` or `attach`; squadron set; ship new/set/rm |
 | ship | the read-only commands (`status`, `check`, `rules`, `doctor`); `signal` to a member the chain allows; `sweep` of itself (its own stale rows) |
 
 `init`, `fleet new`, `fleet rm`, `machine add|rm` and `migrate` stay yours.

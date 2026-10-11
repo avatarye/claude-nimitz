@@ -432,6 +432,8 @@ fn every_command_goes_by_the_role_table() {
         // every member signals with SendMessage: no authority refusal, comms.denied instead
         ("signal", &["MAIN/ARGOS", "hi"], [true, true, true, true]),
         ("open", &["MAIN/ARGOS/CLEAN"], [false, false, false, false]),
+        // an attach takes over the caller's terminal: yours alone
+        ("attach", &["MAIN/ARGOS/CLEAN"], [false, false, false, false]),
         ("layout", &["herdr", "MAIN"], [true, false, false, false]),
         ("restore", &["MAIN"], [true, true, false, false]),
         ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false, false]),
@@ -2624,4 +2626,93 @@ fn an_aides_start_is_a_members_start() {
     // a fleet's start still speaks for the fleet
     let r = sb.run(&["start", "MAIN", "--plan", "--json"]);
     assert!(r.out.contains("active.none") && r.out.contains("\"summary\": \"start MAIN: "), "{}", r.out);
+}
+
+/// `nimitz attach <id>` with the exec replaced by a print (`NIMITZ_ATTACH_DRY=1`).
+fn attach_dry(sb: &Sb, args: &[&str], extra: &[(&str, &str)]) -> Run {
+    let mut e = vec![("NIMITZ_ATTACH_DRY", "1")];
+    e.extend_from_slice(extra);
+    raw(&sb.vars, args, &e, None)
+}
+
+#[test]
+fn attach_execs_claude_attach_with_the_members_exact_job() {
+    let sb = Sb::new(false);
+    let native = sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"].clone();
+    for id in ["MAIN/ARGOS/CLEAN", "MAIN/ARGOS", "MAIN"] {
+        let job = sb.member(id)["session"]["short_id"].as_str().unwrap().to_string();
+        let r = attach_dry(&sb, &["attach", id], &[]);
+        assert_eq!(r.code, 0, "{id}:\n{}", r.out);
+        assert!(r.out.contains(&format!("attaching to {id} (job {job}); ctrl-z detaches, \u{2190} opens the agent view")), "{id}:\n{}", r.out);
+        // the job's short id, never a name (claude attach matches names by part)
+        let exec: Vec<&str> = r.out.lines().filter(|l| l.starts_with("exec ")).collect();
+        assert_eq!(exec, vec![format!("exec {native} attach {job}")], "{id}:\n{}", r.out);
+    }
+    // an id is the whole id: a fragment of a name is no member
+    let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEA"], &[]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(member.unknown)") && !r.out.contains("exec "), "{}", r.out);
+    let r = attach_dry(&sb, &["attach", "main/argos/clean"], &[]);
+    assert_eq!(r.code, 2, "{}", r.out);
+    // --plan shows the attach and runs nothing
+    let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN", "--plan"], &[]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("exec ") && !r.out.contains("attaching to"), "{}", r.out);
+}
+
+#[test]
+fn attach_is_yours_and_never_nests_in_a_claude_session() {
+    let sb = Sb::new(false);
+    for who in ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"] {
+        let r = sb.run_as(who, &["attach", "MAIN/ARGOS/CLEAN", "--yes"]);
+        assert!(r.code != 0 && r.out.contains("(authority)") && !r.out.contains("exec "), "{who}:\n{}", r.out);
+    }
+    // CLAUDECODE alone (a terminal started from a Claude Code tool inherits it): the way out is said
+    let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN"], &[("CLAUDECODE", "1")]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(attach.nested)") && r.out.contains("env -u CLAUDECODE nimitz attach MAIN/ARGOS/CLEAN") && !r.out.contains("exec "), "{}", r.out);
+    // --force means nothing here: a usage error, not silently dropped
+    let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN", "--force"], &[]);
+    assert_eq!(r.code, 2, "{}", r.out);
+    // a Claude Code session above this process (its session file, by pid), no CLAUDECODE
+    let d = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions");
+    std::fs::write(d.join("424242.json"), serde_json::json!({"pid": 424242, "sessionId": "abcdef12-0000", "cwd": "/tmp", "status": "idle", "kind": "interactive"}).to_string()).unwrap();
+    let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN"], &[("NIMITZ_TEST_ANCESTORS", "424242")]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(attach.nested)") && r.out.contains("session abcdef12") && !r.out.contains("exec "), "{}", r.out);
+    // a stale file whose pid is now another process (this test's own, a different procStart): no session above
+    if cfg!(target_os = "linux") {
+        let me = std::process::id();
+        std::fs::write(d.join(format!("{me}.json")), serde_json::json!({"pid": me, "sessionId": "deadbeef-0000", "cwd": "/tmp", "kind": "interactive", "procStart": "1"}).to_string()).unwrap();
+        let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN"], &[("NIMITZ_TEST_ANCESTORS", &me.to_string())]);
+        assert_eq!(r.code, 0, "{}", r.out);
+        assert!(!r.out.contains("attach.nested") && r.out.contains("exec "), "{}", r.out);
+    }
+}
+
+#[test]
+fn attach_wakes_a_parked_member_by_starts_plan_first() {
+    let sb = Sb::new(false);
+    let id = "MAIN/ARGOS/STOPPED";
+    assert!(!live(&sb.member(id)));
+    let job = sb.member(id)["session"]["short_id"].as_str().unwrap().to_string();
+    // a wake to do: the plan, and the question (no terminal here: --yes needed)
+    let r = attach_dry(&sb, &["attach", id], &[]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("1 to wake") && r.out.contains("pass --yes") && !r.out.contains("exec "), "{}", r.out);
+    let r = attach_dry(&sb, &["attach", id, "--plan"], &[]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("1 to wake") && r.out.contains(&format!("then: attach to {id} in this terminal")) && !r.out.contains("exec "), "{}", r.out);
+    assert!(!live(&sb.member(id)), "--plan changes nothing");
+    let r = attach_dry(&sb, &["attach", id, "--yes"], &[]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(live(&sb.member(id)), "woken:\n{}", r.out);
+    let now = sb.member(id)["session"]["short_id"].as_str().unwrap().to_string();
+    assert_eq!(now, job, "woken by its exact id: the same job");
+    let native = sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"].clone();
+    assert!(r.out.contains(&format!("attaching to {id} (job {now})")) && r.out.lines().any(|l| l == format!("exec {native} attach {now}")), "{}", r.out);
+    // live now: it attaches at once, no plan
+    let r = attach_dry(&sb, &["attach", id], &[]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("to wake") && r.out.contains("exec "), "{}", r.out);
 }

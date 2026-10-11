@@ -1133,7 +1133,15 @@ fn detached() -> bool {
     parent == 1 || std::fs::read_to_string(format!("/proc/{parent}/comm")).is_ok_and(|c| c.trim() == "systemd")
 }
 
-/// The session file of the nearest Claude Code process above this one.
+/// The Claude Code session this process runs inside, when one is above it
+/// (its session file, as `sender_of` reads the ancestry): its session id,
+/// or `?` when the file names none.
+pub fn session_above_id(env: &Env, vars: &std::collections::HashMap<String, String>) -> Option<String> {
+    session_above(env, vars).map(|v| v.get("sessionId").and_then(Value::as_str).unwrap_or("?").to_string())
+}
+
+/// The session file of the nearest Claude Code process above this one (one
+/// whose `procStart` names another process is a stale file: skipped).
 fn session_above(env: &Env, vars: &std::collections::HashMap<String, String>) -> Option<Value> {
     // tests only (a debug build): the ancestry is given, a sandbox has no
     // Claude Code above it. A release build never reads it, so no caller
@@ -1147,7 +1155,7 @@ fn session_above(env: &Env, vars: &std::collections::HashMap<String, String>) ->
 }
 
 fn read_session(env: &Env, pid: i64) -> Option<Value> {
-    std::fs::read(env.claude_home.join("sessions").join(format!("{pid}.json"))).ok().and_then(|b| crate::evidence::first_json(&b))
+    std::fs::read(env.claude_home.join("sessions").join(format!("{pid}.json"))).ok().and_then(|b| crate::evidence::first_json(&b)).filter(|d| crate::evidence::session_is_its_process(pid, d))
 }
 
 #[cfg(test)]
