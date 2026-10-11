@@ -730,6 +730,20 @@ fn exec_attach(ctx: &Ctx, argv: &[String]) -> i32 {
         out::error(&format!("cannot run {}: {e}", argv.join(" ")));
         1
     }
+    // ctrl-c and ctrl-break reach every process on the console: nimitz
+    // swallows them while it waits, so the attach (which handles them) keeps
+    // the console. A handler function, set before the spawn: a child never
+    // inherits one (only the ignore flag of `SetConsoleCtrlHandler(None, 1)`)
+    #[cfg(windows)]
+    {
+        unsafe extern "system" fn swallow(kind: u32) -> windows_sys::core::BOOL {
+            use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
+            (kind == CTRL_C_EVENT || kind == CTRL_BREAK_EVENT) as windows_sys::core::BOOL
+        }
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(Some(swallow), 1);
+        }
+    }
     #[cfg(not(unix))]
     {
         let mut child = match c.spawn() {
@@ -739,13 +753,6 @@ fn exec_attach(ctx: &Ctx, argv: &[String]) -> i32 {
                 return 1;
             }
         };
-        // ctrl-c reaches every process on the console: nimitz ignores it while
-        // it waits, so the attach (which handles it) keeps the console. Set
-        // after the spawn: a child inherits the ignore it is created under.
-        #[cfg(windows)]
-        unsafe {
-            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1);
-        }
         match child.wait() {
             Ok(st) => st.code().unwrap_or(1),
             Err(e) => {
