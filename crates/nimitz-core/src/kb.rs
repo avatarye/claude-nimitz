@@ -266,9 +266,10 @@ pub fn commit(dir: &Path, aide: &str, reference: &str, title: &str, from: &str, 
 
 /// `inbox fail --restore <paths>`: undo what a failed pass wrote: a tracked
 /// file back to its last commit (index and tree), a new one removed. Every
-/// path is checked first, as a commit's paths are; a tracked file that
-/// differs from its commit is copied to `backup` before it goes back (the
-/// user may have edited it too), and the note says where.
+/// path is checked first, as a commit's paths are; whatever is there before
+/// it goes (a tracked file that differs from its commit, an untracked file:
+/// the user may have edited or made it) is copied to `backup` first, never
+/// over a copy kept before, and the note says where.
 pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) -> Result<Vec<String>, String> {
     if let Some(stray) = stray_attributes(dir) {
         return Err(format!("{stray} is changed and not committed: nothing is restored until the user looks at it"));
@@ -288,6 +289,19 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) ->
         }
         checked.push(rel);
     }
+    let keep = |rel: &str, full: &Path| -> Result<std::path::PathBuf, String> {
+        let mut to = backup.join(rel);
+        let mut n = 1;
+        while to.exists() {
+            n += 1;
+            to = backup.join(format!("{rel}.{n}"));
+        }
+        if let Some(p) = to.parent() {
+            std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        }
+        std::fs::copy(full, &to).map_err(|e| format!("{rel}: keeping a copy: {e}"))?;
+        Ok(to)
+    };
     let mut done = vec![];
     for rel in checked {
         let full = dir.join(&rel);
@@ -296,23 +310,21 @@ pub fn restore(dir: &Path, paths: &[String], brief: &[String], backup: &Path) ->
             let mut diff = git(dir);
             diff.args(["diff", "--quiet", "HEAD", "--"]).arg(&rel).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
             let changed = !diff.status().is_ok_and(|s| s.success());
-            if changed && full.is_file() {
-                let to = backup.join(&rel);
-                if let Some(p) = to.parent() {
-                    std::fs::create_dir_all(p).map_err(|e| format!("{}: {e}", p.display()))?;
-                }
-                std::fs::copy(&full, &to).map_err(|e| format!("{rel}: keeping a copy: {e}"))?;
-            }
+            let kept = if changed && full.is_file() { Some(keep(&rel, &full)?) } else { None };
             let mut c = git(dir);
             c.args(["checkout", "HEAD", "--"]).arg(&rel);
             run(c)?;
-            done.push(if changed { format!("{rel} restored (as it was: {})", backup.join(&rel).display()) } else { format!("{rel} restored") });
-        } else if full.exists() {
+            done.push(match kept {
+                Some(k) => format!("{rel} restored (as it was: {})", k.display()),
+                None => format!("{rel} restored"),
+            });
+        } else if full.is_file() {
+            let k = keep(&rel, &full)?;
             let mut c = git(dir);
             c.args(["reset", "-q", "--"]).arg(&rel);
             let _ = run(c);
             std::fs::remove_file(&full).map_err(|e| format!("{rel}: {e}"))?;
-            done.push(format!("{rel} removed"));
+            done.push(format!("{rel} removed (kept: {})", k.display()));
         }
     }
     Ok(done)
@@ -429,6 +441,12 @@ mod tests {
         assert_eq!(std::fs::read_to_string(d.join("wiki/page.md")).unwrap(), "Alpha beta\n");
         assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md")).unwrap(), "half written\n", "what was there is kept");
         assert!(!d.join("raw/cap-9.md").exists());
+        assert_eq!(std::fs::read_to_string(keep.path().join("raw/cap-9.md")).unwrap(), "capture\n", "a new file is kept too");
+        // a second restore of the same page never writes over the first copy
+        std::fs::write(d.join("wiki/page.md"), "second pass\n").unwrap();
+        restore(d, &["wiki/page.md".into()], &[], keep.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md")).unwrap(), "half written\n");
+        assert_eq!(std::fs::read_to_string(keep.path().join("wiki/page.md.2")).unwrap(), "second pass\n");
         assert!(restore(d, &["CLAUDE.md".into()], &[], keep.path()).is_err());
         assert!(restore(d, &["wiki".into()], &[], keep.path()).is_err());
         // a refused path anywhere in the list: nothing is restored

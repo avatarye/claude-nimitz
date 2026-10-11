@@ -347,11 +347,11 @@ fn fail(ctx: &Ctx) -> Result<i32, Refusal> {
     let q = open(ctx, &id)?;
     // what this pass wrote goes back first (an aide runs no git of its own)
     if let Some(list) = ctx.args.value("--restore") {
-        q.holding(&item, holder(&s).as_deref(), now())?;
+        let held = q.holding(&item, holder(&s).as_deref(), now())?;
         let dir = aide_folder(ctx, &id).map_err(|e| no_commit(format!("{id}: {e}")))?;
         let paths: Vec<String> = list.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect();
         // what the files held before (a page the user edited too) is kept in this machine's state
-        let backup = ctx.env.state.join("aides").join(queue::escape(&id)).join("restored").join(item.trim_start_matches('0'));
+        let backup = ctx.env.state.join("aides").join(queue::escape(&id)).join("restored").join(&item).join(format!("try-{}", held.tries));
         let done = nimitz_core::kb::restore(&dir, &paths, &brief_of(ctx, &id), &backup).map_err(|e| no_commit(format!("nothing failed, nothing restored: {e}")))?;
         for d in done {
             out::line(&d);
