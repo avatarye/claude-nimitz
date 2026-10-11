@@ -3184,3 +3184,61 @@ fn an_aides_brief_is_in_its_session_start() {
     let c = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     assert!(c.contains("## Your brief") && c.contains("Use agent/skills/ingest-auto.md for every note."), "{c}");
 }
+
+/// The edges of `done --commit` the S4 review found: `.` and globs never
+/// commit, a result that is no object is refused before any commit, `fail
+/// --restore` puts back what a pass wrote, and `claim` tells a writer an item
+/// it committed before.
+#[test]
+fn done_commit_edges_literal_paths_restore_and_committed_items() {
+    let sb = Sb::new(false);
+    nimitz_core::sandbox::add_aide(&sb.base, "MAIN", "KB", false).unwrap();
+    let repo = sb.base.canonicalize().unwrap().join("dirs").join("main").join("kb");
+    let git = |args: &[&str]| {
+        let o = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    std::fs::create_dir_all(repo.join("wiki")).unwrap();
+    std::fs::write(repo.join("wiki/page.md"), "one\n").unwrap();
+    std::fs::write(repo.join("CLAUDE.md"), "rules\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+    let aide = [("NIMITZ_ID", "MAIN/@KB"), ("NIMITZ_ROLE", "aide")];
+    sb.run(&["inbox", "post", "MAIN/@KB", "--type", "wiki.note.v1", "--payload", "{\"title\":\"T\",\"body\":\"b\"}", "--yes"]);
+    let claim = || {
+        let r = raw(&sb.vars, &["inbox", "claim", "MAIN/@KB"], &aide, None);
+        serde_json::from_str::<Value>(&r.out[r.out.find('{').unwrap()..]).unwrap()
+    };
+    let item = claim();
+    let id = item["id"].as_str().unwrap().to_string();
+    std::fs::write(repo.join("CLAUDE.md"), "the user's edit\n").unwrap();
+    std::fs::write(repo.join("wiki/page.md"), "half written\n").unwrap();
+    std::fs::write(repo.join("wiki/new.md"), "new\n").unwrap();
+    for paths in [".", "wiki", "*", "wiki/*", "CLAUDE.m?"] {
+        let r = raw(&sb.vars, &["inbox", "done", "MAIN/@KB", &id, "--commit", "--paths", paths], &aide, None);
+        assert!(r.code != 0 && r.out.contains("(inbox.commit)"), "{paths}: {}", r.out);
+    }
+    let r = raw(&sb.vars, &["inbox", "done", "MAIN/@KB", &id, "--commit", "--paths", "wiki/new.md", "--result", "[1]"], &aide, None);
+    assert_eq!(r.code, 2, "{}", r.out);
+    assert_eq!(git(&["rev-list", "--count", "HEAD"]).trim(), "1", "nothing committed");
+    // the pass fails: its files go back, the user's edit stays
+    let r = raw(&sb.vars, &["inbox", "fail", "MAIN/@KB", &id, "--reason", "half done", "--restore", "wiki/page.md,wiki/new.md"], &aide, None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(std::fs::read_to_string(repo.join("wiki/page.md")).unwrap(), "one\n");
+    assert!(!repo.join("wiki/new.md").exists());
+    assert_eq!(std::fs::read_to_string(repo.join("CLAUDE.md")).unwrap(), "the user's edit\n");
+    // its commit made by an earlier pass that died before done: claim says so
+    let item = claim();
+    let reference = item["ref"].as_str().unwrap().to_string();
+    std::fs::write(repo.join("wiki/new.md"), "new\n").unwrap();
+    git(&["add", "wiki/new.md"]);
+    git(&["commit", "-qm", "ingest(auto): T", "-m", &format!("inbox-item: {reference}")]);
+    let r = raw(&sb.vars, &["inbox", "fail", "MAIN/@KB", item["id"].as_str().unwrap(), "--reason", "crash"], &aide, None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let again = claim();
+    assert_eq!(again["committed"].as_str(), Some(git(&["rev-parse", "HEAD"]).trim()), "{again}");
+}

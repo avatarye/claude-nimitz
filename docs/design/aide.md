@@ -449,10 +449,13 @@ answer and nimitz delivers it (4.6).
     run programs, which is why the aide gets neither. The KB is never pushed
     by its aide (a decision by NIMITZ_DEV, pending the user's word,
     2026-10-10);
-  - Edit and Write within the repo (`acceptEdits` in its folder), denied on
-    `.git/**` and the repo's own rules (`kb::OFF_LIMITS`: agent/, CLAUDE.md,
-    START_HERE.md, SCOPE.md, DESIGN-NOTES.md, README.md, .gitignore), as
-    `Edit(//<folder>/<path>)` rules.
+  - Edit and Write within the repo (`acceptEdits` in its folder), denied (an
+    `Edit(//<folder>/<path>)` rule covers every editing tool; `//c/...` on
+    Windows) on the repo's own rules (`kb::OFF_LIMITS`: agent/, CLAUDE.md,
+    START_HERE.md, SCOPE.md, DESIGN-NOTES.md, README.md, CLAUDE.local.md), at
+    any depth on `.git`, `.gitattributes` (a filter it names runs inside git),
+    `.gitmodules`, `.gitignore` and CLAUDE.md (instructions at the next session
+    start), and on its own brief.
   - Nothing else is pre-allowed: a payload that talks it into `curl` or a write
     outside the repo hits a prompt, and the prompt becomes a needs-you, not an
     action.
@@ -469,15 +472,22 @@ answer and nimitz delivers it (4.6).
      never matches item 420; `<ref>` is `<queue uid>:<id>`, which never
      repeats). Found: that commit is the item's (an earlier pass committed
      and died before `done`), and nothing is committed;
-   - checks the paths: relative, inside the repo, none off limits, none an
-     existing `raw/` file (a capture is always new);
+   - checks the paths: each a file named literally (`--literal-pathspecs`:
+     never `.`, a folder or a glob), relative, inside the repo, none off
+     limits (any case), none its brief, none an existing `raw/` file (a
+     capture is always new); and no `.gitattributes`/`.gitmodules` in the
+     tree that differs from its commit (found by `hash-object --no-filters`,
+     no git that runs filters: `status` and `add` clean what they compare);
    - stages **those paths, by name**, and `git commit --only --no-verify`
      them (whatever the user staged stays staged) with `ingest(auto):
      <title>`, `inbox-item: <ref>`, `from: <sender>` (each one line, no
      control characters: no forged trailer);
    - records `{"commit": "<sha>", "pages": [...]}` with `done`.
 3. A duplicate: `done --result {"duplicate_of": ...}`; refused: `fail
-   --reason` (`--permanent` for a secret or a payload with no knowledge).
+   --reason --restore <paths>` (nimitz puts the files back: a tracked one as
+   its last commit had it, a new one removed; `--permanent` for a secret or a
+   payload with no knowledge). A pass that finds the item committed already
+   (`claim` shows `committed`) writes nothing and runs `done --commit`.
 
 Rollback is `git revert <sha>`; `inbox list --state done` maps items to commits.
 

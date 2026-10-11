@@ -28,8 +28,11 @@
   `nimitz aide grep <term> [<path>]` and `nimitz aide status` read its folder,
   and `nimitz inbox done <aide> <item> --commit --title --paths --pages`
   commits exactly the named paths with the item's `inbox-item: <ref>` trailer,
-  once (a retry finds the commit). Edit and Write are denied on `.git` and the
-  repo's own rules. `[[aide]] brief` follows the rules at each session start.
+  once (a retry finds the commit; `claim` says so), paths taken literally,
+  file by file; `inbox fail --restore <paths>` puts back what a failed pass
+  wrote. Edits are denied on the repo's own rules, its brief, and at any depth
+  on `.git`, `.gitattributes`, `.gitmodules`, `.gitignore` and CLAUDE.md; a
+  changed attributes file stops nimitz's git until the user looks. `[[aide]] brief` follows the rules at each session start.
   `inbox list` shows each item's ref. Tested on real Claude Code with a copy of
   the KB: one commit per note through a kill, a `/clear` and a relaunch; a
   hostile note refused.

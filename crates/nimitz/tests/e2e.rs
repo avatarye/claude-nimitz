@@ -1895,7 +1895,7 @@ fn e2e_99_the_kb_aide_commits_each_note_once_through_a_kill_a_clear_and_a_relaun
     settled(&d, 600);
     assert_eq!(std::fs::read_to_string(repo.join(".git").join("config")).unwrap(), config_before, ".git/config untouched");
     let touched = git(&["log", "--name-only", "--format=", &format!("{base_sha}..HEAD")]);
-    assert!(!touched.lines().any(|l| l.starts_with(".git") || l == "CLAUDE.md" || l.starts_with("agent/")), "nothing off limits committed:\n{touched}");
+    assert!(!touched.lines().any(|l| nimitz_core::kb::off_limits(l).is_some() || l == "AIDE.md"), "nothing off limits committed:\n{touched}");
     println!("[OK] e2e #99: the aide's commits:\n{}", git(&["log", "--oneline", &format!("{base_sha}..HEAD")]));
     let st = w.ok(&["inbox", "status", &aide]);
     println!("{st}");

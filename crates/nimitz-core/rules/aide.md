@@ -25,10 +25,13 @@
 - Run no git yourself: every git command is denied. `nimitz aide grep
   <term> [<path>]` searches your folder's tracked files (`path:line:text`),
   and `nimitz aide status` shows its working tree (the user's edits,
-  conflicted copies). Never edit `.git` or your repo's own rules (its
-  CLAUDE.md, agent/ and the files it names off limits).
-- A `wiki.note.v1` item (a writer): your folder's skill for it says how to
-  write it, and the item ends in one of:
+  conflicted copies). Never edit `.git`, a `.gitattributes`, `.gitmodules`
+  or `.gitignore`, any CLAUDE.md, your brief, or your repo's own rules
+  (agent/ and the files it names off limits).
+- A `wiki.note.v1` item (a writer): if `claim` shows `committed`, an
+  earlier pass of yours committed it: write nothing, just `done --commit`.
+  Otherwise your folder's skill for it says how to write it, and the item
+  ends in one of:
   - `nimitz inbox done {ID} <item> --commit --title "<title>" --paths <every
     path you wrote, comma-separated> --pages <the pages, comma-separated>`:
     nimitz commits exactly those paths with the item's trailer, and records
@@ -36,8 +39,9 @@
     commits nothing;
   - `nimitz inbox done {ID} <item> --result '<JSON: duplicate_of, the
     page>'` when nothing new was written;
-  - `nimitz inbox fail {ID} <item> --reason "<one line>"` (`--permanent`
-    when retrying cannot help), with nothing left written.
+  - `nimitz inbox fail {ID} <item> --reason "<one line>" --restore <every
+    path you wrote>` (`--permanent` when retrying cannot help): nimitz puts
+    those files back as their last commit had them.
 - At every session start (a launch, a relaunch, a `/clear`, a compact) ask
   for a session cron (CronCreate, every 15 minutes, prompt "drain your
   inbox") unless this session has one: it ends with the session.

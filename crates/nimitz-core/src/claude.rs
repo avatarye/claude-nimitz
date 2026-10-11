@@ -184,17 +184,39 @@ fn aide_permissions(env: &Env, id: &Id) -> (Vec<String>, Vec<String>) {
         return (allow, deny);
     }
     if let Some(dir) = crate::config::member_dir(env, &f, id) {
-        // `//` anchors a rule at the filesystem root (a path rule's own form)
-        let root = dir.to_string_lossy().replace('\\', "/");
-        let root = format!("/{}", root.trim_end_matches('/'));
+        let root = rule_root(&dir);
+        // (an Edit rule covers every tool that edits a file)
         for off in crate::kb::OFF_LIMITS {
             let pat = if off.ends_with('/') { format!("{root}/{off}**") } else { format!("{root}/{off}") };
-            for tool in ["Edit", "Write", "NotebookEdit"] {
-                deny.push(format!("{tool}({pat})"));
+            deny.push(format!("Edit({pat})"));
+        }
+        for off in crate::kb::OFF_LIMITS_ANYWHERE {
+            let pat = if off == ".git" { format!("{root}/**/.git/**") } else { format!("{root}/**/{off}") };
+            deny.push(format!("Edit({pat})"));
+            if off == ".git" {
+                deny.push(format!("Edit({root}/.git/**)"));
             }
+        }
+        // its brief: standing instructions it never writes itself
+        if let Some(b) = def.brief.as_deref().filter(|b| !b.is_empty()) {
+            let p = std::path::Path::new(b);
+            let p = if p.is_absolute() { p.to_path_buf() } else { dir.join(p) };
+            deny.push(format!("Edit({})", rule_root(&p)));
         }
     }
     (allow, deny)
+}
+
+/// A path as a permission rule anchors it at the filesystem root: `//abs`
+/// (`//c/abs` for `C:\abs` on Windows).
+fn rule_root(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().replace('\\', "/");
+    let s = s.trim_start_matches("//?/").trim_end_matches('/').to_string();
+    let b = s.as_bytes();
+    if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        return format!("//{}{}", (b[0] as char).to_ascii_lowercase(), &s[2..]);
+    }
+    format!("/{s}")
 }
 
 /// `--settings` JSON: the labels as env, the Herdr pane env blank
@@ -502,11 +524,12 @@ mod tests {
         assert_eq!(allow, vec![NIMITZ_ALLOW.to_string()], "nothing but nimitz");
         assert!(deny.contains(&"Bash(git)".to_string()) && deny.contains(&"Bash(git *)".to_string()), "{deny:?}");
         let root = format!("/{}", real.display());
-        for pat in [format!("{root}/.git/**"), format!("{root}/agent/**"), format!("{root}/CLAUDE.md"), format!("{root}/.gitignore")] {
-            for tool in ["Edit", "Write", "NotebookEdit"] {
-                assert!(deny.contains(&format!("{tool}({pat})")), "{tool}({pat}): {deny:?}");
-            }
+        for pat in [format!("{root}/.git/**"), format!("{root}/**/.git/**"), format!("{root}/agent/**"), format!("{root}/CLAUDE.md"), format!("{root}/**/CLAUDE.md"), format!("{root}/**/.gitattributes"), format!("{root}/**/.gitignore"), format!("{root}/CLAUDE.local.md")] {
+            assert!(deny.contains(&format!("Edit({pat})")), "Edit({pat}): {deny:?}");
         }
+        assert!(!deny.iter().any(|d| d.starts_with("Write(") || d.starts_with("NotebookEdit(")), "an Edit rule covers them: {deny:?}");
+        assert_eq!(rule_root(std::path::Path::new(r"C:\Users\x\kb")), "//c/Users/x/kb");
+        assert_eq!(rule_root(std::path::Path::new("/srv/kb/")), "//srv/kb");
         let r = perms(&Id("MAIN/@REF".into()));
         assert_eq!(r["allow"], serde_json::json!([NIMITZ_ALLOW]));
         assert!(["Edit", "Write", "NotebookEdit", "Bash(git *)"].iter().all(|d| r["deny"].as_array().unwrap().iter().any(|x| x == d)), "{r}");

@@ -195,8 +195,15 @@ fn claim(ctx: &Ctx) -> Result<i32, Refusal> {
     let by = holder(&s).unwrap_or_else(|| "the user".into());
     match q.claim(&by, now())? {
         Some(item) => {
+            let mut shown = serde_json::to_value(&item).unwrap_or(Value::Null);
+            // a writer whose earlier pass committed this item: finish it, write nothing
+            if let Ok(dir) = aide_folder(ctx, &id) {
+                if let Ok(Some(sha)) = nimitz_core::kb::committed(&dir, &item.reference) {
+                    shown["committed"] = json!(sha);
+                }
+            }
             // always JSON: the aide reads it
-            println!("{}", serde_json::to_string_pretty(&item).unwrap_or_default());
+            println!("{}", serde_json::to_string_pretty(&shown).unwrap_or_default());
             Ok(0)
         }
         None => {
@@ -237,14 +244,18 @@ fn done(ctx: &Ctx) -> Result<i32, Refusal> {
     // a writer's commit, made by nimitz (aide.md 6.3): the item's trailer
     // first (an earlier pass committed and died before `done`), else the
     // named paths staged and committed, then `done` with {commit, pages}
-    let commit = if ctx.args.flag("--commit") { Some(commit_item(ctx, &q, &id, &item, &s)?) } else { None };
     let result = match (ctx.args.value("--result"), ctx.args.value("--result-file")) {
         (Some(r), None) => Some(r.to_string()),
         (None, Some(f)) => Some(std::fs::read_to_string(f).map_err(|e| usage(format!("--result-file {f}: {e}")))?),
         (None, None) => None,
         _ => return Err(usage("give the result once: --result JSON or --result-file F".into())),
     };
+    // the result is checked before anything is committed
     let mut result = result.map(|r| serde_json::from_str::<Value>(&r).map_err(|e| usage(format!("the result is not JSON: {e}")))).transpose()?;
+    if ctx.args.flag("--commit") && result.as_ref().is_some_and(|r| !r.is_object()) {
+        return Err(usage("with --commit, --result is a JSON object (commit and pages are added to it)".into()));
+    }
+    let commit = if ctx.args.flag("--commit") { Some(commit_item(ctx, &q, &id, &item, &s)?) } else { None };
     if let Some((sha, again)) = commit {
         let pages: Vec<String> = ctx.args.value("--pages").map(|p| p.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default();
         let mut r = match result.take() {
@@ -290,8 +301,13 @@ fn commit_item(ctx: &Ctx, q: &Queue, id: &Id, item: &str, s: &Sender) -> Result<
     }
     let paths: Vec<String> = ctx.args.value("--paths").map(|p| p.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect()).unwrap_or_default();
     let title = ctx.args.value("--title").map(str::to_string).or_else(|| held.payload.get("title").and_then(Value::as_str).map(str::to_string)).unwrap_or_else(|| "a note".into());
-    let sha = nimitz_core::kb::commit(&dir, &id.0, &held.reference, &title, &held.sender.line(), &paths).map_err(|e| no_commit(format!("nothing committed: {e}")))?;
+    let sha = nimitz_core::kb::commit(&dir, &id.0, &held.reference, &title, &held.sender.line(), &paths, &brief_of(ctx, id)).map_err(|e| no_commit(format!("nothing committed: {e}")))?;
     Ok((sha, false))
+}
+
+/// The aide's brief, as a path in its repo (never its own to write or commit).
+fn brief_of(ctx: &Ctx, id: &Id) -> Vec<String> {
+    queue::find(&ctx.env, id).ok().and_then(|(_, d)| d.brief).filter(|b| !b.is_empty()).map(|b| vec![b.trim_start_matches("./").to_string()]).unwrap_or_default()
 }
 
 fn no_commit(why: String) -> Refusal {
@@ -315,12 +331,22 @@ pub fn aide_folder(ctx: &Ctx, id: &Id) -> Result<std::path::PathBuf, String> {
 }
 
 fn fail(ctx: &Ctx) -> Result<i32, Refusal> {
-    ctx.args.allow(&["--reason", "--permanent"]).map_err(usage)?;
+    ctx.args.allow(&["--reason", "--permanent", "--restore"]).map_err(usage)?;
     let (id, item) = item_arg(ctx)?;
     let s = me(ctx);
     the_aide(&s, &id, "fail")?;
     let reason = ctx.args.value("--reason").ok_or_else(|| usage("--reason is required (one line)".into()))?;
     let q = open(ctx, &id)?;
+    // what this pass wrote goes back first (an aide runs no git of its own)
+    if let Some(list) = ctx.args.value("--restore") {
+        q.holding(&item, holder(&s).as_deref(), now())?;
+        let dir = aide_folder(ctx, &id).map_err(|e| no_commit(format!("{id}: {e}")))?;
+        let paths: Vec<String> = list.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect();
+        let done = nimitz_core::kb::restore(&dir, &paths, &brief_of(ctx, &id)).map_err(|e| no_commit(format!("nothing failed, nothing restored: {e}")))?;
+        for d in done {
+            out::line(&d);
+        }
+    }
     let (i, dead) = q.fail(&item, holder(&s).as_deref(), reason, ctx.args.flag("--permanent"), now())?;
     if dead {
         out::warn(&format!("item {} is a dead letter after {} tr{}: {reason}", i.id, i.tries, if i.tries == 1 { "y" } else { "ies" }));
