@@ -152,12 +152,9 @@ impl E2e {
         let native = native();
         // `nimitz` on the members' PATH is THIS build (a wrapper that logs each
         // call to `nimitz-calls.log` first); `claude-cheap` adds the model to a
-        // cold launch (the native binary stays flag-free for wakes), and this
-        // repo's plugin (`--plugin-dir`, named `nimitz`: it overrides the
-        // installed one, so the hooks are this build's; a wake keeps the flag)
-        let plugin = nimitz_core::os::canonical(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin")).unwrap();
+        // cold launch (the native binary stays flag-free for wakes)
         executable(&base.join("bin").join("nimitz"), &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{EXE}' \"$@\"\n", base.join("nimitz-calls.log").display()));
-        executable(&base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{native}' --plugin-dir '{}' --model '{}' \"$@\"\n", plugin.display(), cheap_model()));
+        executable(&base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{native}' --model '{}' \"$@\"\n", cheap_model()));
         let b = |x: &str| base.join(x).to_string_lossy().into_owned();
         let vars: HashMap<String, String> = [
             ("HOME", home().to_string_lossy().into_owned()),
@@ -282,6 +279,10 @@ impl E2e {
         let mut hooks = serde_json::Map::new();
         for e in ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "SubagentStart", "SubagentStop", "PermissionRequest"] {
             hooks.insert(e.into(), one(e));
+        }
+        // the fleet's harness rules, an entry of their own (as the plugin's)
+        for e in ["SessionStart", "UserPromptSubmit"] {
+            hooks[e].as_array_mut().unwrap().push(json!({"hooks": [{"type": "command", "command": exe, "args": ["hook", "rules", "harness"], "timeout": 5}]}));
         }
         hooks.insert(
             "PreToolUse".into(),

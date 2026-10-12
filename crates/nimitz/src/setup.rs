@@ -278,8 +278,9 @@ impl Report {
     }
 }
 
-/// `nimitz rules [<id>]`: the rules the SessionStart hook hands `id` (a member
-/// caller: its own when no id is given). Read-only.
+/// `nimitz rules [<id>]`: the rules `id` is given at a session start (a member
+/// caller: its own when no id is given): its role's, then its fleet's harness
+/// rules, which come from their own hook entry. Read-only.
 pub fn rules(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;

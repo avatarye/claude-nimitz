@@ -12,7 +12,7 @@
   prompt when they change, once; when they are taken away, one line says so.
   `harness list` and `harness add` warn above 6,000: every member carries
   them every turn.
-- **Rules v9: shorter, with nothing a member does changed** (about a quarter
+- **Rules v9: shorter, with the same behaviour** (about a quarter
   shorter for each role). `nimitz start` is in the leads' rules only (a ship
   may not run it); the deprecated verbs and the history are gone. A rules
   update lists the last three changes.
@@ -24,8 +24,8 @@
 - Install over 0.7.1 (`cargo install` both crates) and update the plugin
   together: the new hooks.json entry needs the 0.7.2 binary (0.7.1 gives it
   no answer and logs a line for each call). Live members get rules v9 at
-  their next prompt; their harness rules stay as delivered until the next
-  change or session start.
+  their next prompt, and a fleet's harness rules once more as "changed" (their
+  heading now says they add to the role rules, which moves their hash).
 
 ## 0.7.1 (2026-10-12)
 
