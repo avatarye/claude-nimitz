@@ -48,9 +48,9 @@ next prompt.
 | --- | --- | --- | --- | --- |
 | One hook (today) | yes | yes | 10,000 in all | role and harness share it |
 | **Several hook entries** | yes | yes | 10,000 per entry | entries arrive unordered; one more process per entry per event |
-| CLAUDE.md `@`-import | yes | no | none | read when the session starts. Ships get no nimitz-written CLAUDE.md (their folder is the user's repo), so this reaches leads only |
-| `--append-system-prompt-file` | yes | no | none | read at launch. A change needs `nimitz start -f`, which drops a turn in flight. Not checked: whether a job resumed by the daemon keeps the flag |
-| Fleet output style | yes | no | none | one per session, so it collides with the user's own `outputStyle`. Unless it sets `keep-coding-instructions`, it replaces Claude Code's coding instructions |
+| CLAUDE.md `@`-import | yes | no | none | read at session start and again after a compaction and a few other events (then re-sent marked changed), not at each prompt. Ships get no nimitz-written CLAUDE.md (their folder is the user's repo), so this reaches leads only |
+| `--append-system-prompt-file` | yes | no | none | read at launch; a change needs `nimitz start -f`, which drops a turn in flight. Claude Code's own restart refuses to carry "a custom system prompt" among its launch flags |
+| Fleet output style | yes | no (not verified) | none | one per session: it collides with the user's own `outputStyle` and with the harness's `outputStyle` setting (P4). Without `keep-coding-instructions` it replaces Claude Code's coding instructions |
 | A pointer to a file | no | yes | none | the model may not read the file. Fits reference material, not rules |
 | A harness skill (exists, P4) | no | yes | none | loaded on demand. The right home for long procedures |
 
@@ -77,57 +77,96 @@ the first 2,000 characters only, so it fails the moment the text passes
 
 ## 4. Recommendation: raise the cap, don't remove it
 
-1. **Deliver the rules over several hook entries.** Each entry is its own
-   text with its own delivery record.
-   - Add entries to SessionStart and UserPromptSubmit in hooks.json:
-     `nimitz hook rules role`, `nimitz hook rules harness-1`, `harness-2` and
-     `harness-3`.
-   - `role` carries the role's rules, as today minus the harness.
-   - `harness-N` carries the fleet's harness rules, split at `###` section
-     boundaries into parts of at most 9,800 characters. Each part is headed
-     "Fleet HOME's own rules, part N of M", because parts arrive in any order.
-   - A part with nothing to say exits at once with no output.
-   - The SessionStart hook keeps binding the session and stops carrying rules.
-   - On UserPromptSubmit, each part checks its own record. A harness edit then
-     resends only the harness, and a role-rules change only the role rules.
-   - `rules-delivered.json` keeps a hash per part. An old record holds one
-     `harness` hash; it counts as no parts delivered, which costs one resend
-     after the upgrade.
-2. **Set `RULES_MAX` to 29,000** (three parts). `harness add` and `harness
-   push` refuse anything over it, as they do today for 4,000.
-   - **Add a soft warning at 6,000:** `harness list` and `add` print what
-     every member pays each turn.
-   - A fourth part costs nothing to add later. A cap that is high but real
-     keeps one runaway file from taking up every member's context.
-3. **Old binaries.** The 0.7.1 binary exits 0 silently on an unknown hook
-   name. I checked this for `nimitz hook SessionStartHarness`. That makes the
-   new entries harmless while the plugin, which runs live from the main
-   checkout, is ahead of the installed binary. To check before merging: does
-   0.7.1 log an `events.jsonl` line for an unknown hook name? 0.6.0 did for
-   kb-guard.
-4. **Trim the update's changelog.** Show at most the last three entries after
-   the member's version, then "(older changes: superseded)". A member on v8
-   then gets one line.
-5. **Not chosen:**
+1. **Keep the role rules where they are, and add harness entries.**
+   - The existing SessionStart and UserPromptSubmit handler keeps binding the
+     session and delivering the role rules: same code path, same record
+     field `version`, same `rules` on its SessionStart line.
+   - It stops carrying the harness rules. Those move to new hooks.json
+     entries on both events: `nimitz hook rules harness-1` and
+     `harness-2`. That is two to start; adding a third later costs one line.
+   - A new binary with an old hooks.json still gives members their role
+     rules. Only the harness goes missing, and `doctor`'s hook check
+     (setup.rs:28-56) learns the new entries and names them.
+2. **Identity.** A harness hook resolves the session exactly as the main
+   handler does. The checks in hook.rs:53-118 become one shared function:
+   - labels backed by the job's row, with the 500 ms wait;
+   - the spare session;
+   - another nimitz home and `NIMITZ_HOME`.
+   It writes no SessionStart line, because registry.rs replays those.
+3. **Packing.**
+   - The harness rules are rendered as today: the `>` quotes and the
+     headings.
+   - The rendered text is packed in order into parts of at most 9,800
+     characters, splitting between files (`###` sections).
+   - Each part is headed "Fleet HOME's own rules, part N of M", since parts
+     arrive in any order.
+   - One file must fit in one part: `harness add` refuses a file whose
+     rendered text is over 9,500, as it refuses one over 4,000 today.
+   - The total cap is "fits in the parts there are" (two today, so about
+     19,000), measured on the rendered text. Over it, `harness add` refuses,
+     and `harness push`/`list` warn and name what does not fit, as today's
+     cut does.
+   - A soft warning at 6,000 in `harness list` and `add` says what every
+     member pays each turn.
+4. **Records and races.** The hooks run in parallel, all writing
+   rules-delivered.json.
+   - Each hook updates only its own field, under the existing lock: the
+     main handler `version`, harness part N `harness.N` (a hash). Neither
+     replaces the record whole, so a harness part cannot mark a role update
+     as delivered.
+   - The new record shape is a formats step (formats.rs). An old record's
+     single `harness` hash counts as no parts delivered: one resend after
+     the upgrade.
+   - A part's update goes out when its hash differs from its record.
+   - When a part becomes empty, or the harness is removed, and the record
+     still holds a hash, it sends one line: "Fleet HOME's own rules, part N:
+     withdrawn; drop what it said". Today's "a rule taken away is a change
+     too" (rules.rs:475) keeps holding.
+5. **Wording.**
+   - The role update's "The full rules now" becomes "Your role's rules now".
+   - The harness heading's "nimitz's rules above" becomes "nimitz's role
+     rules".
+   Both assume one combined text today.
+6. **Old binaries.** The live plugin runs from the main checkout, so it can
+   be ahead of the installed binary.
+   - 0.7.1 exits 0 with no output on an unknown hook name. The new entries
+     add nothing until the install.
+   - But 0.7.1 logs an events.jsonl line (event `rules`) for each of them on
+     every event. Nothing reads those lines; they are noise.
+   - So merge the hooks.json change with the release, not before.
+7. **Trim the update's changelog.** Show at most the last three entries after
+   the member's version, then "(older changes: superseded)".
+8. **Not chosen:**
    - removing the cap (anything past 10,000 becomes a preview);
    - `--append-system-prompt-file`, an output style and CLAUDE.md imports,
-     which fail (b), and the CLAUDE.md route does not reach ships at all.
+     which all fail (b), and CLAUDE.md does not reach ships.
+
+**For the user to decide:**
+- Do the harness rules need more than about 9,500 characters at all? If
+  not, a single harness entry is enough. It still frees the role rules'
+  share, so the harness alone gets 9,800 instead of about 4,000.
+- How many parts, and so what cap: one (about 9,500), two (about 19,000) or
+  three (about 29,000)?
 
 ## 5. Shorter role rules (v9)
 
-The draft is in `docs/design/rules-v9-draft/`: `common.md`, `admiral.md`,
-`commodore.md` and `ship.md`, plus `rules.diff` against today's
+The draft is in `docs/design/rules-v9-draft/`: `common.md`, `leads.md`,
+`admiral.md`, `commodore.md` and `ship.md`, plus `rules.diff` against today's
 `crates/nimitz-core/rules/`. Sizes are counted as rendered for HOME, without
 the harness:
 
 | Role | Now | Draft | Cut |
 | --- | ---: | ---: | ---: |
-| admiral | 4,479 | 3,241 | 27% |
-| commodore | 4,603 | 3,491 | 24% |
-| ship | 4,381 | 3,244 | 25% |
+| admiral | 4,479 | 3,290 | 27% |
+| commodore | 4,603 | 3,611 | 22% |
+| ship | 4,381 | 3,029 | 31% |
 
 With HOME's harness (1,567) added, members get about 6,000 today and about
-4,800 with the draft.
+4,600 to 5,200 with the draft.
+
+The `nimitz start` bullet moves from the common part to a new `leads.md`,
+given to the admiral and commodores only. Ships may not run `start`
+(sessions.rs:495).
 
 **Every behaviour stays. Dropped outright:**
 
@@ -142,11 +181,8 @@ With HOME's harness (1,567) added, members get about 6,000 today and about
   ships", the one fact only the matrix held.
 - **Duplicates:**
   - the admiral's second "leave day-to-day work to the commodore" bullet;
-  - the commodore's "a one-off job is a subagent", which the common part
-    says;
   - the ship's "nimitz refuses every other change", which the common part
-    says;
-  - the ship's "who tells the user".
+    says.
 - **Implementation detail:** "wakes what is down by its exact id", and "(you
   alone, relaunched)" after the `start.self` fix.
 
