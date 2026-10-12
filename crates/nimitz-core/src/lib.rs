@@ -17,6 +17,7 @@ pub mod env;
 pub mod formats;
 pub mod migrate;
 pub mod os;
+pub mod paths;
 pub mod registry;
 
 // core-sessions

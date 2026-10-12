@@ -146,7 +146,7 @@ fn bug01_nimitz_mux_auto_still_detects_herdr() {
     // contracts.md section 2: NIMITZ_MUX defaults to `auto`; saying so must not turn the mux off.
     let sb = Sb::new(true);
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap(); // the admiral is down
-    let r = sb.run_env(&["start", "MAIN", "--yes"], &[("NIMITZ_MUX", "auto")]);
+    let r = sb.run_env(&["start", "MAIN/...", "--yes"], &[("NIMITZ_MUX", "auto")]);
     assert!(!r.out.contains("mux.none"), "NIMITZ_MUX=auto with HERDR_ENV=1 and a herdr binary fell back to none:\n{}", r.out);
 }
 
@@ -490,9 +490,9 @@ fn bug47_a_second_start_does_not_start_a_second_admiral() {
     let sb = Sb::new(true);
     // the admiral's process is gone (a parked job); the first start wakes it
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
-    let r = sb.run(&["start", "MAIN", "--yes"]);
+    let r = sb.run(&["start", "MAIN/...", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    let r = sb.run(&["start", "MAIN", "--yes"]);
+    let r = sb.run(&["start", "MAIN/...", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("nothing to start"), "the second start finds it live:\n{}", r.out);
     let calls = std::fs::read_to_string(sb.dir("calls.log")).unwrap_or_default();
@@ -587,7 +587,7 @@ fn trust_a_start_trusts_the_folder_then_launches() {
     assert!(p.out.contains(&format!("trust {}, then", lone.display())), "{}", p.out);
     assert!(p.out.contains("hooks and MCP servers"), "{}", p.out);
     // a wider start never trusts a folder the user did not name
-    let f = sb.run(&["start", "MAIN/ARGOS", "--plan", "-v"]);
+    let f = sb.run(&["start", "MAIN/ARGOS/...", "--plan", "-v"]);
     assert!(!f.out.contains("hooks and MCP servers"), "{}", f.out);
     let r = sb.run(&["start", "MAIN/ARGOS/FRESH", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);

@@ -410,11 +410,10 @@ pub fn name_taken_issue(m: &Member, others: &[SessionInfo]) -> Option<Issue> {
 
 // ------------------------------------------------------------------ the caller
 
-/// The `nimitz start` that acts on `id` alone, with `flags` (`-f`, `-p`): a
-/// lead's id names its whole fleet or squadron, so a lead's adds `--only`.
+/// The `nimitz start` that acts on `id` alone (its exact path), with
+/// `flags` (`-f`, `-p`).
 pub fn start_cmd(id: &Id, flags: &str) -> String {
-    let only = if id.role().lead() { " --only" } else { "" };
-    format!("nimitz start {id}{only} {flags}")
+    format!("nimitz start {id} {flags}")
 }
 
 /// Is the caller (a member, by its labels) `target` or under it? A stop, a

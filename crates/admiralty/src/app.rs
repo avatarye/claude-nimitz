@@ -191,7 +191,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("J / K", "next / previous row with a pane"),
     ("!", "everything waiting on you"),
     ("i", "every issue, with its fix command"),
-    ("a", "start it: nimitz start <id> (a lead alone: --only; confirms)"),
+    ("a", "start it: nimitz start <id> (confirms)"),
     ("u", "up (deprecated): everything the fleet runs here, first launches too (confirms)"),
     ("A", "a pane for it, focused: nimitz start <id> -p (one that shows it: jump there)"),
     ("x", "actions: stop, relaunch (start -f), sweep, rm, adopt, remove; on a fleet: R start the fleet, layout, machines"),

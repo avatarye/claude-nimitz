@@ -15,6 +15,11 @@ pub fn parse_id(s: &str) -> Result<Id, String> {
     }
 }
 
+/// Parse paths (`nimitz_core::paths`): at least one.
+pub fn parse_paths(args: &[String]) -> Result<Vec<nimitz_core::paths::Path>, String> {
+    nimitz_core::paths::parse_all(args)
+}
+
 pub fn members(snap: &Snapshot) -> Vec<&Member> {
     snap.fleets.iter().flat_map(|f| f.members()).collect()
 }
@@ -179,7 +184,7 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.at_most(1)?;
     let fleet = ctx.args.need(0, "fleet")?;
     parse_id(fleet)?;
-    deprecated(&format!("up {fleet}"), &format!("start {fleet} --all` (and `nimitz start <id>` for a first launch"));
+    deprecated(&format!("up {fleet}"), &format!("start {fleet}/... --parked` (and `nimitz start <id>` for a first launch"));
     let snap = ctx.snap();
     // the jobs first (every member with a row wakes, the rest cold-launch:
     // `restore --all` plus the first launches), then the shape: the leads'
@@ -188,7 +193,7 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
     let mux = ctx.mux();
     if ctx.plan_only() {
         if mux.caps().open {
-            out::line(&format!("then: the leads' Herdr tabs (`nimitz start {fleet} --plan` shows them once the jobs run)"));
+            out::line(&format!("then: the leads' Herdr tabs (`nimitz start {fleet}/... --plan` shows them once the jobs run)"));
         }
         return Ok(code);
     }
@@ -196,28 +201,27 @@ pub fn up(ctx: &Ctx) -> Result<i32, String> {
         return Ok(code);
     }
     if code != 0 {
-        out::line(&format!("[INFO] the leads' tabs were not made; nimitz start {fleet} makes them once the jobs run"));
+        out::line(&format!("[INFO] the leads' tabs were not made; nimitz start {fleet}/... makes them once the jobs run"));
         return Ok(code);
     }
-    let opts = nimitz_core::restore::RestoreOpts { all: true, shape_only: true, ..Default::default() };
-    Ok(crate::restore::run_shape(ctx, Some(fleet), opts, true))
+    let opts = nimitz_core::restore::RestoreOpts { parked: true, shape_only: true, ..Default::default() };
+    Ok(crate::restore::run_shape(ctx, &[nimitz_core::paths::Path::Under(Some(Id::admiral(fleet)))], opts, true))
 }
 
-/// `nimitz start [<target>] [-f] [-p [--tab]] [--fresh] [--all] [--force]`: one verb
-/// brings any member up and ready (`restore::plan_start`). The target is a
-/// ship, a squadron (its commodore and ships), a fleet, or nothing (every
-/// fleet here). `-f` (`--relaunch`) relaunches the live ones too; `-p`
-/// (`--pane`) gives the named member a pane and focuses it (`--tab`: always
-/// its own tab, reused or created); `--fresh` starts
-/// its new conversation; `--all` wakes parked ships; `--force` keeps its old
-/// meaning (a cold launch over a broken lineage or an untested Claude Code).
-/// The short flags are start's own (read from the positionals, so no other
-/// command, `signal`'s text least of all, ever reads them). With no
-/// multiplexer it brings up the jobs only.
+/// `nimitz start <path>... [-f] [-p [--tab]] [--fresh] [--parked] [--force]`:
+/// one verb brings any member up and ready (`restore::plan_start`), over the
+/// members the paths cover. `-f` (`--relaunch`) relaunches the live ones too;
+/// `-p` (`--pane`) gives each named member a pane and focuses it (`--tab`:
+/// always its own tab, reused or created); `--fresh` starts its new
+/// conversation; `--parked` wakes parked ships a `...` covers; `--force`
+/// keeps its old meaning (a cold launch over a broken lineage or an untested
+/// Claude Code). The short flags are start's own (read from the
+/// positionals, so no other command, `signal`'s text least of all, ever
+/// reads them). With no multiplexer it brings up the jobs only.
 pub fn start(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--fresh", "--all", "--relaunch", "--pane", "--tab", "--jobs-only", "--here", "--rename", "--only"])?;
+    ctx.args.allow(&["--fresh", "--parked", "--relaunch", "--pane", "--tab", "--jobs-only", "--here", "--rename"])?;
     let (mut relaunch, mut pane) = (ctx.args.flag("--relaunch"), ctx.args.flag("--pane"));
-    let mut pos: Vec<&str> = vec![];
+    let mut pos: Vec<String> = vec![];
     for a in &ctx.args.pos {
         let short = a.strip_prefix('-').filter(|r| !r.is_empty() && r.chars().all(|c| c == 'f' || c == 'p'));
         match short {
@@ -225,20 +229,17 @@ pub fn start(ctx: &Ctx) -> Result<i32, String> {
                 relaunch |= r.contains('f');
                 pane |= r.contains('p');
             }
-            None => pos.push(a),
+            None => pos.push(a.clone()),
         }
-    }
-    if pos.len() > 1 {
-        return Err(format!("start takes one target (a fleet, a squadron or a ship), not {}", pos.len()));
     }
     let tab = ctx.args.flag("--tab");
     if tab && !pane {
         return Err("--tab goes with -p (`nimitz start <id> -p --tab`)".into());
     }
-    let target = pos.first().map(|t| parse_id(t)).transpose()?;
+    let paths = parse_paths(&pos)?;
     let jobs_only = ctx.args.flag("--jobs-only") || (!ctx.mux().caps().open && !pane);
     let opts = nimitz_core::restore::RestoreOpts {
-        all: ctx.args.flag("--all"),
+        parked: ctx.args.flag("--parked"),
         force: ctx.force(),
         jobs_only,
         here: ctx.args.flag("--here"),
@@ -247,10 +248,9 @@ pub fn start(ctx: &Ctx) -> Result<i32, String> {
         pane,
         tab,
         fresh: ctx.args.flag("--fresh"),
-        only: ctx.args.flag("--only"),
         ..Default::default()
     };
-    Ok(crate::restore::run_start(ctx, target.as_ref(), opts))
+    Ok(crate::restore::run_start(ctx, &paths, opts))
 }
 
 /// A deprecated command's pointer to `start` (stderr under `--json`).
@@ -622,7 +622,7 @@ pub fn attach(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.at_most(1)?;
     let id = parse_id(ctx.args.need(0, "id")?)?;
     if ctx.force() {
-        return Err("--force does nothing for attach (a wake goes by start's plan: nimitz start <id> --only first)".into());
+        return Err("--force does nothing for attach (a wake goes by start's plan: nimitz start <id> first)".into());
     }
     let mut plan = Plan { summary: format!("attach {id}"), ..Default::default() };
     // a live Claude Code process above this one (its session file, checked
@@ -650,8 +650,8 @@ pub fn attach(ctx: &Ctx) -> Result<i32, String> {
     } else {
         // down: start's own plan wakes it (by its exact id; jobs only, no tab),
         // with its gate; then the attach
-        let opts = nimitz_core::restore::RestoreOpts { jobs_only: true, only: true, ..Default::default() };
-        let code = crate::restore::run_start(ctx, Some(&id), opts);
+        let opts = nimitz_core::restore::RestoreOpts { jobs_only: true, ..Default::default() };
+        let code = crate::restore::run_start(ctx, &[nimitz_core::paths::Path::Member(id.clone())], opts);
         if ctx.plan_only() {
             if code == 0 {
                 out::line(&format!("then: attach to {id} in this terminal (`claude attach <its job>`)"));
@@ -746,15 +746,13 @@ fn attached_pane(a: &nimitz_mux::Attached) -> nimitz_mux::PaneRef {
 /// Deprecated: an alias for one release, pointing at `nimitz restore`.
 pub fn layout(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--ships"])?;
-    ctx.args.at_most(2)?;
     let which = ctx.args.need(0, "multiplexer (herdr)")?;
     if which != "herdr" {
         return Err(format!("no layout for {which:?}; only `herdr` is built"));
     }
-    let only = ctx.args.pos.get(1).map(|s| parse_id(s)).transpose()?;
-    deprecated("layout herdr", "start [<F>]` (it makes the same tabs and brings the jobs up too");
+    let paths = if ctx.args.pos.len() < 2 { vec![nimitz_core::paths::Path::Under(None)] } else { parse_paths(&ctx.args.pos[1..])? };
     let opts = nimitz_core::restore::RestoreOpts { shape_only: true, ships: ctx.args.flag("--ships"), force: ctx.force(), ..Default::default() };
-    Ok(crate::restore::run_shape(ctx, only.as_ref().map(|i| i.fleet().to_string()).as_deref(), opts, false))
+    Ok(crate::restore::run_shape(ctx, &paths, opts, false))
 }
 
 #[cfg(test)]

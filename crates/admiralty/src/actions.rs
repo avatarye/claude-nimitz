@@ -452,17 +452,14 @@ fn last_json<T: serde::de::DeserializeOwned>(stdout: &str) -> Option<T> {
 /// panes), so Admiralty says and does the same as the command line (M25).
 pub fn prepare_start(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Result<Pending, String> {
     available(caps, snap, target, act)?;
-    let id = match target {
-        Target::Member(id) | Target::Squadron(id) | Target::Fleet(id) => id.clone(),
+    // a member by its path; a squadron or a fleet, everything under it
+    let path = match target {
+        Target::Member(id) => id.0.clone(),
+        Target::Squadron(id) | Target::Fleet(id) => format!("{id}/..."),
         _ => return Err("start names a fleet, a squadron or a member".into()),
     };
     let bin = nimitz_bin();
-    let mut args = vec!["start".to_string(), id.0.clone()];
-    // a lead's id is its whole fleet or squadron: its own relaunch or pane is `--only`
-    let lead_alone = matches!(target, Target::Member(_)) && id.role().lead() && matches!(act, Act::Relaunch | Act::Open | Act::Start);
-    if lead_alone {
-        args.push("--only".into());
-    }
+    let mut args = vec!["start".to_string(), path];
     match act {
         Act::Relaunch => args.push("-f".into()),
         Act::Open => args.push("-p".into()),

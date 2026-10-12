@@ -11,7 +11,7 @@
 //!
 //! Rules (restore-scenarios.md R1-R8): reuse before create; never type into a
 //! pane that runs anything but a shell; resume by exact id; leads always come
-//! back, ships from the active set unless `--all`; one member, one tab, one
+//! back, ships from the active set unless `--parked`; one member, one tab, one
 //! job; idempotent; only the fleets asked for, never the ADMIRALTY workspace.
 use crate::env::Env;
 use crate::layout::{legacy_tab_of, tab_of, workspace_of};
@@ -108,8 +108,9 @@ pub const ADMIRALTY_WORKSPACE: &str = "ADMIRALTY";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RestoreOpts {
-    /// every member with a job row, parked or stopped, not only the active set
-    pub all: bool,
+    /// `--parked`: a `...` match brings up parked and stopped members too,
+    /// not only the leads and the active set's
+    pub parked: bool,
     /// open a fresh tab beside a taken one (`tab.dup`)
     pub force: bool,
     /// no multiplexer: wake the jobs, make no tab (over ssh)
@@ -134,9 +135,6 @@ pub struct RestoreOpts {
     pub tab: bool,
     /// `start --fresh`: the named member starts a new conversation
     pub fresh: bool,
-    /// `start --only`: the target's own member alone (a lead without its
-    /// fleet or squadron)
-    pub only: bool,
 }
 
 /// Where a step runs in the mux.
@@ -327,14 +325,11 @@ struct Ctx<'a> {
     caller: &'a Caller,
     /// the member that runs this restore: never relaunched by it
     me: Option<Id>,
-    /// a commodore's restore: only its own ships
-    scope: Option<Id>,
-    /// `start <target>`: the members it covers (a fleet, a squadron: its
-    /// commodore and ships, one member); None: every member
-    target: Option<Id>,
-    /// the member `start` names (the target's own): it may get a first
-    /// launch, `--fresh`, `-p`
-    named: Option<Id>,
+    /// the paths the command names: the members they cover
+    paths: Vec<crate::paths::Path>,
+    /// the members exact paths name (`start <id>`, never a `...` match): they
+    /// may get a first launch, `--fresh`, `-p`
+    named: Vec<Id>,
     /// `restore`, `start`, `layout herdr`: the command the fixes name
     verb: &'static str,
 }
@@ -342,7 +337,7 @@ struct Ctx<'a> {
 impl Ctx<'_> {
     /// `-p --tab` for this member: its pane is its own tab, nothing else.
     fn own_tab(&self, m: &Member) -> bool {
-        self.opts.pane && self.opts.tab && self.named.as_ref() == Some(&m.id)
+        self.opts.pane && self.opts.tab && self.named.contains(&m.id)
     }
 
     /// Is this pane the member's: it shows one of the member's job's sessions
@@ -531,80 +526,69 @@ fn interrupted_note(active: Option<&crate::active::ActiveMember>, id: &Id) -> Op
     }
 }
 
-/// Plan the restore of `fleet` (None: every fleet that runs here), for any
-/// caller. `herdr`: the Herdr identity of this process (compared with the recorded
-/// one, R-29); `has_mux`: a multiplexer is there.
+/// Plan the restore of the members `paths` cover, for any caller. `herdr`:
+/// the Herdr identity of this process (compared with the recorded one,
+/// R-29); `has_mux`: a multiplexer is there.
 ///
 /// One command after any of three events, told apart per member: Claude
 /// Code updated (a live worker on an older version than the installed one is
 /// relaunched, same id and history, then reattached), Herdr closed or
 /// crashed (live jobs whose panes are gone are reattached; nothing is
-/// relaunched), a reboot (leads and the active set's ships are woken, `--all`
-/// every ship). `--restart` relaunches every live member. Relaunches run
-/// last, ships first, then commodores, then admirals, one at a time; never
-/// the member that runs the restore (`restore.self`).
+/// relaunched), a reboot (leads and the active set's ships are woken,
+/// `--parked` every ship). `--restart` relaunches every live member.
+/// Relaunches run last, ships first, then commodores, then admirals, one at
+/// a time; never the member that runs the restore (`restore.self`).
 #[allow(clippy::too_many_arguments)]
-pub fn plan(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, fleet: Option<&str>, opts: RestoreOpts, caller: &Caller) -> RestorePlan {
-    let verb = if opts.shape_only { "layout herdr" } else { "restore" };
-    let rp = RestorePlan { plan: Plan { summary: format!("{verb} {}", fleet.unwrap_or("(every fleet here)")), ..Default::default() }, ..Default::default() };
-    plan_inner(env, snap, shape, active, herdr, has_mux, fleet, None, None, None, verb, opts, caller, rp)
+pub fn plan(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, paths: &[crate::paths::Path], opts: RestoreOpts, caller: &Caller) -> RestorePlan {
+    let verb = if opts.shape_only { "layout" } else { "restore" };
+    let rp = RestorePlan { plan: Plan { summary: format!("{verb} {}", shown(paths)), ..Default::default() }, ..Default::default() };
+    plan_inner(env, snap, shape, active, herdr, has_mux, paths, vec![], verb, opts, caller, rp)
 }
 
-/// `nimitz start [<target>]`: the restore engine over the target (a fleet
-/// `F`, a squadron `F/SQ`: its commodore and ships, a ship, or every fleet
-/// here), and the target's own member named: it may get a first launch
-/// (`plan_start_with`, top-down; a fleet- or squadron-wide start never
-/// cold-launches the rest), `--fresh`, `-p`. Any caller starts anything;
-/// nothing restarts itself.
+/// The paths as the plan's first line names them.
+fn shown(paths: &[crate::paths::Path]) -> String {
+    paths.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ")
+}
+
+/// `nimitz start <path>...`: the restore engine over the members the paths
+/// cover; the members exact paths name may get a first launch (top-down,
+/// `plan_start_with`; a `...` match never cold-launches), `--fresh`, `-p`.
+/// Any caller starts anything; nothing restarts itself.
 #[allow(clippy::too_many_arguments)]
-pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, target: Option<&Id>, opts: RestoreOpts, caller: &Caller) -> RestorePlan {
+pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, paths: &[crate::paths::Path], opts: RestoreOpts, caller: &Caller) -> RestorePlan {
     let verb = "start";
-    let mut rp = RestorePlan { plan: Plan { summary: format!("start {}", target.map(|t| t.0.as_str()).unwrap_or("(every fleet here)")), ..Default::default() }, ..Default::default() };
-    let refuse = |mut rp: RestorePlan, code: &str, msg: String, fix: Option<String>| {
-        rp.plan.refusals.push(issue(code, Severity::Error, msg, fix, target.cloned()));
+    let named: Vec<Id> = paths.iter().filter_map(|p| p.member().cloned()).collect();
+    let rp = RestorePlan { plan: Plan { summary: format!("start {}", shown(paths)), ..Default::default() }, ..Default::default() };
+    let refuse = |mut rp: RestorePlan, code: &str, msg: String, fix: Option<String>, id: Option<Id>| {
+        rp.plan.refusals.push(issue(code, Severity::Error, msg, fix, id));
         rp
     };
-    if opts.pane && target.is_none() {
-        return refuse(rp, "usage", "`-p` gives one member a pane: name it (`nimitz start <id> -p`)".into(), None);
+    if opts.pane && named.is_empty() {
+        return refuse(rp, "usage", "`-p` gives a member a pane: name it (`nimitz start <id> -p`)".into(), None, None);
     }
     if opts.tab && !opts.pane {
-        return refuse(rp, "usage", "--tab goes with -p (`nimitz start <id> -p --tab`)".into(), None);
+        return refuse(rp, "usage", "--tab goes with -p (`nimitz start <id> -p --tab`)".into(), None, None);
     }
-    if opts.fresh && (target.is_none() || opts.restart) {
-        return refuse(rp, "usage", "`--fresh` starts one member's new conversation: name it, without -f".into(), None);
+    if opts.fresh && (named.is_empty() || opts.restart) {
+        return refuse(rp, "usage", "`--fresh` starts a member's new conversation: name it, without -f".into(), None, None);
     }
     if opts.pane && opts.jobs_only {
-        return refuse(rp, "usage", "`-p` gives a pane; `--jobs-only` makes none: one or the other".into(), None);
+        return refuse(rp, "usage", "`-p` gives a pane; `--jobs-only` makes none: one or the other".into(), None, None);
     }
-    if opts.only && target.is_none() {
-        return refuse(rp, "usage", "`--only` starts one member alone: name it".into(), None);
+    if let Err(i) = crate::paths::resolve(snap, paths) {
+        return refuse(rp, &i.code, i.message, i.fix, i.id);
     }
-    if let Some(t) = target {
-        if !snap.fleets.iter().flat_map(fleet_members).any(|m| &m.id == t) {
-            return refuse(rp, "member.unknown", format!("{t} is not in any fleet config"), None);
+    // nothing relaunches itself: a start that names the caller; a wider one skips it
+    if let Caller::Member { id, .. } = caller {
+        if opts.restart && named.contains(id) {
+            return refuse(rp, "start.self", format!("{id} runs this start; nothing relaunches itself"), Some(format!("{}  # from your own shell", crate::sessions::start_cmd(id, "-f"))), Some(id.clone()));
         }
     }
-    let (fleet, scope, named): (Option<&str>, Option<Id>, Option<Id>) = (target.map(|t| t.fleet()), None, target.cloned());
-    // nothing relaunches itself: a start of the caller alone; a wider one skips it
-    if let (Some(n), Caller::Member { id, .. }) = (&named, caller) {
-        if n == id && opts.restart && (opts.only || id.parts().len() == 3) {
-            return refuse(rp, "start.self", format!("{id} runs this start; nothing relaunches itself"), Some(format!("{}  # from your own shell", crate::sessions::start_cmd(id, "-f"))));
-        }
-    }
-    if opts.fresh && named.is_none() {
-        return refuse(rp, "usage", "`--fresh` starts one member's new conversation: name it".into(), None);
-    }
-    if let Some(sq) = &scope {
-        rp.plan.summary = format!("{verb} {sq} (its ships)");
-    }
-    let target = target.filter(|_| scope.is_none()).cloned();
-    // `--only`: the target's own member, nothing under it
-    let target = if opts.only { named.clone() } else { target };
-    plan_inner(env, snap, shape, active, herdr, has_mux, fleet, scope, target, named, verb, opts, caller, rp)
+    plan_inner(env, snap, shape, active, herdr, has_mux, paths, named, verb, opts, caller, rp)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, fleet: Option<&str>, scope: Option<Id>, target: Option<Id>, named: Option<Id>, verb: &'static str, opts: RestoreOpts, caller: &Caller, mut rp: RestorePlan) -> RestorePlan {
+fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, paths: &[crate::paths::Path], named: Vec<Id>, verb: &'static str, opts: RestoreOpts, caller: &Caller, mut rp: RestorePlan) -> RestorePlan {
     // the member that runs this restore: by its labels, else the member whose
     // worker is an ancestor of this process (a session with no labels)
     let me = match caller {
@@ -614,9 +598,6 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
             snap.fleets.iter().flat_map(fleet_members).find(|m| m.session.as_ref().and_then(|s| s.pid).is_some_and(|p| p > 1 && up.contains(&p))).map(|m| m.id.clone())
         }
     };
-    if let Some(sq) = &scope {
-        rp.plan.summary = format!("{verb} {sq} (its ships)");
-    }
     if !has_mux && (!opts.jobs_only || opts.pane) {
         let what = if opts.pane { "`-p` gives a pane".to_string() } else { format!("`nimitz {verb}` rebuilds Herdr tabs") };
         rp.plan.refusals.push(issue("mux.none", Severity::Error, format!("{what}; there is no multiplexer here"), Some(format!("run it inside Herdr; or `nimitz {verb} --jobs-only` to wake the jobs without tabs")), None));
@@ -655,22 +636,20 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
             }
         }
     }
-    let ctx = Ctx { env, snap, shape, active, opts, job_of, member_of, caller, me, scope, target, named, verb };
-    let explicit = fleet.is_some();
-    for f in snap.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
-        if f.id.fleet() == ADMIRALTY_WORKSPACE {
-            continue; // never a target (R-35)
-        }
+    if let Err(i) = crate::paths::resolve(snap, paths) {
+        rp.plan.refusals.push(i);
+        return rp;
+    }
+    let ctx = Ctx { env, snap, shape, active, opts, job_of, member_of, caller, me, paths: paths.to_vec(), named, verb };
+    for f in snap.fleets.iter().filter(|f| f.members().any(|m| crate::paths::covered(paths, &m.id))) {
+        // (a fleet the paths name, not one `//...` sweeps in, refuses when it cannot run)
+        let explicit = paths.iter().any(|p| matches!(p, crate::paths::Path::Member(id) | crate::paths::Path::Under(Some(id)) if id.fleet() == f.id.fleet()));
         plan_fleet(&ctx, f, explicit, &mut rp);
     }
-    if explicit && !snap.fleets.iter().any(|f| Some(f.id.fleet()) == fleet) {
-        rp.plan.refusals.push(issue("member.unknown", Severity::Error, format!("no fleet {} in the config", fleet.unwrap_or_default()), None, None));
-    }
-    // a fleet's or a squadron's start (by the target's role: a ship's is one
-    // member's) speaks for the whole
-    let wide = ctx.target.as_ref().is_none_or(|t| t.role().lead());
+    // a `...` start speaks for the whole; members by name, for themselves
+    let wide = paths.iter().any(|p| p.member().is_none());
     if rp.no_active_set && !opts.shape_only && wide {
-        rp.plan.warnings.push(issue("active.none", Severity::Info, "no active set recorded (first restore, or NIMITZ_STATE wiped): leads come back; ships stay parked (`--all` wakes every ship)".into(), None, None));
+        rp.plan.warnings.push(issue("active.none", Severity::Info, "no active set recorded (first restore, or NIMITZ_STATE wiped): leads come back; ships stay parked (`--parked` wakes every ship)".into(), None, None));
     }
     // the relaunches last: ships, then commodores, then admirals (a stable sort
     // keeps the config's order inside each)
@@ -687,7 +666,7 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
     dedup(&mut rp.plan);
     verbs(&mut rp);
     if opts.pane && opts.tab {
-        if let Some(n) = &ctx.named {
+        for n in &ctx.named {
             own_tab_place(&mut rp, n);
         }
     }
@@ -806,19 +785,6 @@ fn happened(rp: &RestorePlan, installed: Option<&str>, restart: bool) -> String 
     }
 }
 
-/// Does `start <target>` cover `id`: a fleet all of it, a squadron its
-/// commodore and ships, a ship itself; no target, everything.
-fn in_target(target: Option<&Id>, id: &Id) -> bool {
-    match target {
-        None => true,
-        Some(t) => match t.parts().len() {
-            1 => id.fleet() == t.fleet(),
-            2 => id == t || id.parent().as_ref() == Some(t),
-            _ => id == t,
-        },
-    }
-}
-
 /// One member's line in the plan.
 fn found(rp: &mut RestorePlan, id: &Id, found: impl Into<String>, action: impl Into<String>) {
     rp.plan.found.push(Found { id: id.clone(), found: found.into(), action: action.into(), job: String::new(), pane: String::new(), place: String::new() });
@@ -871,12 +837,13 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     // the config's findings ride along (a conflicted copy, a layout problem);
     // a member's own findings are `status`'s to show, and a restore judges
     // them where it wakes the member
-    // (a squadron's or a ship's start: only what is about its own members and chain)
-    let narrow = ctx.target.as_ref().filter(|t| t.parts().len() > 1 || ctx.opts.only);
+    // (paths that cover part of the fleet: only what is about their members and chains)
+    let narrow = !ctx.paths.iter().any(|p| p.whole_fleet(fleet));
+    let mine: Vec<&Id> = fleet_members(f).into_iter().map(|m| &m.id).filter(|id| crate::paths::covered(&ctx.paths, id)).collect();
     let ours = |i: &Issue| match (narrow, &i.id) {
-        (None, _) => true,
-        (Some(_), None) => i.code.starts_with("config."),
-        (Some(t), Some(x)) => in_target(Some(t), x) || crate::sessions::chain(t).contains(x),
+        (false, _) => true,
+        (true, None) => i.code.starts_with("config."),
+        (true, Some(x)) => mine.iter().any(|m| *m == x || crate::sessions::chain(m).contains(x)),
     };
     for i in gate.iter().filter(|i| i.id.is_none() || i.code.starts_with("config.")).filter(|i| i.severity != Severity::Error || i.id.is_none()).filter(|i| ours(i)) {
         rp.plan.warnings.push(i.clone());
@@ -884,19 +851,7 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     let before = rep.not_started;
     let mut never: Vec<String> = vec![];
     for m in fleet_members(f) {
-        // a commodore's restore: its own ships only (and its own line when its
-        // worker would be relaunched: it never is by its own restore)
-        if let Some(sq) = ctx.scope.as_ref() {
-            if &m.id == sq {
-                self_line(ctx, m, rp);
-                continue;
-            }
-            if m.role != Role::Ship || m.id.parent().as_ref() != Some(sq) {
-                continue;
-            }
-        }
-        // `start <target>`: a squadron is its commodore and ships; a ship itself
-        if !in_target(ctx.target.as_ref(), &m.id) || (ctx.opts.only && ctx.named.as_ref() != Some(&m.id)) {
+        if !crate::paths::covered(&ctx.paths, &m.id) {
             continue;
         }
         let n = rep.not_started;
@@ -909,9 +864,9 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     if rep.not_started > before && !ctx.opts.shape_only {
         rp.plan.warnings.push(issue("not.started", Severity::Info, format!("not restored, nothing to resume (no job row and no transcript: never started, or started and never prompted, so nothing is lost): {}", never.join(", ")), Some("nimitz start <id>  # a first launch, one member at a time".to_string()), None));
     }
-    if ctx.target.as_ref().is_some_and(|t| t.parts().len() > 1) || ctx.opts.only {
+    if narrow {
         rp.fleets.push(rep);
-        return; // a squadron's, a ship's or one member's start: no fleet-wide report
+        return; // a squadron's or some members' start: no fleet-wide report
     }
     // tabs named for members this fleet does not have (R-13)
     let ws_of_fleet = |label: &str| {
@@ -954,7 +909,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 "tab.resumed",
                 Severity::Error,
                 format!("{id}'s conversation is open in pane {} (Herdr's resume_agents_on_restore, or a claude --resume by hand), interactively, with no job; a wake would start a copy beside it, so nothing runs for it", p.pane_id),
-                Some(format!("type /exit in pane {}, then nimitz start {}  # with Herdr's resume_agents_on_restore on, every restart does this again: nimitz doctor", p.pane_id, id.fleet())),
+                Some(format!("type /exit in pane {}, then nimitz start {}/...  # with Herdr's resume_agents_on_restore on, every restart does this again: nimitz doctor", p.pane_id, id.fleet())),
                 Some(id.clone()),
             ));
             return;
@@ -962,13 +917,13 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
         let mut i = crate::sessions::held_issue(m, h);
         if lead && !opts.shape_only {
             i.code = "lead.interactive".into();
-            i.fix = Some(format!("type /exit in its pane (tab {}), then nimitz start {}", tab_of(id), id.fleet()));
+            i.fix = Some(format!("type /exit in its pane (tab {}), then nimitz start {id}", tab_of(id)));
         }
         found(rp, id, "runs interactively with no job (held)", "nothing; see the fix");
         fail(rp, rep, Issue { severity: Severity::Error, ..i });
         return;
     }
-    if ctx.named.as_ref() == Some(id) {
+    if ctx.named.contains(id) {
         plan_named(ctx, m, had_tab, rep, rp);
         return;
     }
@@ -980,7 +935,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
         (false, false, _) => had_tab,
     };
     // which members come back without a tab's attach: leads always; ships in
-    // the active set, or every one under --all (R4)
+    // the active set, or every one under --parked (R4)
     let in_set = active.is_some();
     match m.session.as_ref() {
         // live: relaunched when its worker runs an older Claude Code than the
@@ -1023,7 +978,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 fail(rp, rep, issue("session.unreadable", Severity::Error, format!("{id}'s session file cannot be read; its process may be live"), Some(format!("nimitz status  # read it again in a moment")), Some(id.clone())));
                 return;
             }
-            let wanted = always_on || opts.all || (in_set && m.status != Status::Stopped);
+            let wanted = always_on || opts.parked || (in_set && m.status != Status::Stopped);
             if opts.shape_only && !lead {
                 found(rp, id, "not live", "no tab (a layout makes tabs for live members)");
                 rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} is not live; no tab (`nimitz start {id}` first)"), None, Some(id.clone())));
@@ -1033,19 +988,19 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 if m.status == Status::Stopped {
                     rep.stopped += 1;
                     let why = m.reasons.iter().find(|r| r.starts_with("SessionEnd")).cloned().unwrap_or_else(|| "stopped".into());
-                    found(rp, id, format!("stopped on purpose ({why})"), "left stopped (--all wakes it)");
-                    rp.plan.warnings.push(issue("stopped", Severity::Info, format!("{id} was stopped on purpose ({why}); left alone"), Some(format!("nimitz start {id}  # wakes it; `nimitz restore --all` wakes every stopped and parked ship")), Some(id.clone())));
+                    found(rp, id, format!("stopped on purpose ({why})"), "left stopped (--parked wakes it)");
+                    rp.plan.warnings.push(issue("stopped", Severity::Info, format!("{id} was stopped on purpose ({why}); left alone"), Some(format!("nimitz start {id}  # wakes it; `nimitz start {}/... --parked` wakes every stopped and parked ship", id.fleet())), Some(id.clone())));
                 } else {
                     rep.parked += 1;
-                    found(rp, id, "parked (not active at the last look)", "left parked; it wakes on demand (--all wakes it)");
+                    found(rp, id, "parked (not active at the last look)", "left parked; it wakes on demand (--parked wakes it)");
                 }
                 return;
             }
-            let down = if lead { "down, a lead" } else if in_set { "down, it was active" } else { "down (--all)" };
+            let down = if lead { "down, a lead" } else if in_set { "down, it was active" } else { "down (--parked)" };
             // a live copy or an impostor holds its name: never a second one (R-26)
             if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
                 found(rp, id, format!("{down}; a live copy holds its name"), "nothing; see the fix");
-                fail(rp, rep, issue("name.taken", Severity::Error, format!("{id} is stopped but a copy {} ({}) is live; nothing is resumed beside it", r.short_id.as_deref().unwrap_or(&r.session_id), r.name), Some(format!("nimitz sweep {id}  # stops and removes the copy; then nimitz start {}", id.fleet())), Some(id.clone())));
+                fail(rp, rep, issue("name.taken", Severity::Error, format!("{id} is stopped but a copy {} ({}) is live; nothing is resumed beside it", r.short_id.as_deref().unwrap_or(&r.session_id), r.name), Some(format!("nimitz sweep {id}  # stops and removes the copy; then nimitz start {}/...", id.fleet())), Some(id.clone())));
                 return;
             }
             if let Some(e) = m.issues.iter().find(|i| i.severity == Severity::Error && ["job.unreadable", "labels.mismatch", "name.taken"].contains(&i.code.as_str())) {
@@ -1126,7 +1081,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
             let rec = crate::registry::load(env).identities.remove(&id.0);
             let current = rec.as_ref().and_then(|r| r.session.clone());
             let has_log = |sid: &str| crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), cwd.as_deref(), sid).is_some();
-            let wanted = always_on || opts.all || in_set;
+            let wanted = always_on || opts.parked || in_set;
             match (current.filter(|sid| has_log(sid)), cwd.as_deref()) {
                 (Some(sid), Some(cwd)) if wanted => {
                     if let Some(i) = crate::check::check(env, ctx.snap, Some(id)).into_iter().find(|i| i.id.as_ref() == Some(id) && i.severity == Severity::Error && !TABLE_HANDLED.contains(&i.code.as_str())) {
@@ -1164,7 +1119,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 // a conversation to resume, but not wanted (a ship out of the set)
                 (Some(_), Some(_)) => {
                     rep.parked += 1;
-                    found(rp, id, "its job row is gone, its transcript is there; not active at the last look", "left (--all resumes it)");
+                    found(rp, id, "its job row is gone, its transcript is there; not active at the last look", "left (--parked resumes it)");
                 }
                 _ => rep.not_started += 1, // reported once per fleet (`plan_fleet`)
             }
@@ -1243,7 +1198,7 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
         None => "never run",
     };
     let mut p = crate::sessions::plan_start_with(env, ctx.snap, id, ctx.caller, crate::sessions::StartOpts { force: opts.force, fresh: opts.fresh });
-    if ctx.named.as_ref() != Some(id) {
+    if !ctx.named.contains(id) {
         p.steps.retain(|s| s.id.as_ref() == Some(id));
     }
     if !p.ok() {
@@ -1266,7 +1221,7 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
     // only the named target's (a fleet- or squadron-wide start never trusts
     // a folder the user did not name: that one is refused, its fix the trust)
     let trusts: Vec<Step> = p.steps.iter().filter(|s| s.cmd.first().is_some_and(|c| c == "trust")).cloned().collect();
-    if !trusts.is_empty() && ctx.named.as_ref() != Some(id) {
+    if !trusts.is_empty() && !ctx.named.contains(id) {
         found(rp, id, state, "not started; see the fix");
         for t in &trusts {
             fail_with(rp, rep, Issue {
@@ -1311,7 +1266,7 @@ fn fail_with(rp: &mut RestorePlan, rep: &mut FleetReport, i: Issue) {
 
 /// `-p` for this member: its pane is brought to the front.
 fn pane_wanted(ctx: &Ctx, m: &Member) -> bool {
-    ctx.opts.pane && ctx.named.as_ref() == Some(&m.id)
+    ctx.opts.pane && ctx.named.contains(&m.id)
 }
 
 /// The pane after `step` (`None`: the one it makes), focused under `-p`.
@@ -1365,22 +1320,6 @@ fn self_skipped(ctx: &Ctx, m: &Member, why: String, rp: &mut RestorePlan) {
     found(rp, id, format!("{why}; it runs this {verb}"), format!("not relaunched while it runs; afterwards you run: {again}"));
     let whose = if m.role.lead() { format!("; {id} is a lead: you run it again from your own shell once this one is done") } else { String::new() };
     rp.plan.warnings.push(issue(&format!("{verb}.self"), Severity::Warn, format!("{id} runs this {verb}, so it is not relaunched now{whose}"), Some(format!("{again}  # yours, from a shell, once this one is done: it relaunches {id} and reattaches its pane")), Some(id.clone())));
-}
-
-/// A commodore's own line in its restore: only when its worker would be
-/// relaunched (older, or `--restart`), which its own restore never does.
-fn self_line(ctx: &Ctx, m: &Member, rp: &mut RestorePlan) {
-    let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some()) else { return };
-    let worker = worker_version(ctx.env, s);
-    let installed = ctx.snap.cc_version.as_deref();
-    let on = worker.as_deref().unwrap_or("an unreadable version");
-    let older = matches!((worker.as_deref(), installed), (Some(w), Some(i)) if crate::compat::older(w, i));
-    if older {
-        rp.updated += 1;
-        self_skipped(ctx, m, format!("on {on}"), rp);
-    } else if ctx.opts.restart {
-        self_skipped(ctx, m, format!("on {on} (-f)"), rp);
-    }
 }
 
 /// A live member to relaunch (an older worker, or `--restart`): stop, rm and
@@ -1489,15 +1428,15 @@ fn count(rep: &mut FleetReport, lead: bool) {
 fn taken_fix(id: &Id, pane: &PaneAt, running: &str, agent_view: bool) -> (&'static str, String) {
     let fleet = id.fleet();
     if running == UNREADABLE {
-        return ("tab.unreadable", format!("herdr pane process-info --pane {} failed; retry nimitz start {fleet}, or rename the tab", pane.pane_id));
+        return ("tab.unreadable", format!("herdr pane process-info --pane {} failed; retry nimitz start {fleet}/..., or rename the tab", pane.pane_id));
     }
     if agent_view {
-        return ("tab.agentview", format!("close that pane {} (or Esc / ctrl-c until a shell), then nimitz start {fleet}", pane.pane_id));
+        return ("tab.agentview", format!("close that pane {} (or Esc / ctrl-c until a shell), then nimitz start {fleet}/...", pane.pane_id));
     }
     if running.starts_with("an agent") {
-        return ("tab.taken", format!("ctrl-z in pane {} (it shows {}), then nimitz start {fleet}", pane.pane_id, running.trim_start_matches("an agent: ")));
+        return ("tab.taken", format!("ctrl-z in pane {} (it shows {}), then nimitz start {fleet}/...", pane.pane_id, running.trim_start_matches("an agent: ")));
     }
-    ("tab.taken", format!("quit `{running}` in pane {} (or rename the tab), then nimitz start {fleet}", pane.pane_id))
+    ("tab.taken", format!("quit `{running}` in pane {} (or rename the tab), then nimitz start {fleet}/...", pane.pane_id))
 }
 
 /// A parked or stopped member with no shell tab to wake it from: wake it by
@@ -1621,7 +1560,7 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
                     action = format!("rename its tab to {}", tab_of(id));
                     rp.steps.push(RestoreStep::Rename { id: id.clone(), tab_id: pane.tab_id.clone(), label: tab_of(id) });
                 } else {
-                    rp.plan.warnings.push(issue("tab.renamed", Severity::Info, format!("tab {tab_label} (pane {}) shows {id}; nimitz looks for {}", pane.pane_id, tab_of(id)), Some(format!("herdr tab rename {} {}  # or nimitz start {} --rename", pane.tab_id, tab_of(id), id.fleet())), Some(id.clone())));
+                    rp.plan.warnings.push(issue("tab.renamed", Severity::Info, format!("tab {tab_label} (pane {}) shows {id}; nimitz looks for {}", pane.pane_id, tab_of(id)), Some(format!("herdr tab rename {} {}  # or nimitz start {}/... --rename", pane.tab_id, tab_of(id), id.fleet())), Some(id.clone())));
                 }
             } else if norm_label(&ws_label) != norm_label(&workspace_of(id)) {
                 rp.plan.warnings.push(issue("tab.moved", Severity::Info, format!("{id}'s tab is in workspace {ws_label}, not {}; left there", workspace_of(id)), None, Some(id.clone())));
@@ -1640,7 +1579,7 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
                 if crate::compat::older(&v, installed) {
                     seen = format!("shown by an attach on {v}");
                     action = "nothing typed there (ctrl-z in it, then restore again, reattaches on the new version)".into();
-                    rp.plan.warnings.push(issue("attach.old", Severity::Info, format!("{id}'s pane {} runs its attach on Claude Code {v}, installed {installed}", pane.pane_id), Some(format!("ctrl-z in pane {}, then nimitz start {}", pane.pane_id, id.fleet())), Some(id.clone())));
+                    rp.plan.warnings.push(issue("attach.old", Severity::Info, format!("{id}'s pane {} runs its attach on Claude Code {v}, installed {installed}", pane.pane_id), Some(format!("ctrl-z in pane {}, then nimitz start {}/...", pane.pane_id, id.fleet())), Some(id.clone())));
                 }
             }
             (seen, action)
@@ -1674,7 +1613,7 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
         TabMatch::Missing => {
             if wakes && tab.wakes && opts.shape_only {
                 // a layout never resumes: the tab is made only for a live lead (`nimitz start` first)
-                rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} is not live and has no tab to wake it from; no tab (`nimitz start {id}` or `nimitz start {}` first)", id.fleet()), None, Some(id.clone())));
+                rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} is not live and has no tab to wake it from; no tab (`nimitz start {id}` or `nimitz start {}/...` first)", id.fleet()), None, Some(id.clone())));
                 return ("no tab".into(), "nothing (a layout never resumes)".into());
             }
             count(rep, lead);

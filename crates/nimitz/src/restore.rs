@@ -92,45 +92,43 @@ pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&n
     let _ = active::write(&ctx.env, set);
 }
 
-/// `nimitz restore [<F>] [--all] [--restart] [--force] [--jobs-only] [--here] [--rename]`.
+/// `nimitz restore [<path>...] [--parked] [--restart] [--force] [--jobs-only] [--here] [--rename]`
+/// (no path: `//...`).
 pub fn restore(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--all", "--restart", "--jobs-only", "--here", "--rename"])?;
-    ctx.args.at_most(1)?;
-    let f = ctx.args.pos.first().cloned().unwrap_or_default();
-    crate::members::deprecated(&format!("restore{}", if f.is_empty() { String::new() } else { format!(" {f}") }), &format!("start{}{}", if f.is_empty() { String::new() } else { format!(" {f}") }, if ctx.args.flag("--restart") { " -f" } else { "" }));
-    let fleet = ctx.args.pos.first().map(|s| crate::members::parse_id(s)).transpose()?;
-    if fleet.as_ref().is_some_and(|f| f.parts().len() != 1) {
-        return Err("restore takes a fleet (F), not a member".into());
-    }
-    let opts = rs::RestoreOpts { all: ctx.args.flag("--all"), force: ctx.force(), jobs_only: ctx.args.flag("--jobs-only"), here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), restart: ctx.args.flag("--restart"), ..Default::default() };
-    Ok(run_shape(ctx, fleet.as_ref().map(|f| f.fleet().to_string()).as_deref(), opts, false))
+    ctx.args.allow(&["--parked", "--restart", "--jobs-only", "--here", "--rename"])?;
+    let paths = if ctx.args.pos.is_empty() { vec![nimitz_core::paths::Path::Under(None)] } else { crate::members::parse_paths(&ctx.args.pos)? };
+    let opts = rs::RestoreOpts { parked: ctx.args.flag("--parked"), force: ctx.force(), jobs_only: ctx.args.flag("--jobs-only"), here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), restart: ctx.args.flag("--restart"), ..Default::default() };
+    Ok(run_shape(ctx, &paths, opts, false))
 }
 
 /// Plan, gate and run one restore (or a shape-only pass). `confirmed`: the
 /// user said yes already (`up` runs its tab pass after its own gate).
-pub fn run_shape(ctx: &Ctx, fleet: Option<&str>, opts: rs::RestoreOpts, confirmed: bool) -> i32 {
-    run_engine(ctx, fleet, None, opts, confirmed)
+pub fn run_shape(ctx: &Ctx, paths: &[nimitz_core::paths::Path], opts: rs::RestoreOpts, confirmed: bool) -> i32 {
+    run_engine(ctx, paths, false, opts, confirmed)
 }
 
-/// `nimitz start [<target>]`: the same engine, planned by `restore::plan_start`.
-pub fn run_start(ctx: &Ctx, target: Option<&Id>, opts: rs::RestoreOpts) -> i32 {
-    run_engine(ctx, target.map(|t| t.fleet()), Some(target), opts, false)
+/// `nimitz start <path>...`: the same engine, planned by `restore::plan_start`.
+pub fn run_start(ctx: &Ctx, paths: &[nimitz_core::paths::Path], opts: rs::RestoreOpts) -> i32 {
+    run_engine(ctx, paths, true, opts, false)
 }
 
-/// Plan (`restore::plan`, or `plan_start` when `start` names its target),
-/// gate and run.
-fn run_engine(ctx: &Ctx, fleet: Option<&str>, start: Option<Option<&Id>>, opts: rs::RestoreOpts, confirmed: bool) -> i32 {
+/// Plan (`restore::plan`, or `plan_start` for `start`), gate and run.
+fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: rs::RestoreOpts, confirmed: bool) -> i32 {
     let snap = ctx.snap();
+    // the fleets the paths reach, for the checks after and the run's record
+    let fleets: Vec<String> = snap.fleets.iter().filter(|f| f.members().any(|m| nimitz_core::paths::covered(paths, &m.id))).map(|f| f.id.0.clone()).collect();
+    let mine = |f: &nimitz_core::Fleet| fleets.contains(&f.id.0);
+    let named = paths.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
     let mux = ctx.mux();
     let has_mux = mux.caps().open;
     let (shape, raw) = if has_mux && !opts.jobs_only {
         match shape_of(mux.as_ref(), true) {
             Ok((s, r)) => (s, Some(r)),
             Err(e) => {
-                let verb = if start.is_some() { "start" } else if opts.shape_only { "layout herdr" } else { "restore" };
+                let verb = if start { "start" } else if opts.shape_only { "layout herdr" } else { "restore" };
                 // a server taken from the record (outside Herdr) says which, and what works
-                let fix = active::recorded_server_fix(&ctx.env, &ctx.vars).map(|f| format!("{f}; or nimitz start{} --jobs-only", fleet.map(|f| format!(" {f}")).unwrap_or_default()));
-                let plan = Plan { summary: format!("{verb} {}", fleet.unwrap_or("(every fleet here)")), refusals: vec![refusal("mux.failed", format!("cannot read the Herdr shape ({e}); nothing is typed into panes nimitz cannot see"), fix, None)], ..Default::default() };
+                let fix = active::recorded_server_fix(&ctx.env, &ctx.vars).map(|f| format!("{f}; or nimitz start {named} --jobs-only"));
+                let plan = Plan { summary: format!("{verb} {named}"), refusals: vec![refusal("mux.failed", format!("cannot read the Herdr shape ({e}); nothing is typed into panes nimitz cannot see"), fix, None)], ..Default::default() };
                 return finish(ctx, &plan);
             }
         }
@@ -139,12 +137,13 @@ fn run_engine(ctx: &Ctx, fleet: Option<&str>, start: Option<Option<&Id>>, opts: 
     };
     let act = active::load(&ctx.env);
     let herdr = active::herdr_identity(&ctx.vars);
-    let mut rp = match start {
-        Some(target) => rs::plan_start(&ctx.env, &snap, &shape, act.as_ref(), herdr.as_ref(), has_mux, target, opts, &ctx.caller),
-        None => rs::plan(&ctx.env, &snap, &shape, act.as_ref(), herdr.as_ref(), has_mux, fleet, opts, &ctx.caller),
+    let mut rp = if start {
+        rs::plan_start(&ctx.env, &snap, &shape, act.as_ref(), herdr.as_ref(), has_mux, paths, opts, &ctx.caller)
+    } else {
+        rs::plan(&ctx.env, &snap, &shape, act.as_ref(), herdr.as_ref(), has_mux, paths, opts, &ctx.caller)
     };
     for r in rp.plan.refusals.iter_mut().filter(|r| r.code == "mux.none" && !opts.pane) {
-        r.fix = Some(format!("{}; or `nimitz start --jobs-only` to wake the jobs without tabs", nimitz_mux::missing_mux_fix(&ctx.vars)));
+        r.fix = Some(format!("{}; or `nimitz start {named} --jobs-only` to wake the jobs without tabs", nimitz_mux::missing_mux_fix(&ctx.vars)));
     }
     if !rp.plan.ok() {
         return finish(ctx, &rp.plan);
@@ -155,7 +154,7 @@ fn run_engine(ctx: &Ctx, fleet: Option<&str>, start: Option<Option<&Id>>, opts: 
         } else {
             out::plan(&rp.plan);
         }
-        for f in snap.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
+        for f in snap.fleets.iter().filter(|f| mine(f)) {
             for i in nimitz_core::check::check_tree(&ctx.env, &snap, Some(&f.id)).into_iter().filter(|i| i.code == "rc.exposed") {
                 out::issue(&i);
             }
@@ -177,12 +176,12 @@ fn run_engine(ctx: &Ctx, fleet: Option<&str>, start: Option<Option<&Id>>, opts: 
     } else {
         out::plan(&rp.plan);
     }
-    let (outcome, failed) = execute(ctx, mux.as_ref(), &rp, fleet);
+    let (outcome, failed) = execute(ctx, mux.as_ref(), &rp, &fleets);
     crate::view::run(&rp.plan, &outcome, &failed);
     // what the re-read says now: Remote Control reconnected by a resume (R-31)
     let after = ctx.snap();
     let mut late: Vec<Issue> = vec![];
-    for f in after.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
+    for f in after.fleets.iter().filter(|f| mine(f)) {
         for i in nimitz_core::check::check_tree(&ctx.env, &after, Some(&f.id)).into_iter().filter(|i| i.code == "rc.exposed") {
             out::issue(&i);
             late.push(i);
@@ -248,14 +247,14 @@ fn trim_lead(s: &str) -> String {
 /// Run the steps in order, recording progress in `restore.json`. A member
 /// whose step failed gets no later step (its tab is not made for a job that
 /// did not come back). Returns what ran and the members that failed.
-fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) -> (Outcome, Vec<Id>) {
+fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleets: &[String]) -> (Outcome, Vec<Id>) {
     let env = &ctx.env;
     let mut out = Outcome { verified: true, ..Default::default() };
     let mut failed: Vec<Id> = vec![];
     let mut prog = rs::Progress {
         run: rs::run_id(),
         started: nimitz_core::evidence::now(),
-        fleets: fleet.map(|f| vec![f.to_string()]).unwrap_or_else(|| rp.fleets.iter().map(|f| f.fleet.clone()).collect()),
+        fleets: fleets.to_vec(),
         total: rp.steps.len(),
         done: 0,
         steps: rp.steps.iter().map(|s| s.display().iter().map(|d| d.cmd.join(" ")).collect::<Vec<_>>().join(" && ")).collect(),
@@ -413,7 +412,7 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleet: Option<&str>) 
                 // within a second or so; nothing is typed until it has
                 if !wait_for_shell(mux, &pref) {
                     out.ran.push((display, 1, "the old attach did not end".into()));
-                    fail(&mut out, &mut failed, &id, refusal("tab.taken", format!("{id} is relaunched, but pane {} still runs something other than a shell; nothing is typed into it", pane.pane_id), Some(format!("ctrl-z in pane {}, then nimitz start {}", pane.pane_id, id.fleet())), Some(id.clone())));
+                    fail(&mut out, &mut failed, &id, refusal("tab.taken", format!("{id} is relaunched, but pane {} still runs something other than a shell; nothing is typed into it", pane.pane_id), Some(format!("ctrl-z in pane {}, then nimitz start {}/...", pane.pane_id, id.fleet())), Some(id.clone())));
                     prog.done = n + 1;
                     let _ = rs::progress_write(env, &prog);
                     continue;

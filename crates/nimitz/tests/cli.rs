@@ -148,7 +148,7 @@ fn help_unknown_commands_and_flags() {
     let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--bogus"]);
     assert_eq!(r.code, 2);
     assert!(r.out.contains("unknown flag --bogus"));
-    assert_eq!(sb.run(&["start", "main/argos"]).code, 2, "lowercase is not an id");
+    assert_eq!(sb.run(&["start", "//...", "main/argos"]).code, 2, "lowercase is not an id");
     for line in sb.run(&["status"]).out.lines() {
         assert!(line.is_ascii(), "no emoji or other non-ASCII in output: {line}");
     }
@@ -229,6 +229,30 @@ fn plan_prints_and_changes_nothing() {
     let j = sb.run(&["start", "MAIN/ARGOS/STOPPED", "--plan", "--json"]);
     let v: Value = serde_json::from_str(j.out.trim()).unwrap();
     assert_eq!(v["steps"][0]["cmd"][1], "--bg");
+}
+
+/// Paths (0.7.3): an exact path is one member, `...` everything under it;
+/// several per command, a member matched twice counts once; one that
+/// matches nothing is refused with what is there.
+#[test]
+fn paths_name_one_member_or_everything_under_it() {
+    let sb = Sb::new(false);
+    let ids = |args: &[&str]| -> Vec<String> {
+        let j = sb.run(&[args, &["--plan", "--json"]].concat());
+        let v: Value = serde_json::from_str(j.out.trim()).unwrap_or_else(|e| panic!("{e}: {}", j.out));
+        v["found"].as_array().unwrap().iter().map(|f| f["id"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(ids(&["start", "MAIN/ARGOS/STOPPED", "MAIN/ARGOS/STOPPED"]), ["MAIN/ARGOS/STOPPED"], "once");
+    let under = ids(&["start", "MAIN/ARGOS/...", "MAIN/ARGOS/STOPPED"]);
+    assert!(under.contains(&"MAIN/ARGOS".to_string()) && !under.contains(&"MAIN".to_string()) && under.iter().filter(|i| *i == "MAIN/ARGOS/STOPPED").count() == 1, "{under:?}");
+    assert!(ids(&["start", "MAIN"]).iter().all(|i| i == "MAIN"), "the admiral alone");
+    for (path, there) in [("NOPE/...", "the fleets are BETA"), ("MAIN/ARGOS/NOPE", "MAIN has MAIN, MAIN/ARGOS")] {
+        let r = sb.run(&["start", path, "--plan"]);
+        assert!(r.code != 0 && r.out.contains("(member.unknown)") && r.out.contains(there), "{path}:\n{}", r.out);
+    }
+    for bad in ["main/argos", "MAIN/*", "...", "MAIN/.../X"] {
+        assert_eq!(sb.run(&["start", bad, "--plan"]).code, 2, "{bad}");
+    }
 }
 
 #[test]
@@ -343,7 +367,7 @@ fn any_member_starts_and_stops_any_member() {
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["stop", "MAIN/ARGOS/FRESH", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
-    for (who, args) in [("MAIN/ARGOS", vec!["start", "BETA", "--plan"]), ("BETA", vec!["sweep", "MAIN", "--plan"]), ("MAIN/ARGOS/CLEAN", vec!["sweep", "MAIN/ARGOS", "--plan"])] {
+    for (who, args) in [("MAIN/ARGOS", vec!["start", "BETA/...", "--plan"]), ("BETA", vec!["sweep", "MAIN", "--plan"]), ("MAIN/ARGOS/CLEAN", vec!["sweep", "MAIN/ARGOS", "--plan"])] {
         let r = sb.run_as(who, &args);
         assert_eq!(r.code, 0, "{who} {args:?}:\n{}", r.out);
     }
@@ -474,7 +498,7 @@ fn start_is_top_down_admiral_commodore_ship() {
     }
     assert_eq!(r.out.matches("--name [TOP]-ADMIRAL").count(), 1, "the launch line is printed once (in the plan):\n{}", r.out);
     // a second start finds everything live and does nothing
-    let r = raw(&sb.vars, &["start", "TOP", "--yes"], &[("NIMITZ_MUX", "none")], None);
+    let r = raw(&sb.vars, &["start", "TOP/...", "--yes"], &[("NIMITZ_MUX", "none")], None);
     assert!(r.out.contains("nothing to start"), "{}", r.out);
 }
 
@@ -707,19 +731,19 @@ fn layout_herdr() {
     let sb = Sb::new(true);
     // every live lead gets a tab that attaches to its job; a lead that is not
     // live gets none (`nimitz start` first)
-    let r = sb.run(&["layout", "herdr", "MAIN", "--yes"]);
+    let r = sb.run(&["layout", "herdr", "MAIN/...", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("tab MAIN.ADMIRAL in workspace MAIN") && r.out.contains("tab MAIN.ARGOS.COMMODORE in workspace MAIN.ARGOS"), "{}", r.out);
     assert!(sb.calls().contains(" attach ") && sb.calls().contains("MAIN.ADMIRAL") && !sb.calls().contains("\"-c\""), "{}", sb.calls());
-    let r = sb.run(&["layout", "herdr", "BETA", "--plan"]);
+    let r = sb.run(&["layout", "herdr", "BETA/...", "--plan"]);
     assert!(r.out.contains("BETA  has no job") && r.out.contains("nimitz start BETA"), "{}", r.out);
     // again: the tabs are there already (by label), so nothing is attached twice
-    let r = sb.run(&["layout", "herdr", "MAIN", "--yes"]);
+    let r = sb.run(&["layout", "herdr", "MAIN/...", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     let runs = sb.calls().lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("attach")).count();
     assert_eq!(runs, 3, "one attach per lead, once:\n{}", sb.calls());
     // --ships: attach tabs for live ships; stopped ones are skipped
-    let r = sb.run(&["layout", "herdr", "MAIN", "--ships", "--yes"]);
+    let r = sb.run(&["layout", "herdr", "MAIN/...", "--ships", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("tab MAIN.ARGOS.CLEAN in workspace MAIN.ARGOS"), "{}", r.out);
     assert!(r.out.contains("MAIN/ARGOS/STOPPED  is not live; no tab"), "{}", r.out);
@@ -857,7 +881,7 @@ fn a_retired_tender_row_is_checked_once_and_removed_by_rm() {
     assert_eq!(at.len(), 1, "{}", r.out);
     assert!(lines[at[0]].starts_with("[INFO]") && lines[at[0]].contains("MAIN/ARGOS/~fixci"), "{}", lines[at[0]]);
     let short = lines[at[0] + 1].trim().strip_prefix("fix: nimitz rm ").map(|t| t.split_whitespace().next().unwrap().to_string()).unwrap_or_else(|| panic!("the fix: {}", lines[at[0] + 1]));
-    assert_eq!(sb.run(&["start", "MAIN/ARGOS/~fixci", "--plan"]).code, 2, "not an id");
+    assert_eq!(sb.run(&["start", "//...", "MAIN/ARGOS/~fixci", "--plan"]).code, 2, "not an id");
     let r = sb.run(&["rm", &short, "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(!sb.run(&["check"]).out.contains("tender.retired"));
@@ -1303,7 +1327,7 @@ fn a_broken_fleet_toml_blocks_its_own_fleet_only() {
     assert_eq!(p.code, 0, "{}", p.out);
     assert!(p.out.contains("[PLAN]"), "{}", p.out);
     // anything aimed at the broken fleet refuses with that error and the one fix
-    for args in [vec!["start", "BAD", "--plan"], vec!["up", "BAD", "--plan"], vec!["fleet", "set", "BAD", "--admiral-mode", "auto", "--plan"]] {
+    for args in [vec!["start", "BAD/...", "--plan"], vec!["up", "BAD", "--plan"], vec!["fleet", "set", "BAD", "--admiral-mode", "auto", "--plan"]] {
         let r = sb.run(&args);
         assert_eq!(r.code, 1, "{args:?}:\n{}", r.out);
         assert!(r.out.contains(&format!("{file}:3:")) && r.out.contains(&format!("fix {file} line 3")), "{args:?}:\n{}", r.out);
@@ -1710,7 +1734,7 @@ fn stop_of_a_live_lead_beside_an_interactive_older_conversation_stops_its_job() 
     // conversation of the lineage, and names that process (not a 0.3.x lead)
     let r = sb.run(&["relaunch", "MAIN", "--plan"]);
     assert_ne!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("session.interactive") && r.out.contains(&mid) && !r.out.contains("0.3.x") && r.out.contains("then nimitz start MAIN --only -f"), "{}", r.out);
+    assert!(r.out.contains("session.interactive") && r.out.contains(&mid) && !r.out.contains("0.3.x") && r.out.contains("then nimitz start MAIN -f"), "{}", r.out);
     // and status says only to end that process (the live job needs nothing more)
     let st = sb.member("MAIN");
     let held = st["issues"].as_array().unwrap().iter().find(|i| i["code"] == "held").expect("held");
@@ -1916,9 +1940,9 @@ fn the_users_nimitz_outside_herdr_uses_the_recorded_server() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&dead, std::fs::Permissions::from_mode(0o755)).unwrap();
     outside.insert("NIMITZ_HERDR_BIN".into(), dead.to_string_lossy().into_owned());
-    let r = raw(&outside, &["restore", "MAIN", "--plan"], &[], None);
+    let r = raw(&outside, &["restore", "MAIN/...", "--plan"], &[], None);
     assert_ne!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("herdr --session rec") && r.out.contains("nimitz start MAIN --jobs-only"), "{}", r.out);
+    assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("herdr --session rec") && r.out.contains("nimitz start MAIN/... --jobs-only"), "{}", r.out);
 }
 
 /// A hook always exits 0, even when Claude Code has closed its pipe before
@@ -1944,7 +1968,7 @@ fn rm_of_a_lead_points_at_the_retire_command() {
     let sb = Sb::new(false);
     let r = sb.run(&["rm", "MAIN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("its own row") && r.out.contains("nimitz fleet rm MAIN retires the member") && r.out.contains("nimitz start MAIN --only -f"), "{}", r.out);
+    assert!(r.out.contains("its own row") && r.out.contains("nimitz fleet rm MAIN retires the member") && r.out.contains("nimitz start MAIN -f"), "{}", r.out);
     let r = sb.run(&["rm", "MAIN/ARGOS", "--plan"]);
     assert!(r.out.contains("nimitz squadron rm MAIN/ARGOS"), "{}", r.out);
 }
@@ -2702,7 +2726,7 @@ fn a_fleets_harness_reaches_the_members_rules_settings_and_launch() {
     assert!(pd.join("agents/reviewer.md").is_file() && pd.join(".claude-plugin/plugin.json").is_file());
     assert!(nimitz_core::claude::launch_bg(&env, &nimitz_core::Id::admiral("BETA"), "default", None).iter().all(|a| a != "--plugin-dir"));
     let push = sb.run(&["harness", "push", "--fleet", "MAIN"]);
-    assert!(push.code == 0 && push.out.contains("plugin fleet-main") && push.out.contains("nimitz start MAIN -f"), "{}", push.out);
+    assert!(push.code == 0 && push.out.contains("plugin fleet-main") && push.out.contains("nimitz start MAIN/... -f"), "{}", push.out);
     // rm: kept as .archived, out of the rules
     let rm = sb.run(&["harness", "rm", "rule", "style", "--fleet", "MAIN", "--yes"]);
     assert_eq!(rm.code, 0, "{}", rm.out);

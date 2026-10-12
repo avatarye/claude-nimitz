@@ -964,7 +964,7 @@ fn e2e_07_slow_lead_is_a_pinned_background_job_attach_detach_unpin() {
     w.ok(&["fleet", "new", &w.fleet, "--machine", "e2e", "--yes"]);
     w.settings(&w.fleet_dir().join("admiral"));
     let pins0 = w.pins();
-    let out = w.ok(&["start", &w.fleet, "--yes"]);
+    let out = w.ok(&["start", &format!("{}/...", w.fleet), "--yes"]);
     println!("{out}");
     assert!(out.contains("pinned"), "the start did not pin the lead:\n{out}");
     let adm = w.wait(45, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null())).expect("admiral live");
@@ -1779,7 +1779,7 @@ fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
     executable(&newer, &format!("#!/bin/sh\nfor a; do [ \"$a\" = --version ] && {{ echo '2.1.999 (Claude Code)'; exit 0; }}; done\nexec '{}' \"$@\"\n", w.native));
     let restore = |form: &str| {
         let mut c = w.nz_cmd();
-        c.env("NIMITZ_NATIVE_CLAUDE_BIN", &newer).args(["restore", &w.fleet, "--jobs-only", form]);
+        c.env("NIMITZ_NATIVE_CLAUDE_BIN", &newer).args(["restore", &format!("{}/...", w.fleet), "--jobs-only", form]);
         E2e::run(c)
     };
     let (code, plan) = restore("--plan");
@@ -1826,7 +1826,7 @@ fn e2e_start_f_relaunches_and_a_fleet_start_all_wakes_a_stopped_ship() {
     w.wait(120, || w.member(&ship).filter(|m| m["status"] == "Idle")).expect("idle after the relaunch");
     w.ok(&["stop", &ship, "--yes"]);
     w.wait(30, || w.member(&ship).filter(|m| m["session"]["pid"].is_null())).expect("stopped");
-    let out = w.ok(&["start", &w.fleet, "--all", "--yes"]);
+    let out = w.ok(&["start", &format!("{}/...", w.fleet), "--parked", "--yes"]);
     println!("{out}");
     let m = w.wait(60, || w.member(&ship).filter(|m| !m["session"]["pid"].is_null())).unwrap_or_else(|| panic!("woken:\n{out}"));
     assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "woken by its id");
