@@ -65,8 +65,9 @@ const USAGES: &[(&str, &str)] = &[
     ("init", "  init [--label L]                 data root, machine label, Claude Code's trust of the data root, doctor"),
     ("trust", "  trust <folder>                   Claude Code's trust for the folder's git root (or the folder): it lets
                                    the folder's .claude settings, hooks and MCP servers run"),
-    ("doctor", "  doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs,
-                                   the format steps due, the machines of each fleet"),
+    ("doctor", "  doctor [--fix]                   hooks, the plugin's cached copy, crossSessionInbound, native claude, trust,
+                                   versions, formats, role briefs, the format steps due, the machines of each
+                                   fleet"),
     ("rules", "  rules [<id>]                     the role rules nimitz hands a member at session start"),
     ("status", "  status [<path>...] [--json]      the fleets, their members and issues (paths: only those members);
                                    down: taken down while active (a ... start wakes it); parked: retired by
@@ -108,9 +109,10 @@ const USAGES: &[(&str, &str)] = &[
                                    member's new conversation; --parked: the parked and stopped ships a ...
                                    covers too; --force: a cold launch over a broken lineage or an untested
                                    Claude Code"),
-    ("restart", "  restart <path>... [--parked]     relaunch the live members (same id and history, every flag again) and wake
-                                   the ones that are down; a pane whose attach the relaunch ends is reattached"),
-    ("stop", "  stop <path|session>...           stop members (under a ...: the live ones), or one session by its id"),
+    ("restart", "  restart <path>... [--parked]     relaunch the live members (same id and history, every flag again; ships
+                                   first; a turn in flight is dropped) and wake the ones that are down; a pane
+                                   whose attach the relaunch ends is reattached"),
+    ("stop", "  stop <path|session>...           stop members (under a ...: the live ones, ships first), or one session by its id"),
     ("rm", "  rm <path|session>...             remove job rows (never transcripts): a member's stale rows, or one row by its id"),
     ("sweep", "  sweep [<path>...]                drop stale rows and copies of members (none: a member's own, else every one)"),
     ("adopt", "  adopt <session> <id>             make a stowaway an identity's session"),
