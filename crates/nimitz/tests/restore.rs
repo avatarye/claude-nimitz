@@ -850,21 +850,26 @@ fn r09_claude_code_updated_relaunches_older_workers_ships_first_then_leads_and_r
     assert!(r.contains("restore MAIN/...  ·  nothing to bring back") && relaunched(&r).is_empty(), "{r}");
 }
 
-/// After an update: a member mid-turn is left running (a relaunch would cut
-/// it off), the member that runs the restore is never relaunched by it (a
-/// lead says who runs what).
+/// After an update: a member mid-turn is relaunched too, its line says the
+/// turn in flight is dropped (0.7.3); the member that runs the restore is
+/// never relaunched by it (a lead says who runs what).
 #[test]
-fn r09b_an_update_never_cuts_a_turn_and_never_relaunches_the_caller() {
+fn r09b_an_update_drops_a_turn_in_flight_and_never_relaunches_the_caller() {
     let sb = Sb::new(true);
     lay(&sb);
     stop_mislabel(&sb);
     sb.attach_all();
     idle_all(&sb);
     sb.session_file("MAIN/ARGOS/CLEAN", |v| v["status"] = json!("busy"));
+    sb.session_file("MAIN/ARGOS/NOLABEL", |v| {
+        v["status"] = json!("waiting");
+        v["waitingFor"] = json!("permission prompt");
+    });
     update_claude(&sb, "2.1.289");
     let r = sb.run(&["__muster", "MAIN/...", "--plan"]);
-    assert!(lines_with(&r.out, "MAIN/ARGOS/CLEAN ").iter().any(|l| l.contains("mid-turn -> left running")), "{}", r.out);
-    assert!(r.out.contains("(relaunch.busy)") && r.out.contains("nimitz restart MAIN/ARGOS/CLEAN  # once it is idle"), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN/ARGOS/CLEAN ").iter().any(|l| l.contains("busy: its turn in flight is dropped -> relaunch")), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN/ARGOS/NOLABEL ").iter().any(|l| l.contains("waiting: its question is dropped -> relaunch")), "{}", r.out);
+    assert!(!r.out.contains("relaunch.busy"), "{}", r.out);
     // the admiral runs it: every other member, never itself
     let r = sb.run_as("MAIN", &["__muster", "MAIN/...", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -963,9 +968,9 @@ fn r09c_a_pane_that_shows_a_member_without_its_attach_is_never_typed_into_after_
 }
 
 /// A member idle at the plan but busy by the time its relaunch comes (the
-/// plan can be minutes old): held back then, its later steps skipped, no failure.
+/// plan can be minutes old): relaunched all the same (0.7.3), no recheck.
 #[test]
-fn r09d_a_member_that_turns_busy_during_the_run_is_held_back() {
+fn r09d_a_member_that_turns_busy_during_the_run_is_relaunched_all_the_same() {
     let sb = Sb::new(true);
     lay(&sb);
     stop_mislabel(&sb);
@@ -980,10 +985,9 @@ fn r09d_a_member_that_turns_busy_during_the_run_is_held_back() {
     std::fs::write(&p, serde_json::to_vec(&w).unwrap()).unwrap();
     update_claude(&sb, "2.1.289");
     let r = sb.ok(&["__muster", "MAIN/...", "--yes"]);
-    assert!(r.contains("MAIN  turned busy after the plan: not relaunched now (relaunch.busy)"), "{r}");
-    assert!(!relaunched(&r).contains(&"MAIN".to_string()), "{r}");
-    assert_eq!(worker(&sb, "MAIN"), "2.1.288", "the admiral's turn was not cut");
-    assert_eq!(sb.pane_attaching("MAIN"), adm_pane, "its pane untouched");
+    assert!(!r.contains("relaunch.busy") && relaunched(&r).contains(&"MAIN".to_string()), "{r}");
+    assert_eq!(worker(&sb, "MAIN"), "2.1.289", "the admiral's turn is dropped");
+    assert_eq!(sb.pane_attaching("MAIN"), adm_pane, "its pane reattached");
     assert_eq!(worker(&sb, "MAIN/ARGOS/CLEAN"), "2.1.289");
 }
 
@@ -1252,7 +1256,7 @@ fn r19_r20_a_busy_ship_is_only_reattached_and_a_waiting_one_is_reported() {
     let r = sb.ok(&["__muster", "MAIN/...", "--yes"]);
     assert!(!r.contains("--bg --resume"), "nothing resumed:\n{r}");
     assert!(sb.runs().iter().any(|(_, l)| l.contains(&format!("attach {}", sb.short("MAIN/ARGOS/CLEAN")))), "CLEAN reattached:\n{r}");
-    assert!(r.contains("(needs-you)") && r.contains("nimitz open MAIN/ARGOS/NOLABEL"), "{r}");
+    assert!(!r.contains("(needs-you)"), "a question is the member's own, never a skip:\n{r}");
     assert!(!sb.calls().contains("\"agent\",\"prompt\""), "nimitz answers nothing");
     // the machine died instead: the prompt is gone with the process
     sb.reboot();
@@ -1899,7 +1903,7 @@ fn s05_f_relaunches_a_ship_with_a_pane_and_reattaches_that_pane() {
 }
 
 #[test]
-fn s06_nothing_relaunches_itself_and_busy_is_skipped() {
+fn s06_nothing_relaunches_itself_and_busy_is_relaunched() {
     let sb = Sb::new(true);
     lay(&sb);
     stop_mislabel(&sb);
@@ -1921,8 +1925,8 @@ fn s06_nothing_relaunches_itself_and_busy_is_skipped() {
     let r = sb.run_as("MAIN", &["start", "MAIN/...", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("skip") && l.contains("runs this start")), "{}", r.out);
-    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("skip") && l.contains("mid-turn")), "{}", r.out);
-    assert!(r.out.contains("(start.self)") && r.out.contains("(relaunch.busy)"), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("relaunch") && l.contains("busy: its turn in flight is dropped")), "{}", r.out);
+    assert!(r.out.contains("(start.self)") && !r.out.contains("(relaunch.busy)"), "{}", r.out);
     // anyone starts anything, `-p` too
     for (who, args) in [("MAIN", &["open", "MAIN/ARGOS/CLEAN", "--plan"][..]), ("MAIN/ARGOS", &["start", "MAIN/BOREAL/...", "--plan"][..]), ("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/NOLABEL", "--plan"][..])] {
         assert!(!sb.run_as(who, args).out.contains("(authority)"), "{who} {args:?}");
@@ -1953,7 +1957,7 @@ fn s09_a_member_skipped_under_start_f_says_f() {
     idle_all(&sb);
     sb.session_file("MAIN/ARGOS/CLEAN", |v| v["status"] = json!("busy"));
     let r = sb.run(&["restart", "MAIN/...", "--plan"]);
-    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("on 2.1.288 (restart); mid-turn")), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("on 2.1.288 (restart); busy: its turn in flight is dropped")), "{}", r.out);
     assert!(!r.out.contains("(--restart)"), "{}", r.out);
     let r = sb.run(&["__muster", "MAIN/...", "--restart", "--plan"]);
     assert!(r.out.contains("on 2.1.288 (--restart)"), "restore keeps its own flag:\n{}", r.out);

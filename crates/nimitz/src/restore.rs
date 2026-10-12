@@ -265,38 +265,21 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleets: &[String]) ->
             failed.push(id.clone());
         }
     };
-    // members whose relaunch was skipped at run time (busy by then): their
-    // later steps are skipped too, with no failure
-    let mut held_back: Vec<Id> = vec![];
     // the pane each member's last step made or typed into (`Focus { pane: None }`)
     let mut made: std::collections::HashMap<Id, PaneRef> = std::collections::HashMap::new();
     let mut installed: Option<Option<String>> = None;
     for (n, step) in rp.steps.iter().enumerate() {
         let id = step.id().clone();
-        if failed.contains(&id) || held_back.contains(&id) {
-            let why = if held_back.contains(&id) { "skipped: its relaunch was held back (busy)" } else { "skipped: an earlier step of this member failed" };
+        if failed.contains(&id) {
             for d in step.display() {
-                out.ran.push((d, 0, why.into()));
+                out.ran.push((d, 0, "skipped: an earlier step of this member failed".into()));
             }
             prog.done = n + 1;
             let _ = rs::progress_write(env, &prog);
             continue;
         }
         match step {
-            rs::RestoreStep::Relaunch { steps, job, .. } => {
-                // the plan may be minutes old: a member that turned busy or
-                // waits on you is not cut off now
-                let status = nimitz_core::sessions::find_row(env, job).filter(|r| r.live()).and_then(|r| r.status);
-                if matches!(status.as_deref(), Some("busy" | "waiting" | "shell")) {
-                    held_back.push(id.clone());
-                    for d in step.display() {
-                        out.ran.push((d, 0, format!("skipped: {id} is {} now", status.as_deref().unwrap_or_default())));
-                    }
-                    out.issues.push(Issue { code: "relaunch.busy".into(), severity: Severity::Info, message: format!("{id} turned busy after the plan: not relaunched now"), fix: Some(format!("{}  # once it is idle", nimitz_core::sessions::restart_cmd(&id))), id: Some(id.clone()) });
-                    prog.done = n + 1;
-                    let _ = rs::progress_write(env, &prog);
-                    continue;
-                }
+            rs::RestoreStep::Relaunch { steps, .. } => {
                 let plan = Plan { summary: format!("restore {id}"), steps: steps.clone(), ..Default::default() };
                 let o = nimitz_core::sessions::apply(env, &plan);
                 out.ran.extend(o.ran);

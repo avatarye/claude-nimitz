@@ -163,8 +163,8 @@ pub enum RestoreStep {
     Pin { id: Id, job: String },
     /// give the tab that shows the member its full label (`--rename`, R-07a)
     Rename { id: Id, tab_id: String, label: String },
-    /// a live member's relaunch (`sessions::plan_relaunch`); the executor
-    /// reads `job`'s status again first and skips one that turned busy
+    /// a live member's relaunch (`sessions::plan_relaunch`) of its job `job`,
+    /// busy or not (a turn in flight is dropped)
     Relaunch { id: Id, steps: Vec<Step>, job: String },
     /// a pane split beside `next_to` (the commodore's) running `cmd` (`open`)
     Split { id: Id, next_to: PaneAt, cmd: Vec<String>, cwd: String, session: String },
@@ -701,7 +701,7 @@ fn own_tab_place(rp: &mut RestorePlan, id: &Id) {
 /// fresh, launch or wake by its steps; else nothing) and its pane (reattach
 /// into a pane, open a tab or a split, focus only), and where.
 fn verbs(rp: &mut RestorePlan) {
-    const SKIPS: [&str; 5] = ["relaunch.busy", "restore.self", "start.self", "needs-you", "attach.old"];
+    const SKIPS: [&str; 3] = ["restore.self", "start.self", "attach.old"];
     for f in rp.plan.found.iter_mut() {
         let steps: Vec<&RestoreStep> = rp.steps.iter().filter(|s| s.id() == &f.id).collect();
         let failed = rp.plan.warnings.iter().any(|i| i.id.as_ref() == Some(&f.id) && i.severity == Severity::Error);
@@ -945,9 +945,6 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
         // live: relaunched when its worker runs an older Claude Code than the
         // installed one (or `--restart`); else its tab, when it should have one
         Some(s) if s.pid.is_some() => {
-            if m.status == Status::NeedsYou && !lead && !opts.shape_only {
-                rp.plan.warnings.push(issue("needs-you", Severity::Warn, format!("{id} waits on you ({}); nimitz answers nothing", s.waiting_for.as_deref().unwrap_or("a question")), Some(format!("nimitz open {id}")), Some(id.clone())));
-            }
             let worker = worker_version(env, s);
             let installed = ctx.snap.cc_version.as_deref();
             let on = worker.as_deref().unwrap_or("an unreadable version");
@@ -1331,24 +1328,21 @@ fn self_skipped(ctx: &Ctx, m: &Member, why: String, rp: &mut RestorePlan) {
 /// resume by its id with every flag (`plan_relaunch`), then its pane again:
 /// the old attach ends with the job, so the pane that showed it gets the new
 /// job's attach once it is a shell; a lead (or a ship that had a pane) with
-/// none gets a tab. Never the member that runs the restore, never one mid-turn
-/// or waiting on you (a relaunch would cut it off).
+/// none gets a tab. Never the member that runs the restore. A member mid-turn
+/// or waiting on a question is relaunched too (0.7.3): its line says what
+/// is dropped.
 fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: bool, rep: &mut FleetReport, rp: &mut RestorePlan) {
     let (env, id, lead, fleet) = (ctx.env, &m.id, m.role.lead(), m.id.fleet());
     if ctx.me.as_ref() == Some(id) {
         self_skipped(ctx, m, why, rp);
         return;
     }
-    if matches!(m.status, Status::Busy | Status::NeedsYou) {
-        let what = if m.status == Status::Busy { "mid-turn" } else { "waiting on you" };
-        let again = crate::sessions::restart_cmd(id);
-        let _ = fleet;
-        // (`open` still gets its pane: a waiting member is answered there)
-        let pane = if pane_wanted(ctx, m) && !ctx.opts.jobs_only { format!("; {}", tab_step(ctx, m, false, rep, rp).1) } else { String::new() };
-        found(rp, id, format!("{why}; {what}"), format!("left running (a relaunch now would cut it off); {again} once it is idle{pane}"));
-        rp.plan.warnings.push(issue("relaunch.busy", Severity::Info, format!("{id} is {what}: not relaunched now"), Some(format!("{again}  # once it is idle")), Some(id.clone())));
-        return;
-    }
+    let _ = fleet;
+    let why = match m.status {
+        Status::Busy => format!("{why}; busy: its turn in flight is dropped"),
+        Status::NeedsYou => format!("{why}; waiting: its question is dropped"),
+        _ => why,
+    };
     let p = crate::sessions::plan_relaunch(env, ctx.snap, id, ctx.caller);
     if !p.ok() {
         found(rp, id, why, "not relaunched; see the fix");
