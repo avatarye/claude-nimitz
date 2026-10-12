@@ -2121,7 +2121,9 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
         }
     }
     assert!(denied.is_empty(), "the guard stopped a report on its way to the caller: {denied:?}");
-    let handed = std::fs::read_dir(&sub).into_iter().flatten().flatten().filter(|e| std::fs::read_to_string(e.path()).unwrap_or_default().contains("\"name\":\"SubagentHandback\"")).count();
+    let reports: Vec<String> = std::fs::read_dir(&sub).into_iter().flatten().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).filter(|t| t.contains("\"name\":\"SubagentHandback\"")).collect();
+    let handed = reports.len();
+    assert!(reports.iter().any(|t| t.contains("ingested") && t.contains(&commits[0][..7])), "the scribe handed back its block at the note's commit");
     println!("[OK] e2e #98: {handed} subagent(s) reported through SubagentHandback");
     assert!(handed >= 2, "auto mode has both agents report through SubagentHandback (the path 0.7.0 broke): {handed}");
     let ev = w.events();
