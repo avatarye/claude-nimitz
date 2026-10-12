@@ -4,6 +4,45 @@ Status: agreed plan, not built. To be built as 0.7.3, with no backward
 compatibility: old forms are removed outright. Code references are to
 `dev` at 4df9b06 (0.7.1).
 
+## Decisions for the user (most important first, with a recommendation)
+
+1. **Muster after a Herdr-only closure**: relaunch every live member (turns
+   in flight dropped), or only workers on an older Claude Code?
+   Recommended: older only; `restart //...` is the explicit "relaunch all".
+2. **A member stopping or removing itself** (`stop`, `rm`, `ship rm`, `fleet
+   rm`, or a `...` that matches it): run last, detached, after the report
+   (section 4), or refuse it (a non-authority `self.end` refusal with the
+   fix to run from a shell)? Recommended: detached last, one path for every
+   verb that ends or replaces the caller.
+3. **"Parked"**: see 6.1. Recommended: `status` says `down` for a member the
+   machine took down while active and `parked` only for one the daemon
+   retired or that was not active; `...` and muster wake `down`, skip
+   `parked`; `--parked` adds those.
+4. **`signal --type`** for your own voice (6.4, 6.5)? Recommended: yes, the user's
+   `signal` types into a shown tab (today's behaviour), `--inbox` forces the
+   inbox; a member's `signal` always uses the inbox.
+5. **Self-relaunch idle-wait timeout**: cut the turn, or give up?
+   Recommended: give up after 10 minutes, log it, and say so at the
+   member's next prompt; never cut a turn the caller is still in.
+6. **kb-guard and `--fleet`**: `kb_cmd` would allow `--fleet OTHER`, while
+   kb-guard pins the KB agents to the member's own fleet (kb_guard.rs:207).
+   Recommended: kb-guard stays pinned (the plan keeps it as is); a member's
+   own read-only `kb show/grep --fleet OTHER` is allowed.
+7. **`close` and the leftover flags**. Recommended: `close <path>` closes
+   the panes that show those members through a new nimitz-mux
+   `close_pane` (there is none today), never a pane running anything but
+   the member's attach; jobs untouched. `--here` and `--rename` go to
+   `layout` and `muster`; `--force` (a second tab beside a taken one,
+   `tab.dup`) goes to `open` and `layout`; `--ships` to `layout`. With no
+   multiplexer `start`/`restart` need none (they make no panes); `muster`
+   runs its job steps and says the pane steps were skipped; `open`,
+   `close`, `layout` refuse (`mux.none`).
+8. **The risk of no checks** (5.3): a ship can run `fleet rm`, `machine rm`,
+   `migrate --shared` or `trust`, guarded only by "plan first" and Claude
+   Code's permission prompt (none in a bypass mode). Recommended: accept,
+   as asked; the ship rules say ships change no fleet shape, and every one
+   of those commands keeps its plan and `--yes`.
+
 ## 1. Paths
 
 - A path names one member: `HOME` is the admiral, `HOME/GITHUB` the
@@ -13,6 +52,9 @@ compatibility: old forms are removed outright. Code references are to
   oh-my-zsh makes `.....` and longer (and, without the user's override, `...`)
   global aliases that expand standalone words, but never part of a word.
   `print -r -- HOME/... //...` passes both through zsh unchanged (checked).
+  MSYS / Git Bash rewrites a leading `//` to `/`, so `/...` is accepted as
+  `//...`. `//...` never includes the ADMIRALTY workspace (R-35,
+  restore.rs:104, 691).
 - No `*`. `--only` and `--all` go.
 - `...` leaves parked ships alone; `--parked` includes them. Leads in the
   match are always brought up.
@@ -76,22 +118,32 @@ verb, scoped by path.
   (restore.rs:1019-1021); drop both from `SKIPS` (restore.rs:751). A busy
   member is relaunched; its plan line says "busy: its turn in flight is
   dropped"; one waiting on a prompt says "waiting: its question is dropped".
-- Self-relaunch: when the caller is a member inside the target, it is
-  planned last and run after everything else is done and the report is
+- Self-relaunch, self-stop, self-removal: removing `may_start` also removes
+  its `target != id` guard (sessions.rs:432), so a member's `stop`, `rm`,
+  `ship rm`, `fleet rm` or `stop HOME/...` would end it mid-command. Every
+  verb that ends or replaces the caller takes one path (decision 2): when
+  the caller is a member inside the target, it is planned last and run after everything else is done and the report is
   printed, by a detached `nimitz __relaunch-self <id> <job>` (setsid and a
   double fork on Unix, `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP` on
   Windows; output to `NIMITZ_STATE/relaunch-self.log`). It replaces
   `start.self` and `restore.self` (restore.rs:612-623, 1214-1230,
   1388-1398). The helper waits for the caller's turn to end (its session
   status idle, with a timeout) so the caller can read the report, then
-  relaunches it by exact id and reattaches its pane. To check before
-  relying on it:
+  runs the caller's own step (relaunch by exact id and reattach its pane;
+  or stop; or stop then rm). Tests (an e2e with real Claude Code for the
+  first three):
+  - the report reaches the Bash tool before the stop;
   - the helper survives `claude stop` of the caller's job (the Bash tool's
-    process tree, and any process-group or cgroup kill by the daemon);
-  - the relaunch resumes the same session id (no copy, no `history.lost`);
-  - a second run while a helper is pending starts no second one (a lock);
-  - the caller's next session start reports the outcome (from the log, via
-    the SessionStart hook's context).
+    process tree, a process-group or cgroup kill by the daemon);
+  - the relaunch resumes the same session id (no copy, no `history.lost`),
+    and a helper killed between stop and resume loses no member (the next
+    `start` wakes it by its exact id);
+  - the idle-wait timeout (decision 5);
+  - the lock: a second run while a helper is pending starts no second one;
+  - `--plan` spawns nothing;
+  - the outcome is appended to the next SessionStart context;
+  - Herdr is found through `member_mux_vars` from the detached helper;
+  - the Windows detach flags.
 
 ## 5. No authority checks, open messaging
 
@@ -119,6 +171,8 @@ Checks to remove (code at 4df9b06; "refusal" means the whole branch goes):
 | sessions.rs:1313-1314 (`plan_stop`), 1432-1433 (`plan_relaunch`), 1547-1548 (`plan_rm`), 1788-1789, 1803-1804 (`plan_adopt`) | `may_start` refusals, the stowaway-fleet check |
 | sessions.rs:1400, 1405, 1415, 1587, 1602 | "anything else is the user's" codes: a session that names nothing is `session.unknown` for everyone |
 | sessions.rs:1714-1749 (`plan_sweep`) | the per-role scope and its refusals (a member's `sweep` with no path still defaults to its own scope) |
+| sessions.rs:1083-1090 (`plan_start_with`) | the chain partition: a member's own chain's errors turned into warnings; goes with the caller distinction |
+| sessions.rs:1665 | a ship never stops a live copy: goes |
 | sessions.rs:1842-1850 | fleet removal is the user's |
 | sessions.rs:1027 `trust_first`; crates/nimitz-core/src/trust.rs:238 `for_plan` | the trust step for the user only: every caller gets it |
 | crates/nimitz-core/src/restore.rs:551-561 (`plan`), 581-582, 604-615 (`plan_start`) | caller scoping and refusals; the caller is still found for self-relaunch |
@@ -132,6 +186,11 @@ Checks to remove (code at 4df9b06; "refusal" means the whole branch goes):
 | crates/nimitz/src/sandbox_cmd.rs:14-15 | `sandbox` |
 | crates/nimitz/src/members.rs:333-341, 526-528, 649-651 | a member's `signal` sent to SendMessage, `open`, `attach` (the `attach.nested` check at 653-667 stays: it is not authority) |
 
+Also: the comments at claude.rs:157-159 and main.rs:222 (the authority
+test), the plugin.json:4 description, and the `attach.nested` fix text
+(members.rs:657: `start -p` becomes `open`). `notify.rs:43` reads the
+identity to address a needs-you notice: identity, not authority; it stays.
+
 The `start.self` / `restore.self` skips are not authority and are replaced
 by the self-relaunch (section 4).
 
@@ -141,13 +200,16 @@ by the self-relaunch (section 4).
   `may_signal` and `signal_table` (hook.rs:405-475). No signal is blocked.
 - Remove the squadron `comms` setting: `--comms` (crud.rs:37-43, 109-116;
   args.rs:7), its validation (config.rs:323-326, 1175-1184), `Comms` in
-  `plan_squadron_new/set` (config.rs:677, 707, 1156), Admiralty's display
-  (crates/admiralty/src/detail.rs:199-203, 255; view.rs:726-730). Nothing
-  else needs it. One catch: `SquadronConfig` is `deny_unknown_fields`
+  `plan_squadron_new/set` (config.rs:677, 707, 1156), `Squadron.comms`
+  (types.rs:481) and its fill in snapshot.rs:344, 372, 409 (it is in the
+  status JSON too), migrate.rs:238, check.rs:468, and Admiralty's display
+  and forms (crates/admiralty/src/detail.rs:199-203, 255; view.rs:726-730,
+  811; forms.rs:85-99, 145, 217, 310, 340, 390; fixtures.rs). Nothing else
+  needs it. One catch: `SquadronConfig` is `deny_unknown_fields`
   (types.rs:189-203) and every squadron.toml written so far holds `comms`,
   so the field stays parsed and ignored (`#[serde(default,
-  skip_serializing)]`): a dropped field would refuse every existing
-  squadron. Older nimitz on another machine reads the missing field as its
+  skip_serializing)]`; `Comms::default()` is open): a dropped field would
+  refuse every existing squadron. Older nimitz on another machine reads the missing field as its
   default.
 - What the hook still does for SendMessage: the PreToolUse and PostToolUse
   lines in the event log (hook.rs:10-11; the `PreToolUse` matcher list in
@@ -169,14 +231,15 @@ safety refusal for everyone, not authority.
 
 ## 6. What looks wrong or hard
 
-1. **"Parked" after a reboot is every ship.** A member with a job row, no
-   pid and no SessionEnd reads as parked (crates/nimitz-core/src/
-   snapshot.rs:673-694: "retired, crashed or stopped with the machine"). So
-   `muster` after a reboot leaves every ship down, the working ones too.
-   Today's restore wakes the active set's ships (restore.rs:1012-1015,
-   1056). Proposed: for `...` and `muster`, "parked" means "not in the
-   active set" (`active.json`), so what was active comes back and
-   `--parked` adds the rest.
+1. **"Parked" means two things.** `Status::Parked` covers a member the
+   daemon retired and one the machine took down while active
+   (snapshot.rs:673-694). The restore engine already wakes the second kind:
+   `wanted = always_on || all || (in_set && not stopped)` (restore.rs:1056),
+   and the active set keeps a taken-down member in the set
+   (active.rs:222-229). So the plan's "`...` leaves parked ships alone" is
+   today's rule if "parked" means the engine's meaning, and wrong if it
+   means the status word: after a reboot every ship reads `parked`. The
+   CLI must use one meaning in `status` and in `...` (decision 3).
 2. **Muster after a Herdr closure relaunches everything.** A Herdr closure
    leaves every job live and current; step 1 drops every turn in flight
    across `//...` only to reattach panes. Proposed: muster relaunches only
@@ -193,12 +256,31 @@ safety refusal for everyone, not authority.
    user's approval" (members.rs:377). A user who signals a lead to approve
    something no longer can. Keep `signal --type` for the user, or say so in
    the rules.
-5. **Members opening panes** run in the daemon's environment; their Herdr
-   is found through `active::member_mux_vars` (main.rs:46-51). That works
-   for today's lead tabs; `open` and `close` from a member need the same,
-   and a member on another machine cannot reach the user's Herdr at all.
+5. Inbox-only `signal` also changes: the ship relay through its
+   commodore (members.rs:347-360) goes, as anyone may message anyone; the
+   inbox body ("relayed by nimitz from a `nimitz signal` run with no member
+   labels", members.rs:377) must name the sender when a member sends it;
+   a target that is down is refused with `nimitz start <path>` as the fix
+   (today the same), never woken by a signal.
+6. **Members and Herdr.** `Ctx::mux()` already routes a member through
+   `member_mux_vars` (main.rs:46-51). The gaps: the Herdr identity is
+   recorded only by your own command (active.rs:179), so a member's
+   `layout` or muster after a Herdr restart may target a stale server
+   until you run a command; and nimitz-mux has no close-pane primitive, so
+   `close` is new code (decision 7). A member on another machine cannot
+   reach your Herdr at all.
 
-## 7. Bugs fixed in 0.7.3
+## 7. Build order
+
+1. Delete the authority and comms checks (section 5); tests follow.
+2. Path parser and `RestoreOpts` (section 1).
+3. Verb split and removals (section 2), with the three bugs (section 8).
+4. Busy relaunch (section 4, first bullet).
+5. The self-end helper, with its e2e (section 4).
+6. `muster` (section 3).
+7. Rules, skills, README and Admiralty (section 9).
+
+## 8. Bugs fixed in 0.7.3
 
 - `nimitz status` takes no argument, yet five fixes say `nimitz status
   <id>` (members.rs:50, 604, 608, 694; crates/nimitz/src/restore.rs:312,
@@ -208,7 +290,7 @@ safety refusal for everyone, not authority.
   <cmd>`.
 - The five verbs deprecated in 0.5.0 are still in 0.7.1: removed (section 2).
 
-## 8. Text and tests that change
+## 9. Text and tests that change
 
 - Rules (crates/nimitz-core/rules/): common.md:11-13 (a lead is attached
   with `open`), 24-30 (start, restart, muster, paths), 37-38 (Signals:
@@ -235,8 +317,9 @@ safety refusal for everyone, not authority.
   relaunch_table.rs (14 hits), cli.rs (28), restore.rs (12), Admiralty's
   ui.rs, sandbox.rs, cli_drift.rs (4-7 each), adversarial_round1.rs (5),
   formats.rs (5, comms in fixtures), e2e.rs (2).
-- Tests: crates/nimitz/tests/restore.rs (12 `--only`), cli.rs, e2e.rs,
-  upgrade.rs, adversarial_round1.rs move to paths and the new verbs; new
+- Tests: old-form hits to move to paths and the new verbs: about 179 in
+  crates/nimitz/tests/restore.rs, 36-46 in cli.rs, 12-15 in e2e.rs, plus
+  upgrade.rs and adversarial_round1.rs; the largest single cost of 0.7.3; new
   tests for path matching, `--parked`, muster, busy relaunch and the
   self-relaunch helper (the last needs real Claude Code: an e2e).
 - CHANGELOG 0.7.3 "Upgrading": every old form and its replacement, since
