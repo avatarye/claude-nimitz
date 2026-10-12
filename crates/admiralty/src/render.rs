@@ -790,7 +790,7 @@ mod separator_tests {
     fn a_long_menu_label_is_separated_from_its_reason() {
         let items = vec![
             MenuItem { key: 'w', label: "sweep: stop and remove copies, remove stale job rows".into(), enabled: Err("no stale job rows".into()), action: MenuAction::NewFleet },
-            MenuItem { key: 'l', label: "layout herdr --ships: and a tab attaching each live ship".into(), enabled: Err(crate::actions::MONITOR_ONLY.into()), action: MenuAction::NewFleet },
+            MenuItem { key: 'l', label: "layout --ships: and a tab attaching each live ship".into(), enabled: Err(crate::actions::MONITOR_ONLY.into()), action: MenuAction::NewFleet },
         ];
         let mut t = Terminal::new(TestBackend::new(140, 12)).unwrap();
         t.draw(|f| draw_menu(f, f.area(), "x", &items, 0)).unwrap();

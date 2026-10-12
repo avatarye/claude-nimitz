@@ -418,6 +418,18 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             ok("pane:process_info", json!({"type": "pane_process_info", "process_info": {"pane_id": target, "shell_pid": 4241, "tty": "/dev/pts/9",
                                            "foreground_process_group_id": 4242, "foreground_processes": [proc_]}}))
         }
+        ["pane", "close", target] => {
+            let panes = world["panes"].as_array_mut().expect("panes");
+            let Some(at) = panes.iter().position(|p| s(p, "pane_id") == *target) else {
+                return err("pane:close", "pane_not_found", &format!("pane {target} not found"));
+            };
+            let tab = s(&panes.remove(at), "tab_id");
+            // like herdr: a tab whose last pane closes goes with it
+            if !panes.iter().any(|p| s(p, "tab_id") == tab) {
+                world["tabs"].as_array_mut().expect("tabs").retain(|t| s(t, "tab_id") != tab);
+            }
+            ok("pane:close", json!({"type": "pane_closed", "pane_id": target}))
+        }
         ["pane", "run", target, cmd @ ..] if !cmd.is_empty() => {
             let exec = world.get("exec").and_then(Value::as_bool).unwrap_or(false);
             let mut hit = None;

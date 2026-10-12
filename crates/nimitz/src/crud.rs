@@ -42,10 +42,7 @@ pub fn machine_label(ctx: &Ctx) -> String {
 // ------------------------------------------------------------------ fleet
 
 pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
-    let verb = ctx.args.need(0, "new|set|rm|settings")?;
-    if verb == "settings" {
-        return crate::kb_cmd::settings(ctx);
-    }
+    let verb = ctx.args.need(0, "new|set|rm")?;
     let fleet = ctx.args.need(1, "fleet")?;
     ctx.args.at_most(2)?;
     let id = parse_id(fleet)?;
@@ -64,7 +61,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
             ctx.args.allow(&[])?;
             return Ok(retire(ctx, &id));
         }
-        v => return Err(format!("fleet {v}: use new, set, rm or settings")),
+        v => return Err(format!("fleet {v}: use new, set or rm")),
     };
     Ok(config_plan(ctx, plan))
 }
@@ -263,7 +260,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                             code: "config.pending".into(),
                             severity: nimitz_core::Severity::Info,
                             message: "the change takes effect at the ship's next relaunch".into(),
-                            fix: Some(nimitz_core::sessions::start_cmd(&id, "-f")),
+                            fix: Some(nimitz_core::sessions::restart_cmd(&id)),
                             id: Some(id.clone()),
                         });
                     }

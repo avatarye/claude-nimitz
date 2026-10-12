@@ -192,7 +192,7 @@ fn layout_is_cores_plan_and_the_cli_takes_its_command() {
     keys(&mut app, "x");
     keys(&mut app, "S");
     let Some(admiralty::app::Modal::Confirm(p)) = &app.modal else { panic!("{}", toast(&app)) };
-    assert_eq!(p.command, "nimitz layout herdr MAIN --ships");
+    assert_eq!(p.command, "nimitz layout MAIN/... --ships");
     let lp = p.layout.as_ref().expect("a layout for the mux");
     // --ships: a tab attaching each live ship, in its squadron's workspace
     let argos = lp.workspaces.iter().find(|(w, _)| w == "MAIN.ARGOS").expect("workspace MAIN.ARGOS");

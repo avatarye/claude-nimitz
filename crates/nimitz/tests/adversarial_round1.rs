@@ -239,7 +239,7 @@ fn bug10_relaunch_refuses_while_the_name_is_taken() {
     let sb = Sb::new(false);
     let sid = sb.sid("MAIN/ARGOS/STOPPED");
     sb.claude(&sb.dir("dirs/main/stopped"), &["--bg", "--resume", &sid, "--name", "[MAIN.ARGOS]-STOPPED"]);
-    sb.run(&["relaunch", "MAIN/ARGOS/STOPPED", "--yes"]);
+    sb.run(&["restart", "MAIN/ARGOS/STOPPED", "--yes"]);
     let n = sb.live_in(&sb.dir("dirs/main/stopped"));
     assert_eq!(n, 1, "relaunch went ahead with name.taken: {n} live sessions now answer to [MAIN.ARGOS]-STOPPED");
 }
@@ -516,7 +516,7 @@ fn bug53_relaunch_keeps_the_session_id_and_its_history() {
     // Real Claude Code: `--bg --resume <id> --name --settings` while the row exists starts a copy
     // with NO conversation; after `claude rm <row>` the same command continues <id> with history.
     let sb = Sb::new(false);
-    let p = sb.run(&["relaunch", "MAIN/ARGOS/NOLABEL", "--plan"]);
+    let p = sb.run(&["restart", "MAIN/ARGOS/NOLABEL", "--plan"]);
     let lines: Vec<&str> = p.out.lines().filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit())).collect();
     let rm = lines.iter().position(|l| l.contains(" rm "));
     let resume = lines.iter().position(|l| l.contains("--resume"));
@@ -709,7 +709,7 @@ fn bug55_relaunch_is_not_skipped_because_an_impostor_carries_the_labels() {
     // MISLABEL's live session carries CLEAN's labels (another folder). Relaunch of CLEAN removed its
     // row, then skipped the resume as "live already": CLEAN is left down while nimitz says OK.
     let sb = Sb::new(false);
-    sb.run(&["relaunch", "MAIN/ARGOS/CLEAN", "--yes"]);
+    sb.run(&["restart", "MAIN/ARGOS/CLEAN", "--yes"]);
     assert_eq!(sb.live_in(&sb.dir("dirs/main/clean")), 1, "CLEAN is down after relaunch");
 }
 

@@ -1,6 +1,6 @@
 //! Fleet restore from the Herdr shape (plan-v4 section 13,
 //! restore-scenarios.md). One engine for `restore`, `up` (its tab pass) and
-//! `layout herdr`: `plan` diffs the shape the mux reports (workspaces, tabs,
+//! `layout`: `plan` diffs the shape the mux reports (workspaces, tabs,
 //! panes, what each pane shows and runs), the jobs the snapshot knows and
 //! the last-known active set (`active.json`) into steps of five kinds only:
 //! a wake (`sessions::wake_steps`, run by `sessions::apply`), a claim (`pane
@@ -116,21 +116,24 @@ pub struct RestoreOpts {
     /// no multiplexer: wake the jobs, make no tab (over ssh)
     pub jobs_only: bool,
     /// the shape only: tabs for the leads, attach where a job is live, no
-    /// resume of a parked job unless its tab's attach wakes it (`layout herdr`, `up`'s tab pass)
+    /// resume of a parked job unless its tab's attach wakes it (`nimitz layout`)
     pub shape_only: bool,
-    /// with `shape_only`: a tab for every live ship too (`layout herdr --ships`)
+    /// with `shape_only`: a tab for every live ship too (`layout --ships`)
     pub ships: bool,
     /// rebuild the shape in this Herdr session although the set was recorded in another
     pub here: bool,
     /// rename a tab that shows a member under another name (R-07a)
     pub rename: bool,
     /// relaunch every live member whatever Claude Code its worker runs
-    /// (`restore --restart`, `start -f`)
+    /// (`nimitz restart`)
     pub restart: bool,
-    /// `start -p`: the named member gets a pane, focused (its pane, its tab,
-    /// a split beside its commodore, a new tab)
+    /// with `jobs_only`: a relaunch reattaches the pane its old attach showed
+    /// (`nimitz restart`: continuity, never a new pane)
+    pub keep_panes: bool,
+    /// `nimitz open`: the named members get a pane, focused (its pane, its
+    /// tab, a split beside its commodore, a new tab)
     pub pane: bool,
-    /// `start -p --tab`: the named member's pane is its own tab, reused or
+    /// `open --tab`: the named member's pane is its own tab, reused or
     /// created (no shown pane elsewhere, no split beside its commodore)
     pub tab: bool,
     /// `start --fresh`: the named member starts a new conversation
@@ -163,9 +166,9 @@ pub enum RestoreStep {
     /// a live member's relaunch (`sessions::plan_relaunch`); the executor
     /// reads `job`'s status again first and skips one that turned busy
     Relaunch { id: Id, steps: Vec<Step>, job: String },
-    /// a pane split beside `next_to` (the commodore's) running `cmd` (`start -p`)
+    /// a pane split beside `next_to` (the commodore's) running `cmd` (`open`)
     Split { id: Id, next_to: PaneAt, cmd: Vec<String>, cwd: String, session: String },
-    /// bring the member's pane to the front (`start -p`); `None`: the pane the
+    /// bring the member's pane to the front (`open`); `None`: the pane the
     /// member's step before this one made or typed into
     Focus { id: Id, pane: Option<PaneAt> },
     /// after a relaunch: the old attach in `pane` ends with its job (measured
@@ -209,7 +212,7 @@ impl RestoreStep {
             }
             RestoreStep::Focus { id, pane } => {
                 let at = pane.as_ref().map(|p| p.pane_id.clone()).unwrap_or_else(|| "<its pane>".into());
-                vec![Step { id: Some(id.clone()), cmd: vec!["herdr".into(), "agent".into(), "focus".into(), at], cwd: None, why: "-p: bring its pane to the front".into() }]
+                vec![Step { id: Some(id.clone()), cmd: vec!["herdr".into(), "agent".into(), "focus".into(), at], cwd: None, why: "open: bring its pane to the front".into() }]
             }
             RestoreStep::Reattach { id, pane, cmd, cwd, .. } => {
                 let mut c = vec!["herdr".into(), "pane".into(), "run".into(), pane.pane_id.clone()];
@@ -328,14 +331,14 @@ struct Ctx<'a> {
     /// the paths the command names: the members they cover
     paths: Vec<crate::paths::Path>,
     /// the members exact paths name (`start <id>`, never a `...` match): they
-    /// may get a first launch, `--fresh`, `-p`
+    /// may get a first launch, `--fresh`, `open`
     named: Vec<Id>,
-    /// `restore`, `start`, `layout herdr`: the command the fixes name
+    /// `restore`, `start`, `restart`, `open`, `layout`: the command the fixes name
     verb: &'static str,
 }
 
 impl Ctx<'_> {
-    /// `-p --tab` for this member: its pane is its own tab, nothing else.
+    /// `open --tab` for this member: its pane is its own tab, nothing else.
     fn own_tab(&self, m: &Member) -> bool {
         self.opts.pane && self.opts.tab && self.named.contains(&m.id)
     }
@@ -424,7 +427,7 @@ impl Ctx<'_> {
         let id = &m.id;
         let want_tab = norm_label(&tab_of(id));
         let want_ws = norm_label(&workspace_of(id));
-        // (a) by session or by the exact attach; under `-p --tab` only a pane
+        // (a) by session or by the exact attach; under `open --tab` only a pane
         // of its own tab counts (one elsewhere is left as it is, never typed into)
         let shown: Vec<&ShapePane> = self.shape.panes.iter().filter(|p| self.pane_is(p, m, cmd) == Some(true)).collect();
         let shown: Vec<&ShapePane> = if self.own_tab(m) {
@@ -491,7 +494,7 @@ impl Ctx<'_> {
             }
         }
         // (e) a default-named tab (`1`) of the workspace, a shell in the
-        // member's folder; never under `-p --tab` (a tab of its own name, or a new one)
+        // member's folder; never under `open --tab` (a tab of its own name, or a new one)
         if self.own_tab(m) {
             return TabMatch::Missing;
         }
@@ -552,28 +555,25 @@ fn shown(paths: &[crate::paths::Path]) -> String {
 
 /// `nimitz start <path>...`: the restore engine over the members the paths
 /// cover; the members exact paths name may get a first launch (top-down,
-/// `plan_start_with`; a `...` match never cold-launches), `--fresh`, `-p`.
+/// `plan_start_with`; a `...` match never cold-launches), `--fresh`, `open`.
 /// Any caller starts anything; nothing restarts itself.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, paths: &[crate::paths::Path], opts: RestoreOpts, caller: &Caller) -> RestorePlan {
-    let verb = "start";
+    let verb = if opts.pane { "open" } else if opts.restart { "restart" } else { "start" };
     let named: Vec<Id> = paths.iter().filter_map(|p| p.member().cloned()).collect();
-    let rp = RestorePlan { plan: Plan { summary: format!("start {}", shown(paths)), ..Default::default() }, ..Default::default() };
+    let rp = RestorePlan { plan: Plan { summary: format!("{verb} {}", shown(paths)), ..Default::default() }, ..Default::default() };
     let refuse = |mut rp: RestorePlan, code: &str, msg: String, fix: Option<String>, id: Option<Id>| {
         rp.plan.refusals.push(issue(code, Severity::Error, msg, fix, id));
         rp
     };
-    if opts.pane && named.is_empty() {
-        return refuse(rp, "usage", "`-p` gives a member a pane: name it (`nimitz start <id> -p`)".into(), None, None);
+    if opts.pane && (named.is_empty() || named.len() < paths.len()) {
+        return refuse(rp, "usage", "`nimitz open` gives members panes: name each one (`nimitz open <id>`), never a `...`".into(), None, None);
     }
     if opts.tab && !opts.pane {
-        return refuse(rp, "usage", "--tab goes with -p (`nimitz start <id> -p --tab`)".into(), None, None);
+        return refuse(rp, "usage", "--tab goes with `nimitz open`".into(), None, None);
     }
     if opts.fresh && (named.is_empty() || opts.restart) {
-        return refuse(rp, "usage", "`--fresh` starts a member's new conversation: name it, without -f".into(), None, None);
-    }
-    if opts.pane && opts.jobs_only {
-        return refuse(rp, "usage", "`-p` gives a pane; `--jobs-only` makes none: one or the other".into(), None, None);
+        return refuse(rp, "usage", "`--fresh` starts a member's new conversation: name it (`nimitz start <id> --fresh`)".into(), None, None);
     }
     if let Err(i) = crate::paths::resolve(snap, paths) {
         return refuse(rp, &i.code, i.message, i.fix, i.id);
@@ -581,7 +581,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&cra
     // nothing relaunches itself: a start that names the caller; a wider one skips it
     if let Caller::Member { id, .. } = caller {
         if opts.restart && named.contains(id) {
-            return refuse(rp, "start.self", format!("{id} runs this start; nothing relaunches itself"), Some(format!("{}  # from your own shell", crate::sessions::start_cmd(id, "-f"))), Some(id.clone()));
+            return refuse(rp, "start.self", format!("{id} runs this restart; nothing relaunches itself"), Some(format!("{}  # from your own shell", crate::sessions::restart_cmd(id))), Some(id.clone()));
         }
     }
     plan_inner(env, snap, shape, active, herdr, has_mux, paths, named, verb, opts, caller, rp)
@@ -598,9 +598,13 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
             snap.fleets.iter().flat_map(fleet_members).find(|m| m.session.as_ref().and_then(|s| s.pid).is_some_and(|p| p > 1 && up.contains(&p))).map(|m| m.id.clone())
         }
     };
+    // (a restore with no multiplexer runs its job steps and says so, decision 7)
+    if !has_mux && opts.jobs_only && verb == "restore" {
+        rp.plan.warnings.push(issue("mux.none", Severity::Info, "no multiplexer here: the jobs only; the pane steps are skipped (`nimitz layout` makes them inside Herdr)".into(), None, None));
+    }
     if !has_mux && (!opts.jobs_only || opts.pane) {
-        let what = if opts.pane { "`-p` gives a pane".to_string() } else { format!("`nimitz {verb}` rebuilds Herdr tabs") };
-        rp.plan.refusals.push(issue("mux.none", Severity::Error, format!("{what}; there is no multiplexer here"), Some(format!("run it inside Herdr; or `nimitz {verb} --jobs-only` to wake the jobs without tabs")), None));
+        let what = if opts.pane { "`nimitz open` gives a pane".to_string() } else { format!("`nimitz {verb}` rebuilds Herdr tabs") };
+        rp.plan.refusals.push(issue("mux.none", Severity::Error, format!("{what}; there is no multiplexer here"), Some(format!("run it inside Herdr; or `nimitz start {}` to wake the jobs without tabs", shown(paths))), None));
         return rp;
     }
     // the set was recorded in another Herdr session: its tabs live there (R-29)
@@ -673,7 +677,7 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
     rp
 }
 
-/// `-p --tab`: the named member's line says its pane is its own tab (`F.SQ.SHIP`
+/// `open --tab`: the named member's line says its pane is its own tab (`F.SQ.SHIP`
 /// in `F.SQ`, a lead's): new, reused, or shown already.
 fn own_tab_place(rp: &mut RestorePlan, id: &Id) {
     let steps: Vec<&RestoreStep> = rp.steps.iter().filter(|s| s.id() == id).collect();
@@ -909,7 +913,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 "tab.resumed",
                 Severity::Error,
                 format!("{id}'s conversation is open in pane {} (Herdr's resume_agents_on_restore, or a claude --resume by hand), interactively, with no job; a wake would start a copy beside it, so nothing runs for it", p.pane_id),
-                Some(format!("type /exit in pane {}, then nimitz start {}/...  # with Herdr's resume_agents_on_restore on, every restart does this again: nimitz doctor", p.pane_id, id.fleet())),
+                Some(format!("type /exit in pane {}, then nimitz start {id}  # with Herdr's resume_agents_on_restore on, every restart does this again: nimitz doctor", p.pane_id)),
                 Some(id.clone()),
             ));
             return;
@@ -942,7 +946,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
         // installed one (or `--restart`); else its tab, when it should have one
         Some(s) if s.pid.is_some() => {
             if m.status == Status::NeedsYou && !lead && !opts.shape_only {
-                rp.plan.warnings.push(issue("needs-you", Severity::Warn, format!("{id} waits on you ({}); nimitz answers nothing", s.waiting_for.as_deref().unwrap_or("a question")), Some(format!("nimitz start {id} -p")), Some(id.clone())));
+                rp.plan.warnings.push(issue("needs-you", Severity::Warn, format!("{id} waits on you ({}); nimitz answers nothing", s.waiting_for.as_deref().unwrap_or("a question")), Some(format!("nimitz open {id}")), Some(id.clone())));
             }
             let worker = worker_version(env, s);
             let installed = ctx.snap.cc_version.as_deref();
@@ -953,8 +957,8 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                     if older {
                         rp.updated += 1;
                     }
-                    // (the flag as the command names it: `start -f`, `restore --restart`)
-                    let flag = if ctx.verb == "start" { "-f" } else { "--restart" };
+                    // (the flag as the command names it: `restart`, `--restart`)
+                    let flag = if ctx.verb == "restore" { "--restart" } else { ctx.verb };
                     let why = if older { format!("on {on}") } else { format!("on {on} ({flag})") };
                     relaunch_live(ctx, m, s, why, had_tab, rep, rp);
                     return;
@@ -965,7 +969,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
             let pin = if !opts.shape_only && repin(env, m, rp) { "; pin its job" } else { "" };
             if !wants_tab {
                 // a live ship gets a tab only when it had one, or with `--ships`
-                found(rp, id, live_on, format!("nothing{pin} (`-p` gives it a pane)"));
+                found(rp, id, live_on, format!("nothing{pin} (`nimitz open` gives it a pane)"));
                 return;
             }
             let (seen, action) = tab_step(ctx, m, false, rep, rp);
@@ -1000,7 +1004,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
             // a live copy or an impostor holds its name: never a second one (R-26)
             if let Some(r) = m.extra_rows.iter().find(|r| r.pid.is_some()) {
                 found(rp, id, format!("{down}; a live copy holds its name"), "nothing; see the fix");
-                fail(rp, rep, issue("name.taken", Severity::Error, format!("{id} is stopped but a copy {} ({}) is live; nothing is resumed beside it", r.short_id.as_deref().unwrap_or(&r.session_id), r.name), Some(format!("nimitz sweep {id}  # stops and removes the copy; then nimitz start {}/...", id.fleet())), Some(id.clone())));
+                fail(rp, rep, issue("name.taken", Severity::Error, format!("{id} is stopped but a copy {} ({}) is live; nothing is resumed beside it", r.short_id.as_deref().unwrap_or(&r.session_id), r.name), Some(format!("nimitz sweep {id}  # stops and removes the copy; then nimitz start {id}")), Some(id.clone())));
                 return;
             }
             if let Some(e) = m.issues.iter().find(|i| i.severity == Severity::Error && ["job.unreadable", "labels.mismatch", "name.taken"].contains(&i.code.as_str())) {
@@ -1128,10 +1132,10 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
 }
 
 /// The member `start` names (the target's own): live and current, nothing
-/// but its pane (a lead's tab; `-p`); live on an older Claude Code (or `-f`),
+/// but its pane (a lead's tab; `open`); live on an older Claude Code (or `restart`),
 /// a relaunch; not live, `start`'s own plan (`plan_start_with`: top-down,
 /// by its exact id, a first launch when it never ran, `--fresh`, `--force`),
-/// then a lead's tab or the `-p` pane.
+/// then a lead's tab or the `open` pane.
 fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &mut RestorePlan) {
     let (env, opts, id, lead) = (ctx.env, ctx.opts, &m.id, m.role.lead());
     // live but not clean (a drifted name, missing labels, a copy): start's own
@@ -1160,7 +1164,7 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
             return;
         }
     }
-    // (`-f` relaunches a live one whatever it is: that is the fix for most of it)
+    // (`restart` relaunches a live one whatever it is: that is the fix for most of it)
     if let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some() && (clean || opts.restart)) {
         let worker = worker_version(env, s);
         let installed = ctx.snap.cc_version.as_deref();
@@ -1175,7 +1179,7 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
             if older {
                 rp.updated += 1;
             }
-            let why = if older { format!("on {on}") } else { format!("on {on} (-f)") };
+            let why = if older { format!("on {on}") } else { format!("on {on} ({})", ctx.verb) };
             relaunch_live(ctx, m, s, why, had_tab, rep, rp);
             return;
         }
@@ -1264,12 +1268,12 @@ fn fail_with(rp: &mut RestorePlan, rep: &mut FleetReport, i: Issue) {
     rp.plan.warnings.push(Issue { severity: Severity::Error, ..i });
 }
 
-/// `-p` for this member: its pane is brought to the front.
+/// `open` for this member: its pane is brought to the front.
 fn pane_wanted(ctx: &Ctx, m: &Member) -> bool {
     ctx.opts.pane && ctx.named.contains(&m.id)
 }
 
-/// The pane after `step` (`None`: the one it makes), focused under `-p`.
+/// The pane after `step` (`None`: the one it makes), focused under `open`.
 fn then_focus(ctx: &Ctx, m: &Member, pane: Option<PaneAt>, rp: &mut RestorePlan) -> &'static str {
     if !pane_wanted(ctx, m) {
         return "";
@@ -1278,10 +1282,10 @@ fn then_focus(ctx: &Ctx, m: &Member, pane: Option<PaneAt>, rp: &mut RestorePlan)
     ", focused"
 }
 
-/// The pane a ship with no tab of its own gets under `-p`: a split beside its
+/// The pane a ship with no tab of its own gets under `open`: a split beside its
 /// commodore's pane (the pane that shows the commodore, else its tab's), else
 /// a new tab in the squadron's workspace (made when missing). A lead: its tab.
-/// `-p --tab`: always its own tab, never a split.
+/// `open --tab`: always its own tab, never a split.
 fn place_missing(ctx: &Ctx, m: &Member, cmd: Vec<String>, cwd: String, session: String, wakes: bool, rp: &mut RestorePlan) -> String {
     let id = &m.id;
     if pane_wanted(ctx, m) && m.role == Role::Ship && !ctx.opts.tab {
@@ -1316,10 +1320,11 @@ fn self_skipped(ctx: &Ctx, m: &Member, why: String, rp: &mut RestorePlan) {
     // after --restart only this one is left: relaunch it, then reattach
     let verb = ctx.verb;
     // (a start of the member alone relaunches it and reattaches its pane)
-    let again = crate::sessions::start_cmd(id, "-f");
+    let again = crate::sessions::restart_cmd(id);
     found(rp, id, format!("{why}; it runs this {verb}"), format!("not relaunched while it runs; afterwards you run: {again}"));
     let whose = if m.role.lead() { format!("; {id} is a lead: you run it again from your own shell once this one is done") } else { String::new() };
-    rp.plan.warnings.push(issue(&format!("{verb}.self"), Severity::Warn, format!("{id} runs this {verb}, so it is not relaunched now{whose}"), Some(format!("{again}  # yours, from a shell, once this one is done: it relaunches {id} and reattaches its pane")), Some(id.clone())));
+    let code = if verb == "restore" { "restore.self" } else { "start.self" };
+    rp.plan.warnings.push(issue(code, Severity::Warn, format!("{id} runs this {verb}, so it is not relaunched now{whose}"), Some(format!("{again}  # yours, from a shell, once this one is done: it relaunches {id} and reattaches its pane")), Some(id.clone())));
 }
 
 /// A live member to relaunch (an older worker, or `--restart`): stop, rm and
@@ -1336,9 +1341,9 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
     }
     if matches!(m.status, Status::Busy | Status::NeedsYou) {
         let what = if m.status == Status::Busy { "mid-turn" } else { "waiting on you" };
-        let again = crate::sessions::start_cmd(id, "-f");
+        let again = crate::sessions::restart_cmd(id);
         let _ = fleet;
-        // (`-p` still gets its pane: a waiting member is answered there)
+        // (`open` still gets its pane: a waiting member is answered there)
         let pane = if pane_wanted(ctx, m) && !ctx.opts.jobs_only { format!("; {}", tab_step(ctx, m, false, rep, rp).1) } else { String::new() };
         found(rp, id, format!("{why}; {what}"), format!("left running (a relaunch now would cut it off); {again} once it is idle{pane}"));
         rp.plan.warnings.push(issue("relaunch.busy", Severity::Info, format!("{id} is {what}: not relaunched now"), Some(format!("{again}  # once it is idle")), Some(id.clone())));
@@ -1355,7 +1360,7 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
     rp.plan.warnings.extend(p.warnings);
     let mut group = vec![RestoreStep::Relaunch { id: id.clone(), steps: p.steps, job: s.short_id.clone().unwrap_or_default() }];
     let mut then = String::new();
-    if !ctx.opts.jobs_only {
+    if !ctx.opts.jobs_only || ctx.opts.keep_panes {
         let old = s.short_id.as_ref().map(|j| crate::claude::attach(env, j)).unwrap_or_default();
         let mut extra = vec![];
         let tab = ctx.find_tab(m, &old, &mut extra);
@@ -1363,7 +1368,8 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
         let cmd = vec![env.native_claude_bin.clone(), "attach".into(), NEW_JOB.into()];
         let session = crate::sessions::wake_target(env, id, s).session;
         let cwd = m.cwd.clone().unwrap_or_default();
-        let wanted = lead || had_tab || pane_wanted(ctx, m);
+        // (`restart` only reattaches the pane it cut: never a new one)
+        let wanted = (lead || had_tab || pane_wanted(ctx, m)) && !ctx.opts.jobs_only;
         let focus = |group: &mut Vec<RestoreStep>, pane: Option<PaneAt>| {
             if pane_wanted(ctx, m) {
                 group.push(RestoreStep::Focus { id: id.clone(), pane });
@@ -1381,7 +1387,7 @@ fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: b
             }
             TabMatch::Shown { pane, .. } => {
                 then = format!(", no attach (pane {} shows it without its attach)", pane.pane_id);
-                rp.plan.warnings.push(issue("tab.taken", Severity::Warn, format!("{id} is relaunched, but pane {} shows it without running `claude attach`; nothing is typed into it", pane.pane_id), Some(format!("nimitz start {id} -p  # once the restore is done")), Some(id.clone())));
+                rp.plan.warnings.push(issue("tab.taken", Severity::Warn, format!("{id} is relaunched, but pane {} shows it without running `claude attach`; nothing is typed into it", pane.pane_id), Some(format!("nimitz open {id}  # once this is done")), Some(id.clone())));
             }
             TabMatch::Shell { pane, rename, .. } if wanted => {
                 rp.panes_gone += 1;
@@ -1426,17 +1432,16 @@ fn count(rep: &mut FleetReport, lead: bool) {
 
 /// The `tab.taken` family: the one fix that works, by what runs there.
 fn taken_fix(id: &Id, pane: &PaneAt, running: &str, agent_view: bool) -> (&'static str, String) {
-    let fleet = id.fleet();
     if running == UNREADABLE {
-        return ("tab.unreadable", format!("herdr pane process-info --pane {} failed; retry nimitz start {fleet}/..., or rename the tab", pane.pane_id));
+        return ("tab.unreadable", format!("herdr pane process-info --pane {} failed; retry nimitz open {id}, or rename the tab", pane.pane_id));
     }
     if agent_view {
-        return ("tab.agentview", format!("close that pane {} (or Esc / ctrl-c until a shell), then nimitz start {fleet}/...", pane.pane_id));
+        return ("tab.agentview", format!("close that pane {} (or Esc / ctrl-c until a shell), then nimitz open {id}", pane.pane_id));
     }
     if running.starts_with("an agent") {
-        return ("tab.taken", format!("ctrl-z in pane {} (it shows {}), then nimitz start {fleet}/...", pane.pane_id, running.trim_start_matches("an agent: ")));
+        return ("tab.taken", format!("ctrl-z in pane {} (it shows {}), then nimitz open {id}", pane.pane_id, running.trim_start_matches("an agent: ")));
     }
-    ("tab.taken", format!("quit `{running}` in pane {} (or rename the tab), then nimitz start {fleet}/...", pane.pane_id))
+    ("tab.taken", format!("quit `{running}` in pane {} (or rename the tab), then nimitz open {id}", pane.pane_id))
 }
 
 /// A parked or stopped member with no shell tab to wake it from: wake it by
@@ -1528,7 +1533,7 @@ fn tab_after_wake(ctx: &Ctx, m: &Member, cmd: Vec<String>, cwd: &str, session: &
 fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut RestorePlan) -> (String, String) {
     let (env, opts, id, lead) = (ctx.env, ctx.opts, &m.id, m.role.lead());
     if opts.jobs_only {
-        return ("tabs not looked at".into(), "nothing (--jobs-only)".into());
+        return ("tabs not looked at".into(), "nothing (the jobs only)".into());
     }
     let tab = match crate::layout::attach_tab(env, m) {
         Ok(t) => t,
@@ -1551,22 +1556,22 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
     match found {
         TabMatch::Shown { pane, tab_label, ws_label } => {
             let mut action = "nothing".to_string();
-            // (a ship in a split of its commodore's tab is where `-p` puts it)
+            // (a ship in a split of its commodore's tab is where `open` puts it)
             let beside_commodore = m.role == Role::Ship && id.parent().is_some_and(|sq| norm_label(&tab_label) == norm_label(&tab_of(&sq)));
             if norm_label(&tab_label) != norm_label(&tab_of(id)) && !beside_commodore {
-                // `-p --tab` shows it only in its own tab: a legacy label gets the full name
+                // `open --tab` shows it only in its own tab: a legacy label gets the full name
                 if opts.rename || ctx.own_tab(m) {
                     count(rep, lead);
                     action = format!("rename its tab to {}", tab_of(id));
                     rp.steps.push(RestoreStep::Rename { id: id.clone(), tab_id: pane.tab_id.clone(), label: tab_of(id) });
                 } else {
-                    rp.plan.warnings.push(issue("tab.renamed", Severity::Info, format!("tab {tab_label} (pane {}) shows {id}; nimitz looks for {}", pane.pane_id, tab_of(id)), Some(format!("herdr tab rename {} {}  # or nimitz start {}/... --rename", pane.tab_id, tab_of(id), id.fleet())), Some(id.clone())));
+                    rp.plan.warnings.push(issue("tab.renamed", Severity::Info, format!("tab {tab_label} (pane {}) shows {id}; nimitz looks for {}", pane.pane_id, tab_of(id)), Some(format!("herdr tab rename {} {}  # or nimitz layout {}/... --rename", pane.tab_id, tab_of(id), id.fleet())), Some(id.clone())));
                 }
             } else if norm_label(&ws_label) != norm_label(&workspace_of(id)) {
                 rp.plan.warnings.push(issue("tab.moved", Severity::Info, format!("{id}'s tab is in workspace {ws_label}, not {}; left there", workspace_of(id)), None, Some(id.clone())));
             }
             if opts.shape_only {
-                rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} already has a pane; `nimitz start {id} -p` shows it"), None, Some(id.clone())));
+                rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} already has a pane; `nimitz open {id}` shows it"), None, Some(id.clone())));
             }
             // the attach client there is a Claude Code process of its own: one
             // older than the installed version is only reported (nothing types into it)
@@ -1579,7 +1584,7 @@ fn tab_step(ctx: &Ctx, m: &Member, wakes: bool, rep: &mut FleetReport, rp: &mut 
                 if crate::compat::older(&v, installed) {
                     seen = format!("shown by an attach on {v}");
                     action = "nothing typed there (ctrl-z in it, then restore again, reattaches on the new version)".into();
-                    rp.plan.warnings.push(issue("attach.old", Severity::Info, format!("{id}'s pane {} runs its attach on Claude Code {v}, installed {installed}", pane.pane_id), Some(format!("ctrl-z in pane {}, then nimitz start {}/...", pane.pane_id, id.fleet())), Some(id.clone())));
+                    rp.plan.warnings.push(issue("attach.old", Severity::Info, format!("{id}'s pane {} runs its attach on Claude Code {v}, installed {installed}", pane.pane_id), Some(format!("ctrl-z in pane {}, then nimitz open {id}", pane.pane_id)), Some(id.clone())));
                 }
             }
             (seen, action)

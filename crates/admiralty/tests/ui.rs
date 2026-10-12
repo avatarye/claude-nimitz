@@ -492,7 +492,7 @@ fn enter_on_a_pane_row_focuses_it_and_exit_after_jump_quits() {
     goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
     assert!(press(&mut t.app, KeyCode::Enter).is_none());
     let Some(Modal::Confirm(p)) = t.app.modal.take() else { panic!("{}", toast(&t.app)) };
-    assert_eq!(p.command, "nimitz start MAIN/ARGOS/BOOM -p");
+    assert_eq!(p.command, "nimitz open MAIN/ARGOS/BOOM");
 }
 
 #[test]
@@ -725,7 +725,7 @@ fn open_attaches_a_background_session_in_a_new_pane() {
     // beside its commodore, a new tab) and runs it; Admiralty opens nothing itself
     keys(&mut t.app, "A");
     let Some(Modal::Confirm(p)) = t.app.modal.take() else { panic!("{}", toast(&t.app)) };
-    assert_eq!(p.command, "nimitz start MAIN/ARGOS/BOLT -p");
+    assert_eq!(p.command, "nimitz open MAIN/ARGOS/BOLT");
     assert!(p.panes.is_empty(), "the CLI makes the pane");
     assert!(t.mux.calls.lock().unwrap().is_empty(), "nothing opened by Admiralty");
     // a lead is a job too (0.4.0): `A` attaches to it in its own tab
@@ -893,13 +893,13 @@ fn sweep_from_a_band_is_scoped_to_that_band() {
     keys(&mut t.app, "x");
     keys(&mut t.app, "w");
     let Some(Modal::Confirm(p)) = &t.app.modal else { panic!("{}", toast(&t.app)) };
-    assert_eq!(p.command, "nimitz sweep FORGE/IRON");
+    assert_eq!(p.command, "nimitz sweep FORGE/IRON/...");
     press(&mut t.app, KeyCode::Esc);
     goto(&mut t.app, "F:FORGE");
     keys(&mut t.app, "x");
     keys(&mut t.app, "w");
     let Some(Modal::Confirm(p)) = &t.app.modal else { panic!() };
-    assert_eq!(p.command, "nimitz sweep FORGE");
+    assert_eq!(p.command, "nimitz sweep FORGE/...");
 }
 
 // ------------------------------------------------------------------ 80x24 (BUG-36)

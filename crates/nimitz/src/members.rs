@@ -1,5 +1,7 @@
-//! Commands on running members: status, check, up, start, stop, relaunch, rm,
-//! sweep, adopt, signal, open, attach, layout. The plans come from core.
+//! Commands on running members (docs/design/cli-ux.md section 2): status,
+//! check; session control (start, restart, stop, rm, sweep, adopt, signal:
+//! jobs, never panes); pane control (open, attach, close, layout). The plans
+//! come from core.
 use crate::run::{self, refusal};
 use crate::{out, Ctx};
 use nimitz_core::sessions as ses;
@@ -36,10 +38,14 @@ fn live(m: &Member) -> bool {
     m.session.as_ref().map(|s| s.pid.is_some()).unwrap_or(false)
 }
 
-fn status_word(s: Status) -> &'static str {
+/// The status word (decision 3 of docs/design/cli-ux.md): `down` for a member
+/// the active set holds (taken down while active: a `...` start wakes it),
+/// `parked` for one the daemon retired or that was not active.
+fn status_word(s: Status, in_set: bool) -> &'static str {
     match s {
         Status::NotStarted => "not-started",
         Status::Stopped => "stopped",
+        Status::Parked if in_set => "down",
         Status::Parked => "parked",
         Status::Idle => "idle",
         Status::Busy => "busy",
@@ -50,10 +56,19 @@ fn status_word(s: Status) -> &'static str {
 
 // ------------------------------------------------------------------ status, check
 
+/// `nimitz status [<path>...]`: the fleets, their members and issues (the
+/// paths: only the members they cover, and their fleets).
 pub fn status(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
-    ctx.args.at_most(0)?;
+    let all = ctx.args.pos.is_empty();
+    let paths = if all { vec![] } else { parse_paths(&ctx.args.pos)? };
     let mut snap = ctx.snap();
+    if !all {
+        if let Err(i) = nimitz_core::paths::resolve(&snap, &paths) {
+            out::issue(&i);
+            return Ok(1);
+        }
+    }
     let mux = ctx.mux();
     // the shape once: the panes that show members, and the active set
     let shape = if mux.caps().open { mux.shape(false).ok() } else { None };
@@ -65,6 +80,10 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         }
     }
     crate::restore::record_active(ctx, &snap, mux.as_ref(), shape.as_ref());
+    let shown = |id: &Id| all || nimitz_core::paths::covered(&paths, id);
+    if !all {
+        snap.fleets.retain(|f| f.members().any(|m| shown(&m.id)));
+    }
     if out::json_mode() {
         out::json(&snap);
         return Ok(0);
@@ -91,22 +110,33 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         .max()
         .unwrap_or(0)
         .max(26);
+    let set = nimitz_core::active::load(&ctx.env).map(|a| a.members.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    let line = |m: &Member, depth: usize| {
+        if shown(&m.id) {
+            member_line(&ctx.env, m, depth, col, set.contains(&m.id.0));
+        }
+    };
     for f in &snap.fleets {
         let here = f.machine.as_deref().map(|m| format!("runs here as {m}")).unwrap_or("does not run on this machine".into());
         out::line(&format!("{}  ({here})", f.id));
         for i in &f.issues {
             out::issue(i);
         }
-        member_line(&ctx.env, &f.admiral, 1, col);
+        line(&f.admiral, 1);
         for sq in &f.squadrons {
-            member_line(&ctx.env, &sq.commodore, 1, col);
-            for i in &sq.issues {
-                out::issue(i);
+            line(&sq.commodore, 1);
+            if shown(&sq.commodore.id) || sq.ships.iter().any(|m| shown(&m.id)) {
+                for i in &sq.issues {
+                    out::issue(i);
+                }
             }
             for m in &sq.ships {
-                member_line(&ctx.env, m, 2, col);
+                line(m, 2);
             }
         }
+    }
+    if !all {
+        return Ok(0);
     }
     if !snap.stowaways.is_empty() {
         out::line("stowaways (no labels; `nimitz adopt <session> <id>` or `nimitz rm <session>`):");
@@ -121,7 +151,7 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
     Ok(0)
 }
 
-fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize) {
+fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize, in_set: bool) {
     let pad = "  ".repeat(depth);
     let width = col.saturating_sub(pad.len());
     let sess = m
@@ -132,7 +162,7 @@ fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize
     let why = m.reasons.first().cloned().unwrap_or_default();
     let pane = m.pane.as_ref().map(|p| format!("  pane {p}")).unwrap_or_default();
     let pinned = if m.session.as_ref().is_some_and(|s| s.pinned) { "  pinned" } else { "" };
-    out::line(&format!("{pad}{:<width$} {:<11} {:<9} {why}{pane}{pinned}", m.id.0, status_word(m.status), sess));
+    out::line(&format!("{pad}{:<width$} {:<11} {:<9} {why}{pane}{pinned}", m.id.0, status_word(m.status, in_set), sess));
     let mut issues = m.issues.clone();
     for i in ses::session_issues(env, m) {
         if !issues.iter().any(|x| x.code == i.code && x.message == i.message) {
@@ -174,137 +204,150 @@ pub fn check(ctx: &Ctx) -> Result<i32, String> {
     Ok(if errors == 0 { 0 } else { 1 })
 }
 
-// ------------------------------------------------------------------ starting and stopping
+// ------------------------------------------------------------------ session control: jobs, never panes
 
-/// `nimitz up F`: deprecated for one release, unchanged meanwhile (every
-/// member with a row wakes, the rest get their first launch, then the
-/// leads' tabs); it points at `nimitz restore`.
-pub fn up(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&[])?;
-    ctx.args.at_most(1)?;
-    let fleet = ctx.args.need(0, "fleet")?;
-    parse_id(fleet)?;
-    deprecated(&format!("up {fleet}"), &format!("start {fleet}/... --parked` (and `nimitz start <id>` for a first launch"));
-    let snap = ctx.snap();
-    // the jobs first (every member with a row wakes, the rest cold-launch:
-    // `restore --all` plus the first launches), then the shape: the leads'
-    // tabs, like `restore`, with the yes already given (plan-v4 section 13)
-    let code = run::session_plan(ctx, ses::plan_up(&ctx.env, &snap, fleet, &ctx.caller));
-    let mux = ctx.mux();
-    if ctx.plan_only() {
-        if mux.caps().open {
-            out::line(&format!("then: the leads' Herdr tabs (`nimitz start {fleet}/... --plan` shows them once the jobs run)"));
-        }
-        return Ok(code);
-    }
-    if !mux.caps().open {
-        return Ok(code);
-    }
-    if code != 0 {
-        out::line(&format!("[INFO] the leads' tabs were not made; nimitz start {fleet}/... makes them once the jobs run"));
-        return Ok(code);
-    }
-    let opts = nimitz_core::restore::RestoreOpts { parked: true, shape_only: true, ..Default::default() };
-    Ok(crate::restore::run_shape(ctx, &[nimitz_core::paths::Path::Under(Some(Id::admiral(fleet)))], opts, true))
+/// The engine's options every session-control verb shares: the jobs only
+/// (`start`, `restart` make no pane; a relaunch reattaches the pane it cut,
+/// continuity, never a new one), `--parked`, `--force`.
+fn job_opts(ctx: &Ctx) -> nimitz_core::restore::RestoreOpts {
+    nimitz_core::restore::RestoreOpts { parked: ctx.args.flag("--parked"), force: ctx.force(), jobs_only: true, keep_panes: true, ..Default::default() }
 }
 
-/// `nimitz start <path>... [-f] [-p [--tab]] [--fresh] [--parked] [--force]`:
-/// one verb brings any member up and ready (`restore::plan_start`), over the
-/// members the paths cover. `-f` (`--relaunch`) relaunches the live ones too;
-/// `-p` (`--pane`) gives each named member a pane and focuses it (`--tab`:
-/// always its own tab, reused or created); `--fresh` starts its new
-/// conversation; `--parked` wakes parked ships a `...` covers; `--force`
-/// keeps its old meaning (a cold launch over a broken lineage or an untested
-/// Claude Code). The short flags are start's own (read from the
-/// positionals, so no other command, `signal`'s text least of all, ever
-/// reads them). With no multiplexer it brings up the jobs only.
+/// `nimitz start <path>... [--fresh] [--parked] [--force]`: bring members up
+/// (`restore::plan_start`), the jobs only: a member that is down is woken by
+/// its exact id, top-down; one a path names exactly gets a first launch when
+/// it never ran; a worker on an older Claude Code is relaunched. `--fresh`:
+/// a named member's new conversation; `--parked`: the parked and stopped
+/// ships a `...` covers too; `--force`: a cold launch over a broken lineage
+/// or an untested Claude Code. It makes no pane (`open`, `layout`).
 pub fn start(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--fresh", "--parked", "--relaunch", "--pane", "--tab", "--jobs-only", "--here", "--rename"])?;
-    let (mut relaunch, mut pane) = (ctx.args.flag("--relaunch"), ctx.args.flag("--pane"));
-    let mut pos: Vec<String> = vec![];
-    for a in &ctx.args.pos {
-        let short = a.strip_prefix('-').filter(|r| !r.is_empty() && r.chars().all(|c| c == 'f' || c == 'p'));
-        match short {
-            Some(r) => {
-                relaunch |= r.contains('f');
-                pane |= r.contains('p');
-            }
-            None => pos.push(a.clone()),
-        }
-    }
-    let tab = ctx.args.flag("--tab");
-    if tab && !pane {
-        return Err("--tab goes with -p (`nimitz start <id> -p --tab`)".into());
-    }
-    let paths = parse_paths(&pos)?;
-    let jobs_only = ctx.args.flag("--jobs-only") || (!ctx.mux().caps().open && !pane);
-    let opts = nimitz_core::restore::RestoreOpts {
-        parked: ctx.args.flag("--parked"),
-        force: ctx.force(),
-        jobs_only,
-        here: ctx.args.flag("--here"),
-        rename: ctx.args.flag("--rename"),
-        restart: relaunch,
-        pane,
-        tab,
-        fresh: ctx.args.flag("--fresh"),
-        ..Default::default()
-    };
+    ctx.args.allow(&["--fresh", "--parked"])?;
+    let paths = parse_paths(&ctx.args.pos)?;
+    let opts = nimitz_core::restore::RestoreOpts { fresh: ctx.args.flag("--fresh"), ..job_opts(ctx) };
     Ok(crate::restore::run_start(ctx, &paths, opts))
 }
 
-/// A deprecated command's pointer to `start` (stderr under `--json`).
-pub fn deprecated(old: &str, new: &str) {
-    let line = format!("[INFO] `nimitz {old}` is deprecated and goes away in the next release: use `nimitz {new}`");
-    if out::json_mode() {
-        eprintln!("{line}");
-    } else {
-        out::line(&line);
-    }
+/// `nimitz restart <path>... [--parked] [--force]`: relaunch the live
+/// members the paths cover (same id and history, every flag again), and
+/// wake the ones that are down; a pane whose attach the relaunch ends gets
+/// the new job's attach (continuity, never a new pane).
+pub fn restart(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&["--parked"])?;
+    let paths = parse_paths(&ctx.args.pos)?;
+    let opts = nimitz_core::restore::RestoreOpts { restart: true, ..job_opts(ctx) };
+    Ok(crate::restore::run_start(ctx, &paths, opts))
 }
 
+/// A target of `stop` or `rm`: the members a path covers (a path that
+/// covers any), else one session by its job or session id.
+enum Target {
+    Members(nimitz_core::paths::Path, Vec<Id>),
+    Session(String),
+}
+
+fn targets(ctx: &Ctx, snap: &Snapshot) -> Result<Vec<Target>, String> {
+    if ctx.args.pos.is_empty() {
+        return Err(format!("missing path or session ({})", nimitz_core::paths::FORMS));
+    }
+    Ok(ctx
+        .args
+        .pos
+        .iter()
+        .map(|a| match nimitz_core::paths::Path::parse(a) {
+            Ok(p) => match nimitz_core::paths::resolve(snap, std::slice::from_ref(&p)) {
+                Ok(ids) => Target::Members(p, ids),
+                Err(_) if p.member().is_none() => Target::Members(p, vec![]),
+                Err(_) => Target::Session(a.clone()),
+            },
+            Err(_) => Target::Session(a.clone()),
+        })
+        .collect())
+}
+
+/// One plan of several: steps, refusals and warnings in order, each once.
+fn merged(summary: String, plans: Vec<Plan>) -> Plan {
+    let mut out = Plan { summary, ..Default::default() };
+    for p in plans {
+        for st in p.steps {
+            if !out.steps.contains(&st) {
+                out.steps.push(st);
+            }
+        }
+        for i in p.refusals {
+            if !out.refusals.contains(&i) {
+                out.refusals.push(i);
+            }
+        }
+        for i in p.warnings {
+            if !out.warnings.contains(&i) {
+                out.warnings.push(i);
+            }
+        }
+    }
+    out
+}
+
+/// Ships first, then commodores, then admirals (a stop takes a fleet down
+/// from the bottom).
+fn bottom_up(ids: &mut [Id]) {
+    ids.sort_by_key(|i| std::cmp::Reverse(i.parts().len()));
+}
+
+/// `nimitz stop <path|session>...`: stop members (a path; under a `...` the
+/// live ones) or one session by its id; start's opposite.
 pub fn stop(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
-    ctx.args.at_most(1)?;
-    let target = ctx.args.need(0, "id or session")?;
     let snap = ctx.snap();
-    let plan = match parse_id(target).ok().filter(|id| member(&snap, id).is_some()) {
-        Some(id) => ses::plan_stop(&ctx.env, &snap, &id, &ctx.caller),
-        None => plan_stop_row(ctx, &snap, target),
-    };
-    Ok(run::session_plan(ctx, plan))
+    let mut plans = vec![];
+    for t in targets(ctx, &snap)? {
+        match t {
+            Target::Members(p, ids) if ids.is_empty() => plans.push(Plan { refusals: vec![nimitz_core::paths::unknown(&snap, &p)], ..Default::default() }),
+            Target::Members(p, mut ids) => {
+                bottom_up(&mut ids);
+                for id in ids.into_iter().filter(|id| p.member().is_some() || member(&snap, id).is_some_and(live)) {
+                    plans.push(ses::plan_stop(&ctx.env, &snap, &id, &ctx.caller));
+                }
+            }
+            Target::Session(s) => plans.push(ses::plan_stop_session(&ctx.env, &snap, &s, &ctx.caller)),
+        }
+    }
+    Ok(run::session_plan(ctx, merged(format!("stop {}", ctx.args.pos.join(" ")), plans)))
 }
 
-/// `nimitz stop <short>`: one live session by its id (core's plan).
-fn plan_stop_row(ctx: &Ctx, snap: &Snapshot, target: &str) -> Plan {
-    ses::plan_stop_session(&ctx.env, snap, target, &ctx.caller)
-}
-
-pub fn relaunch(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&[])?;
-    ctx.args.at_most(1)?;
-    let id = parse_id(ctx.args.need(0, "id")?)?;
-    deprecated(&format!("relaunch {id}"), nimitz_core::sessions::start_cmd(&id, "-f").trim_start_matches("nimitz "));
-    let snap = ctx.snap();
-    Ok(run::session_plan(ctx, ses::plan_relaunch(&ctx.env, &snap, &id, &ctx.caller)))
-}
-
+/// `nimitz rm <path|session>...`: remove job rows (never transcripts): a
+/// member's stale rows, or one row of a stowaway or a copy by its id.
 pub fn rm(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
-    ctx.args.at_most(1)?;
-    let target = ctx.args.need(0, "id or session")?;
     let snap = ctx.snap();
-    Ok(run::session_plan(ctx, ses::plan_rm(&ctx.env, &snap, target, &ctx.caller)))
+    let mut plans = vec![];
+    for t in targets(ctx, &snap)? {
+        match t {
+            Target::Members(p, ids) if ids.is_empty() => plans.push(Plan { refusals: vec![nimitz_core::paths::unknown(&snap, &p)], ..Default::default() }),
+            Target::Members(_, ids) => plans.extend(ids.iter().map(|id| ses::plan_rm(&ctx.env, &snap, &id.0, &ctx.caller))),
+            Target::Session(s) => plans.push(ses::plan_rm(&ctx.env, &snap, &s, &ctx.caller)),
+        }
+    }
+    Ok(run::session_plan(ctx, merged(format!("rm {}", ctx.args.pos.join(" ")), plans)))
 }
 
+/// `nimitz sweep [<path>...]`: drop stale rows and copies of the members the
+/// paths cover (none: a member's own scope, else everything).
 pub fn sweep(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
-    ctx.args.at_most(1)?;
-    let id = ctx.args.pos.first().map(|s| parse_id(s)).transpose()?;
     let snap = ctx.snap();
-    Ok(run::session_plan(ctx, ses::plan_sweep(&ctx.env, &snap, id.as_ref(), &ctx.caller)))
+    let ids = if ctx.args.pos.is_empty() {
+        None
+    } else {
+        let paths = parse_paths(&ctx.args.pos)?;
+        match nimitz_core::paths::resolve(&snap, &paths) {
+            Ok(ids) => Some(ids),
+            Err(i) => return Ok(finish_plan(ctx, &Plan { summary: format!("sweep {}", ctx.args.pos.join(" ")), refusals: vec![i], ..Default::default() })),
+        }
+    };
+    Ok(run::session_plan(ctx, ses::plan_sweep(&ctx.env, &snap, ids.as_deref(), &ctx.caller)))
 }
 
+/// `nimitz adopt <session> <path>`: make a stowaway a member's session.
 pub fn adopt(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(2)?;
@@ -498,113 +541,90 @@ fn finish_plan(ctx: &Ctx, plan: &Plan) -> i32 {
     }
 }
 
-/// `nimitz open <id>`: focus the pane that shows the member, or attach to its
-/// job in its tab (`claude attach <job>`; detach with ctrl-z).
+// ------------------------------------------------------------------ pane control: open, close, layout
+
+/// `nimitz open <id>... [--tab] [--force]`: a pane for each member, focused
+/// (its pane, its tab, a split beside its commodore, a new tab; `--tab`:
+/// always its own tab, reused or created; `--force`: a second tab beside a
+/// taken one). A member that is down is woken first, by start's own plan.
 pub fn open(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&["--tab"])?;
+    let paths = parse_paths(&ctx.args.pos)?;
+    let opts = nimitz_core::restore::RestoreOpts { force: ctx.force(), pane: true, tab: ctx.args.flag("--tab"), ..Default::default() };
+    Ok(crate::restore::run_start(ctx, &paths, opts))
+}
+
+/// `nimitz close <path>...`: close the panes that show those members, each
+/// only while its foreground is the member's exact `claude attach <job>`
+/// (never a pane that runs anything else); the jobs run on.
+pub fn close(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
-    ctx.args.at_most(1)?;
-    let id = parse_id(ctx.args.need(0, "id")?)?;
-    deprecated(&format!("open {id}"), nimitz_core::sessions::start_cmd(&id, "-p").trim_start_matches("nimitz "));
-    let mut plan = Plan { summary: format!("open {id}"), ..Default::default() };
+    let paths = parse_paths(&ctx.args.pos)?;
     let snap = ctx.snap();
     let mux = ctx.mux();
-    let Some(m) = member(&snap, &id) else {
-        plan.refusals.push(refusal("config.invalid", format!("{id} is not in any fleet config"), None, Some(id)));
-        return Ok(finish_plan(ctx, &plan));
-    };
-    if !mux.caps().open {
-        plan.refusals.push(refusal("mux.none", format!("opening {id} needs a multiplexer ({})", mux.name()), Some(nimitz_mux::missing_mux_fix(&ctx.vars)), Some(id)));
-        return Ok(finish_plan(ctx, &plan));
-    }
-    if let Some(pane) = m.session.as_ref().and_then(|s| run::pane_of(mux.as_ref(), &s.session_id)) {
-        plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["focus".into(), pane.pane_id.clone()], cwd: None, why: "it already has a pane".into() });
-        return match out::gate(&plan, ctx.plan_only(), true) {
-            out::Go::Exit(c) => Ok(c),
-            out::Go::Run => match mux.focus(&pane) {
-                Ok(()) => {
-                    out::ok(&format!("focused {id} in pane {}", pane.pane_id));
-                    Ok(0)
-                }
-                Err(e) => {
-                    out::error(&format!("focus failed: {e}"));
-                    Ok(1)
-                }
-            },
-        };
-    }
-    let tab = match nimitz_core::layout::attach_tab(&ctx.env, m) {
-        Ok(t) => t,
-        Err(i) if i.severity == Severity::Error => {
-            // history.lost, name.drift, labels.missing: the start's business first
+    let mut plan = Plan { summary: format!("close {}", ctx.args.pos.join(" ")), ..Default::default() };
+    let ids = match nimitz_core::paths::resolve(&snap, &paths) {
+        Ok(ids) => ids,
+        Err(i) => {
             plan.refusals.push(i);
             return Ok(finish_plan(ctx, &plan));
         }
-        Err(i) => {
-            // no job, or a process with no job: say so, with what to do
-            let fix = if live(m) { None } else { Some(format!("nimitz start {id}")) };
-            plan.refusals.push(refusal("session.none", i.message, fix, Some(id)));
-            return Ok(finish_plan(ctx, &plan));
-        }
     };
-    let wake = if tab.wakes { "; it wakes the parked job (cli-07)" } else { "" };
-    // what its tab shows now: a pane with it (focus), a shell (claim it), something
-    // else (never typed into), or no tab (open one)
-    match nimitz_mux::tab_state(mux.as_ref(), &tab.cmd, &run::place_for(&id), tab.session_id.as_deref()) {
-        Ok(nimitz_mux::TabState::Shown(p)) => {
-            plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["focus".into(), p.pane_id.clone()], cwd: None, why: format!("its tab {} shows it already", tab.label) })
-        }
-        Ok(nimitz_mux::TabState::Shell(p)) => plan.steps.push(Step {
-            id: Some(id.clone()),
-            cmd: tab.cmd.clone(),
-            cwd: Some(tab.cwd.clone()),
-            why: format!("its tab {} is open and pane {} is a plain shell: attach there{wake}", tab.label, p.pane_id),
-        }),
-        Ok(nimitz_mux::TabState::Taken { pane, running }) => {
-            plan.refusals.push(run::attach_issue(&id, nimitz_mux::AttachError::Taken { pane, running }));
-            return Ok(finish_plan(ctx, &plan));
-        }
-        Ok(nimitz_mux::TabState::Missing) => {
-            plan.steps.push(Step { id: Some(id.clone()), cmd: tab.cmd.clone(), cwd: Some(tab.cwd.clone()), why: format!("attach in a new tab {}{wake}; detaching (ctrl-z) leaves it running", tab.label) })
-        }
-        Err(e) => {
-            plan.refusals.push(refusal("mux.failed", format!("cannot see what {id}'s tab runs ({e}); nothing is typed into a pane nimitz cannot see into"), nimitz_core::active::recorded_server_fix(&ctx.env, &ctx.vars), Some(id)));
-            return Ok(finish_plan(ctx, &plan));
+    if !mux.caps().open {
+        plan.refusals.push(refusal("mux.none", format!("closing a pane needs a multiplexer ({})", mux.name()), Some(nimitz_mux::missing_mux_fix(&ctx.vars)), None));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    let panes = mux.panes();
+    let mut closing: Vec<nimitz_mux::PaneRef> = vec![];
+    for id in &ids {
+        let Some(m) = member(&snap, id) else { continue };
+        let Some(s) = m.session.as_ref() else { continue };
+        let job = s.short_id.clone().unwrap_or_default();
+        for p in panes.iter().filter(|p| p.session_id.as_deref() == Some(s.session_id.as_str())) {
+            // (its attach on any Claude Code: nothing is typed, the pane only closes)
+            if !job.is_empty() && nimitz_mux::attach_check(mux.as_ref(), &p.pane, &job) != nimitz_mux::AttachCheck::Other {
+                plan.steps.push(Step { id: Some(id.clone()), cmd: vec!["herdr".into(), "pane".into(), "close".into(), p.pane.pane_id.clone()], cwd: None, why: format!("it shows {id} (`claude attach {job}`); the job runs on") });
+                closing.push(p.pane.clone());
+            } else {
+                plan.warnings.push(Issue { code: "tab.taken".into(), severity: Severity::Warn, message: format!("pane {} shows {id} but does not run its attach; it is left open", p.pane.pane_id), fix: None, id: Some(id.clone()) });
+            }
         }
     }
-    // Attaching changes no session: no confirmation needed.
-    let code = match out::gate(&plan, ctx.plan_only(), true) {
+    if plan.steps.is_empty() && plan.warnings.is_empty() {
+        plan.warnings.push(Issue { code: "pane.none".into(), severity: Severity::Info, message: "no pane shows them; nothing to close".into(), fix: None, id: None });
+    }
+    // closing a pane changes no session: no confirmation needed
+    match out::gate(&plan, ctx.plan_only(), true) {
         out::Go::Exit(c) => Ok(c),
-        out::Go::Run => match run::attach_in_tab(mux.as_ref(), &ctx.env, m) {
-            Ok(nimitz_mux::Attached::Focused(p)) => {
-                out::ok(&format!("{id} is open already; focused pane {}", p.pane_id));
-                Ok(0)
+        out::Go::Run => {
+            let mut code = 0;
+            for p in &closing {
+                match mux.close_pane(p) {
+                    Ok(()) => out::ok(&format!("closed pane {}", p.pane_id)),
+                    Err(e) => {
+                        out::error(&format!("closing pane {} failed: {e}", p.pane_id));
+                        code = 1;
+                    }
+                }
             }
-            Ok(nimitz_mux::Attached::Claimed(p)) if tab.wakes => {
-                out::ok(&format!("{id}: the attach in its tab's pane {} wakes the parked job; check with nimitz status {id} in a moment", p.pane_id));
-                Ok(0)
-            }
-            Ok(nimitz_mux::Attached::Opened(p)) if tab.wakes => {
-                out::ok(&format!("{id}: the attach in pane {} wakes the parked job; check with nimitz status {id} in a moment", p.pane_id));
-                Ok(0)
-            }
-            Ok(nimitz_mux::Attached::Claimed(p)) => {
-                out::ok(&format!("{id} attached in its tab's pane {}", p.pane_id));
-                Ok(0)
-            }
-            Ok(nimitz_mux::Attached::Opened(p)) => {
-                out::ok(&format!("{id} attached in pane {}", p.pane_id));
-                Ok(0)
-            }
-            Err(i) => {
-                out::issue(&i);
-                Ok(1)
-            }
-        },
-    };
-    if !ctx.plan_only() {
-        crate::restore::record_active(ctx, &snap, mux.as_ref(), None);
+            crate::restore::record_active(ctx, &ctx.snap(), mux.as_ref(), None);
+            Ok(code)
+        }
     }
-    code
+}
+
+/// `nimitz layout <path>... [--ships] [--here] [--rename] [--force]`: the
+/// Herdr shape only (plan-v4 section 13): a tab attaching each lead the
+/// paths cover (a parked lead with a shell tab wakes by the attach; one with
+/// no tab needs `nimitz start` first), `--ships` a tab for each live ship;
+/// `--here` rebuilds it in this Herdr session, `--rename` gives a tab that
+/// shows a member under another name its full name, `--force` opens a
+/// second tab beside a taken one.
+pub fn layout(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&["--ships", "--here", "--rename"])?;
+    let paths = parse_paths(&ctx.args.pos)?;
+    let opts = nimitz_core::restore::RestoreOpts { shape_only: true, ships: ctx.args.flag("--ships"), force: ctx.force(), here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), ..Default::default() };
+    Ok(crate::restore::run_shape(ctx, &paths, opts))
 }
 
 // ------------------------------------------------------------------ attach
@@ -629,7 +649,7 @@ pub fn attach(ctx: &Ctx) -> Result<i32, String> {
     // to be that process); else CLAUDECODE alone, which a terminal or a Herdr
     // server started from a Claude Code tool inherits: said so, with the way out
     let nested = match nimitz_core::sessions::session_above_id(&ctx.env, &ctx.vars) {
-        Some(sid) => Some((format!("this runs inside a Claude Code session (session {} is above this process)", &sid[..sid.len().min(8)]), format!("nimitz attach {id}  # from a plain terminal; or nimitz start {id} -p"))),
+        Some(sid) => Some((format!("this runs inside a Claude Code session (session {} is above this process)", &sid[..sid.len().min(8)]), format!("nimitz attach {id}  # from a plain terminal; or nimitz open {id}"))),
         None if ctx.vars.get("CLAUDECODE").is_some_and(|v| !v.is_empty()) => {
             let unset = if cfg!(windows) { format!("$env:CLAUDECODE = $null; nimitz attach {id}  # PowerShell") } else { format!("env -u CLAUDECODE nimitz attach {id}") };
             Some(("CLAUDECODE is set, so this may run inside a Claude Code session, though none is above this process (a terminal started from one inherits it)".to_string(), format!("{unset}  # when this terminal is not inside Claude Code")))
@@ -735,24 +755,6 @@ fn attached_pane(a: &nimitz_mux::Attached) -> nimitz_mux::PaneRef {
     match a {
         nimitz_mux::Attached::Focused(p) | nimitz_mux::Attached::Claimed(p) | nimitz_mux::Attached::Opened(p) => p.clone(),
     }
-}
-
-// ------------------------------------------------------------------ layout
-
-/// `nimitz layout herdr [<F>] [--ships]`: the shape only, as `nimitz restore`
-/// makes it (plan-v4 section 13): a tab attaching each lead (a parked lead
-/// with a shell tab wakes by the attach; one with no tab needs `nimitz
-/// start` or `nimitz restore` first), `--ships` a tab for each live ship.
-/// Deprecated: an alias for one release, pointing at `nimitz restore`.
-pub fn layout(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--ships"])?;
-    let which = ctx.args.need(0, "multiplexer (herdr)")?;
-    if which != "herdr" {
-        return Err(format!("no layout for {which:?}; only `herdr` is built"));
-    }
-    let paths = if ctx.args.pos.len() < 2 { vec![nimitz_core::paths::Path::Under(None)] } else { parse_paths(&ctx.args.pos[1..])? };
-    let opts = nimitz_core::restore::RestoreOpts { shape_only: true, ships: ctx.args.flag("--ships"), force: ctx.force(), ..Default::default() };
-    Ok(crate::restore::run_shape(ctx, &paths, opts, false))
 }
 
 #[cfg(test)]

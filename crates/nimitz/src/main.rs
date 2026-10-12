@@ -58,79 +58,100 @@ impl Ctx {
     }
 }
 
-const USAGE: &str = "\
-usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
-       nimitz --version
-
-  start [<target>] [-f] [-p [--tab]] [--fresh] [--all]
-                                   bring any member up and ready; the one command after a Claude Code
-                                   update, a Herdr closure or a reboot. <target>: a ship F/SQ/SHIP, a
-                                   squadron F/SQ (its commodore and ships), a fleet F, or none (every
-                                   fleet here). Wakes what is down by its exact id, relaunches workers on
-                                   an older Claude Code, attaches the leads' tabs; the target's own member
-                                   gets a first launch when it never ran. -f (--relaunch): relaunch the
-                                   live ones too (a pane they had is reattached); -p (--pane): a pane for
-                                   it, focused (its pane, its tab, a split beside its commodore, a new tab);
-                                   -p --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL, F.SQ.COMMODORE),
-                                   reused or created, a pane showing it elsewhere left as it is;
-                                   --fresh: a new conversation; --all: parked ships too; --jobs-only: no tabs;
-                                   --only: the target's own member alone (a lead without its fleet or squadron)
-  stop <id|session>                stop a member (or one session); start's opposite
-  attach <id>                      attach to a member in this terminal (claude attach <its exact job>);
-                                   one that is down is woken first by start's plan (--plan, --yes);
-                                   ctrl-z detaches. Yours alone, never from inside a Claude Code session
-  init [--label L]                 data root, machine label, Claude Code's trust of the data root, doctor
-  trust <folder>                   Claude Code's trust for the folder's git root (or the folder): yours alone,
-                                   it lets the folder's .claude settings, hooks and MCP servers run
-  doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs,
-                                   the format steps due, the machines of each fleet
-  rules [<id>]                     the role rules nimitz hands a member at session start
-  status [--json]                  the fleets, their members and issues
-  check [<id>]                     integrity check of <id>, its parents and everything under it
-  fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)
-  fleet settings get [<key>]       the fleet's settings.json (a dotted key: kb.remote); a member reads its own
-  fleet settings set <key> <value> JSON or text, null removes it (--plan|--yes); the fleet's admiral or you
-                                   (--fleet F: yours; a member's is its own fleet)
-  kb path|status|head              the fleet's knowledge base on this machine (settings kb.dirs.<this machine>)
-  kb show <path> | kb grep <term> [<prefix>]   read one commit (HEAD, or --at <sha>); grep is literal, any case
+/// Each command's usage: `nimitz help`, `nimitz help <cmd>` and
+/// `nimitz <cmd> --help` print it (the first is every one, in this order).
+const USAGES: &[(&str, &str)] = &[
+    ("init", "  init [--label L]                 data root, machine label, Claude Code's trust of the data root, doctor"),
+    ("trust", "  trust <folder>                   Claude Code's trust for the folder's git root (or the folder): it lets
+                                   the folder's .claude settings, hooks and MCP servers run"),
+    ("doctor", "  doctor [--fix]                   hooks, crossSessionInbound, native claude, versions, formats, role briefs,
+                                   the format steps due, the machines of each fleet"),
+    ("rules", "  rules [<id>]                     the role rules nimitz hands a member at session start"),
+    ("status", "  status [<path>...] [--json]      the fleets, their members and issues (paths: only those members);
+                                   down: taken down while active (a ... start wakes it); parked: retired by
+                                   the daemon or not active (--parked wakes it)"),
+    ("check", "  check [<id>]                     integrity check of <id>, its parents and everything under it"),
+    ("fleet", "  fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)"),
+    ("squadron", "  squadron new|set|rm <F/SQ>       --brief T --mode M"),
+    ("ship", "  ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B"),
+    ("machine", "  machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
+                                   rm warns about live members when <label> is this machine"),
+    ("settings", "  settings get [<key>]             the fleet's settings.json (a dotted key: kb.remote)
+  settings set <key> <value>       JSON or text, null removes it (--plan|--yes)
+                                   (--fleet F; a member's default is its own fleet)"),
+    ("harness", "  harness list                     the fleet's harness: its rules, agents, skills and settings (a member: its own)
+  harness add rule|agent|skill|settings <file|folder> [--name N] [--for F/SQ|F/SQ/SHIP [--member]]
+                                   into the fleet's harness (--plan|--yes); settings: model, outputStyle,
+                                   permissions, env only
+  harness rm rule|agent|skill <name> | harness rm settings [--for ID [--member]]
+                                   out of it (kept as .archived)
+  harness push                     make this machine's harness plugin again; say what is live and what needs restart"),
+    ("kb", "  kb path|status|head              the fleet's knowledge base on this machine (settings kb.dirs.<this machine>)
+  kb show <path> | kb grep <term> [<prefix>]
+                                   read one commit (HEAD, or --at <sha>); grep is literal, any case
   kb hash <path>                   sha256 of a file's body after its frontmatter (a note's id)
   kb commit --title T --paths A,B --pages X,Y --note <sha256> --from \"<kind> <id>\"
                                    commit exactly those paths, once per note, then sync (--no-sync: not)
   kb restore --paths A,B           undo a failed ingest (what was there is kept under NIMITZ_STATE/kb-restore)
   kb sync                          pull --rebase, then push
-  kb clone                         clone kb.remote into this machine's folder (yours alone; --plan|--yes)
-  harness list                     the fleet's harness: its rules, agents, skills and settings (a member: its own)
-  harness add rule|agent|skill|settings <file|folder> [--name N] [--for F/SQ|F/SQ/SHIP [--member]]
-                                   into the fleet's harness (--plan|--yes; the admiral's, from its own
-                                   folder, or yours); settings: model, outputStyle, permissions, env only
-  harness rm rule|agent|skill <name> | harness rm settings [--for ID [--member]]   out of it (kept as .archived)
-  harness push                     make this machine's harness plugin again; say what is live and what needs start -f
-  squadron new|set|rm <F/SQ>       --brief T --mode M
-  ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
-  machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
-                                   rm warns about live members when <label> is this machine
-  rm <id|session>                  remove job rows (never transcripts)
-  sweep [<id>]                     drop stale rows and copies of members
-  adopt <session> <id>             make a stowaway an identity's session
-  signal <id> <text>               type to a member in its tab, else post to its inbox (ships: through the commodore)
-  migrate --plan|--yes [--shared]  the format steps due here (docs/design/migrations.md): local ones run by
+  kb clone                         clone kb.remote into this machine's folder (--plan|--yes)"),
+    ("migrate", "  migrate --plan|--yes [--shared]  the format steps due here (docs/design/migrations.md): local ones run by
                                    themselves with the first command after an update; --shared runs the shared
-                                   ones (fleet.toml), which affect every machine: update each one first. Yours alone
+                                   ones (fleet.toml), which affect every machine: update each one first
   migrate fleet-skill <dir...> --into <F>
-                                   import old fleet-skill fleets
-  hook <Event>                     Claude Code hook (reads stdin, always exits 0)
-  sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)
+                                   import old fleet-skill fleets"),
+    ("start", "  start <path>... [--fresh] [--parked]
+                                   bring members up, the jobs only (no pane): what is down is woken by its
+                                   exact id, top-down; a member a path names gets a first launch when it never
+                                   ran; a worker on an older Claude Code is relaunched. --fresh: a named
+                                   member's new conversation; --parked: the parked and stopped ships a ...
+                                   covers too; --force: a cold launch over a broken lineage or an untested
+                                   Claude Code"),
+    ("restart", "  restart <path>... [--parked]     relaunch the live members (same id and history, every flag again) and wake
+                                   the ones that are down; a pane whose attach the relaunch ends is reattached"),
+    ("stop", "  stop <path|session>...           stop members (under a ...: the live ones), or one session by its id"),
+    ("rm", "  rm <path|session>...             remove job rows (never transcripts): a member's stale rows, or one row by its id"),
+    ("sweep", "  sweep [<path>...]                drop stale rows and copies of members (none: a member's own, else every one)"),
+    ("adopt", "  adopt <session> <id>             make a stowaway an identity's session"),
+    ("signal", "  signal <id> <text> [--inbox]     yours: typed into the member's tab (opened first when it has none), your own
+                                   input; --inbox, or any member's signal: posted to its inbox as a request that
+                                   names the sender. A member that is down is refused, never woken"),
+    ("open", "  open <id>... [--tab] [--force]   a pane for each member, focused (its pane, its tab, a split beside its
+                                   commodore, a new tab); --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL,
+                                   F.SQ.COMMODORE), reused or created; --force: a second tab beside a taken one.
+                                   One that is down is woken first"),
+    ("attach", "  attach <id>                      attach this terminal (claude attach <its exact job>); one that is down is
+                                   woken first (--plan, --yes); ctrl-z detaches; never from inside a Claude
+                                   Code session"),
+    ("close", "  close <path>...                  close the panes that show those members (only a pane that runs its
+                                   attach); the jobs run on"),
+    ("layout", "  layout <path>... [--ships] [--here] [--rename] [--force]
+                                   the Herdr tabs only: one attaching each lead the paths cover (--ships: and
+                                   each live ship); --here: in this Herdr session; --rename: give a tab that
+                                   shows a member under another name its full name; --force: a second tab
+                                   beside a taken one"),
+    ("hook", "  hook <Event>                     Claude Code hook (reads stdin, always exits 0)"),
+    ("sandbox", "  sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)"),
+];
 
-  deprecated, gone in the next release (each prints its start):
-  restore [<F>] [--restart]        start [<F>] [-f]
-  relaunch <id>                    start <id> -f (a lead: start <id> --only -f)
-  open <id>                        start <id> -p (a lead: start <id> --only -p)
-  up <F>                           start <F> --all, and start <id> for a first launch
-  layout herdr [<F>]               start [<F>]
+const HEAD: &str = "usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
+       nimitz --version
+       nimitz help [<command>]   (or nimitz <command> --help)";
 
-  -v shows a plan's details and commands; colour on a terminal only (NO_COLOR turns it off)
+const PATHS: &str = "paths: F (an admiral), F/SQ (a commodore), F/SQ/SHIP (a ship), each one member;
+       F/... and F/SQ/... everything under one, the lead included; //... every fleet
+       (never ADMIRALTY). Several per command; a member matched twice counts once";
 
-ids: F (admiral), F/SQ (commodore), F/SQ/SHIP (ship)";
+const TAIL: &str = "  -v shows a plan's details and commands; colour on a terminal only (NO_COLOR turns it off)";
+
+/// The usage of every command, or of `cmd` alone.
+fn usage(cmd: Option<&str>) -> String {
+    let body: Vec<&str> = USAGES.iter().filter(|(n, _)| cmd.is_none_or(|c| c == *n)).map(|(_, u)| *u).collect();
+    match cmd {
+        None => format!("{HEAD}\n\n{}\n\n{TAIL}\n\n{PATHS}", body.join("\n")),
+        Some(_) => format!("usage:\n{}\n\n{PATHS}", body.join("\n")),
+    }
+}
 
 fn main() {
     let argv: Vec<String> = nimitz_core::os::args();
@@ -172,8 +193,17 @@ fn dispatch(argv: Vec<String>) -> i32 {
             return 0;
         }
         "" | "help" | "--help" | "-h" => {
-            println!("{USAGE}");
+            let of = argv.get(1).map(String::as_str).filter(|_| cmd == "help");
+            if let Some(c) = of.filter(|c| !USAGES.iter().any(|(n, _)| n == c)) {
+                return usage_error(&format!("no command {c:?}"));
+            }
+            println!("{}", usage(of));
             return if cmd.is_empty() { 2 } else { 0 };
+        }
+        // `<cmd> --help`: its own usage, before anything parses its arguments
+        c if argv[1..].iter().any(|a| a == "--help") && USAGES.iter().any(|(n, _)| *n == c) => {
+            println!("{}", usage(Some(c)));
+            return 0;
         }
         _ => {}
     }
@@ -224,9 +254,10 @@ fn dispatch(argv: Vec<String>) -> i32 {
 }
 
 /// Every command that takes a `Ctx` (parsed args, the caller from the
-/// labels), in usage order. The hidden `__commands` prints the names, so the
-/// role test runs every one of them as every role (none is refused on
-/// authority, 0.7.3).
+/// labels), in usage order (docs/design/cli-ux.md section 2: fleet shape,
+/// session control, pane control, the rest). The hidden `__commands` prints
+/// the names, so the role test runs every one of them as every role (none is
+/// refused on authority, 0.7.3), and the usage test finds each one's usage.
 const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("init", setup::init),
     ("trust", setup::trust),
@@ -238,22 +269,24 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("squadron", crud::squadron),
     ("ship", crud::ship),
     ("machine", crud::machine),
-    ("kb", kb_cmd::kb),
+    ("settings", kb_cmd::settings),
     ("harness", harness_cmd::harness),
+    ("kb", kb_cmd::kb),
     ("migrate", crud::migrate),
-    ("up", members::up),
     ("start", members::start),
+    ("restart", members::restart),
     ("stop", members::stop),
-    ("relaunch", members::relaunch),
     ("rm", members::rm),
     ("sweep", members::sweep),
     ("adopt", members::adopt),
     ("signal", members::signal),
     ("open", members::open),
     ("attach", members::attach),
-    ("restore", restore::restore),
+    ("close", members::close),
     ("layout", members::layout),
     ("sandbox", sandbox_cmd::sandbox),
+    // the restore engine whole, until `muster` (0.7.3 build step 6) names it
+    ("__muster", restore::muster),
     ("__commands", |_| {
         for (name, _) in COMMANDS {
             if !name.starts_with("__") {

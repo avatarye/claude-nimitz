@@ -141,7 +141,7 @@ fn row2_live_name_drift_refuses_with_a_relaunch() {
     let plan = w.start(&snap, &id, false);
     assert!(!plan.ok());
     let i = plan.refusals.iter().find(|i| i.code == "name.drift").expect("name.drift");
-    assert_eq!(i.fix.as_deref(), Some("nimitz start MAIN/ARGOS/DRIFT -f"));
+    assert_eq!(i.fix.as_deref(), Some("nimitz restart MAIN/ARGOS/DRIFT"));
     assert!(plan.steps.is_empty());
 }
 
@@ -375,7 +375,7 @@ fn sweep_removes_stale_rows_without_starting_anything() {
     let w = world();
     let snap = w.snap();
     let id = w.ship("COPIES");
-    let plan = sessions::plan_sweep(&w.env, &snap, Some(&id), &Caller::User);
+    let plan = sessions::plan_sweep(&w.env, &snap, Some(std::slice::from_ref(&id)), &Caller::User);
     assert_eq!(plan.steps.len(), 2);
     assert!(plan.steps.iter().all(|s| s.cmd.contains(&"rm".to_string())));
     let out = sessions::apply(&w.env, &plan);
@@ -413,7 +413,7 @@ fn sweep_any_scope_for_anyone_a_members_default_its_own() {
         (Some(Id::admiral("BETA")), Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral }),
         (None, Caller::Member { id: w.ship("CLEAN"), role: Role::Ship }),
     ] {
-        let p = sessions::plan_sweep(&w.env, &snap, target.as_ref(), &caller);
+        let p = sessions::plan_sweep(&w.env, &snap, target.as_ref().map(std::slice::from_ref), &caller);
         assert!(p.ok(), "{target:?} {caller:?}: {:?}", p.refusals);
     }
     // an admiral: its own fleet, by default and by name
@@ -421,9 +421,10 @@ fn sweep_any_scope_for_anyone_a_members_default_its_own() {
     let plan = sessions::plan_sweep(&w.env, &snap, None, &adm);
     assert!(plan.ok() && plan.steps.iter().all(|s| s.id.as_ref().is_some_and(|i| i.fleet() == "MAIN")), "{:?}", plan);
     assert!(plan.steps.iter().any(|s| s.id.as_ref() == Some(&w.ship("COPIES"))));
-    assert!(sessions::plan_sweep(&w.env, &snap, Some(&argos), &adm).ok());
-    // you: a squadron id sweeps everything under it
-    let plan = sessions::plan_sweep(&w.env, &snap, Some(&argos), &Caller::User);
+    assert!(sessions::plan_sweep(&w.env, &snap, Some(std::slice::from_ref(&argos)), &adm).ok());
+    // you: a squadron's `...` sweeps everything under it
+    let under = nimitz_core::paths::resolve(&snap, &[nimitz_core::paths::Path::Under(Some(argos.clone()))]).unwrap();
+    let plan = sessions::plan_sweep(&w.env, &snap, Some(&under), &Caller::User);
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
     let after = w.snap();
@@ -1179,7 +1180,7 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
     assert_eq!(m.issues.iter().filter(|i| i.code == "legacy" && i.severity == Severity::Info).count(), 2, "{:?}", m.issues);
 
     // sweep offers them (it is a plan you confirm), and removes them when applied
-    let sweep = sessions::plan_sweep(&w.env, &after, Some(&id), &Caller::User);
+    let sweep = sessions::plan_sweep(&w.env, &after, Some(std::slice::from_ref(&id)), &Caller::User);
     let rms: Vec<&Step> = sweep.steps.iter().filter(|s| s.why.contains("old fleet")).collect();
     assert_eq!(rms.len(), 2, "{:?}", sweep.steps);
     assert!(sessions::apply(&w.env, &sweep).verified);
@@ -1381,7 +1382,7 @@ fn strays_in_a_ship_folder_are_never_the_ship() {
     assert!(!touches(&start), "{:?}", start.steps);
     let relaunch = sessions::plan_relaunch(&w.env, &snap, &id, &Caller::User);
     assert!(!touches(&relaunch), "{:?}", relaunch.steps);
-    let sweep = sessions::plan_sweep(&w.env, &snap, Some(&id), &Caller::User);
+    let sweep = sessions::plan_sweep(&w.env, &snap, Some(std::slice::from_ref(&id)), &Caller::User);
     assert!(!touches(&sweep), "{:?}", sweep.steps);
     assert!(sweep.steps.iter().any(|s| s.cmd.contains(&old)), "the old legacy row is offered: {:?}", sweep.steps);
     // and after the start ran, the strays are as they were
@@ -1876,7 +1877,7 @@ fn m24_a_leads_job_is_pinned_after_a_start_and_unpinned_when_its_row_goes() {
     let copies = w.ship("COPIES");
     let extra = w.member(&w.snap(), &copies).extra_rows[0].short_id.clone().unwrap();
     assert_eq!(w.fake(&["__pin", &extra]).0, 0);
-    let out = sessions::apply(&w.env, &sessions::plan_sweep(&w.env, &w.snap(), Some(&copies), &Caller::User));
+    let out = sessions::apply(&w.env, &sessions::plan_sweep(&w.env, &w.snap(), Some(std::slice::from_ref(&copies)), &Caller::User));
     assert!(out.verified, "{:?}", out.issues);
     assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(&extra)), "the row went");
     assert!(pins(&w).contains(&extra), "the user's pin stays: it is not nimitz's");
@@ -2066,7 +2067,7 @@ fn m19_a_stopped_renamed_job_is_name_drift_and_a_start_restores_the_name() {
     assert_eq!(m.status, Status::Stopped);
     let drift = m.issues.iter().find(|i| i.code == "name.drift").expect("stopped: name.drift too");
     assert!(drift.message.contains(&short) && drift.message.contains("\"sb1\"") && drift.message.contains("a wake would keep"), "{}", drift.message);
-    assert_eq!(drift.fix.as_deref(), Some(format!("nimitz start {id} -f").as_str()));
+    assert_eq!(drift.fix.as_deref(), Some(format!("nimitz restart {id}").as_str()));
     // start repairs it: rm the row, then resume with every flag (same id, history, right name)
     let plan = w.start(&snap, &id, false);
     assert!(plan.ok(), "{:?}", plan.refusals);
@@ -2158,7 +2159,7 @@ fn an_attach_never_wakes_a_job_the_start_would_relabel() {
     let m = w.member(&w.snap(), &id);
     let e = nimitz_core::layout::attach_tab(&w.env, &m).unwrap_err();
     assert_eq!((e.code.as_str(), e.severity), ("name.drift", Severity::Error));
-    assert_eq!(e.fix.as_deref(), Some(format!("nimitz start {id}  # relabels it, then nimitz start {id} -p").as_str()));
+    assert_eq!(e.fix.as_deref(), Some(format!("nimitz start {id}  # relabels it, then nimitz open {id}").as_str()));
     let bare = w.member(&w.snap(), &w.ship("BARE"));
     assert_eq!(nimitz_core::layout::attach_tab(&w.env, &bare).unwrap_err().code, "labels.missing");
     let parked = w.member(&w.snap(), &w.ship("STOPPED"));

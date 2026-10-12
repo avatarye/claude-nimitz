@@ -209,7 +209,7 @@ fn cli_l8_an_interactive_fork_is_a_copy_ended_in_its_terminal() {
     let i = m.issues.iter().find(|i| i.code == "copy").unwrap();
     assert!(i.fix.as_deref().unwrap().starts_with("end it in its terminal"), "{i:?}");
     // sweep cannot end it: it says so, with the same fix, and runs nothing
-    let plan = sessions::plan_sweep(&w.env, &snap, Some(&id), &Caller::User);
+    let plan = sessions::plan_sweep(&w.env, &snap, Some(std::slice::from_ref(&id)), &Caller::User);
     assert!(plan.steps.is_empty(), "{:?}", plan.steps);
     assert!(plan.warnings.iter().any(|i| i.code == "copy" && i.fix.as_deref().unwrap().starts_with("end it in its terminal")), "{:?}", plan.warnings);
 }
@@ -278,7 +278,7 @@ fn cli_g4_sweep_stops_and_removes_background_copies_after_one_confirm() {
     let snap = w.snap();
     let m = w.member(&snap, &id);
     assert_eq!(m.issues.iter().filter(|i| i.code == "copy").count(), 2, "{:?}", m.issues);
-    let plan = sessions::plan_sweep(&w.env, &snap, Some(&id), &Caller::User);
+    let plan = sessions::plan_sweep(&w.env, &snap, Some(std::slice::from_ref(&id)), &Caller::User);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let cmds: Vec<String> = plan.steps.iter().map(|s| s.cmd[1..].join(" ")).collect();
     assert!(cmds.contains(&format!("stop {live_copy}")) && cmds.contains(&format!("rm {live_copy}")), "{cmds:?}");
@@ -297,7 +297,7 @@ fn cli_g4_sweep_stops_and_removes_background_copies_after_one_confirm() {
     let stopped_again = W::short_of(&w.claude_ok(&["--bg", "--resume", &sid, "--fork-session"], &cwd));
     w.claude_ok(&["stop", &stopped_again], &cwd);
     let ship = Caller::Member { id: id.clone(), role: Role::Ship };
-    let plan = sessions::plan_sweep(&w.env, &w.snap(), Some(&id), &ship);
+    let plan = sessions::plan_sweep(&w.env, &w.snap(), Some(std::slice::from_ref(&id)), &ship);
     assert!(plan.ok() && plan.steps.iter().any(|s| s.cmd[1..].join(" ") == format!("stop {live_again}")), "{:?}", plan.steps);
     assert!(plan.steps.iter().any(|s| s.cmd[1..].join(" ") == format!("rm {stopped_again}")), "{:?}", plan.steps);
 }
@@ -312,7 +312,7 @@ fn a_start_with_a_live_copy_refuses_and_names_it() {
     assert!(has(&plan.refusals, "dup.live"), "{:?}", codes(&plan.refusals));
     assert!(plan.refusals.iter().any(|i| i.message.contains(&copy)), "{:?}", plan.refusals);
     // after a sweep, the start goes ahead as a plain resume
-    let sweep = sessions::plan_sweep(&w.env, &snap, Some(&id), &Caller::User);
+    let sweep = sessions::plan_sweep(&w.env, &snap, Some(std::slice::from_ref(&id)), &Caller::User);
     assert!(sessions::apply(&w.env, &sweep).verified);
     let plan = sessions::plan_start(&w.env, &w.snap(), &id, &Caller::User, false);
     assert!(plan.ok(), "{:?}", plan.refusals);

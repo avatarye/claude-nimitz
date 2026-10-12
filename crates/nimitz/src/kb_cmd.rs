@@ -139,7 +139,7 @@ fn clone(ctx: &Ctx, fleet: &str) -> Result<i32, String> {
     ctx.args.allow(&["--fleet"])?;
     ctx.args.at_most(1)?;
     let k = fleet_settings::kb(&ctx.env, fleet)?;
-    let remote = k.remote.clone().ok_or(format!("fleet {fleet}'s knowledge base names no remote: nimitz fleet settings set kb.remote <git url> --fleet {fleet}"))?;
+    let remote = k.remote.clone().ok_or(format!("fleet {fleet}'s knowledge base names no remote: nimitz settings set kb.remote <git url> --fleet {fleet}"))?;
     if k.dir.join(".git").exists() {
         out::ok(&format!("{} is cloned already", k.dir.display()));
         return Ok(0);
@@ -157,11 +157,11 @@ fn clone(ctx: &Ctx, fleet: &str) -> Result<i32, String> {
     Ok(0)
 }
 
-/// `nimitz fleet settings get [<key>]` / `set <key> <value>` (`null`
-/// removes it): every member reads its own fleet's; the admiral and the
-/// user change them, planned.
+/// `nimitz settings get [<key>]` / `set <key> <value>` (`null` removes it):
+/// the fleet's settings.json (`--fleet F`, a member's default its own),
+/// read, or changed planned.
 pub fn settings(ctx: &Ctx) -> Result<i32, String> {
-    let verb = ctx.args.need(1, "get|set")?.to_string();
+    let verb = ctx.args.need(0, "get|set")?.to_string();
     ctx.args.allow(&["--fleet"])?;
     let fleet = match fleet_of(ctx) {
         Ok(f) => f,
@@ -169,10 +169,10 @@ pub fn settings(ctx: &Ctx) -> Result<i32, String> {
     };
     match verb.as_str() {
         "get" => {
-            ctx.args.at_most(3)?;
+            ctx.args.at_most(2)?;
             let f = nimitz_core::config::load_fleet(&ctx.env, &fleet).map_err(|i| i.message)?;
             let m = fleet_settings::load(&f)?;
-            let v = match ctx.args.pos.get(2) {
+            let v = match ctx.args.pos.get(1) {
                 None => serde_json::Value::Object(m),
                 Some(key) => match fleet_settings::get(&m, key)? {
                     Some(v) => v.clone(),
@@ -189,12 +189,12 @@ pub fn settings(ctx: &Ctx) -> Result<i32, String> {
             Ok(0)
         }
         "set" => {
-            ctx.args.at_most(4)?;
-            let key = ctx.args.need(2, "the key (e.g. kb.remote)")?;
-            let value = fleet_settings::parse_value(ctx.args.need(3, "the value (JSON, or text; null removes the key)")?);
+            ctx.args.at_most(3)?;
+            let key = ctx.args.need(1, "the key (e.g. kb.remote)")?;
+            let value = fleet_settings::parse_value(ctx.args.need(2, "the value (JSON, or text; null removes the key)")?);
             let plan = fleet_settings::plan_set(&ctx.env, &fleet, key, (!value.is_null()).then_some(value));
             Ok(crate::crud::config_plan(ctx, plan))
         }
-        v => Err(format!("fleet settings {v}: use get or set")),
+        v => Err(format!("settings {v}: use get or set")),
     }
 }

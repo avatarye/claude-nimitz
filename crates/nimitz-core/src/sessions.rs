@@ -191,7 +191,7 @@ fn copy_how(r: &SessionInfo) -> &'static str {
 pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
     let mut out = vec![];
     let id = Some(m.id.clone());
-    let relaunch = Some(start_cmd(&m.id, "-f"));
+    let relaunch = Some(restart_cmd(&m.id));
     let rows: Vec<&SessionInfo> = m.session.iter().chain(m.extra_rows.iter()).collect();
     // a lead's folder is exclusive: a live extra row there (a /fork, a hand
     // launch with its labels) is its `lead.intruder` (the snapshot names it,
@@ -283,7 +283,7 @@ pub fn session_issues(env: &Env, m: &Member) -> Vec<Issue> {
                         p.cwd,
                         if gone { "gone" } else { "not trusted" }
                     ),
-                    Some(format!("{}  # a labelled copy in the new folder", start_cmd(&m.id, "-f"))),
+                    Some(format!("{}  # a labelled copy in the new folder", restart_cmd(&m.id))),
                     id.clone(),
                 ));
             }
@@ -365,7 +365,7 @@ pub fn registry_issues(env: &Env, cache: &mut crate::evidence::FileCache, m: &Me
                 "lineage.stale",
                 Severity::Warn,
                 format!("{}'s registry names {} but its job would wake on {}; the job's conversation wins", m.id, &stale[..stale.len().min(8)], &p.session_id[..p.session_id.len().min(8)]),
-                Some(start_cmd(&m.id, "-f")),
+                Some(restart_cmd(&m.id)),
                 Some(m.id.clone()),
             ));
         }
@@ -410,10 +410,9 @@ pub fn name_taken_issue(m: &Member, others: &[SessionInfo]) -> Option<Issue> {
 
 // ------------------------------------------------------------------ the caller
 
-/// The `nimitz start` that acts on `id` alone (its exact path), with
-/// `flags` (`-f`, `-p`).
-pub fn start_cmd(id: &Id, flags: &str) -> String {
-    format!("nimitz start {id} {flags}")
+/// The command that relaunches `id` alone (same id and history).
+pub fn restart_cmd(id: &Id) -> String {
+    format!("nimitz restart {id}")
 }
 
 /// Is the caller (a member, by its labels) `target` or under it? A stop, a
@@ -957,7 +956,8 @@ fn already_refused(plan: &Plan, id: &Id) -> bool {
     plan.refusals.iter().any(|i| i.id.as_ref() == Some(id) || i.id.is_none())
 }
 
-/// `nimitz up <fleet>`: start every member that should run on this machine.
+/// Start every member of `fleet` that should run on this machine (the `up`
+/// of 0.6; Admiralty's `u` until 0.7.3 settles its keys).
 pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("up {fleet}: reconcile the config with the running sessions"), ..Default::default() };
     let _ = caller;
@@ -1251,7 +1251,7 @@ pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Pl
     if let Some(h) = held_of(m) {
         let i = held_issue(m, h);
         let live = m.session.as_ref().is_some_and(|p| p.pid.is_some() && p.short_id.is_some());
-        let fix = i.fix.map(|f| if live { format!("{f}, then {}", start_cmd(id, "-f")) } else { f });
+        let fix = i.fix.map(|f| if live { format!("{f}, then {}", restart_cmd(id)) } else { f });
         refuse(&mut plan, "session.interactive", i.message, fix, Some(id.clone()));
         return plan;
     }
@@ -1334,7 +1334,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
                 "copy.rows",
                 Severity::Info,
                 format!("{target} has no stale rows{own}"),
-                m.session.as_ref().map(|_| format!("{}  # replaces the row (same conversation); {retire} retires the member", start_cmd(&m.id, "-f"))),
+                m.session.as_ref().map(|_| format!("{}  # replaces the row (same conversation); {retire} retires the member", restart_cmd(&m.id))),
                 Some(m.id.clone()),
             ));
         }
@@ -1396,7 +1396,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
             &mut plan,
             "lineage.current",
             format!("session {} is {member}'s current session; its row goes with the member, never alone", row.session_id),
-            Some(format!("{}  # replaces the row (same conversation); {retire} retires the member", start_cmd(&member, "-f"))),
+            Some(format!("{}  # replaces the row (same conversation); {retire} retires the member", restart_cmd(&member))),
             Some(member.clone()),
         );
         return plan;
@@ -1471,26 +1471,28 @@ fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
     }
 }
 
-/// Drop every stale copy row: everything, a fleet, a squadron or one identity
-/// (`id` and every member under it). A member's sweep with no id sweeps its
-/// own scope (itself and everything under it); yours, everything.
-pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) -> Plan {
+/// Drop every stale copy row of the members `ids` names (the CLI resolves
+/// its paths into them); none: a member caller's own scope (itself and
+/// everything under it), else everything.
+pub fn plan_sweep(env: &Env, snap: &Snapshot, ids: Option<&[Id]>, caller: &Caller) -> Plan {
+    let under = |m: &Id, t: &Id| m == t || m.0.starts_with(&format!("{}/", t.0));
     let own = match caller {
         Caller::Member { id: me, .. } if me.well_formed() => Some(me.clone()),
         _ => None,
     };
-    let id = id.or(own.as_ref());
-    let scope = id.map(|i| i.0.clone()).unwrap_or_else(|| "everything".into());
+    let scope = match (ids, &own) {
+        (Some(v), _) => v.iter().map(|i| i.0.clone()).collect::<Vec<_>>().join(" "),
+        (None, Some(me)) => me.0.clone(),
+        (None, None) => "everything".into(),
+    };
     let mut plan = Plan { summary: format!("sweep {scope}"), ..Default::default() };
-    let under = |m: &Id, t: &Id| m == t || m.0.starts_with(&format!("{}/", t.0));
-    if let Some(t) = id {
-        if !members(snap).iter().any(|(_, m)| under(&m.id, t)) {
-            refuse(&mut plan, "member.unknown", format!("{t} names no fleet member"), Some("nimitz status".into()), Some(t.clone()));
-            return plan;
-        }
-    }
+    let in_scope = |m: &Id| match (ids, &own) {
+        (Some(v), _) => v.contains(m),
+        (None, Some(me)) => under(m, me),
+        (None, None) => true,
+    };
     for (_, m) in members(snap) {
-        if id.map(|t| under(&m.id, t)).unwrap_or(true) {
+        if in_scope(&m.id) {
             sweep_member(env, &mut plan, m);
         }
     }
@@ -1500,7 +1502,7 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
     let legacy: HashMap<String, Id> = fleets.iter().flat_map(crate::config::legacy_map).collect();
     for st in snap.stowaways.iter().filter(|s| s.pid.is_none()) {
         let (Some(owner), Some(short)) = (legacy.get(&st.name), st.short_id.as_ref()) else { continue };
-        if id.map(|t| under(owner, t)).unwrap_or(true) && member(snap, owner).is_some() {
+        if in_scope(owner) && member(snap, owner).is_some() {
             plan.steps.push(Step {
                 id: Some(owner.clone()),
                 cmd: crate::claude::rm(env, short),
@@ -1542,7 +1544,7 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
         "labels.missing",
         Severity::Warn,
         format!("{} has no labels; they arrive at its next relaunch", row.session_id),
-        Some(start_cmd(id, "-f")),
+        Some(restart_cmd(id)),
         Some(id.clone()),
     ));
     plan.steps.push(Step {
@@ -1774,7 +1776,7 @@ fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
             "name.drift",
             Severity::Error,
             format!("{id} started as {:?}, expected {:?}", row.name, id.name()),
-            Some(start_cmd(id, "-f")),
+            Some(restart_cmd(id)),
             Some(id.clone()),
         ));
     }
@@ -1785,7 +1787,7 @@ fn verify_live(env: &Env, id: &Id, sid: &str, cwd: Option<&str>) -> Vec<Issue> {
             "labels.missing",
             Severity::Error,
             format!("{id}'s new session {sid} carries no (or foreign) labels"),
-            Some(start_cmd(id, "-f")),
+            Some(restart_cmd(id)),
             Some(id.clone()),
         ));
     }
@@ -1978,7 +1980,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     "step.failed",
                     Severity::Error,
                     format!("the job row {} of {} still exists; a resume with flags would start an empty copy", r.short_id.unwrap_or_default(), r.session_id),
-                    step.id.as_ref().map(|i| start_cmd(i, "-f")),
+                    step.id.as_ref().map(|i| restart_cmd(i)),
                     step.id.clone(),
                 ));
                 return out;
@@ -2131,7 +2133,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                                 match crate::pins::pin(env, job) {
                                     Ok(true) => note(&mut out, "; pinned"),
                                     Ok(false) => {}
-                                    Err(e) => out.issues.push(issue("pin.failed", Severity::Warn, format!("{id}'s job {job} could not be pinned ({e}); the daemon may retire it when idle"), Some(format!("{}  # pins it again", start_cmd(id, "-f"))), Some(id.clone()))),
+                                    Err(e) => out.issues.push(issue("pin.failed", Severity::Warn, format!("{id}'s job {job} could not be pinned ({e}); the daemon may retire it when idle"), Some(format!("{}  # pins it again", restart_cmd(id))), Some(id.clone()))),
                                 }
                             }
                         }
@@ -2534,7 +2536,7 @@ mod tests {
         let ship = Caller::Member { id: me.clone(), role: Role::Ship };
         assert_eq!(plan_sweep(&env, &snap, None, &ship).summary, "sweep MAIN/ARGOS/ARGOS");
         for target in [Id::commodore("MAIN", "ARGOS"), Id::admiral("MAIN")] {
-            let p = plan_sweep(&env, &snap, Some(&target), &ship);
+            let p = plan_sweep(&env, &snap, Some(std::slice::from_ref(&target)), &ship);
             assert!(p.ok(), "{target}: {:?}", p.refusals);
         }
         assert_eq!(plan_sweep(&env, &snap, None, &Caller::User).summary, "sweep everything");

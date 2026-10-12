@@ -320,7 +320,7 @@ fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
         return;
     }
     let fix = format!("set resume_agents_on_restore = false under [session] in {}  # nimitz never edits it", path.display());
-    let effect = "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz restore` then cannot wake it until you /exit there (tab.resumed)";
+    let effect = "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz start` then cannot wake it until you /exit there (tab.resumed)";
     match std::fs::read_to_string(&path).ok().map(|t| herdr_resume_off(&t)) {
         Some(Some(true)) => r.ok(&format!("Herdr {}: resume_agents_on_restore is off", path.display())),
         Some(Some(false)) => r.warn(&format!("Herdr {}: resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),

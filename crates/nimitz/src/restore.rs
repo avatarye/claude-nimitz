@@ -1,10 +1,10 @@
-//! `nimitz restore [<F>] [--all] [--restart] [--force] [--jobs-only] [--here]
-//! [--rename]` (plan-v4 section 13): the one command after a Claude Code
-//! update, a Herdr closure or crash, or a reboot. Core plans it
-//! (`nimitz_core::restore::plan`, which tells the three apart per member);
-//! this runs the steps: a wake or a relaunch through `sessions::apply`, a
-//! claim, an open or a reattach through the mux, a pin. `up` and `layout
-//! herdr` are deprecated for one release and point here.
+//! The restore engine's runner (plan-v4 section 13; docs/design/cli-ux.md):
+//! `start`, `restart` and `open` (`restore::plan_start`), `layout` (the
+//! shape only) and the hidden `__muster` (`restore::plan`, the one command
+//! after a Claude Code update, a Herdr closure or a reboot, which tells the
+//! three apart per member). Core plans; this runs the steps: a wake or a
+//! relaunch through `sessions::apply`, a claim, an open or a reattach
+//! through the mux, a pin.
 //!
 //! Every run also records the active set (`active.json`), as `status`,
 //! `open` and `layout` do (`record_active`).
@@ -92,28 +92,29 @@ pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&n
     let _ = active::write(&ctx.env, set);
 }
 
-/// `nimitz restore [<path>...] [--parked] [--restart] [--force] [--jobs-only] [--here] [--rename]`
-/// (no path: `//...`).
-pub fn restore(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--parked", "--restart", "--jobs-only", "--here", "--rename"])?;
+/// `nimitz __muster [<path>...] [--parked] [--force] [--here] [--rename]`
+/// (no path: `//...`): the restore engine whole, hidden until `muster`
+/// (0.7.3 build step 6) names it.
+pub fn muster(ctx: &Ctx) -> Result<i32, String> {
+    ctx.args.allow(&["--parked", "--restart", "--here", "--rename"])?;
     let paths = if ctx.args.pos.is_empty() { vec![nimitz_core::paths::Path::Under(None)] } else { crate::members::parse_paths(&ctx.args.pos)? };
-    let opts = rs::RestoreOpts { parked: ctx.args.flag("--parked"), force: ctx.force(), jobs_only: ctx.args.flag("--jobs-only"), here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), restart: ctx.args.flag("--restart"), ..Default::default() };
-    Ok(run_shape(ctx, &paths, opts, false))
+    let jobs_only = !ctx.mux().caps().open;
+    let opts = rs::RestoreOpts { parked: ctx.args.flag("--parked"), force: ctx.force(), jobs_only, here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), restart: ctx.args.flag("--restart"), ..Default::default() };
+    Ok(run_shape(ctx, &paths, opts))
 }
 
-/// Plan, gate and run one restore (or a shape-only pass). `confirmed`: the
-/// user said yes already (`up` runs its tab pass after its own gate).
-pub fn run_shape(ctx: &Ctx, paths: &[nimitz_core::paths::Path], opts: rs::RestoreOpts, confirmed: bool) -> i32 {
-    run_engine(ctx, paths, false, opts, confirmed)
+/// Plan, gate and run one restore (or a shape-only pass).
+pub fn run_shape(ctx: &Ctx, paths: &[nimitz_core::paths::Path], opts: rs::RestoreOpts) -> i32 {
+    run_engine(ctx, paths, false, opts)
 }
 
-/// `nimitz start <path>...`: the same engine, planned by `restore::plan_start`.
+/// `nimitz start|restart|open <path>...`: the same engine, planned by `restore::plan_start`.
 pub fn run_start(ctx: &Ctx, paths: &[nimitz_core::paths::Path], opts: rs::RestoreOpts) -> i32 {
-    run_engine(ctx, paths, true, opts, false)
+    run_engine(ctx, paths, true, opts)
 }
 
 /// Plan (`restore::plan`, or `plan_start` for `start`), gate and run.
-fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: rs::RestoreOpts, confirmed: bool) -> i32 {
+fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: rs::RestoreOpts) -> i32 {
     let snap = ctx.snap();
     // the fleets the paths reach, for the checks after and the run's record
     let fleets: Vec<String> = snap.fleets.iter().filter(|f| f.members().any(|m| nimitz_core::paths::covered(paths, &m.id))).map(|f| f.id.0.clone()).collect();
@@ -121,13 +122,13 @@ fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: 
     let named = paths.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
     let mux = ctx.mux();
     let has_mux = mux.caps().open;
-    let (shape, raw) = if has_mux && !opts.jobs_only {
+    let (shape, raw) = if has_mux && (!opts.jobs_only || opts.keep_panes) {
         match shape_of(mux.as_ref(), true) {
             Ok((s, r)) => (s, Some(r)),
             Err(e) => {
-                let verb = if start { "start" } else if opts.shape_only { "layout herdr" } else { "restore" };
+                let verb = if start { "start" } else if opts.shape_only { "layout" } else { "restore" };
                 // a server taken from the record (outside Herdr) says which, and what works
-                let fix = active::recorded_server_fix(&ctx.env, &ctx.vars).map(|f| format!("{f}; or nimitz start {named} --jobs-only"));
+                let fix = active::recorded_server_fix(&ctx.env, &ctx.vars).map(|f| format!("{f}; or nimitz start {named}  # the jobs, no panes"));
                 let plan = Plan { summary: format!("{verb} {named}"), refusals: vec![refusal("mux.failed", format!("cannot read the Herdr shape ({e}); nothing is typed into panes nimitz cannot see"), fix, None)], ..Default::default() };
                 return finish(ctx, &plan);
             }
@@ -143,7 +144,7 @@ fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: 
         rs::plan(&ctx.env, &snap, &shape, act.as_ref(), herdr.as_ref(), has_mux, paths, opts, &ctx.caller)
     };
     for r in rp.plan.refusals.iter_mut().filter(|r| r.code == "mux.none" && !opts.pane) {
-        r.fix = Some(format!("{}; or `nimitz start {named} --jobs-only` to wake the jobs without tabs", nimitz_mux::missing_mux_fix(&ctx.vars)));
+        r.fix = Some(format!("{}; or `nimitz start {named}` to wake the jobs without tabs", nimitz_mux::missing_mux_fix(&ctx.vars)));
     }
     if !rp.plan.ok() {
         return finish(ctx, &rp.plan);
@@ -168,13 +169,11 @@ fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: 
         }
         return code;
     }
-    if !confirmed {
-        match ctx.gate(&rp.plan) {
-            out::Go::Exit(code) => return code,
-            out::Go::Run => {}
-        }
-    } else {
-        out::plan(&rp.plan);
+    // panes alone change no session (an `open` of live members): no confirmation
+    let panes_only = opts.pane && rp.steps.iter().all(|s| !matches!(s, rs::RestoreStep::Wake { .. } | rs::RestoreStep::Relaunch { .. }) && !matches!(s, rs::RestoreStep::Claim { wakes: true, .. } | rs::RestoreStep::Open { wakes: true, .. }));
+    match out::gate(&rp.plan, ctx.plan_only(), ctx.yes() || panes_only) {
+        out::Go::Exit(code) => return code,
+        out::Go::Run => {}
     }
     let (outcome, failed) = execute(ctx, mux.as_ref(), &rp, &fleets);
     crate::view::run(&rp.plan, &outcome, &failed);
@@ -209,7 +208,7 @@ fn report(rp: &rs::RestorePlan, failed: &[Id], issues: &[Issue]) -> i32 {
     // only what could not be restored is an error: the planner's failures
     // and the executor's (a config finding that rides along is not)
     let errors = rp.fleets.iter().map(|f| f.failed).sum::<usize>() + issues.iter().filter(|i| i.severity == Severity::Error).count();
-    let start = rp.plan.summary.starts_with("start ");
+    let start = ["start ", "restart ", "open "].iter().any(|v| rp.plan.summary.starts_with(v));
     let (none, done) = if start { ("nothing to start", "up") } else { ("nothing to restore", "restored") };
     for f in &rp.fleets {
         let failed_here = failed.iter().filter(|id| id.fleet() == f.fleet).count() + f.failed;
@@ -293,7 +292,7 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleets: &[String]) ->
                     for d in step.display() {
                         out.ran.push((d, 0, format!("skipped: {id} is {} now", status.as_deref().unwrap_or_default())));
                     }
-                    out.issues.push(Issue { code: "relaunch.busy".into(), severity: Severity::Info, message: format!("{id} turned busy after the plan: not relaunched now"), fix: Some(format!("{}  # once it is idle", nimitz_core::sessions::start_cmd(&id, "-f"))), id: Some(id.clone()) });
+                    out.issues.push(Issue { code: "relaunch.busy".into(), severity: Severity::Info, message: format!("{id} turned busy after the plan: not relaunched now"), fix: Some(format!("{}  # once it is idle", nimitz_core::sessions::restart_cmd(&id))), id: Some(id.clone()) });
                     prog.done = n + 1;
                     let _ = rs::progress_write(env, &prog);
                     continue;
@@ -499,7 +498,7 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleets: &[String]) ->
                     Ok(false) => out.ran.push((display, 0, "pinned already".into())),
                     Err(e) => {
                         out.ran.push((display, 1, e.to_string()));
-                        out.issues.push(Issue { code: "pin.failed".into(), severity: Severity::Warn, message: format!("{id}'s job {job} could not be pinned ({e}); the daemon may retire it when idle"), fix: Some(format!("{}  # pins it again", nimitz_core::sessions::start_cmd(&id, "-f"))), id: Some(id.clone()) });
+                        out.issues.push(Issue { code: "pin.failed".into(), severity: Severity::Warn, message: format!("{id}'s job {job} could not be pinned ({e}); the daemon may retire it when idle"), fix: Some(format!("{}  # pins it again", nimitz_core::sessions::restart_cmd(&id))), id: Some(id.clone()) });
                     }
                 }
             }
@@ -572,7 +571,7 @@ fn after_wake(ctx: &Ctx, out: &mut Outcome, failed: &mut Vec<Id>, id: &Id, cwd: 
                         Ok(true) if out::verbose() => out::ok(&format!("{id}: pinned {job}")),
                         Ok(true) => {}
                         Ok(false) => {}
-                        Err(e) => out.issues.push(Issue { code: "pin.failed".into(), severity: Severity::Warn, message: format!("{id}'s job {job} could not be pinned ({e})"), fix: Some(format!("{}  # pins it again", nimitz_core::sessions::start_cmd(&id, "-f"))), id: Some(id.clone()) }),
+                        Err(e) => out.issues.push(Issue { code: "pin.failed".into(), severity: Severity::Warn, message: format!("{id}'s job {job} could not be pinned ({e})"), fix: Some(format!("{}  # pins it again", nimitz_core::sessions::restart_cmd(&id))), id: Some(id.clone()) }),
                     }
                 }
             }

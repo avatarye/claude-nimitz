@@ -187,14 +187,14 @@ pub const HELP: &[(&str, &str)] = &[
     ("z", "show / hide the member's crew that finished over 30 min ago (+N finished)"),
     ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
-    ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz start <id> -p, confirms); else fold / unfold"),
+    ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz open <id>, confirms); else fold / unfold"),
     ("J / K", "next / previous row with a pane"),
     ("!", "everything waiting on you"),
     ("i", "every issue, with its fix command"),
     ("a", "start it: nimitz start <id> (confirms)"),
     ("u", "up (deprecated): everything the fleet runs here, first launches too (confirms)"),
-    ("A", "a pane for it, focused: nimitz start <id> -p (one that shows it: jump there)"),
-    ("x", "actions: stop, relaunch (start -f), sweep, rm, adopt, remove; on a fleet: R start the fleet, layout, machines"),
+    ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
+    ("x", "actions: stop, relaunch (restart), sweep, rm, adopt, remove; on a fleet: R bring the fleet back, layout, machines"),
     ("m", "message (ships: relayed by their commodore)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
@@ -884,7 +884,7 @@ impl App {
                     }
                     return None;
                 }
-                // anything else: `nimitz start <id> -p` (its tab, a split beside
+                // anything else: `nimitz open <id>` (its tab, a split beside
                 // its commodore, a new tab; a parked job wakes)
                 // a stowaway is no member: its tab's shell takes the attach here
                 Ok(nimitz_mux::TabState::Shell(pane)) if !matches!(self.target(), Target::Member(_)) => {
@@ -935,7 +935,7 @@ impl App {
                 }
                 Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
             },
-            // a member with no pane: `nimitz start <id> -p` gives it one
+            // a member with no pane: `nimitz open <id>` gives it one
             Err(_) if self.ctx.live && matches!(self.target(), Target::Member(_)) && self.available(Act::Open).is_ok() => return self.start_act(Act::Open),
             Err(why) => self.notify(format!("No pane to jump to for {}: {why}", full_name(&r)), st(mono::WARN)),
         }

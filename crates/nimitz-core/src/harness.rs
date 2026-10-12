@@ -8,7 +8,7 @@
 //!   this machine (`NIMITZ_STATE/harness/<fleet>/plugin`, named
 //!   `fleet-<fleet>`) and gives every launch with `--plugin-dir` (a wake keeps
 //!   it: it is in the job's `respawnFlags`); a running member picks a change
-//!   up at a relaunch (`start -f`);
+//!   up at a relaunch (`nimitz restart`);
 //! - `settings/fleet.json`, `settings/squadrons/<SQ>.json`,
 //!   `settings/members/<id with . for />.json`: merged in that order (fleet,
 //!   squadron, member) under nimitz's own `--settings` (its labels and its

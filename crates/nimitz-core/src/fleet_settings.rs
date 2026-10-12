@@ -1,8 +1,8 @@
 //! A fleet's settings: `<NIMITZ_HOME>/<fleet>/settings.json`, beside
 //! fleet.toml but apart from it (its own format, so a key one machine does
 //! not know never stops another from loading the fleet). Members read it
-//! (`nimitz fleet settings get`); the fleet's admiral and the user change it
-//! (`nimitz fleet settings set`, planned). Keys are free; the ones nimitz
+//! (`nimitz settings get`); any caller changes it
+//! (`nimitz settings set`, planned). Keys are free; the ones nimitz
 //! reads are checked on a write:
 //!
 //! - `kb`: the fleet's knowledge base, `{"remote": "<git url>", "dirs":
@@ -137,12 +137,12 @@ pub fn problems(m: &Map<String, Value>, machines: &std::collections::BTreeMap<St
     out
 }
 
-/// The plan of `fleet settings set <key> <value>` (`None`: remove the key):
+/// The plan of `settings set <key> <value>` (`None`: remove the key):
 /// one write of the whole file. Refused while the file does not read here,
 /// or when the result breaks a key nimitz reads.
 pub fn plan_set(env: &Env, fleet: &str, key: &str, value: Option<Value>) -> Plan {
     let fid = Id::admiral(fleet);
-    let mut plan = Plan { summary: format!("fleet settings set {key} ({fleet})"), ..Default::default() };
+    let mut plan = Plan { summary: format!("settings set {key} ({fleet})"), ..Default::default() };
     let refuse = |plan: &mut Plan, code: &str, msg: String| plan.refusals.push(Issue { code: code.into(), severity: Severity::Error, message: msg, fix: None, id: Some(fid.clone()) });
     let f = match crate::config::load_fleet(env, fleet) {
         Ok(f) => f,
@@ -198,14 +198,14 @@ pub fn kb(env: &Env, fleet: &str) -> Result<Kb, String> {
     let f = crate::config::load_fleet(env, fleet).map_err(|i| i.message)?;
     let m = load(&f)?;
     let Some(Value::Object(kb)) = m.get("kb") else {
-        return Err(format!("fleet {fleet} has no knowledge base (no kb in {}): the user sets one with `nimitz fleet settings set kb.remote <git url> --fleet {fleet}`", path(&f.dir).display()));
+        return Err(format!("fleet {fleet} has no knowledge base (no kb in {}): set one with `nimitz settings set kb.remote <git url> --fleet {fleet}`", path(&f.dir).display()));
     };
     let Some(label) = f.machine.clone() else {
         return Err(format!("this machine is not in fleet {fleet}'s [machines]"));
     };
     let remote = kb.get("remote").and_then(Value::as_str).map(|r| r.trim().to_string());
     let Some(dir) = kb.get("dirs").and_then(|d| d.get(&label)).and_then(Value::as_str) else {
-        return Err(format!("fleet {fleet}'s knowledge base has no folder on this machine ({label}): the user sets one with `nimitz fleet settings set kb.dirs '{{\"{label}\": \"<folder>\"}}' --fleet {fleet}` (with the other machines' folders too), then `nimitz kb clone --fleet {fleet}`"));
+        return Err(format!("fleet {fleet}'s knowledge base has no folder on this machine ({label}): set one with `nimitz settings set kb.dirs '{{\"{label}\": \"<folder>\"}}' --fleet {fleet}` (with the other machines' folders too), then `nimitz kb clone --fleet {fleet}`"));
     };
     Ok(Kb { fleet: f.config.fleet.clone(), label, dir: crate::config::expand_dir(dir.trim()), remote })
 }

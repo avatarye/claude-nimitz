@@ -658,6 +658,10 @@ impl Mux for Herdr {
         self.run(&["tab", "rename", tab_id, label]).map(|_| ())
     }
 
+    fn close_pane(&self, pane: &PaneRef) -> Result<(), MuxError> {
+        self.run(&["pane", "close", &pane.pane_id]).map(|_| ())
+    }
+
     fn caps(&self) -> Caps {
         Caps { open: true, focus: true, type_text: true, layout: true }
     }

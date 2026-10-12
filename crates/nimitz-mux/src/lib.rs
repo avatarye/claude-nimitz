@@ -193,6 +193,13 @@ pub trait Mux {
         let _ = (tab_id, label);
         Err(MuxError::Unsupported("renaming a tab"))
     }
+
+    /// Close a pane (`herdr pane close`): `nimitz close` takes the panes that
+    /// show a member, and only one whose foreground is the member's attach.
+    fn close_pane(&self, pane: &PaneRef) -> Result<(), MuxError> {
+        let _ = pane;
+        Err(MuxError::Unsupported("closing a pane"))
+    }
 }
 
 /// Is this the argv of a shell sitting at its prompt (nothing in the

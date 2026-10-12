@@ -129,8 +129,8 @@ fn soft(n: usize) -> String {
 fn live_when(kind: Kind) -> &'static str {
     match kind {
         Kind::Rule => "every member gets it at its next prompt",
-        Kind::Agent | Kind::Skill => "a member launched from now on has it (a running one: nimitz start F/... -f)",
-        Kind::Settings => "at each member's next launch (nimitz start F/... -f)",
+        Kind::Agent | Kind::Skill => "a member launched from now on has it (a running one: nimitz restart F/...)",
+        Kind::Settings => "at each member's next launch (nimitz restart F/...)",
     }
 }
 
@@ -189,5 +189,5 @@ fn push(ctx: &Ctx, fleet: &str) {
     out::line(&format!("  rules: live, every member gets them at its next prompt"));
     out::line("  agents, skills: in members launched from now on");
     out::line(&format!("  settings: at each member's next launch"));
-    out::line(&format!("  to relaunch every live member of the fleet now: nimitz start {fleet}/... -f --plan  # then --yes"));
+    out::line(&format!("  to relaunch every live member of the fleet now: nimitz restart {fleet}/... --plan  # then --yes"));
 }
