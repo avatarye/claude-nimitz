@@ -17,6 +17,31 @@ pub fn parse_id(s: &str) -> Result<Id, String> {
     }
 }
 
+/// Parse one member for a command that takes exactly one (`why`: what makes
+/// it one, `attach: a terminal attaches one session`): a pattern (`F/...`,
+/// `//...`) is refused with why and the exact form to use.
+pub fn parse_one(s: &str, why: &str) -> Result<Id, String> {
+    match nimitz_core::paths::Path::parse(s) {
+        Ok(nimitz_core::paths::Path::Under(lead)) => {
+            let exact = lead.map(|l| l.0).unwrap_or_else(|| "F, F/SQ or F/SQ/SHIP".into());
+            Err(format!("{s:?} covers a set of members; {why}: name one exactly ({exact})"))
+        }
+        _ => parse_id(s),
+    }
+}
+
+/// A fleet's name (`--fleet F`, `machine add F`; `why`: what makes it one
+/// fleet): a pattern or a member below a fleet is refused with the fleet's
+/// name to use.
+pub fn fleet_name(s: &str, why: &str) -> Result<String, String> {
+    match nimitz_core::paths::Path::parse(s) {
+        Ok(nimitz_core::paths::Path::Member(id)) if id.parts().len() == 1 => Ok(id.0),
+        Ok(nimitz_core::paths::Path::Member(id) | nimitz_core::paths::Path::Under(Some(id))) => Err(format!("{s:?} is not a fleet's name; {why}: name the fleet ({})", id.fleet())),
+        Ok(nimitz_core::paths::Path::Under(None)) => Err(format!("{s:?} covers every fleet; {why}: name one fleet (F)")),
+        Err(_) => Err(format!("{s:?} is not a fleet's name (F; names are [A-Z0-9_]+)")),
+    }
+}
+
 /// Parse paths (`nimitz_core::paths`): at least one.
 pub fn parse_paths(args: &[String]) -> Result<Vec<nimitz_core::paths::Path>, String> {
     nimitz_core::paths::parse_all(args)
@@ -188,12 +213,42 @@ fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize
     }
 }
 
+/// `nimitz check [<path>...]`: the integrity findings of the members the
+/// paths cover, their parents and everything under them (none: everything;
+/// `//...`: every fleet but ADMIRALTY). An exact lead covers its members as
+/// its `...` does (bug 24: a check never hides a ship's errors).
 pub fn check(ctx: &Ctx) -> Result<i32, String> {
+    use nimitz_core::check::check_tree;
+    use nimitz_core::paths::Path;
     ctx.args.allow(&[])?;
-    ctx.args.at_most(1)?;
-    let id = ctx.args.pos.first().map(|s| parse_id(s)).transpose()?;
+    let paths = if ctx.args.pos.is_empty() { vec![] } else { parse_paths(&ctx.args.pos)? };
     let snap = ctx.snap();
-    let mut issues = nimitz_core::check::check_tree(&ctx.env, &snap, id.as_ref());
+    // a path that matches nothing is no clean check: `member.unknown`, with what is there
+    let unknown: Vec<Issue> = paths.iter().filter_map(|p| nimitz_core::paths::resolve(&snap, std::slice::from_ref(p)).err()).collect();
+    if !unknown.is_empty() {
+        if out::json_mode() {
+            out::json(&unknown);
+        } else {
+            unknown.iter().for_each(out::issue);
+        }
+        return Ok(1);
+    }
+    let mut issues: Vec<Issue> = vec![];
+    let found: Vec<Issue> = match paths.is_empty() {
+        true => check_tree(&ctx.env, &snap, None),
+        false => paths
+            .iter()
+            .flat_map(|p| match p {
+                Path::Member(id) | Path::Under(Some(id)) => check_tree(&ctx.env, &snap, Some(id)),
+                Path::Under(None) => check_tree(&ctx.env, &snap, None).into_iter().filter(|i| !i.id.as_ref().is_some_and(|x| x.fleet() == nimitz_core::restore::ADMIRALTY_WORKSPACE)).collect(),
+            })
+            .collect(),
+    };
+    for i in found {
+        if !issues.contains(&i) {
+            issues.push(i);
+        }
+    }
     issues.sort_by(|a, b| b.severity.cmp(&a.severity));
     let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
     if out::json_mode() {
@@ -202,7 +257,7 @@ pub fn check(ctx: &Ctx) -> Result<i32, String> {
         for i in &issues {
             out::issue(i);
         }
-        let scope = id.as_ref().map(|i| i.0.clone()).unwrap_or("everything".into());
+        let scope = if paths.is_empty() { "everything".to_string() } else { ctx.args.pos.join(" ") };
         if errors == 0 {
             out::ok(&format!("check {scope}: no errors ({} other finding(s))", issues.len()));
         } else {
@@ -410,53 +465,132 @@ pub fn adopt(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(2)?;
     let session = ctx.args.need(0, "session")?;
-    let id = parse_id(ctx.args.need(1, "id")?)?;
+    let id = parse_one(ctx.args.need(1, "member")?, "adopt makes one session one member's")?;
     let snap = ctx.snap();
     Ok(run::session_plan(ctx, ses::plan_adopt(&ctx.env, &snap, session, &id, &ctx.caller)))
 }
 
 // ------------------------------------------------------------------ signal, open
 
-/// `nimitz signal <id> <text> [--inbox]`: any caller messages any member.
-/// Yours types into the member's attached tab (opened first when it has
-/// none): your own input. `--inbox`, a member's signal, or a tab that cannot
-/// be typed into: its inbox, a cross-session message from nimitz that names
-/// the sender, a request and never the user's approval. A member that is
-/// down is refused (`nimitz start <id>` first), never woken by a signal.
+/// `nimitz signal <path> <text> [--inbox]`: any caller messages any member,
+/// or every live member under a `F/...` or `F/SQ/...` (one path: the rest is
+/// the text; never `//...`, a turn in every fleet at once). Yours types into
+/// the member's attached tab (opened first when it has none): your own
+/// input. `--inbox`, a member's signal, or a tab that cannot be typed into:
+/// its inbox, a cross-session message from nimitz that names the sender, a
+/// request and never the user's approval. A member named exactly that is
+/// down is refused (`nimitz start <id>` first), never woken by a signal;
+/// under a `...` it is skipped. One plan, one gate: a refusal for any member
+/// sends nothing.
 pub fn signal(ctx: &Ctx) -> Result<i32, String> {
+    use nimitz_core::paths::Path;
     ctx.args.allow(&["--inbox"])?;
-    let id = parse_id(ctx.args.need(0, "id")?)?;
+    let target = ctx.args.need(0, "path")?;
+    let path = Path::parse(target)?;
+    if path == Path::Under(None) {
+        return Err(format!("signal {target}: a signal starts a turn in every member it reaches; name one fleet's (F/...) or squadron's (F/SQ/...) members, or one member"));
+    }
+    let snap = ctx.snap();
+    // `signal F/SQ/A F/SQ/B hi`: the text's first word a member's path, not a
+    // second target (a path form, with a `/`: a bare name, `MAIN is down`, is text)
+    if let (Some(first), true) = (ctx.args.pos.get(1), ctx.args.pos.len() > 2) {
+        if first.contains('/') && Path::parse(first).is_ok_and(|p| nimitz_core::paths::resolve(&snap, std::slice::from_ref(&p)).is_ok()) {
+            return Err(format!("signal takes one path; the text starts with a path ({first}): quote the text, or send one signal per path"));
+        }
+    }
     // Typed into a pane: no control characters, no newlines (BUG-43).
     let text = nimitz_mux::sanitize_text(&ctx.args.pos[1..].join(" "));
     if text.is_empty() {
         return Err("missing text (nothing is left after removing control characters)".into());
     }
-    let snap = ctx.snap();
-    let mut plan = Plan { summary: format!("signal {id}"), ..Default::default() };
-    let Some(via) = member(&snap, &id) else {
-        plan.refusals.push(refusal("member.unknown", format!("{id} is not in any fleet config"), None, Some(id)));
-        return Ok(finish_plan(ctx, &plan));
+    let mut plan = Plan { summary: format!("signal {path}"), ..Default::default() };
+    // (a `...` never reaches its own sender; one named exactly may be)
+    let me = ses::verified(&ctx.caller).cloned();
+    let mut but_sender = "";
+    let ids = match nimitz_core::paths::resolve(&snap, std::slice::from_ref(&path)) {
+        Ok(ids) if path.member().is_none() => {
+            if me.as_ref().is_some_and(|m| ids.contains(m)) {
+                but_sender = " but the sender";
+            }
+            ids.into_iter().filter(|id| Some(id) != me.as_ref()).collect::<Vec<_>>()
+        }
+        Ok(ids) => ids,
+        Err(_) if path.member().is_some() => {
+            let id = path.member().cloned();
+            plan.refusals.push(refusal("member.unknown", format!("{target} is not in any fleet config"), None, id));
+            return Ok(finish_plan(ctx, &plan));
+        }
+        Err(i) => {
+            plan.refusals.push(i);
+            return Ok(finish_plan(ctx, &plan));
+        }
     };
-    if !live(via) {
-        plan.refusals.push(refusal("session.none", format!("{id} is not live; a signal never wakes it"), Some(format!("nimitz start {id}")), Some(id.clone())));
-        return Ok(finish_plan(ctx, &plan));
-    }
     let from = match (&ctx.caller, ses::verified(&ctx.caller)) {
         (_, Some(me)) => format!("from {me}"),
         (Caller::Member { .. }, None) => "from a caller whose NIMITZ_* labels are partial or disagree (unverified)".to_string(),
         (Caller::User, None) => "from a `nimitz signal` run with no member labels".to_string(),
     };
-    let body = format!("[nimitz signal] A message for {id}, relayed by nimitz {from}. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {text}");
-    let why = "type into its attached tab".to_string();
     let mux = ctx.mux();
+    let (mut deliveries, mut down) = (vec![], vec![]);
+    for id in &ids {
+        let Some(via) = member(&snap, id) else { continue };
+        if !live(via) {
+            match path.member() {
+                Some(_) => plan.refusals.push(refusal("session.none", format!("{id} is not live; a signal never wakes it"), Some(format!("nimitz start {id}")), Some(id.clone()))),
+                None => down.push(id.0.clone()),
+            }
+            continue;
+        }
+        let body = format!("[nimitz signal] A message for {id}, relayed by nimitz {from}. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {text}");
+        if let Some(d) = prepare(ctx, mux.as_ref(), via, body, &text, &mut plan) {
+            deliveries.push(d);
+        }
+    }
+    if !down.is_empty() && !deliveries.is_empty() {
+        let message = format!("not live, skipped (a signal never wakes one): {}", down.join(", "));
+        plan.warnings.push(Issue { code: "session.none".into(), severity: Severity::Info, message, fix: None, id: None });
+    }
+    if deliveries.is_empty() && plan.refusals.is_empty() {
+        plan.refusals.push(refusal("session.none", format!("no member under {path}{but_sender} is live; a signal never wakes one"), Some(format!("nimitz start {path}")), path.member().cloned()));
+    }
+    if !plan.refusals.is_empty() {
+        return Ok(finish_plan(ctx, &plan));
+    }
+    match ctx.gate(&plan) {
+        out::Go::Exit(code) => Ok(code),
+        out::Go::Run => Ok(deliveries.iter().map(|d| deliver(ctx, mux.as_ref(), d, &text)).max().unwrap_or(0)),
+    }
+}
+
+/// How a signal reaches one member.
+enum Reach {
+    /// its inbox: the sockets its own process listens on, and that process
+    Inbox(Vec<std::path::PathBuf>, i64),
+    /// typed into the pane that shows it (`recheck`: a pane known by its
+    /// attach alone, read again just before typing)
+    Pane(nimitz_mux::PaneRef, bool),
+    /// attached in a tab first, then typed
+    NewTab,
+}
+
+struct Delivery<'a> {
+    via: &'a Member,
+    reach: Reach,
+    body: String,
+    job: String,
+}
+
+/// One member's delivery and its steps in `plan`, or its refusal there.
+fn prepare<'a>(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, via: &'a Member, body: String, text: &str, plan: &mut Plan) -> Option<Delivery<'a>> {
+    let why = "type into its attached tab".to_string();
     let inbox = ctx.args.flag("--inbox") || ctx.caller != Caller::User;
     // its attached tab first: text typed there is the user's own input
-    let shown = via.session.as_ref().filter(|_| !inbox && mux.caps().type_text).and_then(|s| run::shown_in(mux.as_ref(), &s.session_id));
+    let shown = via.session.as_ref().filter(|_| !inbox && mux.caps().type_text).and_then(|s| run::shown_in(mux, &s.session_id));
     // a pane known by its attach alone takes typing only while it runs
     // exactly `claude attach <job>` (the agent view re-execs as `claude
     // agents`, R-24); read now, and again just before typing
     let job = via.session.as_ref().and_then(|s| s.short_id.clone()).unwrap_or_default();
-    let exact = |p: &nimitz_mux::Pane| nimitz_mux::runs_exact_attach(mux.as_ref(), &p.pane, &job);
+    let exact = |p: &nimitz_mux::Pane| nimitz_mux::runs_exact_attach(mux, &p.pane, &job);
     let untypeable = shown.as_ref().is_some_and(|p| p.inferred && !exact(p));
     let mut no_inbox = None;
     if inbox || !mux.caps().type_text || untypeable {
@@ -466,19 +600,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
                     let at = socks.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" or ");
                     let what = if inbox { "post it into its inbox (the first socket its own process listens on), as a request".to_string() } else { format!("{}'s tab cannot be typed into: post it into its inbox (the first socket its own process listens on), as a request, not your input", via.id) };
                     plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["inbox".into(), at, body.clone()], cwd: None, why: what });
-                    return match ctx.gate(&plan) {
-                        out::Go::Exit(code) => Ok(code),
-                        out::Go::Run => match nimitz_core::inbox::send(&ctx.env, &socks, pid, &body) {
-                            Ok(sock) => {
-                                out::ok(&format!("posted to {}'s inbox {} as a request from nimitz{}", via.id, sock.display(), if ctx.caller == Caller::User { " (not as your own input)" } else { "" }));
-                                Ok(0)
-                            }
-                            Err(e) => {
-                                out::error(&format!("posting to {}'s inbox failed: {e}; nothing was typed. Run the signal again in a moment", via.id));
-                                Ok(1)
-                            }
-                        },
-                    };
+                    return Some(Delivery { via, reach: Reach::Inbox(socks, pid), body, job });
                 }
                 Err(w) => no_inbox = Some(w),
             }
@@ -487,7 +609,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     let inbox_why = no_inbox.map(|w| format!("; its inbox cannot be used: {w}")).unwrap_or_default();
     if inbox {
         plan.refusals.push(refusal("inbox.none", format!("{} has no inbox to post to{inbox_why}", via.id), None, Some(via.id.clone())));
-        return Ok(finish_plan(ctx, &plan));
+        return None;
     }
     if !mux.caps().type_text {
         plan.refusals.push(refusal(
@@ -496,94 +618,110 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
             Some(nimitz_mux::missing_mux_fix(&ctx.vars)),
             Some(via.id.clone()),
         ));
-        return Ok(finish_plan(ctx, &plan));
+        return None;
     }
     // with no tab, one is opened first (plan-v4 section 7)
     if let Some(p) = shown.as_ref().filter(|_| untypeable) {
         let mut i = run::untypeable(&via.id, &p.pane);
         i.message.push_str(&inbox_why);
         plan.refusals.push(i);
-        return Ok(finish_plan(ctx, &plan));
+        return None;
     }
     let recheck = shown.as_ref().is_some_and(|p| p.inferred);
-    let pane = shown.map(|p| p.pane);
-    match &pane {
-        Some(p) => plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), p.pane_id.clone(), text.clone()], cwd: None, why }),
+    match shown.map(|p| p.pane) {
+        Some(p) => {
+            plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), p.pane_id.clone(), text.to_string()], cwd: None, why });
+            Some(Delivery { via, reach: Reach::Pane(p, recheck), body, job })
+        }
         None => {
             let tab = match nimitz_core::layout::attach_tab(&ctx.env, via) {
                 Ok(t) => t,
                 Err(i) => {
                     plan.refusals.push(Issue { severity: Severity::Error, ..i });
-                    return Ok(finish_plan(ctx, &plan));
+                    return None;
                 }
             };
             plan.steps.push(Step { id: Some(via.id.clone()), cmd: tab.cmd, cwd: Some(tab.cwd), why: format!("{} has no tab yet: attach it in tab {} first", via.id, tab.label) });
-            plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), "<the new pane>".into(), text.clone()], cwd: None, why });
+            plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["type".into(), "<the new pane>".into(), text.to_string()], cwd: None, why });
+            Some(Delivery { via, reach: Reach::NewTab, body, job })
         }
     }
-    match ctx.gate(&plan) {
-        out::Go::Exit(code) => Ok(code),
-        out::Go::Run => {
-            let pane = match pane {
-                Some(p) => p,
-                None => match run::attach_in_tab(mux.as_ref(), &ctx.env, via) {
-                    Ok(a) => {
-                        let p = attached_pane(&a);
-                        out::ok(&format!("{} attached in pane {}", via.id, p.pane_id));
-                        // the attach takes a moment: type only once the pane shows the session
-                        let sid = via.session.as_ref().map(|s| s.session_id.clone()).unwrap_or_default();
-                        let wait: f64 = ctx.vars.get("NIMITZ_SIGNAL_WAIT").and_then(|v| v.parse().ok()).unwrap_or(SIGNAL_ATTACH_WAIT_S);
-                        match run::wait_for_session(mux.as_ref(), &sid, wait) {
-                            // the new tab is known by its attach alone, and a fresh
-                            // attach may not be connected yet (a failed one drops to
-                            // the shell, which would run the text): its inbox
-                            Some(p) if p.inferred => {
-                                let posted = via.session.as_ref().ok_or_else(|| "no session".to_string()).and_then(|s| crate::notify::inbox_target(&ctx.env, &via.id, s)).and_then(|(socks, pid)| nimitz_core::inbox::send(&ctx.env, &socks, pid, &body));
-                                return Ok(match posted {
-                                    Ok(sock) => {
-                                        out::ok(&format!("posted to {}'s inbox {} as a request from nimitz (not as your own input): its new tab cannot be typed into", via.id, sock.display()));
-                                        0
-                                    }
-                                    Err(w) => {
-                                        let mut i = run::untypeable(&via.id, &p.pane);
-                                        i.message.push_str(&format!("; its inbox cannot be used: {w}"));
-                                        out::issue(&i);
-                                        1
-                                    }
-                                });
-                            }
-                            Some(p) => p.pane,
-                            None => {
-                                out::error(&format!("pane {} does not show {}'s session after {wait} s; nothing was typed. Run the signal again once it is attached", p.pane_id, via.id));
-                                return Ok(1);
-                            }
-                        }
-                    }
-                    Err(i) => {
-                        out::issue(&i);
-                        return Ok(1);
-                    }
-                },
-            };
-            let check = if recheck { nimitz_mux::attach_check(mux.as_ref(), &pane, &job) } else { nimitz_mux::AttachCheck::Exact };
-            if check != nimitz_mux::AttachCheck::Exact {
-                out::error(&format!("{}: {}; nothing was typed", via.id, check.refusal(&pane.pane_id, &job)));
-                return Ok(1);
-            }
-            match mux.type_text(&pane, &text) {
-                Ok(()) if recheck && nimitz_mux::typed_into_view(mux.as_ref(), &pane) => {
-                    out::warn(&format!("typed to {} in pane {}, but the pane runs the agent view now (an /exit raced the typing): check pane {} for a dispatched session", via.id, pane.pane_id, pane.pane_id));
-                    Ok(1)
-                }
-                Ok(()) => {
-                    out::ok(&format!("typed to {} in pane {}", via.id, pane.pane_id));
-                    Ok(0)
+}
+
+/// Deliver one member's signal (the plan ran); its exit code.
+fn deliver(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, d: &Delivery, text: &str) -> i32 {
+    let via = d.via;
+    let (pane, recheck) = match &d.reach {
+        Reach::Inbox(socks, pid) => {
+            return match nimitz_core::inbox::send(&ctx.env, socks, *pid, &d.body) {
+                Ok(sock) => {
+                    out::ok(&format!("posted to {}'s inbox {} as a request from nimitz{}", via.id, sock.display(), if ctx.caller == Caller::User { " (not as your own input)" } else { "" }));
+                    0
                 }
                 Err(e) => {
-                    out::error(&format!("typing to {} failed: {e}  # the tab may still be attaching; run the signal again in a moment", via.id));
-                    Ok(1)
+                    out::error(&format!("posting to {}'s inbox failed: {e}; nothing was typed. Run the signal again in a moment", via.id));
+                    1
+                }
+            };
+        }
+        Reach::Pane(p, recheck) => (p.clone(), *recheck),
+        Reach::NewTab => match run::attach_in_tab(mux, &ctx.env, via) {
+            Ok(a) => {
+                let p = attached_pane(&a);
+                out::ok(&format!("{} attached in pane {}", via.id, p.pane_id));
+                // the attach takes a moment: type only once the pane shows the session
+                let sid = via.session.as_ref().map(|s| s.session_id.clone()).unwrap_or_default();
+                let wait: f64 = ctx.vars.get("NIMITZ_SIGNAL_WAIT").and_then(|v| v.parse().ok()).unwrap_or(SIGNAL_ATTACH_WAIT_S);
+                match run::wait_for_session(mux, &sid, wait) {
+                    // the new tab is known by its attach alone, and a fresh
+                    // attach may not be connected yet (a failed one drops to
+                    // the shell, which would run the text): its inbox
+                    Some(p) if p.inferred => {
+                        let posted = via.session.as_ref().ok_or_else(|| "no session".to_string()).and_then(|s| crate::notify::inbox_target(&ctx.env, &via.id, s)).and_then(|(socks, pid)| nimitz_core::inbox::send(&ctx.env, &socks, pid, &d.body));
+                        return match posted {
+                            Ok(sock) => {
+                                out::ok(&format!("posted to {}'s inbox {} as a request from nimitz (not as your own input): its new tab cannot be typed into", via.id, sock.display()));
+                                0
+                            }
+                            Err(w) => {
+                                let mut i = run::untypeable(&via.id, &p.pane);
+                                i.message.push_str(&format!("; its inbox cannot be used: {w}"));
+                                out::issue(&i);
+                                1
+                            }
+                        };
+                    }
+                    Some(p) => (p.pane, false),
+                    None => {
+                        out::error(&format!("pane {} does not show {}'s session after {wait} s; nothing was typed. Run the signal again once it is attached", p.pane_id, via.id));
+                        return 1;
+                    }
                 }
             }
+            Err(i) => {
+                out::issue(&i);
+                return 1;
+            }
+        },
+    };
+    let job = &d.job;
+    let check = if recheck { nimitz_mux::attach_check(mux, &pane, job) } else { nimitz_mux::AttachCheck::Exact };
+    if check != nimitz_mux::AttachCheck::Exact {
+        out::error(&format!("{}: {}; nothing was typed", via.id, check.refusal(&pane.pane_id, job)));
+        return 1;
+    }
+    match mux.type_text(&pane, text) {
+        Ok(()) if recheck && nimitz_mux::typed_into_view(mux, &pane) => {
+            out::warn(&format!("typed to {} in pane {}, but the pane runs the agent view now (an /exit raced the typing): check pane {} for a dispatched session", via.id, pane.pane_id, pane.pane_id));
+            1
+        }
+        Ok(()) => {
+            out::ok(&format!("typed to {} in pane {}", via.id, pane.pane_id));
+            0
+        }
+        Err(e) => {
+            out::error(&format!("typing to {} failed: {e}  # the tab may still be attaching; run the signal again in a moment", via.id));
+            1
         }
     }
 }
@@ -699,7 +837,7 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
 pub fn attach(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
-    let id = parse_id(ctx.args.need(0, "id")?)?;
+    let id = parse_one(ctx.args.need(0, "member")?, "a terminal attaches one session (nimitz open <path>... gives each its pane)")?;
     if ctx.force() {
         return Err("--force does nothing for attach (a wake goes by start's plan: nimitz start <id> first)".into());
     }

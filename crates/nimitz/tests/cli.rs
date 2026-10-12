@@ -197,6 +197,79 @@ fn check_reports_errors_and_scopes_to_an_id() {
     assert!(v.as_array().unwrap().iter().any(|i| i["code"] == "name.drift"));
 }
 
+/// 0.7.4: `check` takes paths, several at once; an exact lead covers what
+/// is under it, as its `...` does (bug 24).
+#[test]
+fn check_takes_paths() {
+    let sb = Sb::new(false);
+    let (lead, all) = (sb.run(&["check", "MAIN"]), sb.run(&["check", "MAIN/..."]));
+    assert!(all.code == 1 && all.out.contains("name.drift") && all.out.contains("dup.live"), "{}", all.out);
+    assert_eq!(lead.out.replace("check MAIN:", "check MAIN/...:"), all.out, "an exact lead is its ...");
+    let two = sb.run(&["check", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/DRIFT"]);
+    assert!(two.code == 1 && two.out.contains("name.drift") && !two.out.contains("dup.live"), "{}", two.out);
+    assert!(sb.run(&["check", "//..."]).out.contains("name.drift"));
+    assert_eq!(sb.run(&["check", "main/..."]).code, 2, "not a path");
+    // a path that matches nothing is no clean check
+    for typo in [&["MAIN/TYPO"][..], &["NOPE/..."][..], &["MAIN/ARGOS/CLEAN", "MAIN/ARGOS/TYPO"][..]] {
+        let mut a = vec!["check"];
+        a.extend(typo.iter().copied());
+        let r = sb.run(&a);
+        assert!(r.code == 1 && r.out.contains("(member.unknown)") && !r.out.contains("no errors"), "{typo:?}:\n{}", r.out);
+    }
+    assert!(sb.run(&["check", "MAIN/TYPO"]).out.contains("MAIN has MAIN, MAIN/ARGOS"), "what is there");
+}
+
+/// 0.7.4: `rules` takes paths (each member under its own line); `signal`
+/// takes one path, a `...` its live members (never `//...`); the commands
+/// that take one member (attach, adopt, the config verbs, `--for`,
+/// `--fleet`, `machine`) refuse a pattern with why and the exact form.
+#[test]
+fn single_member_commands_refuse_patterns_and_set_commands_take_them() {
+    let sb = Sb::new(true);
+    let r = sb.run(&["rules", "MAIN/ARGOS/..."]);
+    assert!(r.code == 0 && r.out.contains("== MAIN/ARGOS ==") && r.out.contains("== MAIN/ARGOS/CLEAN ==") && !r.out.contains("== MAIN =="), "{}", r.out);
+    assert!(!sb.run(&["rules", "MAIN/ARGOS/CLEAN"]).out.contains("=="), "one member: its rules alone");
+    for typo in ["MAIN/ARGOS/TYPO", "NOPE/..."] {
+        let r = sb.run(&["rules", typo]);
+        assert!(r.code == 1 && r.out.contains("(member.unknown)"), "{typo}:\n{}", r.out);
+    }
+    let r = sb.run(&["signal", "MAIN/ARGOS/...", "hello", "there", "--plan"]);
+    assert!(r.code == 0 && r.out.contains("MAIN/ARGOS/CLEAN has no tab yet") && r.out.contains("not live, skipped") && r.out.contains("MAIN/ARGOS/STOPPED"), "{}", r.out);
+    // a ... never reaches its sender; one named exactly may
+    let r = sb.run_as("MAIN/ARGOS", &["signal", "MAIN/ARGOS/...", "hello", "--plan"]);
+    assert!(r.out.contains("MAIN/ARGOS/CLEAN") && !r.out.contains("  COMMODORE "), "the sender is dropped (a member's signal: the inbox):\n{}", r.out);
+    assert!(sb.run_as("MAIN/ARGOS", &["signal", "MAIN/ARGOS", "note", "--plan"]).out.contains("COMMODORE"), "named exactly: kept");
+    // a second path where the text starts: refused (quoted, it is text)
+    let r = sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/DRIFT", "hello", "--plan"]);
+    assert!(r.code == 2 && r.out.contains("signal takes one path; the text starts with a path"), "{}", r.out);
+    assert_eq!(sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/DRIFT is drifting", "--plan"]).code, 0, "quoted: text");
+    assert_eq!(sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN", "is", "down", "--plan"]).code, 0, "a bare name is text");
+    let r = sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS", "hi", "--plan"]);
+    assert!(r.code == 2 && r.out.contains("the text starts with a path"), "{}", r.out);
+    // the sender alone live under the ...: said so
+    let r = sb.run_as("MAIN/BOREAL", &["signal", "MAIN/BOREAL/...", "hi", "--plan"]);
+    assert!(r.code == 1 && r.out.contains("no member under MAIN/BOREAL/... but the sender is live"), "{}", r.out);
+    let r = sb.run(&["signal", "//...", "hello", "--plan"]);
+    assert!(r.code == 2 && r.out.contains("F/..."), "{}", r.out);
+    let r = sb.run(&["signal", "MAIN/ARGOS/STOPPED", "hello", "--plan"]);
+    assert!(r.code == 1 && r.out.contains("(session.none)") && r.out.contains("nimitz start MAIN/ARGOS/STOPPED"), "named exactly: refused\n{}", r.out);
+    for (args, exact) in [
+        (&["attach", "MAIN/ARGOS/..."][..], "(MAIN/ARGOS)"),
+        (&["adopt", "00000000-0000", "MAIN/..."][..], "(MAIN)"),
+        (&["ship", "set", "MAIN/ARGOS/...", "--mode", "auto"][..], "(MAIN/ARGOS)"),
+        (&["squadron", "rm", "//..."][..], "(F, F/SQ or F/SQ/SHIP)"),
+        (&["fleet", "set", "MAIN/...", "--admiral-mode", "auto"][..], "(MAIN)"),
+        (&["machine", "add", "MAIN/...", "box2", "--hostname", "b"][..], "(MAIN)"),
+        (&["settings", "get", "--fleet", "MAIN/ARGOS/..."][..], "(MAIN)"),
+        (&["harness", "rm", "settings", "--fleet", "MAIN", "--for", "MAIN/ARGOS/..."][..], "(MAIN/ARGOS)"),
+    ] {
+        let mut a = args.to_vec();
+        a.push("--plan");
+        let r = sb.run(&a);
+        assert!(r.code == 2 && r.out.contains(exact) && (r.out.contains("covers") || r.out.contains("not a fleet's name")), "{args:?}:\n{}", r.out);
+    }
+}
+
 // ------------------------------------------------------------------ the gate
 
 #[test]
@@ -2884,6 +2957,11 @@ fn a_wider_start_never_trusts_a_never_started_leads_folder() {
     }
     let wide = sb.run(&["start", "TOP/...", "--plan", "-v"]);
     assert!(wide.out.contains("a wider start does not trust it") && !wide.out.contains("to launch"), "{}", wide.out);
+    // the folder that lacks the trust is named (the data root, not a member's), once
+    let root = nimitz_core::os::canonical(&root).unwrap();
+    assert!(wide.out.contains(&format!("{} is not trusted by Claude Code; a wider start", root.display())) && !wide.out.contains("TOP's folder") && !wide.out.contains("TOP/SQ's folder"), "{}", wide.out);
+    assert_eq!(wide.out.matches("(folder.untrusted)").count(), 1, "said once:\n{}", wide.out);
+    assert!(wide.out.contains("2 refused"), "both held back:\n{}", wide.out);
     let exact = sb.run(&["start", "TOP", "--plan", "-v"]);
     assert!(exact.out.contains("trust ") && exact.out.contains("1 to launch") && !exact.out.contains("refuse"), "the exact path trusts it:\n{}", exact.out);
 }

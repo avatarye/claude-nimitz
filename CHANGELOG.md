@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.7.4 (unreleased)
+
+### Changed
+
+- **Paths everywhere a set makes sense.** `check` and `rules` take several
+  paths (`check MAIN/...`, `rules HOME/GITHUB/...`; `rules` heads each member
+  with `== ID ==`). `check F` still covers everything under F, so an exact
+  lead never reads clean while its ships have errors. `signal F/...` (or
+  `F/SQ/...`) sends to every live member under it, one plan; down members are
+  listed and skipped; `//...` is refused (a turn in every fleet at once).
+- Commands that act on one member (`attach`, `adopt`'s target, `fleet`,
+  `squadron` and `ship` new|set|rm, `machine`, `harness --for`, `--fleet`)
+  refuse a pattern, saying why and naming the exact form.
+- Admiralty's screenshots (`docs/screens/`) show the 0.7.3 layout, made by
+  `tools/admiralty_screens.py` (see crates/admiralty/README.md); the design
+  page has a "UI as shipped" section.
+
+### Fixed
+
+- A start refused for an untrusted data root names that folder, once, with
+  `nimitz trust <root>` as the fix (it named a commodore's folder, twice).
+- The `start` usage wraps like its neighbours.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). No format or rules change.
+
 ## 0.7.3 (2026-10-12)
 
 The commands, cleaned up: Perforce paths, four families, one `muster`, no

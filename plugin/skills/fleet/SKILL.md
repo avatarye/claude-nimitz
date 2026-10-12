@@ -20,6 +20,8 @@ edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
 
 A path names one member (`F`, `F/SQ`, `F/SQ/SHIP`), or everything under one
 (`F/...`, `F/SQ/...`; `//...` is every fleet). Several paths per command.
+`attach`, `adopt`'s target, the config verbs, `--for` and `--fleet` take one
+exact name and refuse a `...`; `signal` takes one path (a `...`: its live members).
 
 One-off work is a subagent in the lead's own session, or a ship. Every member
 is a Claude Code background job (`claude --bg`); a lead's job is pinned, so it
@@ -63,9 +65,9 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 | --- | --- |
 | First run on a machine | `nimitz init --label <label>`, then `nimitz doctor` |
 | Check the setup | `nimitz doctor` (`--fix` sets `crossSessionInbound` and replaces role briefs an older nimitz wrote) |
-| A role's rules | `nimitz rules <id>` (what every member gets at session start; a new nimitz hands a running member the changes at its next prompt) |
+| A role's rules | `nimitz rules <path>...` (what every member gets at session start; a new nimitz hands a running member the changes at its next prompt) |
 | See everything | `nimitz status [<path>...]` |
-| Find problems | `nimitz check [<id>]` |
+| Find problems | `nimitz check [<path>...]` (a lead's check covers everything under it) |
 | A command's own usage | `nimitz <command> --help`, `nimitz help <command>` |
 | New fleet | `nimitz fleet new <F> [--machine <label>]` |
 | New squadron | `nimitz squadron new <F/SQ> --brief "<text>" [--mode <permission mode>]` |
@@ -80,9 +82,9 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 | After a reboot, a Claude Code update, a Herdr closure or crash | `nimitz muster [<path>...]` (no path: every fleet here): workers on an older Claude Code relaunched, down leads and the ships live at the last look woken (`--parked`: the rest), every pane reattached in its own pane, else its lead's tab. One plan. No multiplexer: the jobs, the pane steps skipped |
 | Stop members | `nimitz stop <path>...` (under a `...`, the live ones, ships first); one copy of two: `nimitz stop <short id>` |
 | Remove stale rows and copies | `nimitz sweep [<path>...]` (none: a member's own, else everything), or one row: `nimitz rm <short id>`. A background copy is stopped and removed; a copy with no job (interactive, SDK) is ended in its own terminal |
-| A session with no labels (a stowaway) | `nimitz adopt <session> <id>`, or `nimitz rm <session>`; a live one with no job: end it in its terminal |
-| Message a member | `SendMessage` to its name; the user's `nimitz signal <id> <text>` types into its tab (its own input), `--inbox` (and any member's signal) posts to its inbox as a request. A member that is down is refused, never woken |
-| Show a member | `nimitz open <id>...`: a pane already showing it; else its own tab (`F.SQ.SHIP`); else a split in its commodore's tab; else a new tab. A lead: its own tab (`F.ADMIRAL`, `F.SQ.COMMODORE`). `--tab`: always its own tab; `--force`: a second tab beside a taken one. One that is down is woken first |
+| A session with no labels (a stowaway) | `nimitz adopt <session> <F/SQ/SHIP>` (one exact path), or `nimitz rm <session>`; a live one with no job: end it in its terminal |
+| Message a member | `SendMessage` to its name; the user's `nimitz signal <path> <text>` types into its tab (its own input), `--inbox` (and any member's signal) posts to its inbox as a request. One path: a member, or `F/...`/`F/SQ/...` for every live one under it (never `//...`). A member named exactly that is down is refused, never woken |
+| Show a member | `nimitz open <path>...`: a pane already showing it; else its own tab (`F.SQ.SHIP`); else a split in its commodore's tab; else a new tab. A lead: its own tab (`F.ADMIRAL`, `F.SQ.COMMODORE`). `--tab`: always its own tab; `--force`: a second tab beside a taken one. One that is down is woken first |
 | Close a member's panes | `nimitz close <path>...` (only a pane that runs its attach; the job runs on) |
 | Lay out the tabs only | `nimitz layout <path>... [--ships] [--here] [--rename] [--force]` |
 | Read a plan | A headline (what happened, then counts per action); one line per member in columns (name, job verb `wake`/`relaunch`/`launch`/`fresh`/`skip`/`refuse`/`nothing`, pane verb `reattach`/`open pane`/`focus`, why); "needs you" (skips, refusals, warnings, each with one fix); then `Run N steps? [y/N]`. `-v` shows the raw `claude` and `herdr` lines; `--json` is unchanged; `NO_COLOR` turns colour off |

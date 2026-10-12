@@ -159,10 +159,16 @@ fn trust_issue(env: &Env, cache: &mut TrustCache, id: &Id, dir: &Path) -> Option
         (_, Some(_)) => None,
         (root, None) => {
             let at = if in_home && root.is_none() { home.clone() } else { root.clone().unwrap_or_else(|| real.clone()) };
-            let why = root.map(|r| format!(" (git repository {})", r.display())).unwrap_or_default();
+            let why = root.as_ref().map(|r| format!(" (git repository {})", r.display())).unwrap_or_default();
             let twin = case_twin(&projects, &crate::env::trust_ancestors(dir));
             let note = twin.map(|k| format!("; it is trusted as `{k}`, but Claude Code compares the folder's case and looks it up as it is on disk")).unwrap_or_default();
-            Some(mk(Severity::Error, format!("{id}'s folder {} is not trusted by Claude Code{why}{note}", real.display()), &at))
+            // the folder that lacks the trust is named: the data root a lead's folder is under, else its own
+            let message = if at != real && root.is_none() {
+                format!("the data root {} is not trusted by Claude Code ({id}'s folder {} is under it){note}", at.display(), real.display())
+            } else {
+                format!("{id}'s folder {} is not trusted by Claude Code{why}{note}", real.display())
+            };
+            Some(mk(Severity::Error, message, &at))
         }
     }
 }

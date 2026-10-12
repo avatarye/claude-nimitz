@@ -273,18 +273,32 @@ impl Report {
     }
 }
 
-/// `nimitz rules [<id>]`: the rules `id` is given at a session start (a member
-/// caller: its own when no id is given): its role's, then its fleet's harness
-/// rules, which come from their own hook entry. Read-only.
+/// `nimitz rules [<path>...]`: the rules each member the paths cover is
+/// given at a session start (a member caller: its own when no path is
+/// given): its role's, then its fleet's harness rules, which come from their
+/// own hook entry. Several members: each under a `== <id> ==` line. Read-only.
 pub fn rules(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
-    ctx.args.at_most(1)?;
-    let id = match (ctx.args.pos.first(), nimitz_core::sessions::verified(&ctx.caller)) {
-        (Some(x), _) => crate::members::parse_id(x)?,
-        (None, Some(id)) => id.clone(),
-        (None, None) => return Err("missing id (F, F/SQ or F/SQ/SHIP)".into()),
+    let ids = match (ctx.args.pos.is_empty(), nimitz_core::sessions::verified(&ctx.caller)) {
+        (false, _) => {
+            let paths = crate::members::parse_paths(&ctx.args.pos)?;
+            match nimitz_core::paths::resolve(&ctx.snap(), &paths) {
+                Ok(ids) => ids,
+                Err(i) => {
+                    out::issue(&i);
+                    return Ok(1);
+                }
+            }
+        }
+        (true, Some(id)) => vec![id.clone()],
+        (true, None) => return Err(format!("missing path ({})", nimitz_core::paths::FORMS)),
     };
-    print!("{}", nimitz_core::rules::text_for(&ctx.env, &id));
+    for (n, id) in ids.iter().enumerate() {
+        if ids.len() > 1 {
+            println!("{}== {id} ==", if n > 0 { "\n" } else { "" });
+        }
+        print!("{}", nimitz_core::rules::text_for(&ctx.env, id));
+    }
     Ok(0)
 }
 

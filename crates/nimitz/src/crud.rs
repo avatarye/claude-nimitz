@@ -2,7 +2,7 @@
 //! fleet-skill migration. They change only the config (plan-v3 5.1); running
 //! sessions change through `up` and the single-session commands. `ship rm` is
 //! the one exception the plan names: stop, remove job rows, then the config.
-use crate::members::parse_id;
+use crate::members::parse_one;
 use crate::run::refusal;
 use crate::{out, Ctx};
 use nimitz_core::config;
@@ -45,7 +45,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "new|set|rm")?;
     let fleet = ctx.args.need(1, "fleet")?;
     ctx.args.at_most(2)?;
-    let id = parse_id(fleet)?;
+    let id = Id(crate::members::fleet_name(fleet, "a fleet's config is one fleet's")?);
     split(&id, Role::Admiral, "fleet")?;
     let plan = match verb {
         "new" => {
@@ -70,7 +70,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
 
 pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "new|set|rm")?;
-    let id = parse_id(ctx.args.need(1, "squadron id F/SQ")?)?;
+    let id = parse_one(ctx.args.need(1, "squadron id F/SQ")?, "a squadron's config is one squadron's")?;
     ctx.args.at_most(2)?;
     let parts = split(&id, Role::Commodore, "squadron")?;
     let (fleet, sq) = (parts[0], parts[1]);
@@ -201,7 +201,7 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk) -> Resu
 
 pub fn ship(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "new|set|rm")?;
-    let id = parse_id(ctx.args.need(1, "ship id F/SQ/SHIP")?)?;
+    let id = parse_one(ctx.args.need(1, "ship id F/SQ/SHIP")?, "a ship's config is one ship's")?;
     ctx.args.at_most(2)?;
     let parts = split(&id, Role::Ship, "ship")?;
     let (fleet, sq, name) = (parts[0], parts[1], parts[2]);
@@ -329,7 +329,7 @@ fn retire(ctx: &Ctx, id: &Id) -> i32 {
 
 pub fn machine(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "add|rm")?;
-    let fleet = ctx.args.need(1, "fleet")?;
+    let fleet = &crate::members::fleet_name(ctx.args.need(1, "fleet")?, "a machine is one fleet's")?;
     let label = ctx.args.need(2, "machine label")?;
     ctx.args.at_most(3)?;
     let plan = match verb {
@@ -338,7 +338,7 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
             let mut dirs = vec![];
             for d in ctx.args.values("--dir") {
                 let (sid, path) = d.split_once('=').ok_or(format!("--dir {d:?}: use F/SQ/SHIP=PATH"))?;
-                dirs.push((parse_id(sid)?, path.to_string()));
+                dirs.push((parse_one(sid, "--dir sets one ship's folder")?, path.to_string()));
             }
             config::plan_machine_add_on(&ctx.env, fleet, label, ctx.args.value("--hostname"), dirs)
         }
