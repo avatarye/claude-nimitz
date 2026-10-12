@@ -143,7 +143,10 @@ impl LayoutSpec {
 pub fn plan(env: &Env, snap: &Snapshot, fleet: Option<&str>, ships: bool, force: bool) -> LayoutSpec {
     let _ = force; // every tab attaches; nothing is started or forced here
     let mut spec = LayoutSpec::default();
-    spec.plan.summary = format!("layout herdr {}", fleet.unwrap_or("(every fleet here)"));
+    spec.plan.summary = match fleet {
+        Some(f) => format!("layout {f}/..."),
+        None => "layout //...".into(),
+    };
     for f in snap.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
         if f.machine.is_none() {
             spec.plan.warnings.push(skip(&f.id, format!("fleet {} does not run on this machine; no layout", f.id)));

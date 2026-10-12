@@ -439,7 +439,6 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     }
     if member_like {
         match app.message_plan() {
-            Ok(p) if p.relay => line(&mut v, "m", Ok(format!("message {} (relayed by {})", p.to, p.via))),
             Ok(p) => line(&mut v, "m", Ok(format!("message {} in its pane", p.to))),
             Err(why) => line(&mut v, "m", Err(why)),
         }

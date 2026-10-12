@@ -605,6 +605,22 @@ fn make_top(sb: &Sb) {
     }
 }
 
+/// Leads in a `...` match are always brought up: one that never ran gets its
+/// first launch; a ship that never ran needs its exact path.
+#[test]
+fn a_fleet_start_gives_its_never_started_leads_their_first_launch() {
+    let sb = Sb::new(false);
+    make_top(&sb);
+    let r = sb.run(&["start", "TOP/...", "--plan"]);
+    let line = |id: &str| r.out.lines().find(|l| l.split_whitespace().next() == Some(id) && l.contains("->")).unwrap_or("").to_string();
+    assert!(r.code == 0 && line("TOP").contains("first launch") && line("TOP/SQ").contains("first launch"), "{}", r.out);
+    assert!(!line("TOP/SQ/S1").contains("launch") && r.out.contains("members that never ran"), "{}", r.out);
+    let j: Value = serde_json::from_str(sb.run(&["start", "TOP/...", "--plan", "--json"]).out.trim()).unwrap();
+    let ids: Vec<&str> = j["steps"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str()).collect();
+    assert_eq!(ids, ["TOP", "TOP/SQ"], "each lead launched once, top-down");
+    assert!(sb.run(&["start", "TOP/SQ/S1", "--plan"]).out.contains("first launch"));
+}
+
 #[test]
 fn start_is_top_down_admiral_commodore_ship() {
     let sb = Sb::new(true);
@@ -1793,7 +1809,7 @@ fn a_held_member_gives_held_only_and_stop_or_relaunch_say_session_interactive() 
     assert_eq!(codes, vec!["held"], "{m}");
     assert!(m["issues"][0]["fix"].as_str().unwrap().contains("end that process"), "{m}");
     // (a stop says so as `session.interactive`; a restart goes by the engine, which holds it as `held`)
-    for (verb, code) in [("stop", "session.interactive"), ("restart", "(held)")] {
+    for (verb, code) in [("stop", "session.interactive"), ("restart", "session.interactive")] {
         let r = sb.run(&[verb, "MAIN/ARGOS/STOPPED", "--plan"]);
         assert_ne!(r.code, 0, "{}", r.out);
         assert!(r.out.contains(code) && r.out.contains("end that process") && !r.out.contains("dup.live") && !r.out.contains("session.none"), "{verb}: {}", r.out);

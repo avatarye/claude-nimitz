@@ -542,7 +542,7 @@ fn interrupted_note(active: Option<&crate::active::ActiveMember>, id: &Id) -> Op
 /// relaunched, same id and history, then reattached), Herdr closed or
 /// crashed (live jobs whose panes are gone are reattached; nothing is
 /// relaunched), a reboot (leads and the active set's ships are woken,
-/// `--parked` every ship). `--restart` relaunches every live member.
+/// `--parked` every ship). `restart` relaunches every live member.
 /// Relaunches run last, ships first, then commodores, then admirals, one at
 /// a time; the member that runs the restore last of all, detached (`self.end`).
 #[allow(clippy::too_many_arguments)]
@@ -564,7 +564,7 @@ fn shown(paths: &[crate::paths::Path]) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, paths: &[crate::paths::Path], opts: RestoreOpts, caller: &Caller) -> RestorePlan {
     let verb = if opts.pane { "open" } else if opts.restart { "restart" } else { "start" };
-    let named: Vec<Id> = paths.iter().filter_map(|p| p.member().cloned()).collect();
+    let mut named: Vec<Id> = paths.iter().filter_map(|p| p.member().cloned()).collect();
     let rp = RestorePlan { plan: Plan { summary: format!("{verb} {}", shown(paths)), ..Default::default() }, ..Default::default() };
     let refuse = |mut rp: RestorePlan, code: &str, msg: String, fix: Option<String>, id: Option<Id>| {
         rp.plan.refusals.push(issue(code, Severity::Error, msg, fix, id));
@@ -581,6 +581,19 @@ pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&cra
     }
     if let Err(i) = crate::paths::resolve(snap, paths) {
         return refuse(rp, &i.code, i.message, i.fix, i.id);
+    }
+    // leads in the match are always brought up (docs/design/cli-ux.md
+    // section 1): a `...` gives a lead that never ran its first launch, as its
+    // exact path would; a ship that never ran needs its exact path (a
+    // restart relaunches, it launches nothing new)
+    if !opts.pane && !opts.restart {
+        let reg = crate::registry::load(env);
+        for m in snap.fleets.iter().flat_map(fleet_members) {
+            let never_ran = m.session.is_none() && reg.identities.get(&m.id.0).and_then(|r| r.session.clone()).is_none();
+            if m.role.lead() && never_ran && crate::paths::covered(paths, &m.id) && !named.contains(&m.id) {
+                named.push(m.id.clone());
+            }
+        }
     }
     plan_inner(env, snap, shape, active, herdr, has_mux, paths, named, verb, opts, caller, rp)
 }
@@ -656,7 +669,7 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
     }
     // (a one-ship start says nothing about the fleet: its line says it all)
     if !opts.shape_only && wide {
-        rp.plan.summary = format!("{}: {}", rp.plan.summary, happened(&rp, snap.cc_version.as_deref(), opts.restart));
+        rp.plan.summary = format!("{}: {}", rp.plan.summary, happened(&rp, snap.cc_version.as_deref(), opts.restart, verb));
     }
     rp.plan.steps = rp.steps.iter().flat_map(RestoreStep::display).collect();
     dedup(&mut rp.plan);
@@ -763,7 +776,7 @@ fn verbs(rp: &mut RestorePlan) {
 
 /// What happened, for the plan's first line (the counts per action are the
 /// view's: they follow from the member lines).
-fn happened(rp: &RestorePlan, installed: Option<&str>, restart: bool) -> String {
+fn happened(rp: &RestorePlan, installed: Option<&str>, restart: bool, verb: &str) -> String {
     let mut v = vec![];
     if rp.updated > 0 {
         v.push(format!("Claude Code updated to {}", installed.unwrap_or("a newer version")));
@@ -777,8 +790,11 @@ fn happened(rp: &RestorePlan, installed: Option<&str>, restart: bool) -> String 
     if rp.down > 0 {
         v.push("members down (a reboot, or jobs that ended)".to_string());
     }
+    if v.is_empty() && !rp.steps.is_empty() && rp.plan.found.iter().any(|f| f.found == "never run") {
+        v.push("members that never ran".to_string());
+    }
     if v.is_empty() {
-        "nothing to bring back".into()
+        if verb == "muster" { "nothing to bring back".into() } else { format!("nothing to {verb}") }
     } else {
         v.join("; ")
     }
@@ -932,6 +948,9 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
         if lead && !opts.shape_only {
             i.code = "lead.interactive".into();
             i.fix = Some(format!("type /exit in its pane (tab {}), then nimitz start {id}", tab_of(id)));
+        } else if opts.restart {
+            // a relaunch refuses it as `stop` does: nimitz cannot stop or resume it there
+            i.code = "session.interactive".into();
         }
         found(rp, id, "runs interactively with no job (held)", "nothing; see the fix");
         fail(rp, rep, Issue { severity: Severity::Error, ..i });
@@ -1208,9 +1227,13 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
         None => "never run",
     };
     let mut p = crate::sessions::plan_start_with(env, ctx.snap, id, ctx.caller, crate::sessions::StartOpts { force: opts.force, fresh: opts.fresh });
-    if !ctx.named.contains(id) {
-        p.steps.retain(|s| s.id.as_ref() == Some(id));
-    }
+    // its chain's steps, but for a parent that plans itself (named too) or
+    // that an earlier member's chain brought up already: never twice
+    let planned: Vec<Id> = rp.steps.iter().map(|s| s.id().clone()).collect();
+    p.steps.retain(|s| match &s.id {
+        Some(x) if x != id => !ctx.named.contains(x) && !planned.contains(x),
+        _ => true,
+    });
     if !p.ok() {
         found(rp, id, state, "not started; see the fix");
         rep.failed += 1;

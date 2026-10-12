@@ -1349,7 +1349,7 @@ fn r24b_a_ships_claim_on_its_commodores_attach_pane_is_not_the_agent_view() {
 /// the pane for the ship. The claim is not backed (the pane runs the
 /// admiral's `claude attach <job>`), so it is ignored and the pane shows the
 /// admiral, read from the attach: status gives it the pane and the ship
-/// none; a restore and `start -p` leave it be, nothing typed; `start -f`
+/// none; a muster and `open` leave it be, nothing typed; `restart`
 /// relaunches the admiral and reattaches that very pane.
 #[test]
 fn an_unbacked_claim_on_a_leads_attach_pane_shows_the_lead_there() {
@@ -1453,6 +1453,19 @@ fn r28_a_ship_stopped_on_purpose_after_the_last_write_is_left_alone() {
     // --all is the explicit "everything" switch
     sb.ok(&["muster", "MAIN/...", "--parked", "--yes"]);
     assert!(sb.live("MAIN/ARGOS/CLEAN"));
+}
+
+/// `muster` with the multiplexer off (`NIMITZ_MUX=none`): the job steps, a
+/// `mux.none` note that the pane steps are skipped, and exit 0.
+#[test]
+fn muster_with_no_multiplexer_runs_the_jobs_and_says_so() {
+    let sb = Sb::new(true);
+    let none = [("NIMITZ_MUX", "none")];
+    for form in ["--plan", "--yes"] {
+        let r = raw(&sb.vars, &["muster", "MAIN/...", form], &none);
+        assert_eq!(r.code, 0, "{form}: {}", r.out);
+        assert!(r.out.contains("(mux.none)") && r.out.contains("pane steps are skipped") && !r.out.contains("herdr pane"), "{form}: {}", r.out);
+    }
 }
 
 #[test]
@@ -1816,7 +1829,7 @@ fn s01_start_a_fleet_after_an_update_relaunches_and_reattaches() {
     }
     assert!(r.contains("[OK] MAIN: 3 lead(s), 4 ship(s) up"), "{r}");
     let r = sb.ok(&["start", "MAIN/...", "--yes"]);
-    assert!(r.contains("start MAIN/...  ·  nothing to bring back") && r.contains("[OK] MAIN: nothing to start"), "{r}");
+    assert!(r.contains("start MAIN/...  ·  nothing to start") && r.contains("[OK] MAIN: nothing to start"), "{r}");
 }
 
 #[test]
@@ -1954,7 +1967,7 @@ fn s07_no_target_means_every_fleet_and_no_multiplexer_means_jobs_only() {
     assert!(!r.out.contains("herdr"), "jobs only, no tabs:\n{}", r.out);
 }
 
-/// A row skipped under `start -f` names start's flag, not restore's.
+/// A row under `restart` names `restart`, and muster has no `--restart`.
 #[test]
 fn s09_a_member_skipped_under_start_f_says_f() {
     let sb = Sb::new(true);

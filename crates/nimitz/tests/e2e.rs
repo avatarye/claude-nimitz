@@ -1881,7 +1881,7 @@ fn e2e_trust_lets_a_background_job_start_in_an_untrusted_repo() {
 
 /// 89. A fleet's harness on real Claude Code: a rule the user adds reaches a
 /// running ship at its next prompt (the whole text once, the hash
-/// recorded); an agent added to the harness is the ship's after `start -f`
+/// recorded); an agent added to the harness is the ship's after `restart`
 /// (its job's flags carry the fleet's plugin) and answers as itself.
 #[test]
 fn e2e_89_a_harness_rule_reaches_a_live_ship_and_its_agent_comes_with_a_relaunch() {
@@ -1910,7 +1910,7 @@ fn e2e_89_a_harness_rule_reaches_a_live_ship_and_its_agent_comes_with_a_relaunch
     let replies: Vec<String> = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["type"] == "assistant").flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default()).filter_map(|c| c["text"].as_str().map(str::to_string)).collect();
     assert!(replies.iter().any(|r| r.contains(&format!("ZEBRA{marker}"))), "the ship answered by the harness rule: {replies:?}");
     assert!(w.deliveries()[&job]["harness"].as_str().is_some_and(|h| h.len() == 64), "the hash delivered is recorded: {}", w.deliveries());
-    // 2. an agent: after `start -f`, from the fleet's plugin
+    // 2. an agent: after `restart`, from the fleet's plugin
     w.ok(&["harness", "add", "agent", src.join("echo.md").to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
     println!("{}", w.ok(&["restart", &w.ship(), "--yes"]));
     // (a relaunch keeps the job id: its flags now carry the fleet's plugin)
@@ -2151,7 +2151,7 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
 /// ship, and starts it (its hooks bind it); then this build, as if the user
 /// updated the binary on PATH: its `status` migrates (the one line), shows
 /// the ship live on the same job and session with the same lineage, and
-/// `start <ship> -f` relaunches it into the same conversation.
+/// `restart <ship>` relaunches it into the same conversation.
 #[test]
 fn e2e_97_an_update_from_0_4_migrates_and_the_ship_lives_on() {
     if !gated() {

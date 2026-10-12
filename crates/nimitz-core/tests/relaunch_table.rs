@@ -1233,7 +1233,7 @@ fn layout_spec_attaches_live_leads_and_with_ships_live_ships() {
     let snap = w.snap();
     // every live lead gets a tab that attaches to its job (plan-v4 section 7)
     let spec = layout::plan(&w.env, &snap, Some("MAIN"), false, false);
-    assert_eq!(spec.plan.summary, "layout herdr MAIN");
+    assert_eq!(spec.plan.summary, "layout MAIN/...");
     let labels: Vec<(String, Vec<String>)> = spec.workspaces.iter().map(|w| (w.label.clone(), w.tabs.iter().map(|t| t.label.clone()).collect())).collect();
     assert_eq!(labels, vec![("MAIN".to_string(), vec!["MAIN.ADMIRAL".to_string()]), ("MAIN.ARGOS".into(), vec!["MAIN.ARGOS.COMMODORE".into()]), ("MAIN.BOREAL".into(), vec!["MAIN.BOREAL.COMMODORE".into()])]);
     for t in spec.workspaces.iter().flat_map(|w| w.tabs.iter()) {

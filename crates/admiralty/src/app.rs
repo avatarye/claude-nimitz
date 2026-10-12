@@ -192,10 +192,10 @@ pub const HELP: &[(&str, &str)] = &[
     ("!", "everything waiting on you"),
     ("i", "every issue, with its fix command"),
     ("a", "start it: nimitz start <id> (confirms)"),
-    ("u", "up (deprecated): everything the fleet runs here, first launches too (confirms)"),
+    ("u", "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked; confirms)"),
     ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
     ("x", "actions: stop, relaunch (restart), sweep, rm, adopt, remove; on a fleet: R bring the fleet back, layout, machines"),
-    ("m", "message (ships: relayed by their commodore)"),
+    ("m", "message: typed into its pane (nimitz signal <id> <text>)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
@@ -1345,8 +1345,7 @@ impl App {
             }
             Ok(()) => {
                 actions::log(&self.ctx.env, "message", &format!("{} via {}: {}", plan.to, plan.via, nimitz_mux::sanitize_text(text)));
-                let how = if plan.relay { format!(" (relayed by {})", plan.via) } else { String::new() };
-                self.notify(format!("Sent to {}{how}", plan.to), st(mono::BUSY));
+                self.notify(format!("Sent to {}", plan.to), st(mono::BUSY));
             }
             Err(e) => self.notify(format!("Not sent to {}: {e}", plan.via), st(mono::ERROR)),
         }

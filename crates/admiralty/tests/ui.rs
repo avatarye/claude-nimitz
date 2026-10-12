@@ -566,7 +566,7 @@ fn issues_view_lists_every_issue_code_with_its_fix() {
     ] {
         assert!(s.contains(code), "issues view shows {code}");
     }
-    assert!(s.contains("nimitz relaunch FORGE/IRON/ANVIL"));
+    assert!(s.contains("nimitz restart FORGE/IRON/ANVIL"));
     assert!(s.contains("ERROR"));
     // worst first; enter goes to the row
     let issues = t.app.issues();
@@ -694,21 +694,16 @@ fn action_menu_greys_out_what_does_not_apply_with_the_reason() {
 }
 
 #[test]
-fn message_goes_direct_to_leads_and_through_the_commodore_for_ships() {
+fn message_goes_to_the_member_itself_a_ship_too() {
     let mut t = fixture_app(fixtures::demo(), true);
+    // a ship: its own pane, never its commodore's (0.7.3)
     goto(&mut t.app, "M:MAIN/ARGOS/BOLT");
-    let p = t.app.message_plan().unwrap();
-    assert!(p.relay);
-    assert_eq!(p.via, "[MAIN.ARGOS]-COMMODORE");
-    keys(&mut t.app, "m");
-    keys(&mut t.app, "ship it");
-    press(&mut t.app, KeyCode::Enter);
-    let calls = t.mux.calls.lock().unwrap().clone();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0], "type p2 Relay to [MAIN.ARGOS]-BOLT from the user: ship it", "the CLI's relay text");
+    match t.app.message_plan() {
+        Ok(p) => assert_eq!(p.via, p.to, "never relayed"),
+        Err(why) => assert!(why.contains("[MAIN.ARGOS]-BOLT") && !why.contains("COMMODORE"), "{why}"),
+    }
     goto(&mut t.app, "M:MAIN");
     let p = t.app.message_plan().unwrap();
-    assert!(!p.relay);
     assert_eq!(p.pane.pane_id, "p1");
     // a stopped ship's commodore is live, but the ship is not
     goto(&mut t.app, "M:MAIN/KITS/DOCS");
@@ -1679,7 +1674,7 @@ fn the_key_bar_keeps_m_at_80_columns() {
 }
 
 /// `m` on a lead row opens the message dialog and types into the lead's pane;
-/// on a ship it is relayed by the commodore.
+/// a ship gets it in its own pane.
 #[test]
 fn m_on_a_lead_row_sends_into_its_pane() {
     let mut t = fixture_app(fixtures::demo(), true);
@@ -1697,7 +1692,7 @@ fn m_on_a_lead_row_sends_into_its_pane() {
 #[test]
 fn m_refusals_name_the_fix() {
     let mut t = fixture_app(fixtures::demo(), true);
-    // a stopped ship whose commodore runs, but the ship does not: relay refused
+    // a stopped ship: refused, with how to start it
     goto(&mut t.app, "M:MAIN/KITS/DOCS");
     press(&mut t.app, KeyCode::Char('m'));
     let why = toast(&t.app);

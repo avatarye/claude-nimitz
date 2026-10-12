@@ -673,8 +673,6 @@ pub struct MessagePlan {
     /// whose pane it is typed into
     pub via: String,
     pub pane: PaneRef,
-    /// true: typed to the commodore, who relays it with SendMessage
-    pub relay: bool,
     /// the pane is known by its attach alone (`Pane.inferred`): typed into
     /// only while it runs exactly `claude attach <this job>`, read just
     /// before typing (the agent view re-execs as `claude agents`, R-24)
@@ -693,19 +691,10 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
         });
     };
     let m = find_member(snap, id).ok_or("not in the snapshot")?;
-    let (via_m, relay) = match m.role {
-        Role::Admiral | Role::Commodore => (m, false),
-        Role::Ship => {
-            let sq = id.parent().ok_or("no squadron")?;
-            (find_member(snap, &sq).ok_or("its commodore is not in the snapshot")?, true)
-        }
-    };
+    // every member gets it itself, a ship too (0.7.3: no relay through its commodore)
+    let via_m = m;
     if !live(via_m) {
-        return Err(if relay {
-            format!("its commodore {} is not running and relays go through it: a on the commodore starts it", via_m.expected_name)
-        } else {
-            format!("{} is not running: a starts it", via_m.expected_name)
-        });
+        return Err(format!("{} is not running: a starts it", via_m.expected_name));
     }
     let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into: A opens its tab, then m (or nimitz signal {} <text>, which opens its tab and delivers it)", via_m.expected_name, via_m.id.0))?;
     let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone: R refreshes"))?;
@@ -722,10 +711,7 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     } else {
         None
     };
-    if relay && !live(m) {
-        return Err(format!("{} is not running: a starts it", m.expected_name));
-    }
-    Ok(MessagePlan { id: id.clone(), to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, relay, attach_job })
+    Ok(MessagePlan { id: id.clone(), to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, attach_job })
 }
 
 /// The CLI command that sends the same message (its text as it will be sent).
@@ -737,12 +723,8 @@ pub fn signal_command(p: &MessagePlan, text: &str) -> String {
 /// escape sequences and control characters removed (newlines as spaces), the
 /// same floor the Herdr adapter applies.
 pub fn message_text(p: &MessagePlan, text: &str) -> String {
-    let text = nimitz_mux::strip_controls(text);
-    if p.relay {
-        format!("Relay to {} from the user: {text}", p.to)
-    } else {
-        text.to_string()
-    }
+    let _ = p;
+    nimitz_mux::strip_controls(text)
 }
 
 /// Write a file atomically (temp + rename).

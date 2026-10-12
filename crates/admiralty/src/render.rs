@@ -626,11 +626,7 @@ fn draw_menu(f: &mut Frame, area: Rect, title: &str, items: &[MenuItem], sel: us
 }
 
 fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {
-    let how = if plan.relay {
-        format!("typed into {}'s pane {}, which relays it with SendMessage", plan.via, plan.pane.pane_id)
-    } else {
-        format!("typed into its pane {}", plan.pane.pane_id)
-    };
+    let how = format!("typed into its pane {}", plan.pane.pane_id);
     let lines = vec![
         Line::styled(format!("Message {}", plan.to), bold(mono::FG)),
         Line::styled(how, st(mono::COMMENT)),

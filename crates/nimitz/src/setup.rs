@@ -629,12 +629,12 @@ fn formats_check(env: &nimitz_core::env::Env, r: &mut Report) {
     }
 }
 
-/// The marketplace to add: this build's repo when it is still on disk, else GitHub.
 /// The fix for a cached plugin that is old or lacks a hook: sessions load
 /// Claude Code's cached copy (`~/.claude/plugins/cache/claude-nimitz/nimitz/<version>/`),
 /// never the repo, so the marketplace and the plugin are updated, then read again.
 const PLUGIN_UPDATE_FIX: &str = "claude plugin marketplace update claude-nimitz && claude plugin update nimitz@claude-nimitz, then /reload-plugins in each live session";
 
+/// The marketplace to add: this build's repo when it is still on disk, else GitHub.
 pub fn plugin_install_fix() -> String {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source = match nimitz_core::os::canonical(&repo) {

@@ -214,7 +214,7 @@ fn a_newer_nimitz_state_stops_every_command_but_doctor() {
 
 /// A 0.6 fleet that holds `[[aide]]` (format 2): it loads, the shared
 /// cleanup is due, said by `migrate --plan`, doctor and check, and run only
-/// by `migrate --shared --yes` (yours alone): the tables and their stamp
+/// by `migrate --shared --yes`: the tables and their stamp
 /// go, the rest of the file stays; a fleet stamped for a newer nimitz is
 /// refused.
 #[test]

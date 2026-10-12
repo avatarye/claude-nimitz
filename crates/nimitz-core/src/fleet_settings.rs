@@ -261,7 +261,7 @@ mod tests {
         apply(&plan_set(&env, "MAIN", "kb.dirs.test-mac", Some(json!(dir.to_string_lossy()))));
         let k = kb(&env, "MAIN").unwrap();
         assert_eq!((k.label.as_str(), k.dir.clone(), k.remote.as_deref()), ("test-mac", dir, Some("git@github.com:u/kb.git")));
-        // kb.* is the user's alone; a folder is absolute
+        // any key, any caller; a folder is absolute
         assert!(plan_set(&env, "MAIN", "notes.x", Some(json!(1))).ok());
         assert!(plan_set(&env, "MAIN", "kb.dirs.test-mac", Some(json!("kb"))).refusals.iter().any(|r| r.message.contains("an absolute folder")));
         // the same value again: nothing to write

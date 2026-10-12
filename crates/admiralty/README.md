@@ -110,11 +110,10 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 (every fleet), `n/N`, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
 row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
-new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (stop, relaunch, sweep, rm, adopt, remove from config;
-on a fleet band also `layout herdr [--ships]` and removing a machine; sweep is
+new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (stop, restart, sweep, rm, adopt, remove from config;
+on a fleet band also `layout F/... [--ships]`, `R` muster and removing a machine; sweep is
 scoped to the row: member, squadron or fleet),
-`m` message (admiral and commodore: typed into their pane; ships: relayed by
-their commodore), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
+`m` message (typed into the member's own pane, a ship's too), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
 from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
 flagged only, `R` refresh, `?` help, `q` quit. `esc` closes what is open, one
 thing at a time (a dialog or form, the detail panel, the `/` name filter), and
@@ -127,7 +126,7 @@ a prompt or brief in `$EDITOR`.
 
 Every plan comes from core: `sessions::plan_*` (removal is `plan_retire`: a
 ship is stopped, its job rows removed, then the config), `config::plan_*`, and
-`layout::plan` for `layout herdr` (tabs whose session already has a pane are
+`layout::plan` for `layout F/... [--ships]` (tabs whose session already has a pane are
 dropped, the rest go to the multiplexer's `layout`).
 
 `tests/cli_drift.rs` runs every command Admiralty shows through the real CLI

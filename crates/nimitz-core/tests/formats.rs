@@ -231,3 +231,15 @@ work = "plan"
     let failures: Vec<String> = shown.iter().filter_map(|(a, ext, ty, text)| pin(&shapes, a, ext, ty, text)).collect();
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// Every squadron.toml written before 0.7.3 holds `comms`: each of its forms
+/// still parses (read and ignored), and nothing writes it again.
+#[test]
+fn an_old_squadron_comms_still_parses_and_is_never_written() {
+    for comms in [r#""open""#, r#""commodore-only""#, r#"{ allow = ["MAIN/ARGOS/CLEAN", "MAIN/BOREAL"] }"#] {
+        let text = format!("squadron = \"ARGOS\"\nbrief = \"SQUADRON.md\"\ncomms = {comms}\n");
+        let sq: nimitz_core::SquadronConfig = toml::from_str(&text).unwrap_or_else(|e| panic!("{comms}: {e}"));
+        assert_eq!(sq.squadron, "ARGOS");
+        assert!(!toml::to_string_pretty(&sq).unwrap().contains("comms"), "{comms}");
+    }
+}

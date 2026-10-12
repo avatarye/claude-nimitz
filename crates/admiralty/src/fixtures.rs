@@ -229,7 +229,7 @@ fn fleet_forge() -> Fleet {
         "labels.missing",
         Severity::Warn,
         "current session has no NIMITZ_* labels (resumed with flags)",
-        Some("nimitz relaunch FORGE/IRON"),
+        Some("nimitz restart FORGE/IRON"),
         Some(&sq),
     )];
     let anvil_id = Id::ship(f, "IRON", "ANVIL");
@@ -242,7 +242,7 @@ fn fleet_forge() -> Fleet {
     anvil.session.as_mut().unwrap().name = "[FORGE.IRON]-ANVIL-2".into(); // drifted
     anvil.extra_rows = vec![session(&anvil_id, "cc33dupe", Some(5311), "background", Some("idle"), None, 3200.0, true)];
     anvil.issues = vec![
-        issue("name.drift", Severity::Error, "live session is named [FORGE.IRON]-ANVIL-2, expected [FORGE.IRON]-ANVIL", Some("nimitz relaunch FORGE/IRON/ANVIL"), Some(&anvil_id)),
+        issue("name.drift", Severity::Error, "live session is named [FORGE.IRON]-ANVIL-2, expected [FORGE.IRON]-ANVIL", Some("nimitz restart FORGE/IRON/ANVIL"), Some(&anvil_id)),
         issue("dup.live", Severity::Error, "two live sessions for this identity (cc33ac33, cc33dupe)", Some("nimitz stop cc33dupe"), Some(&anvil_id)),
     ];
     let hammer_id = Id::ship(f, "IRON", "HAMMER");
@@ -274,7 +274,7 @@ fn fleet_forge() -> Fleet {
         Some(session(&hotfix_id, "ce55ce55", None, "background", None, None, 50000.0, true)),
     );
     hotfix.session.as_mut().unwrap().labels.insert("NIMITZ_ID".into(), "FORGE/MOLD/HOTFIX".into());
-    hotfix.issues = vec![issue("labels.mismatch", Severity::Error, "labels name FORGE/MOLD/HOTFIX, registry says FORGE/IRON/HOTFIX", Some("nimitz relaunch FORGE/IRON/HOTFIX"), Some(&hotfix_id))];
+    hotfix.issues = vec![issue("labels.mismatch", Severity::Error, "labels name FORGE/MOLD/HOTFIX, registry says FORGE/IRON/HOTFIX", Some("nimitz restart FORGE/IRON/HOTFIX"), Some(&hotfix_id))];
     let iron = Squadron {
         id: sq,
         commodore,
