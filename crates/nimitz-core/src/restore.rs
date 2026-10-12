@@ -1228,8 +1228,9 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
     };
     let mut p = crate::sessions::plan_start_with(env, ctx.snap, id, ctx.caller, crate::sessions::StartOpts { force: opts.force, fresh: opts.fresh });
     // its chain's steps, but for a parent that plans itself (named too) or
-    // that an earlier member's chain brought up already: never twice
-    let planned: Vec<Id> = rp.steps.iter().map(|s| s.id().clone()).collect();
+    // that an earlier member's chain brought up already (a step inside its
+    // `Wake` chain counts): never twice
+    let planned: Vec<Id> = rp.steps.iter().flat_map(|s| s.display().into_iter().filter_map(|x| x.id).chain([s.id().clone()])).collect();
     p.steps.retain(|s| match &s.id {
         Some(x) if x != id => !ctx.named.contains(x) && !planned.contains(x),
         _ => true,
@@ -1251,10 +1252,11 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
         rp.down += 1;
     }
     // a folder the user's start trusts first: said in the row and in a note;
-    // only the named target's (a fleet- or squadron-wide start never trusts
-    // a folder the user did not name: that one is refused, its fix the trust)
+    // only the target's an exact path names (a fleet- or squadron-wide start
+    // never trusts a folder the user did not name, a lead it launches first
+    // included: that one is refused, its fix the trust)
     let trusts: Vec<Step> = p.steps.iter().filter(|s| s.cmd.first().is_some_and(|c| c == "trust")).cloned().collect();
-    if !trusts.is_empty() && !ctx.named.contains(id) {
+    if !trusts.is_empty() && !ctx.paths.iter().any(|p| p.member() == Some(id)) {
         found(rp, id, state, "not started; see the fix");
         for t in &trusts {
             fail_with(rp, rep, Issue {

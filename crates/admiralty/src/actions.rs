@@ -685,7 +685,7 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     }
     let Target::Member(id) = target else {
         return Err(match target {
-            Target::Stowaway(_) => "a stowaway has no chain of command: adopt it as a ship first (x then d)".into(),
+            Target::Stowaway(_) => "a stowaway is no fleet member: adopt it as a ship first (x then d)".into(),
             Target::Fleet(id) | Target::Squadron(id) => return plan_message(caps, snap, panes, &Target::Member(id.clone())),
             _ => "message names a member".into(),
         });
@@ -722,8 +722,7 @@ pub fn signal_command(p: &MessagePlan, text: &str) -> String {
 /// The text typed into the pane: what the user typed, spaces as typed, with
 /// escape sequences and control characters removed (newlines as spaces), the
 /// same floor the Herdr adapter applies.
-pub fn message_text(p: &MessagePlan, text: &str) -> String {
-    let _ = p;
+pub fn message_text(text: &str) -> String {
     nimitz_mux::strip_controls(text)
 }
 

@@ -1908,6 +1908,9 @@ fn the_status_row_shows_the_nimitz_version_and_flags_a_mismatch() {
     let top = |t: &mut common::TestApp| screen(&mut t.app, 240, 40).lines().last().unwrap_or("").to_string();
     let l = top(&mut t);
     assert!(l.contains(&format!("admiralty {ours}")) && !l.contains("nimitz "), "not read yet: its own: {l}");
+    *t.app.nimitz_version.lock().unwrap() = Some("?".to_string());
+    let l = top(&mut t);
+    assert!(l.contains(" nimitz ?") && !l.contains("mismatch"), "the read failed: {l}");
     *t.app.nimitz_version.lock().unwrap() = Some(ours.to_string());
     let l = top(&mut t);
     assert!(l.contains(&format!("nimitz {ours}")) && !l.contains("mismatch"), "{l}");

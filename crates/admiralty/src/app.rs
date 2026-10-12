@@ -152,7 +152,8 @@ pub struct App {
     /// fixtures: a frozen clock so ages never move
     pub fixed_now: Option<f64>,
     /// the version of the `nimitz` Admiralty runs (`nimitz --version`, read
-    /// once off the UI thread: `read_nimitz_version`); `None` until it is read
+    /// once off the UI thread: `read_nimitz_version`); `None` until it is
+    /// read, `?` when the binary does not answer
     pub nimitz_version: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// how often the live loop refreshes (`--interval`; the status row shows it)
     pub interval: std::time::Duration,
@@ -219,13 +220,12 @@ impl App {
         let slot = self.nimitz_version.clone();
         std::thread::spawn(move || {
             let bin = crate::actions::nimitz_bin();
-            let Ok(o) = std::process::Command::new(&bin).arg("--version").stdin(std::process::Stdio::null()).output() else { return };
-            // `nimitz 0.7.3`
-            let text = String::from_utf8_lossy(&o.stdout).into_owned();
-            if let Some(v) = text.split_whitespace().nth(1) {
-                if let Ok(mut s) = slot.lock() {
-                    *s = Some(v.to_string());
-                }
+            let out = std::process::Command::new(&bin).arg("--version").stdin(std::process::Stdio::null()).output();
+            // `nimitz 0.7.3`; `?` when it does not answer so
+            let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            let v = text.split_whitespace().nth(1).unwrap_or("?");
+            if let Ok(mut s) = slot.lock() {
+                *s = Some(v.to_string());
             }
         });
     }
@@ -1356,7 +1356,7 @@ impl App {
             self.notify(format!("demo data: would type into {}'s pane {}", plan.via, plan.pane.pane_id), st(mono::WARN));
             return;
         }
-        let body = actions::message_text(plan, text);
+        let body = actions::message_text(text);
         if let Some(job) = &plan.attach_job {
             let check = nimitz_mux::attach_check(self.ctx.mux.as_ref(), &plan.pane, job);
             if check != nimitz_mux::AttachCheck::Exact {

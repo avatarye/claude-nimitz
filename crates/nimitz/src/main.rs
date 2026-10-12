@@ -104,8 +104,8 @@ const USAGES: &[(&str, &str)] = &[
                                    import old fleet-skill fleets"),
     ("start", "  start <path>... [--fresh] [--parked] [--force]
                                    bring members up, the jobs only (no pane): what is down is woken by its
-                                   exact id, top-down; a member a path names gets a first launch when it never
-                                   ran; a worker on an older Claude Code is relaunched. --fresh: a named
+                                   exact id, top-down; a member a path names, and a lead under a ..., gets a
+                                   first launch when it never ran; a worker on an older Claude Code is relaunched. --fresh: a named
                                    member's new conversation; --parked: the parked and stopped ships a ...
                                    covers too; --force: a cold launch over a broken lineage or an untested
                                    Claude Code"),

@@ -76,7 +76,7 @@ one plan. Design: [docs/design/cli-ux.md](docs/design/cli-ux.md).
 
 | Command | What it does |
 | --- | --- |
-| `start <path>... [--fresh] [--parked] [--force]` | Bring members up, the jobs only: what is down is woken by its exact id, top-down; a member a path names gets a first launch when it never ran; a worker on an older Claude Code is relaunched. `--fresh`: a named member's new conversation (drops its history); `--parked`: the parked and stopped ships a `...` covers too; `--force`: a cold launch over a broken lineage or an untested Claude Code |
+| `start <path>... [--fresh] [--parked] [--force]` | Bring members up, the jobs only: what is down is woken by its exact id, top-down; a member a path names, and a lead under a `...`, gets a first launch when it never ran; a worker on an older Claude Code is relaunched. `--fresh`: a named member's new conversation (drops its history); `--parked`: the parked and stopped ships a `...` covers too; `--force`: a cold launch over a broken lineage or an untested Claude Code |
 | `restart <path>... [--parked]` | Relaunch the live members (same id and history, ships first) and wake the ones that are down; a turn in flight is dropped, and the plan says so |
 | `stop <path\|session>...` | Stop members (under a `...`: the live ones, ships first), or one session by its id |
 | `rm <path\|session>...` | Remove job rows, never transcripts |
@@ -164,7 +164,7 @@ Removed in 0.7.3: `restore` (use `muster`), `relaunch` (`restart`), `up`
 
 Keys: `j`/`k` move, `tab` next fleet, `enter` jump to a pane, `a` start, `A` a
 pane for it, `x` more actions (stop, restart, sweep, rm, adopt; on a fleet: `R`
-muster, `u` up with the parked ships), `m` message, `!` what waits on you, `i`
+muster), `u` up a fleet with its parked ships, `m` message, `!` what waits on you, `i`
 every issue with its fix, `c`/`e`/`D` create, edit, remove, `?` all keys (`?`
 again closes them), `q` quit. The two status rows at the bottom show the
 fleets' counts, then the nimitz and Claude Code versions (a mismatch or an

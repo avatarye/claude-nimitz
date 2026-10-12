@@ -515,12 +515,23 @@ impl E2e {
         self.tx(&["capture-pane", "-p", "-t", "e2e"]).1
     }
 
+    /// A new session `e2e` in `cwd`. One already there (a second attach in
+    /// one test) is renamed and killed only after the new one runs: killing
+    /// the server's last session ends the server, and a `new-session` that
+    /// reaches it while it shuts down fails with "server exited unexpectedly".
+    fn fresh_session(&self, cwd: &Path) {
+        let old = self.tx(&["rename-session", "-t", "e2e", "e2e-old"]).0 == 0;
+        let (code, out) = self.tx(&["new-session", "-d", "-s", "e2e", "-x", "180", "-y", "50", "-c", cwd.to_str().unwrap()]);
+        assert_eq!(code, 0, "tmux new-session: {out}");
+        if old {
+            let _ = self.tx(&["kill-session", "-t", "e2e-old"]);
+        }
+    }
+
     /// `claude attach <job>` in a private tmux window started in `cwd`; waits
     /// until the pane shows the session (its name in the status line).
     fn attach(&self, cwd: &Path, job: &str, name: &str) {
-        let _ = self.tx(&["kill-session", "-t", "e2e"]); // a second attach in one test
-        let (code, out) = self.tx(&["new-session", "-d", "-s", "e2e", "-x", "180", "-y", "50", "-c", cwd.to_str().unwrap()]);
-        assert_eq!(code, 0, "tmux new-session: {out}");
+        self.fresh_session(cwd);
         self.tx(&["send-keys", "-t", "e2e", "-l", &format!("'{}' attach {job}", self.native)]);
         self.tx(&["send-keys", "-t", "e2e", "Enter"]);
         let shown = self.wait(45, || Some(self.pane()).filter(|p| p.contains(name) && p.contains('\u{276f}')));
@@ -531,9 +542,7 @@ impl E2e {
     /// Run `line` in a fresh private tmux window started in `cwd` (an
     /// interactive `claude`, say); waits until the pane shows `want`.
     fn tmux_run(&self, cwd: &Path, line: &str, want: &str) {
-        let _ = self.tx(&["kill-session", "-t", "e2e"]);
-        let (code, out) = self.tx(&["new-session", "-d", "-s", "e2e", "-x", "180", "-y", "50", "-c", cwd.to_str().unwrap()]);
-        assert_eq!(code, 0, "tmux new-session: {out}");
+        self.fresh_session(cwd);
         self.tx(&["send-keys", "-t", "e2e", "-l", line]);
         self.tx(&["send-keys", "-t", "e2e", "Enter"]);
         let shown = self.wait(60, || Some(self.pane()).filter(|p| p.contains(want)));

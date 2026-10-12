@@ -621,6 +621,30 @@ fn a_fleet_start_gives_its_never_started_leads_their_first_launch() {
     assert!(sb.run(&["start", "TOP/SQ/S1", "--plan"]).out.contains("first launch"));
 }
 
+/// A parent that several members' chains bring up is launched once: two
+/// squadrons under a never-started admiral, two ships under a never-started
+/// commodore.
+#[test]
+fn a_parent_two_chains_share_is_launched_once() {
+    let sb = Sb::new(false);
+    make_top(&sb);
+    for args in [
+        vec!["squadron", "new", "TOP/SQ2", "--brief", "Second squadron.", "--yes"],
+        vec!["ship", "new", "TOP/SQ/S2", "--dir", "managed", "--prompt", "You are S2.", "--yes"],
+    ] {
+        assert_eq!(sb.run(&args).code, 0, "{args:?}");
+    }
+    let ids = |args: &[&str]| -> Vec<String> {
+        let r = sb.run(args);
+        let j: Value = serde_json::from_str(r.out.trim()).unwrap_or_else(|_| panic!("{}", r.out));
+        j["steps"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str().map(String::from)).collect()
+    };
+    assert_eq!(ids(&["start", "TOP/SQ/...", "TOP/SQ2/...", "--plan", "--json"]), ["TOP", "TOP/SQ", "TOP/SQ2"]);
+    let ships = ids(&["start", "TOP/SQ/S1", "TOP/SQ/S2", "--plan", "--json"]);
+    let launches = |id: &str| ships.iter().filter(|x| *x == id).count();
+    assert!(launches("TOP") == 1 && launches("TOP/SQ") == 1, "{ships:?}");
+}
+
 #[test]
 fn start_is_top_down_admiral_commodore_ship() {
     let sb = Sb::new(true);
@@ -2843,4 +2867,23 @@ fn a_fleets_harness_reaches_the_members_rules_settings_and_launch() {
     assert_eq!(rm.code, 0, "{}", rm.out);
     assert!(!sb.run_as("MAIN/ARGOS/CLEAN", &["rules"]).out.contains("Answer in haiku."));
     assert!(nimitz_core::harness::dir(&env, "MAIN").join("rules/style.md.archived").is_file());
+}
+
+/// A lead a `...` launches first never has its folder trusted on the way: only
+/// a target an exact path names does (here the data root lost its trust).
+#[test]
+fn a_wider_start_never_trusts_a_never_started_leads_folder() {
+    let sb = Sb::new(false);
+    make_top(&sb);
+    let root = sb.base.join("nimitz");
+    for f in [sb.base.join("claude_home/.claude.json"), sb.base.join("claude_home.json")] {
+        let Ok(b) = std::fs::read(&f) else { continue };
+        let mut v: Value = serde_json::from_slice(&b).unwrap();
+        v["projects"] = serde_json::json!({ root.to_string_lossy(): {"hasTrustDialogAccepted": false} });
+        std::fs::write(&f, serde_json::to_vec(&v).unwrap()).unwrap();
+    }
+    let wide = sb.run(&["start", "TOP/...", "--plan", "-v"]);
+    assert!(wide.out.contains("a wider start does not trust it") && !wide.out.contains("to launch"), "{}", wide.out);
+    let exact = sb.run(&["start", "TOP", "--plan", "-v"]);
+    assert!(exact.out.contains("trust ") && exact.out.contains("1 to launch") && !exact.out.contains("refuse"), "the exact path trusts it:\n{}", exact.out);
 }

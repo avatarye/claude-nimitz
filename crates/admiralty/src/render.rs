@@ -319,6 +319,8 @@ fn status_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'sta
     let mut v = vec![];
     match app.nimitz_version.lock().ok().and_then(|v| v.clone()) {
         Some(n) if n == ours => v.push(Span::styled(format!(" nimitz {n}"), st(mono::MUTED))),
+        // the read failed: the nimitz it runs is unknown
+        Some(n) if n == "?" => v.push(Span::styled(" nimitz ?".to_string(), bold(mono::WARN))),
         Some(n) => v.push(Span::styled(pick(format!(" admiralty {ours} \u{b7} nimitz {n} (mismatch)"), format!(" nimitz {n} \u{2260} {ours}"), format!(" {n}\u{2260}{ours}")), bold(mono::WARN))),
         // not read yet (or no answer): Admiralty's own
         None => v.push(Span::styled(format!(" admiralty {ours}"), st(mono::MUTED))),
