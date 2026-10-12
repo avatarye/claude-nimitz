@@ -107,7 +107,8 @@ Claude Code's own tools for a subagent's work with its caller
 `tools:` say, `TodoWrite`, `ToolSearch`) get no answer: Claude Code decides
 as for any session. Never an explicit allow: only auto mode's review may
 allow `SubagentHandback`, and Claude Code turns a hook's allow into a deny.
-The task tools stay denied (they write the session's task list). Every other tool than each agent's own is denied. (0.7.0 denied
+The task tools stay denied (they write the session's task list), as does
+every other tool outside each agent's own. (0.7.0 denied
 `SubagentHandback` too, so the agents' reports never reached their callers;
 fixed in 0.7.1.)
 

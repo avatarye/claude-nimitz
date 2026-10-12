@@ -2031,7 +2031,8 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     write(&plug.join("hooks/hooks.json"), &json!({"hooks": {"PreToolUse": [guard]}}).to_string());
     // the ship on the account's default model, as a lead runs: Claude Code
     // gives its subagents `SubagentHandback` to report with (0.7.0's guard
-    // denied it, and no report reached the caller; the cheap model never showed it)
+    // denied it, and no report reached the caller; the cheap model never showed
+    // it). The wrapper keeps its name; this case pays the default model's price
     executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --plugin-dir '{}' \"$@\"\n", w.native, plug.display()));
     let ship = w.ship();
     let marker = format!("e2e-{}-{}", std::process::id(), nimitz_core::evidence::now() as u64);
@@ -2121,11 +2122,19 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
         }
     }
     assert!(denied.is_empty(), "the guard stopped a report on its way to the caller: {denied:?}");
-    let reports: Vec<String> = std::fs::read_dir(&sub).into_iter().flatten().flatten().map(|e| std::fs::read_to_string(e.path()).unwrap_or_default()).filter(|t| t.contains("\"name\":\"SubagentHandback\"")).collect();
+    // each subagent's SubagentHandback input: what it handed back
+    let handbacks = |t: &str| -> Vec<String> {
+        t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
+            .filter(|c| c["type"] == "tool_use" && c["name"] == "SubagentHandback")
+            .map(|c| c["input"].to_string())
+            .collect()
+    };
+    let reports: Vec<Vec<String>> = std::fs::read_dir(&sub).into_iter().flatten().flatten().map(|e| handbacks(&std::fs::read_to_string(e.path()).unwrap_or_default())).filter(|h| !h.is_empty()).collect();
     let handed = reports.len();
-    assert!(reports.iter().any(|t| t.contains("ingested") && t.contains(&commits[0][..7])), "the scribe handed back its block at the note's commit");
     println!("[OK] e2e #98: {handed} subagent(s) reported through SubagentHandback");
     assert!(handed >= 2, "auto mode has both agents report through SubagentHandback (the path 0.7.0 broke): {handed}");
+    assert!(reports.iter().flatten().any(|h| h.contains("ingested") && h.contains(&commits[0][..7])), "the scribe handed back its block at the note's commit: {reports:?}");
     let ev = w.events();
     assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {:?}", ev.iter().filter(|e| e["event"] == "PermissionRequest").collect::<Vec<_>>());
     assert!(std::fs::read_dir(w.base.join("state").join("needs")).map(|d| d.count() == 0).unwrap_or(true), "a needs-you notice was left");

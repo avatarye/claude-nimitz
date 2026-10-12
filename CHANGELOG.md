@@ -8,11 +8,12 @@
   mode.** There Claude Code has a subagent report through its
   `SubagentHandback` tool, and the kb-guard denied every tool outside each
   agent's own, that one too: the note was committed, the question answered,
-  and neither result arrived. The guard now gives no answer for Claude Code's
-  own tools for reporting to the caller (`SubagentHandback`, its todo list,
-  `ToolSearch`): Claude Code decides as for any session. Every other tool
-  outside the agents' own is still denied. e2e #98 runs its ship in auto mode and checks
-  that both reports arrive.
+  and neither result arrived. The guard now gives no answer for
+  `SubagentHandback`, which delivers a subagent's report, and for two
+  harmless tools of Claude Code's own, `TodoWrite` and `ToolSearch`: Claude
+  Code decides as for any session. Every other tool outside the agents' own
+  is still denied, the task tools too. e2e #98 runs its ship in auto mode
+  and checks that both reports arrive.
 
 ### Upgrading
 

@@ -4,8 +4,9 @@
 //! section 3) are held here, by the payload's `agent_type`, whatever the
 //! session's permission mode. What an agent may do is allowed (so a member
 //! in the background never stops on a permission prompt for its KB); the
-//! rest is denied with the reason. Any other agent, and the session itself,
-//! get no answer at all.
+//! rest is denied with the reason, but for Claude Code's own `CALLER_TOOLS`
+//! (a subagent's handback to its caller), which get no answer. Any other
+//! agent, and the session itself, get no answer at all.
 //!
 //! - kb-scribe: Bash only as one `nimitz kb path|status|grep|hash|commit|restore`
 //!   (no `;`, `&`, `|`, redirects, globs or comments; `$`, backticks and `\`
