@@ -19,9 +19,9 @@
 //! temp file with the old file's mode (0600: it holds the login) and a rename.
 //! A linked file is written where it points.
 //!
-//! The user's alone: trust lets the folder's own `.claude` settings, hooks
-//! and MCP servers run, so a member gets an authority refusal and the fix
-//! goes to the user.
+//! Any caller's (0.7.3): trust lets the folder's own `.claude` settings,
+//! hooks and MCP servers run, which every plan that trusts says
+//! (`CONSEQUENCE`); a folder too broad to trust is refused for everyone.
 use crate::env::Env;
 use crate::types::{Id, Issue, Severity, Step};
 use serde_json::{json, Map, Value};

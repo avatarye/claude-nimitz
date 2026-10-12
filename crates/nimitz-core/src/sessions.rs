@@ -415,11 +415,32 @@ pub fn restart_cmd(id: &Id) -> String {
     format!("nimitz restart {id}")
 }
 
-/// Is the caller (a member, by its labels) `target` or under it? A stop,
-/// a relaunch or a removal of it would end the caller mid-command: the CLI
-/// runs that step last, detached, once the caller's turn ends (`self_end`).
-pub fn caller_inside(caller: &Caller, target: &Id) -> bool {
-    matches!(caller, Caller::Member { id, .. } if id == target || id.0.starts_with(&format!("{}/", target.0)))
+/// The caller's member id by its labels: none for the user or an
+/// unverified caller (partial or disagreeing labels).
+pub fn verified(caller: &Caller) -> Option<&Id> {
+    match caller {
+        Caller::Member { id, .. } if id.0 != UNVERIFIED => Some(id),
+        _ => None,
+    }
+}
+
+/// The member that runs this command: by its labels, else the member whose
+/// worker is an ancestor of this process (a session with no labels, or
+/// partial ones). Its own end goes to the self-end helper.
+pub fn me_of(snap: &Snapshot, caller: &Caller) -> Option<Id> {
+    if let Some(id) = verified(caller) {
+        return Some(id.clone());
+    }
+    let up = crate::evidence::ancestors();
+    members(snap).into_iter().map(|(_, m)| m).find(|m| m.session.as_ref().and_then(|s| s.pid).is_some_and(|p| p > 1 && up.contains(&p))).map(|m| m.id.clone())
+}
+
+/// Is member `me` `target` or under it? A retire of `target` (ship,
+/// squadron or fleet rm) would end it mid-command: the CLI runs that retire
+/// last, detached, once its turn ends (`self_end`). A stop or a relaunch
+/// ends only its own member: those go by `me == target`.
+pub fn inside(me: &Id, target: &Id) -> bool {
+    me == target || me.0.starts_with(&format!("{}/", target.0))
 }
 
 fn refuse(plan: &mut Plan, code: &str, msg: String, fix: Option<String>, id: Option<Id>) {
@@ -2518,11 +2539,13 @@ mod tests {
 
     #[test]
     fn a_member_is_inside_itself_and_its_leads() {
-        let me = Caller::Member { id: Id::ship("MAIN", "ARGOS", "ARGOS"), role: Role::Ship };
+        let me = Id::ship("MAIN", "ARGOS", "ARGOS");
         for target in [Id::ship("MAIN", "ARGOS", "ARGOS"), Id::commodore("MAIN", "ARGOS"), Id::admiral("MAIN")] {
-            assert!(caller_inside(&me, &target), "{target}");
+            assert!(inside(&me, &target), "{target}");
         }
-        assert!(!caller_inside(&me, &Id::ship("MAIN", "ARGOS", "AST")) && !caller_inside(&Caller::User, &Id::admiral("MAIN")));
+        assert!(!inside(&me, &Id::ship("MAIN", "ARGOS", "AST")) && !inside(&me, &Id::admiral("BETA")));
+        let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Ship };
+        assert!(verified(&unverified).is_none() && verified(&Caller::User).is_none());
     }
 
     #[test]

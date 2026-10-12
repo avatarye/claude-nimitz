@@ -7,15 +7,14 @@ use crate::out;
 use crate::Ctx;
 use nimitz_core::fleet_settings;
 use nimitz_core::kb::{self, Committed};
-use nimitz_core::Caller;
 
 /// The fleet a command is about: `--fleet F`, else a member's own.
 /// `Err(Ok(code))`: refused, said already.
 pub fn fleet_of(ctx: &Ctx) -> Result<String, Result<i32, String>> {
-    match (&ctx.caller, ctx.args.value("--fleet")) {
+    match (nimitz_core::sessions::verified(&ctx.caller), ctx.args.value("--fleet")) {
         (_, Some(f)) => Ok(f.to_string()),
-        (Caller::Member { id, .. }, None) => Ok(id.fleet().to_string()),
-        (Caller::User, None) => Err(Err("name the fleet: --fleet F (inside a fleet member's session it is the member's own)".into())),
+        (Some(id), None) => Ok(id.fleet().to_string()),
+        (None, None) => Err(Err("name the fleet: --fleet F (inside a fleet member's session it is the member's own)".into())),
     }
 }
 

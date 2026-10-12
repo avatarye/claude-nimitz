@@ -588,14 +588,8 @@ pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&cra
 #[allow(clippy::too_many_arguments)]
 fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, paths: &[crate::paths::Path], named: Vec<Id>, verb: &'static str, opts: RestoreOpts, caller: &Caller, mut rp: RestorePlan) -> RestorePlan {
     // the member that runs this restore: by its labels, else the member whose
-    // worker is an ancestor of this process (a session with no labels)
-    let me = match caller {
-        Caller::Member { id, .. } => Some(id.clone()),
-        Caller::User => {
-            let up = crate::evidence::ancestors();
-            snap.fleets.iter().flat_map(fleet_members).find(|m| m.session.as_ref().and_then(|s| s.pid).is_some_and(|p| p > 1 && up.contains(&p))).map(|m| m.id.clone())
-        }
-    };
+    // worker is an ancestor of this process (no labels, or partial ones)
+    let me = crate::sessions::me_of(snap, caller);
     // (a restore with no multiplexer runs its job steps and says so, decision 7)
     if !has_mux && opts.jobs_only && verb == "restore" {
         rp.plan.warnings.push(issue("mux.none", Severity::Info, "no multiplexer here: the jobs only; the pane steps are skipped (`nimitz layout` makes them inside Herdr)".into(), None, None));

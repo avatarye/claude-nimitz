@@ -92,7 +92,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     }
     // The env's labels go on the event line as they were (a replay judges
     // them again against the job's row); every effect here (binding, rules,
-    // signal authority, needs-you) uses only labels the job's row backs. A
+    // needs-you) uses only labels the job's row backs. A
     // job whose row is not written yet is waited for a moment, then left
     // unlabelled for now: no rules, no binding; its first prompt gets the
     // rules (`rules::update_for`) and `status` replays the line.
@@ -586,7 +586,7 @@ mod tests {
     /// The daemon hands its environment to every job it starts; a daemon
     /// started from a labelled lead's shell labels an unlabelled `claude --bg`
     /// as that lead. Such a job's labels never count: no binding, no rules, no
-    /// signal authority.
+    /// needs-you notice.
     #[test]
     fn a_job_that_inherited_a_leads_labels_from_the_daemon_is_unlabelled() {
         let (_td, env) = world();
@@ -623,7 +623,7 @@ mod tests {
     }
 
     /// The agent view's pre-warmed spare is never anyone's member, whatever
-    /// labels it inherited: no rules, no binding, no signal authority.
+    /// labels it inherited: no rules, no binding, no output.
     #[test]
     fn a_spare_is_never_labelled_in_the_hook() {
         let (_td, env) = world();
@@ -640,7 +640,7 @@ mod tests {
         assert!(!handle(&env, "SessionStart", &input.to_string(), &v).contains("additionalContext"));
         assert!(crate::registry::load(&env).identities.get(&lead.0).map_or(true, |r| r.session.as_deref() != Some("s-spare")));
         let send = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN.ARGOS]-ARGOS"}});
-        assert!(handle(&env, "PreToolUse", &send.to_string(), &v).is_empty(), "no commodore authority");
+        assert!(handle(&env, "PreToolUse", &send.to_string(), &v).is_empty(), "a signal is never judged");
     }
 
     #[test]

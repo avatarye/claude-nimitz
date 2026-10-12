@@ -265,6 +265,11 @@ fn every_command_has_its_own_help() {
     let r = sb.run(&["stop", "--help"]);
     assert!(!r.out.contains("missing") && !r.out.contains("  start "), "its own alone:\n{}", r.out);
     assert_eq!(sb.run(&["help", "relaunch"]).code, 2, "a removed verb has no help");
+    // `--help` first after the verb, or the only flag; never inside signal's text, never the hook's stdin
+    assert!(sb.run(&["hook", "--help"]).out.contains("  hook <Event>"));
+    assert!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--help"]).out.contains("  stop "));
+    let r = sb.run(&["signal", "MAIN/ARGOS", "see", "--help", "text", "--plan"]);
+    assert!(!r.out.contains("paths:"), "{}", r.out);
     for gone in ["up", "relaunch", "restore"] {
         let r = sb.run(&[gone, "MAIN", "--plan"]);
         assert!(r.code == 2 && r.out.contains("unknown command"), "{gone}: {}", r.out);
@@ -279,6 +284,9 @@ fn status_takes_paths_and_tells_down_from_parked() {
     assert_eq!(sb.run(&["status"]).code, 0, "records the active set");
     let r = sb.run(&["status", "MAIN/ARGOS/..."]);
     assert!(r.code == 0 && r.out.contains("MAIN/ARGOS/CLEAN") && !r.out.contains("BETA") && !r.out.lines().any(|l| l.starts_with("  MAIN ")), "{}", r.out);
+    let j: Value = serde_json::from_str(sb.run(&["status", "MAIN/ARGOS/CLEAN", "--json"]).out.trim()).unwrap();
+    let ships: Vec<&str> = j["fleets"].as_array().unwrap().iter().flat_map(|f| f["squadrons"].as_array().unwrap().iter()).flat_map(|sq| sq["ships"].as_array().unwrap().iter()).filter_map(|m| m["id"].as_str()).collect();
+    assert_eq!((j["fleets"].as_array().unwrap().len(), ships), (1, vec!["MAIN/ARGOS/CLEAN"]), "--json filters members too");
     let r = sb.run(&["status", "NOPE"]);
     assert!(r.code != 0 && r.out.contains("(member.unknown)"), "{}", r.out);
     // the machine takes CLEAN down (a reboot: its process and session file gone)
@@ -303,6 +311,13 @@ fn stop_takes_paths_and_stops_the_live_ones() {
     assert!(stops >= 2, "{}", r.out);
     let r = sb.run(&["stop", "MAIN/ARGOS/STOPPED", "--plan"]);
     assert!(r.code != 0 && r.out.contains("(session.none)"), "a member by name that is not live: {}", r.out);
+    let r = sb.run(&["stop", "MAIN/ARGOS/NOPE", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("(member.unknown)") && r.out.contains("MAIN has MAIN"), "{}", r.out);
+    // bottom-up across every path: the ship before its admiral
+    let r = sb.run(&["stop", "MAIN", "MAIN/ARGOS/CLEAN", "--plan", "--json"]);
+    let v: Value = serde_json::from_str(r.out.trim()).unwrap_or_else(|e| panic!("{e}: {}", r.out));
+    let order: Vec<&str> = v["steps"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str()).collect();
+    assert_eq!(order, ["MAIN/ARGOS/CLEAN", "MAIN"], "{}", r.out);
 }
 
 #[test]
@@ -455,6 +470,12 @@ fn a_members_own_stop_runs_last_in_a_detached_helper() {
     assert!(!live(&sb.member(me)) && !lock.exists(), "the helper stopped it:\n{text}");
     let note = std::fs::read_to_string(state.join("self-end").join("MAIN.ARGOS.CLEAN.txt")).unwrap_or_default();
     assert!(note.contains("`nimitz stop MAIN/ARGOS/CLEAN`, which you ran, ran after your turn ended"), "{note}\n{text}");
+    // its own session by id is its own stop too; a commodore's stop of its admiral is not its own
+    let job = sb.member("MAIN/ARGOS/NOLABEL")["session"]["short_id"].as_str().unwrap().to_string();
+    let r = sb.run_as("MAIN/ARGOS/NOLABEL", &["stop", &job, "--plan"]);
+    assert!(r.code == 0 && r.out.contains("(self.end)") && r.out.contains(&format!("nimitz stop {job}")), "{}", r.out);
+    let r = sb.run_as("MAIN/ARGOS", &["stop", "MAIN", "--plan"]);
+    assert!(r.code == 0 && !r.out.contains("self.end"), "{}", r.out);
     // a turn that does not end: the helper gives up (decision 5), nothing runs, the note says so
     let me = "MAIN/ARGOS/DRIFT";
     let sid = sb.member(me)["session"]["session_id"].as_str().unwrap().to_string();

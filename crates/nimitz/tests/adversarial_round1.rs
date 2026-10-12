@@ -194,11 +194,16 @@ fn bug05_an_empty_dir_is_refused() {
 }
 
 #[test]
-fn bug06_partial_labels_warn_and_run_as_the_user() {
+fn bug06_partial_labels_warn_and_run_as_no_member() {
     let sb = Sb::new(false);
     for extra in [&[("NIMITZ_ROLE", "ship")][..], &[("NIMITZ_ID", "MAIN/ARGOS/CLEAN")][..], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS/CLEAN")][..]] {
         let r = sb.run_env(&["start", "MAIN/ARGOS/STOPPED", "--plan"], extra);
         assert!(r.code == 0 && r.out.contains("[WARN]") && r.out.contains("partial or disagree"), "labels {extra:?}:\n{}", r.out);
+        // never the user's: a bare sweep is not everything, a signal never types as you
+        let r = sb.run_env(&["sweep", "--plan"], extra);
+        assert!(r.code != 0 && r.out.contains("name what to sweep"), "labels {extra:?}:\n{}", r.out);
+        let r = sb.run_env(&["signal", "MAIN/ARGOS", "hi", "--plan"], extra);
+        assert!(r.out.contains("inbox") && !r.out.contains("type into"), "labels {extra:?}:\n{}", r.out);
     }
 }
 

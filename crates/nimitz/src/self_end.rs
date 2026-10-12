@@ -11,16 +11,14 @@
 use crate::{out, Ctx};
 use nimitz_core::env::Env;
 use nimitz_core::self_end;
-use nimitz_core::{Caller, Id};
+use nimitz_core::Id;
 use std::collections::HashMap;
 use std::process::{Command, Stdio};
 
-/// The caller's member id, when it is one.
-pub fn me(ctx: &Ctx) -> Option<Id> {
-    match &ctx.caller {
-        Caller::Member { id, .. } => Some(id.clone()),
-        Caller::User => None,
-    }
+/// The member that runs this command (`sessions::me_of`: its labels, else
+/// its process), when one does.
+pub fn me(ctx: &Ctx, snap: &nimitz_core::Snapshot) -> Option<Id> {
+    nimitz_core::sessions::me_of(snap, &ctx.caller)
 }
 
 /// Leave `nimitz <args>` to the helper, for `id` (the caller): said under

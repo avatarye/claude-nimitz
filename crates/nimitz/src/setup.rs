@@ -279,10 +279,10 @@ impl Report {
 pub fn rules(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
-    let id = match (ctx.args.pos.first(), &ctx.caller) {
+    let id = match (ctx.args.pos.first(), nimitz_core::sessions::verified(&ctx.caller)) {
         (Some(x), _) => crate::members::parse_id(x)?,
-        (None, nimitz_core::Caller::Member { id, .. }) => id.clone(),
-        (None, nimitz_core::Caller::User) => return Err("missing id (F, F/SQ or F/SQ/SHIP)".into()),
+        (None, Some(id)) => id.clone(),
+        (None, None) => return Err("missing id (F, F/SQ or F/SQ/SHIP)".into()),
     };
     print!("{}", nimitz_core::rules::text_for(&ctx.env, &id));
     Ok(0)

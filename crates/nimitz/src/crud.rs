@@ -299,7 +299,8 @@ fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, label: Option<&str>, dir: Opt
 /// fleet) runs whole, last, detached, once the caller's turn ends (`self_end`).
 fn retire(ctx: &Ctx, id: &Id) -> i32 {
     let plan = nimitz_core::sessions::plan_retire(&ctx.env, &ctx.snap(), &ctx.caller, id);
-    let me = crate::self_end::me(ctx).filter(|_| nimitz_core::sessions::caller_inside(&ctx.caller, id));
+    let snap = ctx.snap();
+    let me = crate::self_end::me(ctx, &snap).filter(|m| nimitz_core::sessions::inside(m, id));
     let verb = match id.role() {
         Role::Admiral => "fleet",
         Role::Commodore => "squadron",

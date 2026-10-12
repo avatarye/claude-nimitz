@@ -101,7 +101,7 @@ const USAGES: &[(&str, &str)] = &[
                                    ones (fleet.toml), which affect every machine: update each one first
   migrate fleet-skill <dir...> --into <F>
                                    import old fleet-skill fleets"),
-    ("start", "  start <path>... [--fresh] [--parked]
+    ("start", "  start <path>... [--fresh] [--parked] [--force]
                                    bring members up, the jobs only (no pane): what is down is woken by its
                                    exact id, top-down; a member a path names gets a first launch when it never
                                    ran; a worker on an older Claude Code is relaunched. --fresh: a named
@@ -173,6 +173,15 @@ fn main() {
 
 fn dispatch(argv: Vec<String>) -> i32 {
     let cmd = argv.first().cloned().unwrap_or_default();
+    // `<cmd> --help`: its own usage, before anything reads its arguments (the
+    // hook's stdin included): `--help` first after the verb, or its only flag
+    // (never inside `signal`'s text)
+    let flags: Vec<&String> = argv.iter().skip(1).filter(|a| a.starts_with("--")).collect();
+    let asks = argv.get(1).is_some_and(|a| a == "--help") || (cmd != "signal" && flags.len() == 1 && flags[0] == "--help");
+    if asks && USAGES.iter().any(|(n, _)| *n == cmd) {
+        println!("{}", usage(Some(&cmd)));
+        return 0;
+    }
     // The hook and the fakes come first and stay lean: no parsing, no snapshot.
     match cmd.as_str() {
         "hook" => return hook(argv.get(1).map(String::as_str).unwrap_or("")),
@@ -202,11 +211,6 @@ fn dispatch(argv: Vec<String>) -> i32 {
             println!("{}", usage(of));
             return if cmd.is_empty() { 2 } else { 0 };
         }
-        // `<cmd> --help`: its own usage, before anything parses its arguments
-        c if argv[1..].iter().any(|a| a == "--help") && USAGES.iter().any(|(n, _)| *n == c) => {
-            println!("{}", usage(Some(c)));
-            return 0;
-        }
         _ => {}
     }
     // `-v` is `--verbose` for every command but `signal` (whose text it may be)
@@ -228,14 +232,13 @@ fn dispatch(argv: Vec<String>) -> i32 {
     if let Err(e) = nimitz_mux::valid_mux_setting(&vars) {
         return usage_error(&e);
     }
-    // partial or mismatched labels: said once, and the command runs as yours
-    let caller = match nimitz_core::sessions::caller_from_env(&vars) {
-        Caller::Member { id, .. } if id.0 == nimitz_core::sessions::UNVERIFIED => {
-            eprintln!("[WARN] this process's NIMITZ_ID / NIMITZ_ROLE labels are partial or disagree; nimitz runs it as yours");
-            Caller::User
-        }
-        c => c,
-    };
+    // partial or mismatched labels: said once; the command runs, as a caller
+    // that is no member by name (its own member, for a self-end, is found by
+    // its process; its signal goes to the inbox)
+    let caller = nimitz_core::sessions::caller_from_env(&vars);
+    if matches!(&caller, Caller::Member { id, .. } if id.0 == nimitz_core::sessions::UNVERIFIED) {
+        eprintln!("[WARN] this process's NIMITZ_ID / NIMITZ_ROLE labels are partial or disagree; nimitz runs it with no member's name");
+    }
     let ctx = Ctx { env: Env::from_vars(&vars), caller, vars, args };
     // a registry too new for this nimitz stops a command at its first read,
     // never reads as an empty one (doctor reports it instead)
