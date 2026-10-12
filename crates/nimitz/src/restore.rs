@@ -1,6 +1,6 @@
 //! The restore engine's runner (plan-v4 section 13; docs/design/cli-ux.md):
 //! `start`, `restart` and `open` (`restore::plan_start`), `layout` (the
-//! shape only) and the hidden `__muster` (`restore::plan`, the one command
+//! shape only) and `muster` (`restore::plan`, the one command
 //! after a Claude Code update, a Herdr closure or a reboot, which tells the
 //! three apart per member). Core plans; this runs the steps: a wake or a
 //! relaunch through `sessions::apply`, a claim, an open or a reattach
@@ -92,14 +92,18 @@ pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&n
     let _ = active::write(&ctx.env, set);
 }
 
-/// `nimitz __muster [<path>...] [--parked] [--force] [--here] [--rename]`
-/// (no path: `//...`): the restore engine whole, hidden until `muster`
-/// (0.7.3 build step 6) names it.
+/// `nimitz muster [<path>...] [--parked] [--force] [--here] [--rename]`
+/// (no path: `//...`): the one command after a reboot, a Claude Code update
+/// or a Herdr closure (docs/design/cli-ux.md section 3), one plan: workers
+/// on an older Claude Code relaunched (decision 1; `restart //...` relaunches
+/// every one), down leads and the active set's down ships woken (`--parked`:
+/// the rest too), every member's pane reattached (its own, else its lead
+/// tab). With no multiplexer, the job steps alone, and the plan says so.
 pub fn muster(ctx: &Ctx) -> Result<i32, String> {
-    ctx.args.allow(&["--parked", "--restart", "--here", "--rename"])?;
+    ctx.args.allow(&["--parked", "--here", "--rename"])?;
     let paths = if ctx.args.pos.is_empty() { vec![nimitz_core::paths::Path::Under(None)] } else { crate::members::parse_paths(&ctx.args.pos)? };
     let jobs_only = !ctx.mux().caps().open;
-    let opts = rs::RestoreOpts { parked: ctx.args.flag("--parked"), force: ctx.force(), jobs_only, here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), restart: ctx.args.flag("--restart"), ..Default::default() };
+    let opts = rs::RestoreOpts { parked: ctx.args.flag("--parked"), force: ctx.force(), jobs_only, here: ctx.args.flag("--here"), rename: ctx.args.flag("--rename"), ..Default::default() };
     Ok(run_shape(ctx, &paths, opts))
 }
 
@@ -126,7 +130,7 @@ fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: 
         match shape_of(mux.as_ref(), true) {
             Ok((s, r)) => (s, Some(r)),
             Err(e) => {
-                let verb = if start { "start" } else if opts.shape_only { "layout" } else { "restore" };
+                let verb = if start { "start" } else if opts.shape_only { "layout" } else { "muster" };
                 // a server taken from the record (outside Herdr) says which, and what works
                 let fix = active::recorded_server_fix(&ctx.env, &ctx.vars).map(|f| format!("{f}; or nimitz start {named}  # the jobs, no panes"));
                 let plan = Plan { summary: format!("{verb} {named}"), refusals: vec![refusal("mux.failed", format!("cannot read the Herdr shape ({e}); nothing is typed into panes nimitz cannot see"), fix, None)], ..Default::default() };
@@ -222,7 +226,7 @@ fn report(rp: &rs::RestorePlan, failed: &[Id], issues: &[Issue]) -> i32 {
     // and the executor's (a config finding that rides along is not)
     let errors = rp.fleets.iter().map(|f| f.failed).sum::<usize>() + issues.iter().filter(|i| i.severity == Severity::Error).count();
     let start = ["start ", "restart ", "open "].iter().any(|v| rp.plan.summary.starts_with(v));
-    let (none, done) = if start { ("nothing to start", "up") } else { ("nothing to restore", "restored") };
+    let (none, done) = if start { ("nothing to start", "up") } else { ("nothing to bring back", "back") };
     for f in &rp.fleets {
         let failed_here = failed.iter().filter(|id| id.fleet() == f.fleet).count() + f.failed;
         let planned: usize = rp.steps.iter().filter(|s| s.id().fleet() == f.fleet).count();
@@ -237,7 +241,7 @@ fn report(rp: &rs::RestorePlan, failed: &[Id], issues: &[Issue]) -> i32 {
         } else if start {
             crate::view::verdict(true, &format!("{}: {} lead(s), {} ship(s) up{parked}{stopped}{not_started}{held}", f.fleet, f.leads, f.ships));
         } else {
-            crate::view::verdict(true, &format!("{}: restored {} lead(s), {} ship(s){parked}{stopped}{not_started}{held}", f.fleet, f.leads, f.ships));
+            crate::view::verdict(true, &format!("{}: {} lead(s), {} ship(s) back{parked}{stopped}{not_started}{held}", f.fleet, f.leads, f.ships));
         }
     }
     if errors > 0 || !failed.is_empty() {

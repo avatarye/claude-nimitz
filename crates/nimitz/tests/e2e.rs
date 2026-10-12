@@ -1779,7 +1779,7 @@ fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
     executable(&newer, &format!("#!/bin/sh\nfor a; do [ \"$a\" = --version ] && {{ echo '2.1.999 (Claude Code)'; exit 0; }}; done\nexec '{}' \"$@\"\n", w.native));
     let restore = |form: &str| {
         let mut c = w.nz_cmd();
-        c.env("NIMITZ_NATIVE_CLAUDE_BIN", &newer).args(["__muster", &format!("{}/...", w.fleet), form]);
+        c.env("NIMITZ_NATIVE_CLAUDE_BIN", &newer).args(["muster", &format!("{}/...", w.fleet), form]);
         E2e::run(c)
     };
     let (code, plan) = restore("--plan");

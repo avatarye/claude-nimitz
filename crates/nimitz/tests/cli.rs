@@ -535,6 +535,7 @@ fn every_command_runs_for_every_role() {
         ("attach", &["MAIN/ARGOS/CLEAN"]),
         ("close", &["MAIN/..."]),
         ("layout", &["MAIN/..."]),
+        ("muster", &["MAIN/..."]),
         ("sandbox", &["env", "/nonexistent-nimitz"]),
         ("settings", &["get", "--fleet", "BETA"]),
         ("settings", &["set", "kb.remote", "x", "--fleet", "MAIN"]),
@@ -1998,7 +1999,7 @@ fn the_users_nimitz_outside_herdr_uses_the_recorded_server() {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&dead, std::fs::Permissions::from_mode(0o755)).unwrap();
     outside.insert("NIMITZ_HERDR_BIN".into(), dead.to_string_lossy().into_owned());
-    let r = raw(&outside, &["__muster", "MAIN/...", "--plan"], &[], None);
+    let r = raw(&outside, &["muster", "MAIN/...", "--plan"], &[], None);
     assert_ne!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("mux.failed") && r.out.contains("recorded in active.json (session rec)") && r.out.contains("herdr --session rec") && r.out.contains("nimitz start MAIN/...  # the jobs, no panes"), "{}", r.out);
 }

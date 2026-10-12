@@ -583,7 +583,7 @@ fn a_broken_fleet_toml_is_a_red_band_with_the_error_in_full_and_the_other_fleets
 
 /// `x R` on a fleet band: the plan of `nimitz restore F --plan --json` in
 /// the confirm dialog, then `nimitz restore F --yes` through `apply`; a
-/// second time there is nothing to restore. Needs the `nimitz` binary
+/// second time there is nothing to bring back. Needs the `nimitz` binary
 /// beside this one (a workspace build); skipped when it is not there.
 #[test]
 fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
@@ -611,7 +611,7 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
     keys(&mut app, "x");
     keys(&mut app, "R");
     let Some(Modal::Confirm(p)) = app.modal.take() else { panic!("{}", toast(&app)) };
-    assert_eq!((p.act, p.command.as_str()), (Act::Restore, "nimitz __muster MAIN/..."));
+    assert_eq!((p.act, p.command.as_str()), (Act::Restore, "nimitz muster MAIN/..."));
     assert!(p.plan.ok(), "{:?}", p.plan.refusals);
     assert_eq!(p.plan.steps.iter().filter(|s| s.cmd.first().map(String::as_str) == Some("herdr") && s.cmd.get(2).map(String::as_str) == Some("create")).count(), 3, "a tab per live lead: {:?}", p.plan.steps);
     app.begin(&p).unwrap();
@@ -621,8 +621,8 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
     // a tab per live lead, and a pin for each (the sandbox's leads run unpinned)
     assert_eq!(o.ran.len(), 6, "{:?}", o.ran);
     assert_eq!(o.ran.iter().filter(|(s, _, _)| s.cmd.first().map(String::as_str) == Some("pin")).count(), 3, "{:?}", o.ran);
-    assert!(toast(&app).starts_with("restore: restore MAIN/...: panes missing (Herdr closed, restarted or never laid out) (6 steps"), "{}", toast(&app));
-    // again: nothing to restore
+    assert!(toast(&app).starts_with("restore: muster MAIN/...: panes missing (Herdr closed, restarted or never laid out) (6 steps"), "{}", toast(&app));
+    // again: nothing to bring back
     app.apply(CoreSource::detect(&vars).load());
     goto(&mut app, "F:MAIN");
     keys(&mut app, "x");
@@ -632,7 +632,7 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
     let o = actions::apply(&app.ctx.env, &p);
     app.finish(&p, &o);
     assert!(o.verified && o.ran.is_empty());
-    assert_eq!(toast(&app), "restore: restore MAIN/...: nothing to bring back");
+    assert_eq!(toast(&app), "restore: muster MAIN/...: nothing to bring back");
     // the detail panel lists it on a fleet band, and no fleet selected means no restore
     assert!(app.available(Act::Restore).is_ok());
     goto(&mut app, "M:MAIN/ARGOS/CLEAN");

@@ -337,7 +337,7 @@ struct Ctx<'a> {
     /// the members exact paths name (`start <id>`, never a `...` match): they
     /// may get a first launch, `--fresh`, `open`
     named: Vec<Id>,
-    /// `restore`, `start`, `restart`, `open`, `layout`: the command the fixes name
+    /// `muster`, `start`, `restart`, `open`, `layout`: the command the fixes name
     verb: &'static str,
 }
 
@@ -547,7 +547,7 @@ fn interrupted_note(active: Option<&crate::active::ActiveMember>, id: &Id) -> Op
 /// a time; the member that runs the restore last of all, detached (`self.end`).
 #[allow(clippy::too_many_arguments)]
 pub fn plan(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, paths: &[crate::paths::Path], opts: RestoreOpts, caller: &Caller) -> RestorePlan {
-    let verb = if opts.shape_only { "layout" } else { "restore" };
+    let verb = if opts.shape_only { "layout" } else { "muster" };
     let rp = RestorePlan { plan: Plan { summary: format!("{verb} {}", shown(paths)), ..Default::default() }, ..Default::default() };
     plan_inner(env, snap, shape, active, herdr, has_mux, paths, vec![], verb, opts, caller, rp)
 }
@@ -591,7 +591,7 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
     // worker is an ancestor of this process (no labels, or partial ones)
     let me = crate::sessions::me_of(snap, caller);
     // (a restore with no multiplexer runs its job steps and says so, decision 7)
-    if !has_mux && opts.jobs_only && verb == "restore" {
+    if !has_mux && opts.jobs_only && verb == "muster" {
         rp.plan.warnings.push(issue("mux.none", Severity::Info, "no multiplexer here: the jobs only; the pane steps are skipped (`nimitz layout` makes them inside Herdr)".into(), None, None));
     }
     if !has_mux && (!opts.jobs_only || opts.pane) {
@@ -949,8 +949,8 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                     if older {
                         rp.updated += 1;
                     }
-                    // (the flag as the command names it: `restart`, `--restart`)
-                    let flag = if ctx.verb == "restore" { "--restart" } else { ctx.verb };
+                    // (the command that forced it: `restart`)
+                    let flag = ctx.verb;
                     let why = if older { format!("on {on}") } else { format!("on {on} ({flag})") };
                     relaunch_live(ctx, m, s, why, had_tab, rep, rp);
                     return;

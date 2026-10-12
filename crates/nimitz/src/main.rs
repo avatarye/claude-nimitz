@@ -117,6 +117,7 @@ const USAGES: &[(&str, &str)] = &[
     ("signal", "  signal <id> <text> [--inbox]     yours: typed into the member's tab (opened first when it has none), your own
                                    input; --inbox, or any member's signal: posted to its inbox as a request that
                                    names the sender. A member that is down is refused, never woken"),
+    ("muster", "  muster [<path>...] [--parked]\n                                   the one command after a reboot, a Claude Code update or a Herdr closure\n                                   (no path: //...), one plan: workers on an older Claude Code relaunched\n                                   (restart //... relaunches every one), down leads and the active set's down\n                                   ships woken (--parked: the rest too), every member's pane reattached (its\n                                   own, else its lead tab); --here, --rename, --force as for layout. With no\n                                   multiplexer: the jobs, the pane steps skipped"),
     ("open", "  open <id>... [--tab] [--force]   a pane for each member, focused (its pane, its tab, a split beside its
                                    commodore, a new tab); --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL,
                                    F.SQ.COMMODORE), reused or created; --force: a second tab beside a taken one.
@@ -290,8 +291,7 @@ const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("close", members::close),
     ("layout", members::layout),
     ("sandbox", sandbox_cmd::sandbox),
-    // the restore engine whole, until `muster` (0.7.3 build step 6) names it
-    ("__muster", restore::muster),
+    ("muster", restore::muster),
     ("__commands", |_| {
         for (name, _) in COMMANDS {
             if !name.starts_with("__") {

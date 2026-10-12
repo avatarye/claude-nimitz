@@ -50,7 +50,7 @@ pub enum Act {
     Layout,
     /// the same with `--ships` (a tab attaching each live ship)
     LayoutShips,
-    /// `nimitz __muster F/...`, run by the CLI: the fleet back from the Herdr shape
+    /// `nimitz muster F/...`, run by the CLI: the fleet back from the Herdr shape
     Restore,
 }
 
@@ -450,7 +450,7 @@ fn last_json<T: serde::de::DeserializeOwned>(stdout: &str) -> Option<T> {
 }
 
 /// `R` on a fleet band, `a` (start), `r` (restart) and `A` (a pane) on a
-/// member: `nimitz __muster|start|restart|open <path> --plan --json` gives
+/// member: `nimitz muster|start|restart|open <path> --plan --json` gives
 /// the plan the confirm dialog shows; `y` then runs it with `--yes` (`apply`). The CLI
 /// holds the whole engine (the Herdr shape, the wakes, the relaunches, the
 /// panes), so Admiralty says and does the same as the command line (M25).
@@ -463,11 +463,11 @@ pub fn prepare_start(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, ac
         _ => return Err("start names a fleet, a squadron or a member".into()),
     };
     let bin = nimitz_bin();
-    // (`R`: the restore engine whole, `__muster` until 0.7.3 names it `muster`)
+    // (`R`: muster, the restore engine whole)
     let verb = match act {
         Act::Relaunch => "restart",
         Act::Open => "open",
-        Act::Restore => "__muster",
+        Act::Restore => "muster",
         _ => "start",
     };
     let args = vec![verb.to_string(), path];
@@ -481,12 +481,12 @@ pub fn prepare_start(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, ac
     Ok(Pending { act, command, plan, config: false, panes: vec![], layout: None })
 }
 
-/// `R` on a fleet band (kept for callers of the old name): `nimitz __muster F/...`.
+/// `R` on a fleet band (kept for callers of the old name): `nimitz muster F/...`.
 pub fn prepare_restore(ctx: &Ctx, caps: Caps, snap: &Snapshot, fleet: &Id) -> Result<Pending, String> {
     prepare_start(ctx, caps, snap, &Target::Fleet(fleet.clone()), Act::Restore)
 }
 
-/// Run the CLI command (`nimitz __muster F/... --yes --json`, a start, ...) and read its outcome (a run with
+/// Run the CLI command (`nimitz muster F/... --yes --json`, a start, ...) and read its outcome (a run with
 /// nothing to restore prints none: then the exit code is the verdict).
 fn run_restore(env: &Env, command: &str) -> Outcome {
     let bin = nimitz_bin();
@@ -591,9 +591,9 @@ pub fn open_panes(ctx: &Ctx, p: &Pending) -> Result<Vec<PaneRef>, String> {
 }
 
 /// A pending action the CLI runs whole (`prepare_start`): no pane of
-/// Admiralty's own, a `start`, `restart`, `open` or `__muster` command.
+/// Admiralty's own, a `start`, `restart`, `open` or `muster` command.
 fn via_cli(p: &Pending) -> bool {
-    p.panes.is_empty() && p.layout.is_none() && ["nimitz start ", "nimitz restart ", "nimitz open ", "nimitz __muster "].iter().any(|v| p.command.starts_with(v))
+    p.panes.is_empty() && p.layout.is_none() && ["nimitz start ", "nimitz restart ", "nimitz open ", "nimitz muster "].iter().any(|v| p.command.starts_with(v))
 }
 
 /// Run the non-pane part of the plan (any thread). Core skips pane steps itself.
