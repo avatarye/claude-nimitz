@@ -151,6 +151,9 @@ pub struct App {
     pub detail_open: bool,
     /// fixtures: a frozen clock so ages never move
     pub fixed_now: Option<f64>,
+    /// the version of the `nimitz` Admiralty runs (`nimitz --version`, read
+    /// once off the UI thread: `read_nimitz_version`); `None` until it is read
+    pub nimitz_version: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     pub state_path: Option<PathBuf>,
     /// an action running on the worker thread
     pub busy: Option<String>,
@@ -207,6 +210,24 @@ pub const HELP: &[(&str, &str)] = &[
 ];
 
 impl App {
+    /// Read the `nimitz` binary's version once, on a thread of its own (the
+    /// top bar shows it when it is there; a binary that does not answer
+    /// leaves it unknown).
+    pub fn read_nimitz_version(&self) {
+        let slot = self.nimitz_version.clone();
+        std::thread::spawn(move || {
+            let bin = crate::actions::nimitz_bin();
+            let Ok(o) = std::process::Command::new(&bin).arg("--version").stdin(std::process::Stdio::null()).output() else { return };
+            // `nimitz 0.7.3`
+            let text = String::from_utf8_lossy(&o.stdout).into_owned();
+            if let Some(v) = text.split_whitespace().nth(1) {
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some(v.to_string());
+                }
+            }
+        });
+    }
+
     pub fn new(ctx: Ctx, state_path: Option<PathBuf>, ascii: bool) -> App {
         let mut app = App {
             ctx,
@@ -234,6 +255,7 @@ impl App {
             icons: if ascii { &ASCII } else { &NERD },
             detail_open: false,
             fixed_now: None,
+            nimitz_version: Default::default(),
             state_path,
             busy: None,
             detail_scroll: 0,

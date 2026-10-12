@@ -1854,3 +1854,25 @@ fn dump_renders_the_list_or_the_screen_plain_or_in_colour() {
         assert!(a.contains("\u{1b}[") && a.contains("SESSION"));
     }
 }
+
+/// The top bar names the nimitz Admiralty runs: its version alone when it is
+/// Admiralty's own, both and flagged (a warning) when they differ; nothing
+/// until it is read.
+#[test]
+fn the_top_bar_shows_the_nimitz_version_and_flags_a_mismatch() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    let ours = env!("CARGO_PKG_VERSION");
+    // the ADMIRALTY status bar, right above the key bar
+    let top = |t: &mut common::TestApp| screen(&mut t.app, 240, 40).lines().find(|l| l.contains("ADMIRALTY")).unwrap_or("").to_string();
+    assert!(!top(&mut t).contains("nimitz "), "not read yet: nothing");
+    *t.app.nimitz_version.lock().unwrap() = Some(ours.to_string());
+    let l = top(&mut t);
+    assert!(l.contains(&format!("nimitz {ours}")) && !l.contains("mismatch"), "{l}");
+    *t.app.nimitz_version.lock().unwrap() = Some("0.0.1".to_string());
+    let l = top(&mut t);
+    assert!(l.contains(&format!("admiralty {ours} \u{b7} nimitz 0.0.1 (mismatch)")), "{l}");
+    let buf = draw(&mut t.app, 240, 40);
+    let y = (0..40u16).find(|y| (0..240u16).map(|x| buf[(x, *y)].symbol().to_string()).collect::<String>().contains("ADMIRALTY")).unwrap();
+    let x = l.find("admiralty ").map(|i| l[..i].chars().count()).unwrap() as u16;
+    assert_eq!(buf[(x, y)].fg, admiralty::theme::mono::WARN, "styled as a warning");
+}

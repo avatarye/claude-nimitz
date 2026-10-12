@@ -133,6 +133,10 @@ fn main() -> ExitCode {
         app.inset = (r.trim().parse().unwrap_or(0), c.trim().parse().unwrap_or(0));
     }
     app.fixed_now = fixed_now;
+    // the nimitz it runs, read off the UI thread (the live view only)
+    if app.ctx.live && !dump {
+        app.read_nimitz_version();
+    }
     if dump {
         let mut src = make();
         app.apply(src.load());

@@ -256,6 +256,13 @@ fn top_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static
         }
     }
     let mut opt = vec![];
+    // the nimitz it runs: its version, flagged when it is not Admiralty's own
+    let ours = env!("CARGO_PKG_VERSION");
+    match app.nimitz_version.lock().ok().and_then(|v| v.clone()) {
+        Some(v) if v == ours => opt.push(Span::styled(pick(format!("   nimitz {v}"), format!("   nimitz {v}"), format!(" {v}")), st(mono::MUTED))),
+        Some(v) => opt.push(Span::styled(pick(format!("   admiralty {ours} \u{b7} nimitz {v} (mismatch)"), format!("   nimitz {v} \u{2260} {ours}"), " ver!".into()), bold(mono::WARN))),
+        None => {}
+    }
     if !b.snap.compat_ok {
         let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
         let c = nimitz_core::compat::supported();
