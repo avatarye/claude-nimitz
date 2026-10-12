@@ -157,7 +157,12 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             rules = Some(crate::rules::VERSION);
             crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
             // (the fleet's harness rules come from their own entry, `harness_rules`)
-            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
+            // what a self-end (its own relaunch, its stop) came to, once
+            let mut context = crate::rules::text(&id);
+            if let Some(note) = crate::self_end::take_note(env, &id) {
+                context.push_str(&format!("\n\n[nimitz self-end] {}", note.trim()));
+            }
+            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}).to_string();
             binding = Some(match str_at(&input, "session_id") {
                 // no session file (missing, or caught mid-write): bind nothing
                 // now; `status` replays the line and judges the job from the rows
@@ -549,6 +554,18 @@ mod tests {
         vars.insert("NIMITZ_HOOK_PID".into(), pid.to_string());
         let input = serde_json::json!({"session_id": sid, "source": source, "hook_event_name": "SessionStart", "cwd": cwd});
         handle(env, "SessionStart", &input.to_string(), &vars)
+    }
+
+    #[test]
+    fn a_self_end_outcome_comes_with_the_next_session_start_once() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        crate::self_end::write_note(&env, &id, "`nimitz restart MAIN/ARGOS/ARGOS` ran");
+        let ctx = |out: &str| serde_json::from_str::<Value>(out).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
+        let first = ctx(&start(&env, &id, "s-se", "resume", 4242, None, "/w"));
+        assert!(first.ends_with("[nimitz self-end] `nimitz restart MAIN/ARGOS/ARGOS` ran"), "{first}");
+        let again = ctx(&start(&env, &id, "s-se", "resume", 4242, None, "/w"));
+        assert!(!again.contains("self-end"), "once: {again}");
     }
 
     /// A job row of the ship MAIN/ARGOS/ARGOS as nimitz launches it (its

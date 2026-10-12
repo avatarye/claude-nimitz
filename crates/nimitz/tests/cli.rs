@@ -426,22 +426,55 @@ fn any_member_starts_and_stops_any_member() {
     assert!(r.code == 0 && r.out.contains("sweep MAIN/ARGOS"), "{}", r.out);
 }
 
-/// Until the detached self-end helper (0.7.3 build step 5), a stop, relaunch
-/// or removal that would end its caller mid-command is refused (`self.end`,
-/// not authority), its fix the same command from a shell.
+/// A member's command that ends the member itself runs that step last, in
+/// a detached helper once its turn ends (`__self-end`, docs/design/cli-ux.md
+/// section 4): `--plan` spawns nothing; one helper at a time; the report
+/// first; the outcome waits for its next session start.
 #[test]
-fn a_member_never_ends_itself_mid_command() {
+fn a_members_own_stop_runs_last_in_a_detached_helper() {
     let sb = Sb::new(false);
-    for (who, args) in [
-        ("MAIN/ARGOS/CLEAN", vec!["stop", "MAIN/ARGOS/CLEAN", "--yes"]),
-        ("MAIN", vec!["stop", "MAIN", "--yes"]),
-        ("MAIN/ARGOS/CLEAN", vec!["ship", "rm", "MAIN/ARGOS/CLEAN", "--yes"]),
-        ("MAIN/ARGOS", vec!["squadron", "rm", "MAIN/ARGOS", "--yes"]),
-    ] {
-        let r = sb.run_as(who, &args);
-        assert!(r.code != 0 && r.out.contains("(self.end)") && r.out.contains("from a shell") && !r.out.contains("(authority)"), "{who} {args:?}:\n{}", r.out);
+    let state = sb.base.join("state");
+    let (log, lock) = (state.join("relaunch-self.log"), state.join("relaunch-self.lock"));
+    let me = "MAIN/ARGOS/CLEAN";
+    let r = sb.run_as(me, &["stop", me, "--plan"]);
+    assert!(r.code == 0 && r.out.contains("(self.end)") && r.out.contains("then, after this command"), "{}", r.out);
+    assert!(!log.exists() && !lock.exists(), "--plan spawns nothing");
+    // a helper pending: no second one
+    std::fs::write(&lock, format!("pid {}\n", std::process::id())).unwrap();
+    let r = sb.run_as(me, &["stop", me, "--yes"]);
+    assert!(r.code != 0 && r.out.contains("pending already"), "{}", r.out);
+    std::fs::remove_file(&lock).unwrap();
+    // the report, then the helper: it waits for the turn (idle here) and stops it
+    let r = sb.run_as(me, &["stop", me, "--yes"]);
+    assert!(r.code == 0 && r.out.contains("runs after this command, once its turn ends"), "{}", r.out);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while (live(&sb.member(me)) || lock.exists()) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")) && live(&sb.member("MAIN")));
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(!live(&sb.member(me)) && !lock.exists(), "the helper stopped it:\n{text}");
+    let note = std::fs::read_to_string(state.join("self-end").join("MAIN.ARGOS.CLEAN.txt")).unwrap_or_default();
+    assert!(note.contains("`nimitz stop MAIN/ARGOS/CLEAN`, which you ran, ran after your turn ended"), "{note}\n{text}");
+    // a turn that does not end: the helper gives up (decision 5), nothing runs, the note says so
+    let me = "MAIN/ARGOS/DRIFT";
+    let sid = sb.member(me)["session"]["session_id"].as_str().unwrap().to_string();
+    for e in std::fs::read_dir(sb.base.join("claude_home").join("sessions")).unwrap().flatten() {
+        let t = std::fs::read_to_string(e.path()).unwrap_or_default();
+        if t.contains(&sid) {
+            let mut v: Value = serde_json::from_str(&t).unwrap();
+            v["status"] = Value::from("busy");
+            std::fs::write(e.path(), v.to_string()).unwrap();
+        }
+    }
+    let r = raw(&sb.vars, &["stop", me, "--yes"], &[("NIMITZ_ID", me), ("NIMITZ_ROLE", "ship"), ("NIMITZ_SELF_END_WAIT", "1")], None);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let note = state.join("self-end").join("MAIN.ARGOS.DRIFT.txt");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while (!note.exists() || lock.exists()) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let note = std::fs::read_to_string(note).unwrap_or_default();
+    assert!(note.contains("did not run") && note.contains("did not end within 1 min") && live(&sb.member(me)), "{note}");
 }
 
 /// 0.7.3: no command refuses on authority. Every command the binary has

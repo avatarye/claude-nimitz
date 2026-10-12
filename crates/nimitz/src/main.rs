@@ -14,6 +14,7 @@ mod restore;
 mod run;
 mod view;
 mod sandbox_cmd;
+mod self_end;
 mod setup;
 
 use args::Args;
@@ -160,7 +161,7 @@ fn main() {
     // Not a hook (it always exits 0, whatever Claude Code does with its
     // pipe) nor the internal fakes: there the write error is ignored instead
     #[cfg(unix)]
-    let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__fake-claude" | "__fake-herdr"));
+    let quiet_pipe = !matches!(argv.first().map(String::as_str), Some("hook" | "__notify" | "__self-end" | "__fake-claude" | "__fake-herdr"));
     #[cfg(unix)]
     if quiet_pipe {
         unsafe {
@@ -176,6 +177,7 @@ fn dispatch(argv: Vec<String>) -> i32 {
     match cmd.as_str() {
         "hook" => return hook(argv.get(1).map(String::as_str).unwrap_or("")),
         "__notify" => return notify::deliver_cmd(argv.get(1).map(String::as_str).unwrap_or("")),
+        "__self-end" => return self_end::helper(&argv[1..]),
         "__fake-claude" => {
             return match argv.get(1) {
                 Some(base) => nimitz_core::sandbox::fake_claude(std::path::Path::new(base), &argv[2..]),

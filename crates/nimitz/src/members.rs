@@ -294,24 +294,38 @@ fn bottom_up(ids: &mut [Id]) {
 }
 
 /// `nimitz stop <path|session>...`: stop members (a path; under a `...` the
-/// live ones) or one session by its id; start's opposite.
+/// live ones) or one session by its id; start's opposite. The caller's own
+/// stop runs last, detached, once its turn ends (`self_end`).
 pub fn stop(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     let snap = ctx.snap();
+    let me = crate::self_end::me(ctx);
     let mut plans = vec![];
+    let mut myself = false;
     for t in targets(ctx, &snap)? {
         match t {
             Target::Members(p, ids) if ids.is_empty() => plans.push(Plan { refusals: vec![nimitz_core::paths::unknown(&snap, &p)], ..Default::default() }),
             Target::Members(p, mut ids) => {
                 bottom_up(&mut ids);
                 for id in ids.into_iter().filter(|id| p.member().is_some() || member(&snap, id).is_some_and(live)) {
-                    plans.push(ses::plan_stop(&ctx.env, &snap, &id, &ctx.caller));
+                    let p = ses::plan_stop(&ctx.env, &snap, &id, &ctx.caller);
+                    if me.as_ref() == Some(&id) && p.ok() {
+                        myself = true;
+                        plans.push(Plan { warnings: vec![Issue { code: "self.end".into(), severity: Severity::Info, message: format!("{id} runs this stop: its own stop runs after it, once its turn ends"), fix: None, id: Some(id.clone()) }], ..Default::default() });
+                    } else {
+                        plans.push(p);
+                    }
                 }
             }
             Target::Session(s) => plans.push(ses::plan_stop_session(&ctx.env, &snap, &s, &ctx.caller)),
         }
     }
-    Ok(run::session_plan(ctx, merged(format!("stop {}", ctx.args.pos.join(" ")), plans)))
+    let plan = merged(format!("stop {}", ctx.args.pos.join(" ")), plans);
+    let code = run::session_plan(ctx, plan.clone());
+    match me.filter(|_| myself && plan.ok() && code == 0 && (ctx.plan_only() || ctx.yes())) {
+        Some(id) => Ok(crate::self_end::defer(ctx, &id, &["stop".to_string(), id.0.clone()])),
+        None => Ok(code),
+    }
 }
 
 /// `nimitz rm <path|session>...`: remove job rows (never transcripts): a

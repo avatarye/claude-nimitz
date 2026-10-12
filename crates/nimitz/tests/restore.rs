@@ -854,7 +854,7 @@ fn r09_claude_code_updated_relaunches_older_workers_ships_first_then_leads_and_r
 /// turn in flight is dropped (0.7.3); the member that runs the restore is
 /// never relaunched by it (a lead says who runs what).
 #[test]
-fn r09b_an_update_drops_a_turn_in_flight_and_never_relaunches_the_caller() {
+fn r09b_an_update_drops_a_turn_in_flight_and_relaunches_the_caller_last() {
     let sb = Sb::new(true);
     lay(&sb);
     stop_mislabel(&sb);
@@ -873,14 +873,20 @@ fn r09b_an_update_drops_a_turn_in_flight_and_never_relaunches_the_caller() {
     // the admiral runs it: every other member, never itself
     let r = sb.run_as("MAIN", &["__muster", "MAIN/...", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(lines_with(&r.out, "MAIN ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz restart MAIN")), "{}", r.out);
-    assert!(r.out.contains("(restore.self)") && r.out.contains("MAIN is a lead: you run it again from your own shell"), "{}", r.out);
-    assert!(r.out.contains("fix: nimitz restart MAIN  # yours, from a shell"), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN ").iter().any(|l| l.contains("it runs this restore -> relaunch last: after this command, once its turn ends")), "{}", r.out);
+    assert!(r.out.contains("(self.end)") && r.out.contains("then, after this command and once MAIN's turn ends: nimitz restart MAIN"), "{}", r.out);
     assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("-> relaunch")), "{}", r.out);
-    let adm = sb.short("MAIN");
+    let adm_sid = sb.sid("MAIN");
     let r = sb.run_as("MAIN", &["__muster", "MAIN/...", "--yes"]);
-    assert_eq!(sb.short("MAIN"), adm, "the caller's own job is untouched:\n{}", r.out);
-    assert!(relaunched(&r.out).iter().all(|id| id != "MAIN"), "{}", r.out);
+    assert!(relaunched(&r.out).iter().all(|id| id != "MAIN") && r.out.contains("[INFO] MAIN: `nimitz restart MAIN` runs after this command"), "not in the run itself:\n{}", r.out);
+    // the helper: last, once its turn ends, the same conversation
+    let lock = sb.base.join("state").join("relaunch-self.lock");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while (lock.exists() || worker(&sb, "MAIN") != "2.1.289") && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let log = std::fs::read_to_string(sb.base.join("state").join("relaunch-self.log")).unwrap_or_default();
+    assert!(worker(&sb, "MAIN") == "2.1.289" && sb.sid("MAIN") == adm_sid && log.ends_with("MAIN: ran\n"), "relaunched by the helper:\n{log}");
     // a commodore's restore is anyone's: the whole fleet, but never itself
     let sb = Sb::new(true);
     lay(&sb);
@@ -890,7 +896,7 @@ fn r09b_an_update_drops_a_turn_in_flight_and_never_relaunches_the_caller() {
     update_claude(&sb, "2.1.289");
     let r = sb.run_as("MAIN/ARGOS", &["__muster", "MAIN/...", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz restart MAIN/ARGOS")), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("it runs this restore -> relaunch last")), "{}", r.out);
     assert!(lines_with(&r.out, "MAIN/BOREAL ").iter().any(|l| l.contains("-> relaunch")), "{}", r.out);
 }
 
@@ -913,9 +919,9 @@ fn r_restart_relaunches_every_live_member_whatever_its_version() {
     let order = relaunched(&r);
     assert_eq!(order.len(), 7, "{r}");
     assert_eq!(order.last().map(String::as_str), Some("MAIN"), "the admiral last: {order:?}");
-    // run by the admiral: its own relaunch is left to the user, with no second round for the rest
+    // run by the admiral: its own relaunch runs last, detached
     let own = sb.run_as("MAIN", &["__muster", "MAIN/...", "--restart", "--plan"]);
-    assert!(own.out.contains("fix: nimitz restart MAIN  #"), "{}", own.out);
+    assert!(own.out.contains("then, after this command and once MAIN's turn ends: nimitz restart MAIN"), "{}", own.out);
     for (id, sid, _) in &before {
         assert_eq!(&sb.sid(id), sid, "{id}");
     }
@@ -1903,19 +1909,19 @@ fn s05_f_relaunches_a_ship_with_a_pane_and_reattaches_that_pane() {
 }
 
 #[test]
-fn s06_nothing_relaunches_itself_and_busy_is_relaunched() {
+fn s06_the_caller_relaunches_last_and_busy_is_relaunched() {
     let sb = Sb::new(true);
     lay(&sb);
     stop_mislabel(&sb);
     sb.attach_all();
     idle_all(&sb);
-    // its own relaunch alone is refused; a fleet-wide -f skips it
+    // its own relaunch runs last, detached, alone or in a wider restart
     let r = sb.run_as("MAIN", &["restart", "MAIN", "--plan"]);
-    assert_eq!(r.code, 1, "{}", r.out);
-    assert!(r.out.contains("(start.self)") && r.out.contains("nimitz restart MAIN  # from your own shell"), "{}", r.out);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(self.end)") && r.out.contains("then, after this command and once MAIN's turn ends: nimitz restart MAIN"), "{}", r.out);
     let r = sb.run_as("MAIN", &["restart", "MAIN/...", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("skip")), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("relaunch") && l.contains("it runs this restart")), "{}", r.out);
     assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("relaunch")), "{}", r.out);
     // a lead alone: --only
     let r = sb.run(&["restart", "MAIN/ARGOS", "--plan"]);
@@ -1924,9 +1930,9 @@ fn s06_nothing_relaunches_itself_and_busy_is_relaunched() {
     sb.session_file("MAIN/ARGOS/CLEAN", |v| v["status"] = json!("busy"));
     let r = sb.run_as("MAIN", &["start", "MAIN/...", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("skip") && l.contains("runs this start")), "{}", r.out);
+    assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("relaunch") && l.contains("runs this start")), "{}", r.out);
     assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("relaunch") && l.contains("busy: its turn in flight is dropped")), "{}", r.out);
-    assert!(r.out.contains("(start.self)") && !r.out.contains("(relaunch.busy)"), "{}", r.out);
+    assert!(r.out.contains("(self.end)") && !r.out.contains("(relaunch.busy)"), "{}", r.out);
     // anyone starts anything, `-p` too
     for (who, args) in [("MAIN", &["open", "MAIN/ARGOS/CLEAN", "--plan"][..]), ("MAIN/ARGOS", &["start", "MAIN/BOREAL/...", "--plan"][..]), ("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/NOLABEL", "--plan"][..])] {
         assert!(!sb.run_as(who, args).out.contains("(authority)"), "{who} {args:?}");

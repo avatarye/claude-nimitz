@@ -2225,3 +2225,51 @@ fn e2e_97_an_update_from_0_4_migrates_and_the_ship_lives_on() {
     assert_eq!(r["version"], 3);
     w.finish();
 }
+
+/// 99. A ship restarts itself (0.7.3, docs/design/cli-ux.md section 4): its
+/// `nimitz restart <its own path> --yes` prints its report into the Bash
+/// tool's output and leaves the relaunch to the detached `__self-end`, which
+/// waits for the turn to end, survives the `claude stop` of the ship's job,
+/// and resumes the same session (no copy); the outcome note comes with the
+/// resume's SessionStart.
+#[test]
+fn e2e_99_a_ship_restarts_itself_through_the_detached_helper() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(99);
+    let prompt = format!("Use the Bash tool to run exactly this command, once: `nimitz restart {} --yes`. Do not ask. Then reply with the single word DONE.", w.ship());
+    w.fleet_with_ship(&prompt, "default");
+    let out = w.ok(&["start", &w.ship(), "--yes"]);
+    println!("{out}");
+    let m = w.wait(45, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null())).expect("ship live after start");
+    let (sid, job) = (m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["short_id"].as_str().unwrap_or("").to_string());
+    // the helper: it waits for the turn, then relaunches; its log says when it ran
+    let log = w.base.join("state").join("relaunch-self.log");
+    let ran = w.wait(300, || std::fs::read_to_string(&log).ok().filter(|t| t.lines().any(|l| l.ends_with(": ran") || l.contains(": failed") || l.contains(": gave up"))));
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    println!("relaunch-self.log:\n{text}");
+    assert!(ran.is_some_and(|t| t.lines().any(|l| l.ends_with(": ran"))), "the helper did not run the relaunch:\n{text}");
+    assert!(text.contains("its turn ended"), "it waited for the turn:\n{text}");
+    let m = w.wait(120, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("the ship live again");
+    println!("member after: {m}");
+    // the same conversation, a new process; no copy row
+    assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "the same session id:\n{m}");
+    assert!(m["extra_rows"].as_array().is_none_or(|a| a.is_empty()), "no copy row:\n{m}");
+    assert!(!w.issue_codes().iter().any(|(c, _)| c == "copy.rows" || c == "lineage.broken" || c == "history.lost"), "{:?}", w.issue_codes());
+    let starts = w.session_starts(&sid);
+    assert!(starts.iter().any(|e| e["source"] == "resume"), "a resume of the same session: {starts:?}");
+    println!("job before {job}, after {}", m["session"]["short_id"]);
+    // the report reached the Bash tool's output, and the outcome the resume's context
+    let tx = std::fs::read_to_string(w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript")).unwrap();
+    assert!(tx.contains("runs after this command, once its turn ends"), "the report is not in the Bash output:\n{}", tx.lines().filter(|l| l.contains("nimitz restart")).collect::<Vec<_>>().join("\n"));
+    // the resume's SessionStart took the note (the hook hands it over once) ...
+    let note = w.base.join("state").join("self-end").join(format!("{}.txt", w.ship().replace('/', ".")));
+    assert!(w.wait(30, || Some(()).filter(|_| !note.exists())).is_some(), "the resume's SessionStart did not take the note");
+    // ... and the session has it: its next turn (an inbox prompt) carries it
+    w.ok(&["signal", &w.ship(), "--inbox", "Reply with the single word NOTED.", "--yes"]);
+    let tx = w.wait(180, || std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid)?).ok().filter(|t| t.contains("NOTED") && t.matches("NOTED").count() >= 2)).unwrap_or_default();
+    assert!(tx.contains("[nimitz self-end]"), "the outcome note is not in the resumed session's context:\n{}", tx.lines().rev().take(8).collect::<Vec<_>>().join("\n"));
+    assert!(!w.base.join("state").join("relaunch-self.lock").exists(), "the lock is released");
+    w.finish();
+}

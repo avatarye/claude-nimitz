@@ -415,26 +415,11 @@ pub fn restart_cmd(id: &Id) -> String {
     format!("nimitz restart {id}")
 }
 
-/// Is the caller (a member, by its labels) `target` or under it? A stop, a
-/// relaunch or a removal of it would end the caller mid-command. Temporary
-/// (0.7.3 build step 1): refused as `self.end` until the detached self-end
-/// helper runs such a step last (docs/design/cli-ux.md section 4).
+/// Is the caller (a member, by its labels) `target` or under it? A stop,
+/// a relaunch or a removal of it would end the caller mid-command: the CLI
+/// runs that step last, detached, once the caller's turn ends (`self_end`).
 pub fn caller_inside(caller: &Caller, target: &Id) -> bool {
     matches!(caller, Caller::Member { id, .. } if id == target || id.0.starts_with(&format!("{}/", target.0)))
-}
-
-/// The temporary `self.end` refusal (`caller_inside`): not authority, the
-/// caller would end itself before its command does.
-pub fn refuse_self_end(plan: &mut Plan, caller: &Caller, target: &Id, verb: &str) -> bool {
-    if !caller_inside(caller, target) {
-        return false;
-    }
-    let me = match caller {
-        Caller::Member { id, .. } => id.clone(),
-        Caller::User => return false,
-    };
-    refuse(plan, "self.end", format!("{me} runs this {verb}, and {verb} {target} would end it mid-command"), Some(format!("nimitz {verb} {target}  # from a shell")), Some(me));
-    true
 }
 
 fn refuse(plan: &mut Plan, code: &str, msg: String, fix: Option<String>, id: Option<Id>) {
@@ -1106,9 +1091,7 @@ fn dedup_issues(plan: &mut Plan) {
 
 pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("stop {id}"), ..Default::default() };
-    if refuse_self_end(&mut plan, caller, id, "stop") {
-        return plan;
-    }
+    let _ = caller;
     let Some((_, m)) = member(snap, id) else {
         refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
         return plan;
@@ -1212,9 +1195,7 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
 /// A deliberate relaunch: new id, every flag, old row removed (contracts.md section 8).
 pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("relaunch {id} (same session id and history; labels, name and mode restored)"), ..Default::default() };
-    if refuse_self_end(&mut plan, caller, id, "relaunch") {
-        return plan;
-    }
+    let _ = caller;
     let Some((fleet, m)) = member(snap, id) else {
         refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
         return plan;
@@ -1563,14 +1544,7 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
 /// left in the config; a live interactive member is ended in its own pane.
 pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan {
     let mut plan = Plan { summary: format!("retire {id}: stop, remove job rows, remove from the config"), ..Default::default() };
-    let verb = match id.role() {
-        Role::Admiral => "fleet rm",
-        Role::Commodore => "squadron rm",
-        Role::Ship => "ship rm",
-    };
-    if refuse_self_end(&mut plan, caller, id, verb) {
-        return plan;
-    }
+    let _ = caller;
     let cfg = crate::config::plan_rm(env, id);
     plan.refusals.extend(cfg.refusals.iter().cloned());
     let under = |m: &Id| m == id || m.0.starts_with(&format!("{id}/"));
@@ -2543,19 +2517,12 @@ mod tests {
     }
 
     #[test]
-    fn a_member_inside_the_target_of_a_stop_is_refused_as_self_end() {
-        let (_td, env) = crate::config::tests::test_env();
-        crate::config::tests::make_fleet(&env);
-        let snap = crate::check::tests::snap_for(&env, None);
+    fn a_member_is_inside_itself_and_its_leads() {
         let me = Caller::Member { id: Id::ship("MAIN", "ARGOS", "ARGOS"), role: Role::Ship };
-        for target in [Id::ship("MAIN", "ARGOS", "ARGOS"), Id::commodore("MAIN", "ARGOS")] {
+        for target in [Id::ship("MAIN", "ARGOS", "ARGOS"), Id::commodore("MAIN", "ARGOS"), Id::admiral("MAIN")] {
             assert!(caller_inside(&me, &target), "{target}");
         }
         assert!(!caller_inside(&me, &Id::ship("MAIN", "ARGOS", "AST")) && !caller_inside(&Caller::User, &Id::admiral("MAIN")));
-        let p = plan_stop(&env, &snap, &Id::ship("MAIN", "ARGOS", "ARGOS"), &me);
-        assert_eq!(p.refusals.iter().map(|i| i.code.as_str()).collect::<Vec<_>>(), ["self.end"]);
-        assert!(p.refusals[0].fix.as_deref().unwrap().contains("from a shell"));
-        assert_eq!(plan_retire(&env, &snap, &me, &Id::admiral("MAIN")).refusals[0].code, "self.end");
     }
 
     #[test]

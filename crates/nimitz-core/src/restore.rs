@@ -260,6 +260,10 @@ pub struct RestorePlan {
     /// this order: ships, then commodores, then admirals
     #[serde(skip)]
     later: Vec<(u8, Vec<RestoreStep>)>,
+    /// the caller, when the command would relaunch it: its relaunch runs
+    /// last, detached, after its turn (`self_end`)
+    #[serde(skip)]
+    pub self_end: Option<Id>,
 }
 
 // ------------------------------------------------------------------ progress of a run (restore.json)
@@ -540,7 +544,7 @@ fn interrupted_note(active: Option<&crate::active::ActiveMember>, id: &Id) -> Op
 /// relaunched), a reboot (leads and the active set's ships are woken,
 /// `--parked` every ship). `--restart` relaunches every live member.
 /// Relaunches run last, ships first, then commodores, then admirals, one at
-/// a time; never the member that runs the restore (`restore.self`).
+/// a time; the member that runs the restore last of all, detached (`self.end`).
 #[allow(clippy::too_many_arguments)]
 pub fn plan(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, paths: &[crate::paths::Path], opts: RestoreOpts, caller: &Caller) -> RestorePlan {
     let verb = if opts.shape_only { "layout" } else { "restore" };
@@ -577,12 +581,6 @@ pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&cra
     }
     if let Err(i) = crate::paths::resolve(snap, paths) {
         return refuse(rp, &i.code, i.message, i.fix, i.id);
-    }
-    // nothing relaunches itself: a start that names the caller; a wider one skips it
-    if let Caller::Member { id, .. } = caller {
-        if opts.restart && named.contains(id) {
-            return refuse(rp, "start.self", format!("{id} runs this restart; nothing relaunches itself"), Some(format!("{}  # from your own shell", crate::sessions::restart_cmd(id))), Some(id.clone()));
-        }
     }
     plan_inner(env, snap, shape, active, herdr, has_mux, paths, named, verb, opts, caller, rp)
 }
@@ -701,7 +699,7 @@ fn own_tab_place(rp: &mut RestorePlan, id: &Id) {
 /// fresh, launch or wake by its steps; else nothing) and its pane (reattach
 /// into a pane, open a tab or a split, focus only), and where.
 fn verbs(rp: &mut RestorePlan) {
-    const SKIPS: [&str; 3] = ["restore.self", "start.self", "attach.old"];
+    const SKIPS: [&str; 1] = ["attach.old"];
     for f in rp.plan.found.iter_mut() {
         let steps: Vec<&RestoreStep> = rp.steps.iter().filter(|s| s.id() == &f.id).collect();
         let failed = rp.plan.warnings.iter().any(|i| i.id.as_ref() == Some(&f.id) && i.severity == Severity::Error);
@@ -712,8 +710,11 @@ fn verbs(rp: &mut RestorePlan) {
         };
         // (a member whose wake runs but whose tab is taken: its pane failed, not its job)
         let acts = steps.iter().any(|s| matches!(s, RestoreStep::Relaunch { .. } | RestoreStep::Wake { .. }));
+        let later = rp.self_end.as_ref() == Some(&f.id);
         let job = if failed && !acts {
             "refuse"
+        } else if later {
+            "relaunch"
         } else if steps.iter().any(|s| matches!(s, RestoreStep::Relaunch { .. })) {
             "relaunch"
         } else if steps.iter().any(|s| launches(s)) {
@@ -1138,9 +1139,8 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
     // live but not clean (a drifted name, missing labels, a copy): start's own
     // plan says what to do about it, as it always did
     let clean = crate::sessions::session_issues(env, m).iter().all(|i| i.severity != Severity::Error);
-    // the caller itself (a fleet's admiral running `start F`): never planned by
-    // start's own plan (that would be "may not start itself"); a skip line
-    // when it would be relaunched, else nothing
+    // the caller itself (a fleet's admiral running `start F/...`): never
+    // planned by start's own plan; its relaunch runs last, detached, else nothing
     if ctx.me.as_ref() == Some(id) {
         if let Some(s) = m.session.as_ref().filter(|s| s.pid.is_some()) {
             let worker = worker_version(env, s);
@@ -1150,7 +1150,7 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
                 if older {
                     rp.updated += 1;
                 }
-                self_skipped(ctx, m, format!("on {on}"), rp);
+                self_deferred(ctx, m, format!("on {on}"), rp);
             } else if lead && !opts.jobs_only {
                 // its own tab still comes back (after a Herdr closure)
                 let (seen, action) = tab_step(ctx, m, false, rep, rp);
@@ -1308,20 +1308,16 @@ fn commodore_pane(ctx: &Ctx, m: &Member) -> Option<PaneAt> {
     }
 }
 
-/// The member that runs the restore, which the restore never relaunches:
-/// its line, and the command the user runs from a shell afterwards (a
-/// restore there relaunches it and reattaches its pane).
-fn self_skipped(ctx: &Ctx, m: &Member, why: String, rp: &mut RestorePlan) {
+/// The member that runs the command, when it would be relaunched: never
+/// now (it would end mid-command). Its relaunch is the command's last step,
+/// run after the report by a detached helper once its turn ends (`self_end`,
+/// docs/design/cli-ux.md section 4).
+fn self_deferred(ctx: &Ctx, m: &Member, why: String, rp: &mut RestorePlan) {
     let id = &m.id;
-    // after an update a plain restore relaunches only the workers still old;
-    // after --restart only this one is left: relaunch it, then reattach
     let verb = ctx.verb;
-    // (a start of the member alone relaunches it and reattaches its pane)
-    let again = crate::sessions::restart_cmd(id);
-    found(rp, id, format!("{why}; it runs this {verb}"), format!("not relaunched while it runs; afterwards you run: {again}"));
-    let whose = if m.role.lead() { format!("; {id} is a lead: you run it again from your own shell once this one is done") } else { String::new() };
-    let code = if verb == "restore" { "restore.self" } else { "start.self" };
-    rp.plan.warnings.push(issue(code, Severity::Warn, format!("{id} runs this {verb}, so it is not relaunched now{whose}"), Some(format!("{again}  # yours, from a shell, once this one is done: it relaunches {id} and reattaches its pane")), Some(id.clone())));
+    found(rp, id, format!("{why}; it runs this {verb}"), "relaunch last: after this command, once its turn ends (a detached helper)");
+    rp.plan.warnings.push(issue("self.end", Severity::Info, format!("{id} runs this {verb}: its own relaunch runs after it, once its turn ends; the outcome comes with its next session start"), None, Some(id.clone())));
+    rp.self_end = Some(id.clone());
 }
 
 /// A live member to relaunch (an older worker, or `--restart`): stop, rm and
@@ -1334,7 +1330,7 @@ fn self_skipped(ctx: &Ctx, m: &Member, why: String, rp: &mut RestorePlan) {
 fn relaunch_live(ctx: &Ctx, m: &Member, s: &SessionInfo, why: String, had_tab: bool, rep: &mut FleetReport, rp: &mut RestorePlan) {
     let (env, id, lead, fleet) = (ctx.env, &m.id, m.role.lead(), m.id.fleet());
     if ctx.me.as_ref() == Some(id) {
-        self_skipped(ctx, m, why, rp);
+        self_deferred(ctx, m, why, rp);
         return;
     }
     let _ = fleet;

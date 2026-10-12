@@ -1209,14 +1209,9 @@ fn retire_a_live_ship_stops_removes_its_rows_then_the_config_in_one_verified_app
     let snap = w.snap();
     let id = w.ship("CLEAN");
     let short = w.member(&snap, &id).session.unwrap().short_id.unwrap();
-    // anyone; but a retire that would end its caller is `self.end` (until the self-end helper)
+    // anyone, with no refusal on whose it is (the CLI runs a retire of its own caller last, detached)
     let ship = Caller::Member { id: w.ship("DRIFT"), role: Role::Ship };
-    assert!(!has(&sessions::plan_retire(&w.env, &snap, &ship, &id).refusals, "self.end"));
-    let own = Caller::Member { id: Id::commodore("MAIN", "ARGOS"), role: Role::Commodore };
-    assert!(has(&sessions::plan_retire(&w.env, &snap, &own, &Id::commodore("MAIN", "ARGOS")).refusals, "self.end"));
-    let adm = Caller::Member { id: Id::admiral("MAIN"), role: Role::Admiral };
-    assert!(has(&sessions::plan_retire(&w.env, &snap, &adm, &Id::admiral("MAIN")).refusals, "self.end"));
-    assert!(!has(&sessions::plan_retire(&w.env, &snap, &adm, &Id::commodore("MAIN", "ARGOS")).refusals, "self.end"));
+    assert!(sessions::plan_retire(&w.env, &snap, &ship, &id).ok());
     let plan = sessions::plan_retire(&w.env, &snap, &Caller::User, &id);
     assert!(plan.ok(), "{:?}", plan.refusals);
     let kinds: Vec<&str> = plan.steps.iter().map(|s| s.cmd.get(1).map(String::as_str).filter(|c| ["stop", "rm"].contains(c)).unwrap_or(s.cmd[0].as_str())).collect();

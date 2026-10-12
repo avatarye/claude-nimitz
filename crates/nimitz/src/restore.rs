@@ -167,12 +167,12 @@ fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: 
         if let Some(r) = raw.as_ref() {
             record_active(ctx, &snap, mux.as_ref(), Some(r));
         }
-        return code;
+        return code.max(self_last(ctx, &rp, true));
     }
     // panes alone change no session (an `open` of live members): no confirmation
     let panes_only = opts.pane && rp.steps.iter().all(|s| !matches!(s, rs::RestoreStep::Wake { .. } | rs::RestoreStep::Relaunch { .. }) && !matches!(s, rs::RestoreStep::Claim { wakes: true, .. } | rs::RestoreStep::Open { wakes: true, .. }));
     match out::gate(&rp.plan, ctx.plan_only(), ctx.yes() || panes_only) {
-        out::Go::Exit(code) => return code,
+        out::Go::Exit(code) => return code.max(if ctx.plan_only() { self_last(ctx, &rp, false) } else { 0 }),
         out::Go::Run => {}
     }
     let (outcome, failed) = execute(ctx, mux.as_ref(), &rp, &fleets);
@@ -192,7 +192,20 @@ fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: 
     }
     let raw_after = raw.as_ref().and_then(|_| shape_of(mux.as_ref(), true).ok()).map(|(_, r)| r);
     record_active(ctx, &after, mux.as_ref(), raw_after.as_ref());
-    code
+    code.max(self_last(ctx, &rp, false))
+}
+
+/// The caller's own relaunch, last of all: left to the detached helper once
+/// the rest ran and the report is printed (`self_end`; said under `--plan`).
+/// `ungated`: no gate ran (a plan whose only step is that one), so it needs
+/// its own `--yes`.
+fn self_last(ctx: &Ctx, rp: &rs::RestorePlan, ungated: bool) -> i32 {
+    let Some(id) = &rp.self_end else { return 0 };
+    if ungated && !ctx.plan_only() && !ctx.yes() {
+        out::line(&format!("[INFO] {id}'s own relaunch runs with --yes"));
+        return 0;
+    }
+    crate::self_end::defer(ctx, id, &["restart".to_string(), id.0.clone()])
 }
 
 /// Print a refused (or empty) plan and return its exit code.

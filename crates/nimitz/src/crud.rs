@@ -295,11 +295,25 @@ fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, label: Option<&str>, dir: Opt
 /// Stop the ship, remove its job rows (transcripts stay), then drop it from the config.
 /// `ship rm`, `squadron rm`, `fleet rm`: core's retire plan (stop, rm the job
 /// rows, then the config), applied and verified in one go.
+/// A retire that takes its caller (`ship rm` of itself, `fleet rm` of its
+/// fleet) runs whole, last, detached, once the caller's turn ends (`self_end`).
 fn retire(ctx: &Ctx, id: &Id) -> i32 {
     let plan = nimitz_core::sessions::plan_retire(&ctx.env, &ctx.snap(), &ctx.caller, id);
+    let me = crate::self_end::me(ctx).filter(|_| nimitz_core::sessions::caller_inside(&ctx.caller, id));
+    let verb = match id.role() {
+        Role::Admiral => "fleet",
+        Role::Commodore => "squadron",
+        Role::Ship => "ship",
+    };
     match ctx.gate(&plan) {
-        out::Go::Exit(c) => c,
-        out::Go::Run => out::outcome(&plan, &nimitz_core::sessions::apply(&ctx.env, &plan)),
+        out::Go::Exit(c) => c.max(match (&me, ctx.plan_only() && plan.ok()) {
+            (Some(m), true) => crate::self_end::defer(ctx, m, &[verb.to_string(), "rm".into(), id.0.clone()]),
+            _ => 0,
+        }),
+        out::Go::Run => match &me {
+            Some(m) => crate::self_end::defer(ctx, m, &[verb.to_string(), "rm".into(), id.0.clone()]),
+            None => out::outcome(&plan, &nimitz_core::sessions::apply(&ctx.env, &plan)),
+        },
     }
 }
 
