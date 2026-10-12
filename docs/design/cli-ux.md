@@ -6,7 +6,8 @@ Code references are to that tree.
 ## 0. The ask
 
 1. Wildcards in member paths: `nimitz start HOME/*`, `HOME/GITHUB/*`, and
-   wherever else they make sense.
+   wherever else they make sense; revised to Perforce-style dots ("we can
+   use p4 like syntax, .. or ....").
 2. Verbatim: "I also want to have a smoother ux with the commands. The main
    actions are 2 types: fleet sessions and pane operation. They are not
    clean. How to have commands that are more user friendly and logically
@@ -37,66 +38,98 @@ line.
 
 ## 2. Member patterns
 
-### 2.1 The wildcard character: `+`, and quoted `*`
+### 2.1 The tokens: Perforce-style dots
 
-zsh stops at an unmatched `*` ("no matches found", seen while writing this
-doc); bash passes it literally unless a file matches, in which case it
-silently passes file names. Options weighed:
+Your call (via the commodore): dots, as in Perforce, so the shell never
+interferes. Perforce has `...` (any depth below) and `*` (one level, inside
+a path segment). The tokens proposed, each a whole path segment:
 
-| Syntax | No quotes in zsh and bash | Verdict |
+| Token | Means | Why this one |
 | --- | --- | --- |
-| `*` | no | accepted when quoted, never documented as the main form |
-| `%` | yes, but `%1` is a job spec at the start of some shells' words, and reads as "percent" | no |
-| `@` | taken: aides are `F/@NAME` | no |
-| `HOME/GITHUB/` (trailing slash) | yes | one meaning only ("the children"), cannot do `+_DEV` or `HOME/+/DEV` |
-| `--ships` / `--leads` flags | yes | only two shapes; grows a flag per need |
-| **`+`** | yes: no glob meaning in zsh (even with `extendedglob`) or bash (extglob needs `+(…)`) | **recommended** |
+| `...` | every member below, at any depth (Perforce's exact meaning) | the one dot form people already know |
+| `..` | every member exactly one level below | the shortest dot form left; one level is the common case (the commodores, the ships of one squadron) |
+| `....` and longer | refused (`usage`, with the `...` fix) | never needed (ids are at most three deep), and oh-my-zsh makes `.....`, `......` global aliases (below) |
 
-`+` is not a name character, so a pattern can never be mistaken for an id.
+`*` is dropped: zsh stops at an unmatched `*` ("no matches found", hit while
+writing this doc), and bash passes file names instead when one matches.
+Keeping both would mean two spellings in every rule and fix line for no gain.
+Matching part of a name (`+_DEV` in the first draft) is dropped with it; it
+can come back later (decision 1).
 
-### 2.2 What `+` matches
+`..` reads as "parent" to anyone who uses a shell. nimitz ids are not file
+paths and nimitz never resolves `..` as a parent, so the clash is in the
+reader's head only; the plan headline (2.4) always spells out what matched.
+If that is too confusing, the alternative is `...` only, with one level
+asked for by a flag (`--depth 1`) (decision 1).
 
-A pattern has one to three segments, like an id. Each segment is a name, or
-a name with `+` standing for any run of name characters (never across `/`).
-A pattern matches **members at exactly its depth**; it is never a subtree.
+### 2.2 The shell: checked on this machine
+
+Read-only checks in an interactive zsh:
+
+- `print -r -- HOME/... HOME/GITHUB/.. HOME/.../DEV` prints the words
+  unchanged: dots are not glob characters in zsh or bash.
+- Your aliases: `..`, `...`, `....` are plain aliases (`cd ..` and up).
+  A plain alias expands only in command position, never as an argument.
+- oh-my-zsh defines *global* aliases (`alias -g`) for `.....` and `......`
+  (`../../../..` and longer). A global alias fires on any standalone word,
+  argument or not. On a machine without your aliases.zsh override, `...` and
+  `....` are global aliases too.
+- A global alias matches a whole word only, so a dot token inside a path
+  (`HOME/...`) is never touched; a bare `...` argument would be.
+
+Rule that follows: **a dot token is always attached to a path and never
+stands alone.** The first segment is always a fleet name; `nimitz start ...`
+is refused with the fix `nimitz start` (no target already means every fleet
+here). There is no cross-fleet pattern (`.../NIMITZ_DEV`): name the fleet.
+
+### 2.3 What the dot forms match, and what they add over bare ids
+
+A pattern has a fleet name, then names or dot tokens. Today's bare `HOME`
+already covers everything under it, so the dot forms add three things:
+
+1. **The members below, never the lead itself.** `HOME/...` is every
+   commodore and ship, not the admiral; `HOME/GITHUB/...` the ships, not the
+   commodore.
+2. **One level only.** `HOME/..` is the commodores without their ships.
+3. **Each match is named, alone** (`--only` semantics): it is woken even
+   when parked or stopped (bare `start HOME` leaves non-active ships parked
+   and stopped ones stopped). So `start HOME/...` is roughly `start HOME
+   --all` without the admiral.
 
 | Pattern | Matches |
 | --- | --- |
-| `HOME/+` | every commodore of HOME (the commodores alone, not their ships) |
-| `HOME/GITHUB/+` | every ship of HOME/GITHUB |
-| `HOME/+/+` | every ship of HOME |
-| `HOME/+/+_DEV` | ships of HOME whose name ends in `_DEV` |
-| `HOME/+/HOME` | the ship called HOME in any squadron of HOME |
-| `+` | every admiral on this machine's fleets |
-| `+/+/NIMITZ_DEV` | that ship name in any fleet |
+| `HOME/...` | every commodore and ship of HOME (not the admiral) |
+| `HOME/..` | every commodore of HOME, alone |
+| `HOME/GITHUB/...` = `HOME/GITHUB/..` | every ship of HOME/GITHUB (ships are leaves) |
+| `HOME/../..` | every ship of HOME |
+| `HOME/../NIMITZ_DEV` | the ship NIMITZ_DEV in any squadron of HOME |
+| `HOME/.../NIMITZ_DEV` | refused: `...` must be the last segment (Perforce allows more; nimitz ids are too shallow to need it) |
 
-Every matched member is the member *alone* (`--only` semantics): `start
-HOME/+` brings up the commodores without their ships. The bare-id forms keep
-today's meaning (`start HOME` is the fleet, `stop HOME` the admiral), so no
-fix line, rule or habit changes. Several targets may be given:
-`nimitz stop HOME/GITHUB/+ HOME/GITHUB` stops a squadron, ships first.
+Bare ids keep today's meaning (`start HOME` is the fleet, `stop HOME` the
+admiral), so no fix line, rule or habit changes. Several targets may be
+given: `nimitz stop HOME/GITHUB/... HOME/GITHUB` stops a squadron, ships
+first.
 
-### 2.3 Named, wide, or loose: first launches
+### 2.4 Named, wide, or loose: first launches
 
 Today a named member may be cold-launched; members reached through a wide
 start may not. A pattern names each match, so by the letter each could get a
-first launch: `start MAIN/+/+` on today's MAIN fleet would launch 14 fresh
-ships. Proposal: a pattern **wakes** every match it may (parked and stopped
-ones too: naming them is the ask, like `--all` for that set) but
-**launches** a never-started match only with `--launch`; without it the plan
-lists them under `not.started` with that fix. A first launch costs a session
-and a prompt; it should never come from a loose pattern.
+first launch: `start MAIN/...` on today's MAIN fleet would launch every
+commodore and over a dozen ships, all fresh. Proposal: a pattern **wakes** every match it
+may but **launches** a never-started match only with `--launch`; without it
+the plan lists them under `not.started` with that fix. A first launch costs a
+session and a prompt; it should never come from a loose pattern.
 
-### 2.4 Plans and empty matches
+### 2.5 Plans and empty matches
 
 The plan headline names the pattern and what it matched, before the usual
 member lines:
-`start HOME/GITHUB/+: 4 matched (NIMITZ_DEV, MYCC_DEV, BERGAMOT, BARN_DEV); 3 wake, 1 nothing`.
+`start HOME/GITHUB/...: 4 matched (NIMITZ_DEV, MYCC_DEV, BERGAMOT, BARN_DEV); 3 wake, 1 nothing`.
 An empty match is a refusal (`pattern.empty`, exit 2) whose fix lists what
-is there at that depth: `HOME/+/+_PROD matches nothing; ships of HOME: GENERAL/HOME, GENERAL/CONFIGS, GITHUB/NIMITZ_DEV, ...`.
+is there at that depth: `HOME/../PROD matches nothing; ships of HOME: GENERAL/HOME, GENERAL/CONFIGS, GITHUB/NIMITZ_DEV, ...`.
 A target given twice (a pattern and an id that it already matched) counts once.
 
-### 2.5 Authority: refuse, do not filter
+### 2.6 Authority: refuse, do not filter
 
 A pattern never widens what a role may do. When any match is outside the
 caller's authority the whole command is refused (`authority`), naming the
@@ -114,7 +147,7 @@ rather than filter, although today's whole-fleet start filters:
 One exception, kept from today: a pattern that matches its caller skips it
 with the `start.self` line (nothing relaunches itself), never refuses.
 
-### 2.6 Which commands take patterns
+### 2.7 Which commands take patterns
 
 | Command | Patterns | Note |
 | --- | --- | --- |
@@ -202,10 +235,10 @@ maps to `show` (actions.rs:468).
 | A ship in its own tab | `nimitz start HOME/GITHUB/MYCC_DEV -p --tab` | `nimitz show HOME/GITHUB/MYCC_DEV --tab` |
 | Relaunch after a Claude Code update | `nimitz start` (older workers only; `-f` all) | unchanged |
 | Wake one ship | `nimitz start HOME/GITHUB/MYCC_DEV` | unchanged |
-| Bring up the commodores alone | one `start F/SQ --only` each | `nimitz start HOME/+` |
-| First launch of a new squadron's ships | one `start F/SQ/SHIP` each | `nimitz start MAIN/ARGOS/+ --launch` |
-| Stop a squadron | one `nimitz stop` per member | `nimitz stop HOME/GITHUB/+ HOME/GITHUB` |
-| See what is up | `nimitz status` (all fleets) | `nimitz status HOME/GITHUB/+` |
+| Bring up the commodores alone | one `start F/SQ --only` each | `nimitz start HOME/..` |
+| First launch of a new squadron's ships | one `start F/SQ/SHIP` each | `nimitz start MAIN/ARGOS/... --launch` |
+| Stop a squadron | one `nimitz stop` per member | `nimitz stop HOME/GITHUB/... HOME/GITHUB` |
+| See what is up | `nimitz status` (all fleets) | `nimitz status HOME/GITHUB/...` |
 | Reattach after a Herdr closure | `nimitz start [F]` (plans jobs too) | `nimitz show` (jobs untouched) |
 | Answer a member that waits on you | `nimitz start <id> -p` | `nimitz show <id>` |
 
@@ -240,8 +273,8 @@ outlived their stated one release four times.
 
 ## 4. Recommendation
 
-Adopt `+` patterns (quoted `*` too) at exact depth with "member alone"
-semantics, several targets per command, refusal on authority, no first
+Adopt dot patterns (`...` any depth below, `..` one level, always after a
+fleet name, never `*`) with "member alone" semantics, several targets per command, refusal on authority, no first
 launch without `--launch`. Split panes out of `start` into `show` (and
 optionally `close`), with `start --show` as the user's one-liner; `signal`
 and `attach` stop doing the other family's work.
@@ -257,7 +290,8 @@ as the `shape_only` mode used by `layout herdr`, restore.rs:117-119).
 
 ## 5. Decisions for you
 
-1. `+` as the unquoted wildcard (vs a trailing slash or flags)?
+1. `..` for one level (it reads as "parent" to shell users), or `...` only
+   plus a depth flag? Bring back part-of-name matching (`HOME/../.._DEV`)?
 2. A pattern match is the member alone, bare ids keep their subtree meaning
    for `start`: or should bare lead ids mean one member everywhere (`start
    HOME` would then bring up the admiral only, breaking every fix line)?
