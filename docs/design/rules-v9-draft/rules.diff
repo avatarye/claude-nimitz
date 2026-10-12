@@ -196,12 +196,12 @@ index c4b1a84..3c431fb 100644
 +  own stale copy rows). A fix that is not yours goes to your commodore.
 diff --git a/docs/design/rules-v9-draft/leads.md b/docs/design/rules-v9-draft/leads.md
 new file mode 100644
-index 0000000..2d51351
+index 0000000..08c5478
 --- /dev/null
 +++ b/docs/design/rules-v9-draft/leads.md
 @@ -0,0 +1,5 @@
 +- `nimitz start [<target>]` (a ship, squadron, fleet, or every fleet here)
 +  wakes what is down, relaunches workers on an older Claude Code, and
-+  attaches the leads' tabs, also after a Herdr closure or a reboot; `-f`
-+  relaunches live ones too, never the member that runs it. `nimitz stop` is
-+  its opposite.
++  attaches the leads' tabs, also after a Herdr closure or a reboot. It never
++  relaunches the member that runs it; `-f` relaunches live ones too.
++  `nimitz stop` is its opposite.

@@ -85,8 +85,11 @@ the first 2,000 characters only, so it fails the moment the text passes
      entries on both events: `nimitz hook rules harness-1` and
      `harness-2`. That is two to start; adding a third later costs one line.
    - A new binary with an old hooks.json still gives members their role
-     rules. Only the harness goes missing, and `doctor`'s hook check
-     (setup.rs:28-56) learns the new entries and names them.
+     rules. Only the harness goes missing. `doctor`'s hook check
+     (setup.rs:28-60) learns the new entries under their own name, as for
+     kb-guard, so a `hook rules` entry is not counted as the main handler.
+   - `nimitz rules` (setup.rs:278) prints the role rules and then every
+     part, with no `CONTEXT_MAX` cut.
 2. **Identity.** A harness hook resolves the session exactly as the main
    handler does. The checks in hook.rs:53-118 become one shared function:
    - labels backed by the job's row, with the 500 ms wait;
@@ -117,7 +120,13 @@ the first 2,000 characters only, so it fails the moment the text passes
    - The new record shape is a formats step (formats.rs). An old record's
      single `harness` hash counts as no parts delivered: one resend after
      the upgrade.
-   - A part's update goes out when its hash differs from its record.
+   - On SessionStart (startup, resume, `/clear`, `/compact`) a part always
+     sends its text, as the role rules do (hook.rs:177), and records its
+     hash, or none when it is empty. On UserPromptSubmit it sends only when
+     its hash differs from its record.
+   - The formats step also makes `Delivery.version` optional, so a record a
+     harness hook created first still lets `delivered_version` fall back to
+     the SessionStart line (rules.rs:136-147).
    - When a part becomes empty, or the harness is removed, and the record
      still holds a hash, it sends one line: "Fleet HOME's own rules, part N:
      withdrawn; drop what it said". Today's "a rule taken away is a change
@@ -152,13 +161,13 @@ the first 2,000 characters only, so it fails the moment the text passes
 
 The draft is in `docs/design/rules-v9-draft/`: `common.md`, `leads.md`,
 `admiral.md`, `commodore.md` and `ship.md`, plus `rules.diff` against today's
-`crates/nimitz-core/rules/`. Sizes are counted as rendered for HOME, without
-the harness:
+`crates/nimitz-core/rules/`. Sizes are counted as rendered for `HOME`,
+`HOME/GITHUB` and `HOME/GITHUB/NIMITZ_DEV`, without the harness:
 
 | Role | Now | Draft | Cut |
 | --- | ---: | ---: | ---: |
-| admiral | 4,479 | 3,290 | 27% |
-| commodore | 4,603 | 3,611 | 22% |
+| admiral | 4,479 | 3,304 | 26% |
+| commodore | 4,603 | 3,625 | 21% |
 | ship | 4,381 | 3,029 | 31% |
 
 With HOME's harness (1,567) added, members get about 6,000 today and about
@@ -200,6 +209,9 @@ notes with `nimitz:kb-scribe`, ask `nimitz:kb-ref`; never touch the KB
 yourself".
 
 **When built:**
+- `rules.rs` `text()` composes common, then `leads.md` for an admiral or a
+  commodore, then the role's file (leads.md has no leading newline, so the
+  order matters);
 - rules v9, with the changelog line "the rules are shorter; nothing a member
   does changes";
 - one update to every live member;
