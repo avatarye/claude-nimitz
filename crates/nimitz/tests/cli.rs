@@ -243,6 +243,12 @@ fn single_member_commands_refuse_patterns_and_set_commands_take_them() {
     let r = sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/DRIFT", "hello", "--plan"]);
     assert!(r.code == 2 && r.out.contains("signal takes one path; the text starts with a path"), "{}", r.out);
     assert_eq!(sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/DRIFT is drifting", "--plan"]).code, 0, "quoted: text");
+    assert_eq!(sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN", "is", "down", "--plan"]).code, 0, "a bare name is text");
+    let r = sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS", "hi", "--plan"]);
+    assert!(r.code == 2 && r.out.contains("the text starts with a path"), "{}", r.out);
+    // the sender alone live under the ...: said so
+    let r = sb.run_as("MAIN/BOREAL", &["signal", "MAIN/BOREAL/...", "hi", "--plan"]);
+    assert!(r.code == 1 && r.out.contains("no member under MAIN/BOREAL/... but the sender is live"), "{}", r.out);
     let r = sb.run(&["signal", "//...", "hello", "--plan"]);
     assert!(r.code == 2 && r.out.contains("F/..."), "{}", r.out);
     let r = sb.run(&["signal", "MAIN/ARGOS/STOPPED", "hello", "--plan"]);

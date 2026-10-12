@@ -491,9 +491,10 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         return Err(format!("signal {target}: a signal starts a turn in every member it reaches; name one fleet's (F/...) or squadron's (F/SQ/...) members, or one member"));
     }
     let snap = ctx.snap();
-    // `signal F/SQ/A F/SQ/B hi`: the text's first word a member's path, not a second target
+    // `signal F/SQ/A F/SQ/B hi`: the text's first word a member's path, not a
+    // second target (a path form, with a `/`: a bare name, `MAIN is down`, is text)
     if let (Some(first), true) = (ctx.args.pos.get(1), ctx.args.pos.len() > 2) {
-        if Path::parse(first).is_ok_and(|p| nimitz_core::paths::resolve(&snap, std::slice::from_ref(&p)).is_ok()) {
+        if first.contains('/') && Path::parse(first).is_ok_and(|p| nimitz_core::paths::resolve(&snap, std::slice::from_ref(&p)).is_ok()) {
             return Err(format!("signal takes one path; the text starts with a path ({first}): quote the text, or send one signal per path"));
         }
     }
@@ -505,8 +506,14 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     let mut plan = Plan { summary: format!("signal {path}"), ..Default::default() };
     // (a `...` never reaches its own sender; one named exactly may be)
     let me = ses::verified(&ctx.caller).cloned();
+    let mut but_sender = "";
     let ids = match nimitz_core::paths::resolve(&snap, std::slice::from_ref(&path)) {
-        Ok(ids) if path.member().is_none() => ids.into_iter().filter(|id| Some(id) != me.as_ref()).collect::<Vec<_>>(),
+        Ok(ids) if path.member().is_none() => {
+            if me.as_ref().is_some_and(|m| ids.contains(m)) {
+                but_sender = " but the sender";
+            }
+            ids.into_iter().filter(|id| Some(id) != me.as_ref()).collect::<Vec<_>>()
+        }
         Ok(ids) => ids,
         Err(_) if path.member().is_some() => {
             let id = path.member().cloned();
@@ -544,7 +551,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
         plan.warnings.push(Issue { code: "session.none".into(), severity: Severity::Info, message, fix: None, id: None });
     }
     if deliveries.is_empty() && plan.refusals.is_empty() {
-        plan.refusals.push(refusal("session.none", format!("no member under {path} is live; a signal never wakes one"), Some(format!("nimitz start {path}")), path.member().cloned()));
+        plan.refusals.push(refusal("session.none", format!("no member under {path}{but_sender} is live; a signal never wakes one"), Some(format!("nimitz start {path}")), path.member().cloned()));
     }
     if !plan.refusals.is_empty() {
         return Ok(finish_plan(ctx, &plan));
