@@ -182,6 +182,8 @@ them with a JetBrainsMono Nerd Font (box drawing drawn as lines, so frames
 have no gaps). NIMITZ_HOME and NIMITZ_STATE point at a temp dir; nothing reads
 the real state. Each screen's size, source and keys are in its `SCREENS`
 table; change a key sequence there when a view moves.
-The font is found under the usual font folders, else pass `--font DIR` (or set
-`ADMIRALTY_SCREENS_FONT`) to a folder holding JetBrainsMono Nerd Font (Propo)
-Regular and Bold; the script refuses rather than draw without the icons.
+The committed screens were drawn with JetBrainsMono Nerd Font Propo (Regular
+and Bold; not in this repo). A JetBrainsMono Nerd Font is found under the usual
+font folders; else `--font DIR` (or `ADMIRALTY_SCREENS_FONT`) takes any Nerd
+Font folder (its `-Regular.ttf`, and the `-Bold.ttf` beside it) or one .ttf. With
+none the script refuses rather than draw without the icons.

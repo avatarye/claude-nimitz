@@ -73,7 +73,7 @@ def find_font(arg: str | None) -> tuple[Path, Path]:
                 cands += sorted(d.rglob("JetBrainsMono*Nerd*.ttf")) + sorted(d.rglob("JetBrainsMonoNerd*.ttf"))
     regs = [c for c in cands if c.name.endswith("-Regular.ttf")] or cands
     if not regs:
-        sys.exit("[ERROR] no Nerd Font found; pass --font DIR (a JetBrainsMono Nerd Font folder) or a .ttf")
+        sys.exit("[ERROR] no Nerd Font found; pass --font DIR (any Nerd Font folder) or a .ttf")
     reg = regs[0]
     bold = reg.with_name(reg.name.replace("-Regular", "-Bold"))
     return reg, bold if bold.is_file() else reg
