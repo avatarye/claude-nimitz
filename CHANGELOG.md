@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.3 (unreleased)
+## 0.7.3 (2026-10-12)
 
 The commands, cleaned up: Perforce paths, four families, one `muster`, no
 authority checks. No old form is kept. Read **Upgrading** first.
