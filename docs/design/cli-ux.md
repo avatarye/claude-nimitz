@@ -60,6 +60,8 @@ compatibility: old forms are removed outright. Code references are to
   match are always brought up.
 - Several paths per command; a member matched twice counts once. An unknown
   path or an empty match is a refusal that lists what is there.
+- One exception (0.7.4): `check F` covers everything under F, as `check F/...`
+  does (bug 24: a read-only check never hides a ship's errors).
 
 Build map: `restore::in_target` (crates/nimitz-core/src/restore.rs:841-849)
 becomes the path matcher; `plan_start` (restore.rs:574-633) takes a set of

@@ -82,7 +82,7 @@ one plan. Design: [docs/design/cli-ux.md](docs/design/cli-ux.md).
 | `rm <path\|session>...` | Remove job rows, never transcripts |
 | `sweep [<path>...]` | Drop stale rows and copies of members |
 | `adopt <session> <F\|F/SQ\|F/SQ/SHIP>` | Make a stowaway (a session in a fleet folder with no labels) one member's session (an exact path; a `...` is refused) |
-| `signal <path> <text> [--inbox]` | Yours: typed into the member's tab, your own input; `--inbox`, or any member's signal: posted to its inbox, naming the sender. One path: a member, or `F/...` / `F/SQ/...` for every live member under it (never `//...`: a turn in every fleet at once). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
+| `signal <path> <text> [--inbox]` | Yours: typed into the member's tab, your own input; `--inbox`, or any member's signal: posted to its inbox, naming the sender. One path: a member, or `F/...` / `F/SQ/...` for every live member under it but the sender (never `//...`: a turn in every fleet at once); all or nothing, behind one gate (any refusal sends none). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
 
 ### Pane control (Herdr)
 

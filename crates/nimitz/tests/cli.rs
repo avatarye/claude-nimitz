@@ -209,6 +209,14 @@ fn check_takes_paths() {
     assert!(two.code == 1 && two.out.contains("name.drift") && !two.out.contains("dup.live"), "{}", two.out);
     assert!(sb.run(&["check", "//..."]).out.contains("name.drift"));
     assert_eq!(sb.run(&["check", "main/..."]).code, 2, "not a path");
+    // a path that matches nothing is no clean check
+    for typo in [&["MAIN/TYPO"][..], &["NOPE/..."][..], &["MAIN/ARGOS/CLEAN", "MAIN/ARGOS/TYPO"][..]] {
+        let mut a = vec!["check"];
+        a.extend(typo.iter().copied());
+        let r = sb.run(&a);
+        assert!(r.code == 1 && r.out.contains("(member.unknown)") && !r.out.contains("no errors"), "{typo:?}:\n{}", r.out);
+    }
+    assert!(sb.run(&["check", "MAIN/TYPO"]).out.contains("MAIN has MAIN, MAIN/ARGOS"), "what is there");
 }
 
 /// 0.7.4: `rules` takes paths (each member under its own line); `signal`
@@ -221,8 +229,20 @@ fn single_member_commands_refuse_patterns_and_set_commands_take_them() {
     let r = sb.run(&["rules", "MAIN/ARGOS/..."]);
     assert!(r.code == 0 && r.out.contains("== MAIN/ARGOS ==") && r.out.contains("== MAIN/ARGOS/CLEAN ==") && !r.out.contains("== MAIN =="), "{}", r.out);
     assert!(!sb.run(&["rules", "MAIN/ARGOS/CLEAN"]).out.contains("=="), "one member: its rules alone");
+    for typo in ["MAIN/ARGOS/TYPO", "NOPE/..."] {
+        let r = sb.run(&["rules", typo]);
+        assert!(r.code == 1 && r.out.contains("(member.unknown)"), "{typo}:\n{}", r.out);
+    }
     let r = sb.run(&["signal", "MAIN/ARGOS/...", "hello", "there", "--plan"]);
     assert!(r.code == 0 && r.out.contains("MAIN/ARGOS/CLEAN has no tab yet") && r.out.contains("not live, skipped") && r.out.contains("MAIN/ARGOS/STOPPED"), "{}", r.out);
+    // a ... never reaches its sender; one named exactly may
+    let r = sb.run_as("MAIN/ARGOS", &["signal", "MAIN/ARGOS/...", "hello", "--plan"]);
+    assert!(r.out.contains("MAIN/ARGOS/CLEAN") && !r.out.contains("  COMMODORE "), "the sender is dropped (a member's signal: the inbox):\n{}", r.out);
+    assert!(sb.run_as("MAIN/ARGOS", &["signal", "MAIN/ARGOS", "note", "--plan"]).out.contains("COMMODORE"), "named exactly: kept");
+    // a second path where the text starts: refused (quoted, it is text)
+    let r = sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/DRIFT", "hello", "--plan"]);
+    assert!(r.code == 2 && r.out.contains("signal takes one path; the text starts with a path"), "{}", r.out);
+    assert_eq!(sb.run(&["signal", "MAIN/ARGOS/CLEAN", "MAIN/ARGOS/DRIFT is drifting", "--plan"]).code, 0, "quoted: text");
     let r = sb.run(&["signal", "//...", "hello", "--plan"]);
     assert!(r.code == 2 && r.out.contains("F/..."), "{}", r.out);
     let r = sb.run(&["signal", "MAIN/ARGOS/STOPPED", "hello", "--plan"]);

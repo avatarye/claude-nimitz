@@ -122,8 +122,9 @@ const USAGES: &[(&str, &str)] = &[
     ("signal", "  signal <path> <text> [--inbox]   yours: typed into the member's tab (opened first when it has none), your own
                                    input; --inbox, or any member's signal: posted to its inbox as a request that
                                    names the sender. One path: a member, or F/... or F/SQ/... for every live
-                                   member under it (never //...). A member named exactly that is down is
-                                   refused, never woken; under a ... it is skipped"),
+                                   member under it but the sender (never //...), all or nothing, one gate. A
+                                   member named exactly that is down is refused, never woken; under a ... it
+                                   is skipped"),
     ("muster", "  muster [<path>...] [--parked]\n                                   the one command after a reboot, a Claude Code update or a Herdr closure\n                                   (no path: //...), one plan: workers on an older Claude Code relaunched\n                                   (restart //... relaunches every one), down leads and the active set's down\n                                   ships woken (--parked: the rest too), every member's pane reattached (its\n                                   own, else its lead tab); --here, --rename, --force as for layout. With no\n                                   multiplexer: the jobs, the pane steps skipped"),
     ("open", "  open <path>... [--tab] [--force] a pane for each member, focused (its pane, its tab, a split beside its
                                    commodore, a new tab); --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL,

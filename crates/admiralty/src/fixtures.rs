@@ -402,14 +402,15 @@ fn stowaways() -> (Vec<SessionInfo>, Vec<Issue>) {
 
 pub fn demo_snapshot() -> Snapshot {
     let (stow, mut issues) = stowaways();
-    issues.push(issue("cc.version", Severity::Warn, "Claude Code 2.1.291 is above the supported range 2.1.288-2.1.289", Some("nimitz doctor"), None));
+    let c = nimitz_core::compat::supported();
+    issues.push(issue("cc.version", Severity::Warn, &format!("Claude Code 2.1.280 is below the supported range {}-{}", c.min, c.max), Some("nimitz doctor"), None));
     Snapshot {
         taken_at: NOW,
         machine: Some("west-mac".into()),
         fleets: vec![fleet_main(), fleet_forge(), fleet_lab()],
         stowaways: stow,
         issues,
-        cc_version: Some("2.1.291".into()),
+        cc_version: Some("2.1.280".into()),
         compat_ok: false,
     }
 }

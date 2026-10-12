@@ -278,21 +278,16 @@ impl Report {
 /// given): its role's, then its fleet's harness rules, which come from their
 /// own hook entry. Several members: each under a `== <id> ==` line. Read-only.
 pub fn rules(ctx: &Ctx) -> Result<i32, String> {
-    use nimitz_core::paths::Path as P;
     ctx.args.allow(&[])?;
     let ids = match (ctx.args.pos.is_empty(), nimitz_core::sessions::verified(&ctx.caller)) {
         (false, _) => {
             let paths = crate::members::parse_paths(&ctx.args.pos)?;
-            // one member named exactly needs no fleet config (its role's rules)
-            match paths.as_slice() {
-                [P::Member(id)] => vec![id.clone()],
-                _ => match nimitz_core::paths::resolve(&ctx.snap(), &paths) {
-                    Ok(ids) => ids,
-                    Err(i) => {
-                        out::issue(&i);
-                        return Ok(1);
-                    }
-                },
+            match nimitz_core::paths::resolve(&ctx.snap(), &paths) {
+                Ok(ids) => ids,
+                Err(i) => {
+                    out::issue(&i);
+                    return Ok(1);
+                }
             }
         }
         (true, Some(id)) => vec![id.clone()],

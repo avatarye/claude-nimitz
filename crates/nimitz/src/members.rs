@@ -223,6 +223,16 @@ pub fn check(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     let paths = if ctx.args.pos.is_empty() { vec![] } else { parse_paths(&ctx.args.pos)? };
     let snap = ctx.snap();
+    // a path that matches nothing is no clean check: `member.unknown`, with what is there
+    let unknown: Vec<Issue> = paths.iter().filter_map(|p| nimitz_core::paths::resolve(&snap, std::slice::from_ref(p)).err()).collect();
+    if !unknown.is_empty() {
+        if out::json_mode() {
+            out::json(&unknown);
+        } else {
+            unknown.iter().for_each(out::issue);
+        }
+        return Ok(1);
+    }
     let mut issues: Vec<Issue> = vec![];
     let found: Vec<Issue> = match paths.is_empty() {
         true => check_tree(&ctx.env, &snap, None),
@@ -480,14 +490,23 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     if path == Path::Under(None) {
         return Err(format!("signal {target}: a signal starts a turn in every member it reaches; name one fleet's (F/...) or squadron's (F/SQ/...) members, or one member"));
     }
+    let snap = ctx.snap();
+    // `signal F/SQ/A F/SQ/B hi`: the text's first word a member's path, not a second target
+    if let (Some(first), true) = (ctx.args.pos.get(1), ctx.args.pos.len() > 2) {
+        if Path::parse(first).is_ok_and(|p| nimitz_core::paths::resolve(&snap, std::slice::from_ref(&p)).is_ok()) {
+            return Err(format!("signal takes one path; the text starts with a path ({first}): quote the text, or send one signal per path"));
+        }
+    }
     // Typed into a pane: no control characters, no newlines (BUG-43).
     let text = nimitz_mux::sanitize_text(&ctx.args.pos[1..].join(" "));
     if text.is_empty() {
         return Err("missing text (nothing is left after removing control characters)".into());
     }
-    let snap = ctx.snap();
     let mut plan = Plan { summary: format!("signal {path}"), ..Default::default() };
+    // (a `...` never reaches its own sender; one named exactly may be)
+    let me = ses::verified(&ctx.caller).cloned();
     let ids = match nimitz_core::paths::resolve(&snap, std::slice::from_ref(&path)) {
+        Ok(ids) if path.member().is_none() => ids.into_iter().filter(|id| Some(id) != me.as_ref()).collect::<Vec<_>>(),
         Ok(ids) => ids,
         Err(_) if path.member().is_some() => {
             let id = path.member().cloned();

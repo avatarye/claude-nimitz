@@ -6,7 +6,8 @@ keys that open the view, captures the pane's cells with their 24-bit colours
 (`tmux capture-pane -e`), and draws that cell grid to a PNG with a Nerd Font
 in a plain window frame. Nothing reads the real nimitz state: NIMITZ_HOME,
 NIMITZ_STATE and ADMIRALTY_STATE point at a temp dir, sandboxes are made
-fresh under /tmp/adm-sb and removed after.
+fresh under /tmp/adm-sb (a fixed path, so the screens that show it never
+change; the run stops when it exists, and removes only the one it made).
 
     cargo build -p admiralty
     uv run --with pillow tools/admiralty_screens.py [--bin target/debug/admiralty]
@@ -89,7 +90,6 @@ def tmux(sock: str, *args: str, check: bool = True) -> str:
 
 
 def make_sandbox(bin_: Path, env: dict[str, str], broken: bool) -> None:
-    shutil.rmtree(SB, ignore_errors=True)
     subprocess.run([str(bin_), "sandbox", "create", SB], env=env, check=True, capture_output=True)
     if broken:
         toml = next(Path(SB).rglob("squadrons/argos/squadron.toml"))
@@ -113,13 +113,21 @@ def capture(bin_: Path, name: str, cols: int, rows: int, source: str, keys: list
     for d in ("home", "nimitz", "state"):
         (tmp / d).mkdir(parents=True, exist_ok=True)
     if source.startswith("sandbox"):
-        make_sandbox(bin_, env, broken=source == "sandbox-broken")
         argv = [str(bin_), "--sandbox", SB]
     else:
         argv = [str(bin_), f"--{source}"]
     sock = f"admiralty-screens-{os.getpid()}"
     envs = [f"{k}={v}" for k, v in env.items()]
+    made = False
     try:
+        if source.startswith("sandbox"):
+            # never removes what it did not make: another run's, or anything else there
+            try:
+                os.mkdir(SB)
+            except FileExistsError:
+                sys.exit(f"[ERROR] {SB} exists (another run, or not this script's); remove it by hand, then run again")
+            made = True
+            make_sandbox(bin_, env, broken=source == "sandbox-broken")
         tmux(sock, "new-session", "-d", "-s", "s", "-x", str(cols), "-y", str(rows), "env", "-i", *envs, *argv)
         tmux(sock, "set-option", "-g", "status", "off")
         tmux(sock, "set-option", "-g", "window-size", "manual")
@@ -138,7 +146,7 @@ def capture(bin_: Path, name: str, cols: int, rows: int, source: str, keys: list
         return tmux(sock, "capture-pane", "-t", "s", "-p", "-e", "-N")
     finally:
         tmux(sock, "kill-server", check=False)
-        if source.startswith("sandbox"):
+        if source.startswith("sandbox") and made:
             shutil.rmtree(SB, ignore_errors=True)
 
 

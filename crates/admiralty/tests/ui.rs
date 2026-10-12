@@ -538,7 +538,8 @@ fn the_second_status_row_names_versions_machine_and_refresh() {
     let mut t = fixture_app(fixtures::demo(), true);
     let ours = env!("CARGO_PKG_VERSION");
     *t.app.nimitz_version.lock().unwrap() = Some(ours.to_string());
-    t.app.bundle.as_mut().unwrap().snap.compat_ok = true;
+    let snap = &mut t.app.bundle.as_mut().unwrap().snap;
+    (snap.cc_version, snap.compat_ok) = (Some("2.1.291".into()), true);
     let ls = lines(&draw(&mut t.app, 120, 24));
     assert!(ls[23].starts_with(&format!(" nimitz {ours}   Claude Code 2.1.291 (supported)   machine west-mac")), "{}", ls[23]);
     assert!(ls[23].trim_end().ends_with("refreshed 0s ago  q quit"), "{}", ls[23]);
@@ -551,9 +552,10 @@ fn the_second_status_row_names_versions_machine_and_refresh() {
     assert!(ls[23].starts_with(&format!(" nimitz 0.0.1 \u{2260} {ours}")), "{}", ls[23]);
     // Claude Code out of range: on this row, never the ADMIRALTY one (in
     // words where they fit beside the mismatch)
-    t.app.bundle.as_mut().unwrap().snap.compat_ok = false;
+    let snap = &mut t.app.bundle.as_mut().unwrap().snap;
+    (snap.cc_version, snap.compat_ok) = (Some("2.1.280".into()), false);
     let ls = lines(&draw(&mut t.app, 200, 24));
-    assert!(ls[23].contains("Claude Code 2.1.291 outside the supported range") && !ls[22].contains("Claude Code"), "{}\n{}", ls[22], ls[23]);
+    assert!(ls[23].contains("Claude Code 2.1.280 outside the supported range") && !ls[22].contains("Claude Code"), "{}\n{}", ls[22], ls[23]);
 }
 
 /// `?` opens the keys panel and `?` closes it; its title says so.
