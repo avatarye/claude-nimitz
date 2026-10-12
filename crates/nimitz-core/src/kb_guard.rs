@@ -188,6 +188,14 @@ pub fn decide(agent: Agent, root: Option<&Path>, tool: &str, input: &Value) -> R
     }
 }
 
+/// Claude Code's own tools for a subagent's work with its caller: delivering
+/// its result (`SubagentHandback`, which Claude Code gives a subagent whatever
+/// its `tools:` say), its todos and tasks, loading a tool's schema. They reach
+/// no file, command or network: the guard gives them no answer, and Claude
+/// Code decides as for any session. (Denying them kept the agents' reports
+/// from their callers, 0.7.0.)
+pub const CALLER_TOOLS: [&str; 7] = ["SubagentHandback", "TodoWrite", "ToolSearch", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"];
+
 /// The session's fleet, by its labels judged as every nimitz command judges
 /// them (`caller_from_env`: partial or disagreeing labels are no member's).
 fn fleet_of(vars: &HashMap<String, String>) -> Option<String> {
@@ -209,6 +217,9 @@ pub fn hook(env: &Env, stdin: &str, vars: &HashMap<String, String>) -> String {
     let Some(agent) = input.get("agent_type").and_then(Value::as_str).and_then(Agent::of) else { return String::new() };
     let root = fleet_of(vars).and_then(|f| crate::fleet_settings::kb(env, &f).ok()).and_then(|k| crate::os::canonical(&k.dir).ok());
     let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or("");
+    if CALLER_TOOLS.contains(&tool) {
+        return String::new();
+    }
     let (decision, reason) = match decide(agent, root.as_deref(), tool, input.get("tool_input").unwrap_or(&Value::Null)) {
         Ok(why) => ("allow", why),
         Err(why) => ("deny", why),
@@ -315,6 +326,16 @@ mod tests {
         }
         assert_eq!(call(Some("general-purpose"), "Bash", json!({"command": "ls"})), "");
         assert_eq!(call(Some("kb-scribe"), "Write", json!({"file_path": "/tmp/x"})), "", "a bare name is a project's agent, not the plugin's");
+        // delivering its result to its caller is never the guard's to stop
+        for t in CALLER_TOOLS {
+            assert_eq!(call(Some("nimitz:kb-scribe"), t, json!({"message": "done"})), "", "{t}");
+            assert_eq!(call(Some("nimitz:kb-ref"), t, json!({"message": "done"})), "", "{t}");
+        }
+        // every other tool still is: what reaches files, commands, the network, other agents
+        for t in ["Glob", "Grep", "WebFetch", "WebSearch", "Agent", "Task", "NotebookEdit", "SendMessage", "mcp__x__y"] {
+            let v: Value = serde_json::from_str(&call(Some("nimitz:kb-ref"), t, json!({}))).unwrap();
+            assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny", "{t}");
+        }
         let a: Value = serde_json::from_str(&call(Some("nimitz:kb-scribe"), "Bash", json!({"command": "nimitz kb path"}))).unwrap();
         assert_eq!(a["hookSpecificOutput"]["permissionDecision"], "allow");
         let d: Value = serde_json::from_str(&call(Some("nimitz:kb-ref"), "Read", json!({"file_path": "/etc/passwd"}))).unwrap();

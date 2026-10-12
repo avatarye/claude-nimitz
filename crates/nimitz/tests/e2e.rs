@@ -1997,8 +1997,9 @@ fn e2e_88_an_update_from_0_6_takes_the_aide_out() {
 /// note to `nimitz:kb-scribe` and a question to `nimitz:kb-ref` (this build's
 /// agents, skills and kb-guard, loaded as plugin `nimitz` by `--plugin-dir`).
 /// The note is one commit with its `note:` and `from:` trailers, pushed to
-/// the remote; the answer cites pages; nothing asked for a permission (the
-/// guard allows what each agent may do outside the ship's folder).
+/// the remote; the answer cites pages and both reports reach the ship (in
+/// auto mode, through `SubagentHandback`, which the guard leaves to Claude
+/// Code); nothing asked for a permission.
 #[test]
 fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     if !gated() {
@@ -2028,7 +2029,10 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     let mut guard = shipped["hooks"]["PreToolUse"].as_array().unwrap().iter().find(|e| e["hooks"][0]["args"] == json!(["hook", "kb-guard"])).expect("the shipped kb-guard entry").clone();
     guard["hooks"][0]["command"] = json!(exe);
     write(&plug.join("hooks/hooks.json"), &json!({"hooks": {"PreToolUse": [guard]}}).to_string());
-    executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --model '{}' --plugin-dir '{}' \"$@\"\n", w.native, cheap_model(), plug.display()));
+    // the ship on the account's default model, as a lead runs: Claude Code
+    // gives its subagents `SubagentHandback` to report with (0.7.0's guard
+    // denied it, and no report reached the caller; the cheap model never showed it)
+    executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --plugin-dir '{}' \"$@\"\n", w.native, plug.display()));
     let ship = w.ship();
     let marker = format!("e2e-{}-{}", std::process::id(), nimitz_core::evidence::now() as u64);
     let note = json!({"sender": {"kind": "member", "id": ship}, "title": format!("Nimitz e2e marker {marker}"), "kind": "fact", "domain": "misc",
@@ -2040,7 +2044,10 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
          2. Only once step 1's completion notification has come: subagent_type nimitz:kb-ref, in the foreground, prompt: this question, as is:\n{question}\n\
          Then end your turn with the two JSON result blocks the subagents returned."
     );
-    w.fleet_with_ship(&prompt, "default");
+    // auto mode, as the leads run: Claude Code then has a subagent report
+    // through `SubagentHandback` (its review of the report), which 0.7.0's
+    // guard denied
+    w.fleet_with_ship(&prompt, "auto");
     let kb = w.base.join("kb");
     w.ok(&["fleet", "settings", "set", "kb.remote", remote.to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
     w.ok(&["fleet", "settings", "set", "kb.dirs.e2e", kb.to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
@@ -2080,13 +2087,13 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
             .filter(|t| t.contains("citations") && t.contains(&sha[..12]))
             .last()
     };
-    let (text, last) = w
+    let (text, last, m_sid) = w
         .wait(1500, || {
             let m = w.member(&ship).filter(|m| m["status"] == "Idle")?;
             let sid = m["session"]["session_id"].as_str()?.to_string();
             let text = std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid)?).ok()?;
             let last = answer(&text, &noted()?)?;
-            Some((text, last))
+            Some((text, last, sid))
         })
         .unwrap_or_else(|| panic!("the ship's turns did not end with kb-ref's answer at the note's commit; its last reply:\n{}", w.member(&ship).and_then(|m| m["session"]["session_id"].as_str().map(str::to_string)).and_then(|sid| w.transcript(&w.ship_dir(), &sid)).and_then(|p| std::fs::read_to_string(p).ok()).map(|t| last_reply(&t)).unwrap_or_default()));
     // one commit for the note, with its trailers, pushed
@@ -2100,6 +2107,23 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     assert!(git(&kb, &["status", "--porcelain"]).trim().is_empty(), "nothing left uncommitted in the clone");
     // the ship's own answer: kb-ref's, the marker's fact, at the note's commit
     assert!(last.contains("citations") && last.to_lowercase().contains("dozen") && last.contains(&commits[0][..12]), "the answer: the marker's fact at the note's commit:\n{last}");
+    // both reports reached their caller: the scribe's block too, and no
+    // subagent was stopped from handing its result back
+    assert!(text.contains("\"outcome\"") && text.contains("ingested"), "the scribe's report reached the ship");
+    let sub = w.transcript(&w.ship_dir(), &m_sid).map(|p| p.with_extension("").join("subagents")).expect("the ship's transcript");
+    let mut denied = vec![];
+    for e in std::fs::read_dir(&sub).into_iter().flatten().flatten() {
+        let t = std::fs::read_to_string(e.path()).unwrap_or_default();
+        for tool in nimitz_core::kb_guard::CALLER_TOOLS {
+            if t.contains(&format!("PreToolUse:{tool} hook error")) {
+                denied.push(format!("{}: {tool}", e.file_name().to_string_lossy()));
+            }
+        }
+    }
+    assert!(denied.is_empty(), "the guard stopped a report on its way to the caller: {denied:?}");
+    let handed = std::fs::read_dir(&sub).into_iter().flatten().flatten().filter(|e| std::fs::read_to_string(e.path()).unwrap_or_default().contains("\"name\":\"SubagentHandback\"")).count();
+    println!("[OK] e2e #98: {handed} subagent(s) reported through SubagentHandback");
+    assert!(handed >= 2, "auto mode has both agents report through SubagentHandback (the path 0.7.0 broke): {handed}");
     let ev = w.events();
     assert!(!ev.iter().any(|e| e["event"] == "PermissionRequest"), "a permission prompt fired: {:?}", ev.iter().filter(|e| e["event"] == "PermissionRequest").collect::<Vec<_>>());
     assert!(std::fs::read_dir(w.base.join("state").join("needs")).map(|d| d.count() == 0).unwrap_or(true), "a needs-you notice was left");

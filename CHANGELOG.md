@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.1 (unreleased)
+
+### Fixed
+
+- **The kb-scribe and kb-ref reports never reached their caller in auto
+  mode.** There Claude Code has a subagent report through its
+  `SubagentHandback` tool, and the kb-guard denied every tool outside each
+  agent's own, that one too: the note was committed, the question answered,
+  and neither result arrived. The guard now gives no answer for Claude Code's
+  own coordination tools (`SubagentHandback`, todos, tasks, `ToolSearch`):
+  Claude Code decides as for any session. Every other tool outside the
+  agents' own is still denied. e2e #98 runs its ship in auto mode and checks
+  that both reports arrive.
+
+### Upgrading
+
+- Install over 0.7.0 (`cargo install` both crates, then the plugin); no
+  file changes format, the rules stay v8.
+
 ## 0.7.0 (2026-10-12)
 
 Aides are gone. Read **Upgrading** first.
