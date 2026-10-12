@@ -32,8 +32,14 @@ fn needed_hooks() -> Vec<(&'static str, Option<&'static str>)> {
     }
     // the KB agents' guard, on every tool (`nimitz hook kb-guard`)
     v.push((KB_GUARD, Some("")));
+    // the fleet's harness rules, an entry of their own (`nimitz hook rules harness`)
+    v.extend(HARNESS_RULES.iter().map(|e| (*e, None)));
     v
 }
+
+/// How `registered_hooks` names the entries that run `nimitz hook rules`
+/// (the fleet's harness rules, at a session start and at each prompt).
+const HARNESS_RULES: [&str; 2] = ["SessionStart:rules", "UserPromptSubmit:rules"];
 
 /// How `registered_hooks` names the PreToolUse entry that runs `nimitz hook kb-guard`.
 const KB_GUARD: &str = "PreToolUse:kb-guard";
@@ -54,7 +60,14 @@ fn registered_hooks(hooks: &Value) -> Vec<(String, String)> {
                     continue;
                 }
                 let guard = args.contains(&"kb-guard") || cmd.contains(" hook kb-guard");
-                let name = if guard && event == "PreToolUse" { KB_GUARD.to_string() } else { event.clone() };
+                let harness = args.get(1) == Some(&"rules") || cmd.contains(" hook rules");
+                let name = if guard && event == "PreToolUse" {
+                    KB_GUARD.to_string()
+                } else if harness {
+                    format!("{event}:rules")
+                } else {
+                    event.clone()
+                };
                 out.push((name, entry["matcher"].as_str().unwrap_or("").to_string()));
             }
         }
@@ -265,8 +278,9 @@ impl Report {
     }
 }
 
-/// `nimitz rules [<id>]`: the rules the SessionStart hook hands `id` (a member
-/// caller: its own when no id is given). Read-only.
+/// `nimitz rules [<id>]`: the rules `id` is given at a session start (a member
+/// caller: its own when no id is given): its role's, then its fleet's harness
+/// rules, which come from their own hook entry. Read-only.
 pub fn rules(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
@@ -702,7 +716,7 @@ mod tests {
         old.as_object_mut().unwrap().remove("UserPromptSubmit");
         old["PreToolUse"].as_array_mut().unwrap().retain(|e| e["matcher"] != "AskUserQuestion");
         let lacks = missing_hooks(&registered_hooks(&old));
-        assert_eq!(lacks, vec!["UserPromptSubmit".to_string(), "PreToolUse (matcher AskUserQuestion)".to_string()]);
+        assert_eq!(lacks, vec!["UserPromptSubmit".to_string(), "PreToolUse (matcher AskUserQuestion)".to_string(), "UserPromptSubmit:rules".to_string()]);
         // an entry with no matcher covers every tool; a command that is not nimitz counts for nothing
         let any = serde_json::json!({"PreToolUse": [{"hooks": [{"type": "command", "command": "nimitz", "args": ["hook", "PreToolUse"]}]}],
             "Stop": [{"hooks": [{"type": "command", "command": "other-tool", "args": ["hook", "Stop"]}]}]});
@@ -715,6 +729,13 @@ mod tests {
         let guard_only = serde_json::json!({"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "nimitz", "args": ["hook", "kb-guard"]}]}]});
         let lacks = missing_hooks(&registered_hooks(&guard_only));
         assert!(lacks.contains(&"PreToolUse (matcher SendMessage)".to_string()) && !lacks.iter().any(|l| l.contains("kb-guard")), "{lacks:?}");
+        // the harness rules' entry is no SessionStart handler, and a plugin without it lacks it
+        let rules_only = serde_json::json!({"SessionStart": [{"hooks": [{"type": "command", "command": "nimitz", "args": ["hook", "rules", "harness"]}]}]});
+        let lacks = missing_hooks(&registered_hooks(&rules_only));
+        assert!(lacks.contains(&"SessionStart".to_string()) && !lacks.contains(&"SessionStart:rules".to_string()), "{lacks:?}");
+        let mut no_rules = v["hooks"].clone();
+        no_rules["UserPromptSubmit"].as_array_mut().unwrap().retain(|e| e["hooks"][0]["args"][1] != "rules");
+        assert_eq!(missing_hooks(&registered_hooks(&no_rules)), vec!["UserPromptSubmit:rules".to_string()]);
     }
 
     /// A hook given as one command string is named (the repo plugin has none).

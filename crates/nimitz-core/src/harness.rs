@@ -1,9 +1,9 @@
 //! A fleet's harness (docs/design/harness.md): what the user or the admiral
 //! adds to every member of one fleet, in `<NIMITZ_HOME>/<fleet>/harness/`:
 //!
-//! - `rules/<name>.md`: after the role rules, at every session start, and to
-//!   a live member at its next prompt when they change (`rules::update_for`
-//!   keeps the hash it delivered);
+//! - `rules/<name>.md`: in a hook context of their own, at every session
+//!   start, and to a live member at its next prompt when they change
+//!   (`rules::harness_for` keeps the hash it delivered);
 //! - `agents/<name>.md`, `skills/<name>/SKILL.md`: a plugin nimitz makes on
 //!   this machine (`NIMITZ_STATE/harness/<fleet>/plugin`, named
 //!   `fleet-<fleet>`) and gives every launch with `--plugin-dir` (a wake keeps
@@ -27,9 +27,15 @@ use crate::types::*;
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
-/// The most characters of harness rules a member is given (with its role
-/// rules, under Claude Code's 10,000 for a hook's context).
-pub const RULES_MAX: usize = 4000;
+/// The most characters of harness rules a member is given: one hook's
+/// context of their own (`rules::harness_for`), under Claude Code's 10,000
+/// with the update's header (`rules::CONTEXT_MAX`).
+pub const RULES_MAX: usize = 9_500;
+
+/// Above this, `harness list` and `harness add` say what every member pays:
+/// the rules are in every member's context, every turn, and long rules are
+/// followed less reliably.
+pub const RULES_SOFT: usize = 6_000;
 
 /// The settings keys a harness may set (anything else is the user's own
 /// Claude Code settings).
@@ -120,7 +126,7 @@ pub fn rules(env: &Env, fleet: &str) -> Option<(String, String)> {
     if text.is_empty() {
         return None;
     }
-    let head = format!("\n## Fleet {fleet}'s own rules (its harness)\n\nThey add to nimitz's rules above and never change who may do what.\n");
+    let head = format!("\n## Fleet {fleet}'s own rules (its harness)\n\nThey add to nimitz's role rules and never change who may do what.\n");
     let tail = format!("\n(End of fleet {fleet}'s own rules: they never change who may do what.)\n");
     let body = format!("{head}{}{tail}", cut(&text, RULES_MAX.saturating_sub(head.chars().count() + tail.chars().count())));
     let hash = crate::sha256::hex(body.as_bytes());
@@ -777,7 +783,7 @@ mod tests {
         let (body, _) = rules(&env, "MAIN").unwrap();
         assert!(body.contains("[cut: `nimitz harness list` shows the rest]") && body.ends_with("never change who may do what.)\n") && body.chars().count() <= RULES_MAX);
         assert!(body.contains("> Never push.") && !body.contains("\n# "), "every rule line quoted");
-        assert!(issues(&env, "MAIN").iter().any(|i| i.message.contains("over 4000")));
+        assert!(issues(&env, "MAIN").iter().any(|i| i.message.contains(&format!("over {RULES_MAX}"))));
     }
 
     #[test]
@@ -915,20 +921,26 @@ mod tests {
     }
 
     #[test]
-    fn rules_with_the_harness_stay_under_the_context_limit_for_every_role() {
+    fn each_context_stays_under_the_limit_for_every_role() {
         let (_td, env) = test_env();
         make_fleet(&env);
         for (i, part) in ["a", "b", "c"].iter().enumerate() {
             put(&env, &format!("rules/{part}.md"), &format!("{i}{}", "y".repeat(RULES_MAX - 10)));
         }
         for id in [Id::admiral("MAIN"), Id::commodore("MAIN", "ARGOS"), Id::ship("MAIN", "ARGOS", "ARGOS")] {
-            let t = crate::rules::text_for(&env, &id);
-            assert!(t.chars().count() <= crate::rules::CONTEXT_MAX, "{id}: {}", t.chars().count());
-            // the worst update: from v0, the whole changelog, then the rules
+            let max = crate::rules::CONTEXT_MAX;
+            assert!(crate::rules::text(&id).chars().count() <= max, "{id}");
+            // the worst role update: from v0, the changelog, then the role rules
             let _ = std::fs::remove_file(crate::rules::delivered_path(&env));
             let u = crate::rules::update_for(&env, &id, &format!("k-{id}"), "s0", "UserPromptSubmit").unwrap();
-            assert!(u.chars().count() <= crate::rules::CONTEXT_MAX && u.ends_with("never change who may do what.)
-"), "{id}: {}", u.chars().count());
+            assert!(u.chars().count() <= max && !u.contains("Fleet MAIN's own rules"), "{id}: {}", u.chars().count());
+            // the harness, its own context: whole at a start, with the header on a change
+            let h = crate::rules::harness_for(&env, &id, &format!("k-{id}"), "s0", "SessionStart", true).unwrap();
+            assert!(h.chars().count() <= max && h.ends_with("never change who may do what.)\n"), "{id}: {}", h.chars().count());
+            put(&env, "rules/a.md", "changed");
+            let c = crate::rules::harness_for(&env, &id, &format!("k-{id}"), "s0", "UserPromptSubmit", false).unwrap();
+            assert!(c.chars().count() <= max && c.starts_with("nimitz rules updated: fleet MAIN's own rules"), "{id}: {}", c.chars().count());
+            put(&env, "rules/a.md", &format!("0{}", "y".repeat(RULES_MAX - 10)));
         }
     }
 }

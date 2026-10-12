@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.2 (unreleased)
+
+### Changed
+
+- **A fleet's own rules (its harness) may hold 9,500 characters, up from
+  4,000.** They now come to every member in a hook context of their own
+  (`nimitz hook rules harness`, a new entry in the plugin's hooks.json),
+  since Claude Code gives each hook entry 10,000 characters whole and only a
+  2,000-character preview above. At every session start, and at the next
+  prompt when they change, once; when they are taken away, one line says so.
+  `harness list` and `harness add` warn above 6,000: every member carries
+  them every turn.
+- **Rules v9: shorter, with the same behaviour** (about a quarter
+  shorter for each role). `nimitz start` is in the leads' rules only (a ship
+  may not run it); the deprecated verbs and the history are gone. A rules
+  update lists the last three changes.
+- docs/design/rules-size.md: what Claude Code does with a hook's context
+  (per hook, not per event; a preview and a file above 10,000).
+
+### Upgrading
+
+- Install over 0.7.1 (`cargo install` both crates) and update the plugin
+  together: the new hooks.json entry needs the 0.7.2 binary (0.7.1 gives it
+  no answer and logs a line for each call). Live members get rules v9 at
+  their next prompt, and a fleet's harness rules once more as "changed" (their
+  heading now says they add to the role rules, which moves their hash).
+
 ## 0.7.1 (2026-10-12)
 
 ### Fixed

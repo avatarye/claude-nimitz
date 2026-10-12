@@ -280,6 +280,10 @@ impl E2e {
         for e in ["SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "Notification", "SubagentStart", "SubagentStop", "PermissionRequest"] {
             hooks.insert(e.into(), one(e));
         }
+        // the fleet's harness rules, an entry of their own (as the plugin's)
+        for e in ["SessionStart", "UserPromptSubmit"] {
+            hooks[e].as_array_mut().unwrap().push(json!({"hooks": [{"type": "command", "command": exe, "args": ["hook", "rules", "harness"], "timeout": 5}]}));
+        }
         hooks.insert(
             "PreToolUse".into(),
             json!([

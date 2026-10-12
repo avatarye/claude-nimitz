@@ -51,6 +51,13 @@ pub fn handle_full(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, S
 
 fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, String>) -> (String, Option<crate::notify::Notice>) {
     let input: Value = serde_json::from_str(stdin.trim()).unwrap_or(Value::Null);
+    // `nimitz hook rules harness`: the fleet's harness rules, in a hook entry
+    // of their own (each entry gets Claude Code's 10,000 characters). It
+    // judges the session as every event does, under the event Claude Code
+    // names, and does nothing else: no binding, no notice, no line.
+    let harness_hook = event == "rules";
+    let named = str_at(&input, "hook_event_name").unwrap_or_default();
+    let event: &str = if harness_hook { named.as_str() } else { event };
     let mut labels: BTreeMap<String, String> =
         LABELS.iter().filter_map(|k| vars.get(*k).filter(|v| !v.is_empty()).map(|v| (k.to_string(), v.clone()))).collect();
     // An inherited NIMITZ_HOME (a user who exports it in their shell) is not a
@@ -107,6 +114,9 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
                 _ => BTreeMap::new(),
             };
         }
+    }
+    if harness_hook {
+        return (harness_rules(env, event, &input, &labels, pid), None);
     }
     let tool = str_at(&input, "tool_name");
     let is_signal = tool.as_deref() == Some("SendMessage");
@@ -172,9 +182,9 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
                 crate::inbox::record(env, &sid, pid, sock.strip_prefix("uds:").unwrap_or(sock));
             }
             rules = Some(crate::rules::VERSION);
-            let harness = crate::harness::rules(env, id.fleet()).map(|(_, h)| h);
-            crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event, harness.as_deref());
-            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text_for(env, &id)}}).to_string();
+            crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
+            // (the fleet's harness rules come from their own entry, `harness_rules`)
+            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
             binding = Some(match str_at(&input, "session_id") {
                 // no session file (missing, or caught mid-write): bind nothing
                 // now; `status` replays the line and judges the job from the rows
@@ -231,6 +241,22 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
         append_line(env, &line.to_string());
     }
     (out, notice)
+}
+
+/// `nimitz hook rules harness` on `event` (SessionStart, or a per-turn
+/// `UPDATE_EVENTS` one): the fleet's harness rules for the member `labels`
+/// name (labels the job's row backs), as `rules::harness_for` gives them.
+fn harness_rules(env: &Env, event: &str, input: &Value, labels: &BTreeMap<String, String>, pid: i64) -> String {
+    let start = event == "SessionStart";
+    if !start && !UPDATE_EVENTS.contains(&event) {
+        return String::new();
+    }
+    let Some(id) = crate::registry::identity_of(env, labels) else { return String::new() };
+    let sid = str_at(input, "session_id").unwrap_or_default();
+    match crate::rules::harness_for(env, &id, &crate::rules::delivery_key(env, pid, &sid), &sid, event, start) {
+        Some(text) => json!({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}).to_string(),
+        None => String::new(),
+    }
 }
 
 /// The Claude Code process behind a hook: `ppid` (the hook's parent) when
@@ -563,6 +589,39 @@ mod tests {
         assert!(!denied(&send(&env, &ship, &format!("{} [3fa9c1]", argos.name()))));
     }
 
+    /// `nimitz hook rules harness`: the fleet's harness rules, in their own
+    /// context, under the event Claude Code names; nothing else (no line, no
+    /// binding), and nothing for a session that is no member.
+    #[test]
+    fn the_harness_entry_gives_the_fleets_rules_and_nothing_else() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let start = serde_json::json!({"session_id": "s-h", "source": "startup", "hook_event_name": "SessionStart"}).to_string();
+        let prompt = serde_json::json!({"session_id": "s-h", "hook_event_name": "UserPromptSubmit", "prompt": "go"}).to_string();
+        assert!(handle(&env, "rules", &start, &labels_of(&env, &id)).is_empty(), "no harness: nothing");
+        let rules = crate::harness::dir(&env, "MAIN").join("rules");
+        std::fs::create_dir_all(&rules).unwrap();
+        std::fs::write(rules.join("style.md"), "Answer in haiku.\n").unwrap();
+        let v: Value = serde_json::from_str(&handle(&env, "rules", &start, &labels_of(&env, &id))).expect("a hook JSON");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
+        assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("> Answer in haiku."), "{v}");
+        assert!(handle(&env, "rules", &prompt, &labels_of(&env, &id)).is_empty(), "delivered at the start: not again");
+        std::fs::write(rules.join("style.md"), "Answer in prose.\n").unwrap();
+        let v: Value = serde_json::from_str(&handle(&env, "rules", &prompt, &labels_of(&env, &id))).expect("the change");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+        assert!(v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("changed"), "{v}");
+        // no event line, no binding: the main handler's job
+        assert!(crate::evidence::events(&env).is_empty(), "{:?}", crate::evidence::events(&env));
+        // the session itself (no labels) and another event get nothing
+        assert!(handle(&env, "rules", &start, &HashMap::new()).is_empty());
+        let stop = serde_json::json!({"session_id": "s-h", "hook_event_name": "Stop"}).to_string();
+        std::fs::write(rules.join("style.md"), "Answer in verse.\n").unwrap();
+        assert!(handle(&env, "rules", &stop, &labels_of(&env, &id)).is_empty());
+        // the main handler's SessionStart gives the role rules alone
+        let main = handle(&env, "SessionStart", &start, &labels_of(&env, &id));
+        assert!(main.contains("## Ship of MAIN/ARGOS") && !main.contains("own rules (its harness)"), "{main}");
+    }
+
     /// A SessionStart delivers the rules and records it; a prompt in a session
     /// that runs on older rules gets the update once; a current one gets nothing.
     #[test]
@@ -580,7 +639,7 @@ mod tests {
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
         let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
         assert!(ctx.starts_with(&format!("nimitz rules updated v1\u{2192}v{}", crate::rules::VERSION)), "{ctx}");
-        assert!(ctx.contains("- v2: the tender role is gone") && ctx.contains(&crate::rules::text(&id)), "changelog and the full text: {ctx}");
+        assert!(ctx.contains("- v2-v6: older changes, superseded") && ctx.contains(&crate::rules::text(&id)), "changelog and the full text: {ctx}");
         assert!(!ctx.contains("- v1:"), "only the entries after v1");
         let d = crate::rules::delivered(&env, "session:s-up").expect("recorded by session id: no job here");
         assert_eq!((d.version, d.via.as_str(), d.session_id.as_str()), (crate::rules::VERSION, "UserPromptSubmit", "s-up"));

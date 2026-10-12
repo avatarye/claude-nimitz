@@ -56,6 +56,14 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
             }
             let place = (kind == Kind::Settings).then(|| harness::settings_rel(scope.as_ref(), ctx.args.flag("--member"), &fleet)).transpose()?;
             let files = harness::item_files(kind, &name, src, place)?;
+            if kind == Kind::Rule {
+                // what every member will carry: about, as the rule is quoted (`harness::rules`)
+                let had = harness::rules(&ctx.env, &fleet).map(|(b, _)| b.chars().count()).unwrap_or(0);
+                let adds: usize = files.iter().map(|(_, t)| t.chars().count() + 2 * t.lines().count() + name.len() + 6).sum();
+                if had + adds > harness::RULES_SOFT {
+                    out::warn(&soft(had + adds));
+                }
+            }
             let root = harness::dir(&ctx.env, &fleet);
             // never written through a link (a folder of the harness that leads elsewhere)
             if let Some((r, _)) = files.iter().find(|(r, _)| !harness::unlinked(&root, &root.join(r))) {
@@ -128,6 +136,14 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
     }
 }
 
+/// The harness rules at `n` characters, past `RULES_SOFT`: what it costs.
+fn soft(n: usize) -> String {
+    format!(
+        "the harness rules would be about {n} characters (over {}): every member carries them in its context every turn, and long rules are followed less reliably; keep procedures in a harness skill",
+        harness::RULES_SOFT
+    )
+}
+
 /// When a change of `kind` reaches the members.
 fn live_when(kind: Kind) -> &'static str {
     match kind {
@@ -171,6 +187,9 @@ fn list(ctx: &Ctx, fleet: &str) {
     }
     if let Some((body, _)) = harness::rules(&ctx.env, fleet) {
         out::line(&format!("  the rules members get: {} characters (at most {})", body.chars().count(), harness::RULES_MAX));
+        if body.chars().count() > harness::RULES_SOFT {
+            out::warn(&soft(body.chars().count()));
+        }
     }
     for i in harness::issues(&ctx.env, fleet) {
         out::issue(&i);
