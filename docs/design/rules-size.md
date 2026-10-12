@@ -1,6 +1,7 @@
 # Rules size: the 10,000-character hook limit, and shorter role rules
 
-Status: proposal (0.8), not built. Claude Code 2.1.296.
+Status: built in 0.7.2 with one harness part (the user's choice): RULES_MAX
+9,500, `nimitz hook rules harness`. Claude Code 2.1.296.
 
 Today a member's rules are one hook's `additionalContext`: its role's rules,
 then its fleet's harness rules. `CONTEXT_MAX` (9,800, rules.rs) keeps the

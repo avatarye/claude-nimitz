@@ -1188,7 +1188,7 @@ fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
     let v: Value = serde_json::from_str(u.out.trim()).expect("hook JSON");
     let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     assert!(ctx.starts_with(&format!("nimitz rules updated v0→v{}", nimitz_core::rules::VERSION)) && ctx.contains("## Ship of MAIN/ARGOS"), "{ctx}");
-    assert!(ctx.contains("- v1:") && ctx.contains("- v2:"), "the whole changelog from v0: {ctx}");
+    assert!(ctx.contains("- v1-v6: older changes, superseded") && ctx.contains(&format!("- v{}:", nimitz_core::rules::VERSION)), "the changelog from v0, its last entries: {ctx}");
     assert!(raw(&sb.vars, &["hook", "UserPromptSubmit"], &labels, Some(&prompt)).out.trim().is_empty(), "once per version");
     let rec: Value = serde_json::from_str(&std::fs::read_to_string(&delivered).unwrap()).unwrap();
     assert_eq!(rec[format!("session:{sid}")]["version"], nimitz_core::rules::VERSION, "no job id readable here: keyed by session");
@@ -1325,7 +1325,7 @@ fn init_and_doctor_in_an_empty_world() {
     assert!(d.out.contains("does not register UserPromptSubmit") && d.out.contains("fix: /reload-plugins"), "{}", d.out);
     // a copy whose SessionStart entry is one command string: a Warn, reinstall + /reload-plugins
     let mut stringy: Value = serde_json::from_str(&std::fs::read_to_string(&repo_hooks).unwrap()).unwrap();
-    stringy["hooks"]["SessionStart"] = serde_json::json!([{"hooks": [{"type": "command", "command": "nimitz hook SessionStart", "timeout": 5}]}]);
+    stringy["hooks"]["SessionStart"][0] = serde_json::json!({"hooks": [{"type": "command", "command": "nimitz hook SessionStart", "timeout": 5}]});
     let stringy_path = b.join("stringy-hooks.json");
     std::fs::write(&stringy_path, stringy.to_string()).unwrap();
     let d = raw(&vars, &["doctor"], &[("NIMITZ_PLUGIN_HOOKS", stringy_path.to_str().unwrap())], None);

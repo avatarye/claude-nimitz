@@ -14,6 +14,20 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "rules",
+              "harness"
+            ],
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionEnd": [
@@ -40,6 +54,20 @@
             "args": [
               "hook",
               "UserPromptSubmit"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "rules",
+              "harness"
             ],
             "timeout": 5
           }
