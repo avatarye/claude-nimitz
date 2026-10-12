@@ -341,7 +341,6 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
                 id: sqid.clone(),
                 commodore: build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events, &copies),
                 ships: vec![],
-                comms: sq.comms.clone(),
                 issues: vec![],
             };
             for ship in &sq.ships {
@@ -369,7 +368,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             };
             let mut commodore = build_member(env, cache, fc, &sqid, &reg, &mut by_identity, &labels, &events, &copies);
             unread(&mut commodore, Some(sd.to_string_lossy().into_owned()));
-            let mut squadron = Squadron { id: sqid.clone(), commodore, ships: vec![], comms: Comms::default(), issues: vec![err.clone()] };
+            let mut squadron = Squadron { id: sqid.clone(), commodore, ships: vec![], issues: vec![err.clone()] };
             for k in under {
                 let id = Id(k);
                 let mut m = build_member(env, cache, fc, &id, &reg, &mut by_identity, &labels, &events, &copies);
@@ -406,7 +405,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
                     commodore.cwd = Some(dir.join("squadrons").join(sq.to_lowercase()).to_string_lossy().into_owned());
                 }
                 unread(&mut commodore);
-                fleet.squadrons.push(Squadron { id: sqid.clone(), commodore, ships: vec![], comms: Comms::default(), issues: vec![] });
+                fleet.squadrons.push(Squadron { id: sqid.clone(), commodore, ships: vec![], issues: vec![] });
             }
             if id == sqid {
                 continue;

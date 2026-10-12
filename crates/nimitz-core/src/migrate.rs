@@ -235,7 +235,6 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         let sq = SquadronConfig {
             squadron: sq_name.clone(),
             brief: Some("SQUADRON.md".into()),
-            comms: Comms::default(),
             permission_mode: None,
             ships,
             ..Default::default()

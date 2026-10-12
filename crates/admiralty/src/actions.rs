@@ -403,7 +403,7 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
 pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fleet: &Id, ships: bool) -> Result<Pending, String> {
     let act = if ships { Act::LayoutShips } else { Act::Layout };
     available(caps, snap, &Target::Fleet(fleet.clone()), act)?;
-    let mut spec = nimitz_core::layout::plan(&ctx.env, snap, Some(fleet.fleet()), ships && caps.open, &Caller::User, false);
+    let mut spec = nimitz_core::layout::plan(&ctx.env, snap, Some(fleet.fleet()), ships && caps.open, false);
     let shown: Vec<String> = panes.iter().filter_map(|p| p.session_id.clone()).collect();
     nimitz_core::layout::drop_shown(&mut spec, &shown);
     let lp = LayoutPlan {

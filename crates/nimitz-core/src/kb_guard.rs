@@ -316,7 +316,7 @@ mod tests {
         let kb = td.path().join("kb");
         std::fs::create_dir_all(&kb).unwrap();
         for (k, v) in [("kb.remote", json!("/srv/kb.git")), ("kb.dirs.test-mac", json!(kb.to_string_lossy()))] {
-            assert!(crate::config::apply_config_plan(&env, &crate::fleet_settings::plan_set(&env, "MAIN", k, Some(v), true)).verified);
+            assert!(crate::config::apply_config_plan(&env, &crate::fleet_settings::plan_set(&env, "MAIN", k, Some(v))).verified);
         }
         let whole: HashMap<String, String> = [("NIMITZ_ID", "MAIN/ARGOS/ARGOS"), ("NIMITZ_ROLE", "ship")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         let partial: HashMap<String, String> = [("NIMITZ_FLEET", "MAIN")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();

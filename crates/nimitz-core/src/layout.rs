@@ -139,28 +139,10 @@ impl LayoutSpec {
     }
 }
 
-/// The layout for `fleet` (or every fleet that runs here). You lay out any
-/// fleet; an admiral its own.
-pub fn plan(env: &Env, snap: &Snapshot, fleet: Option<&str>, ships: bool, caller: &Caller, force: bool) -> LayoutSpec {
+/// The layout for `fleet` (or every fleet that runs here).
+pub fn plan(env: &Env, snap: &Snapshot, fleet: Option<&str>, ships: bool, force: bool) -> LayoutSpec {
     let _ = force; // every tab attaches; nothing is started or forced here
     let mut spec = LayoutSpec::default();
-    // you lay out any fleet; an admiral its own (by default too); nobody else
-    let fleet = match (caller, fleet) {
-        (Caller::User, f) => f,
-        (Caller::Member { id, role: Role::Admiral }, None) => Some(id.fleet()),
-        (Caller::Member { id, role: Role::Admiral }, Some(f)) if f == id.fleet() => Some(f),
-        (Caller::Member { id, .. }, _) => {
-            spec.plan.summary = format!("layout herdr {}", fleet.unwrap_or("(every fleet here)"));
-            spec.plan.refusals.push(Issue {
-                code: "authority".into(),
-                severity: Severity::Error,
-                message: format!("`nimitz layout` lays out whole fleets: yours, or an admiral's for its own fleet; not {}'s", id.name()),
-                fix: None,
-                id: None,
-            });
-            return spec;
-        }
-    };
     spec.plan.summary = format!("layout herdr {}", fleet.unwrap_or("(every fleet here)"));
     for f in snap.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
         if f.machine.is_none() {

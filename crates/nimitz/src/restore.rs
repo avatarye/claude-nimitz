@@ -153,9 +153,7 @@ fn run_engine(ctx: &Ctx, fleet: Option<&str>, start: Option<Option<&Id>>, opts: 
         if ctx.plan_only() && out::json_mode() {
             out::json(&rp.plan);
         } else {
-            let mut shown = rp.plan.clone();
-            crate::run::fixes_for(&ctx.env, &ctx.caller, &mut shown);
-            out::plan(&shown);
+            out::plan(&rp.plan);
         }
         for f in snap.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
             for i in nimitz_core::check::check_tree(&ctx.env, &snap, Some(&f.id)).into_iter().filter(|i| i.code == "rc.exposed") {
@@ -180,11 +178,7 @@ fn run_engine(ctx: &Ctx, fleet: Option<&str>, start: Option<Option<&Id>>, opts: 
         out::plan(&rp.plan);
     }
     let (outcome, failed) = execute(ctx, mux.as_ref(), &rp, fleet);
-    let mut shown = outcome.clone();
-    let mut fixed = Plan { warnings: std::mem::take(&mut shown.issues), ..Default::default() };
-    crate::run::fixes_for(&ctx.env, &ctx.caller, &mut fixed);
-    shown.issues = fixed.warnings;
-    crate::view::run(&rp.plan, &shown, &failed);
+    crate::view::run(&rp.plan, &outcome, &failed);
     // what the re-read says now: Remote Control reconnected by a resume (R-31)
     let after = ctx.snap();
     let mut late: Vec<Issue> = vec![];

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use nimitz_core::{Comms, Crew, Fleet, Issue, Member, Role, SessionInfo, Severity, Snapshot, Squadron, Status, Task};
+use nimitz_core::{Crew, Fleet, Issue, Member, Role, SessionInfo, Severity, Snapshot, Squadron, Status, Task};
 use nimitz_mux::Pane;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -723,13 +723,6 @@ pub fn status_counts(members: &[&Member], issues: &[&Issue], icons: &Icons) -> V
     out
 }
 
-fn comms_text(c: &Comms) -> String {
-    match c {
-        Comms::Mode(m) => m.clone(),
-        Comms::Allow { allow } => format!("allow: {}", allow.join(", ")),
-    }
-}
-
 /// A member's own part of its name, for a row inside its fleet and
 /// squadron: `ADMIRAL`, `COMMODORE`, or the ship's name. (`layout::legacy_tab_of`
 /// says the same for a 0.3.x tab label, from the third part of the id; this
@@ -808,7 +801,7 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
     n.issue_count = sq.issues.len();
     n.detail = vec![
         Span::styled(state.squadron_label().to_string(), bold(color)),
-        Span::styled(format!("   comms {}", comms_text(&sq.comms)), st(mono::SOFT)),
+        Span::styled(format!("   ships {}", sq.ships.len()), st(mono::SOFT)),
     ];
     if let Some(i) = sq.issues.first() {
         n.detail.push(Span::styled(format!("   {} {}", v.icons.issue, i.code), bold(theme::severity_color(i.severity))));

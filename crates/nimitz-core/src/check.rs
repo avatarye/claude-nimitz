@@ -465,7 +465,6 @@ pub(crate) mod tests {
                     id: Id::commodore("MAIN", "ARGOS"),
                     commodore: member(Id::commodore("MAIN", "ARGOS"), sq_dir.to_str()),
                     ships: vec![member(Id::ship("MAIN", "ARGOS", "ARGOS"), ship_cwd)],
-                    comms: Comms::default(),
                     issues: vec![],
                 }],
                 issues: vec![],

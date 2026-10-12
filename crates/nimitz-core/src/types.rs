@@ -155,6 +155,9 @@ pub struct FleetConfig {
     pub aide: Vec<toml::Value>,
 }
 
+/// A squadron's `comms` rule of 0.7.2 and older: parsed (every
+/// squadron.toml written so far holds it, and `SquadronConfig` denies unknown
+/// fields) and ignored, never written; any member messages any member (0.7.3).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Comms {
@@ -199,7 +202,8 @@ pub struct SquadronConfig {
     pub squadron: String,
     #[serde(default)]
     pub brief: Option<String>,
-    #[serde(default)]
+    /// read and ignored (`Comms`)
+    #[serde(default, skip_serializing)]
     pub comms: Comms,
     #[serde(default)]
     pub permission_mode: Option<String>,
@@ -478,7 +482,6 @@ pub struct Squadron {
     pub id: Id,
     pub commodore: Member,
     pub ships: Vec<Member>,
-    pub comms: Comms,
     pub issues: Vec<Issue>,
 }
 

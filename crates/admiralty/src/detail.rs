@@ -2,7 +2,7 @@
 //! row is, why its status is what it is, its issues with their fixes, and what
 //! each key would do here (or why it will not).
 
-use nimitz_core::{Comms, Fleet, Issue, Member, SessionInfo, Snapshot, Squadron};
+use nimitz_core::{Fleet, Issue, Member, SessionInfo, Snapshot, Squadron};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
@@ -196,13 +196,6 @@ fn broken_detail(snap: &Snapshot, id: &nimitz_core::Id, width: usize) -> Vec<Lin
     v
 }
 
-fn comms_text(c: &Comms) -> String {
-    match c {
-        Comms::Mode(m) => m.clone(),
-        Comms::Allow { allow } => format!("allow {}", allow.join(", ")),
-    }
-}
-
 fn issues_block(title: &str, issues: &[&Issue], width: usize) -> Vec<Line<'static>> {
     if issues.is_empty() {
         return vec![];
@@ -252,7 +245,6 @@ fn squadron_detail(f: &Fleet, sq: &Squadron, width: usize) -> Vec<Line<'static>>
         blank(),
         Line::from(vec![Span::styled(format!("{:<KEY_W$}", "state"), st(mono::COMMENT)), Span::styled(state.squadron_label().to_uppercase(), bold(state.color()))]),
         kv("commodore", format!("{}  {}", sq.commodore.expected_name, status_word(sq.commodore.status))),
-        kv("comms", comms_text(&sq.comms)),
         kv("ships", sq.ships.iter().map(|s| s.id.parts().last().unwrap_or(&"?").to_string()).collect::<Vec<_>>().join(", ")),
     ];
     v.extend(issues_block("SQUADRON ISSUES", &sq.issues.iter().collect::<Vec<_>>(), width));

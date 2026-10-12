@@ -68,16 +68,15 @@ fn read_session_file(env: &Env, pid: i64) -> Option<serde_json::Value> {
     std::fs::read(env.claude_home.join("sessions").join(format!("{pid}.json"))).ok().and_then(|b| crate::evidence::first_json(&b)).filter(|d| crate::evidence::session_is_its_process(pid, d))
 }
 
-/// The identity a caller gets when its labels are partial or disagree: no
-/// authority at all (BUG-06, fail closed). Its role is ship, so every
-/// authority rule refuses it.
+/// The identity a caller gets when its labels are partial or disagree: one
+/// `[WARN]` and it runs as you (kb-guard reads it as no member's).
 pub const UNVERIFIED: &str = "?/?/unverified-labels";
 
 /// Who is asking, from the caller's env (labels reach the Bash tool's
 /// processes, probe P0.6). No labels at all (`NIMITZ_HOME` alone is none): the
 /// user. Labels that are partial (`NIMITZ_ID` or `NIMITZ_ROLE` missing), that
-/// disagree, or that name no valid identity: an unverified caller with no
-/// authority, never the user.
+/// disagree, or that name no valid identity: an unverified caller (the CLI
+/// warns and runs it as the user).
 pub fn caller_from_env(vars: &HashMap<String, String>) -> Caller {
     let get = |k: &str| vars.get(k).filter(|v| !v.is_empty());
     let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Ship };
@@ -95,10 +94,6 @@ pub fn caller_from_env(vars: &HashMap<String, String>) -> Caller {
         }
         _ => unverified,
     }
-}
-
-fn caller_name(id: &Id) -> String {
-    if id.0 == UNVERIFIED { "a caller with partial or inconsistent NIMITZ_* labels".into() } else { id.name() }
 }
 
 // ------------------------------------------------------------------ issues
@@ -413,12 +408,8 @@ pub fn name_taken_issue(m: &Member, others: &[SessionInfo]) -> Option<Issue> {
     ))
 }
 
-// ------------------------------------------------------------------ authority
+// ------------------------------------------------------------------ the caller
 
-/// May `caller` start (or stop, relaunch, rm, adopt as) `target`? The
-/// authority table (plan-v3 section 5.5, widened in 0.3.1): you, anything; an
-/// admiral, every member of its own fleet but itself; a commodore, its own
-/// ships; ships nothing.
 /// The `nimitz start` that acts on `id` alone, with `flags` (`-f`, `-p`): a
 /// lead's id names its whole fleet or squadron, so a lead's adds `--only`.
 pub fn start_cmd(id: &Id, flags: &str) -> String {
@@ -426,176 +417,26 @@ pub fn start_cmd(id: &Id, flags: &str) -> String {
     format!("nimitz start {id}{only} {flags}")
 }
 
-pub fn may_start(caller: &Caller, target: &Id, verb: &str) -> Result<(), String> {
-    match caller {
-        Caller::User => Ok(()),
-        Caller::Member { id, role: Role::Admiral } if target.fleet() == id.fleet() && target != id => Ok(()),
-        Caller::Member { id, role: Role::Commodore } if target.parent().as_ref() == Some(id) => Ok(()),
-        Caller::Member { id, .. } => Err(format!(
-            "{} may not {verb} {target}: you {verb} anything; an admiral, the members of its own fleet; a commodore, its own ships",
-            caller_name(id)
-        )),
-    }
+/// Is the caller (a member, by its labels) `target` or under it? A stop, a
+/// relaunch or a removal of it would end the caller mid-command. Temporary
+/// (0.7.3 build step 1): refused as `self.end` until the detached self-end
+/// helper runs such a step last (docs/design/cli-ux.md section 4).
+pub fn caller_inside(caller: &Caller, target: &Id) -> bool {
+    matches!(caller, Caller::Member { id, .. } if id == target || id.0.starts_with(&format!("{}/", target.0)))
 }
 
-/// May `caller` change the config at `scope` (a fleet `F`, a squadron `F/SQ`,
-/// a ship `F/SQ/SHIP`)? You, anything; an admiral, its own fleet (the fleet's
-/// settings, its squadrons and ships); a commodore, its own squadron's settings
-/// and ships. Creating or removing a fleet, machines and migration stay yours
-/// (the CLI never asks this for them).
-pub fn may_config(caller: &Caller, scope: &Id) -> Result<(), String> {
-    match caller {
-        Caller::User => Ok(()),
-        Caller::Member { id, role: Role::Admiral } if scope.fleet() == id.fleet() => Ok(()),
-        Caller::Member { id, role: Role::Commodore } if scope == id || scope.parent().as_ref() == Some(id) => Ok(()),
-        Caller::Member { id, .. } => Err(format!(
-            "{} may not change the config of {scope}: you change any; an admiral, its own fleet; a commodore, its own squadron and its ships",
-            caller_name(id)
-        )),
-    }
-}
-
-/// May `caller` run this fix itself (`nimitz <verb> ...`)? Read-only commands
-/// (`status`, `check`, `rules`, `doctor` without `--fix`) always; `signal` by
-/// the chain of command (`hook::may_signal`; with no `env` a ship may signal
-/// only its commodore and its admiral); a ship's `sweep` of itself; the rest
-/// by the authority table for the id the command names. A command that names
-/// a session by its short id, or that only you run (init, fleet new / rm,
-/// machine, migrate, doctor --fix), is not a member's.
-pub fn may_run(caller: &Caller, fix: &str) -> bool {
-    may_run_in(None, caller, fix)
-}
-
-/// `may_run` with the config at hand (a ship's `signal` to another ship goes
-/// by the squadron's comms rule).
-pub fn may_run_in(env: Option<&Env>, caller: &Caller, fix: &str) -> bool {
-    let Caller::Member { id: me, role } = caller else { return true };
-    let w: Vec<&str> = fix.split_whitespace().take_while(|x| *x != "#").collect();
-    if w.first() != Some(&"nimitz") {
+/// The temporary `self.end` refusal (`caller_inside`): not authority, the
+/// caller would end itself before its command does.
+pub fn refuse_self_end(plan: &mut Plan, caller: &Caller, target: &Id, verb: &str) -> bool {
+    if !caller_inside(caller, target) {
         return false;
     }
-    let id_at = |i: usize| -> Option<Id> {
-        let s = w.get(i)?;
-        let id = Id(s.to_string());
-        id.well_formed().then_some(id)
+    let me = match caller {
+        Caller::Member { id, .. } => id.clone(),
+        Caller::User => return false,
     };
-    let in_fleet = |t: &Id| *role == Role::Admiral && t.fleet() == me.fleet();
-    let in_squadron = |t: &Id| *role == Role::Commodore && (t == me || t.parent().as_ref() == Some(me));
-    match w.get(1).copied() {
-        Some("status") | Some("check") | Some("rules") => true,
-        Some("doctor") => !w.contains(&"--fix"),
-        Some("signal") => id_at(2).is_some_and(|t| {
-            let strict = || Comms::Mode("commodore-only".into());
-            match env {
-                Some(env) => crate::hook::may_signal(env, me, &t.name()).is_ok(),
-                None => crate::hook::signal_table(me, &t, &strict).is_ok(),
-            }
-        }),
-        // `start`: a pane (-p) is the user's; nothing relaunches itself; a fleet
-        // or no target is a whole-fleet start (an admiral's own, a commodore's ships)
-        Some("start") if matches!(role, Role::Ship) => false,
-        // `start`: a pane (-p) is the user's; nothing relaunches itself alone
-        // (`--only -f`); a wider start of yours skips you; a fleet or no
-        // target is a whole-fleet start (an admiral's own, a commodore's ships)
-        Some("start") if w.iter().any(|x| x.starts_with('-') && !x.starts_with("--") && x.contains('p')) || w.contains(&"--pane") => false,
-        Some("start") => {
-            let only = w.contains(&"--only");
-            let relaunch = w.contains(&"--relaunch") || w.iter().any(|x| x.starts_with('-') && !x.starts_with("--") && x.contains('f'));
-            match id_at(2) {
-                None => matches!(role, Role::Admiral | Role::Commodore),
-                Some(t) if t == *me => !(only && relaunch),
-                Some(t) if only => may_start(caller, &t, "start").is_ok(),
-                Some(t) if t.parts().len() == 1 => t.fleet() == me.fleet() && matches!(role, Role::Admiral | Role::Commodore),
-                Some(t) if t.parts().len() == 2 => *role == Role::Admiral && t.fleet() == me.fleet(),
-                Some(t) => may_start(caller, &t, "start").is_ok(),
-            }
-        }
-        Some("stop") | Some("relaunch") | Some("rm") => id_at(2).is_some_and(|t| may_start(caller, &t, "start").is_ok()),
-        // a ship sweeps its own stale copy rows only
-        Some("sweep") => match id_at(2) {
-            None => w.len() == 2 && matches!(role, Role::Admiral | Role::Commodore),
-            Some(t) => in_fleet(&t) || in_squadron(&t) || (matches!(role, Role::Ship) && t == *me),
-        },
-        Some("adopt") => id_at(3).is_some_and(|t| may_start(caller, &t, "adopt as").is_ok()),
-        Some("up") => id_at(2).is_some_and(|t| in_fleet(&t)),
-        Some("layout") => *role == Role::Admiral && id_at(3).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
-        // a restore brings back whole fleets: an admiral its own, a commodore
-        // its own ships (plan-v4 section 13)
-        Some("restore") => matches!(role, Role::Admiral | Role::Commodore) && id_at(2).map(|t| t.fleet() == me.fleet()).unwrap_or(true),
-        Some("ship") => id_at(3).is_some_and(|t| may_config(caller, &t).is_ok()),
-        Some("squadron") => match (w.get(2).copied(), id_at(3)) {
-            (Some("new"), Some(t)) => in_fleet(&t),
-            (Some("rm"), Some(t)) => in_fleet(&t),
-            (Some("set"), Some(t)) => may_config(caller, &t).is_ok(),
-            _ => false,
-        },
-        Some("fleet") if w.get(2) == Some(&"settings") => {
-            let verb = verbs(&w[3..]);
-            fleet_flag(&w).is_none_or(|f| f == me.fleet()) && (verb.first() == Some(&"get") || (verb.first() == Some(&"set") && *role == Role::Admiral && !verb.get(1).is_some_and(|k| *k == "kb" || k.starts_with("kb."))))
-        }
-        Some("fleet") => w.get(2) == Some(&"set") && id_at(3).is_some_and(|t| in_fleet(&t)),
-        // the harness: every member lists its own fleet's; its admiral changes and pushes it
-        Some("harness") => fleet_flag(&w).is_none_or(|f| f == me.fleet()) && (verbs(&w[2..]).first() == Some(&"list") || *role == Role::Admiral),
-        // the knowledge base: every member's (its own fleet's), but a clone (yours)
-        Some("kb") => fleet_flag(&w).is_none_or(|f| f == me.fleet()) && verbs(&w[2..]).first() != Some(&"clone"),
-        _ => false,
-    }
-}
-
-/// The flags of `fleet settings` and `kb` that take a value.
-const KB_VALUE_FLAGS: [&str; 9] = ["--fleet", "--at", "--title", "--paths", "--pages", "--note", "--from", "--name", "--for"];
-
-/// The fleet a command names with `--fleet F` or `--fleet=F` (the last one,
-/// as the command line reads it).
-fn fleet_flag<'a>(w: &[&'a str]) -> Option<&'a str> {
-    let mut out = None;
-    for (i, x) in w.iter().enumerate() {
-        if *x == "--fleet" {
-            out = w.get(i + 1).copied();
-        } else if let Some(f) = x.strip_prefix("--fleet=") {
-            out = Some(f);
-        }
-    }
-    out
-}
-
-/// The words of a command that are no flag nor a flag's value (`--fleet F`).
-fn verbs<'a>(w: &[&'a str]) -> Vec<&'a str> {
-    let mut out = vec![];
-    let mut skip = false;
-    for x in w {
-        if skip {
-            skip = false;
-        } else if x.starts_with("--") {
-            skip = !x.contains('=') && KB_VALUE_FLAGS.contains(x);
-        } else {
-            out.push(*x);
-        }
-    }
-    out
-}
-
-/// May `caller` act on one session row (`stop <short>`, `rm <short>`)? A
-/// member's row goes by that member (`may_start`); a stowaway in an admiral's
-/// own fleet is that admiral's too; anything else is yours.
-fn may_touch_row(snap: &Snapshot, caller: &Caller, owner: Option<&Id>, row: &SessionInfo, verb: &str) -> Result<(), String> {
-    if let Some(o) = owner {
-        return may_start(caller, o, verb);
-    }
-    match caller {
-        Caller::User => Ok(()),
-        Caller::Member { id, role: Role::Admiral }
-            if snap.stowaways.iter().any(|s| s.session_id == row.session_id)
-                && crate::snapshot::stowaway_fleet(snap, row).as_deref() == Some(id.fleet()) =>
-        {
-            Ok(())
-        }
-        Caller::Member { id, .. } => Err(format!(
-            "{} may not {verb} session {}: it is no member of yours (a stowaway goes to its fleet's admiral or you; the rest to you)",
-            caller_name(id),
-            row.short_id.as_deref().unwrap_or(&row.session_id)
-        )),
-    }
+    refuse(plan, "self.end", format!("{me} runs this {verb}, and {verb} {target} would end it mid-command"), Some(format!("nimitz {verb} {target}  # from a shell")), Some(me));
+    true
 }
 
 fn refuse(plan: &mut Plan, code: &str, msg: String, fix: Option<String>, id: Option<Id>) {
@@ -1017,16 +858,12 @@ fn gate(env: &Env, plan: &mut Plan, snap: &Snapshot, id: Option<&Id>, force: boo
     // nightly Claude Code update never stops a fleet (0.3.2).
 }
 
-/// The user's start of a member that never ran: a folder Claude Code will
-/// not trust is no refusal, the plan trusts it first (`trust::step`, which
-/// says what that lets run). Only the started member's own folder, only on
-/// its first launch, never one `trust::too_broad` names; a member caller,
-/// a wake and a parent's folder keep the refusal (or the warning), the fix
-/// `nimitz trust` (the user's).
-fn trust_first(env: &Env, plan: &mut Plan, snap: &Snapshot, caller: &Caller, id: &Id) {
-    if *caller != Caller::User {
-        return;
-    }
+/// The start of a member that never ran: a folder Claude Code will not
+/// trust is no refusal, the plan trusts it first (`trust::step`, which says
+/// what that lets run). Only the started member's own folder, only on its
+/// first launch, never one `trust::too_broad` names; a wake and a parent's
+/// folder keep the refusal (or the warning), the fix `nimitz trust`.
+fn trust_first(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id) {
     let Some((_, m)) = member(snap, id) else { return };
     let never_ran = m.session.is_none() && crate::registry::load(env).identities.get(&id.0).and_then(|r| r.session.clone()).is_none();
     let Some(dir) = m.cwd.clone().filter(|_| never_ran) else { return };
@@ -1061,14 +898,9 @@ pub fn plan_start(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, force: b
 pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opts: StartOpts) -> Plan {
     let force = opts.force;
     let mut plan = Plan { summary: format!("start {id} (top-down)"), ..Default::default() };
-    // Authority first (BUG-51): a caller who may not start the target gets that
-    // one refusal, and nothing else (no other refusals, warnings or fixes).
-    if let Err(why) = may_start(caller, id, "start") {
-        refuse(&mut plan, "authority", why, None, Some(id.clone()));
-        return plan;
-    }
+    let _ = caller;
     gate(env, &mut plan, snap, Some(id), force);
-    trust_first(env, &mut plan, snap, caller, id);
+    trust_first(env, &mut plan, snap, id);
     // `--fresh` starts over: not under a live job (that would make two)
     if opts.fresh && member(snap, id).map(|(_, m)| m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)).unwrap_or(false) {
         refuse(
@@ -1079,15 +911,6 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
             Some(id.clone()),
         );
         return plan;
-    }
-    // What is wrong with a member caller's own chain is yours to fix, not a
-    // reason to refuse the caller's start of its ship.
-    if let Caller::Member { id: me, .. } = caller {
-        let above = chain(me);
-        let (theirs, keep): (Vec<Issue>, Vec<Issue>) =
-            plan.refusals.drain(..).partition(|i| i.id.as_ref().map(|x| x != id && above.contains(x)).unwrap_or(false));
-        plan.refusals = keep;
-        plan.warnings.extend(theirs.into_iter().map(|i| Issue { severity: Severity::Warn, ..i }));
     }
     for link in chain(id) {
         let running_clean = member(snap, &link)
@@ -1101,31 +924,13 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
                 // the target itself: the empty plan says why (M25)
                 plan.warnings.push(issue("session.live", Severity::Info, format!("nothing to do: {id} is live"), None, Some(id.clone())));
             }
-            continue; // row 1 for a parent: nothing, and no authority needed
+            continue; // row 1 for a parent: nothing
         }
         // a parent held by a process with no job (a 0.3.x interactive admiral
         // still running) is live for the chain: its ships start; the warning
         // rides along, and only a start of the parent itself refuses
         if let Some(h) = member(snap, &link).filter(|_| link != *id).and_then(|(_, m)| held_of(m).map(|h| held_issue(m, h))) {
             plan.warnings.push(h);
-            continue;
-        }
-        // A member caller is running, and what is above it is yours to start: a
-        // commodore reviving its ship is not blocked by an admiral that is down.
-        if let Caller::Member { id: me, .. } = caller {
-            if link != *id && chain(me).contains(&link) {
-                plan.warnings.push(issue(
-                    "authority",
-                    Severity::Info,
-                    format!("{link} is not running clean; only you start it"),
-                    Some(format!("nimitz start {link}")),
-                    Some(link.clone()),
-                ));
-                continue;
-            }
-        }
-        if let Err(why) = may_start(caller, &link, "start") {
-            refuse(&mut plan, "authority", why, None, Some(link.clone()));
             continue;
         }
         if already_refused(&plan, &link) {
@@ -1156,15 +961,7 @@ fn already_refused(plan: &Plan, id: &Id) -> bool {
 /// `nimitz up <fleet>`: start every member that should run on this machine.
 pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("up {fleet}: reconcile the config with the running sessions"), ..Default::default() };
-    let ok = match caller {
-        Caller::User => true,
-        Caller::Member { id, role: Role::Admiral } => id.fleet() == fleet,
-        _ => false,
-    };
-    if !ok {
-        refuse(&mut plan, "authority", format!("`nimitz up {fleet}` is yours or {fleet}'s admiral's; a commodore starts its own ships one by one"), None, None);
-        return plan;
-    }
+    let _ = caller;
     let Some(f) = snap.fleets.iter().find(|f| f.id.fleet() == fleet) else {
         refuse(&mut plan, "member.unknown", format!("no fleet {fleet} in the config"), None, None);
         return plan;
@@ -1310,8 +1107,7 @@ fn dedup_issues(plan: &mut Plan) {
 
 pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("stop {id}"), ..Default::default() };
-    if let Err(why) = may_start(caller, id, "stop") {
-        refuse(&mut plan, "authority", why, None, Some(id.clone()));
+    if refuse_self_end(&mut plan, caller, id, "stop") {
         return plan;
     }
     let Some((_, m)) = member(snap, id) else {
@@ -1356,7 +1152,7 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
 }
 
 /// `nimitz stop <short>`: stop one live background session by its job id or
-/// session id. Yours alone. Allowed: a member's row (one of two live copies), a
+/// session id. Allowed: a member's row (one of two live copies), a
 /// stowaway, or a session anywhere that holds a fleet member's name (the
 /// `name.taken` fix, BUG-08); never an unrelated session.
 pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Plan {
@@ -1396,26 +1192,14 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
     }
     let Some((owner, row, why)) = hit else {
         let msg = format!("{target} names no fleet member's session, no stowaway and no holder of a fleet name");
-        // a member learns nothing about sessions that are not its business
-        let (code, msg) = if *caller == Caller::User { ("session.unknown", msg) } else { ("authority", format!("{msg}; anything else is the user's")) };
-        refuse(&mut plan, code, msg, Some("nimitz status".into()), None);
+        refuse(&mut plan, "session.unknown", msg, Some("nimitz status".into()), None);
         return plan;
     };
-    if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), &row, "stop") {
-        refuse(&mut plan, "authority", why, None, owner);
-        return plan;
-    }
+    let _ = caller;
     let Some(short) = row.short_id.clone().filter(|_| row.pid.is_some()) else {
         refuse(&mut plan, "session.none", format!("session {} is not a live background session", row.session_id), None, owner);
         return plan;
     };
-    // the copy's rm rides with the stop: the caller must be allowed both
-    if row.copy.is_some() {
-        if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), &row, "rm") {
-            refuse(&mut plan, "authority", why, None, owner);
-            return plan;
-        }
-    }
     plan.steps.push(Step { id: owner.clone(), cmd: crate::claude::stop(env, &short), cwd: None, why });
     // a copy goes with its stop (as `sweep` does): once stopped, a copy that
     // was never prompted has no name, no labels and no transcript, so no
@@ -1429,8 +1213,7 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
 /// A deliberate relaunch: new id, every flag, old row removed (contracts.md section 8).
 pub fn plan_relaunch(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     let mut plan = Plan { summary: format!("relaunch {id} (same session id and history; labels, name and mode restored)"), ..Default::default() };
-    if let Err(why) = may_start(caller, id, "relaunch") {
-        refuse(&mut plan, "authority", why, None, Some(id.clone()));
+    if refuse_self_end(&mut plan, caller, id, "relaunch") {
         return plan;
     }
     let Some((fleet, m)) = member(snap, id) else {
@@ -1544,11 +1327,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
     let mut plan = Plan { summary: format!("rm {target}"), ..Default::default() };
     // An identity: its stale rows (same as sweep <id>).
     if let Some((_, m)) = member(snap, &Id(target.to_string())) {
-        if let Err(why) = may_start(caller, &m.id, "rm") {
-            refuse(&mut plan, "authority", why, None, Some(m.id.clone()));
-            return plan;
-        }
-        sweep_member(env, &mut plan, m, caller);
+        sweep_member(env, &mut plan, m);
         if plan.steps.is_empty() && plan.refusals.is_empty() {
             let retire = retire_hint(&m.id);
             let own = m.session.as_ref().map(|p| format!("; its own row {} goes with the member", p.short_id.as_deref().unwrap_or(&p.session_id))).unwrap_or_default();
@@ -1584,7 +1363,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
     // and one a 0.5/0.6 aide left (`aide.retired`): the user's
     let aide = retired_aide_row(env, target);
     let Some(row) = all.iter().copied().find(|r| r.short_id.as_deref() == Some(target) || r.session_id == target).or(misplaced.as_ref()).or(retired.as_ref().map(|(_, r)| r)).or(aide.as_ref().map(|(_, r)| r)) else {
-        refuse(&mut plan, if *caller == Caller::User { "session.unknown" } else { "authority" }, format!("{target} names no identity and no job row"), None, None);
+        refuse(&mut plan, "session.unknown", format!("{target} names no identity and no job row"), None, None);
         return plan;
     };
     // whose row: a member's (its session or a copy), else the labels it carries (misplaced)
@@ -1598,10 +1377,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
             labels.get(&row.short_id.clone().unwrap_or_else(|| row.session_id.clone())).and_then(|l| l.get("NIMITZ_ID")).map(|o| Id(o.clone())).filter(|_| misplaced.as_ref().is_some_and(|m| m.session_id == row.session_id))
         })
         .or_else(|| retired.as_ref().map(|(id, _)| id.clone()));
-    if let Err(why) = may_touch_row(snap, caller, owner.as_ref(), row, "rm") {
-        refuse(&mut plan, "authority", why, None, owner);
-        return plan;
-    }
+    let _ = (caller, owner);
     if row.pid.is_some() {
         refuse(
             &mut plan,
@@ -1636,8 +1412,7 @@ pub fn plan_rm(env: &Env, snap: &Snapshot, target: &str, caller: &Caller) -> Pla
 
 /// The job row of a 0.3.x tender, by short id or session id: its labels name
 /// `F/SQ/~task`, or the registry's `retired` map has the session. The owner
-/// is the retired identity, so the authority table judges `stop` and `rm` as
-/// for a ship of that squadron.
+/// is the retired identity.
 fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
     let rows = crate::evidence::rows_from_files(env, &mut crate::evidence::FileCache::default()).unwrap_or_default();
     let labels = crate::evidence::session_labels(&crate::evidence::events(env), &rows);
@@ -1653,22 +1428,12 @@ fn retired_tender_row(env: &Env, target: &str) -> Option<(Id, SessionInfo)> {
     Some((Id(owner), r.info(labels.get(&crate::evidence::row_key(r)).cloned().unwrap_or_default())))
 }
 
-fn sweep_member(env: &Env, plan: &mut Plan, m: &Member, caller: &Caller) {
+fn sweep_member(env: &Env, plan: &mut Plan, m: &Member) {
     for r in &m.extra_rows {
         // a copy (plan-v4 section 6): a background job is stopped and removed;
-        // a process with no job is ended in its terminal, not by nimitz. A
-        // ship sweeping itself never stops a live copy (the user's own fork
-        // of its conversation may be at work): it removes stopped ones only
-        // and names the live one for the user or its commodore.
+        // a process with no job is ended in its terminal, not by nimitz
         if r.copy.is_some() {
             match &r.short_id {
-                Some(short) if r.pid.is_some() && matches!(caller, Caller::Member { role: Role::Ship, .. }) => plan.warnings.push(issue(
-                    "copy",
-                    Severity::Warn,
-                    format!("{}'s copy {short} ({}) is live; a ship does not stop it", m.id, r.name),
-                    Some(format!("nimitz sweep {}  # you, or its commodore", m.id)),
-                    Some(m.id.clone()),
-                )),
                 Some(short) => {
                     let why = format!("copy of {}: {}", m.id, copy_how(r));
                     if r.pid.is_some() {
@@ -1708,48 +1473,17 @@ fn sweep_member(env: &Env, plan: &mut Plan, m: &Member, caller: &Caller) {
 }
 
 /// Drop every stale copy row: everything, a fleet, a squadron or one identity
-/// (`id` and every member under it). Authority (contracts.md section 8): you,
-/// any scope; a commodore, its own squadron only (the stale rows of its own
-/// ships); everyone else nothing.
+/// (`id` and every member under it). A member's sweep with no id sweeps its
+/// own scope (itself and everything under it); yours, everything.
 pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) -> Plan {
-    let scope = match (id, caller) {
-        (Some(i), _) => i.0.clone(),
-        (None, Caller::Member { id: me, role: Role::Commodore | Role::Admiral }) => me.0.clone(),
-        (None, _) => "everything".into(),
+    let own = match caller {
+        Caller::Member { id: me, .. } if me.well_formed() => Some(me.clone()),
+        _ => None,
     };
+    let id = id.or(own.as_ref());
+    let scope = id.map(|i| i.0.clone()).unwrap_or_else(|| "everything".into());
     let mut plan = Plan { summary: format!("sweep {scope}"), ..Default::default() };
     let under = |m: &Id, t: &Id| m == t || m.0.starts_with(&format!("{}/", t.0));
-    let mine: Box<dyn Fn(&Id) -> bool> = match caller {
-        Caller::User => Box::new(|_| true),
-        Caller::Member { id: me, role: Role::Commodore } => {
-            let me = me.clone();
-            let target_ok = id.map(|t| t == &me || t.parent().as_ref() == Some(&me)).unwrap_or(true);
-            if !target_ok {
-                let t = id.map(|t| t.0.clone()).unwrap_or_default();
-                refuse(&mut plan, "authority", format!("{} may sweep only its own squadron, not {t}", me.name()), None, id.cloned());
-                return plan;
-            }
-            Box::new(move |m: &Id| m.parent().as_ref() == Some(&me))
-        }
-        Caller::Member { id: me, role: Role::Admiral } => {
-            let fleet = me.fleet().to_string();
-            if id.is_some_and(|t| t.fleet() != fleet) {
-                let t = id.map(|t| t.0.clone()).unwrap_or_default();
-                refuse(&mut plan, "authority", format!("{} may sweep only its own fleet, not {t}", me.name()), None, id.cloned());
-                return plan;
-            }
-            Box::new(move |m: &Id| m.fleet() == fleet)
-        }
-        // a ship: its own stale copy rows, nothing else
-        Caller::Member { id: me, role: Role::Ship } if id == Some(me) => {
-            let me = me.clone();
-            Box::new(move |m: &Id| *m == me)
-        }
-        Caller::Member { id: me, .. } => {
-            refuse(&mut plan, "authority", format!("{} may sweep only itself (nimitz sweep {}); you, its admiral or its commodore sweep the rest", me.name(), me), None, id.cloned());
-            return plan;
-        }
-    };
     if let Some(t) = id {
         if !members(snap).iter().any(|(_, m)| under(&m.id, t)) {
             refuse(&mut plan, "member.unknown", format!("{t} names no fleet member"), Some("nimitz status".into()), Some(t.clone()));
@@ -1757,8 +1491,8 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
         }
     }
     for (_, m) in members(snap) {
-        if id.map(|t| under(&m.id, t)).unwrap_or(true) && mine(&m.id) {
-            sweep_member(env, &mut plan, m, caller);
+        if id.map(|t| under(&m.id, t)).unwrap_or(true) {
+            sweep_member(env, &mut plan, m);
         }
     }
     // Stopped rows of the old fleet (Info `legacy`): offered here, never removed
@@ -1767,7 +1501,7 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
     let legacy: HashMap<String, Id> = fleets.iter().flat_map(crate::config::legacy_map).collect();
     for st in snap.stowaways.iter().filter(|s| s.pid.is_none()) {
         let (Some(owner), Some(short)) = (legacy.get(&st.name), st.short_id.as_ref()) else { continue };
-        if id.map(|t| under(owner, t)).unwrap_or(true) && mine(owner) && member(snap, owner).is_some() {
+        if id.map(|t| under(owner, t)).unwrap_or(true) && member(snap, owner).is_some() {
             plan.steps.push(Step {
                 id: Some(owner.clone()),
                 cmd: crate::claude::rm(env, short),
@@ -1785,10 +1519,7 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, id: Option<&Id>, caller: &Caller) 
 pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller: &Caller) -> Plan {
     let _ = env;
     let mut plan = Plan { summary: format!("adopt {session_id} as {id}"), ..Default::default() };
-    if let Err(why) = may_start(caller, id, "adopt as") {
-        refuse(&mut plan, "authority", why, None, Some(id.clone()));
-        return plan;
-    }
+    let _ = caller;
     let Some(row) = snap.stowaways.iter().find(|r| r.session_id == session_id || r.short_id.as_deref() == Some(session_id)) else {
         refuse(
             &mut plan,
@@ -1799,11 +1530,6 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
         );
         return plan;
     };
-    // a member adopts only what sits in its own fleet's folders
-    if *caller != Caller::User && crate::snapshot::stowaway_fleet(snap, row).as_deref() != Some(id.fleet()) {
-        refuse(&mut plan, "authority", format!("session {session_id} does not sit in fleet {}'s folders; adopting it is the user's", id.fleet()), None, Some(id.clone()));
-        return plan;
-    }
     let found = member(snap, id);
     if found.is_none() {
         refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config; add it first"), Some(format!("nimitz ship new {id} --dir <folder|managed> --prompt <text>")), Some(id.clone()));
@@ -1836,18 +1562,12 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
 /// left in the config; a live interactive member is ended in its own pane.
 pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan {
     let mut plan = Plan { summary: format!("retire {id}: stop, remove job rows, remove from the config"), ..Default::default() };
-    // a fleet goes only by you; a squadron by its admiral or you (not by its own
-    // commodore); a ship by its admiral, its commodore or you
-    let allowed = match (id.role(), caller) {
-        (_, Caller::User) => Ok(()),
-        (Role::Admiral, Caller::Member { id: me, .. }) => Err(format!("{} may not remove fleet {id}: creating and removing fleets is yours alone", caller_name(me))),
-        (Role::Commodore, Caller::Member { id: me, role: Role::Commodore }) if me == id => {
-            Err(format!("{} may not remove its own squadron; its admiral or you do", caller_name(me)))
-        }
-        _ => may_config(caller, id),
+    let verb = match id.role() {
+        Role::Admiral => "fleet rm",
+        Role::Commodore => "squadron rm",
+        Role::Ship => "ship rm",
     };
-    if let Err(why) = allowed {
-        refuse(&mut plan, "authority", why, None, None);
+    if refuse_self_end(&mut plan, caller, id, verb) {
         return plan;
     }
     let cfg = crate::config::plan_rm(env, id);
@@ -2793,10 +2513,10 @@ mod tests {
             caller_from_env(&m(&[("NIMITZ_ID", "F/SQ"), ("NIMITZ_ROLE", "commodore")])),
             Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore }
         );
-        // partial or disagreeing labels: an unverified caller with no authority, never the user
+        // partial or disagreeing labels: an unverified caller, never the user
         let unverified = Caller::Member { id: Id(UNVERIFIED.into()), role: Role::Ship };
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/S"), ("NIMITZ_ROLE", "commodore")])), unverified);
-        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/~fix"), ("NIMITZ_ROLE", "tender")])), unverified, "a 0.3.x tender has no authority");
+        assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/~fix"), ("NIMITZ_ROLE", "tender")])), unverified, "a 0.3.x tender is unverified");
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "F/SQ/S")])), unverified);
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ROLE", "ship")])), unverified);
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "not an id"), ("NIMITZ_ROLE", "admiral")])), unverified);
@@ -2804,127 +2524,37 @@ mod tests {
         assert_eq!(caller_from_env(&m(&[("NIMITZ_HOME", "/h")])), Caller::User);
         // a 0.6 aide's labels: no member's
         assert_eq!(caller_from_env(&m(&[("NIMITZ_ID", "HOME/@KB"), ("NIMITZ_ROLE", "aide")])), unverified);
-        assert!(may_start(&unverified, &Id::ship("F", "SQ", "S"), "start").unwrap_err().contains("partial or inconsistent"));
     }
 
     #[test]
-    fn authority_is_the_5_5_table() {
-        let ship = Id::ship("F", "SQ", "S");
-        let own = Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore };
-        let other = Caller::Member { id: Id::commodore("F", "ZZ"), role: Role::Commodore };
-        let admiral = Caller::Member { id: Id::admiral("F"), role: Role::Admiral };
-        assert!(may_start(&Caller::User, &ship, "start").is_ok());
-        assert!(may_start(&own, &ship, "start").is_ok());
-        assert!(may_start(&other, &ship, "start").is_err());
-        assert!(may_start(&own, &Id::commodore("F", "SQ"), "start").is_err(), "not itself");
-        assert!(may_start(&own, &Id::admiral("F"), "start").is_err(), "not its admiral");
-        // an admiral: every member of its own fleet but itself
-        assert!(may_start(&admiral, &ship, "start").is_ok());
-        assert!(may_start(&admiral, &Id::commodore("F", "ZZ"), "relaunch").is_ok());
-        assert!(may_start(&admiral, &Id::admiral("F"), "stop").is_err(), "not itself");
-        assert!(may_start(&admiral, &Id::ship("G", "SQ", "S"), "start").is_err(), "not another fleet");
-        let msg = may_start(&admiral, &Id::ship("G", "SQ", "S"), "start").unwrap_err();
-        assert!(msg.contains("an admiral, the members of its own fleet"), "{msg}");
-        // ships: nothing
-        let a_ship = Caller::Member { id: ship.clone(), role: Role::Ship };
-        assert!(may_start(&a_ship, &Id::ship("F", "SQ", "T"), "start").is_err());
-        // the KB and the settings: one's own fleet's, however the flag is written
-        assert!(may_run(&a_ship, "nimitz kb path") && !may_run(&a_ship, "nimitz kb path --fleet G") && !may_run(&a_ship, "nimitz kb path --fleet=G"));
-        assert!(!may_run(&a_ship, "nimitz kb --fleet F clone") && !may_run(&a_ship, "nimitz kb path --fleet F --fleet G"));
-        assert!(may_run(&admiral, "nimitz fleet settings set notes.x 1") && !may_run(&admiral, "nimitz fleet settings set kb.remote x"));
-        // 0.6's aide verbs are no one's
-        for cmd in ["nimitz inbox retry F/@KB 17", "nimitz ask F/@REF q", "nimitz aide new F/@KB --yes"] {
-            assert!(!may_run(&admiral, cmd) && !may_run(&a_ship, cmd), "{cmd}");
-        }
-    }
-
-    #[test]
-    fn config_authority_follows_the_same_scopes() {
-        let own = Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore };
-        let admiral = Caller::Member { id: Id::admiral("F"), role: Role::Admiral };
-        let a_ship = Caller::Member { id: Id::ship("F", "SQ", "S"), role: Role::Ship };
-        for scope in [Id::admiral("F"), Id::commodore("F", "ZZ"), Id::ship("F", "ZZ", "X")] {
-            assert!(may_config(&admiral, &scope).is_ok(), "{scope}");
-            assert!(may_config(&Caller::User, &scope).is_ok());
-        }
-        assert!(may_config(&admiral, &Id::admiral("G")).is_err(), "another fleet");
-        assert!(may_config(&own, &Id::commodore("F", "SQ")).is_ok(), "its squadron's settings");
-        assert!(may_config(&own, &Id::ship("F", "SQ", "NEW")).is_ok(), "its ships");
-        assert!(may_config(&own, &Id::ship("F", "ZZ", "X")).is_err());
-        assert!(may_config(&own, &Id::admiral("F")).is_err(), "not the fleet's settings");
-        assert!(may_config(&a_ship, &Id::ship("F", "SQ", "S")).is_err(), "a ship changes no config, not even its own");
-    }
-
-    #[test]
-    fn a_fix_is_a_members_when_the_table_lets_it_run_it() {
-        let own = Caller::Member { id: Id::commodore("F", "SQ"), role: Role::Commodore };
-        let admiral = Caller::Member { id: Id::admiral("F"), role: Role::Admiral };
-        let a_ship = Caller::Member { id: Id::ship("F", "SQ", "S"), role: Role::Ship };
-        for fix in ["nimitz start F/SQ/S", "nimitz relaunch F/SQ/S", "nimitz sweep F/SQ", "nimitz ship set F/SQ/S --mode auto", "nimitz squadron set F/SQ --comms open"] {
-            assert!(may_run(&own, fix), "commodore: {fix}");
-            assert!(may_run(&admiral, fix), "admiral: {fix}");
-        }
-        for fix in ["nimitz up F", "nimitz fleet set F --admiral-mode auto", "nimitz squadron new F/NEW", "nimitz relaunch F/SQ", "nimitz layout herdr F"] {
-            assert!(may_run(&admiral, fix), "admiral: {fix}");
-            assert!(!may_run(&own, fix), "not the commodore's: {fix}");
-        }
-        for fix in ["nimitz fleet new G", "nimitz fleet rm F", "nimitz machine add F box", "nimitz init", "nimitz stop 1a2b3c4d", "nimitz start G/SQ/S", "claude rm x"] {
-            assert!(!may_run(&admiral, fix), "the user's: {fix}");
-        }
-        assert!(may_run(&own, "nimitz start F/SQ/S  # if it holds work"), "a comment is not an argument");
-        // a ship (plan-v4 section 12): every read-only command, signal within
-        // its comms, sweep of itself; nothing that changes another member
-        for fix in ["nimitz status", "nimitz status --json", "nimitz check F/SQ/S", "nimitz check F", "nimitz rules", "nimitz rules F/SQ", "nimitz doctor", "nimitz sweep F/SQ/S"] {
-            assert!(may_run(&a_ship, fix), "a ship's: {fix}");
-        }
-        for fix in [
-            "nimitz start F/SQ/S",
-            "nimitz stop F/SQ/S",
-            "nimitz relaunch F/SQ/S",
-            "nimitz rm F/SQ/S",
-            "nimitz sweep F/SQ",
-            "nimitz sweep F/SQ/T",
-            "nimitz sweep",
-            "nimitz ship set F/SQ/S --mode auto",
-            "nimitz doctor --fix",
-            "nimitz adopt sid F/SQ/S",
-            "nimitz up F",
-            "nimitz open F/SQ/S",
-        ] {
-            assert!(!may_run(&a_ship, fix), "not a ship's: {fix}");
-        }
-        // signal: the chain of command; with no config a ship reaches only its commodore and admiral
-        assert!(may_run(&a_ship, "nimitz signal F/SQ hello") && may_run(&a_ship, "nimitz signal F hello"));
-        assert!(!may_run(&a_ship, "nimitz signal F/SQ/T hello") && !may_run(&a_ship, "nimitz signal F/ZZ hello"));
-        assert!(may_run(&own, "nimitz signal F/SQ/S go") && may_run(&own, "nimitz signal F report"));
-        assert!(!may_run(&own, "nimitz signal F/ZZ/X go"));
-        assert!(may_run(&admiral, "nimitz signal F/SQ/S go") && may_run(&admiral, "nimitz signal F/ZZ go"));
-        assert!(!may_run(&admiral, "nimitz signal G/SQ go") && !may_run(&admiral, "nimitz signal F go"), "not another fleet, not itself");
-        // and with the config: the squadron's comms rule decides ship to ship
-        let (_td, env) = crate::config::tests::test_env();
-        crate::config::tests::make_fleet(&env); // MAIN/ARGOS, comms open
-        let argos = Caller::Member { id: Id::ship("MAIN", "ARGOS", "ARGOS"), role: Role::Ship };
-        assert!(may_run_in(Some(&env), &argos, "nimitz signal MAIN/ARGOS/OTHER hi"), "open comms");
-        assert!(!may_run_in(Some(&env), &argos, "nimitz signal MAIN/ZZ/OTHER hi"), "open within the squadron only");
-        assert!(!may_run_in(Some(&env), &argos, "nimitz signal OTHER hi"), "another fleet's admiral");
-    }
-
-    #[test]
-    fn a_ship_sweeps_only_itself() {
+    fn a_members_sweep_with_no_id_is_its_own_scope_and_any_scope_runs() {
         let (_td, env) = crate::config::tests::test_env();
         crate::config::tests::make_fleet(&env);
         let snap = crate::check::tests::snap_for(&env, None);
         let me = Id::ship("MAIN", "ARGOS", "ARGOS");
         let ship = Caller::Member { id: me.clone(), role: Role::Ship };
-        let p = plan_sweep(&env, &snap, Some(&me), &ship);
-        assert!(p.ok(), "{:?}", p.refusals);
-        assert_eq!(p.summary, "sweep MAIN/ARGOS/ARGOS");
-        for target in [None, Some(Id::commodore("MAIN", "ARGOS")), Some(Id::admiral("MAIN"))] {
-            let p = plan_sweep(&env, &snap, target.as_ref(), &ship);
-            assert_eq!(p.refusals.len(), 1, "{target:?}: {:?}", p.refusals);
-            assert_eq!(p.refusals[0].code, "authority");
-            assert!(p.refusals[0].message.contains("nimitz sweep MAIN/ARGOS/ARGOS"), "{}", p.refusals[0].message);
+        assert_eq!(plan_sweep(&env, &snap, None, &ship).summary, "sweep MAIN/ARGOS/ARGOS");
+        for target in [Id::commodore("MAIN", "ARGOS"), Id::admiral("MAIN")] {
+            let p = plan_sweep(&env, &snap, Some(&target), &ship);
+            assert!(p.ok(), "{target}: {:?}", p.refusals);
         }
+        assert_eq!(plan_sweep(&env, &snap, None, &Caller::User).summary, "sweep everything");
+    }
+
+    #[test]
+    fn a_member_inside_the_target_of_a_stop_is_refused_as_self_end() {
+        let (_td, env) = crate::config::tests::test_env();
+        crate::config::tests::make_fleet(&env);
+        let snap = crate::check::tests::snap_for(&env, None);
+        let me = Caller::Member { id: Id::ship("MAIN", "ARGOS", "ARGOS"), role: Role::Ship };
+        for target in [Id::ship("MAIN", "ARGOS", "ARGOS"), Id::commodore("MAIN", "ARGOS")] {
+            assert!(caller_inside(&me, &target), "{target}");
+        }
+        assert!(!caller_inside(&me, &Id::ship("MAIN", "ARGOS", "AST")) && !caller_inside(&Caller::User, &Id::admiral("MAIN")));
+        let p = plan_stop(&env, &snap, &Id::ship("MAIN", "ARGOS", "ARGOS"), &me);
+        assert_eq!(p.refusals.iter().map(|i| i.code.as_str()).collect::<Vec<_>>(), ["self.end"]);
+        assert!(p.refusals[0].fix.as_deref().unwrap().contains("from a shell"));
+        assert_eq!(plan_retire(&env, &snap, &me, &Id::admiral("MAIN")).refusals[0].code, "self.end");
     }
 
     #[test]

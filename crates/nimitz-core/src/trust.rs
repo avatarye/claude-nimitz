@@ -23,7 +23,7 @@
 //! and MCP servers run, so a member gets an authority refusal and the fix
 //! goes to the user.
 use crate::env::Env;
-use crate::types::{Caller, Id, Issue, Severity, Step};
+use crate::types::{Id, Issue, Severity, Step};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -227,24 +227,14 @@ pub fn step(env: &Env, id: Option<Id>, dir: &Path) -> Step {
 }
 
 /// What a plan gets for a member folder `dir` that Claude Code will not
-/// trust: the user, a trust step; anyone else, an issue whose fix is the
-/// user's (`nimitz trust` is never a member's). None when it is trusted. A
-/// folder too broad to trust (`too_broad`) is a refusal for everyone.
-pub fn for_plan(env: &Env, caller: &Caller, id: Option<&Id>, dir: &Path) -> Option<Result<Step, Issue>> {
-    let severity = untrusted(env, dir)?;
+/// trust: a trust step, for every caller. None when it is trusted. A folder
+/// too broad to trust (`too_broad`) is a refusal for everyone.
+pub fn for_plan(env: &Env, id: Option<&Id>, dir: &Path) -> Option<Result<Step, Issue>> {
+    untrusted(env, dir)?;
     if let Some(why) = too_broad(env, dir) {
         return Some(Err(Issue { code: "trust.broad".into(), severity: Severity::Error, message: why, fix: None, id: id.cloned() }));
     }
-    if *caller == Caller::User {
-        return Some(Ok(step(env, id.cloned(), dir)));
-    }
-    Some(Err(Issue {
-        code: "folder.untrusted".into(),
-        severity,
-        message: format!("{} is not trusted by Claude Code; trusting it is the user's ({CONSEQUENCE})", shown(env, dir).display()),
-        fix: Some(fix(&target(env, dir))),
-        id: id.cloned(),
-    }))
+    Some(Ok(step(env, id.cloned(), dir)))
 }
 
 /// Does every config file trust every key of `dir`?
@@ -566,7 +556,7 @@ mod tests {
         for d in [Path::new("/"), home.as_path(), home.parent().unwrap()] {
             assert!(too_broad(&env, d).is_some(), "{}", d.display());
             assert!(write(&env, d).is_err(), "{}", d.display());
-            let p = for_plan(&env, &Caller::User, None, d);
+            let p = for_plan(&env, None, d);
             assert!(matches!(&p, Some(Err(i)) if i.code == "trust.broad") || p.is_none(), "{}: {p:?}", d.display());
             assert!(fix(d).starts_with("run `claude`"), "{}", fix(d));
         }
@@ -627,12 +617,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(file(&env), r#"{"projects": {}}"#).unwrap();
         let id = Id::ship("MAIN", "ARGOS", "X");
-        let s = for_plan(&env, &Caller::User, Some(&id), &dir).unwrap().unwrap();
+        let s = for_plan(&env, Some(&id), &dir).unwrap().unwrap();
         assert_eq!(s.cmd, vec!["trust".to_string(), dir.to_string_lossy().into_owned()]);
         assert!(s.why.contains("writes") && s.why.contains(".claude settings, hooks and MCP servers"), "{}", s.why);
-        let member = Caller::Member { id: Id("MAIN/ARGOS".into()), role: crate::types::Role::Commodore };
-        let i = for_plan(&env, &member, Some(&id), &dir).unwrap().unwrap_err();
-        assert_eq!(i.fix.as_deref(), Some(format!("nimitz trust {}", dir.display()).as_str()));
     }
 
     /// `forget` takes the flag out of an entry without reordering the rest

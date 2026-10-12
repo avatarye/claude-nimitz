@@ -151,9 +151,6 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.at_most(0)?;
     let label = ctx.args.value("--label").map(str::to_string).unwrap_or_else(|| crate::crud::machine_label(ctx));
     let mut plan = Plan { summary: format!("init nimitz on this machine as {label}"), ..Default::default() };
-    if ctx.caller != nimitz_core::Caller::User {
-        plan.refusals.push(refusal("authority", "`nimitz init` is yours alone".into(), None, None));
-    }
     if !nimitz_core::config::valid_label(&label) {
         plan.refusals.push(refusal("config.invalid", format!("machine label {label:?} is not [a-z0-9._-]+"), Some("nimitz init --label <label>".into()), None));
     }
@@ -223,17 +220,15 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
 // ------------------------------------------------------------------ trust
 
 /// `nimitz trust <folder>`: Claude Code's trust for the folder's git root
-/// (or the folder outside git), written as Claude Code writes it. Yours
-/// alone: it lets the folder's own .claude settings, hooks and MCP servers run.
+/// (or the folder outside git), written as Claude Code writes it: it lets
+/// the folder's own .claude settings, hooks and MCP servers run.
 pub fn trust(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     let dir = ctx.args.need(0, "folder")?;
     ctx.args.at_most(1)?;
     let p = Path::new(dir);
     let mut plan = Plan { summary: format!("trust {}", nimitz_core::trust::shown(&ctx.env, p).display()), ..Default::default() };
-    if ctx.caller != nimitz_core::Caller::User {
-        plan.refusals.push(refusal("authority", format!("`nimitz trust` is yours alone: {}", nimitz_core::trust::CONSEQUENCE), None, None));
-    } else if let Some(why) = nimitz_core::trust::too_broad(&ctx.env, p) {
+    if let Some(why) = nimitz_core::trust::too_broad(&ctx.env, p) {
         plan.refusals.push(refusal("trust.broad", why, None, None));
     } else if !p.is_dir() {
         plan.refusals.push(refusal("folder.missing", format!("{dir} is not a folder"), Some(format!("mkdir -p {}", out::quote(dir))), None));
@@ -296,19 +291,6 @@ pub fn rules(ctx: &Ctx) -> Result<i32, String> {
 pub fn doctor(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--fix"])?;
     ctx.args.at_most(0)?;
-    // The report is every member's; the fixes (the user's settings.json, the
-    // briefs) are yours alone.
-    if ctx.args.flag("--fix") && ctx.caller != nimitz_core::Caller::User {
-        let plan = Plan {
-            summary: "doctor fixes".into(),
-            refusals: vec![refusal("authority", "`nimitz doctor --fix` is yours alone; a member runs `nimitz doctor` (the report) only".into(), None, None)],
-            ..Default::default()
-        };
-        return Ok(match ctx.gate(&plan) {
-            out::Go::Exit(c) => c.max(1),
-            out::Go::Run => 1,
-        });
-    }
     Ok(doctor_report(ctx, ctx.args.flag("--fix")))
 }
 

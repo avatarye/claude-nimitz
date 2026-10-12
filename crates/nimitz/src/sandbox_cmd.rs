@@ -10,11 +10,6 @@ pub fn sandbox(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "create|tick|env")?;
     let dir = PathBuf::from(ctx.args.need(1, "sandbox folder")?);
     ctx.args.at_most(2)?;
-    // A sandbox writes a whole world under any folder: yours alone.
-    if ctx.caller != nimitz_core::Caller::User {
-        out::error("`nimitz sandbox` is yours alone (authority)");
-        return Ok(1);
-    }
     match verb {
         "create" => {
             ctx.args.allow(&["--herdr"])?;

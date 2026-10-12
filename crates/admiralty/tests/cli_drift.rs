@@ -150,7 +150,6 @@ fn form_commands_match_the_cli() {
     forms.push(f);
     let mut f = Form::new_squadron("MAIN");
     f.set("squadron", "CIRRUS");
-    f.set("comms", "allow:MAIN/ARGOS/CLEAN");
     f.set("brief", "Clouds, with 'quotes'.");
     forms.push(f);
     let mut f = Form::new_ship("MAIN", "ARGOS", "sandbox");
@@ -163,7 +162,6 @@ fn form_commands_match_the_cli() {
     f.set("mode", "plan");
     forms.push(f);
     let mut f = Form::edit_squadron(&env, &Id("MAIN/ARGOS".into())).unwrap();
-    f.set("comms", "commodore-only");
     f.set("brief", "New brief.");
     f.set("mode", "auto");
     forms.push(f);
@@ -252,7 +250,6 @@ fn each_form_command_stores_what_the_form_stores() {
         ("new squadron", |_| {
             let mut f = Form::new_squadron("MAIN");
             f.set("squadron", "CIRRUS");
-            f.set("comms", "allow:MAIN/ARGOS/CLEAN");
             f.set("brief", "Clouds, with 'quotes'.");
             f
         }),
@@ -279,7 +276,6 @@ fn each_form_command_stores_what_the_form_stores() {
         }),
         ("edit squadron", |env| {
             let mut f = Form::edit_squadron(env, &Id("MAIN/ARGOS".into())).unwrap();
-            f.set("comms", "commodore-only");
             f.set("brief", "New brief.");
             f.set("mode", "auto");
             f

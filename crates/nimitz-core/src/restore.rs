@@ -531,9 +531,8 @@ fn interrupted_note(active: Option<&crate::active::ActiveMember>, id: &Id) -> Op
     }
 }
 
-/// Plan the restore of `fleet` (None: every fleet that runs here). You restore
-/// any fleet; an admiral its own; a commodore its own ships (`may_start`).
-/// `herdr`: the Herdr identity of this process (compared with the recorded
+/// Plan the restore of `fleet` (None: every fleet that runs here), for any
+/// caller. `herdr`: the Herdr identity of this process (compared with the recorded
 /// one, R-29); `has_mux`: a multiplexer is there.
 ///
 /// One command after any of three events, told apart per member: Claude
@@ -548,28 +547,15 @@ fn interrupted_note(active: Option<&crate::active::ActiveMember>, id: &Id) -> Op
 pub fn plan(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, fleet: Option<&str>, opts: RestoreOpts, caller: &Caller) -> RestorePlan {
     let verb = if opts.shape_only { "layout herdr" } else { "restore" };
     let rp = RestorePlan { plan: Plan { summary: format!("{verb} {}", fleet.unwrap_or("(every fleet here)")), ..Default::default() }, ..Default::default() };
-    let (fleet, scope) = match (caller, fleet) {
-        (Caller::User, f) => (f, None),
-        (Caller::Member { id, role: Role::Admiral }, None) => (Some(id.fleet()), None),
-        (Caller::Member { id, role: Role::Admiral }, Some(f)) if f == id.fleet() => (Some(f), None),
-        // a commodore brings back its own ships (it starts and relaunches them)
-        (Caller::Member { id, role: Role::Commodore }, f) if !opts.shape_only && f.is_none_or(|f| f == id.fleet()) => (Some(id.fleet()), Some(id.clone())),
-        (Caller::Member { id, .. }, _) => {
-            let mut rp = rp;
-            rp.plan.refusals.push(issue("authority", Severity::Error, format!("`nimitz {verb}` brings back whole fleets: yours, an admiral's own fleet, or a commodore's own ships; not {}'s", id.name()), None, None));
-            return rp;
-        }
-    };
-    plan_inner(env, snap, shape, active, herdr, has_mux, fleet, scope, None, None, verb, opts, caller, rp)
+    plan_inner(env, snap, shape, active, herdr, has_mux, fleet, None, None, None, verb, opts, caller, rp)
 }
 
 /// `nimitz start [<target>]`: the restore engine over the target (a fleet
 /// `F`, a squadron `F/SQ`: its commodore and ships, a ship, or every fleet
 /// here), and the target's own member named: it may get a first launch
 /// (`plan_start_with`, top-down; a fleet- or squadron-wide start never
-/// cold-launches the rest), `--fresh`, `-p`. You start anything; an admiral
-/// inside its fleet; a commodore its own ships; a ship nothing; `-p` is
-/// yours alone (a pane in your terminal); nothing restarts itself.
+/// cold-launches the rest), `--fresh`, `-p`. Any caller starts anything;
+/// nothing restarts itself.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::active::ActiveSet>, herdr: Option<&crate::active::HerdrIdentity>, has_mux: bool, target: Option<&Id>, opts: RestoreOpts, caller: &Caller) -> RestorePlan {
     let verb = "start";
@@ -578,9 +564,6 @@ pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&cra
         rp.plan.refusals.push(issue(code, Severity::Error, msg, fix, target.cloned()));
         rp
     };
-    if opts.pane && *caller != Caller::User {
-        return refuse(rp, "authority", "`nimitz start -p` opens a pane in your terminal: yours alone".into(), None);
-    }
     if opts.pane && target.is_none() {
         return refuse(rp, "usage", "`-p` gives one member a pane: name it (`nimitz start <id> -p`)".into(), None);
     }
@@ -601,20 +584,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&cra
             return refuse(rp, "member.unknown", format!("{t} is not in any fleet config"), None);
         }
     }
-    // (fleet, commodore scope, named)
-    let (fleet, scope, named): (Option<&str>, Option<Id>, Option<Id>) = match (caller, target) {
-        (Caller::User, t) => (t.map(|t| t.fleet()), None, t.cloned()),
-        (Caller::Member { id, role: Role::Admiral }, None) => (Some(id.fleet()), None, None),
-        (Caller::Member { id, role: Role::Admiral }, Some(t)) if t.fleet() == id.fleet() => (Some(t.fleet()), None, Some(t.clone())),
-        // a commodore: its ships; its squadron or its fleet means the same
-        (Caller::Member { id, role: Role::Commodore }, None) => (Some(id.fleet()), Some(id.clone()), None),
-        (Caller::Member { id, role: Role::Commodore }, Some(t)) if t == id && opts.only => (Some(id.fleet()), None, Some(t.clone())),
-        (Caller::Member { id, role: Role::Commodore }, Some(t)) if (t == id || t.0 == id.fleet()) && !opts.only => (Some(id.fleet()), Some(id.clone()), None),
-        (Caller::Member { id, role: Role::Commodore }, Some(t)) if t.parent().as_ref() == Some(id) => (Some(t.fleet()), None, Some(t.clone())),
-        (Caller::Member { id, .. }, _) => {
-            return refuse(rp, "authority", format!("{} may not start {}: you start anything; an admiral, its own fleet; a commodore, its own ships", id.name(), target.map(|t| t.0.as_str()).unwrap_or("every fleet")), None);
-        }
-    };
+    let (fleet, scope, named): (Option<&str>, Option<Id>, Option<Id>) = (target.map(|t| t.fleet()), None, target.cloned());
     // nothing relaunches itself: a start of the caller alone; a wider one skips it
     if let (Some(n), Caller::Member { id, .. }) = (&named, caller) {
         if n == id && opts.restart && (opts.only || id.parts().len() == 3) {
@@ -622,7 +592,7 @@ pub fn plan_start(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&cra
         }
     }
     if opts.fresh && named.is_none() {
-        return refuse(rp, "usage", "`--fresh` starts one member's new conversation: name a member you may start".into(), None);
+        return refuse(rp, "usage", "`--fresh` starts one member's new conversation: name it".into(), None);
     }
     if let Some(sq) = &scope {
         rp.plan.summary = format!("{verb} {sq} (its ships)");

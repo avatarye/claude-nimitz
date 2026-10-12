@@ -471,7 +471,6 @@ mod tests {
                     snap_member(&s1, Status::Parked, &["job row j1 with no live pid (state working)", "parked: no SessionEnd (retired, crashed or stopped with the machine); a start wakes it"], "j1", "x1", false),
                     snap_member(&s2, Status::Parked, &["job row j2 with no live pid (state done)", "parked: the daemon retired it (bg retire j2: settled, idle 61m); a start wakes it"], "j2", "x2", false),
                 ],
-                comms: Comms::default(),
                 issues: vec![],
             }],
             issues: vec![],

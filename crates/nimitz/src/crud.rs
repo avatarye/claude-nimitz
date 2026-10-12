@@ -6,41 +6,14 @@ use crate::members::parse_id;
 use crate::run::refusal;
 use crate::{out, Ctx};
 use nimitz_core::config;
-use nimitz_core::{Caller, Comms, FleetOnDisk, Id, Plan, Role, ShipDef};
+use nimitz_core::{FleetOnDisk, Id, Plan, Role, ShipDef};
 use std::path::{Path, PathBuf};
 
-/// Who may make this config change. `None`: you alone (a fleet created or
-/// removed, machines, migration). `Some(scope)`: you, the scope's admiral, or
-/// (for a squadron's settings and its ships) its commodore (`may_config`).
-fn authority(ctx: &Ctx, plan: &mut Plan, scope: Option<&Id>) {
-    let why = match (scope, &ctx.caller) {
-        (_, Caller::User) => return,
-        (None, _) => "this change is yours alone (fleets created or removed, machines, migration); ask the user".to_string(),
-        (Some(scope), caller) => match nimitz_core::sessions::may_config(caller, scope) {
-            Ok(()) => return,
-            Err(why) => why,
-        },
-    };
-    // the refusal alone: no other refusals or fixes for a change the caller may not make
-    *plan = Plan { summary: plan.summary.clone(), refusals: vec![refusal("authority", why, None, scope.cloned())], ..Default::default() };
-}
-
 /// Gate, then apply a config plan.
-pub(crate) fn config_plan(ctx: &Ctx, mut plan: Plan, scope: Option<&Id>) -> i32 {
-    authority(ctx, &mut plan, scope);
+pub(crate) fn config_plan(ctx: &Ctx, plan: Plan) -> i32 {
     match ctx.gate(&plan) {
         out::Go::Exit(c) => c,
         out::Go::Run => out::outcome(&plan, &config::apply_config_plan(&ctx.env, &plan)),
-    }
-}
-
-fn parse_comms(s: &str) -> Result<Comms, String> {
-    match s {
-        "open" | "commodore-only" => Ok(Comms::Mode(s.into())),
-        _ => match s.strip_prefix("allow:") {
-            Some(list) => Ok(Comms::Allow { allow: list.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect() }),
-            None => Err(format!("--comms {s:?}: use open, commodore-only or allow:F/SQ/SHIP,...")),
-        },
     }
 }
 
@@ -81,7 +54,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
         "new" => {
             ctx.args.allow(&["--machine"])?;
             let label = ctx.args.value("--machine").map(str::to_string).unwrap_or_else(|| machine_label(ctx));
-            return Ok(config_plan(ctx, config::plan_fleet_new(&ctx.env, fleet, &label), None));
+            return Ok(config_plan(ctx, config::plan_fleet_new(&ctx.env, fleet, &label)));
         }
         "set" => {
             ctx.args.allow(&["--admiral-mode"])?;
@@ -93,7 +66,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
         }
         v => return Err(format!("fleet {v}: use new, set, rm or settings")),
     };
-    Ok(config_plan(ctx, plan, Some(&id)))
+    Ok(config_plan(ctx, plan))
 }
 
 // ------------------------------------------------------------------ squadron
@@ -106,14 +79,12 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
     let (fleet, sq) = (parts[0], parts[1]);
     let plan = match verb {
         "new" => {
-            ctx.args.allow(&["--brief", "--comms", "--mode"])?;
-            let comms = ctx.args.value("--comms").map(parse_comms).transpose()?.unwrap_or_default();
-            config::plan_squadron_new(&ctx.env, fleet, sq, ctx.args.value("--brief").unwrap_or(""), comms, ctx.args.value("--mode"))
+            ctx.args.allow(&["--brief", "--mode"])?;
+            config::plan_squadron_new(&ctx.env, fleet, sq, ctx.args.value("--brief").unwrap_or(""), ctx.args.value("--mode"))
         }
         "set" => {
-            ctx.args.allow(&["--brief", "--comms", "--mode"])?;
-            let comms = ctx.args.value("--comms").map(parse_comms).transpose()?;
-            config::plan_squadron_set(&ctx.env, &id, ctx.args.value("--brief"), comms, ctx.args.value("--mode"))
+            ctx.args.allow(&["--brief", "--mode"])?;
+            config::plan_squadron_set(&ctx.env, &id, ctx.args.value("--brief"), ctx.args.value("--mode"))
         }
         "rm" => {
             ctx.args.allow(&[])?;
@@ -121,9 +92,7 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
         }
         v => return Err(format!("squadron {v}: use new, set or rm")),
     };
-    // a new squadron is its admiral's (or yours); a squadron's settings its commodore's too
-    let scope = if verb == "new" { Id::admiral(fleet) } else { id.clone() };
-    Ok(config_plan(ctx, plan, Some(&scope)))
+    Ok(config_plan(ctx, plan))
 }
 
 // ------------------------------------------------------------------ ship
@@ -244,13 +213,9 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
         return Ok(retire(ctx, &id));
     }
     ctx.args.allow(SHIP_FLAGS)?;
-    // refuse before anything opens an editor
-    if nimitz_core::sessions::may_config(&ctx.caller, &id).is_err() {
-        return Ok(config_plan(ctx, Plan { summary: format!("ship {verb} {id}"), ..Default::default() }, Some(&id)));
-    }
     let f = match load(ctx, fleet) {
         Ok(f) => f,
-        Err(p) => return Ok(config_plan(ctx, p, Some(&id))),
+        Err(p) => return Ok(config_plan(ctx, p)),
     };
     let label = match ctx.args.value("--machine").map(str::to_string).or(f.machine.clone()) {
         Some(l) => l,
@@ -308,12 +273,11 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
         }
         v => return Err(format!("ship {v}: use new, set or rm")),
     };
-    Ok(config_plan(ctx, plan, Some(&id)))
+    Ok(config_plan(ctx, plan))
 }
 
-/// A ship folder Claude Code will not trust: the user's plan trusts it
-/// (after the config is written); anyone else's says so, the fix the user's.
-/// A managed folder is under the data root (`nimitz init` trusts that).
+/// A ship folder Claude Code will not trust: the plan trusts it (after the
+/// config is written). A managed folder is under the data root (`nimitz init` trusts that).
 fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, label: Option<&str>, dir: Option<&str>) {
     let Some(dir) = dir.filter(|d| *d != "managed") else { return };
     if !plan.ok() {
@@ -324,7 +288,7 @@ fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, label: Option<&str>, dir: Opt
     if label != here.as_deref() {
         return;
     }
-    match nimitz_core::trust::for_plan(&ctx.env, &ctx.caller, Some(id), &config::expand_dir(dir)) {
+    match nimitz_core::trust::for_plan(&ctx.env, Some(id), &config::expand_dir(dir)) {
         Some(Ok(step)) => plan.steps.push(step),
         Some(Err(issue)) => plan.warnings.push(issue),
         None => {}
@@ -365,7 +329,7 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
         }
         v => return Err(format!("machine {v}: use add or rm")),
     };
-    Ok(config_plan(ctx, plan, None))
+    Ok(config_plan(ctx, plan))
 }
 
 // ------------------------------------------------------------------ migrate
@@ -376,19 +340,8 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
 /// (docs/design/migrations.md section 4); `--yes` runs the local ones, and
 /// with `--shared` the shared ones (they affect every machine that reads the
 /// data root). `nimitz migrate fleet-skill <dir...> --into <F>`: the import
-/// of old fleet-skill fleets. Both are yours alone, like `init`.
+/// of old fleet-skill fleets.
 pub fn migrate(ctx: &Ctx) -> Result<i32, String> {
-    if ctx.caller != Caller::User {
-        let plan = Plan {
-            summary: "migrate".into(),
-            refusals: vec![refusal("authority", "`nimitz migrate` is yours alone (it rewrites this machine's files, and with --shared the data root of every machine); ask the user".into(), None, None)],
-            ..Default::default()
-        };
-        return Ok(match ctx.gate(&plan) {
-            out::Go::Exit(c) => c.max(1),
-            out::Go::Run => 1,
-        });
-    }
     match ctx.args.pos.first().map(String::as_str) {
         Some("fleet-skill") => fleet_skill(ctx),
         Some(other) => Err(format!("migrate {other}: use `migrate --plan|--yes [--shared]` or `migrate fleet-skill <dir...> --into <F>`")),
@@ -504,7 +457,7 @@ fn fleet_skill(ctx: &Ctx) -> Result<i32, String> {
         Some("mkdir") => !Path::new(&s.cmd[1]).is_dir(),
         _ => true,
     });
-    Ok(config_plan(ctx, plan, None))
+    Ok(config_plan(ctx, plan))
 }
 
 #[cfg(test)]
@@ -527,12 +480,5 @@ mod tests {
         assert_eq!(absolute_dir("managed"), "managed");
         assert_eq!(absolute_dir("/x/y"), "/x/y");
         assert_eq!(absolute_dir("~/p"), "~/p");
-    }
-
-    #[test]
-    fn comms_forms() {
-        assert_eq!(parse_comms("open").unwrap(), Comms::Mode("open".into()));
-        assert_eq!(parse_comms("allow:MAIN/A/B,MAIN/C/D").unwrap(), Comms::Allow { allow: vec!["MAIN/A/B".into(), "MAIN/C/D".into()] });
-        assert!(parse_comms("closed").is_err());
     }
 }

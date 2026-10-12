@@ -63,23 +63,6 @@ pub fn refusal(code: &str, message: String, fix: Option<String>, id: Option<Id>)
     Issue { code: code.into(), severity: Severity::Error, message, fix, id }
 }
 
-/// A member caller sees only fixes it may run itself (`sessions::may_run_in`,
-/// the authority table); any other fix becomes "ask the user to run: ..."
-/// (BUG-51). The user sees every fix as is.
-pub fn fixes_for(env: &nimitz_core::env::Env, caller: &nimitz_core::Caller, plan: &mut Plan) {
-    if *caller == nimitz_core::Caller::User {
-        return;
-    }
-    for i in plan.refusals.iter_mut().chain(plan.warnings.iter_mut()) {
-        if let Some(f) = i.fix.take() {
-            // `restore.self`: the restore that relaunches the caller is the
-            // user's, from a shell, whatever the caller may run itself
-            let mine = !matches!(i.code.as_str(), "restore.self" | "start.self") && nimitz_core::sessions::may_run_in(Some(env), caller, &f);
-            i.fix = Some(if mine { f } else { format!("ask the user to run: {f}") });
-        }
-    }
-}
-
 /// Gate, then run. Returns the exit code.
 pub fn session_plan(ctx: &Ctx, plan: Plan) -> i32 {
     match ctx.gate(&plan) {

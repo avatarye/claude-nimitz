@@ -1,12 +1,12 @@
 //! `nimitz harness list|add|rm|push`: a fleet's harness (`nimitz_core::harness`,
-//! docs/design/harness.md). Every member lists its own fleet's; the fleet's
-//! admiral and the user change it (planned) and push it.
+//! docs/design/harness.md). Any caller lists, changes (planned) and pushes
+//! it; a member's default fleet is its own.
 use crate::kb_cmd::fleet_of;
 use crate::out;
 use crate::run::refusal;
 use crate::Ctx;
 use nimitz_core::harness::{self, Kind};
-use nimitz_core::{Caller, Id, Plan, Role, Step};
+use nimitz_core::{Id, Plan, Step};
 use std::path::Path;
 
 pub fn harness(ctx: &Ctx) -> Result<i32, String> {
@@ -17,13 +17,6 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
     };
     nimitz_core::config::load_fleet(&ctx.env, &fleet).map_err(|i| i.message)?;
     let fid = Id::admiral(&fleet);
-    // a change is the admiral's or yours: said before anything is read
-    if let Caller::Member { id, role } = &ctx.caller {
-        if verb != "list" && *role != Role::Admiral {
-            out::issue(&refusal("authority", format!("`nimitz harness {verb}` is the fleet's admiral's or the user's, not {}'s", id.name()), None, Some(fid)));
-            return Ok(1);
-        }
-    }
     match verb.as_str() {
         "list" => {
             ctx.args.allow(&["--fleet"])?;
@@ -36,18 +29,6 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
             ctx.args.at_most(3)?;
             let kind = Kind::parse(ctx.args.need(1, "rule|agent|skill|settings")?).ok_or("harness add: rule, agent, skill or settings")?;
             let src = Path::new(ctx.args.need(2, "the file (a skill: its folder)")?);
-            // an admiral takes from its own folder only: never a file of the
-            // user's it can read (it would sync to every machine and reach every
-            // member's context)
-            if let Caller::Member { id, .. } = &ctx.caller {
-                let own = nimitz_core::config::load_fleet(&ctx.env, &fleet).ok().and_then(|f| nimitz_core::config::member_dir(&ctx.env, &f, id));
-                // (a source that is not there is said by the add itself)
-                let outside = nimitz_core::os::canonical(src).is_ok_and(|s| !own.and_then(|o| nimitz_core::os::canonical(&o).ok()).is_some_and(|o| s.starts_with(&o)));
-                if outside {
-                    out::issue(&refusal("authority", format!("{} adds to the harness only from its own folder; {} is not in it", id.name(), src.display()), None, Some(fid)));
-                    return Ok(1);
-                }
-            }
             let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let name = ctx.args.value("--name").map(str::to_string).unwrap_or(stem);
             let scope = ctx.args.value("--for").map(|s| Id(s.to_string()));
@@ -88,7 +69,7 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
                 let why = format!("{} ({} bytes from {}): {}", rel.display(), text.len(), src.display(), live_when(kind));
                 plan.steps.push(Step { id: Some(fid.clone()), cmd: vec!["write".into(), p.to_string_lossy().into_owned(), text], cwd: None, why });
             }
-            Ok(crate::crud::config_plan(ctx, plan, Some(&fid)))
+            Ok(crate::crud::config_plan(ctx, plan))
         }
         "rm" => {
             ctx.args.allow(&["--fleet", "--for", "--member"])?;
@@ -124,7 +105,7 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
             } else {
                 plan.steps.push(Step { id: Some(fid.clone()), cmd: vec!["archive".into(), p.to_string_lossy().into_owned()], cwd: None, why: format!("{} out of the fleet's harness (kept as .archived): {}", rel.display(), live_when(kind)) });
             }
-            Ok(crate::crud::config_plan(ctx, plan, Some(&fid)))
+            Ok(crate::crud::config_plan(ctx, plan))
         }
         "push" => {
             ctx.args.allow(&["--fleet"])?;

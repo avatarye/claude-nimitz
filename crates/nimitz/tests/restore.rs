@@ -852,9 +852,9 @@ fn r09_claude_code_updated_relaunches_older_workers_ships_first_then_leads_and_r
 
 /// After an update: a member mid-turn is left running (a relaunch would cut
 /// it off), the member that runs the restore is never relaunched by it (a
-/// lead says who runs what), and a commodore restores its own ships only.
+/// lead says who runs what).
 #[test]
-fn r09b_an_update_never_cuts_a_turn_never_relaunches_the_caller_and_a_commodore_restores_its_ships() {
+fn r09b_an_update_never_cuts_a_turn_and_never_relaunches_the_caller() {
     let sb = Sb::new(true);
     lay(&sb);
     stop_mislabel(&sb);
@@ -870,31 +870,23 @@ fn r09b_an_update_never_cuts_a_turn_never_relaunches_the_caller_and_a_commodore_
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(lines_with(&r.out, "MAIN ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz start MAIN")), "{}", r.out);
     assert!(r.out.contains("(restore.self)") && r.out.contains("MAIN is a lead: you run it again from your own shell"), "{}", r.out);
-    assert!(r.out.contains("fix: ask the user to run: nimitz start MAIN --only -f  # yours, from a shell"), "{}", r.out);
+    assert!(r.out.contains("fix: nimitz start MAIN --only -f  # yours, from a shell"), "{}", r.out);
     assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("-> relaunch")), "{}", r.out);
     let adm = sb.short("MAIN");
     let r = sb.run_as("MAIN", &["restore", "MAIN", "--yes"]);
     assert_eq!(sb.short("MAIN"), adm, "the caller's own job is untouched:\n{}", r.out);
     assert!(relaunched(&r.out).iter().all(|id| id != "MAIN"), "{}", r.out);
-    // a commodore: its own ships, nobody else (its lead and the other squadron are not its)
+    // a commodore's restore is anyone's: the whole fleet, but never itself
     let sb = Sb::new(true);
     lay(&sb);
     stop_mislabel(&sb);
     sb.attach_all();
     idle_all(&sb);
     update_claude(&sb, "2.1.289");
-    let r = sb.run_as("MAIN/ARGOS", &["restore", "--plan"]);
+    let r = sb.run_as("MAIN/ARGOS", &["restore", "MAIN", "--plan"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    let ids: Vec<&str> = r.out.lines().filter(|l| l.starts_with("    MAIN")).filter_map(|l| l.split_whitespace().next()).collect();
-    assert!(!ids.is_empty() && ids.iter().all(|id| id.starts_with("MAIN/ARGOS/") || *id == "MAIN/ARGOS"), "{ids:?}\n{}", r.out);
-    // its own worker is older too: its line, and the restore the user runs afterwards
     assert!(lines_with(&r.out, "MAIN/ARGOS ").iter().any(|l| l.contains("it runs this restore -> not relaunched while it runs; afterwards you run: nimitz start MAIN")), "{}", r.out);
-    assert!(sb.run_as("MAIN/ARGOS", &["restore", "BETA", "--plan"]).out.contains("(authority)"));
-    assert!(sb.run_as("MAIN/ARGOS/CLEAN", &["restore", "--plan"]).out.contains("(authority)"));
-    let r = sb.run_as("MAIN/ARGOS", &["restore", "--yes"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    let order = relaunched(&r.out);
-    assert!(!order.is_empty() && order.iter().all(|id| id.starts_with("MAIN/ARGOS/")), "{}", r.out);
+    assert!(lines_with(&r.out, "MAIN/BOREAL ").iter().any(|l| l.contains("-> relaunch")), "{}", r.out);
 }
 
 /// `--restart`: every live member relaunched whatever its version, in the
@@ -918,7 +910,7 @@ fn r_restart_relaunches_every_live_member_whatever_its_version() {
     assert_eq!(order.last().map(String::as_str), Some("MAIN"), "the admiral last: {order:?}");
     // run by the admiral: its own relaunch is left to the user, with no second round for the rest
     let own = sb.run_as("MAIN", &["restore", "MAIN", "--restart", "--plan"]);
-    assert!(own.out.contains("fix: ask the user to run: nimitz start MAIN --only -f  #"), "{}", own.out);
+    assert!(own.out.contains("fix: nimitz start MAIN --only -f  #"), "{}", own.out);
     for (id, sid, _) in &before {
         assert_eq!(&sb.sid(id), sid, "{id}");
     }
@@ -1554,12 +1546,12 @@ fn r_layout_is_the_shape_only_alias() {
     let r = sb.ok(&["layout", "herdr", "MAIN", "--yes"]);
     assert!(r.contains("(layout.skip)") && r.contains("no tab to wake it from") && !r.contains("--bg --resume"), "{r}");
     assert!(!sb.live("MAIN/ARGOS"));
-    // an admiral may lay out (restore) its own fleet, a commodore restore its own ships, nobody else
-    assert_eq!(sb.run_as("MAIN", &["restore", "MAIN", "--plan"]).code, 0);
-    assert_eq!(sb.run_as("MAIN/ARGOS", &["restore", "MAIN", "--plan"]).code, 0);
-    assert!(sb.run_as("MAIN/ARGOS", &["layout", "herdr", "MAIN", "--plan"]).out.contains("(authority)"));
-    assert!(sb.run_as("MAIN/ARGOS/CLEAN", &["restore", "MAIN", "--plan"]).out.contains("(authority)"));
-    assert!(sb.run_as("BETA", &["restore", "MAIN", "--plan"]).out.contains("(authority)"));
+    // anyone lays out and restores any fleet
+    for who in ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN", "BETA"] {
+        for verb in [&["restore", "MAIN", "--plan"][..], &["layout", "herdr", "MAIN", "--plan"][..]] {
+            assert!(!sb.run_as(who, verb).out.contains("(authority)"), "{who} {verb:?}");
+        }
+    }
 }
 
 #[test]
@@ -1909,7 +1901,7 @@ fn s05_f_relaunches_a_ship_with_a_pane_and_reattaches_that_pane() {
 }
 
 #[test]
-fn s06_nothing_relaunches_itself_busy_is_skipped_and_p_is_yours() {
+fn s06_nothing_relaunches_itself_and_busy_is_skipped() {
     let sb = Sb::new(true);
     lay(&sb);
     stop_mislabel(&sb);
@@ -1933,12 +1925,10 @@ fn s06_nothing_relaunches_itself_busy_is_skipped_and_p_is_yours() {
     assert!(r.out.lines().any(|l| l.trim_start().starts_with("ADMIRAL") && l.contains("skip") && l.contains("runs this start")), "{}", r.out);
     assert!(r.out.lines().any(|l| l.trim_start().starts_with("CLEAN") && l.contains("skip") && l.contains("mid-turn")), "{}", r.out);
     assert!(r.out.contains("(start.self)") && r.out.contains("(relaunch.busy)"), "{}", r.out);
-    // -p opens a pane in your terminal: yours alone
-    assert!(sb.run_as("MAIN", &["start", "MAIN/ARGOS/CLEAN", "-p", "--plan"]).out.contains("(authority)"));
-    // a commodore starts its own ships, not another squadron's, never a ship
-    assert_eq!(sb.run_as("MAIN/ARGOS", &["start", "MAIN/ARGOS/TWIN", "--plan"]).code, 0);
-    assert!(sb.run_as("MAIN/ARGOS", &["start", "MAIN/BOREAL", "--plan"]).out.contains("(authority)"));
-    assert!(sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/NOLABEL", "--plan"]).out.contains("(authority)"));
+    // anyone starts anything, `-p` too
+    for (who, args) in [("MAIN", &["start", "MAIN/ARGOS/CLEAN", "-p", "--plan"][..]), ("MAIN/ARGOS", &["start", "MAIN/BOREAL", "--plan"][..]), ("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/NOLABEL", "--plan"][..])] {
+        assert!(!sb.run_as(who, args).out.contains("(authority)"), "{who} {args:?}");
+    }
 }
 
 #[test]
@@ -2155,12 +2145,12 @@ fn s14_p_tab_for_an_admiral_a_taken_tab_and_under_f() {
 }
 
 #[test]
-fn s12_tab_goes_with_p_and_is_yours() {
+fn s12_tab_goes_with_p() {
     let sb = Sb::new(true);
     lay(&sb);
     let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--tab", "--plan"]);
     assert_eq!(r.code, 2, "{}", r.out);
     assert!(r.out.contains("--tab goes with -p"), "{}", r.out);
     let r = sb.run_as("MAIN", &["start", "MAIN/ARGOS/CLEAN", "-p", "--tab", "--plan"]);
-    assert!(r.code != 0 && r.out.contains("(authority)"), "{}", r.out);
+    assert!(r.code == 0 && !r.out.contains("(authority)"), "{}", r.out);
 }

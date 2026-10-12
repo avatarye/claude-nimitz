@@ -102,7 +102,7 @@ fn a_new_squadron_form_writes_the_config_through_core() {
     keys(&mut app, "CIRRUS");
     let Some(Modal::Form(f)) = &app.modal else { panic!() };
     assert!(f.ok(), "{:?} {:?}", f.problems, f.fields.iter().map(|x| &x.error).collect::<Vec<_>>());
-    assert_eq!(f.command, "nimitz squadron new MAIN/CIRRUS --comms open");
+    assert_eq!(f.command, "nimitz squadron new MAIN/CIRRUS");
     ctrl(&mut app, 's');
     let Some(Modal::Confirm(p)) = app.modal.take() else { panic!() };
     app.begin(&p).unwrap();
@@ -172,26 +172,18 @@ fn edit_squadron_and_fleet_forms_plan_through_core() {
     goto(&mut app, "SQ:MAIN/ARGOS");
     keys(&mut app, "e");
     let Some(Modal::Form(f)) = &app.modal else { panic!("{}", toast(&app)) };
-    assert_eq!(f.get("comms"), "open");
     assert!(f.ok(), "{:?}", f.problems);
-    // a bad comms rule is caught in the field
-    ctrl(&mut app, 'u');
-    keys(&mut app, "everyone");
-    let Some(Modal::Form(f)) = &app.modal else { panic!() };
-    assert!(f.fields.iter().find(|x| x.key == "comms").unwrap().error.is_some());
-    ctrl(&mut app, 'u');
-    keys(&mut app, "allow:MAIN/ARGOS/CLEAN");
+    // the first field is the brief: a new one goes to the squadron's brief file
+    keys(&mut app, "New orders");
     let Some(Modal::Form(f)) = &app.modal else { panic!() };
     assert!(f.ok(), "{:?}", f.problems);
-    assert_eq!(f.command, "nimitz squadron set MAIN/ARGOS --comms allow:MAIN/ARGOS/CLEAN");
-    assert!(f.plan.steps.iter().any(|s| s.cmd[1].ends_with("squadron.toml")));
+    assert!(f.command.starts_with("nimitz squadron set MAIN/ARGOS --brief"), "{}", f.command);
+    assert!(f.plan.steps.iter().any(|s| s.cmd[1].ends_with("SQUADRON.md")), "{:?}", f.plan.steps);
     ctrl(&mut app, 's');
     let Some(Modal::Confirm(p)) = app.modal.take() else { panic!() };
     let o = actions::apply(&app.ctx.env, &p);
     assert!(o.issues.is_empty(), "{:?}", o.issues);
     reload(&w, &mut app);
-    let sq = app.bundle.as_ref().unwrap().snap.fleets.iter().flat_map(|f| f.squadrons.iter()).find(|s| s.id.0 == "MAIN/ARGOS").unwrap().clone();
-    assert_eq!(sq.comms, nimitz_core::Comms::Allow { allow: vec!["MAIN/ARGOS/CLEAN".into()] });
 
     let mut f = Form::edit_fleet(&app.ctx.env, "MAIN").unwrap();
     f.set("mode", "auto");
@@ -509,16 +501,17 @@ fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
     let base = std::path::PathBuf::from(&w.vars["NIMITZ_HOME"]);
     let t = base.join("main").join("squadrons").join("argos").join("squadron.toml");
     let s = std::fs::read_to_string(&t).unwrap();
+    let at = format!("{}:13", s.lines().count() + 2);
     std::fs::write(&t, s + "\nname = \"oops\n").unwrap();
     let mut app = app_on(&w, TestMux::default());
     tab(&mut app, "MAIN");
     let buf = draw(&mut app, 200, 60);
     let ls = lines(&buf);
     assert!(ls[0].contains("MAIN") && ls.iter().any(|l| l.contains("ADMIRAL ")), "the fleet stays on screen");
-    let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).expect("the squadron stays on screen");
+    let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("ships ")).expect("the squadron stays on screen");
     assert_eq!(buf[(1, y as u16)].bg, admiralty::theme::mono::ERROR, "its bar takes the error hue");
     let all = ls.join("\n");
-    assert!(all.contains("squadron.toml") && all.contains("164:13"), "the file and line, in full:\n{all}");
+    assert!(all.contains("squadron.toml") && all.contains(&at), "the file and line, in full:\n{all}");
     assert!(all.contains("invalid basic string"), "the parse error's own words");
 }
 

@@ -1049,7 +1049,8 @@ fn e2e_08_rules_update_is_delivered_once_at_the_next_prompt() {
 }
 
 /// 9. A ship runs `nimitz status` through its `Bash(nimitz *)` allow with no
-/// permission prompt; `nimitz stop <other>` is refused with `authority`.
+/// permission prompt; `nimitz stop <other>` runs (no authority, 0.7.3) and
+/// says OTHER is not live.
 #[test]
 fn e2e_09_a_ship_runs_nimitz_without_a_prompt_and_stop_is_refused() {
     if !gated() {
@@ -1075,7 +1076,7 @@ fn e2e_09_a_ship_runs_nimitz_without_a_prompt_and_stop_is_refused() {
         assert!(calls.lines().any(|l| l.trim() == want), "the ship did not run `nimitz {want}` through its PATH; calls:\n{calls}");
     }
     assert!(text.contains(&w.fleet), "the status output is not in the transcript");
-    assert!(text.contains("authority"), "the stop was not refused with authority:\n{}", text.lines().filter(|l| l.contains("nimitz stop")).collect::<Vec<_>>().join("\n"));
+    assert!(text.contains("session.none") && !text.contains("(authority)"), "the stop did not say OTHER is not live:\n{}", text.lines().filter(|l| l.contains("nimitz stop")).collect::<Vec<_>>().join("\n"));
     assert!(w.member(&other).unwrap()["session"].is_null(), "OTHER was touched");
     w.finish();
 }

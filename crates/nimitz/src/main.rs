@@ -54,9 +54,7 @@ impl Ctx {
     }
     /// The gate, with this command's `--plan` / `--yes`.
     pub fn gate(&self, p: &nimitz_core::Plan) -> out::Go {
-        let mut shown = p.clone();
-        run::fixes_for(&self.env, &self.caller, &mut shown);
-        out::gate(&shown, self.plan_only(), self.yes())
+        out::gate(p, self.plan_only(), self.yes())
     }
 }
 
@@ -107,7 +105,7 @@ usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
                                    folder, or yours); settings: model, outputStyle, permissions, env only
   harness rm rule|agent|skill <name> | harness rm settings [--for ID [--member]]   out of it (kept as .archived)
   harness push                     make this machine's harness plugin again; say what is live and what needs start -f
-  squadron new|set|rm <F/SQ>       --brief T --comms open|commodore-only|allow:A,B --mode M
+  squadron new|set|rm <F/SQ>       --brief T --mode M
   ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
   machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine
@@ -198,7 +196,15 @@ fn dispatch(argv: Vec<String>) -> i32 {
     if let Err(e) = nimitz_mux::valid_mux_setting(&vars) {
         return usage_error(&e);
     }
-    let ctx = Ctx { env: Env::from_vars(&vars), caller: nimitz_core::sessions::caller_from_env(&vars), vars, args };
+    // partial or mismatched labels: said once, and the command runs as yours
+    let caller = match nimitz_core::sessions::caller_from_env(&vars) {
+        Caller::Member { id, .. } if id.0 == nimitz_core::sessions::UNVERIFIED => {
+            eprintln!("[WARN] this process's NIMITZ_ID / NIMITZ_ROLE labels are partial or disagree; nimitz runs it as yours");
+            Caller::User
+        }
+        c => c,
+    };
+    let ctx = Ctx { env: Env::from_vars(&vars), caller, vars, args };
     // a registry too new for this nimitz stops a command at its first read,
     // never reads as an empty one (doctor reports it instead)
     nimitz_core::registry::set_strict(cmd != "doctor");
@@ -219,8 +225,8 @@ fn dispatch(argv: Vec<String>) -> i32 {
 
 /// Every command that takes a `Ctx` (parsed args, the caller from the
 /// labels), in usage order. The hidden `__commands` prints the names, so the
-/// authority test runs every one of them as every role: a command added here
-/// fails that test until its row is in plan-v4 section 12.1.
+/// role test runs every one of them as every role (none is refused on
+/// authority, 0.7.3).
 const COMMANDS: &[(&str, fn(&Ctx) -> Result<i32, String>)] = &[
     ("init", setup::init),
     ("trust", setup::trust),

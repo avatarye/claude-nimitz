@@ -332,186 +332,107 @@ fn adopt() {
     assert_eq!(r.out.matches("(labels.missing)").count(), 1, "{}", r.out);
 }
 
-// ------------------------------------------------------------------ caller authority
+// ------------------------------------------------------------------ no authority (0.7.3)
 
 #[test]
-fn a_commodore_starts_its_own_ship_only() {
+fn any_member_starts_and_stops_any_member() {
     let sb = Sb::new(false);
-    let r = sb.run_as("MAIN/ARGOS", &["start", "MAIN/ARGOS/STOPPED", "--yes"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    assert!(live(&sb.member("MAIN/ARGOS/STOPPED")));
     let r = sb.run_as("MAIN/BOREAL", &["start", "MAIN/ARGOS/FRESH", "--yes"]);
-    assert_eq!(r.code, 1, "{}", r.out);
-    assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
-    assert_eq!(sb.run_as("MAIN/ARGOS", &["start", "BETA", "--yes"]).code, 1, "never an admiral");
-    for verb in [vec!["sweep", "MAIN/BOREAL", "--yes"], vec!["up", "MAIN", "--yes"], vec!["fleet", "new", "ZED", "--yes"]] {
-        assert_eq!(sb.run_as("MAIN/ARGOS", &verb).code, 1, "{verb:?} is not a commodore's");
-    }
-    // a commodore sweeps its own squadron (contracts.md section 8)
-    let r = sb.run_as("MAIN/ARGOS", &["sweep", "--yes"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-}
-
-#[test]
-fn a_ship_starts_nothing_and_an_admiral_only_in_its_own_fleet() {
-    let sb = Sb::new(false);
-    // a ship, and another fleet's admiral: nothing here
-    for who in ["MAIN/ARGOS/CLEAN", "BETA"] {
-        let r = sb.run_as(who, &["start", "MAIN/ARGOS/FRESH", "--yes"]);
-        assert_eq!(r.code, 1, "{who}: {}", r.out);
-        assert!(r.out.contains("may not start"), "{}", r.out);
-        assert_eq!(sb.run_as(who, &["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 1);
-    }
-    assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
-    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
-    // MAIN's admiral: any member of MAIN, with the same plan step first
-    let r = sb.run_as("MAIN", &["start", "MAIN/ARGOS/FRESH", "--plan"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    let r = sb.run_as("MAIN", &["start", "MAIN/ARGOS/FRESH", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(live(&sb.member("MAIN/ARGOS/FRESH")));
-    assert_eq!(sb.run_as("MAIN", &["stop", "MAIN/ARGOS/FRESH", "--yes"]).code, 0);
-    assert_eq!(sb.run_as("MAIN", &["sweep", "--plan"]).code, 0, "its own fleet");
-    assert_eq!(sb.run_as("MAIN", &["sweep", "BETA", "--plan"]).code, 1, "not another fleet");
-    assert_eq!(sb.run_as("MAIN", &["up", "BETA", "--plan"]).code, 1);
-    assert_eq!(sb.run_as("MAIN", &["stop", "MAIN", "--yes"]).code, 1, "not itself");
-    // a caller without authority gets only the authority refusal (BUG-51): no
-    // other refusal, and never a fix only the user may run
-    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/DRIFT", "--plan"]);
-    assert!(r.out.contains("(authority)") && !r.out.contains("name.drift"), "{}", r.out);
-    assert!(!r.out.lines().any(|l| l.trim_start().starts_with("fix: nimitz relaunch")), "{}", r.out);
-    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["start", "MAIN/ARGOS/CLEAN", "--plan"]);
-    assert_ne!(r.code, 0, "nothing to do is still not the caller's to do: {}", r.out);
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["stop", "MAIN/ARGOS/FRESH", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!live(&sb.member("MAIN/ARGOS/FRESH")));
+    for (who, args) in [("MAIN/ARGOS", vec!["start", "BETA", "--plan"]), ("BETA", vec!["sweep", "MAIN", "--plan"]), ("MAIN/ARGOS/CLEAN", vec!["sweep", "MAIN/ARGOS", "--plan"])] {
+        let r = sb.run_as(who, &args);
+        assert_eq!(r.code, 0, "{who} {args:?}:\n{}", r.out);
+    }
+    // a member's sweep with no id is its own scope
+    let r = sb.run_as("MAIN/ARGOS", &["sweep", "--plan"]);
+    assert!(r.code == 0 && r.out.contains("sweep MAIN/ARGOS"), "{}", r.out);
 }
 
-/// plan-v4 section 12.1, the role table: every command the binary has
-/// (`nimitz __commands`, the dispatch table) runs as an admiral, a commodore
-/// and a ship, with `--plan` and `--yes`. A row the role may run never says
-/// `(authority)` (it may refuse for another reason); every other row exits 1
-/// with `(authority)`. A command that is not in this table fails the test.
+/// Until the detached self-end helper (0.7.3 build step 5), a stop, relaunch
+/// or removal that would end its caller mid-command is refused (`self.end`,
+/// not authority), its fix the same command from a shell.
 #[test]
-fn every_command_goes_by_the_role_table() {
-    // (command, the rest of the argv, admiral MAIN, commodore MAIN/ARGOS, ship MAIN/ARGOS/CLEAN)
-    const TABLE: &[(&str, &[&str], [bool; 3])] = &[
-        ("init", &["--label", "box"], [false, false, false]),
-        ("trust", &["/tmp"], [false, false, false]),
-        ("doctor", &[], [true, true, true]),
-        ("doctor", &["--fix"], [false, false, false]),
-        ("rules", &[], [true, true, true]),
-        ("status", &[], [true, true, true]),
-        ("check", &["MAIN"], [true, true, true]),
-        ("fleet", &["new", "ZED"], [false, false, false]),
-        ("fleet", &["set", "MAIN", "--admiral-mode", "auto"], [true, false, false]),
-        ("fleet", &["rm", "BETA"], [false, false, false]),
-        ("squadron", &["new", "MAIN/EXTRA", "--brief", "x"], [true, false, false]),
-        ("squadron", &["set", "MAIN/ARGOS", "--comms", "open"], [true, true, false]),
-        ("squadron", &["rm", "MAIN/ARGOS"], [true, false, false]),
-        ("ship", &["new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "x"], [true, true, false]),
-        ("ship", &["set", "MAIN/ARGOS/CLEAN", "--mode", "auto"], [true, true, false]),
-        ("ship", &["rm", "MAIN/ARGOS/FRESH"], [true, true, false]),
-        ("machine", &["add", "MAIN", "box2", "--hostname", "box2"], [false, false, false]),
-        ("machine", &["rm", "MAIN", "box2"], [false, false, false]),
-        ("migrate", &["fleet-skill", "/nonexistent-nimitz", "--into", "MAIN"], [false, false, false]),
-        ("up", &["MAIN"], [true, false, false]),
-        ("start", &["MAIN/ARGOS/STOPPED"], [true, true, false]),
-        ("stop", &["MAIN/ARGOS/CLEAN"], [true, true, false]),
-        ("relaunch", &["MAIN/ARGOS/CLEAN"], [true, true, false]),
-        ("rm", &["MAIN/ARGOS/STOPPED"], [true, true, false]),
-        ("sweep", &["MAIN/ARGOS/CLEAN"], [true, true, true]),
-        ("sweep", &["MAIN/ARGOS"], [true, true, false]),
-        ("sweep", &["MAIN"], [true, false, false]),
-        ("adopt", &["00000000-0000", "MAIN/ARGOS/FRESH"], [true, true, false]),
-        // every member signals with SendMessage: no authority refusal, comms.denied instead
-        ("signal", &["MAIN/ARGOS", "hi"], [true, true, true]),
-        ("open", &["MAIN/ARGOS/CLEAN"], [false, false, false]),
-        // an attach takes over the caller's terminal: yours alone
-        ("attach", &["MAIN/ARGOS/CLEAN"], [false, false, false]),
-        ("layout", &["herdr", "MAIN"], [true, false, false]),
-        ("restore", &["MAIN"], [true, true, false]),
-        ("sandbox", &["env", "/nonexistent-nimitz"], [false, false, false]),
-        // the fleet's settings: every member reads its own fleet's; its admiral (and you) change them
-        ("fleet", &["settings", "get", "--fleet", "MAIN"], [true, true, true]),
-        ("fleet", &["settings", "get", "--fleet", "BETA"], [false, false, false]),
-        ("fleet", &["settings", "set", "notes.channel", "x", "--fleet", "MAIN"], [true, false, false]),
-        // the knowledge base: every member's own fleet's (its subagents run in it); a clone is yours
-        ("kb", &["path"], [true, true, true]),
-        ("kb", &["status", "--fleet", "MAIN"], [true, true, true]),
-        ("kb", &["head"], [true, true, true]),
-        ("kb", &["show", "wiki/_index.md"], [true, true, true]),
-        ("kb", &["grep", "term", "wiki"], [true, true, true]),
-        ("kb", &["hash", "raw/x.md"], [true, true, true]),
-        ("kb", &["commit", "--title", "t", "--paths", "raw/x.md", "--note", "0", "--from", "x"], [true, true, true]),
-        ("kb", &["restore", "--paths", "raw/x.md"], [true, true, true]),
-        ("kb", &["sync"], [true, true, true]),
-        ("kb", &["path", "--fleet", "BETA"], [false, false, false]),
-        ("kb", &["clone", "--fleet", "MAIN"], [false, false, false]),
-        // the fleet's harness: every member lists its own fleet's; its admiral (and you) change and push it
-        ("harness", &["list"], [true, true, true]),
-        ("harness", &["list", "--fleet", "BETA"], [false, false, false]),
-        ("harness", &["add", "rule", "/nonexistent-nimitz/rule.md"], [true, false, false]),
-        ("harness", &["rm", "rule", "style"], [true, false, false]),
-        ("harness", &["push"], [true, false, false]),
+fn a_member_never_ends_itself_mid_command() {
+    let sb = Sb::new(false);
+    for (who, args) in [
+        ("MAIN/ARGOS/CLEAN", vec!["stop", "MAIN/ARGOS/CLEAN", "--yes"]),
+        ("MAIN", vec!["stop", "MAIN", "--yes"]),
+        ("MAIN/ARGOS/CLEAN", vec!["ship", "rm", "MAIN/ARGOS/CLEAN", "--yes"]),
+        ("MAIN/ARGOS", vec!["squadron", "rm", "MAIN/ARGOS", "--yes"]),
+    ] {
+        let r = sb.run_as(who, &args);
+        assert!(r.code != 0 && r.out.contains("(self.end)") && r.out.contains("from a shell") && !r.out.contains("(authority)"), "{who} {args:?}:\n{}", r.out);
+    }
+    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")) && live(&sb.member("MAIN")));
+}
+
+/// 0.7.3: no command refuses on authority. Every command the binary has
+/// (`nimitz __commands`, the dispatch table) runs as an admiral, a commodore
+/// and a ship with `--plan`: none says `(authority)` (it may refuse for
+/// another reason). A command that is not in this table fails the test.
+#[test]
+fn every_command_runs_for_every_role() {
+    const TABLE: &[(&str, &[&str])] = &[
+        ("init", &["--label", "box"]),
+        ("trust", &["/tmp"]),
+        ("doctor", &[]),
+        ("doctor", &["--fix"]),
+        ("rules", &[]),
+        ("status", &[]),
+        ("check", &["MAIN"]),
+        ("fleet", &["new", "ZED"]),
+        ("fleet", &["set", "MAIN", "--admiral-mode", "auto"]),
+        ("fleet", &["rm", "BETA"]),
+        ("squadron", &["new", "MAIN/EXTRA", "--brief", "x"]),
+        ("squadron", &["set", "MAIN/ARGOS", "--mode", "auto"]),
+        ("squadron", &["rm", "MAIN/BOREAL"]),
+        ("ship", &["new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "x"]),
+        ("ship", &["set", "MAIN/ARGOS/CLEAN", "--mode", "auto"]),
+        ("ship", &["rm", "MAIN/ARGOS/FRESH"]),
+        ("machine", &["add", "MAIN", "box2", "--hostname", "box2"]),
+        ("machine", &["rm", "MAIN", "box2"]),
+        ("migrate", &["fleet-skill", "/nonexistent-nimitz", "--into", "MAIN"]),
+        ("up", &["MAIN"]),
+        ("start", &["MAIN/ARGOS/STOPPED"]),
+        ("stop", &["MAIN/ARGOS/DRIFT"]),
+        ("relaunch", &["MAIN/ARGOS/DRIFT"]),
+        ("rm", &["MAIN/ARGOS/STOPPED"]),
+        ("sweep", &["MAIN"]),
+        ("adopt", &["00000000-0000", "MAIN/ARGOS/FRESH"]),
+        ("signal", &["MAIN/ARGOS", "hi"]),
+        ("open", &["MAIN/ARGOS/CLEAN"]),
+        ("attach", &["MAIN/ARGOS/CLEAN"]),
+        ("layout", &["herdr", "MAIN"]),
+        ("restore", &["MAIN"]),
+        ("sandbox", &["env", "/nonexistent-nimitz"]),
+        ("fleet", &["settings", "get", "--fleet", "BETA"]),
+        ("fleet", &["settings", "set", "kb.remote", "x", "--fleet", "MAIN"]),
+        ("kb", &["path", "--fleet", "BETA"]),
+        ("kb", &["clone", "--fleet", "MAIN"]),
+        ("harness", &["list", "--fleet", "BETA"]),
+        ("harness", &["add", "rule", "/nonexistent-nimitz/rule.md"]),
+        ("harness", &["rm", "rule", "style"]),
+        ("harness", &["push"]),
     ];
-    let roles = ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"];
-    let listed = Sb::new(false).run(&["__commands"]);
+    let sb = Sb::new(false);
+    let listed = sb.run(&["__commands"]);
     assert_eq!(listed.code, 0, "{}", listed.out);
     for cmd in listed.out.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        assert!(TABLE.iter().any(|(c, _, _)| *c == cmd), "`nimitz {cmd}` has no row in the role table (plan-v4 section 12.1)");
+        assert!(TABLE.iter().any(|(c, _)| *c == cmd), "`nimitz {cmd}` has no row in the table");
     }
-    for (i, who) in roles.iter().enumerate() {
-        // one world per role and form, so a `--yes` run changes nothing for the next row
-        for form in ["--plan", "--yes"] {
-            let sb = Sb::new(false);
-            for (cmd, rest, may) in TABLE {
-                let mut args = vec![*cmd];
-                args.extend(rest.iter().copied());
-                args.push(form);
-                let r = sb.run_as(who, &args);
-                let authority = r.out.contains("(authority)");
-                if may[i] {
-                    assert!(!authority, "{who} may run `nimitz {}`:\n{}", args.join(" "), r.out);
-                } else {
-                    assert!(authority && r.code != 0, "{who} may not run `nimitz {}` (exit {}):\n{}", args.join(" "), r.code, r.out);
-                }
-            }
+    for who in ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"] {
+        for (cmd, rest) in TABLE {
+            let mut args = vec![*cmd];
+            args.extend(rest.iter().copied());
+            args.push("--plan");
+            let r = sb.run_as(who, &args);
+            assert!(!r.out.contains("(authority)"), "{who} `nimitz {}`:\n{}", args.join(" "), r.out);
         }
     }
-}
-
-#[test]
-fn config_changes_go_by_the_same_scopes_and_whole_fleets_stay_yours() {
-    let sb = Sb::new(false);
-    let ok = |who: &str, args: &[&str]| {
-        let r = sb.run_as(who, args);
-        assert_eq!(r.code, 0, "{who} {args:?}:\n{}", r.out);
-    };
-    let no = |who: &str, args: &[&str]| {
-        let r = sb.run_as(who, args);
-        assert_eq!(r.code, 1, "{who} {args:?}:\n{}", r.out);
-        assert!(r.out.contains("(authority)"), "{who} {args:?}:\n{}", r.out);
-    };
-    // a commodore: its squadron's settings and its ships
-    ok("MAIN/ARGOS", &["ship", "new", "MAIN/ARGOS/NEWBIE", "--dir", "managed", "--prompt", "You are NEWBIE.", "--yes"]);
-    ok("MAIN/ARGOS", &["ship", "set", "MAIN/ARGOS/NEWBIE", "--mode", "auto", "--plan"]);
-    ok("MAIN/ARGOS", &["squadron", "set", "MAIN/ARGOS", "--comms", "open", "--plan"]);
-    no("MAIN/ARGOS", &["ship", "new", "MAIN/BOREAL/X", "--dir", "managed", "--prompt", "x", "--plan"]);
-    no("MAIN/ARGOS", &["squadron", "new", "MAIN/EXTRA", "--brief", "x", "--plan"]);
-    no("MAIN/ARGOS", &["squadron", "rm", "MAIN/ARGOS", "--plan"]);
-    no("MAIN/ARGOS", &["fleet", "set", "MAIN", "--admiral-mode", "auto", "--plan"]);
-    // an admiral: its own fleet
-    ok("MAIN", &["squadron", "new", "MAIN/EXTRA", "--brief", "Extra squadron.", "--yes"]);
-    ok("MAIN", &["ship", "rm", "MAIN/ARGOS/NEWBIE", "--yes"]);
-    ok("MAIN", &["fleet", "set", "MAIN", "--admiral-mode", "auto", "--plan"]);
-    no("MAIN", &["ship", "new", "BETA/SQ/X", "--dir", "managed", "--prompt", "x", "--plan"]);
-    // a whole fleet, machines, migration: yours alone
-    no("MAIN", &["fleet", "new", "ZED", "--plan"]);
-    no("MAIN", &["fleet", "rm", "MAIN", "--plan"]);
-    no("MAIN", &["machine", "add", "MAIN", "box2", "--hostname", "box2", "--plan"]);
-    // ships change no config
-    no("MAIN/ARGOS/CLEAN", &["ship", "set", "MAIN/ARGOS/CLEAN", "--mode", "auto", "--plan"]);
-    // a refusal's fix is shown only when the caller may run it
-    let r = sb.run_as("MAIN/ARGOS", &["start", "MAIN/ARGOS/DRIFT", "--plan"]);
-    assert!(r.out.contains("fix: nimitz start MAIN/ARGOS/DRIFT -f"), "its own ship's fix is its own:\n{}", r.out);
 }
 
 // ------------------------------------------------------------------ CRUD and top-down
@@ -567,9 +488,9 @@ fn crud_round_trip() {
 
     assert_eq!(sb.run(&["fleet", "set", "TOP", "--admiral-mode", "auto", "--yes"]).code, 0);
     assert!(std::fs::read_to_string(fleet_dir.join("fleet.toml")).unwrap().contains("permission_mode = \"auto\""));
-    let r = sb.run(&["squadron", "set", "TOP/SQ", "--comms", "commodore-only", "--brief", "New brief.", "--yes"]);
+    let r = sb.run(&["squadron", "set", "TOP/SQ", "--mode", "plan", "--brief", "New brief.", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(sq_toml().contains("commodore-only"));
+    assert!(sq_toml().contains("permission_mode = \"plan\""));
     assert!(std::fs::read_to_string(fleet_dir.join("squadrons").join("sq").join("SQUADRON.md")).unwrap().contains("New brief."));
     let r = sb.run(&["ship", "set", "TOP/SQ/S1", "--mode", "plan", "--depends", "S2", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -736,7 +657,7 @@ fn open_reuses_the_tab_it_opened_before() {
 }
 
 #[test]
-fn signal_types_or_relays_and_members_use_sendmessage() {
+fn signal_types_into_the_members_own_tab_and_never_wakes() {
     let sb = Sb::new(true);
     // no tab shows the commodore yet: one is attached first; the text is typed
     // only once a pane shows the session (the fake herdr never shows one, so
@@ -750,23 +671,16 @@ fn signal_types_or_relays_and_members_use_sendmessage() {
     sb.pane_for("MAIN/ARGOS");
     let r = sb.run(&["signal", "MAIN/ARGOS", "status?", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    let r = sb.run(&["signal", "MAIN/ARGOS/CLEAN", "rebase", "please", "--yes"]);
-    assert_eq!(r.code, 0, "{}", r.out);
-    assert!(sb.calls().contains("Relay to [MAIN.ARGOS]-CLEAN from the user: rebase please"), "{}", sb.calls());
-    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/BOREAL", "hi", "--yes"]);
-    assert_eq!(r.code, 1);
-    assert!(r.out.contains("comms.denied"), "{}", r.out);
-    // 0.4.0: a ship replies to its admiral, and the admiral reaches a ship; both
-    // still go by SendMessage, which the refusal says
-    for (who, to) in [("MAIN/ARGOS/CLEAN", "MAIN"), ("MAIN", "MAIN/ARGOS/CLEAN")] {
-        let r = sb.run_as(who, &["signal", to, "hi", "--yes"]);
-        assert_eq!(r.code, 1);
-        assert!(r.out.contains("the chain allows it") && r.out.contains("SendMessage"), "{who} -> {to}: {}", r.out);
-    }
+    // a ship gets it in its own tab, never relayed through its commodore
+    let r = sb.run(&["signal", "MAIN/ARGOS/CLEAN", "rebase", "please", "--plan"]);
+    assert!(r.out.contains("MAIN.ARGOS.CLEAN") && r.out.contains("has no tab yet") && !r.out.contains("Relay"), "{}", r.out);
+    // a member that is down is refused, never woken by a signal
+    let r = sb.run(&["signal", "MAIN/ARGOS/STOPPED", "hi", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("(session.none)") && r.out.contains("nimitz start MAIN/ARGOS/STOPPED"), "{}", r.out);
 }
 
 #[test]
-fn a_ship_runs_the_read_only_commands_and_sweeps_itself() {
+fn a_ship_runs_the_read_only_commands_sweeps_and_starts() {
     let sb = Sb::new(false);
     let ship = "MAIN/ARGOS/CLEAN";
     for args in [vec!["status"], vec!["check", "MAIN"], vec!["rules"], vec!["doctor"]] {
@@ -775,13 +689,8 @@ fn a_ship_runs_the_read_only_commands_and_sweeps_itself() {
     }
     let r = sb.run_as(ship, &["sweep", ship, "--plan"]);
     assert_eq!(r.code, 0, "its own stale rows: {}", r.out);
-    let r = sb.run_as(ship, &["sweep", "MAIN/ARGOS", "--plan"]);
-    assert_eq!(r.code, 1);
-    assert!(r.out.contains("(authority)") && r.out.contains("may sweep only itself"), "{}", r.out);
-    // a fix a ship may not run itself is marked for its commodore / the user
     let r = sb.run_as(ship, &["start", "MAIN/ARGOS/STOPPED", "--plan"]);
-    assert!(r.out.contains("(authority)"), "{}", r.out);
-    assert!(!r.out.lines().any(|l| l.trim_start().starts_with("fix: nimitz start")), "{}", r.out);
+    assert_eq!(r.code, 0, "{}", r.out);
 }
 
 #[test]
@@ -809,7 +718,6 @@ fn layout_herdr() {
     assert_eq!(r.code, 0, "{}", r.out);
     let runs = sb.calls().lines().filter(|l| l.contains("\"pane\",\"run\"") && l.contains("attach")).count();
     assert_eq!(runs, 3, "one attach per lead, once:\n{}", sb.calls());
-    assert_eq!(sb.run_as("MAIN/ARGOS", &["layout", "herdr", "--yes"]).code, 1);
     // --ships: attach tabs for live ships; stopped ones are skipped
     let r = sb.run(&["layout", "herdr", "MAIN", "--ships", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -854,25 +762,13 @@ fn hook_logs_session_start_with_labels() {
 }
 
 #[test]
-fn hook_denies_a_signal_the_chain_forbids() {
+fn the_hook_never_judges_a_signal() {
     let sb = Sb::new(false);
     let msg = |to: &str| format!(r#"{{"session_id":"s","tool_name":"SendMessage","tool_input":{{"to":"{to}","message":"hi"}}}}"#);
-    let ship = [("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_ROLE", "ship")];
-    let r = raw(&sb.vars, &["hook", "PreToolUse"], &ship, Some(&msg("[MAIN.BOREAL]-COMMODORE")));
-    assert_eq!(r.code, 0);
-    let v: Value = serde_json::from_str(r.out.trim()).expect("deny JSON");
-    assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny");
-    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "PreToolUse");
-    // its own commodore: allowed, no output
-    let r = raw(&sb.vars, &["hook", "PreToolUse"], &ship, Some(&msg("[MAIN.ARGOS]-COMMODORE")));
-    assert_eq!((r.code, r.out.trim()), (0, ""));
-    // BOREAL is commodore-only: a ship there may not signal a peer
-    let boreal = [("NIMITZ_ID", "MAIN/BOREAL/X"), ("NIMITZ_ROLE", "ship")];
-    let r = raw(&sb.vars, &["hook", "PreToolUse"], &boreal, Some(&msg("[MAIN.BOREAL]-Y")));
-    assert!(r.out.contains("\"deny\""), "{}", r.out);
-    // no labels (the user's own session): not ours to rule
-    let r = raw(&sb.vars, &["hook", "PreToolUse"], &[], Some(&msg("[MAIN.BOREAL]-COMMODORE")));
-    assert_eq!(r.out.trim(), "");
+    for (labels, to) in [(&[("NIMITZ_ID", "MAIN/ARGOS/CLEAN"), ("NIMITZ_ROLE", "ship")][..], "[MAIN.BOREAL]-COMMODORE"), (&[("NIMITZ_ID", "MAIN/BOREAL/X"), ("NIMITZ_ROLE", "ship")][..], "uds:/tmp/cc-socks/999999.sock"), (&[][..], "[MAIN]-ADMIRAL")] {
+        let r = raw(&sb.vars, &["hook", "PreToolUse"], labels, Some(&msg(to)));
+        assert_eq!((r.code, r.out.trim()), (0, ""), "{labels:?} -> {to}");
+    }
 }
 
 // ------------------------------------------------------------------ needs-you
@@ -985,12 +881,8 @@ fn a_0_6_aide_job_left_running_is_stopped_and_removed_by_its_short_id() {
     let f = fix(&sb.run(&["check"]));
     let short = f.strip_prefix("nimitz stop ").and_then(|t| t.split_whitespace().next()).unwrap_or_else(|| panic!("{f}")).to_string();
     assert!(f.ends_with(&format!("# then nimitz rm {short}")), "{f}");
-    // the user's alone: a member (its admiral too) is refused
-    for who in ["MAIN", "MAIN/ARGOS"] {
-        let r = sb.run_as(who, &["stop", &short, "--yes"]);
-        assert!(r.code != 0 && r.out.contains("(authority)"), "{who}: {}", r.out);
-    }
-    let r = sb.run(&["stop", &short, "--yes"]);
+    // any caller (a member here)
+    let r = sb.run_as("MAIN/ARGOS", &["stop", &short, "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert_eq!(fix(&sb.run(&["check"])), format!("nimitz rm {short}"));
     let r = sb.run(&["rm", &short, "--yes"]);
@@ -2488,6 +2380,19 @@ fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("typed one")), "{}", r.out);
     assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "the signal did not go to the inbox");
+    // `--inbox`, and any member's signal: its inbox, a request that names the sender
+    for (who, flag, sender) in [(None, Some("--inbox"), "with no member labels"), (Some("MAIN/ARGOS/CLEAN"), None, "from MAIN/ARGOS/CLEAN")] {
+        let mut args = vec!["signal", "MAIN/ARGOS", "boxed", "--yes"];
+        args.extend(flag);
+        let r = match who {
+            Some(w) => sb.run_as(w, &args),
+            None => sb.run(&args),
+        };
+        assert_eq!(r.code, 0, "{}", r.out);
+        let line: Value = serde_json::from_str(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().trim()).unwrap();
+        let c = line["message"]["content"].as_str().unwrap();
+        assert!(c.contains("[nimitz signal]") && c.contains("boxed") && c.contains(sender) && c.contains("not the user's approval"), "{c}");
+    }
 }
 
 /// A lead on a Claude Code older than the verified line format gets the
@@ -2592,12 +2497,8 @@ fn attach_execs_claude_attach_with_the_members_exact_job() {
 }
 
 #[test]
-fn attach_is_yours_and_never_nests_in_a_claude_session() {
+fn attach_never_nests_in_a_claude_session() {
     let sb = Sb::new(false);
-    for who in ["MAIN", "MAIN/ARGOS", "MAIN/ARGOS/CLEAN"] {
-        let r = sb.run_as(who, &["attach", "MAIN/ARGOS/CLEAN", "--yes"]);
-        assert!(r.code != 0 && r.out.contains("(authority)") && !r.out.contains("exec "), "{who}:\n{}", r.out);
-    }
     // CLAUDECODE alone (a terminal started from a Claude Code tool inherits it): the way out is said
     let r = attach_dry(&sb, &["attach", "MAIN/ARGOS/CLEAN"], &[("CLAUDECODE", "1")]);
     assert_eq!(r.code, 1, "{}", r.out);
@@ -2697,12 +2598,9 @@ fn a_fleets_kb_is_set_cloned_and_written_once_per_note_by_a_member() {
     set("kb.dirs.sandbox", here.to_str().unwrap());
     let r = sb.run_as(ship, &["fleet", "settings", "get", "kb.remote"]);
     assert_eq!((r.code, r.out.trim()), (0, remote.to_str().unwrap()), "{}", r.out);
-    assert!(sb.run_as("MAIN/ARGOS", &["fleet", "settings", "set", "kb.remote", "x", "--yes"]).out.contains("(authority)"));
-    assert!(sb.run_as("MAIN", &["fleet", "settings", "set", "kb.remote", "/elsewhere.git", "--yes"]).out.contains("(authority)"), "kb.* is the user's alone");
     // not cloned yet: said; a member may not clone; the user clones
     let r = sb.run_as(ship, &["kb", "path"]);
     assert!(r.code != 0 && r.out.contains("not cloned on this machine"), "{}", r.out);
-    assert!(sb.run_as(ship, &["kb", "clone", "--yes"]).out.contains("(authority)"));
     let r = sb.run(&["kb", "clone", "--fleet", "MAIN", "--plan"]);
     assert!(r.code == 0 && r.out.contains(&format!("clone {}", remote.display())) && !here.exists(), "{}", r.out);
     let r = sb.run(&["kb", "clone", "--fleet", "MAIN", "--yes"]);
@@ -2744,8 +2642,8 @@ fn a_fleets_kb_is_set_cloned_and_written_once_per_note_by_a_member() {
     assert!(r.code != 0 && r.out.contains("is no clone of the fleet's kb.remote"), "{}", r.out);
     std::process::Command::new("git").arg("-C").arg(&here).args(["remote", "set-url", "origin", &format!("{}/", remote.display())]).status().unwrap();
     assert_eq!(sb.run_as(ship, &["kb", "head"]).code, 0, "a trailing slash is the same remote");
-    // another fleet's KB is not a member's to read
-    assert!(sb.run_as(ship, &["kb", "path", "--fleet", "BETA"]).out.contains("(authority)"));
+    // another fleet's KB: any member may name it
+    assert!(!sb.run_as(ship, &["kb", "path", "--fleet", "BETA"]).out.contains("(authority)"));
 }
 
 // ------------------------------------------------------------------ the harness
@@ -2777,11 +2675,7 @@ fn a_fleets_harness_reaches_the_members_rules_settings_and_launch() {
     add(&["settings", src.join("argos.json").to_str().unwrap(), "--for", "MAIN/ARGOS"]);
     let bad = sb.run(&["harness", "add", "settings", src.join("bad.json").to_str().unwrap(), "--fleet", "MAIN", "--yes"]);
     assert!(bad.code != 0 && bad.out.contains("hooks: not a harness's to set"), "{}", bad.out);
-    // the admiral adds from its own folder only (never a file of the user's it can read)
-    let secret = sb.base.join("secret.md");
-    std::fs::write(&secret, "s3cret").unwrap();
-    let r = sb.run_as("MAIN", &["harness", "add", "rule", secret.to_str().unwrap(), "--yes"]);
-    assert!(r.code != 0 && r.out.contains("(authority)") && r.out.contains("only from its own folder"), "{}", r.out);
+    // a member adds too, from any folder
     let adm = nimitz_core::config::load_fleet(&nimitz_core::env::Env::from_vars(&sb.vars.clone().into_iter().collect()), "MAIN").unwrap().dir.join("admiral");
     std::fs::write(adm.join("tone.md"), "Be brief.\n").unwrap();
     let r = sb.run_as("MAIN", &["harness", "add", "rule", adm.join("tone.md").to_str().unwrap(), "--yes"]);
@@ -2789,12 +2683,11 @@ fn a_fleets_harness_reaches_the_members_rules_settings_and_launch() {
     // rm takes a name, never a path
     let r = sb.run(&["harness", "rm", "skill", "../../fleet.toml", "--fleet", "MAIN", "--yes"]);
     assert!(r.code != 0 && r.out.contains("a name is"), "{}", r.out);
-    // a member: its rules carry it; it lists, never changes
+    // a member: its rules carry it; it lists
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["rules"]);
     assert!(r.out.contains("## Fleet MAIN's own rules") && r.out.contains("Answer in haiku."), "{}", r.out);
     let l = sb.run_as("MAIN/ARGOS/CLEAN", &["harness", "list"]);
     assert!(l.code == 0 && l.out.contains("style") && l.out.contains("reviewer") && l.out.contains("squadrons/ARGOS.json"), "{}", l.out);
-    assert!(sb.run_as("MAIN/ARGOS", &["harness", "rm", "rule", "style", "--yes"]).out.contains("(authority)"));
     assert!(!sb.run_as("BETA", &["rules"]).out.contains("Answer in haiku."), "another fleet's members");
     // a launch: the settings merged under nimitz's own, the plugin given
     let env = nimitz_core::env::Env::from_vars(&sb.vars.clone().into_iter().collect());

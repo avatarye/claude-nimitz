@@ -238,13 +238,10 @@ fn the_aides_cleanup_waits_for_migrate_shared_yes() {
     assert!(doctor.out.contains("[WARN] MAIN: machine far: no nimitz >= 0.5.0 seen; update it"), "{}", doctor.out);
     let check = w.run(&["check", "MAIN"]);
     assert!(check.out.contains("aide.legacy") && !check.out.contains("format.shared"), "{}", check.out);
-    // the local run, and a member, never touch it
+    // the local run never touches it
     let local = w.run(&["migrate", "--yes"]);
     assert_eq!(local.code, 0, "{}{}", local.out, local.err);
     assert!(local.out.contains("migrate --shared --yes"), "{}", local.out);
-    let member = raw(&w.vars, &["migrate", "--shared", "--yes"], &[("NIMITZ_ID", "MAIN"), ("NIMITZ_ROLE", "admiral")], None);
-    assert_eq!(member.code, 1, "{}{}", member.out, member.err);
-    assert!(member.out.contains("yours alone"), "{}", member.out);
     assert_eq!(std::fs::read_to_string(&fleet_toml).unwrap(), text);
     // yours: the aides and their stamp gone, the rest as it was, the backup beside it
     let shared = w.run(&["migrate", "--shared", "--yes"]);
