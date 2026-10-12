@@ -11,7 +11,9 @@ authority checks. No old form is kept. Read **Upgrading** first.
   commodore, `HOME/GITHUB/SHIP` a ship. `HOME/...` is everything under HOME,
   the admiral included; `//...` (or `/...`) is every fleet, the ADMIRALTY
   workspace never. A command takes several paths. `...` leaves parked ships
-  alone; `--parked` adds them. `--only` and `--all` are gone.
+  alone; `--parked` adds them. A member a path names, and a lead under a
+  `...`, gets a first launch when it never ran. `--only` and `--all` are
+  gone.
 - **Four families.**
   - Fleet shape (configuration, nothing launched): `fleet`, `squadron`,
     `ship` new|set|rm; `machine add|rm`; `settings get|set` (was `fleet
@@ -51,7 +53,8 @@ authority checks. No old form is kept. Read **Upgrading** first.
 
 - **Admiralty** shows the nimitz version in its status bar (both, flagged,
   when admiralty's and the binary's differ); `m` types into the member's
-  own pane, a ship's too; `R` runs `muster`, `u` `start F/... --parked`.
+  own pane, a ship's too; `x` then `R` runs `muster`, and `u` runs `start
+  F/... --parked`.
 - **README**: a "Most used" section and one reference line per command.
 
 ### Fixed
