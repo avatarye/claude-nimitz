@@ -4,8 +4,9 @@
 //! section 3) are held here, by the payload's `agent_type`, whatever the
 //! session's permission mode. What an agent may do is allowed (so a member
 //! in the background never stops on a permission prompt for its KB); the
-//! rest is denied with the reason. Any other agent, and the session itself,
-//! get no answer at all.
+//! rest is denied with the reason, but for Claude Code's own `CALLER_TOOLS`
+//! (a subagent's handback to its caller), which get no answer. Any other
+//! agent, and the session itself, get no answer at all.
 //!
 //! - kb-scribe: Bash only as one `nimitz kb path|status|grep|hash|commit|restore`
 //!   (no `;`, `&`, `|`, redirects, globs or comments; `$`, backticks and `\`
@@ -188,6 +189,17 @@ pub fn decide(agent: Agent, root: Option<&Path>, tool: &str, input: &Value) -> R
     }
 }
 
+/// Claude Code's own tools for a subagent's work with its caller: delivering
+/// its result (`SubagentHandback`, which Claude Code gives a subagent in auto
+/// mode whatever its `tools:` say), its own todo list, loading a tool's schema
+/// (the tool it loads still meets the guard). They reach no file, command or
+/// network: the guard gives them no answer, and Claude Code decides as for any
+/// session. Never an explicit allow: only auto mode's review may allow
+/// `SubagentHandback`, and Claude Code turns a hook's allow into a deny.
+/// (Denying it kept the agents' reports from their callers, 0.7.0.) The task
+/// tools stay denied: they write the session's task list and fire its hooks.
+pub const CALLER_TOOLS: [&str; 3] = ["SubagentHandback", "TodoWrite", "ToolSearch"];
+
 /// The session's fleet, by its labels judged as every nimitz command judges
 /// them (`caller_from_env`: partial or disagreeing labels are no member's).
 fn fleet_of(vars: &HashMap<String, String>) -> Option<String> {
@@ -207,8 +219,11 @@ pub fn hook(env: &Env, stdin: &str, vars: &HashMap<String, String>) -> String {
     }
     let input: Value = serde_json::from_str(stdin.trim()).unwrap_or(Value::Null);
     let Some(agent) = input.get("agent_type").and_then(Value::as_str).and_then(Agent::of) else { return String::new() };
-    let root = fleet_of(vars).and_then(|f| crate::fleet_settings::kb(env, &f).ok()).and_then(|k| crate::os::canonical(&k.dir).ok());
     let tool = input.get("tool_name").and_then(Value::as_str).unwrap_or("");
+    if CALLER_TOOLS.contains(&tool) {
+        return String::new();
+    }
+    let root = fleet_of(vars).and_then(|f| crate::fleet_settings::kb(env, &f).ok()).and_then(|k| crate::os::canonical(&k.dir).ok());
     let (decision, reason) = match decide(agent, root.as_deref(), tool, input.get("tool_input").unwrap_or(&Value::Null)) {
         Ok(why) => ("allow", why),
         Err(why) => ("deny", why),
@@ -315,6 +330,16 @@ mod tests {
         }
         assert_eq!(call(Some("general-purpose"), "Bash", json!({"command": "ls"})), "");
         assert_eq!(call(Some("kb-scribe"), "Write", json!({"file_path": "/tmp/x"})), "", "a bare name is a project's agent, not the plugin's");
+        // delivering its result to its caller is never the guard's to stop
+        for t in CALLER_TOOLS {
+            assert_eq!(call(Some("nimitz:kb-scribe"), t, json!({"message": "done"})), "", "{t}");
+            assert_eq!(call(Some("nimitz:kb-ref"), t, json!({"message": "done"})), "", "{t}");
+        }
+        // every other tool still is: what reaches files, commands, the network, other agents
+        for t in ["Glob", "Grep", "WebFetch", "WebSearch", "Agent", "Task", "NotebookEdit", "SendMessage", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskOutput", "TaskStop", "mcp__x__y"] {
+            let v: Value = serde_json::from_str(&call(Some("nimitz:kb-ref"), t, json!({}))).unwrap();
+            assert_eq!(v["hookSpecificOutput"]["permissionDecision"], "deny", "{t}");
+        }
         let a: Value = serde_json::from_str(&call(Some("nimitz:kb-scribe"), "Bash", json!({"command": "nimitz kb path"}))).unwrap();
         assert_eq!(a["hookSpecificOutput"]["permissionDecision"], "allow");
         let d: Value = serde_json::from_str(&call(Some("nimitz:kb-ref"), "Read", json!({"file_path": "/etc/passwd"}))).unwrap();

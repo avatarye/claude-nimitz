@@ -102,6 +102,16 @@ is not the plugin's agent and gets no answer. `--fleet` is denied on the line
 judges them), and a write through a link that leads out, or nowhere yet, is
 denied.
 
+Claude Code's own tools for a subagent's work with its caller
+(`SubagentHandback`, which delivers its result in auto mode whatever its
+`tools:` say, `TodoWrite`, `ToolSearch`) get no answer: Claude Code decides
+as for any session. Never an explicit allow: only auto mode's review may
+allow `SubagentHandback`, and Claude Code turns a hook's allow into a deny.
+The task tools stay denied (they write the session's task list), as does
+every other tool outside each agent's own. (0.7.0 denied
+`SubagentHandback` too, so the agents' reports never reached their callers;
+fixed in 0.7.1.)
+
 **It fails open if it cannot run.** A hook Claude Code cannot run (nimitz
 missing from the session's PATH, a crash, past its 5 s) is no answer, so the
 agents fall back to the session's own permission mode: in `default` or
