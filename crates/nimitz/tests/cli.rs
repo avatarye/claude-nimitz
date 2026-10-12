@@ -1168,7 +1168,7 @@ fn a_labelled_session_gets_its_rules_at_start_and_rules_prints_them() {
     let v: Value = serde_json::from_str(u.out.trim()).expect("hook JSON");
     let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     assert!(ctx.starts_with(&format!("nimitz rules updated v0→v{}", nimitz_core::rules::VERSION)) && ctx.contains("## Ship of MAIN/ARGOS"), "{ctx}");
-    assert!(ctx.contains("- v1-v6: older changes, superseded") && ctx.contains(&format!("- v{}:", nimitz_core::rules::VERSION)), "the changelog from v0, its last entries: {ctx}");
+    assert!(ctx.contains(&format!("- v1-v{}: older changes, superseded", nimitz_core::rules::VERSION - 3)) && ctx.contains(&format!("- v{}:", nimitz_core::rules::VERSION)), "the changelog from v0, its last entries: {ctx}");
     assert!(raw(&sb.vars, &["hook", "UserPromptSubmit"], &labels, Some(&prompt)).out.trim().is_empty(), "once per version");
     let rec: Value = serde_json::from_str(&std::fs::read_to_string(&delivered).unwrap()).unwrap();
     assert_eq!(rec[format!("session:{sid}")]["version"], nimitz_core::rules::VERSION, "no job id readable here: keyed by session");
@@ -1296,13 +1296,20 @@ fn init_and_doctor_in_an_empty_world() {
     .unwrap();
     let d = raw(&vars, &["doctor"], &[], None);
     assert!(d.out.contains("[OK] hooks: the nimitz plugin is enabled and") && d.out.contains("registers every event nimitz needs"), "{}", d.out);
-    // an older installed copy lacks an event: named, with /reload-plugins as the fix (NIMITZ_PLUGIN_HOOKS points doctor at a file)
+    // the cached copy's version: one other than this binary's is a Warn, the update its fix
+    std::fs::create_dir_all(install.join(".claude-plugin")).unwrap();
+    std::fs::write(install.join(".claude-plugin").join("plugin.json"), r#"{"name": "nimitz", "version": "0.4.0"}"#).unwrap();
+    let d = raw(&vars, &["doctor"], &[], None);
+    assert!(d.out.contains("[WARN] plugin: the cached nimitz plugin is 0.4.0") && d.out.contains("claude plugin update nimitz@claude-nimitz, then /reload-plugins"), "{}", d.out);
+    std::fs::write(install.join(".claude-plugin").join("plugin.json"), format!(r#"{{"name": "nimitz", "version": "{}"}}"#, env!("CARGO_PKG_VERSION"))).unwrap();
+    assert!(!raw(&vars, &["doctor"], &[], None).out.contains("cached nimitz plugin"));
+    // an older installed copy lacks an event: named, with the update as the fix (NIMITZ_PLUGIN_HOOKS points doctor at a file)
     let mut old: Value = serde_json::from_str(&std::fs::read_to_string(&repo_hooks).unwrap()).unwrap();
     old["hooks"].as_object_mut().unwrap().remove("UserPromptSubmit");
     let old_path = b.join("old-hooks.json");
     std::fs::write(&old_path, old.to_string()).unwrap();
     let d = raw(&vars, &["doctor"], &[("NIMITZ_PLUGIN_HOOKS", old_path.to_str().unwrap())], None);
-    assert!(d.out.contains("does not register UserPromptSubmit") && d.out.contains("fix: /reload-plugins"), "{}", d.out);
+    assert!(d.out.contains("does not register UserPromptSubmit") && d.out.contains("fix: claude plugin marketplace update claude-nimitz && claude plugin update nimitz@claude-nimitz, then /reload-plugins"), "{}", d.out);
     // a copy whose SessionStart entry is one command string: a Warn, reinstall + /reload-plugins
     let mut stringy: Value = serde_json::from_str(&std::fs::read_to_string(&repo_hooks).unwrap()).unwrap();
     stringy["hooks"]["SessionStart"][0] = serde_json::json!({"hooks": [{"type": "command", "command": "nimitz hook SessionStart", "timeout": 5}]});

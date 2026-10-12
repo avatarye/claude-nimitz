@@ -1,5 +1,6 @@
-- `nimitz start [<target>]` (a ship, squadron, fleet, or every fleet here)
-  wakes what is down, relaunches workers on an older Claude Code, and
-  attaches the leads' tabs, also after a Herdr closure or a reboot. It never
-  relaunches the member that runs it; `-f` relaunches live ones too.
-  `nimitz stop` is its opposite.
+- `nimitz start <path>` wakes what is down (by its exact id) and relaunches
+  workers on an older Claude Code; `nimitz restart <path>` relaunches live
+  ones too; `nimitz stop` is start's opposite. `nimitz muster` is the one
+  command after a reboot, a Claude Code update or a Herdr closure: it also
+  reattaches panes. A command that stops or relaunches you runs that step
+  last, after your turn ends.

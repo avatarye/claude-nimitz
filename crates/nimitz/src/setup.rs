@@ -438,8 +438,14 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
                     } else {
                         r.err(
                             &format!("hooks: the installed nimitz plugin ({}) does not register {}", p.display(), lacks.join(", ")),
-                            Some("/reload-plugins in each live session (a new session reads the plugin again), then nimitz doctor"),
+                            Some(PLUGIN_UPDATE_FIX),
                         );
+                    }
+                    // sessions load Claude Code's cached copy, not the repo: one
+                    // older than this binary lacks what it needs
+                    let cached = p.parent().and_then(Path::parent).and_then(|d| read_json(&d.join(".claude-plugin/plugin.json"))).and_then(|v| v["version"].as_str().map(str::to_string));
+                    if let Some(v) = cached.filter(|v| v != env!("CARGO_PKG_VERSION")) {
+                        r.warn(&format!("plugin: the cached nimitz plugin is {v}, this nimitz is {} (sessions load the cached copy, {})", env!("CARGO_PKG_VERSION"), p.parent().and_then(Path::parent).map(|d| d.display().to_string()).unwrap_or_default()), Some(PLUGIN_UPDATE_FIX));
                     }
                 }
                 None => r.err(&format!("hooks: the nimitz plugin is enabled but {} is missing or not JSON", p.display()), Some(&plugin_install_fix())),
@@ -624,6 +630,11 @@ fn formats_check(env: &nimitz_core::env::Env, r: &mut Report) {
 }
 
 /// The marketplace to add: this build's repo when it is still on disk, else GitHub.
+/// The fix for a cached plugin that is old or lacks a hook: sessions load
+/// Claude Code's cached copy (`~/.claude/plugins/cache/claude-nimitz/nimitz/<version>/`),
+/// never the repo, so the marketplace and the plugin are updated, then read again.
+const PLUGIN_UPDATE_FIX: &str = "claude plugin marketplace update claude-nimitz && claude plugin update nimitz@claude-nimitz, then /reload-plugins in each live session";
+
 pub fn plugin_install_fix() -> String {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source = match nimitz_core::os::canonical(&repo) {

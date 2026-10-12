@@ -849,7 +849,22 @@ fn plan_fleet(ctx: &Ctx, f: &Fleet, explicit: bool, rp: &mut RestorePlan) {
     }
     let before = rep.not_started;
     let mut never: Vec<String> = vec![];
-    for m in fleet_members(f) {
+    // the members in config order, but each squadron's ships after the ships
+    // they name in `depends_on`
+    let fod = crate::config::load_fleet(env, fleet).ok();
+    let mut order: Vec<&Member> = vec![&f.admiral];
+    for sq in &f.squadrons {
+        order.push(&sq.commodore);
+        let deps = fod
+            .as_ref()
+            .and_then(|fo| fo.squadrons.iter().find(|(_, s)| Some(s.squadron.as_str()) == sq.id.squadron()))
+            .map(|(_, s)| s.ships.iter().map(|sh| (sh.name.clone(), sh.depends_on.clone())).collect::<Vec<_>>())
+            .unwrap_or_default();
+        for id in crate::sessions::in_dependency_order(sq.ships.iter().map(|m| m.id.clone()).collect(), &deps) {
+            order.extend(sq.ships.iter().find(|m| m.id == id));
+        }
+    }
+    for m in order {
         if !crate::paths::covered(&ctx.paths, &m.id) {
             continue;
         }

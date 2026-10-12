@@ -654,21 +654,31 @@ fn issue_ship_elsewhere() {
     assert!(!lock.exists(), "a stop releases the folder");
 }
 
+/// What `nimitz start F/... --parked` plans (the jobs only), as one plan:
+/// its steps, its errors as refusals, the rest as warnings (the `up` of 0.6).
+fn up(w: &World, snap: &Snapshot, fleet: &str) -> nimitz_core::Plan {
+    let opts = nimitz_core::restore::RestoreOpts { parked: true, jobs_only: true, ..Default::default() };
+    let rp = nimitz_core::restore::plan_start(&w.env, snap, &Default::default(), None, None, false, &[nimitz_core::paths::Path::Under(Some(Id::admiral(fleet)))], opts, &Caller::User);
+    let (errors, warnings): (Vec<Issue>, Vec<Issue>) = rp.plan.warnings.into_iter().partition(|i| i.severity == Severity::Error);
+    nimitz_core::Plan { steps: rp.plan.steps, refusals: rp.plan.refusals.into_iter().chain(errors).collect(), warnings, ..Default::default() }
+}
+
 #[test]
-fn up_starts_ships_in_depends_on_order() {
+fn a_fleet_start_wakes_ships_in_depends_on_order() {
     let w = world();
-    // FRESH depends on STOPPED, so STOPPED comes first even though F sorts before S
+    // BARE depends on COPIES, so COPIES is woken first though BARE comes first in the config
     let sq = w.env.fleet_dir("MAIN").join("squadrons").join("argos").join("squadron.toml");
     let raw = std::fs::read_to_string(&sq).unwrap();
-    let at = raw.find("name = \"FRESH\"").expect("the FRESH ship");
+    let at = raw.find("name = \"BARE\"").expect("the BARE ship");
     let (head, tail) = raw.split_at(at);
-    std::fs::write(&sq, format!("{head}{}", tail.replacen("depends_on = []", "depends_on = [\"STOPPED\"]", 1))).unwrap();
+    std::fs::write(&sq, format!("{head}{}", tail.replacen("depends_on = []", "depends_on = [\"COPIES\"]", 1))).unwrap();
 
     let snap = w.snap();
-    let plan = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
-    let order: Vec<String> = plan.steps.iter().filter_map(|s| s.id.as_ref().map(|i| i.0.clone())).collect();
+    let opts = nimitz_core::restore::RestoreOpts { parked: true, jobs_only: true, ..Default::default() };
+    let rp = nimitz_core::restore::plan_start(&w.env, &snap, &Default::default(), None, None, false, &[nimitz_core::paths::Path::Under(Some(Id::admiral("MAIN")))], opts, &Caller::User);
+    let order: Vec<String> = rp.steps.iter().map(|s| s.id().0.clone()).collect();
     let pos = |id: &str| order.iter().position(|o| o == id);
-    assert!(pos("MAIN/ARGOS/STOPPED").is_some() && pos("MAIN/ARGOS/STOPPED") < pos("MAIN/ARGOS/FRESH"), "{order:?}");
+    assert!(pos("MAIN/ARGOS/COPIES").is_some() && pos("MAIN/ARGOS/COPIES") < pos("MAIN/ARGOS/BARE"), "{order:?}");
 }
 
 #[test]
@@ -755,24 +765,6 @@ fn relaunch_stops_a_live_ship_first_then_forks_and_drops_the_old_row() {
     assert_eq!(s.session_id, old.session_id, "same id, history kept (BUG-53)");
     assert_eq!(s.name, id.name(), "the drift is gone");
     assert!(sessions::session_issues(&w.env, &w.member(&w.snap(), &id)).is_empty());
-}
-
-#[test]
-fn up_starts_the_whole_fleet() {
-    let w = world();
-    let snap = w.snap();
-    let plan = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
-    // MAIN has broken members, so `up` refuses and names each one
-    assert!(!plan.ok());
-    for code in ["name.drift", "labels.missing", "dup.live", "folder.missing", "lineage.broken"] {
-        assert!(has(&plan.refusals, code), "{code} missing from {:?}", codes(&plan.refusals));
-    }
-    assert!(!has(&plan.refusals, "role.background"), "a background lead is a job like every member (0.4.0)");
-    // BETA is clean: up plans its admiral only
-    let plan = sessions::plan_up(&w.env, &snap, "BETA", &Caller::User);
-    assert!(plan.ok(), "{:?}", plan.refusals);
-    assert_eq!(plan.steps.len(), 1);
-    assert_eq!(plan.steps[0].id, Some(Id::admiral("BETA")));
 }
 
 #[test]
@@ -1074,12 +1066,13 @@ fn legacy_old_fleet_session_refuses_then_adopt_stop_start_relaunches_with_labels
     assert!(!leg.fix.as_deref().unwrap().contains("rm"), "never rm a live session: {:?}", leg.fix);
     assert!(!issues.iter().any(|i| i.code == "stowaway" && i.message.contains(&row.session_id)));
 
-    // start and up refuse: a second agent in the folder
+    // a start refuses, a fleet's start leaves it: a second agent in the folder
     let plan = w.start(&snap, &id, false);
     assert!(has(&plan.refusals, "legacy"), "{:?}", plan.refusals);
     assert!(w.steps_of(&plan, &id).is_empty());
-    let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
-    assert!(up.steps.iter().all(|s| s.id.as_ref() != Some(&id)), "up starts no second FRESH");
+    let opts = nimitz_core::restore::RestoreOpts { parked: true, jobs_only: true, ..Default::default() };
+    let up = nimitz_core::restore::plan_start(&w.env, &snap, &Default::default(), None, None, false, &[nimitz_core::paths::Path::Under(Some(Id::admiral("MAIN")))], opts, &Caller::User);
+    assert!(up.steps.iter().all(|s| s.id() != &id), "a fleet start starts no second FRESH");
 
     // adopt, then stop: the identity owns an unlabelled, stopped session
     let out = sessions::apply(&w.env, &sessions::plan_adopt(&w.env, &snap, &row.session_id, &id, &Caller::User));
@@ -1161,9 +1154,6 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
     assert_eq!(steps[0].cmd, claude::rm(&w.env, &olds[0]));
     assert_eq!(steps[1].cmd, claude::relaunch_bg(&w.env, &id, "", &newest.session_id));
     assert_eq!(steps[1].why, format!("continue the old fleet's session {} (newest of 3): its id becomes the ship's, history kept", olds[0]));
-    // up plans the same, not a cold launch
-    let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
-    assert!(up.steps.iter().any(|s| s.id.as_ref() == Some(&id) && s.cmd.contains(&"--resume".to_string())));
 
     let out = sessions::apply(&w.env, &plan);
     assert!(out.verified, "{:?}", out.issues);
@@ -1577,7 +1567,7 @@ fn no_plan_forks_a_session() {
             }
             assert!(sessions::no_fork(&snap, &sessions::plan_relaunch(&w.env, &snap, &id, &Caller::User)), "relaunch {id}");
         }
-        assert!(sessions::no_fork(&snap, &sessions::plan_up(&w.env, &snap, f.id.fleet(), &Caller::User)));
+        assert!(sessions::no_fork(&snap, &up(&w, &snap, f.id.fleet())));
     }
 }
 
@@ -2098,11 +2088,10 @@ fn a_held_parent_does_not_block_the_chain() {
     assert!(plan.ok(), "{:?}", plan.refusals);
     assert!(plan.steps.iter().all(|s| s.id.as_ref() != Some(&adm)), "nothing for the admiral: {:?}", plan.steps);
     assert!(plan.warnings.iter().any(|i| i.code == "held" && i.id.as_ref() == Some(&adm)), "{:?}", plan.warnings);
-    // (the sandbox fleet is full of broken ships, so `up` has refusals: none for the admiral)
-    let up = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
-    assert!(up.refusals.iter().all(|i| i.id.as_ref() != Some(&adm)), "{:?}", up.refusals);
+    // a fleet's start: the held admiral is said (`lead.interactive`, nothing for it), the ships still come up
+    let up = up(&w, &snap, "MAIN");
+    assert!(up.refusals.iter().any(|i| i.code == "lead.interactive" && i.id.as_ref() == Some(&adm)), "{:?}", up.refusals);
     assert!(up.steps.iter().any(|s| s.id == Some(w.ship("STOPPED"))) && up.steps.iter().all(|s| s.id.as_ref() != Some(&adm)), "{:?}", up.steps);
-    assert!(up.warnings.iter().any(|i| i.code == "held" && i.id.as_ref() == Some(&adm)));
 }
 
 /// Two crashed jobs in one plan wait out one window together, not one each.
@@ -2115,7 +2104,7 @@ fn the_crash_window_is_waited_once_for_every_member_of_a_plan() {
         assert_eq!(w.fake(&["__crash", &short]).0, 0);
     }
     let snap = w.snap();
-    let mut plan = sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
+    let mut plan = up(&w, &snap, "MAIN");
     plan.steps.retain(|s| ids.contains(s.id.as_ref().unwrap()));
     plan.refusals.clear();
     assert_eq!(plan.steps.iter().filter(|s| s.cmd.contains(&"--resume".to_string())).count(), 2, "{:?}", plan.steps);

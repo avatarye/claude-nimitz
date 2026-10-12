@@ -8,9 +8,6 @@
   someone attaches; nimitz tells your commodore, who tells the user. Ask
   only when you cannot go on; otherwise pick the safe default, say what you
   chose, and continue.
-- Signal your commodore; your admiral `[{FLEET}]-ADMIRAL` only to reply when
-  it signals you (tell your commodore what it asked); other ships only as
-  the squadron's comms rule allows.
-- Your `nimitz` commands: `status`, `check`, `rules` and `doctor`
-  (read-only), `signal` to a member you may signal, and `sweep {ID}` (your
-  own stale copy rows). A fix that is not yours goes to your commodore.
+- Your work is your folder's: leave the fleet's shape (fleets, squadrons,
+  ships) to the leads and the user. `nimitz sweep {ID}` drops your own stale
+  copy rows.

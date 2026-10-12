@@ -1751,16 +1751,16 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
     w.finish();
 }
 
-/// One restore after a Claude Code update (real Claude Code): the installed
+/// One muster after a Claude Code update (real Claude Code): the installed
 /// version reads newer than every worker's (a wrapper as the native binary
 /// answers `--version` with 2.1.999 and runs the real one for the rest), so
-/// `restore --jobs-only` relaunches each live member, the ship first, then
+/// `muster F/...` relaunches each live member, the ship first, then
 /// the commodore, then the admiral: the same session id, a new process on
 /// the binary the worker runs, its labels intact. The test's own members
-/// only; no multiplexer (`--jobs-only`).
+/// only; no multiplexer (muster runs the job steps alone).
 #[cfg(unix)]
 #[test]
-fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
+fn e2e_muster_relaunches_workers_older_than_the_installed_claude() {
     if !gated() {
         return;
     }
@@ -1777,18 +1777,18 @@ fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
     }).collect();
     let newer = w.base.join("bin").join("claude-newer");
     executable(&newer, &format!("#!/bin/sh\nfor a; do [ \"$a\" = --version ] && {{ echo '2.1.999 (Claude Code)'; exit 0; }}; done\nexec '{}' \"$@\"\n", w.native));
-    let restore = |form: &str| {
+    let muster = |form: &str| {
         let mut c = w.nz_cmd();
         c.env("NIMITZ_NATIVE_CLAUDE_BIN", &newer).args(["muster", &format!("{}/...", w.fleet), form]);
         E2e::run(c)
     };
-    let (code, plan) = restore("--plan");
+    let (code, plan) = muster("--plan");
     assert_eq!(code, 0, "{plan}");
     assert!(plan.contains("Claude Code updated to 2.1.999  ·  3 to relaunch"), "{plan}");
     for id in &ids {
         assert!(plan.lines().any(|l| l.trim_start().starts_with(&format!("{id} ")) && l.contains("-> relaunch (same id and history)")), "{id}:\n{plan}");
     }
-    let (code, out) = restore("--yes");
+    let (code, out) = muster("--yes");
     println!("{out}");
     assert_eq!(code, 0, "{out}");
     let order: Vec<&str> = out.lines().filter(|l| l.starts_with("[OK] ") && l.contains(" -> stopped ")).filter_map(|l| l.strip_prefix("[OK] ")?.split(':').next()).collect();

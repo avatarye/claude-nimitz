@@ -850,9 +850,9 @@ impl App {
             }
         }
         let Some(b) = &self.bundle else { return None };
-        // start, relaunch, a fleet's restore: `nimitz start` itself (the CLI plans and runs)
+        // start, restart, up, a fleet's muster: the CLI itself (it plans and runs)
         // (demo data has no CLI world behind it: there the plans are previews)
-        if matches!(act, Act::Restore | Act::Start | Act::Relaunch) && (self.ctx.live || act == Act::Restore) {
+        if matches!(act, Act::Restore | Act::Start | Act::Relaunch | Act::Up) && (self.ctx.live || act == Act::Restore) {
             match actions::prepare_start(&self.ctx, b.mux_caps, &b.snap, &self.target(), act) {
                 Ok(p) => self.modal = Some(Modal::Confirm(p)),
                 Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),

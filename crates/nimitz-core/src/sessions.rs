@@ -962,77 +962,9 @@ fn already_refused(plan: &Plan, id: &Id) -> bool {
     plan.refusals.iter().any(|i| i.id.as_ref() == Some(id) || i.id.is_none())
 }
 
-/// Start every member of `fleet` that should run on this machine (the `up`
-/// of 0.6; Admiralty's `u` until 0.7.3 settles its keys).
-pub fn plan_up(env: &Env, snap: &Snapshot, fleet: &str, caller: &Caller) -> Plan {
-    let mut plan = Plan { summary: format!("up {fleet}: reconcile the config with the running sessions"), ..Default::default() };
-    let _ = caller;
-    let Some(f) = snap.fleets.iter().find(|f| f.id.fleet() == fleet) else {
-        refuse(&mut plan, "member.unknown", format!("no fleet {fleet} in the config"), None, None);
-        return plan;
-    };
-    // a fleet.toml that does not parse: that error and its fix, nothing else (M8)
-    let fod = match crate::config::load_fleet(env, fleet) {
-        Ok(fod) => Some(fod),
-        Err(i) if i.code == "config.invalid" => {
-            plan.refusals.push(i);
-            return plan;
-        }
-        Err(_) => None,
-    };
-    if f.machine.is_none() {
-        refuse(&mut plan, "machine.missing", format!("fleet {fleet} does not run on this machine"), Some(format!("nimitz machine add {fleet} <label>")), None);
-        return plan;
-    }
-    gate(env, &mut plan, snap, Some(&f.id), false);
-    let mut ids = vec![f.admiral.id.clone()];
-    for sq in &f.squadrons {
-        ids.push(sq.commodore.id.clone());
-        // ships with a folder on this machine, in depends_on order
-        let here: Vec<Id> = sq.ships.iter().filter(|s| s.cwd.is_some()).map(|s| s.id.clone()).collect();
-        let deps = fod
-            .as_ref()
-            .and_then(|f| f.squadrons.iter().find(|(_, s)| Some(s.squadron.as_str()) == sq.id.squadron()))
-            .map(|(_, s)| s.ships.iter().map(|sh| (sh.name.clone(), sh.depends_on.clone())).collect::<Vec<_>>())
-            .unwrap_or_default();
-        ids.extend(in_dependency_order(here, &deps));
-    }
-    let mut live_already = 0usize;
-    for id in ids {
-        let clean_live = member(snap, &id)
-            .map(|(_, m)| {
-                m.session.as_ref().map(|p| p.pid.is_some() && !held_row(m, p)).unwrap_or(false)
-                    && session_issues(env, m).iter().all(|i| i.severity != Severity::Error)
-            })
-            .unwrap_or(false);
-        if clean_live {
-            live_already += 1;
-            continue;
-        }
-        // a held member (a 0.3.x interactive lead still running) is live for
-        // the fleet: the rest comes up; the warning says how to migrate it
-        if let Some(h) = member(snap, &id).and_then(|(_, m)| held_of(m).map(|h| held_issue(m, h))) {
-            plan.warnings.push(h);
-            continue;
-        }
-        gate(env, &mut plan, snap, Some(&id), false);
-        if !already_refused(&plan, &id) {
-            start_member(env, &mut plan, snap, &id, StartOpts::default());
-        }
-    }
-    if plan.steps.is_empty() && plan.refusals.is_empty() && live_already > 0 {
-        // the empty plan says why (M25)
-        plan.warnings.push(issue("session.live", Severity::Info, format!("nothing to do: every member of {fleet} on this machine ({live_already}) is live"), None, Some(Id::admiral(fleet))));
-    }
-    dedup_issues(&mut plan);
-    mark_repairs(&mut plan);
-    debug_assert!(no_fork(snap, &plan), "a plan would fork a session: {:?}", plan.steps);
-    plan
-}
-
 /// Ships before the ships that declare them in `depends_on`. A cycle or an
 /// unknown name never drops a ship: it keeps its place (`check` reports it).
-fn in_dependency_order(ids: Vec<Id>, deps: &[(String, Vec<String>)]) -> Vec<Id> {
+pub(crate) fn in_dependency_order(ids: Vec<Id>, deps: &[(String, Vec<String>)]) -> Vec<Id> {
     let dep_of = |id: &Id| -> Vec<String> {
         let name = id.parts().get(2).map(|s| s.to_string()).unwrap_or_default();
         deps.iter().find(|(n, _)| *n == name).map(|(_, d)| d.clone()).unwrap_or_default()

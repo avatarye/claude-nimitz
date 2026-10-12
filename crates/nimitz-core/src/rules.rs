@@ -1,7 +1,7 @@
 //! Role rules and role briefs. Owner: core-sessions.
 //!
 //! The rules (`rules/*.md`, compiled in) are what a member must know about
-//! its role: the authority table, the chain, plan-first. The SessionStart hook
+//! its role: the roles, paths, plan-first. The SessionStart hook
 //! hands them to every labelled session (startup, resume, clear, compact), and
 //! a session that runs on older rules gets the update at its next turn
 //! (`update_for`, from the UserPromptSubmit hook), so a new nimitz build
@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 /// Bump when the rules text changes in a way members must pick up, and add
 /// the version's entry to `CHANGELOG`.
-pub const VERSION: u32 = 9;
+pub const VERSION: u32 = 10;
 
 /// What changed in each rules version, oldest first (one entry per version;
 /// a member on v{N} gets the entries after N with the new text).
@@ -84,6 +84,13 @@ pub const CHANGELOG: &[(u32, &str)] = &[
         9,
         "the rules are shorter, with nothing a member does changed; `nimitz start` is in the leads' rules only; \
          the fleet's own rules (its harness) now come as a context of their own, up to 9,500 characters",
+    ),
+    (
+        10,
+        "no authority: every member may run every `nimitz` command on any member, and any member may message any member; \
+         members are named by paths (`F`, `F/SQ`, `F/SQ/SHIP`; `F/...` everything under one); the user attaches with `nimitz open <id>`; \
+         `start` (jobs only), `restart` (relaunch), `stop`, and `muster` (after a reboot, an update or a Herdr closure); \
+         a command that stops or relaunches you runs that step last, after your turn ends",
     ),
 ];
 
@@ -461,10 +468,10 @@ mod tests {
         let t = text(&Id::commodore("HOME", "GITHUB"));
         assert!(t.starts_with(&format!("# nimitz fleet rules (rules v{VERSION}) for HOME/GITHUB")), "{t}");
         assert!(t.contains("You are [HOME.GITHUB]-COMMODORE, the commodore of squadron GITHUB in fleet HOME"));
-        assert!(t.contains("`ship new|set|rm HOME/GITHUB/<SHIP>`") && t.contains("[nimitz needs-you]"));
+        assert!(t.contains("`ship new|set|rm\n  HOME/GITHUB/<SHIP>`") && t.contains("[nimitz needs-you]"), "{t}");
         assert!(!placeholder_left(&t), "every placeholder filled: {t}");
         let a = text(&Id::admiral("HOME"));
-        assert!(a.contains("## Admiral of HOME") && a.contains("Never another fleet"));
+        assert!(a.contains("## Admiral of HOME") && a.contains("You run fleet HOME"));
         let s = text(&Id::ship("HOME", "GITHUB", "DEV"));
         assert!(s.contains("[HOME.GITHUB]-DEV, the ship in squadron GITHUB") && s.contains("no one watches your pane"));
         assert!(!t.contains("tender") && !a.contains("tender") && !s.contains("tender"), "the role is gone");
@@ -472,12 +479,17 @@ mod tests {
             assert!(text(&id).len() < 10_000, "fits SessionStart's 10,000-character context limit");
             assert!(update_text(&id, 0).len() < 10_000, "the whole changelog plus the text fits too");
         }
-        // 0.4.0 wording: comms and nimitz for every member
-        assert!(a.contains("signal a ship of your fleet directly"), "{a}");
-        assert!(s.contains("[HOME]-ADMIRAL` only to reply") && s.contains("`sweep HOME/GITHUB/DEV`"), "{s}");
-        assert!(t.contains("Every member may run `nimitz`"), "{t}");
-        // 0.7.2: `start` is in the leads' rules, not a ship's
-        assert!(a.contains("`nimitz start [<target>]`") && t.contains("`nimitz start [<target>]`") && !s.contains("nimitz start ["), "{s}");
+        // 0.7.3: no authority lists, open messaging, paths, the new verbs
+        for r in [&t, &a, &s] {
+            assert!(r.contains("Every member may run every `nimitz` command on any member") && r.contains("any member may message any member") && r.contains("`F/...`") && r.contains("`nimitz open <id>`"), "{r}");
+            assert!(!r.contains("may not") && !r.contains("Never another") && !r.contains("comms") && !r.contains("-p`") && !r.contains(" -f`"), "{r}");
+        }
+        assert!(s.contains("`nimitz sweep HOME/GITHUB/DEV`"), "{s}");
+        // `start`, `restart`, `muster` are in the leads' rules, not a ship's
+        for r in [&t, &a] {
+            assert!(r.contains("`nimitz start <path>`") && r.contains("`nimitz restart <path>`") && r.contains("`nimitz muster`"), "{r}");
+        }
+        assert!(!s.contains("nimitz start <path>"), "{s}");
         // 0.7: the knowledge base through its two subagents, in every role
         for r in [&t, &a, &s] {
             assert!(r.contains("`nimitz:kb-scribe`") && r.contains("`nimitz:kb-ref`"), "{r}");

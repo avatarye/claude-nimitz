@@ -477,7 +477,7 @@ mod tests {
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
         let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
         assert!(ctx.starts_with(&format!("nimitz rules updated v1\u{2192}v{}", crate::rules::VERSION)), "{ctx}");
-        assert!(ctx.contains("- v2-v6: older changes, superseded") && ctx.contains(&crate::rules::text(&id)), "changelog and the full text: {ctx}");
+        assert!(ctx.contains(&format!("- v2-v{}: older changes, superseded", crate::rules::VERSION - 3)) && ctx.contains(&crate::rules::text(&id)), "changelog and the full text: {ctx}");
         assert!(!ctx.contains("- v1:"), "only the entries after v1");
         let d = crate::rules::delivered(&env, "session:s-up").expect("recorded by session id: no job here");
         assert_eq!((d.version, d.via.as_str(), d.session_id.as_str()), (crate::rules::VERSION, "UserPromptSubmit", "s-up"));

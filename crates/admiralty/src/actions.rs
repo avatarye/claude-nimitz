@@ -79,7 +79,7 @@ impl Act {
     pub fn label(self) -> &'static str {
         match self {
             Act::Start => "start (top-down: admiral, commodore, then this)",
-            Act::Up => "up: start everything this fleet runs here",
+            Act::Up => "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked)",
             Act::Open => "open: attach in a new pane",
             Act::Stop => "stop",
             Act::Relaunch => "relaunch (same session id and history; labels, name and mode restored)",
@@ -348,8 +348,8 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
             let id = member_id(target).ok_or("no member")?;
             with_panes(act, format!("nimitz start {id}"), nimitz_core::sessions::plan_start(env, snap, &id, &user, false))
         }
-        // (`up` is gone from the CLI: the nearest command, until 0.7.3 step 7 settles Admiralty's keys)
-        (Act::Up, Target::Fleet(id)) => with_panes(act, format!("nimitz start {id}/... --parked"), nimitz_core::sessions::plan_up(env, snap, id.fleet(), &user)),
+        // `u`: every member of the fleet up, the parked ships too (`nimitz start F/... --parked`)
+        (Act::Up, Target::Fleet(_)) => return prepare_start(ctx, caps, snap, target, act),
         (Act::Stop, _) => {
             let id = member_id(target).ok_or("no member")?;
             with_panes(act, format!("nimitz stop {id}"), nimitz_core::sessions::plan_stop(env, snap, &id, &user))
@@ -470,7 +470,10 @@ pub fn prepare_start(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, ac
         Act::Restore => "muster",
         _ => "start",
     };
-    let args = vec![verb.to_string(), path];
+    let mut args = vec![verb.to_string(), path];
+    if act == Act::Up {
+        args.push("--parked".into());
+    }
     let out = cli_command(&ctx.env, &bin).args(&args).args(["--plan", "--json"]).output().map_err(|e| format!("{bin}: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let command = format!("nimitz {}", args.join(" "));
