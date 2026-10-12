@@ -21,11 +21,6 @@ pub fn place_for(id: &Id) -> Place {
     Place::Tab { workspace: workspace_of(id), label: tab_of(id) }
 }
 
-/// The pane that shows `session_id`, if the mux knows one.
-pub fn pane_of(mux: &dyn Mux, session_id: &str) -> Option<PaneRef> {
-    shown_in(mux, session_id).map(|p| p.pane)
-}
-
 /// The pane that shows `session_id`, with how nimitz knows (`Pane.inferred`).
 pub fn shown_in(mux: &dyn Mux, session_id: &str) -> Option<nimitz_mux::Pane> {
     mux.panes().into_iter().find(|p| p.session_id.as_deref() == Some(session_id))
@@ -39,7 +34,7 @@ pub fn untypeable(id: &Id, pane: &PaneRef) -> Issue {
     refusal(
         "tab.unverified",
         format!("{id}'s tab (pane {}) is known by its attach alone and does not run exactly `claude attach <its job>` now (the agent view after /exit re-execs as `claude agents`, R-24); nothing is typed into it", pane.pane_id),
-        Some(format!("nimitz start {id} -p, and type it there yourself")),
+        Some(format!("nimitz open {id}, and type it there yourself")),
         Some(id.clone()),
     )
 }
@@ -61,23 +56,6 @@ pub fn wait_for_session(mux: &dyn Mux, session_id: &str, secs: f64) -> Option<ni
 
 pub fn refusal(code: &str, message: String, fix: Option<String>, id: Option<Id>) -> Issue {
     Issue { code: code.into(), severity: Severity::Error, message, fix, id }
-}
-
-/// A member caller sees only fixes it may run itself (`sessions::may_run_in`,
-/// the authority table); any other fix becomes "ask the user to run: ..."
-/// (BUG-51). The user sees every fix as is.
-pub fn fixes_for(env: &nimitz_core::env::Env, caller: &nimitz_core::Caller, plan: &mut Plan) {
-    if *caller == nimitz_core::Caller::User {
-        return;
-    }
-    for i in plan.refusals.iter_mut().chain(plan.warnings.iter_mut()) {
-        if let Some(f) = i.fix.take() {
-            // `restore.self`: the restore that relaunches the caller is the
-            // user's, from a shell, whatever the caller may run itself
-            let mine = !matches!(i.code.as_str(), "restore.self" | "start.self") && nimitz_core::sessions::may_run_in(Some(env), caller, &f);
-            i.fix = Some(if mine { f } else { format!("ask the user to run: {f}") });
-        }
-    }
 }
 
 /// Gate, then run. Returns the exit code.
@@ -110,7 +88,7 @@ pub fn attach_issue(id: &Id, e: AttachError) -> Issue {
         AttachError::Taken { pane, running } => refusal(
             "tab.taken",
             format!("{id}'s tab is open but its pane {} runs `{running}`, not a shell; nothing was typed into it", pane.pane_id),
-            Some(format!("in pane {}: ctrl-z (an attach) or quit `{running}`, then nimitz start {id} -p", pane.pane_id)),
+            Some(format!("in pane {}: ctrl-z (an attach) or quit `{running}`, then nimitz open {id}", pane.pane_id)),
             Some(id.clone()),
         ),
         AttachError::Mux(e) => refusal("mux.failed", format!("attaching {id} failed: {e}"), None, Some(id.clone())),

@@ -1,28 +1,20 @@
 //! `nimitz kb ...`: the fleet's knowledge base on this machine (its folder
 //! from the fleet's settings, `nimitz_core::fleet_settings::kb`) and its git
 //! (`nimitz_core::kb`). The kb-scribe and kb-ref subagents run these inside
-//! a fleet member's session, so the fleet is the member's own; the user names
-//! it with `--fleet F`.
+//! a fleet member's session, so the fleet is the member's own by default;
+//! `--fleet F` names any.
 use crate::out;
-use crate::run::refusal;
 use crate::Ctx;
 use nimitz_core::fleet_settings;
 use nimitz_core::kb::{self, Committed};
-use nimitz_core::Caller;
 
-/// The fleet a command is about: a member's own (`--fleet` may only repeat
-/// it), else the user's `--fleet F`. `Err(Ok(code))`: refused, said already.
+/// The fleet a command is about: `--fleet F`, else a member's own.
+/// `Err(Ok(code))`: refused, said already.
 pub fn fleet_of(ctx: &Ctx) -> Result<String, Result<i32, String>> {
-    let named = ctx.args.value("--fleet");
-    match (&ctx.caller, named) {
-        (Caller::Member { id, .. }, None) => Ok(id.fleet().to_string()),
-        (Caller::Member { id, .. }, Some(f)) if f == id.fleet() => Ok(f.to_string()),
-        (Caller::Member { id, .. }, Some(f)) => {
-            out::issue(&refusal("authority", format!("{} works with its own fleet's ({}) settings and knowledge base, not {f}'s", id.name(), id.fleet()), None, None));
-            Err(Ok(1))
-        }
-        (Caller::User, Some(f)) => Ok(f.to_string()),
-        (Caller::User, None) => Err(Err("name the fleet: --fleet F (inside a fleet member's session it is the member's own)".into())),
+    match (nimitz_core::sessions::verified(&ctx.caller), ctx.args.value("--fleet")) {
+        (_, Some(f)) => Ok(f.to_string()),
+        (Some(id), None) => Ok(id.fleet().to_string()),
+        (None, None) => Err(Err("name the fleet: --fleet F (inside a fleet member's session it is the member's own)".into())),
     }
 }
 
@@ -140,17 +132,13 @@ fn sync_line(ctx: &Ctx, dir: &std::path::Path) {
     }
 }
 
-/// `nimitz kb clone --fleet F`: the user's. The remote into this machine's
+/// `nimitz kb clone --fleet F`: the remote into this machine's
 /// folder, both from the fleet's settings; `--plan` says what it would do.
 fn clone(ctx: &Ctx, fleet: &str) -> Result<i32, String> {
     ctx.args.allow(&["--fleet"])?;
     ctx.args.at_most(1)?;
-    if let Caller::Member { id, .. } = &ctx.caller {
-        out::issue(&refusal("authority", format!("`nimitz kb clone` makes a folder on this machine: the user's alone, not {}'s", id.name()), None, None));
-        return Ok(1);
-    }
     let k = fleet_settings::kb(&ctx.env, fleet)?;
-    let remote = k.remote.clone().ok_or(format!("fleet {fleet}'s knowledge base names no remote: nimitz fleet settings set kb.remote <git url> --fleet {fleet}"))?;
+    let remote = k.remote.clone().ok_or(format!("fleet {fleet}'s knowledge base names no remote: nimitz settings set kb.remote <git url> --fleet {fleet}"))?;
     if k.dir.join(".git").exists() {
         out::ok(&format!("{} is cloned already", k.dir.display()));
         return Ok(0);
@@ -168,11 +156,11 @@ fn clone(ctx: &Ctx, fleet: &str) -> Result<i32, String> {
     Ok(0)
 }
 
-/// `nimitz fleet settings get [<key>]` / `set <key> <value>` (`null`
-/// removes it): every member reads its own fleet's; the admiral and the
-/// user change them, planned.
+/// `nimitz settings get [<key>]` / `set <key> <value>` (`null` removes it):
+/// the fleet's settings.json (`--fleet F`, a member's default its own),
+/// read, or changed planned.
 pub fn settings(ctx: &Ctx) -> Result<i32, String> {
-    let verb = ctx.args.need(1, "get|set")?.to_string();
+    let verb = ctx.args.need(0, "get|set")?.to_string();
     ctx.args.allow(&["--fleet"])?;
     let fleet = match fleet_of(ctx) {
         Ok(f) => f,
@@ -180,10 +168,10 @@ pub fn settings(ctx: &Ctx) -> Result<i32, String> {
     };
     match verb.as_str() {
         "get" => {
-            ctx.args.at_most(3)?;
+            ctx.args.at_most(2)?;
             let f = nimitz_core::config::load_fleet(&ctx.env, &fleet).map_err(|i| i.message)?;
             let m = fleet_settings::load(&f)?;
-            let v = match ctx.args.pos.get(2) {
+            let v = match ctx.args.pos.get(1) {
                 None => serde_json::Value::Object(m),
                 Some(key) => match fleet_settings::get(&m, key)? {
                     Some(v) => v.clone(),
@@ -200,12 +188,12 @@ pub fn settings(ctx: &Ctx) -> Result<i32, String> {
             Ok(0)
         }
         "set" => {
-            ctx.args.at_most(4)?;
-            let key = ctx.args.need(2, "the key (e.g. kb.remote)")?;
-            let value = fleet_settings::parse_value(ctx.args.need(3, "the value (JSON, or text; null removes the key)")?);
-            let plan = fleet_settings::plan_set(&ctx.env, &fleet, key, (!value.is_null()).then_some(value), ctx.caller == Caller::User);
-            Ok(crate::crud::config_plan(ctx, plan, Some(&nimitz_core::Id::admiral(&fleet))))
+            ctx.args.at_most(3)?;
+            let key = ctx.args.need(1, "the key (e.g. kb.remote)")?;
+            let value = fleet_settings::parse_value(ctx.args.need(2, "the value (JSON, or text; null removes the key)")?);
+            let plan = fleet_settings::plan_set(&ctx.env, &fleet, key, (!value.is_null()).then_some(value));
+            Ok(crate::crud::config_plan(ctx, plan))
         }
-        v => Err(format!("fleet settings {v}: use get or set")),
+        v => Err(format!("settings {v}: use get or set")),
     }
 }

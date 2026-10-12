@@ -134,7 +134,7 @@ fn session_commands_match_the_cli() {
     if let Ok(m) = app.message_plan() {
         cli(&app, &actions::signal_command(&m, "hello there"));
     }
-    cli(&app, &actions::signal_command(&actions::MessagePlan { id: Id("MAIN".into()), to: "[MAIN]-ADMIRAL".into(), via: "[MAIN]-ADMIRAL".into(), pane: nimitz_mux::PaneRef { pane_id: "p".into(), tab_id: None, workspace_id: None }, relay: false, attach_job: None }, "it's me"));
+    cli(&app, &actions::signal_command(&actions::MessagePlan { id: Id("MAIN".into()), to: "[MAIN]-ADMIRAL".into(), via: "[MAIN]-ADMIRAL".into(), pane: nimitz_mux::PaneRef { pane_id: "p".into(), tab_id: None, workspace_id: None }, attach_job: None }, "it's me"));
 }
 
 #[test]
@@ -150,7 +150,6 @@ fn form_commands_match_the_cli() {
     forms.push(f);
     let mut f = Form::new_squadron("MAIN");
     f.set("squadron", "CIRRUS");
-    f.set("comms", "allow:MAIN/ARGOS/CLEAN");
     f.set("brief", "Clouds, with 'quotes'.");
     forms.push(f);
     let mut f = Form::new_ship("MAIN", "ARGOS", "sandbox");
@@ -163,7 +162,6 @@ fn form_commands_match_the_cli() {
     f.set("mode", "plan");
     forms.push(f);
     let mut f = Form::edit_squadron(&env, &Id("MAIN/ARGOS".into())).unwrap();
-    f.set("comms", "commodore-only");
     f.set("brief", "New brief.");
     f.set("mode", "auto");
     forms.push(f);
@@ -194,7 +192,7 @@ fn layout_is_cores_plan_and_the_cli_takes_its_command() {
     keys(&mut app, "x");
     keys(&mut app, "S");
     let Some(admiralty::app::Modal::Confirm(p)) = &app.modal else { panic!("{}", toast(&app)) };
-    assert_eq!(p.command, "nimitz layout herdr MAIN --ships");
+    assert_eq!(p.command, "nimitz layout MAIN/... --ships");
     let lp = p.layout.as_ref().expect("a layout for the mux");
     // --ships: a tab attaching each live ship, in its squadron's workspace
     let argos = lp.workspaces.iter().find(|(w, _)| w == "MAIN.ARGOS").expect("workspace MAIN.ARGOS");
@@ -252,7 +250,6 @@ fn each_form_command_stores_what_the_form_stores() {
         ("new squadron", |_| {
             let mut f = Form::new_squadron("MAIN");
             f.set("squadron", "CIRRUS");
-            f.set("comms", "allow:MAIN/ARGOS/CLEAN");
             f.set("brief", "Clouds, with 'quotes'.");
             f
         }),
@@ -279,7 +276,6 @@ fn each_form_command_stores_what_the_form_stores() {
         }),
         ("edit squadron", |env| {
             let mut f = Form::edit_squadron(env, &Id("MAIN/ARGOS".into())).unwrap();
-            f.set("comms", "commodore-only");
             f.set("brief", "New brief.");
             f.set("mode", "auto");
             f

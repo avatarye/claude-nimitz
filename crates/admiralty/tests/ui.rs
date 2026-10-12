@@ -42,11 +42,11 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     goto(&mut t.app, "F:MAIN");
     assert_eq!(t.app.current().unwrap().node.kind, Kind::FleetBand);
     // squadron bars: filled in the status colour, dark text
-    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("comms")).unwrap();
+    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
     let x = ls[kits].find("KITS").unwrap() as u16;
     assert_eq!((buf[(x, kits as u16)].bg, buf[(x, kits as u16)].fg), (mono::NEEDS, mono::INK), "KITS needs you");
     assert_eq!(buf[(0, (kits + 1) as u16)].fg, mono::LINE, "the sides stay neutral");
-    let argos = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
+    let argos = ls.iter().position(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
     let b = t.app.bundle.clone().unwrap();
     let argos_sq = b.snap.fleets.iter().flat_map(|f| f.squadrons.iter()).find(|q| q.id.0 == "MAIN/ARGOS").unwrap();
     let members: Vec<&nimitz_core::Member> = std::iter::once(&argos_sq.commodore).chain(argos_sq.ships.iter()).collect();
@@ -62,7 +62,7 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     goto(&mut t.app, "SQ:MAIN/KITS");
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
-    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("comms")).unwrap();
+    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
     let x = ls[kits].find("KITS").unwrap() as u16;
     let c = &buf[(x, kits as u16)];
     assert_eq!((c.bg, c.fg), (mono::NEEDS, mono::INK), "selected: same fill, same text");
@@ -203,8 +203,8 @@ fn the_tab_carries_the_fleets_state_and_counts() {
     let ls = lines(&draw(&mut t.app, 200, 60));
     assert!(ls[0].contains("needs you") && ls[0].contains("!2 / *3 / -2 / x1"), "needs-you first: {}", ls[0]);
     let end = |l: &str| l.trim_end().chars().count();
-    let argos = ls.iter().find(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
-    let kits = ls.iter().find(|l| l.contains("KITS") && l.contains("comms")).unwrap();
+    let argos = ls.iter().find(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
+    let kits = ls.iter().find(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
     assert_eq!(end(argos), end(kits), "{argos}\n{kits}");
     let ls = lines(&draw(&mut t.app, 90, 40));
     assert!(ls[0].contains("!2") && !ls[0].contains("*4"), "narrow: {}", ls[0]);
@@ -217,7 +217,8 @@ fn the_tab_carries_the_fleets_state_and_counts() {
 fn columns_line_up_across_fleet_squadron_and_stowaway_frames() {
     let mut t = demo();
     let ls = lines(&draw(&mut t.app, 200, 60));
-    let header = col_of(&ls, "STATUS", "STATUS");
+    // no column-name row: the row under the fleet tabs is blank
+    assert!(ls[1].trim().is_empty() && !ls.iter().any(|l| l.contains("STATUS")), "{}", ls[1]);
     let admiral = col_of(&ls, "ADMIRAL   ", "- idle");
     let ship = col_of(&ls, "BOOM", "- idle");
     tab(&mut t.app, "FORGE");
@@ -225,7 +226,6 @@ fn columns_line_up_across_fleet_squadron_and_stowaway_frames() {
     let stow = col_of(&forge, "scratch-run", "* live");
     let cast = forge.iter().find(|l| l.contains("CAST") && l.contains("- idle")).unwrap();
     let forge_ship = cast[..cast.find("- idle").unwrap()].chars().count();
-    assert_eq!(header, admiral);
     assert_eq!(admiral, ship);
     assert_eq!(ship, stow);
     assert_eq!(ship, forge_ship);
@@ -339,7 +339,7 @@ fn renders_at_narrow_and_wide_sizes() {
         keys(&mut t.app, "w");
         let s = screen(&mut t.app, w, h);
         assert!(s.contains("ADMIRALTY"), "{w}x{h}");
-        assert!(s.contains("NAME"), "{w}x{h}");
+        assert!(s.contains("q quit"), "{w}x{h}");
         assert!(s.contains("detail"), "{w}x{h}");
     }
 }
@@ -372,7 +372,7 @@ fn the_detail_panel_floats_over_the_list_on_w_and_follows_the_cursor() {
     keys(&mut t.app, "ww");
     assert!(!t.app.detail_open);
     let s = screen(&mut t.app, 200, 50);
-    assert!(s.lines().last().unwrap().contains("w detail") && !s.contains("v/s"), "key bar: {}", s.lines().last().unwrap());
+    assert!(!s.contains("v/s"), "{s}");
     assert!(admiralty::app::HELP.iter().any(|(k, d)| *k == "w" && d.contains("detail")));
     assert!(!admiralty::app::HELP.iter().any(|(k, _)| k.contains("v / s")));
     // `s` and `v` no longer do anything on the list
@@ -492,7 +492,7 @@ fn enter_on_a_pane_row_focuses_it_and_exit_after_jump_quits() {
     goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
     assert!(press(&mut t.app, KeyCode::Enter).is_none());
     let Some(Modal::Confirm(p)) = t.app.modal.take() else { panic!("{}", toast(&t.app)) };
-    assert_eq!(p.command, "nimitz start MAIN/ARGOS/BOOM -p");
+    assert_eq!(p.command, "nimitz open MAIN/ARGOS/BOOM");
 }
 
 #[test]
@@ -517,14 +517,54 @@ fn help_has_a_legend_line_for_each_icon() {
 }
 
 #[test]
-fn the_footer_keeps_help_first_at_every_width() {
+fn the_status_rows_end_on_keys_and_quit_at_every_width() {
     for w in [40u16, 60, 80, 120, 200] {
         let mut t = demo();
         let ls = lines(&draw(&mut t.app, w, 24));
-        let foot = &ls[23];
-        assert!(foot.trim_start().starts_with("? help"), "{w}: {foot}");
-        assert!(foot.contains("q/esc quit"), "{w}: {foot}");
+        // no key row: the ADMIRALTY row ends on `? keys` (from 60 columns),
+        // the row under it on `q quit`, both flush to the right edge
+        if w >= 60 {
+            assert!(ls[22].trim_end().ends_with("? keys") && ls[22].chars().count() == w as usize, "{w}: {}", ls[22]);
+        }
+        assert!(ls[23].trim_end().ends_with("q quit"), "{w}: {}", ls[23]);
+        assert!(!ls.iter().any(|l| l.contains("? help") || l.contains("q/esc")), "{w}: the key row is gone");
     }
+}
+
+/// The second status row: the nimitz version, Claude Code and its support,
+/// the machine, the refresh, in words, then short words at 80 columns.
+#[test]
+fn the_second_status_row_names_versions_machine_and_refresh() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    let ours = env!("CARGO_PKG_VERSION");
+    *t.app.nimitz_version.lock().unwrap() = Some(ours.to_string());
+    t.app.bundle.as_mut().unwrap().snap.compat_ok = true;
+    let ls = lines(&draw(&mut t.app, 120, 24));
+    assert!(ls[23].starts_with(&format!(" nimitz {ours}   Claude Code 2.1.291 (supported)   machine west-mac")), "{}", ls[23]);
+    assert!(ls[23].trim_end().ends_with("refreshed 0s ago  q quit"), "{}", ls[23]);
+    assert!(!ls[22].contains("Claude Code") && !ls[22].contains("nimitz"), "the ADMIRALTY row keeps the fleets: {}", ls[22]);
+    let ls = lines(&draw(&mut t.app, 80, 24));
+    assert!(ls[23].starts_with(&format!(" nimitz {ours}  CC 2.1.291  west-mac")) && ls[23].trim_end().ends_with("0s ago  q quit"), "{}", ls[23]);
+    // the mismatch, short at 80 columns, still a warning
+    *t.app.nimitz_version.lock().unwrap() = Some("0.0.1".to_string());
+    let ls = lines(&draw(&mut t.app, 80, 24));
+    assert!(ls[23].starts_with(&format!(" nimitz 0.0.1 \u{2260} {ours}")), "{}", ls[23]);
+    // Claude Code out of range: on this row, never the ADMIRALTY one (in
+    // words where they fit beside the mismatch)
+    t.app.bundle.as_mut().unwrap().snap.compat_ok = false;
+    let ls = lines(&draw(&mut t.app, 200, 24));
+    assert!(ls[23].contains("Claude Code 2.1.291 outside the supported range") && !ls[22].contains("Claude Code"), "{}\n{}", ls[22], ls[23]);
+}
+
+/// `?` opens the keys panel and `?` closes it; its title says so.
+#[test]
+fn question_mark_toggles_the_keys_panel() {
+    let mut t = demo();
+    keys(&mut t.app, "?");
+    assert!(matches!(t.app.modal, Some(Modal::Help { .. })));
+    assert!(screen(&mut t.app, 200, 120).contains("keys (? or esc closes, j/k scroll)"));
+    keys(&mut t.app, "?");
+    assert!(t.app.modal.is_none(), "? closes it");
 }
 
 #[test]
@@ -566,7 +606,7 @@ fn issues_view_lists_every_issue_code_with_its_fix() {
     ] {
         assert!(s.contains(code), "issues view shows {code}");
     }
-    assert!(s.contains("nimitz relaunch FORGE/IRON/ANVIL"));
+    assert!(s.contains("nimitz restart FORGE/IRON/ANVIL"));
     assert!(s.contains("ERROR"));
     // worst first; enter goes to the row
     let issues = t.app.issues();
@@ -631,7 +671,7 @@ fn pane_dots_at_row_start_in_herdr_colours() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     // KITS commodore's pane is blocked: needs you, and the dot takes the needs-you hue
-    let kits_bar = ls.iter().position(|l| l.contains("KITS") && l.contains("comms")).unwrap();
+    let kits_bar = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
     let y = kits_bar + 1 + ls[kits_bar + 1..].iter().position(|l| l.contains("COMMODORE ")).unwrap();
     assert_eq!(buf[(2, y as u16)].fg, mono::NEEDS);
     assert!(ls[y].contains("needs you"));
@@ -694,21 +734,16 @@ fn action_menu_greys_out_what_does_not_apply_with_the_reason() {
 }
 
 #[test]
-fn message_goes_direct_to_leads_and_through_the_commodore_for_ships() {
+fn message_goes_to_the_member_itself_a_ship_too() {
     let mut t = fixture_app(fixtures::demo(), true);
+    // a ship: its own pane, never its commodore's (0.7.3)
     goto(&mut t.app, "M:MAIN/ARGOS/BOLT");
-    let p = t.app.message_plan().unwrap();
-    assert!(p.relay);
-    assert_eq!(p.via, "[MAIN.ARGOS]-COMMODORE");
-    keys(&mut t.app, "m");
-    keys(&mut t.app, "ship it");
-    press(&mut t.app, KeyCode::Enter);
-    let calls = t.mux.calls.lock().unwrap().clone();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0], "type p2 Relay to [MAIN.ARGOS]-BOLT from the user: ship it", "the CLI's relay text");
+    match t.app.message_plan() {
+        Ok(p) => assert_eq!(p.via, p.to, "never relayed"),
+        Err(why) => assert!(why.contains("[MAIN.ARGOS]-BOLT") && !why.contains("COMMODORE"), "{why}"),
+    }
     goto(&mut t.app, "M:MAIN");
     let p = t.app.message_plan().unwrap();
-    assert!(!p.relay);
     assert_eq!(p.pane.pane_id, "p1");
     // a stopped ship's commodore is live, but the ship is not
     goto(&mut t.app, "M:MAIN/KITS/DOCS");
@@ -725,7 +760,7 @@ fn open_attaches_a_background_session_in_a_new_pane() {
     // beside its commodore, a new tab) and runs it; Admiralty opens nothing itself
     keys(&mut t.app, "A");
     let Some(Modal::Confirm(p)) = t.app.modal.take() else { panic!("{}", toast(&t.app)) };
-    assert_eq!(p.command, "nimitz start MAIN/ARGOS/BOLT -p");
+    assert_eq!(p.command, "nimitz open MAIN/ARGOS/BOLT");
     assert!(p.panes.is_empty(), "the CLI makes the pane");
     assert!(t.mux.calls.lock().unwrap().is_empty(), "nothing opened by Admiralty");
     // a lead is a job too (0.4.0): `A` attaches to it in its own tab
@@ -893,13 +928,13 @@ fn sweep_from_a_band_is_scoped_to_that_band() {
     keys(&mut t.app, "x");
     keys(&mut t.app, "w");
     let Some(Modal::Confirm(p)) = &t.app.modal else { panic!("{}", toast(&t.app)) };
-    assert_eq!(p.command, "nimitz sweep FORGE/IRON");
+    assert_eq!(p.command, "nimitz sweep FORGE/IRON/...");
     press(&mut t.app, KeyCode::Esc);
     goto(&mut t.app, "F:FORGE");
     keys(&mut t.app, "x");
     keys(&mut t.app, "w");
     let Some(Modal::Confirm(p)) = &t.app.modal else { panic!() };
-    assert_eq!(p.command, "nimitz sweep FORGE");
+    assert_eq!(p.command, "nimitz sweep FORGE/...");
 }
 
 // ------------------------------------------------------------------ 80x24 (BUG-36)
@@ -910,8 +945,8 @@ fn at_80x24_the_essentials_stay_on_screen() {
     goto(&mut t.app, "M:FORGE/IRON/ANVIL");
     let ls = lines(&draw(&mut t.app, 80, 24));
     let status = &ls[ls.len() - 2];
-    assert!(status.contains("MONITOR-ONLY"), "the status bar, above the key bar, keeps the mux state: {status}");
-    assert!(ls[23].contains("? help") && ls[23].contains("q/esc quit"), "footer keeps help and quit: {}", ls[23]);
+    assert!((status.contains("MONITOR-ONLY") || status.contains("NO MUX")) && status.contains("? keys"), "the ADMIRALTY row keeps the mux state and the keys: {status}");
+    assert!(ls[23].contains("q quit"), "the last row keeps quit: {}", ls[23]);
     let row = ls.iter().find(|l| l.contains("ANVIL-2")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
     assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
     // the floating panel, opened on the same small screen
@@ -990,6 +1025,7 @@ fn the_header_shortens_counts_instead_of_cutting_words() {
     for w in [200u16, 120, 100, 80, 60, 50] {
         let mut t = demo();
         let top = status_bar(&mut t.app, w);
+        let top = top.trim_end().trim_end_matches("? keys").to_string();
         assert!(!top.contains("warni ") && !top.trim_end().ends_with("warni"), "{w}: {top}");
         let words: Vec<&str> = top.split_whitespace().collect();
         let last = words.last().copied().unwrap_or("");
@@ -1550,7 +1586,7 @@ fn a_squadron_that_gets_worse_pulses_its_bar_once() {
         t.app.anim_frame = f;
         let buf = draw(&mut t.app, 200, 60);
         let ls = lines(&buf);
-        let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("comms")).unwrap();
+        let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
         buf[(2, y as u16)].bg
     };
     assert_ne!(fill(&mut t, 105), mono::NEEDS, "mid-pulse: lighter");
@@ -1659,7 +1695,7 @@ fn in_herdrs_overlay_the_status_and_key_bars_stay_in_view() {
         let ls = lines(&draw(&mut t.app, w, h));
         let (rows, cols) = (h as usize - 2, w as usize - 2);
         assert!(ls[rows - 2].contains("ADMIRALTY"), "{w}x{h}: the status bar in view:\n{}", ls.join("\n"));
-        assert!(ls[rows - 1].contains("? help"), "{w}x{h}: the key bar in view: {}", ls[rows - 1]);
+        assert!(ls[rows - 1].contains("q quit"), "{w}x{h}: the second status row in view: {}", ls[rows - 1]);
         assert!(ls[rows..].iter().all(|l| l.trim().is_empty()), "{w}x{h}: nothing under the border:\n{}", ls[rows..].join("\n"));
         assert!(ls.iter().all(|l| l.chars().skip(cols).all(|c| c == ' ')), "{w}x{h}: nothing under the right border");
     }
@@ -1667,19 +1703,20 @@ fn in_herdrs_overlay_the_status_and_key_bars_stay_in_view() {
 
 // ------------------------------------------------------------------ m, message
 
-/// `m` is on the key bar at 80 columns, right after the pane jump: the two
-/// ways to reach a lead.
+/// With no key row, `? keys` stays on screen at 80 columns and the panel
+/// lists `m`, the way to message a lead.
 #[test]
-fn the_key_bar_keeps_m_at_80_columns() {
+fn the_keys_hint_stays_at_80_columns_and_the_panel_has_m() {
     let mut t = demo();
     for w in [80u16, 100, 200] {
         let ls = lines(&draw(&mut t.app, w, 24));
-        assert!(ls[23].contains("m message"), "{w}: {}", ls[23]);
+        assert!(ls[22].contains("? keys"), "{w}: {}", ls[22]);
     }
+    assert!(admiralty::app::HELP.iter().any(|(k, d)| *k == "m" && d.contains("message")));
 }
 
 /// `m` on a lead row opens the message dialog and types into the lead's pane;
-/// on a ship it is relayed by the commodore.
+/// a ship gets it in its own pane.
 #[test]
 fn m_on_a_lead_row_sends_into_its_pane() {
     let mut t = fixture_app(fixtures::demo(), true);
@@ -1697,7 +1734,7 @@ fn m_on_a_lead_row_sends_into_its_pane() {
 #[test]
 fn m_refusals_name_the_fix() {
     let mut t = fixture_app(fixtures::demo(), true);
-    // a stopped ship whose commodore runs, but the ship does not: relay refused
+    // a stopped ship: refused, with how to start it
     goto(&mut t.app, "M:MAIN/KITS/DOCS");
     press(&mut t.app, KeyCode::Char('m'));
     let why = toast(&t.app);
@@ -1778,9 +1815,9 @@ fn a_paste_into_a_form_keeps_long_lines_and_is_validated() {
     f.focus = 1;
     f.paste("OPS\nTWO");
     assert_eq!(f.fields[1].value, "OPS TWO");
-    f.focus = 3;
+    f.focus = 2;
     f.paste("line one\r\nline two\rline three\nend");
-    assert_eq!(f.fields[3].value, "line one\nline two\nline three\nend");
+    assert_eq!(f.fields[2].value, "line one\nline two\nline three\nend");
     f.focus = 0;
     f.paste("X");
     assert_eq!(f.fields[0].value, "MAIN", "a fixed field takes nothing");
@@ -1858,4 +1895,30 @@ fn dump_renders_the_list_or_the_screen_plain_or_in_colour() {
         let a = run(&["dump", "--demo", "--width", w, "--height", "70", "--select", "MAIN/ARGOS/BOLT", "--detail", "--ansi"]);
         assert!(a.contains("\u{1b}[") && a.contains("SESSION"));
     }
+}
+
+/// The second status row names the nimitz Admiralty runs: its version alone
+/// when it is Admiralty's own, both and flagged (a warning) when they differ;
+/// Admiralty's own until it is read.
+#[test]
+fn the_status_row_shows_the_nimitz_version_and_flags_a_mismatch() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    let ours = env!("CARGO_PKG_VERSION");
+    // the last row, under the ADMIRALTY one
+    let top = |t: &mut common::TestApp| screen(&mut t.app, 240, 40).lines().last().unwrap_or("").to_string();
+    let l = top(&mut t);
+    assert!(l.contains(&format!("admiralty {ours}")) && !l.contains("nimitz "), "not read yet: its own: {l}");
+    *t.app.nimitz_version.lock().unwrap() = Some("?".to_string());
+    let l = top(&mut t);
+    assert!(l.contains(" nimitz ?") && !l.contains("mismatch"), "the read failed: {l}");
+    *t.app.nimitz_version.lock().unwrap() = Some(ours.to_string());
+    let l = top(&mut t);
+    assert!(l.contains(&format!("nimitz {ours}")) && !l.contains("mismatch"), "{l}");
+    *t.app.nimitz_version.lock().unwrap() = Some("0.0.1".to_string());
+    let l = top(&mut t);
+    assert!(l.contains(&format!("admiralty {ours} \u{b7} nimitz 0.0.1 (mismatch)")), "{l}");
+    let buf = draw(&mut t.app, 240, 40);
+    let y = 39u16;
+    let x = l.find("admiralty ").map(|i| l[..i].chars().count()).unwrap() as u16;
+    assert_eq!(buf[(x, y)].fg, admiralty::theme::mono::WARN, "styled as a warning");
 }

@@ -75,7 +75,7 @@ fn live(m: &Member) -> bool {
 }
 
 /// The tab that attaches to `m`'s job (`claude attach <job>` in its folder,
-/// labelled `tab_of`): what `layout herdr`, `nimitz open`, Admiralty's `A`
+/// labelled `tab_of`): what `nimitz layout`, `nimitz open`, Admiralty's `A`
 /// and a restore run in the member's tab. A parked or stopped job is woken by
 /// the attach itself (cli-07; `wakes`), so a lead with a shell tab needs no
 /// resume first; its transcript must be there (else `history.lost`, as for a
@@ -95,7 +95,7 @@ pub fn attach_tab(env: &Env, m: &Member) -> Result<TabSpec, Issue> {
         // name or missing labels need the relabel (`nimitz start` does it),
         // and a lost transcript the cold launch
         if let Some(i) = crate::sessions::session_issues(env, m).into_iter().find(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing")) {
-            return Err(Issue { fix: Some(format!("nimitz start {id}  # relabels it, then nimitz start {id} -p")), ..i });
+            return Err(Issue { fix: Some(format!("nimitz start {id}  # relabels it, then nimitz open {id}")), ..i });
         }
         if crate::evidence::transcript(env, &mut crate::evidence::FileCache::default(), m.cwd.as_deref(), &s.session_id).is_none() {
             return Err(Issue {
@@ -139,29 +139,14 @@ impl LayoutSpec {
     }
 }
 
-/// The layout for `fleet` (or every fleet that runs here). You lay out any
-/// fleet; an admiral its own.
-pub fn plan(env: &Env, snap: &Snapshot, fleet: Option<&str>, ships: bool, caller: &Caller, force: bool) -> LayoutSpec {
+/// The layout for `fleet` (or every fleet that runs here).
+pub fn plan(env: &Env, snap: &Snapshot, fleet: Option<&str>, ships: bool, force: bool) -> LayoutSpec {
     let _ = force; // every tab attaches; nothing is started or forced here
     let mut spec = LayoutSpec::default();
-    // you lay out any fleet; an admiral its own (by default too); nobody else
-    let fleet = match (caller, fleet) {
-        (Caller::User, f) => f,
-        (Caller::Member { id, role: Role::Admiral }, None) => Some(id.fleet()),
-        (Caller::Member { id, role: Role::Admiral }, Some(f)) if f == id.fleet() => Some(f),
-        (Caller::Member { id, .. }, _) => {
-            spec.plan.summary = format!("layout herdr {}", fleet.unwrap_or("(every fleet here)"));
-            spec.plan.refusals.push(Issue {
-                code: "authority".into(),
-                severity: Severity::Error,
-                message: format!("`nimitz layout` lays out whole fleets: yours, or an admiral's for its own fleet; not {}'s", id.name()),
-                fix: None,
-                id: None,
-            });
-            return spec;
-        }
+    spec.plan.summary = match fleet {
+        Some(f) => format!("layout {f}/..."),
+        None => "layout //...".into(),
     };
-    spec.plan.summary = format!("layout herdr {}", fleet.unwrap_or("(every fleet here)"));
     for f in snap.fleets.iter().filter(|f| fleet.map(|x| x == f.id.fleet()).unwrap_or(true)) {
         if f.machine.is_none() {
             spec.plan.warnings.push(skip(&f.id, format!("fleet {} does not run on this machine; no layout", f.id)));
@@ -202,7 +187,7 @@ pub fn drop_shown(spec: &mut LayoutSpec, shown_sessions: &[String]) {
     spec.workspaces.retain(|w| !w.tabs.is_empty());
     for id in dropped {
         spec.plan.steps.retain(|s| !(s.id.as_ref() == Some(&id) && s.cmd.get(1).map(|c| c == "attach").unwrap_or(false)));
-        spec.plan.warnings.push(skip(&id, format!("{id} already has a pane; `nimitz start {id} -p` shows it")));
+        spec.plan.warnings.push(skip(&id, format!("{id} already has a pane; `nimitz open {id}` shows it")));
     }
 }
 

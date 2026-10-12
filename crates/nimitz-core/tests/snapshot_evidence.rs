@@ -250,9 +250,9 @@ fn a_fleet_that_does_not_run_here_is_listed_without_folders() {
     assert_eq!(main.machine, None);
     let ship = main.squadrons[0].ships.iter().find(|m| m.id.0.ends_with("/FRESH")).unwrap();
     assert_eq!(ship.cwd, None, "a ship with no folder here does not run here");
-    // and `up` refuses for a fleet that is not on this machine
-    let plan = nimitz_core::sessions::plan_up(&w.env, &snap, "MAIN", &Caller::User);
-    assert!(plan.refusals.iter().any(|i| i.message.contains("does not run on this machine")), "{:?}", plan.refusals);
+    // and a start of the fleet refuses: it is not on this machine
+    let rp = nimitz_core::restore::plan_start(&w.env, &snap, &Default::default(), None, None, false, &[nimitz_core::paths::Path::Under(Some(nimitz_core::Id::admiral("MAIN")))], nimitz_core::restore::RestoreOpts { jobs_only: true, ..Default::default() }, &Caller::User);
+    assert!(rp.plan.refusals.iter().any(|i| i.message.contains("does not run on this machine")), "{:?}", rp.plan.refusals);
 }
 
 #[test]

@@ -151,9 +151,6 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.at_most(0)?;
     let label = ctx.args.value("--label").map(str::to_string).unwrap_or_else(|| crate::crud::machine_label(ctx));
     let mut plan = Plan { summary: format!("init nimitz on this machine as {label}"), ..Default::default() };
-    if ctx.caller != nimitz_core::Caller::User {
-        plan.refusals.push(refusal("authority", "`nimitz init` is yours alone".into(), None, None));
-    }
     if !nimitz_core::config::valid_label(&label) {
         plan.refusals.push(refusal("config.invalid", format!("machine label {label:?} is not [a-z0-9._-]+"), Some("nimitz init --label <label>".into()), None));
     }
@@ -223,17 +220,15 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
 // ------------------------------------------------------------------ trust
 
 /// `nimitz trust <folder>`: Claude Code's trust for the folder's git root
-/// (or the folder outside git), written as Claude Code writes it. Yours
-/// alone: it lets the folder's own .claude settings, hooks and MCP servers run.
+/// (or the folder outside git), written as Claude Code writes it: it lets
+/// the folder's own .claude settings, hooks and MCP servers run.
 pub fn trust(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     let dir = ctx.args.need(0, "folder")?;
     ctx.args.at_most(1)?;
     let p = Path::new(dir);
     let mut plan = Plan { summary: format!("trust {}", nimitz_core::trust::shown(&ctx.env, p).display()), ..Default::default() };
-    if ctx.caller != nimitz_core::Caller::User {
-        plan.refusals.push(refusal("authority", format!("`nimitz trust` is yours alone: {}", nimitz_core::trust::CONSEQUENCE), None, None));
-    } else if let Some(why) = nimitz_core::trust::too_broad(&ctx.env, p) {
+    if let Some(why) = nimitz_core::trust::too_broad(&ctx.env, p) {
         plan.refusals.push(refusal("trust.broad", why, None, None));
     } else if !p.is_dir() {
         plan.refusals.push(refusal("folder.missing", format!("{dir} is not a folder"), Some(format!("mkdir -p {}", out::quote(dir))), None));
@@ -284,10 +279,10 @@ impl Report {
 pub fn rules(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     ctx.args.at_most(1)?;
-    let id = match (ctx.args.pos.first(), &ctx.caller) {
+    let id = match (ctx.args.pos.first(), nimitz_core::sessions::verified(&ctx.caller)) {
         (Some(x), _) => crate::members::parse_id(x)?,
-        (None, nimitz_core::Caller::Member { id, .. }) => id.clone(),
-        (None, nimitz_core::Caller::User) => return Err("missing id (F, F/SQ or F/SQ/SHIP)".into()),
+        (None, Some(id)) => id.clone(),
+        (None, None) => return Err("missing id (F, F/SQ or F/SQ/SHIP)".into()),
     };
     print!("{}", nimitz_core::rules::text_for(&ctx.env, &id));
     Ok(0)
@@ -296,19 +291,6 @@ pub fn rules(ctx: &Ctx) -> Result<i32, String> {
 pub fn doctor(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--fix"])?;
     ctx.args.at_most(0)?;
-    // The report is every member's; the fixes (the user's settings.json, the
-    // briefs) are yours alone.
-    if ctx.args.flag("--fix") && ctx.caller != nimitz_core::Caller::User {
-        let plan = Plan {
-            summary: "doctor fixes".into(),
-            refusals: vec![refusal("authority", "`nimitz doctor --fix` is yours alone; a member runs `nimitz doctor` (the report) only".into(), None, None)],
-            ..Default::default()
-        };
-        return Ok(match ctx.gate(&plan) {
-            out::Go::Exit(c) => c.max(1),
-            out::Go::Run => 1,
-        });
-    }
     Ok(doctor_report(ctx, ctx.args.flag("--fix")))
 }
 
@@ -338,7 +320,7 @@ fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
         return;
     }
     let fix = format!("set resume_agents_on_restore = false under [session] in {}  # nimitz never edits it", path.display());
-    let effect = "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz restore` then cannot wake it until you /exit there (tab.resumed)";
+    let effect = "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz start` then cannot wake it until you /exit there (tab.resumed)";
     match std::fs::read_to_string(&path).ok().map(|t| herdr_resume_off(&t)) {
         Some(Some(true)) => r.ok(&format!("Herdr {}: resume_agents_on_restore is off", path.display())),
         Some(Some(false)) => r.warn(&format!("Herdr {}: resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
@@ -456,8 +438,14 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
                     } else {
                         r.err(
                             &format!("hooks: the installed nimitz plugin ({}) does not register {}", p.display(), lacks.join(", ")),
-                            Some("/reload-plugins in each live session (a new session reads the plugin again), then nimitz doctor"),
+                            Some(PLUGIN_UPDATE_FIX),
                         );
+                    }
+                    // sessions load Claude Code's cached copy, not the repo: one
+                    // older than this binary lacks what it needs
+                    let cached = p.parent().and_then(Path::parent).and_then(|d| read_json(&d.join(".claude-plugin/plugin.json"))).and_then(|v| v["version"].as_str().map(str::to_string));
+                    if let Some(v) = cached.filter(|v| v != env!("CARGO_PKG_VERSION")) {
+                        r.warn(&format!("plugin: the cached nimitz plugin is {v}, this nimitz is {} (sessions load the cached copy, {})", env!("CARGO_PKG_VERSION"), p.parent().and_then(Path::parent).map(|d| d.display().to_string()).unwrap_or_default()), Some(PLUGIN_UPDATE_FIX));
                     }
                 }
                 None => r.err(&format!("hooks: the nimitz plugin is enabled but {} is missing or not JSON", p.display()), Some(&plugin_install_fix())),
@@ -640,6 +628,11 @@ fn formats_check(env: &nimitz_core::env::Env, r: &mut Report) {
         r.ok(&format!("formats: every file here is at the format nimitz {} writes; every listed machine runs it", formats::NIMITZ));
     }
 }
+
+/// The fix for a cached plugin that is old or lacks a hook: sessions load
+/// Claude Code's cached copy (`~/.claude/plugins/cache/claude-nimitz/nimitz/<version>/`),
+/// never the repo, so the marketplace and the plugin are updated, then read again.
+const PLUGIN_UPDATE_FIX: &str = "claude plugin marketplace update claude-nimitz && claude plugin update nimitz@claude-nimitz, then /reload-plugins in each live session";
 
 /// The marketplace to add: this build's repo when it is still on disk, else GitHub.
 pub fn plugin_install_fix() -> String {

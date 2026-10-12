@@ -1,6 +1,5 @@
-//! `nimitz hook <Event>` logic: append an Event; for PreToolUse SendMessage, decide
-//! allow/deny from the comms rule (contracts.md sections 5, plan-v3 section 7);
-//! when a ship blocks on the user (AskUserQuestion, PermissionRequest,
+//! `nimitz hook <Event>` logic: append an Event (a SendMessage is logged,
+//! never judged: any member may message any member, 0.7.3); when a ship blocks on the user (AskUserQuestion, PermissionRequest,
 //! a blocking Notification), record a needs-you notice for its commodore
 //! (`notify`). Owner: core-sessions.
 //!
@@ -93,7 +92,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
     }
     // The env's labels go on the event line as they were (a replay judges
     // them again against the job's row); every effect here (binding, rules,
-    // signal authority, needs-you) uses only labels the job's row backs. A
+    // needs-you) uses only labels the job's row backs. A
     // job whose row is not written yet is waited for a moment, then left
     // unlabelled for now: no rules, no binding; its first prompt gets the
     // rules (`rules::update_for`) and `status` replays the line.
@@ -124,32 +123,6 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
 
     let mut out = String::new();
     let mut reason = str_at(&input, "reason");
-    if event == "PreToolUse" && is_signal {
-        // The sender is its NIMITZ_ID only when NIMITZ_ROLE agrees with the
-        // id's shape (as `sessions::caller_from_env` judges it): a 0.3.x tender
-        // (`F/SQ/~task`, role `tender`) is no sender with a role.
-        let sender = match crate::sessions::caller_from_env(&labels.iter().map(|(k, v)| (k.clone(), v.clone())).collect()) {
-            Caller::Member { id, .. } if id.0 != crate::sessions::UNVERIFIED => Some(id),
-            _ => None,
-        };
-        let verdict = match (to.as_deref(), sender) {
-            (Some(target), Some(sender)) => Some(may_signal(env, &sender, target)),
-            // labels without an id, or that disagree (partial): fail closed for fleet targets
-            (Some(target), None) if !labels.is_empty() && (crate::sessions::id_from_name(target).is_some() || target.contains(':')) => {
-                Some(Err("the sender's NIMITZ_* labels are partial (no NIMITZ_ID, or NIMITZ_ROLE does not match it); nimitz cannot judge this signal".to_string()))
-            }
-            _ => None,
-        };
-        if let Some(Err(why)) = verdict {
-            reason = Some(format!("denied: {why}"));
-            out = json!({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": why,
-            }})
-            .to_string();
-        }
-    }
     // A ship now blocks on the user: record it for its commodore.
     // Moving on (a prompt, a stop, the end) closes its notice.
     let mut notice = None;
@@ -184,7 +157,12 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             rules = Some(crate::rules::VERSION);
             crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
             // (the fleet's harness rules come from their own entry, `harness_rules`)
-            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": crate::rules::text(&id)}}).to_string();
+            // what a self-end (its own relaunch, its stop) came to, once
+            let mut context = crate::rules::text(&id);
+            if let Some(note) = crate::self_end::take_note(env, &id) {
+                context.push_str(&format!("\n\n[nimitz self-end] {}", note.trim()));
+            }
+            out = json!({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}).to_string();
             binding = Some(match str_at(&input, "session_id") {
                 // no session file (missing, or caught mid-write): bind nothing
                 // now; `status` replays the line and judges the job from the rows
@@ -410,97 +388,6 @@ pub fn compact_events(path: &std::path::Path) {
     }
 }
 
-/// A `uds:<socket>` address (real Claude Code 2.1.288 delivers SendMessage to a
-/// session's socket): the name of the session that owns the socket, from the
-/// session files (`messagingSocketPath`, or the pid in `<pid>.sock`).
-fn resolve_socket(env: &Env, to: &str) -> Option<String> {
-    let path = to.strip_prefix("uds:")?;
-    let pid: Option<i64> = std::path::Path::new(path).file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse().ok());
-    for e in std::fs::read_dir(env.claude_home.join("sessions")).ok()?.filter_map(|e| e.ok()) {
-        let Some(v) = std::fs::read(e.path()).ok().and_then(|b| crate::evidence::first_json(&b)) else { continue };
-        let sock = v.get("messagingSocketPath").and_then(|x| x.as_str());
-        let vpid = v.get("pid").and_then(|x| x.as_i64());
-        if sock == Some(path) || (pid.is_some() && vpid == pid) {
-            return v.get("name").and_then(|x| x.as_str()).map(str::to_string);
-        }
-    }
-    None
-}
-
-/// The chain-of-command signal table (plan-v4 section 12): an admiral, every
-/// member of its own fleet; a commodore, its admiral and its ships; a ship,
-/// its commodore, its admiral (a reply) and other ships as the squadron's
-/// comms rule allows. Targets that are not fleet names (teammates of an agent
-/// team, other sessions) are not ours to rule, except an address nimitz
-/// cannot resolve (a socket, BUG-22): a ship under a closed comms rule may
-/// not signal what it cannot name.
-pub fn may_signal(env: &Env, from: &Id, to_name: &str) -> Result<(), String> {
-    if to_name.contains(':') && !to_name.starts_with('[') {
-        let resolved = resolve_socket(env, to_name);
-        if let Some(name) = resolved.as_deref().filter(|n| crate::sessions::id_from_name(n).is_some()) {
-            return may_signal(env, from, name);
-        }
-        let closed = match from.role() {
-            Role::Ship => !matches!(squadron_comms(env, from), Comms::Mode(m) if m == "open"),
-            Role::Admiral | Role::Commodore => false,
-        };
-        return if closed {
-            Err(format!(
-                "{to_name} is not a fleet address nimitz can resolve{}; {} signals only named members (nimitz chain of command; sender {})",
-                resolved.map(|n| format!(" (it is {n:?})")).unwrap_or_default(),
-                "a ship under this squadron's comms rule",
-                from.name()
-            ))
-        } else {
-            Ok(())
-        };
-    }
-    let Some(to) = crate::sessions::id_from_name(to_name) else { return Ok(()) };
-    signal_table(from, &to, &|| squadron_comms(env, from))
-}
-
-/// The table itself, for two fleet ids; `comms` gives the sender's squadron
-/// rule when a ship signals a ship (read only then).
-pub fn signal_table(from: &Id, to: &Id, comms: &dyn Fn() -> Comms) -> Result<(), String> {
-    let to_name = to.name();
-    let deny = |why: String| Err(format!("{why} (nimitz chain of command; sender {})", from.name()));
-    let same_sq = to.fleet() == from.fleet() && to.squadron() == from.squadron();
-    match from.role() {
-        Role::Admiral => match to.role() {
-            _ if to.fleet() == from.fleet() && to != from => Ok(()),
-            _ => deny(format!("an admiral signals the members of its own fleet, not {to_name}")),
-        },
-        Role::Commodore => match to.role() {
-            Role::Admiral if to.fleet() == from.fleet() => Ok(()),
-            Role::Ship if same_sq => Ok(()),
-            _ => deny(format!("a commodore signals its admiral and its ships, not {to_name}")),
-        },
-        Role::Ship => match to.role() {
-            Role::Commodore if same_sq => Ok(()),
-            // a reply: the admiral may signal a ship, and the ship answers it
-            Role::Admiral if to.fleet() == from.fleet() => Ok(()),
-            Role::Ship => match comms() {
-                Comms::Mode(m) if m == "open" && same_sq => Ok(()),
-                Comms::Mode(m) if m == "open" => deny(format!("comms is open within the squadron only; {to_name} is in another squadron")),
-                Comms::Mode(m) if m == "commodore-only" => {
-                    deny(format!("squadron comms is commodore-only; signal your commodore, not {to_name}"))
-                }
-                Comms::Allow { allow } if allow.iter().any(|a| *a == to.0 || *a == to.name()) => Ok(()),
-                Comms::Allow { .. } => deny(format!("{to_name} is not in the squadron's comms allow list")),
-                Comms::Mode(m) => deny(format!("unknown comms rule {m:?}; only the commodore may be signalled")),
-            },
-            _ => deny(format!("a ship signals its commodore, its admiral (a reply) and, by the comms rule, other ships; not {to_name}")),
-        },
-    }
-}
-
-/// The sender's squadron `comms` rule; on any doubt the strictest rule.
-fn squadron_comms(env: &Env, from: &Id) -> Comms {
-    let strict = Comms::Mode("commodore-only".into());
-    let Ok(f) = crate::config::load_fleet(env, from.fleet()) else { return strict };
-    f.squadrons.into_iter().find(|(_, s)| Some(s.squadron.as_str()) == from.squadron()).map(|(_, s)| s.comms).unwrap_or(strict)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,20 +409,11 @@ mod tests {
         handle(env, "PreToolUse", &input.to_string(), &labels_of(env, from))
     }
 
-    fn denied(out: &str) -> bool {
-        serde_json::from_str::<Value>(out)
-            .ok()
-            .and_then(|v| v["hookSpecificOutput"]["permissionDecision"].as_str().map(str::to_string))
-            .as_deref()
-            == Some("deny")
-    }
-
-    /// MAIN with squadron ARGOS (comms open) and ship ARGOS; plus BOREAL, comms
-    /// commodore-only, with ships ONE and TWO.
+    /// MAIN with squadron ARGOS and ship ARGOS; plus BOREAL, with ships ONE and TWO.
     fn world() -> (tempfile::TempDir, Env) {
         let (td, env) = test_env();
         make_fleet(&env);
-        let plan = crate::config::plan_squadron_new(&env, "MAIN", "BOREAL", "Quiet squadron.", Comms::Mode("commodore-only".into()), None);
+        let plan = crate::config::plan_squadron_new(&env, "MAIN", "BOREAL", "Quiet squadron.", None);
         crate::config::tests::apply_ok(&env, &plan);
         for name in ["ONE", "TWO"] {
             let ship = ShipDef {
@@ -547,46 +425,6 @@ mod tests {
             crate::config::tests::apply_ok(&env, &crate::config::plan_ship_new(&env, "MAIN", "BOREAL", ship));
         }
         (td, env)
-    }
-
-    #[test]
-    fn the_signal_table_holds() {
-        let (_td, env) = world();
-        let adm = Id::admiral("MAIN");
-        let argos = Id::commodore("MAIN", "ARGOS");
-        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
-        let one = Id::ship("MAIN", "BOREAL", "ONE");
-
-        // an admiral signals every member of its own fleet (commodores and ships), and nothing else
-        assert!(!denied(&send(&env, &adm, &argos.name())));
-        assert!(!denied(&send(&env, &adm, &ship.name())), "0.4.0: the admiral reaches its ships");
-        assert!(!denied(&send(&env, &adm, &one.name())));
-        assert!(denied(&send(&env, &adm, &Id::commodore("OTHER", "SQ").name())));
-        assert!(denied(&send(&env, &adm, &Id::ship("OTHER", "SQ", "S").name())));
-        assert!(denied(&send(&env, &adm, &adm.name())), "not itself");
-        // a commodore: its admiral, its ships
-        assert!(!denied(&send(&env, &argos, &adm.name())));
-        assert!(!denied(&send(&env, &argos, &ship.name())));
-        assert!(denied(&send(&env, &argos, &one.name())), "not a ship of another squadron");
-        // a 0.3.x tender's labels (`~task` id, role `tender`) give no authority at
-        // all: denied to its commodore and to a sibling ship alike
-        let tender: HashMap<String, String> = [("NIMITZ_FLEET", "MAIN"), ("NIMITZ_SQUADRON", "ARGOS"), ("NIMITZ_ROLE", "tender"), ("NIMITZ_ID", "MAIN/ARGOS/~fix"), ("NIMITZ_HOME", "/h")]
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        for to in [argos.name(), ship.name(), "sock:/tmp/x".to_string()] {
-            let input = serde_json::json!({"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "SendMessage", "tool_input": {"to": to, "message": "done"}});
-            let out = handle(&env, "PreToolUse", &input.to_string(), &tender);
-            assert!(denied(&out) && out.contains("NIMITZ_ROLE does not match"), "{to}: {out}");
-        }
-        // a ship: its commodore always, and its admiral (a reply)
-        assert!(!denied(&send(&env, &ship, &argos.name())));
-        assert!(!denied(&send(&env, &ship, &adm.name())), "0.4.0: a ship replies to its admiral");
-        assert!(denied(&send(&env, &ship, &Id::admiral("OTHER").name())), "not another fleet's admiral");
-        assert!(denied(&send(&env, &ship, &Id::commodore("MAIN", "BOREAL").name())), "not another squadron's commodore");
-        // a `[ref]` suffix (two sessions with one name) does not get around the table
-        assert!(denied(&send(&env, &ship, &format!("{} [3fa9c1]", Id::commodore("MAIN", "BOREAL").name()))));
-        assert!(!denied(&send(&env, &ship, &format!("{} [3fa9c1]", argos.name()))));
     }
 
     /// `nimitz hook rules harness`: the fleet's harness rules, in their own
@@ -639,7 +477,7 @@ mod tests {
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
         let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
         assert!(ctx.starts_with(&format!("nimitz rules updated v1\u{2192}v{}", crate::rules::VERSION)), "{ctx}");
-        assert!(ctx.contains("- v2-v6: older changes, superseded") && ctx.contains(&crate::rules::text(&id)), "changelog and the full text: {ctx}");
+        assert!(ctx.contains(&format!("- v2-v{}: older changes, superseded", crate::rules::VERSION - 3)) && ctx.contains(&crate::rules::text(&id)), "changelog and the full text: {ctx}");
         assert!(!ctx.contains("- v1:"), "only the entries after v1");
         let d = crate::rules::delivered(&env, "session:s-up").expect("recorded by session id: no job here");
         assert_eq!((d.version, d.via.as_str(), d.session_id.as_str()), (crate::rules::VERSION, "UserPromptSubmit", "s-up"));
@@ -703,46 +541,6 @@ mod tests {
         assert_eq!(v["hookSpecificOutput"]["additionalContext"], "rules");
     }
 
-    #[test]
-    fn the_comms_rule_decides_ship_to_ship() {
-        let (_td, env) = world();
-        let one = Id::ship("MAIN", "BOREAL", "ONE");
-        let two = Id::ship("MAIN", "BOREAL", "TWO");
-        let argos_ship = Id::ship("MAIN", "ARGOS", "ARGOS");
-
-        // BOREAL is commodore-only
-        let out = send(&env, &one, &two.name());
-        assert!(denied(&out));
-        assert!(out.contains("commodore-only"), "{out}");
-        // ARGOS is open, but only inside the squadron
-        assert!(denied(&send(&env, &argos_ship, &two.name())), "open means open within the squadron");
-
-        // an allow list may name a ship of another squadron
-        let sq_path = crate::config::load_fleet(&env, "MAIN")
-            .unwrap()
-            .squadrons
-            .into_iter()
-            .find(|(_, s)| s.squadron == "BOREAL")
-            .map(|(d, _)| d.join("squadron.toml"))
-            .unwrap();
-        let raw = std::fs::read_to_string(&sq_path).unwrap();
-        std::fs::write(&sq_path, raw.replace("comms = \"commodore-only\"", "comms = { allow = [\"MAIN/ARGOS/ARGOS\"] }")).unwrap();
-        assert!(!denied(&send(&env, &one, &argos_ship.name())), "the allow list lets it through");
-        assert!(denied(&send(&env, &one, &two.name())), "and nothing else");
-    }
-
-    #[test]
-    fn a_target_that_is_not_a_fleet_address_is_not_ours_to_rule() {
-        let (_td, env) = world();
-        let ship = Id::ship("MAIN", "ARGOS", "ARGOS");
-        // teammates and ad-hoc sessions are the session's own business
-        assert!(send(&env, &ship, "reviewer").is_empty());
-        assert!(send(&env, &ship, "[ADMIRALTY]").is_empty());
-        // and an unlabelled sender is never judged
-        let input = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN]-ADMIRAL"}});
-        assert!(handle(&env, "PreToolUse", &input.to_string(), &vars(&[])).is_empty());
-    }
-
     /// A SessionStart as Claude Code fires it for the process `pid`, whose
     /// session file says `job` (None: interactive or SDK).
     fn start(env: &Env, id: &Id, sid: &str, source: &str, pid: i64, job: Option<&str>, cwd: &str) -> String {
@@ -756,6 +554,18 @@ mod tests {
         vars.insert("NIMITZ_HOOK_PID".into(), pid.to_string());
         let input = serde_json::json!({"session_id": sid, "source": source, "hook_event_name": "SessionStart", "cwd": cwd});
         handle(env, "SessionStart", &input.to_string(), &vars)
+    }
+
+    #[test]
+    fn a_self_end_outcome_comes_with_the_next_session_start_once() {
+        let (_td, env) = world();
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        crate::self_end::write_note(&env, &id, "`nimitz restart MAIN/ARGOS/ARGOS` ran");
+        let ctx = |out: &str| serde_json::from_str::<Value>(out).unwrap()["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string();
+        let first = ctx(&start(&env, &id, "s-se", "resume", 4242, None, "/w"));
+        assert!(first.ends_with("[nimitz self-end] `nimitz restart MAIN/ARGOS/ARGOS` ran"), "{first}");
+        let again = ctx(&start(&env, &id, "s-se", "resume", 4242, None, "/w"));
+        assert!(!again.contains("self-end"), "once: {again}");
     }
 
     /// A job row of the ship MAIN/ARGOS/ARGOS as nimitz launches it (its
@@ -776,7 +586,7 @@ mod tests {
     /// The daemon hands its environment to every job it starts; a daemon
     /// started from a labelled lead's shell labels an unlabelled `claude --bg`
     /// as that lead. Such a job's labels never count: no binding, no rules, no
-    /// signal authority.
+    /// needs-you notice.
     #[test]
     fn a_job_that_inherited_a_leads_labels_from_the_daemon_is_unlabelled() {
         let (_td, env) = world();
@@ -813,7 +623,7 @@ mod tests {
     }
 
     /// The agent view's pre-warmed spare is never anyone's member, whatever
-    /// labels it inherited: no rules, no binding, no signal authority.
+    /// labels it inherited: no rules, no binding, no output.
     #[test]
     fn a_spare_is_never_labelled_in_the_hook() {
         let (_td, env) = world();
@@ -830,7 +640,7 @@ mod tests {
         assert!(!handle(&env, "SessionStart", &input.to_string(), &v).contains("additionalContext"));
         assert!(crate::registry::load(&env).identities.get(&lead.0).map_or(true, |r| r.session.as_deref() != Some("s-spare")));
         let send = serde_json::json!({"tool_name": "SendMessage", "tool_input": {"to": "[MAIN.ARGOS]-ARGOS"}});
-        assert!(handle(&env, "PreToolUse", &send.to_string(), &v).is_empty(), "no commodore authority");
+        assert!(handle(&env, "PreToolUse", &send.to_string(), &v).is_empty(), "a signal is never judged");
     }
 
     #[test]
@@ -1069,15 +879,6 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_config_falls_back_to_the_strictest_rule() {
-        let (_td, env) = world();
-        let one = Id::ship("MAIN", "BOREAL", "ONE");
-        let two = Id::ship("MAIN", "BOREAL", "TWO");
-        std::fs::write(env.fleet_dir("MAIN").join("fleet.toml"), "fleet = ").unwrap();
-        assert!(denied(&send(&env, &one, &two.name())));
-    }
-
-    #[test]
     fn every_event_is_appended_as_one_line_with_its_labels() {
         let (_td, env) = world();
         let id = Id::ship("MAIN", "ARGOS", "ARGOS");
@@ -1089,8 +890,8 @@ mod tests {
         // a tool call that is not a signal is not logged (they fire for every tool)
         let read = serde_json::json!({"session_id": "s9", "tool_name": "Read"});
         handle(&env, "PreToolUse", &read.to_string(), &labels_of(&env, &id));
-        // a denied signal is logged with its reason
-        let _ = send(&env, &id, &Id::admiral("OTHER").name());
+        // a signal is logged, never judged: no output
+        assert!(send(&env, &id, &Id::admiral("OTHER").name()).is_empty());
 
         let events = crate::evidence::events(&env);
         assert_eq!(events.len(), 2, "{events:?}");
@@ -1101,7 +902,8 @@ mod tests {
         assert_eq!(events[0].rules, Some(crate::rules::VERSION));
         assert!(events[0].pid.unwrap_or(0) > 0, "the pid is the Claude Code process (the hook's parent)");
         assert_eq!(events[1].tool_name.as_deref(), Some("SendMessage"));
-        assert!(events[1].reason.as_deref().unwrap_or("").starts_with("denied:"), "{:?}", events[1].reason);
+        assert_eq!(events[1].to.as_deref(), Some(Id::admiral("OTHER").name().as_str()));
+        assert_eq!(events[1].reason, None);
     }
 
     #[test]

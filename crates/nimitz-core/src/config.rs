@@ -320,14 +320,6 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
                 Some(sqid.clone()),
             ));
         }
-        if let Comms::Mode(m) = &sq.comms {
-            if m != "open" && m != "commodore-only" {
-                out.push(inv(
-                    format!("squadron {}: comms {m:?} is not open|commodore-only|{{allow}}", sq.squadron),
-                    Some(sqid.clone()),
-                ));
-            }
-        }
         let ship_names: Vec<&str> = sq.ships.iter().map(|s| s.name.as_str()).collect();
         for (i, ship) in sq.ships.iter().enumerate() {
             let shid = Id::ship(&c.fleet, &sq.squadron, &ship.name);
@@ -674,7 +666,7 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
     plan
 }
 
-pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: Comms, mode: Option<&str>) -> Plan {
+pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, mode: Option<&str>) -> Plan {
     let mut plan = Plan { summary: format!("create squadron {fleet}/{sq}"), ..Default::default() };
     let id = Id::commodore(fleet, sq);
     if !valid_name(sq) {
@@ -704,7 +696,6 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, comms: C
     let config = SquadronConfig {
         squadron: sq.into(),
         brief: Some("SQUADRON.md".into()),
-        comms,
         permission_mode,
         ships: vec![],
         ..Default::default()
@@ -1150,10 +1141,10 @@ pub fn plan_fleet_set(env: &Env, fleet: &str, admiral_mode: Option<&str>) -> Pla
     plan
 }
 
-/// `nimitz squadron set <F/SQ>`: brief text (into the brief file), `comms`, and
-/// the default ship mode (`Some("")` clears it). Ships pick changes up at their
-/// next relaunch; the comms rule applies to the next signal.
-pub fn plan_squadron_set(env: &Env, id: &Id, brief: Option<&str>, comms: Option<Comms>, mode: Option<&str>) -> Plan {
+/// `nimitz squadron set <F/SQ>`: brief text (into the brief file) and the
+/// default ship mode (`Some("")` clears it). Ships pick changes up at their
+/// next relaunch.
+pub fn plan_squadron_set(env: &Env, id: &Id, brief: Option<&str>, mode: Option<&str>) -> Plan {
     let mut plan = Plan { summary: format!("update squadron {id}"), ..Default::default() };
     if id.role() != Role::Commodore {
         refuse(&mut plan, "config.invalid", format!("{id} is not a squadron id (F/SQ)"), None, Some(id.clone()));
@@ -1172,17 +1163,6 @@ pub fn plan_squadron_set(env: &Env, id: &Id, brief: Option<&str>, comms: Option<
         return plan;
     };
     let mut c = s.clone();
-    if let Some(cm) = comms {
-        if let Comms::Allow { allow } = &cm {
-            for a in allow {
-                let ok = Id(a.clone()).role() == Role::Ship && Id(a.clone()).parts().iter().all(|p| valid_name(p));
-                if !ok {
-                    refuse(&mut plan, "config.invalid", format!("comms allow entry {a:?} is not a ship id F/SQ/SHIP"), None, Some(id.clone()));
-                }
-            }
-        }
-        c.comms = cm;
-    }
     if let Some(m) = mode_change(&mut plan, mode, id) {
         c.permission_mode = m;
     }
@@ -1388,7 +1368,7 @@ pub(crate) mod tests {
     /// MAIN fleet with squadron ARGOS and ship ARGOS (managed folder here).
     pub fn make_fleet(env: &Env) {
         apply_ok(env, &plan_fleet_new(env, "MAIN", "test-mac"));
-        apply_ok(env, &plan_squadron_new(env, "MAIN", "ARGOS", "Build the asset generator.", Comms::default(), None));
+        apply_ok(env, &plan_squadron_new(env, "MAIN", "ARGOS", "Build the asset generator.", None));
         let ship = ShipDef {
             name: "ARGOS".into(),
             prompt: Some("You are ARGOS.".into()),
@@ -1560,11 +1540,10 @@ pub(crate) mod tests {
             dirs: [("no-such-machine".to_string(), "managed".to_string())].into(),
             ..Default::default()
         });
-        f.squadrons[0].1.comms = Comms::Mode("sideways".into());
         let issues = validate(&env, &f);
         assert!(issues.iter().all(|i| i.code == "config.invalid"), "{issues:?}");
         let msgs = format!("{issues:?}");
-        for want in ["empty hostname", "not [A-Z0-9_]+", "defined twice", "no-such-machine", "sideways"] {
+        for want in ["empty hostname", "not [A-Z0-9_]+", "defined twice", "no-such-machine"] {
             assert!(msgs.contains(want), "missing {want:?} in {msgs}");
         }
     }
@@ -1573,7 +1552,7 @@ pub(crate) mod tests {
     fn a_broken_squadron_does_not_hide_the_fleet() {
         let (_td, env) = test_env();
         make_fleet(&env);
-        apply_ok(&env, &plan_squadron_new(&env, "MAIN", "BOREAL", "", Comms::default(), None));
+        apply_ok(&env, &plan_squadron_new(&env, "MAIN", "BOREAL", "", None));
         let bad = env.fleet_dir("MAIN").join("squadrons/argos/squadron.toml");
         std::fs::write(&bad, std::fs::read_to_string(&bad).unwrap() + "\nname = \"oops\n").unwrap();
         let (fleets, issues) = load_all(&env);
@@ -1588,7 +1567,7 @@ pub(crate) mod tests {
         assert_eq!(un.len(), 1);
         assert_eq!(un[0].0, Id::commodore("MAIN", "ARGOS"));
         // writes refuse while a squadron file is broken (a rewrite could lose it)
-        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default(), None).ok());
+        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", None).ok());
         assert!(!plan_machine_add_on(&env, "MAIN", "other", Some("other-host"), vec![]).ok());
         assert!(load_fleet(&env, "MAIN").is_ok());
     }
@@ -1780,8 +1759,8 @@ pub(crate) mod tests {
         make_fleet(&env);
         assert!(!plan_fleet_new(&env, "MAIN", "test-mac").ok()); // exists
         assert!(!plan_fleet_new(&env, "bad name", "test-mac").ok());
-        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", Comms::default(), None).ok()); // exists
-        assert!(!plan_squadron_new(&env, "NOPE", "X", "", Comms::default(), None).ok()); // no fleet
+        assert!(!plan_squadron_new(&env, "MAIN", "ARGOS", "", None).ok()); // exists
+        assert!(!plan_squadron_new(&env, "NOPE", "X", "", None).ok()); // no fleet
         let dup = ShipDef { name: "ARGOS".into(), prompt: Some("p".into()), ..Default::default() };
         assert!(!plan_ship_new(&env, "MAIN", "ARGOS", dup).ok());
         let nested = ShipDef {
@@ -1870,20 +1849,17 @@ pub(crate) mod tests {
         assert_eq!(load_fleet(&env, "MAIN").unwrap().config.admiral.permission_mode, None);
         assert!(!plan_fleet_set(&env, "NOPE", Some("auto")).ok());
 
-        // squadron set: comms, mode, brief
+        // squadron set: mode, brief
         let sq = Id::commodore("MAIN", "ARGOS");
-        let plan = plan_squadron_set(&env, &sq, Some("New orders."), Some(Comms::Mode("commodore-only".into())), Some("plan"));
+        let plan = plan_squadron_set(&env, &sq, Some("New orders."), Some("plan"));
         apply_ok(&env, &plan);
         let f = load_fleet(&env, "MAIN").unwrap();
         let (dir, s) = &f.squadrons[0];
-        assert_eq!(s.comms, Comms::Mode("commodore-only".into()));
         assert_eq!(s.permission_mode.as_deref(), Some("plan"));
         assert!(std::fs::read_to_string(dir.join(s.brief.as_deref().unwrap())).unwrap().contains("New orders."));
         assert!(validate(&env, &f).is_empty());
-        let bad = plan_squadron_set(&env, &sq, None, Some(Comms::Allow { allow: vec!["not a ship".into()] }), None);
-        assert!(!bad.ok() && bad.steps.is_empty());
-        assert!(!plan_squadron_set(&env, &Id::commodore("MAIN", "GHOST"), None, None, Some("plan")).ok());
-        assert!(!plan_squadron_set(&env, &Id::admiral("MAIN"), None, None, None).ok());
+        assert!(!plan_squadron_set(&env, &Id::commodore("MAIN", "GHOST"), None, Some("plan")).ok());
+        assert!(!plan_squadron_set(&env, &Id::admiral("MAIN"), None, None).ok());
 
         // machine rm: the label leaves fleet.toml and every ship's dirs; this machine warns
         apply_ok(&env, &plan_machine_add_on(&env, "MAIN", "home-server", Some("u0box"), vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]));

@@ -253,6 +253,52 @@ pub fn detach(c: &mut Command) {
     }
 }
 
+/// Start `c` and let it outlive the caller and anything that ends the
+/// caller's process tree (the self-end helper, docs/design/cli-ux.md
+/// section 4): on Unix its own session and a double fork (the grandchild
+/// runs `c`; the child that forked it is reaped here at once), so a kill of
+/// the caller's process group or session never reaches it; on Windows a
+/// hidden console of its own (`detach`), a new process group, out of the
+/// caller's job when the job allows it.
+pub fn spawn_detached(c: &mut Command) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            c.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                match libc::fork() {
+                    -1 => Err(std::io::Error::last_os_error()),
+                    0 => Ok(()),
+                    _ => libc::_exit(0),
+                }
+            });
+        }
+        let mut child = c.spawn()?;
+        child.wait().map(|_| ())
+    }
+    #[cfg(windows)]
+    {
+        detach(c);
+        c.spawn().map(|_| ())
+    }
+}
+
+/// Does a detached child outlive the caller's job object? Always on Unix; on
+/// Windows only when the job allows breakaway (else a kill of the job takes it).
+pub fn detach_outlives_job() -> bool {
+    #[cfg(windows)]
+    {
+        win::may_break_away()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// Make `p` executable (a script nimitz writes); a no-op on Windows.
 pub fn make_executable(p: &Path) -> std::io::Result<()> {
     #[cfg(unix)]

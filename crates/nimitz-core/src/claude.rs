@@ -155,8 +155,8 @@ pub fn labels_for(env: &Env, id: &Id) -> BTreeMap<String, String> {
     m
 }
 
-/// The permission rule every member gets: it may run `nimitz` (the authority
-/// table in `sessions::may_run` decides what each role may do with it).
+/// The permission rule every member gets: it may run `nimitz` (every
+/// command, on any member: no authority table since 0.7.3).
 pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 
 /// The Herdr env that names a pane (and its tab and workspace): blank in

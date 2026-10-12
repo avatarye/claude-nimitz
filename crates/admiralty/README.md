@@ -25,9 +25,14 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 ## Layout
 
-- Status bar (the ADMIRALTY line, at the bottom right above the key bar):
-  fleets, live sessions, how many need you, error and warning counts, the
-  multiplexer (or a MONITOR-ONLY badge), a Claude Code version warning.
+- Two status rows at the bottom, no key row. The ADMIRALTY row: fleets, live
+  sessions, how many need you, error and warning counts, the multiplexer (or a
+  MONITOR-ONLY badge), and `? keys` at its right. The row under it: the
+  `nimitz` version (`admiralty X · nimitz Y (mismatch)` as a warning when it
+  is not Admiralty's own), Claude Code's version and support (out of range: a
+  warning), the machine, the refresh interval, and `refreshed Ns ago  q quit`
+  at its right. Narrower, both shorten (`CC 2.1.296`, `nimitz Y ≠ X`).
+- The row under the fleet tabs is blank (no column names).
 - A tab bar on the top line: one tab per fleet (`1 HOME  2 MAIN ...`, with
   `!n` where members need you), then `unassigned` when a stowaway sits under the
   nimitz home in no fleet's folders. A tab shows only its fleet. `tab` /
@@ -110,13 +115,12 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 (every fleet), `n/N`, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
 row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
-new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (stop, relaunch, sweep, rm, adopt, remove from config;
-on a fleet band also `layout herdr [--ships]` and removing a machine; sweep is
+new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (stop, restart, sweep, rm, adopt, remove from config;
+on a fleet band also `layout F/... [--ships]`, `R` muster and removing a machine; sweep is
 scoped to the row: member, squadron or fleet),
-`m` message (admiral and commodore: typed into their pane; ships: relayed by
-their commodore), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
+`m` message (typed into the member's own pane, a ship's too), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
 from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
-flagged only, `R` refresh, `?` help, `q` quit. `esc` closes what is open, one
+flagged only, `R` refresh, `?` the keys panel (`?` or `esc` closes it), `q` quit. `esc` closes what is open, one
 thing at a time (a dialog or form, the detail panel, the `/` name filter), and
 with nothing open quits (not while an action runs: `q` quits then).
 
@@ -127,7 +131,7 @@ a prompt or brief in `$EDITOR`.
 
 Every plan comes from core: `sessions::plan_*` (removal is `plan_retire`: a
 ship is stopped, its job rows removed, then the config), `config::plan_*`, and
-`layout::plan` for `layout herdr` (tabs whose session already has a pane are
+`layout::plan` for `layout F/... [--ships]` (tabs whose session already has a pane are
 dropped, the rest go to the multiplexer's `layout`).
 
 `tests/cli_drift.rs` runs every command Admiralty shows through the real CLI
@@ -148,8 +152,8 @@ A squadron whose config does not load stays on screen with an orange bar
 and the error in full (file:line and the parser's words) above its members; a
 fleet's, in full at the top of its admiral's box.
 
-At 80x24 the header keeps the mux state, the footer keeps `? help` and `q/esc
-quit`, DETAIL keeps room for issue codes, the detail pane drops its picture to
+At 80x24 the ADMIRALTY row keeps the mux state and `? keys`, the row under it
+keeps the versions and `q quit`, DETAIL keeps room for issue codes, the detail pane drops its picture to
 show the reasons first (ctrl-e / ctrl-y scroll it), and help and the issues view
 wrap and scroll. The first frame comes from the session files alone; `claude
 agents` follows right after, and keys typed meanwhile are kept.

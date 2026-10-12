@@ -46,11 +46,11 @@ pub enum Act {
     ConfigRm,
     /// a create or edit form's config change
     Save,
-    /// `nimitz layout herdr F`, run by the CLI
+    /// `nimitz layout F/...`, run by the CLI
     Layout,
     /// the same with `--ships` (a tab attaching each live ship)
     LayoutShips,
-    /// `nimitz restore F`, run by the CLI: the fleet back from the Herdr shape
+    /// `nimitz muster F/...`, run by the CLI: the fleet back from the Herdr shape
     Restore,
 }
 
@@ -79,7 +79,7 @@ impl Act {
     pub fn label(self) -> &'static str {
         match self {
             Act::Start => "start (top-down: admiral, commodore, then this)",
-            Act::Up => "up: start everything this fleet runs here",
+            Act::Up => "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked)",
             Act::Open => "open: attach in a new pane",
             Act::Stop => "stop",
             Act::Relaunch => "relaunch (same session id and history; labels, name and mode restored)",
@@ -88,9 +88,9 @@ impl Act {
             Act::Adopt => "adopt as a ship",
             Act::ConfigRm => "remove from the config",
             Act::Save => "save the config change",
-            Act::Layout => "layout herdr: workspaces and tabs for this fleet",
-            Act::LayoutShips => "layout herdr --ships: and a tab attaching each live ship",
-            Act::Restore => "start the fleet: after a Claude Code update, a Herdr closure or a reboot (nimitz start F)",
+            Act::Layout => "layout: workspaces and tabs for this fleet",
+            Act::LayoutShips => "layout --ships: and a tab attaching each live ship",
+            Act::Restore => "bring the fleet back: after a Claude Code update, a Herdr closure or a reboot",
         }
     }
 
@@ -348,18 +348,22 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
             let id = member_id(target).ok_or("no member")?;
             with_panes(act, format!("nimitz start {id}"), nimitz_core::sessions::plan_start(env, snap, &id, &user, false))
         }
-        (Act::Up, Target::Fleet(id)) => with_panes(act, format!("nimitz up {id}"), nimitz_core::sessions::plan_up(env, snap, id.fleet(), &user)),
+        // `u`: every member of the fleet up, the parked ships too (`nimitz start F/... --parked`)
+        (Act::Up, Target::Fleet(_)) => return prepare_start(ctx, caps, snap, target, act),
         (Act::Stop, _) => {
             let id = member_id(target).ok_or("no member")?;
             with_panes(act, format!("nimitz stop {id}"), nimitz_core::sessions::plan_stop(env, snap, &id, &user))
         }
         (Act::Relaunch, _) => {
             let id = member_id(target).ok_or("no member")?;
-            with_panes(act, format!("nimitz relaunch {id}"), nimitz_core::sessions::plan_relaunch(env, snap, &id, &user))
+            with_panes(act, format!("nimitz restart {id}"), nimitz_core::sessions::plan_relaunch(env, snap, &id, &user))
         }
         (Act::Sweep, _) => {
             let id = member_id(target).ok_or("no member")?;
-            with_panes(act, format!("nimitz sweep {id}"), nimitz_core::sessions::plan_sweep(env, snap, Some(&id), &user))
+            // the member and everything under it (`nimitz sweep F/SQ/...` for a squadron)
+            let ids = nimitz_core::paths::resolve(snap, &[nimitz_core::paths::Path::Under(Some(id.clone()))]).unwrap_or_default();
+            let path = if id.role() == nimitz_core::Role::Ship { id.0.clone() } else { format!("{id}/...") };
+            with_panes(act, format!("nimitz sweep {path}"), nimitz_core::sessions::plan_sweep(env, snap, Some(&ids), &user))
         }
         (Act::Rm, Target::Stowaway(sid)) => {
             let short = snap.stowaways.iter().find(|s| &s.session_id == sid).map(short_of).unwrap_or(sid.clone());
@@ -398,12 +402,12 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
     Ok(p)
 }
 
-/// `layout herdr F [--ships]`: core's layout for the fleet, minus tabs whose
+/// `layout F/... [--ships]`: core's layout for the fleet, minus tabs whose
 /// session already has a pane, mapped onto the multiplexer's layout plan.
 pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fleet: &Id, ships: bool) -> Result<Pending, String> {
     let act = if ships { Act::LayoutShips } else { Act::Layout };
     available(caps, snap, &Target::Fleet(fleet.clone()), act)?;
-    let mut spec = nimitz_core::layout::plan(&ctx.env, snap, Some(fleet.fleet()), ships && caps.open, &Caller::User, false);
+    let mut spec = nimitz_core::layout::plan(&ctx.env, snap, Some(fleet.fleet()), ships && caps.open, false);
     let shown: Vec<String> = panes.iter().filter_map(|p| p.session_id.clone()).collect();
     nimitz_core::layout::drop_shown(&mut spec, &shown);
     let lp = LayoutPlan {
@@ -414,8 +418,8 @@ pub fn prepare_layout(ctx: &Ctx, caps: Caps, snap: &Snapshot, panes: &[Pane], fl
             .collect(),
     };
     let mut plan = spec.plan;
-    plan.summary = format!("layout herdr {fleet}{}", if ships { " --ships" } else { "" });
-    let command = format!("nimitz layout herdr {fleet}{}", if ships { " --ships" } else { "" });
+    plan.summary = format!("layout {fleet}/...{}", if ships { " --ships" } else { "" });
+    let command = format!("nimitz layout {fleet}/...{}", if ships { " --ships" } else { "" });
     Ok(Pending { act, command, plan, config: false, panes: vec![], layout: Some(lp) })
 }
 
@@ -445,28 +449,30 @@ fn last_json<T: serde::de::DeserializeOwned>(stdout: &str) -> Option<T> {
     serde_json::from_str(&text[start..]).ok().or_else(|| serde_json::from_str(text).ok())
 }
 
-/// `R` on a fleet band, `a` (start), `r` (relaunch) and `A` (a pane) on a
-/// member: `nimitz start <target> [-f|-p] --plan --json` gives the plan the
-/// confirm dialog shows; `y` then runs it with `--yes` (`apply`). The CLI
+/// `R` on a fleet band, `a` (start), `r` (restart) and `A` (a pane) on a
+/// member: `nimitz muster|start|restart|open <path> --plan --json` gives
+/// the plan the confirm dialog shows; `y` then runs it with `--yes` (`apply`). The CLI
 /// holds the whole engine (the Herdr shape, the wakes, the relaunches, the
 /// panes), so Admiralty says and does the same as the command line (M25).
 pub fn prepare_start(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Result<Pending, String> {
     available(caps, snap, target, act)?;
-    let id = match target {
-        Target::Member(id) | Target::Squadron(id) | Target::Fleet(id) => id.clone(),
+    // a member by its path; a squadron or a fleet, everything under it
+    let path = match target {
+        Target::Member(id) => id.0.clone(),
+        Target::Squadron(id) | Target::Fleet(id) => format!("{id}/..."),
         _ => return Err("start names a fleet, a squadron or a member".into()),
     };
     let bin = nimitz_bin();
-    let mut args = vec!["start".to_string(), id.0.clone()];
-    // a lead's id is its whole fleet or squadron: its own relaunch or pane is `--only`
-    let lead_alone = matches!(target, Target::Member(_)) && id.role().lead() && matches!(act, Act::Relaunch | Act::Open | Act::Start);
-    if lead_alone {
-        args.push("--only".into());
-    }
-    match act {
-        Act::Relaunch => args.push("-f".into()),
-        Act::Open => args.push("-p".into()),
-        _ => {}
+    // (`R`: muster, the restore engine whole)
+    let verb = match act {
+        Act::Relaunch => "restart",
+        Act::Open => "open",
+        Act::Restore => "muster",
+        _ => "start",
+    };
+    let mut args = vec![verb.to_string(), path];
+    if act == Act::Up {
+        args.push("--parked".into());
     }
     let out = cli_command(&ctx.env, &bin).args(&args).args(["--plan", "--json"]).output().map_err(|e| format!("{bin}: {e}"))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -478,12 +484,12 @@ pub fn prepare_start(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, ac
     Ok(Pending { act, command, plan, config: false, panes: vec![], layout: None })
 }
 
-/// `R` on a fleet band (kept for callers of the old name): `nimitz start F`.
+/// `R` on a fleet band (kept for callers of the old name): `nimitz muster F/...`.
 pub fn prepare_restore(ctx: &Ctx, caps: Caps, snap: &Snapshot, fleet: &Id) -> Result<Pending, String> {
     prepare_start(ctx, caps, snap, &Target::Fleet(fleet.clone()), Act::Restore)
 }
 
-/// Run `nimitz restore F --yes --json` and read its outcome (a run with
+/// Run the CLI command (`nimitz muster F/... --yes --json`, a start, ...) and read its outcome (a run with
 /// nothing to restore prints none: then the exit code is the verdict).
 fn run_restore(env: &Env, command: &str) -> Outcome {
     let bin = nimitz_bin();
@@ -587,17 +593,20 @@ pub fn open_panes(ctx: &Ctx, p: &Pending) -> Result<Vec<PaneRef>, String> {
     Ok(out)
 }
 
+/// A pending action the CLI runs whole (`prepare_start`): no pane of
+/// Admiralty's own, a `start`, `restart`, `open` or `muster` command.
+fn via_cli(p: &Pending) -> bool {
+    p.panes.is_empty() && p.layout.is_none() && ["nimitz start ", "nimitz restart ", "nimitz open ", "nimitz muster "].iter().any(|v| p.command.starts_with(v))
+}
+
 /// Run the non-pane part of the plan (any thread). Core skips pane steps itself.
 pub fn apply(env: &Env, p: &Pending) -> Outcome {
-    // (`A` and enter run `nimitz start <id> -p` now: the CLI first)
-    if p.command.starts_with("nimitz start") {
+    // (`A` and enter run `nimitz open <id>` now: the CLI first)
+    if via_cli(p) {
         return run_restore(env, &p.command);
     }
     if p.act == Act::Open || p.layout.is_some() {
         return Outcome { verified: true, ..Default::default() };
-    }
-    if p.command.starts_with("nimitz start") {
-        return run_restore(env, &p.command);
     }
     if p.config {
         nimitz_core::config::apply_config_plan(env, &p.plan)
@@ -620,7 +629,7 @@ pub fn outcome_text(p: &Pending, o: &Outcome) -> (bool, String) {
         let tabs: usize = lp.workspaces.iter().map(|(_, t)| t.len()).sum();
         return (true, format!("layout: {} ({tabs} tab(s) in {} workspace(s); members bind at their SessionStart)", p.plan.summary, lp.workspaces.len()));
     }
-    if p.command.starts_with("nimitz start") && o.ran.is_empty() {
+    if via_cli(p) && o.ran.is_empty() {
         return (true, format!("{}: {}", p.act.word(), p.plan.summary));
     }
     let checked = if o.verified || p.config { "verified" } else { "done" };
@@ -664,8 +673,6 @@ pub struct MessagePlan {
     /// whose pane it is typed into
     pub via: String,
     pub pane: PaneRef,
-    /// true: typed to the commodore, who relays it with SendMessage
-    pub relay: bool,
     /// the pane is known by its attach alone (`Pane.inferred`): typed into
     /// only while it runs exactly `claude attach <this job>`, read just
     /// before typing (the agent view re-execs as `claude agents`, R-24)
@@ -678,25 +685,16 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     }
     let Target::Member(id) = target else {
         return Err(match target {
-            Target::Stowaway(_) => "a stowaway has no chain of command: adopt it as a ship first (x then d)".into(),
+            Target::Stowaway(_) => "a stowaway is no fleet member: adopt it as a ship first (x then d)".into(),
             Target::Fleet(id) | Target::Squadron(id) => return plan_message(caps, snap, panes, &Target::Member(id.clone())),
             _ => "message names a member".into(),
         });
     };
     let m = find_member(snap, id).ok_or("not in the snapshot")?;
-    let (via_m, relay) = match m.role {
-        Role::Admiral | Role::Commodore => (m, false),
-        Role::Ship => {
-            let sq = id.parent().ok_or("no squadron")?;
-            (find_member(snap, &sq).ok_or("its commodore is not in the snapshot")?, true)
-        }
-    };
+    // every member gets it itself, a ship too (0.7.3: no relay through its commodore)
+    let via_m = m;
     if !live(via_m) {
-        return Err(if relay {
-            format!("its commodore {} is not running and relays go through it: a on the commodore starts it", via_m.expected_name)
-        } else {
-            format!("{} is not running: a starts it", via_m.expected_name)
-        });
+        return Err(format!("{} is not running: a starts it", via_m.expected_name));
     }
     let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into: A opens its tab, then m (or nimitz signal {} <text>, which opens its tab and delivers it)", via_m.expected_name, via_m.id.0))?;
     let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone: R refreshes"))?;
@@ -713,10 +711,7 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     } else {
         None
     };
-    if relay && !live(m) {
-        return Err(format!("{} is not running: a starts it", m.expected_name));
-    }
-    Ok(MessagePlan { id: id.clone(), to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, relay, attach_job })
+    Ok(MessagePlan { id: id.clone(), to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, attach_job })
 }
 
 /// The CLI command that sends the same message (its text as it will be sent).
@@ -727,13 +722,8 @@ pub fn signal_command(p: &MessagePlan, text: &str) -> String {
 /// The text typed into the pane: what the user typed, spaces as typed, with
 /// escape sequences and control characters removed (newlines as spaces), the
 /// same floor the Herdr adapter applies.
-pub fn message_text(p: &MessagePlan, text: &str) -> String {
-    let text = nimitz_mux::strip_controls(text);
-    if p.relay {
-        format!("Relay to {} from the user: {text}", p.to)
-    } else {
-        text.to_string()
-    }
+pub fn message_text(text: &str) -> String {
+    nimitz_mux::strip_controls(text)
 }
 
 /// Write a file atomically (temp + rename).

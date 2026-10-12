@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use nimitz_core::{Comms, Crew, Fleet, Id, Issue, Member, Role, SessionInfo, Severity, Snapshot, Squadron, Status, Task};
+use nimitz_core::{Crew, Fleet, Id, Issue, Member, Role, SessionInfo, Severity, Snapshot, Squadron, Status, Task};
 use nimitz_mux::{Caps, Pane, PaneRef};
 
 use crate::data::Bundle;
@@ -156,7 +156,6 @@ fn fleet_main() -> Fleet {
         id: sq,
         commodore,
         ships: vec![bolt, boom, ingest],
-        comms: Comms::Mode("open".into()),
         issues: vec![],
     };
 
@@ -186,7 +185,6 @@ fn fleet_main() -> Fleet {
         id: sq,
         commodore,
         ships: vec![docs, pipeline],
-        comms: Comms::Mode("commodore-only".into()),
         issues: vec![],
     };
 
@@ -231,7 +229,7 @@ fn fleet_forge() -> Fleet {
         "labels.missing",
         Severity::Warn,
         "current session has no NIMITZ_* labels (resumed with flags)",
-        Some("nimitz relaunch FORGE/IRON"),
+        Some("nimitz restart FORGE/IRON"),
         Some(&sq),
     )];
     let anvil_id = Id::ship(f, "IRON", "ANVIL");
@@ -244,7 +242,7 @@ fn fleet_forge() -> Fleet {
     anvil.session.as_mut().unwrap().name = "[FORGE.IRON]-ANVIL-2".into(); // drifted
     anvil.extra_rows = vec![session(&anvil_id, "cc33dupe", Some(5311), "background", Some("idle"), None, 3200.0, true)];
     anvil.issues = vec![
-        issue("name.drift", Severity::Error, "live session is named [FORGE.IRON]-ANVIL-2, expected [FORGE.IRON]-ANVIL", Some("nimitz relaunch FORGE/IRON/ANVIL"), Some(&anvil_id)),
+        issue("name.drift", Severity::Error, "live session is named [FORGE.IRON]-ANVIL-2, expected [FORGE.IRON]-ANVIL", Some("nimitz restart FORGE/IRON/ANVIL"), Some(&anvil_id)),
         issue("dup.live", Severity::Error, "two live sessions for this identity (cc33ac33, cc33dupe)", Some("nimitz stop cc33dupe"), Some(&anvil_id)),
     ];
     let hammer_id = Id::ship(f, "IRON", "HAMMER");
@@ -276,12 +274,11 @@ fn fleet_forge() -> Fleet {
         Some(session(&hotfix_id, "ce55ce55", None, "background", None, None, 50000.0, true)),
     );
     hotfix.session.as_mut().unwrap().labels.insert("NIMITZ_ID".into(), "FORGE/MOLD/HOTFIX".into());
-    hotfix.issues = vec![issue("labels.mismatch", Severity::Error, "labels name FORGE/MOLD/HOTFIX, registry says FORGE/IRON/HOTFIX", Some("nimitz relaunch FORGE/IRON/HOTFIX"), Some(&hotfix_id))];
+    hotfix.issues = vec![issue("labels.mismatch", Severity::Error, "labels name FORGE/MOLD/HOTFIX, registry says FORGE/IRON/HOTFIX", Some("nimitz restart FORGE/IRON/HOTFIX"), Some(&hotfix_id))];
     let iron = Squadron {
         id: sq,
         commodore,
         ships: vec![anvil, hammer, quench, hotfix],
-        comms: Comms::Mode("open".into()),
         issues: vec![],
     };
 
@@ -303,7 +300,6 @@ fn fleet_forge() -> Fleet {
         id: sq.clone(),
         commodore,
         ships: vec![cast, flask],
-        comms: Comms::Allow { allow: vec!["MAIN/ARGOS/BOLT".into()] },
         issues: vec![issue("config.invalid", Severity::Error, "squadron.toml: ships[1] duplicate name CAST", Some("nimitz check FORGE/MOLD"), Some(&sq))],
     };
 
@@ -330,7 +326,7 @@ fn fleet_lab() -> Fleet {
         dir: "/home/u/.claude-nimitz/lab".into(),
         machine: None,
         admiral,
-        squadrons: vec![Squadron { id: sq, commodore, ships: vec![lens], comms: Comms::default(), issues: vec![] }],
+        squadrons: vec![Squadron { id: sq, commodore, ships: vec![lens], issues: vec![] }],
         issues: vec![],
     }
 }

@@ -17,6 +17,7 @@ pub mod env;
 pub mod formats;
 pub mod migrate;
 pub mod os;
+pub mod paths;
 pub mod registry;
 
 // core-sessions
@@ -35,6 +36,7 @@ pub mod pins;
 pub mod restore;
 pub mod rules;
 pub mod sandbox;
+pub mod self_end;
 pub mod sessions;
 pub mod snapshot;
 pub mod sha256;

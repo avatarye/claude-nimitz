@@ -271,26 +271,6 @@ fn row_spans_anim(r: &Row, w: &[u16; 4], inner: usize, gap: usize, icons: &Icons
     out
 }
 
-/// The column header, aligned with the rows inside the boxes.
-pub fn header_line(width: u16) -> Line<'static> {
-    header_line_with(width, spacing_for(width as usize))
-}
-
-/// `header_line` for the spacing the list is drawn with.
-pub fn header_line_with(width: u16, sp: Spacing) -> Line<'static> {
-    let inner = sp.inner(width as usize);
-    let w = col_widths_gap(inner as u16, sp.gap as u16);
-    let mut spans = vec![Span::raw(" ".repeat(sp.side()))];
-    for (k, (name, cw)) in ["    NAME", "STATUS", "AGE", "DETAIL"].iter().zip(w.iter()).enumerate() {
-        let text = if k == 2 { format!("{:>w$}", name, w = *cw as usize) } else { pad(name, *cw as usize) };
-        spans.push(Span::styled(text, bold(mono::COMMENT)));
-        if k < 3 {
-            spans.push(Span::raw(" ".repeat(sp.gap)));
-        }
-    }
-    Line::from(truncate_spans(spans, width as usize))
-}
-
 /// A title band `width` columns wide including its two corner cells.
 /// Bands narrower than this show only the key counts (needs you, errors).
 pub const NARROW_BAND: usize = 100;

@@ -133,6 +133,10 @@ fn main() -> ExitCode {
         app.inset = (r.trim().parse().unwrap_or(0), c.trim().parse().unwrap_or(0));
     }
     app.fixed_now = fixed_now;
+    // the nimitz it runs, read off the UI thread (the live view only)
+    if app.ctx.live && !dump {
+        app.read_nimitz_version();
+    }
     if dump {
         let mut src = make();
         app.apply(src.load());
@@ -159,7 +163,9 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
-    match run::run(app, make, Duration::from_secs_f64(interval.max(0.5))) {
+    app.interval = Duration::from_secs_f64(interval.max(0.5));
+    let every = app.interval;
+    match run::run(app, make, every) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e.to_string()),
     }

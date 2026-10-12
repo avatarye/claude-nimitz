@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 /// Flags that take a value (`--x v` or `--x=v`). All others are booleans.
 const VALUE_FLAGS: &[&str] = &[
-    "--into", "--dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--brief", "--comms", "--label",
+    "--into", "--dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--brief", "--label",
     "--admiral-mode", "--no-dir", "--hostname", "--fleet", "--title", "--paths", "--pages", "--note", "--from", "--at", "--name", "--for",
 ];
 

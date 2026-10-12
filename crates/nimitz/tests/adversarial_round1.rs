@@ -139,15 +139,6 @@ impl Sb {
     }
 }
 
-fn hook_decision(out: &str) -> String {
-    let t = out.trim();
-    if t.is_empty() {
-        return "allow".into();
-    }
-    let v: Value = serde_json::from_str(t).unwrap_or(Value::Null);
-    v["hookSpecificOutput"]["permissionDecision"].as_str().unwrap_or("?").to_string()
-}
-
 // ------------------------------------------------------------------ A. starting and order
 
 #[test]
@@ -155,7 +146,7 @@ fn bug01_nimitz_mux_auto_still_detects_herdr() {
     // contracts.md section 2: NIMITZ_MUX defaults to `auto`; saying so must not turn the mux off.
     let sb = Sb::new(true);
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap(); // the admiral is down
-    let r = sb.run_env(&["start", "MAIN", "--yes"], &[("NIMITZ_MUX", "auto")]);
+    let r = sb.run_env(&["start", "MAIN/...", "--yes"], &[("NIMITZ_MUX", "auto")]);
     assert!(!r.out.contains("mux.none"), "NIMITZ_MUX=auto with HERDR_ENV=1 and a herdr binary fell back to none:\n{}", r.out);
 }
 
@@ -203,11 +194,16 @@ fn bug05_an_empty_dir_is_refused() {
 }
 
 #[test]
-fn bug06_partial_labels_do_not_make_the_caller_the_user() {
+fn bug06_partial_labels_warn_and_run_as_no_member() {
     let sb = Sb::new(false);
     for extra in [&[("NIMITZ_ROLE", "ship")][..], &[("NIMITZ_ID", "MAIN/ARGOS/CLEAN")][..], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS/CLEAN")][..]] {
         let r = sb.run_env(&["start", "MAIN/ARGOS/STOPPED", "--plan"], extra);
-        assert!(r.out.contains("authority"), "labels {extra:?} were trusted as the user:\n{}", r.out);
+        assert!(r.code == 0 && r.out.contains("[WARN]") && r.out.contains("partial or disagree"), "labels {extra:?}:\n{}", r.out);
+        // never the user's: a bare sweep is not everything, a signal never types as you
+        let r = sb.run_env(&["sweep", "--plan"], extra);
+        assert!(r.code != 0 && r.out.contains("name what to sweep"), "labels {extra:?}:\n{}", r.out);
+        let r = sb.run_env(&["signal", "MAIN/ARGOS", "hi", "--plan"], extra);
+        assert!(r.out.contains("inbox") && !r.out.contains("type into"), "labels {extra:?}:\n{}", r.out);
     }
 }
 
@@ -248,7 +244,7 @@ fn bug10_relaunch_refuses_while_the_name_is_taken() {
     let sb = Sb::new(false);
     let sid = sb.sid("MAIN/ARGOS/STOPPED");
     sb.claude(&sb.dir("dirs/main/stopped"), &["--bg", "--resume", &sid, "--name", "[MAIN.ARGOS]-STOPPED"]);
-    sb.run(&["relaunch", "MAIN/ARGOS/STOPPED", "--yes"]);
+    sb.run(&["restart", "MAIN/ARGOS/STOPPED", "--yes"]);
     let n = sb.live_in(&sb.dir("dirs/main/stopped"));
     assert_eq!(n, 1, "relaunch went ahead with name.taken: {n} live sessions now answer to [MAIN.ARGOS]-STOPPED");
 }
@@ -359,15 +355,6 @@ fn bug21_a_stale_ship_lock_is_noticed_on_its_own_machine() {
 }
 
 // ------------------------------------------------------------------ D/E/F
-
-#[test]
-fn bug22_a_uds_address_does_not_bypass_the_comms_rule() {
-    // Real Claude Code 2.1.288 delivers SendMessage to `uds:/tmp/cc-socks/<pid>.sock`.
-    let sb = Sb::new(false);
-    let input = r#"{"session_id":"s","tool_name":"SendMessage","tool_input":{"to":"uds:/tmp/cc-socks/999999.sock","message":"hi"}}"#;
-    let r = raw(&sb.vars, &["hook", "PreToolUse"], &[("NIMITZ_ID", "MAIN/BOREAL/X"), ("NIMITZ_ROLE", "ship"), ("NIMITZ_FLEET", "MAIN"), ("NIMITZ_SQUADRON", "BOREAL")], Some(input), None);
-    assert_eq!(hook_decision(&r.out), "deny", "a ship of a commodore-only squadron signals an unknown session by socket");
-}
 
 #[test]
 fn bug23_labels_in_the_job_row_count_when_session_start_is_lost() {
@@ -508,9 +495,9 @@ fn bug47_a_second_start_does_not_start_a_second_admiral() {
     let sb = Sb::new(true);
     // the admiral's process is gone (a parked job); the first start wakes it
     std::fs::remove_file(sb.dir("claude_home/sessions/c46d79b9.json")).unwrap();
-    let r = sb.run(&["start", "MAIN", "--yes"]);
+    let r = sb.run(&["start", "MAIN/...", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    let r = sb.run(&["start", "MAIN", "--yes"]);
+    let r = sb.run(&["start", "MAIN/...", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("nothing to start"), "the second start finds it live:\n{}", r.out);
     let calls = std::fs::read_to_string(sb.dir("calls.log")).unwrap_or_default();
@@ -534,7 +521,7 @@ fn bug53_relaunch_keeps_the_session_id_and_its_history() {
     // Real Claude Code: `--bg --resume <id> --name --settings` while the row exists starts a copy
     // with NO conversation; after `claude rm <row>` the same command continues <id> with history.
     let sb = Sb::new(false);
-    let p = sb.run(&["relaunch", "MAIN/ARGOS/NOLABEL", "--plan"]);
+    let p = sb.run(&["restart", "MAIN/ARGOS/NOLABEL", "--plan"]);
     let lines: Vec<&str> = p.out.lines().filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit())).collect();
     let rm = lines.iter().position(|l| l.contains(" rm "));
     let resume = lines.iter().position(|l| l.contains("--resume"));
@@ -552,33 +539,36 @@ fn trust_entry(sb: &Sb, dir: &Path, accepted: bool) {
     }
 }
 
-/// Point FRESH at `dir` (as its commodore: the user's own `ship set` would
-/// trust the folder) and return `nimitz check MAIN/ARGOS/FRESH`.
+/// Point FRESH at `dir`, with the trust files as they were before (a `ship
+/// set` trusts the folder), and return `nimitz check MAIN/ARGOS/FRESH`.
 fn check_fresh_at(sb: &Sb, dir: &Path) -> Run {
-    let r = sb.run_env(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", dir.to_str().unwrap(), "--yes"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
+    let files = [sb.dir("claude_home/.claude.json"), sb.dir("claude_home.json")];
+    let before: Vec<Vec<u8>> = files.iter().map(|f| std::fs::read(f).unwrap()).collect();
+    let r = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", dir.to_str().unwrap(), "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
+    for (f, b) in files.iter().zip(before) {
+        std::fs::write(f, b).unwrap();
+    }
     sb.run(&["check", "MAIN/ARGOS/FRESH"])
 }
 
 #[test]
-fn trust_the_users_ship_set_trusts_a_new_folder_and_a_members_cannot() {
+fn trust_a_ship_set_trusts_a_new_folder_whoever_runs_it() {
     let sb = Sb::new(false);
     let lone = sb.dir("elsewhere/lone");
     std::fs::create_dir_all(&lone).unwrap();
-    // a commodore's: a warning, the fix the user's
-    let r = sb.run_env(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--plan"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
-    assert!(r.out.contains(&format!("ask the user to run: nimitz trust {}", lone.display())), "{}", r.out);
+    // a commodore's: the same trust step
+    let r = sb.run_env(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--plan", "-v"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
+    assert!(r.out.contains(&format!("trust {}", lone.display())) && r.out.contains("hooks and MCP servers"), "{}", r.out);
     // the user's: a plan step that says what it lets run, then the folder is trusted
     let p = sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--plan", "-v"]);
     assert!(p.out.contains(&format!("trust {}", lone.display())) && p.out.contains("hooks and MCP servers"), "{}", p.out);
     assert_eq!(sb.run(&["ship", "set", "MAIN/ARGOS/FRESH", "--dir", lone.to_str().unwrap(), "--yes"]).code, 0);
     assert!(untrusted_line(&sb.run(&["check", "MAIN/ARGOS/FRESH"]).out).is_none());
-    // `nimitz trust` itself: the user's; a member is refused
+    // `nimitz trust` itself: any caller
     let other = sb.dir("elsewhere/other");
     std::fs::create_dir_all(&other).unwrap();
-    let m = sb.run_env(&["trust", other.to_str().unwrap(), "--yes"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
-    assert!(m.code != 0 && m.out.contains("(authority)") && m.out.contains("MCP servers"), "{}", m.out);
-    let u = sb.run(&["trust", other.to_str().unwrap(), "--yes"]);
+    let u = sb.run_env(&["trust", other.to_str().unwrap(), "--yes"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
     assert_eq!(u.code, 0, "{}", u.out);
     let again = sb.run(&["trust", other.to_str().unwrap(), "--plan"]);
     assert!(again.code == 0 && !again.out.contains("writes"), "already trusted: no step\n{}", again.out);
@@ -589,20 +579,20 @@ fn untrusted_line(out: &str) -> Option<String> {
 }
 
 #[test]
-fn trust_the_users_start_trusts_the_folder_then_launches() {
+fn trust_a_start_trusts_the_folder_then_launches() {
     let sb = Sb::new(false);
     let lone = sb.dir("elsewhere/repo");
     std::fs::create_dir_all(lone.join(".git")).unwrap();
     assert!(untrusted_line(&check_fresh_at(&sb, &lone).out).is_some_and(|l| l.contains("[ERROR]")));
-    // a commodore's start is refused, the fix the user's
+    // a commodore's start trusts it first too
     let m = sb.run_env(&["start", "MAIN/ARGOS/FRESH", "--plan"], &[("NIMITZ_ROLE", "commodore"), ("NIMITZ_ID", "MAIN/ARGOS")]);
-    assert!(m.out.contains(&format!("ask the user to run: nimitz trust {}", lone.display())), "{}", m.out);
+    assert!(m.out.contains(&format!("trust {}, then", lone.display())), "{}", m.out);
     // the user's: the row says it, a note says what it lets run, and it runs
     let p = sb.run(&["start", "MAIN/ARGOS/FRESH", "--plan"]);
     assert!(p.out.contains(&format!("trust {}, then", lone.display())), "{}", p.out);
     assert!(p.out.contains("hooks and MCP servers"), "{}", p.out);
     // a wider start never trusts a folder the user did not name
-    let f = sb.run(&["start", "MAIN/ARGOS", "--plan", "-v"]);
+    let f = sb.run(&["start", "MAIN/ARGOS/...", "--plan", "-v"]);
     assert!(!f.out.contains("hooks and MCP servers"), "{}", f.out);
     let r = sb.run(&["start", "MAIN/ARGOS/FRESH", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -724,7 +714,7 @@ fn bug55_relaunch_is_not_skipped_because_an_impostor_carries_the_labels() {
     // MISLABEL's live session carries CLEAN's labels (another folder). Relaunch of CLEAN removed its
     // row, then skipped the resume as "live already": CLEAN is left down while nimitz says OK.
     let sb = Sb::new(false);
-    sb.run(&["relaunch", "MAIN/ARGOS/CLEAN", "--yes"]);
+    sb.run(&["restart", "MAIN/ARGOS/CLEAN", "--yes"]);
     assert_eq!(sb.live_in(&sb.dir("dirs/main/clean")), 1, "CLEAN is down after relaunch");
 }
 

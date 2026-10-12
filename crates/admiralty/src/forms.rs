@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use nimitz_core::env::Env;
-use nimitz_core::{Caller, Comms, Id, Plan, ShipDef, Snapshot};
+use nimitz_core::{Caller, Id, Plan, ShipDef, Snapshot};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::actions::{quote, Act, Pending};
@@ -82,24 +82,6 @@ pub const MODES: [&str; 6] = ["(squadron default)", "default", "acceptEdits", "a
 /// For edits: keep what the config has, or clear it.
 pub const SET_MODES: [&str; 7] = ["(unchanged)", "(none)", "default", "acceptEdits", "auto", "bypassPermissions", "plan"];
 
-/// `open`, `commodore-only` or `allow:F/SQ/SHIP,...` (the CLI's `--comms`).
-pub fn parse_comms(s: &str) -> Result<Comms, String> {
-    match s.trim() {
-        t @ ("open" | "commodore-only") => Ok(Comms::Mode(t.into())),
-        t => match t.strip_prefix("allow:") {
-            Some(list) => Ok(Comms::Allow { allow: list.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::to_string).collect() }),
-            None => Err("open, commodore-only or allow:F/SQ/SHIP,...".into()),
-        },
-    }
-}
-
-pub fn comms_text(c: &Comms) -> String {
-    match c {
-        Comms::Mode(m) => m.clone(),
-        Comms::Allow { allow } => format!("allow:{}", allow.join(",")),
-    }
-}
-
 /// `(unchanged)` -> None, `(none)` -> Some("") (core clears it), else the mode.
 fn set_mode(v: &str) -> Option<&str> {
     match v {
@@ -142,7 +124,6 @@ impl Form {
             vec![
                 Field::new("fleet", "fleet", fleet, FieldKind::Fixed, ""),
                 Field::new("squadron", "squadron", "", FieldKind::Text, "UPPERCASE, unique in the fleet"),
-                Field::new("comms", "comms", "open", FieldKind::Text, "open, commodore-only or allow:F/SQ/SHIP,..."),
                 Field::new("brief", "brief", "", FieldKind::Long, "goes to SQUADRON.md; ctrl-e opens $EDITOR"),
             ],
         )
@@ -214,7 +195,6 @@ impl Form {
             format!("Edit squadron {id}"),
             vec![
                 Field::new("squadron", "squadron", &id.0, FieldKind::Fixed, ""),
-                Field::new("comms", "comms", &comms_text(&c.comms), FieldKind::Text, "open, commodore-only or allow:F/SQ/SHIP,..."),
                 Field::new("brief", "new brief", "", FieldKind::Long, "empty keeps the brief; ctrl-e opens $EDITOR"),
                 Field::new("now", "ship mode now", &mode_now, FieldKind::Fixed, ""),
                 Field::new("mode", "ship mode", SET_MODES[0], FieldKind::Choice(SET_MODES.iter().map(|s| s.to_string()).collect()), "default permission mode for its ships"),
@@ -307,7 +287,7 @@ impl Form {
         match &self.kind {
             FormKind::NewFleet => format!("nimitz fleet new {} --machine {}", q(self.get("fleet")), q(self.get("machine"))),
             FormKind::NewSquadron => {
-                let mut c = format!("nimitz squadron new {} --comms {}", q(&format!("{}/{}", self.get("fleet"), self.get("squadron"))), q(self.get("comms").trim()));
+                let mut c = format!("nimitz squadron new {}", q(&format!("{}/{}", self.get("fleet"), self.get("squadron"))));
                 if !self.get("brief").trim().is_empty() {
                     c.push_str(&format!(" --brief {}", q(self.get("brief").trim())));
                 }
@@ -337,7 +317,7 @@ impl Form {
                 None => format!("nimitz fleet set {}", q(f)),
             },
             FormKind::EditSquadron(id) => {
-                let mut c = format!("nimitz squadron set {} --comms {}", q(&id.0), q(self.get("comms").trim()));
+                let mut c = format!("nimitz squadron set {}", q(&id.0));
                 if !self.get("brief").trim().is_empty() {
                     c.push_str(&format!(" --brief {}", q(self.get("brief").trim())));
                 }
@@ -387,11 +367,7 @@ impl Form {
                 if let Some(e) = name_err(self.get("squadron"), "squadron") {
                     errs.insert("squadron", e);
                 }
-                let comms = parse_comms(self.get("comms")).unwrap_or_else(|e| {
-                    errs.insert("comms", e);
-                    Comms::default()
-                });
-                nimitz_core::config::plan_squadron_new(env, self.get("fleet"), self.get("squadron").trim(), self.get("brief").trim(), comms, None)
+                nimitz_core::config::plan_squadron_new(env, self.get("fleet"), self.get("squadron").trim(), self.get("brief").trim(), None)
             }
             FormKind::NewShip | FormKind::EditShip(_) => {
                 if let Some(e) = name_err(self.get("ship"), "ship") {
@@ -420,15 +396,8 @@ impl Form {
             }
             FormKind::EditFleet(f) => nimitz_core::config::plan_fleet_set(env, f, set_mode(self.get("mode"))),
             FormKind::EditSquadron(id) => {
-                let comms = match parse_comms(self.get("comms")) {
-                    Ok(c) => Some(c),
-                    Err(e) => {
-                        errs.insert("comms", e);
-                        None
-                    }
-                };
                 let brief = Some(self.get("brief").trim()).filter(|b| !b.is_empty());
-                nimitz_core::config::plan_squadron_set(env, id, brief, comms, set_mode(self.get("mode")))
+                nimitz_core::config::plan_squadron_set(env, id, brief, set_mode(self.get("mode")))
             }
             FormKind::MachineRm(f) => {
                 if let Some(e) = label_err(self.get("machine")) {

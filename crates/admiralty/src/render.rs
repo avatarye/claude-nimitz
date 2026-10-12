@@ -16,7 +16,7 @@ use crate::actions::{shell, MessagePlan, Pending};
 use crate::app::{App, MenuItem, Modal, NeedItem, HELP};
 use crate::detail::{badge, detail_with_art};
 use crate::forms::{FieldKind, Form};
-use crate::frames::{header_line_with, layout, pad, selectable, wrap};
+use crate::frames::{layout, pad, selectable, wrap};
 use crate::theme::{bold, mono, severity_color, severity_word, st};
 use crate::view::FleetState;
 
@@ -32,7 +32,8 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), full);
     // the part the user sees: Herdr's overlay hides its last rows and columns
     let area = Rect { width: full.width.saturating_sub(app.inset.1), height: full.height.saturating_sub(app.inset.0), ..full };
-    // fleet tabs on top; the ADMIRALTY status bar sits right above the key bar
+    // fleet tabs on top; two status rows at the bottom: the fleets (ADMIRALTY)
+    // over the versions, the machine and the refresh
     let [tabs, body, top, bottom] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
     f.render_widget(Paragraph::new(top_line(app, top.width as usize)).style(Style::new().bg(mono::BG_HI)), top);
@@ -150,13 +151,27 @@ fn top_line(app: &App, width: usize) -> Line<'static> {
     // the longest form whose essentials fit: words, then short words, then
     // letters; optional pieces follow while whole ones fit, never cut mid-word
     let w = |v: &[Span]| v.iter().map(|s| s.content.width()).sum::<usize>();
-    let level = (0..3).find(|l| w(&top_spans(app, b, *l).0) <= width).unwrap_or(2);
-    let (essential, optional) = top_spans(app, b, level);
+    // `? keys` goes before the essentials do
+    let level = (0..3).find(|l| w(&top_spans(app, b, *l).0) + w(&key_hint("?", "keys")) <= width);
+    let (essential, optional) = top_spans(app, b, level.unwrap_or(2));
+    balanced(essential, optional, if level.is_some() { key_hint("?", "keys") } else { vec![] }, width)
+}
+
+/// A key and what it does, as the status rows show it at their right.
+fn key_hint(k: &str, d: &str) -> Vec<Span<'static>> {
+    vec![Span::styled(format!(" {k} "), bold(mono::ACCENT)), Span::styled(format!("{d} "), st(mono::SOFT))]
+}
+
+/// One status row: `essential` from the left (cut at the edge), `optional`
+/// pieces while whole ones fit, `right` flush to the right edge whenever it fits.
+fn balanced(essential: Vec<Span<'static>>, optional: Vec<Span<'static>>, right: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let right_w: usize = right.iter().map(|s| s.content.width()).sum();
+    let room = width.saturating_sub(right_w);
     let mut out = vec![];
     let mut used = 0;
     for sp in essential {
         let n = sp.content.width();
-        if used + n > width {
+        if used + n > room {
             break;
         }
         used += n;
@@ -164,10 +179,14 @@ fn top_line(app: &App, width: usize) -> Line<'static> {
     }
     for sp in optional {
         let n = sp.content.width();
-        if used + n <= width {
+        if used + n <= room {
             used += n;
             out.push(sp);
         }
+    }
+    if right_w <= width {
+        out.push(Span::raw(" ".repeat(room - used)));
+        out.extend(right);
     }
     Line::from(out)
 }
@@ -208,8 +227,8 @@ fn filter_marker(app: &App, level: u8) -> Option<String> {
     })
 }
 
-/// The top bar at a level of detail (0 words, 1 short words, 2 letters), as
-/// (what always shows, what shows when there is room).
+/// The ADMIRALTY row at a level of detail (0 words, 1 short words, 2
+/// letters), as (what always shows, what shows when there is room).
 fn top_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
     let (fleets, live, need, errors, warns) = app.counts();
     let pick = |full: String, short: String, tiny: String| match level {
@@ -255,19 +274,7 @@ fn top_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static
             v.push(Span::styled(" (i)", st(mono::COMMENT)));
         }
     }
-    let mut opt = vec![];
-    if !b.snap.compat_ok {
-        let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
-        let c = nimitz_core::compat::supported();
-        let newer = !ver.contains('-') && nimitz_core::compat::position(&c, &ver) == 1;
-        let (full, short) = if newer {
-            (format!("   Claude Code {ver} newer than tested ({})", c.max), format!("   CC {ver} untested"))
-        } else {
-            (format!("   Claude Code {ver} outside the supported range"), format!("   CC {ver} unsupported"))
-        };
-        opt.push(Span::styled(pick(full, short, " CC!".into()), bold(if newer { mono::WARN } else { mono::ERROR })));
-    }
-    (v, opt)
+    (v, vec![])
 }
 
 fn bottom_line(app: &App, width: usize) -> Line<'static> {
@@ -287,48 +294,79 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
             return Line::from(Span::styled(format!(" {}", t.msg), t.style));
         }
     }
-    let key = |k: &str, d: &str| vec![Span::styled(format!(" {k} "), bold(mono::ACCENT)), Span::styled(format!("{d} "), st(mono::SOFT))];
-    // `? help` first and `q quit` at the right, at every width; the rest fills what is left
-    let right: Vec<Span<'static>> = key("q/esc", "quit");
-    let right_w: usize = right.iter().map(|s| s.content.width()).sum();
-    let keys = [
-        ("?", "help"),
-        // the two ways to reach a lead (jump to its pane, message it) and what
-        // waits on you, before the vim keys everyone knows
-        ("\u{23ce}", "pane"),
-        ("m", "message"),
-        ("!", "needs you"),
-        ("j/k", "move"),
-        ("h/l", "fold"),
-        ("i", "issues"),
-        ("a", "start"),
-        ("x", "actions"),
-        ("c", "create"),
-        ("/", "filter"),
-        ("z", "old crew"),
-        ("f/F", "filters"),
-        ("I", "stowaways"),
-        ("w", "detail"),
-    ];
-    let mut v: Vec<Span<'static>> = vec![];
-    let mut used = 0;
-    for (k, d) in keys {
-        let item = key(k, d);
-        let w: usize = item.iter().map(|s| s.content.width()).sum();
-        if used + w + right_w > width && used > 0 {
-            break;
-        }
-        used += w;
-        v.extend(item);
+    let Some(b) = &app.bundle else { return balanced(vec![], vec![], key_hint("q", "quit"), width) };
+    let w = |v: &[Span]| v.iter().map(|s| s.content.width()).sum::<usize>();
+    let level = (0..3).find(|l| {
+        let (e, _, r) = status_spans(app, b, *l);
+        w(&e) + w(&r) <= width
+    });
+    let (essential, optional, right) = status_spans(app, b, level.unwrap_or(2));
+    balanced(essential, optional, if level.is_some() { right } else { vec![] }, width)
+}
+
+/// The second status row at a level of detail (0 words, 1 short words, 2
+/// letters): the nimitz Admiralty runs (flagged when it is not Admiralty's
+/// own), Claude Code and its support, the machine, the refresh interval and
+/// its age; as (what always shows, what shows when there is room, the right part).
+fn status_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static>>, Vec<Span<'static>>, Vec<Span<'static>>) {
+    let pick = |full: String, short: String, tiny: String| match level {
+        0 => full,
+        1 => short,
+        _ => tiny,
+    };
+    let gap = if level == 0 { "   " } else { "  " };
+    let ours = env!("CARGO_PKG_VERSION");
+    let mut v = vec![];
+    match app.nimitz_version.lock().ok().and_then(|v| v.clone()) {
+        Some(n) if n == ours => v.push(Span::styled(format!(" nimitz {n}"), st(mono::MUTED))),
+        // the read failed: the nimitz it runs is unknown
+        Some(n) if n == "?" => v.push(Span::styled(" nimitz ?".to_string(), bold(mono::WARN))),
+        Some(n) => v.push(Span::styled(pick(format!(" admiralty {ours} \u{b7} nimitz {n} (mismatch)"), format!(" nimitz {n} \u{2260} {ours}"), format!(" {n}\u{2260}{ours}")), bold(mono::WARN))),
+        // not read yet (or no answer): Admiralty's own
+        None => v.push(Span::styled(format!(" admiralty {ours}"), st(mono::MUTED))),
     }
-    v.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w))));
-    v.extend(right);
-    Line::from(v)
+    let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
+    if b.snap.compat_ok {
+        v.push(Span::styled(pick(format!("{gap}Claude Code {ver} (supported)"), format!("{gap}CC {ver}"), format!("{gap}CC {ver}")), st(mono::MUTED)));
+    } else {
+        let c = nimitz_core::compat::supported();
+        let newer = !ver.contains('-') && nimitz_core::compat::position(&c, &ver) == 1;
+        let (full, short) = if newer {
+            (format!("{gap}Claude Code {ver} newer than tested ({})", c.max), format!("{gap}CC {ver} untested"))
+        } else {
+            (format!("{gap}Claude Code {ver} outside the supported range"), format!("{gap}CC {ver} unsupported"))
+        };
+        v.push(Span::styled(pick(full, short, format!("{gap}CC!")), bold(if newer { mono::WARN } else { mono::ERROR })));
+    }
+    if let Some(m) = &b.snap.machine {
+        v.push(Span::styled(pick(format!("{gap}machine {m}"), format!("{gap}{m}"), format!("{gap}{m}")), st(mono::MUTED)));
+    }
+    let mut opt = vec![];
+    if app.ctx.live {
+        opt.push(Span::styled(format!("{gap}every {}", ago(app.interval.as_secs_f64())), st(mono::COMMENT)));
+    }
+    let age = ago(app.now() - b.snap.taken_at);
+    let mut right = vec![];
+    if level < 2 {
+        right.push(Span::styled(pick(format!("refreshed {age} ago "), format!("{age} ago "), String::new()), st(mono::COMMENT)));
+    }
+    right.extend(key_hint("q", "quit"));
+    (v, opt, right)
+}
+
+/// Seconds as `2s`, `5m` or `3h`.
+fn ago(secs: f64) -> String {
+    let s = secs.max(0.0).round() as u64;
+    match s {
+        0..60 => format!("{s}s"),
+        60..3600 => format!("{}m", s / 60),
+        _ => format!("{}h", s / 3600),
+    }
 }
 
 fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
     let view = area.height.saturating_sub(1) as usize;
-    let (lines, sp) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons, app.frame());
+    let (lines, _) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons, app.frame());
     app.page = view.max(2);
     if let Some(pos) = lines.iter().position(|(_, r)| *r == Some(app.cursor)) {
         if pos < app.scroll {
@@ -338,7 +376,8 @@ fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
         }
     }
     app.scroll = app.scroll.min(lines.len().saturating_sub(view));
-    let mut shown = vec![header_line_with(area.width, sp)];
+    // the first row stays blank: the fleet tabs never sit on the first box's border
+    let mut shown = vec![Line::raw("")];
     if lines.is_empty() {
         shown.push(Line::raw(""));
         let msg = if app.bundle.as_ref().map(|b| b.snap.fleets.is_empty()).unwrap_or(false) {
@@ -387,7 +426,7 @@ fn keys_line(pairs: &[(&str, &str)]) -> Line<'static> {
 fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Icons) {
     // as wide as it may be, then as tall as its lines (the screen caps it; j scrolls)
     let width = centered(area, 90, 1).width.saturating_sub(2) as usize;
-    let mut lines = vec![Line::styled("Keys (vim style)   j/k scroll, esc closes", bold(mono::FG)), Line::raw("")];
+    let mut lines = vec![Line::styled("Keys (vim style)", bold(mono::FG)), Line::raw("")];
     for (k, d) in HELP {
         lines.extend(wrap(vec![Span::styled(format!("  {k:<18}"), bold(mono::ACCENT)), Span::styled(d.to_string(), st(mono::FG))], width, 20));
     }
@@ -427,8 +466,8 @@ fn draw_help(f: &mut Frame, area: Rect, scroll: usize, icons: &crate::theme::Ico
     let more = lines.len() > room + scroll;
     let shown: Vec<Line> = lines.into_iter().skip(scroll).take(room).collect();
     f.render_widget(Clear, r);
-    let title = if more { "help (j for more)".to_string() } else { "help".to_string() };
-    f.render_widget(Paragraph::new(shown).block(modal_block(title, mono::ACCENT)), r);
+    let title = if more { "keys (? or esc closes, j/k scroll; j for more)" } else { "keys (? or esc closes, j/k scroll)" };
+    f.render_widget(Paragraph::new(shown).block(modal_block(title.into(), mono::ACCENT)), r);
 }
 
 /// One plan step: what runs, where, and why (wrapped to `width`, indent kept).
@@ -626,11 +665,7 @@ fn draw_menu(f: &mut Frame, area: Rect, title: &str, items: &[MenuItem], sel: us
 }
 
 fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {
-    let how = if plan.relay {
-        format!("typed into {}'s pane {}, which relays it with SendMessage", plan.via, plan.pane.pane_id)
-    } else {
-        format!("typed into its pane {}", plan.pane.pane_id)
-    };
+    let how = format!("typed into its pane {}", plan.pane.pane_id);
     let lines = vec![
         Line::styled(format!("Message {}", plan.to), bold(mono::FG)),
         Line::styled(how, st(mono::COMMENT)),
@@ -790,7 +825,7 @@ mod separator_tests {
     fn a_long_menu_label_is_separated_from_its_reason() {
         let items = vec![
             MenuItem { key: 'w', label: "sweep: stop and remove copies, remove stale job rows".into(), enabled: Err("no stale job rows".into()), action: MenuAction::NewFleet },
-            MenuItem { key: 'l', label: "layout herdr --ships: and a tab attaching each live ship".into(), enabled: Err(crate::actions::MONITOR_ONLY.into()), action: MenuAction::NewFleet },
+            MenuItem { key: 'l', label: "layout --ships: and a tab attaching each live ship".into(), enabled: Err(crate::actions::MONITOR_ONLY.into()), action: MenuAction::NewFleet },
         ];
         let mut t = Terminal::new(TestBackend::new(140, 12)).unwrap();
         t.draw(|f| draw_menu(f, f.area(), "x", &items, 0)).unwrap();

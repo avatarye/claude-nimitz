@@ -151,6 +151,12 @@ pub struct App {
     pub detail_open: bool,
     /// fixtures: a frozen clock so ages never move
     pub fixed_now: Option<f64>,
+    /// the version of the `nimitz` Admiralty runs (`nimitz --version`, read
+    /// once off the UI thread: `read_nimitz_version`); `None` until it is
+    /// read, `?` when the binary does not answer
+    pub nimitz_version: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// how often the live loop refreshes (`--interval`; the status row shows it)
+    pub interval: std::time::Duration,
     pub state_path: Option<PathBuf>,
     /// an action running on the worker thread
     pub busy: Option<String>,
@@ -187,15 +193,15 @@ pub const HELP: &[(&str, &str)] = &[
     ("z", "show / hide the member's crew that finished over 30 min ago (+N finished)"),
     ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
-    ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz start <id> -p, confirms); else fold / unfold"),
+    ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz open <id>, confirms); else fold / unfold"),
     ("J / K", "next / previous row with a pane"),
     ("!", "everything waiting on you"),
     ("i", "every issue, with its fix command"),
-    ("a", "start it: nimitz start <id> (a lead alone: --only; confirms)"),
-    ("u", "up (deprecated): everything the fleet runs here, first launches too (confirms)"),
-    ("A", "a pane for it, focused: nimitz start <id> -p (one that shows it: jump there)"),
-    ("x", "actions: stop, relaunch (start -f), sweep, rm, adopt, remove; on a fleet: R start the fleet, layout, machines"),
-    ("m", "message (ships: relayed by their commodore)"),
+    ("a", "start it: nimitz start <id> (confirms)"),
+    ("u", "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked; confirms)"),
+    ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
+    ("x", "actions: stop, relaunch (restart), sweep, rm, adopt, remove; on a fleet: R bring the fleet back, layout, machines"),
+    ("m", "message: typed into its pane (nimitz signal <id> <text>)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
@@ -203,10 +209,27 @@ pub const HELP: &[(&str, &str)] = &[
     ("w", "detail: open or close the floating detail panel (esc closes it too)"),
     ("R", "refresh now"),
     ("esc", "close what is open (a dialog, the detail panel, the / name filter); with nothing open and nothing running, quit"),
-    ("? / q", "help / quit"),
+    ("? / q", "these keys (? or esc closes them) / quit"),
 ];
 
 impl App {
+    /// Read the `nimitz` binary's version once, on a thread of its own (the
+    /// top bar shows it when it is there; a binary that does not answer
+    /// leaves it unknown).
+    pub fn read_nimitz_version(&self) {
+        let slot = self.nimitz_version.clone();
+        std::thread::spawn(move || {
+            let bin = crate::actions::nimitz_bin();
+            let out = std::process::Command::new(&bin).arg("--version").stdin(std::process::Stdio::null()).output();
+            // `nimitz 0.7.3`; `?` when it does not answer so
+            let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+            let v = text.split_whitespace().nth(1).unwrap_or("?");
+            if let Ok(mut s) = slot.lock() {
+                *s = Some(v.to_string());
+            }
+        });
+    }
+
     pub fn new(ctx: Ctx, state_path: Option<PathBuf>, ascii: bool) -> App {
         let mut app = App {
             ctx,
@@ -234,6 +257,8 @@ impl App {
             icons: if ascii { &ASCII } else { &NERD },
             detail_open: false,
             fixed_now: None,
+            nimitz_version: Default::default(),
+            interval: std::time::Duration::from_secs(2),
             state_path,
             busy: None,
             detail_scroll: 0,
@@ -850,9 +875,9 @@ impl App {
             }
         }
         let Some(b) = &self.bundle else { return None };
-        // start, relaunch, a fleet's restore: `nimitz start` itself (the CLI plans and runs)
+        // start, restart, up, a fleet's muster: the CLI itself (it plans and runs)
         // (demo data has no CLI world behind it: there the plans are previews)
-        if matches!(act, Act::Restore | Act::Start | Act::Relaunch) && (self.ctx.live || act == Act::Restore) {
+        if matches!(act, Act::Restore | Act::Start | Act::Relaunch | Act::Up) && (self.ctx.live || act == Act::Restore) {
             match actions::prepare_start(&self.ctx, b.mux_caps, &b.snap, &self.target(), act) {
                 Ok(p) => self.modal = Some(Modal::Confirm(p)),
                 Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),
@@ -884,7 +909,7 @@ impl App {
                     }
                     return None;
                 }
-                // anything else: `nimitz start <id> -p` (its tab, a split beside
+                // anything else: `nimitz open <id>` (its tab, a split beside
                 // its commodore, a new tab; a parked job wakes)
                 // a stowaway is no member: its tab's shell takes the attach here
                 Ok(nimitz_mux::TabState::Shell(pane)) if !matches!(self.target(), Target::Member(_)) => {
@@ -935,7 +960,7 @@ impl App {
                 }
                 Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
             },
-            // a member with no pane: `nimitz start <id> -p` gives it one
+            // a member with no pane: `nimitz open <id>` gives it one
             Err(_) if self.ctx.live && matches!(self.target(), Target::Member(_)) && self.available(Act::Open).is_ok() => return self.start_act(Act::Open),
             Err(why) => self.notify(format!("No pane to jump to for {}: {why}", full_name(&r)), st(mono::WARN)),
         }
@@ -1331,7 +1356,7 @@ impl App {
             self.notify(format!("demo data: would type into {}'s pane {}", plan.via, plan.pane.pane_id), st(mono::WARN));
             return;
         }
-        let body = actions::message_text(plan, text);
+        let body = actions::message_text(text);
         if let Some(job) = &plan.attach_job {
             let check = nimitz_mux::attach_check(self.ctx.mux.as_ref(), &plan.pane, job);
             if check != nimitz_mux::AttachCheck::Exact {
@@ -1345,8 +1370,7 @@ impl App {
             }
             Ok(()) => {
                 actions::log(&self.ctx.env, "message", &format!("{} via {}: {}", plan.to, plan.via, nimitz_mux::sanitize_text(text)));
-                let how = if plan.relay { format!(" (relayed by {})", plan.via) } else { String::new() };
-                self.notify(format!("Sent to {}{how}", plan.to), st(mono::BUSY));
+                self.notify(format!("Sent to {}", plan.to), st(mono::BUSY));
             }
             Err(e) => self.notify(format!("Not sent to {}: {e}", plan.via), st(mono::ERROR)),
         }

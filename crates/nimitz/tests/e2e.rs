@@ -515,12 +515,23 @@ impl E2e {
         self.tx(&["capture-pane", "-p", "-t", "e2e"]).1
     }
 
+    /// A new session `e2e` in `cwd`. One already there (a second attach in
+    /// one test) is renamed and killed only after the new one runs: killing
+    /// the server's last session ends the server, and a `new-session` that
+    /// reaches it while it shuts down fails with "server exited unexpectedly".
+    fn fresh_session(&self, cwd: &Path) {
+        let old = self.tx(&["rename-session", "-t", "e2e", "e2e-old"]).0 == 0;
+        let (code, out) = self.tx(&["new-session", "-d", "-s", "e2e", "-x", "180", "-y", "50", "-c", cwd.to_str().unwrap()]);
+        assert_eq!(code, 0, "tmux new-session: {out}");
+        if old {
+            let _ = self.tx(&["kill-session", "-t", "e2e-old"]);
+        }
+    }
+
     /// `claude attach <job>` in a private tmux window started in `cwd`; waits
     /// until the pane shows the session (its name in the status line).
     fn attach(&self, cwd: &Path, job: &str, name: &str) {
-        let _ = self.tx(&["kill-session", "-t", "e2e"]); // a second attach in one test
-        let (code, out) = self.tx(&["new-session", "-d", "-s", "e2e", "-x", "180", "-y", "50", "-c", cwd.to_str().unwrap()]);
-        assert_eq!(code, 0, "tmux new-session: {out}");
+        self.fresh_session(cwd);
         self.tx(&["send-keys", "-t", "e2e", "-l", &format!("'{}' attach {job}", self.native)]);
         self.tx(&["send-keys", "-t", "e2e", "Enter"]);
         let shown = self.wait(45, || Some(self.pane()).filter(|p| p.contains(name) && p.contains('\u{276f}')));
@@ -531,9 +542,7 @@ impl E2e {
     /// Run `line` in a fresh private tmux window started in `cwd` (an
     /// interactive `claude`, say); waits until the pane shows `want`.
     fn tmux_run(&self, cwd: &Path, line: &str, want: &str) {
-        let _ = self.tx(&["kill-session", "-t", "e2e"]);
-        let (code, out) = self.tx(&["new-session", "-d", "-s", "e2e", "-x", "180", "-y", "50", "-c", cwd.to_str().unwrap()]);
-        assert_eq!(code, 0, "tmux new-session: {out}");
+        self.fresh_session(cwd);
         self.tx(&["send-keys", "-t", "e2e", "-l", line]);
         self.tx(&["send-keys", "-t", "e2e", "Enter"]);
         let shown = self.wait(60, || Some(self.pane()).filter(|p| p.contains(want)));
@@ -964,7 +973,7 @@ fn e2e_07_slow_lead_is_a_pinned_background_job_attach_detach_unpin() {
     w.ok(&["fleet", "new", &w.fleet, "--machine", "e2e", "--yes"]);
     w.settings(&w.fleet_dir().join("admiral"));
     let pins0 = w.pins();
-    let out = w.ok(&["start", &w.fleet, "--yes"]);
+    let out = w.ok(&["start", &format!("{}/...", w.fleet), "--yes"]);
     println!("{out}");
     assert!(out.contains("pinned"), "the start did not pin the lead:\n{out}");
     let adm = w.wait(45, || w.member(&w.fleet).filter(|m| !m["session"]["pid"].is_null())).expect("admiral live");
@@ -1049,7 +1058,8 @@ fn e2e_08_rules_update_is_delivered_once_at_the_next_prompt() {
 }
 
 /// 9. A ship runs `nimitz status` through its `Bash(nimitz *)` allow with no
-/// permission prompt; `nimitz stop <other>` is refused with `authority`.
+/// permission prompt; `nimitz stop <other>` runs (no authority, 0.7.3) and
+/// says OTHER is not live.
 #[test]
 fn e2e_09_a_ship_runs_nimitz_without_a_prompt_and_stop_is_refused() {
     if !gated() {
@@ -1075,7 +1085,7 @@ fn e2e_09_a_ship_runs_nimitz_without_a_prompt_and_stop_is_refused() {
         assert!(calls.lines().any(|l| l.trim() == want), "the ship did not run `nimitz {want}` through its PATH; calls:\n{calls}");
     }
     assert!(text.contains(&w.fleet), "the status output is not in the transcript");
-    assert!(text.contains("authority"), "the stop was not refused with authority:\n{}", text.lines().filter(|l| l.contains("nimitz stop")).collect::<Vec<_>>().join("\n"));
+    assert!(text.contains("session.none") && !text.contains("(authority)"), "the stop did not say OTHER is not live:\n{}", text.lines().filter(|l| l.contains("nimitz stop")).collect::<Vec<_>>().join("\n"));
     assert!(w.member(&other).unwrap()["session"].is_null(), "OTHER was touched");
     w.finish();
 }
@@ -1375,7 +1385,7 @@ fn e2e_15_accept_cli18_a_held_member_gives_held_only() {
     let codes = held.expect("held").into_iter().map(|(c, _)| c).collect::<Vec<_>>();
     println!("cli-18 issues: {codes:?}");
     assert_eq!(codes, vec!["held".to_string()], "held only");
-    for cmd in [vec!["stop", &w.ship(), "--plan"], vec!["relaunch", &w.ship(), "--plan"]] {
+    for cmd in [vec!["stop", &w.ship(), "--plan"], vec!["restart", &w.ship(), "--plan"]] {
         let (code, out) = w.nz(&cmd.iter().map(|s| &**s).collect::<Vec<_>>());
         println!("{cmd:?}: {out}");
         assert!(code != 0 && out.contains("session.interactive"), "{out}");
@@ -1508,9 +1518,9 @@ fn e2e_20_accept_n2_n15_mode_flag_and_empty_plans_say_why() {
     let (_, out) = w.nz(&["start", &w.ship(), "--plan"]);
     println!("N15 start: {out}");
     assert!(out.contains("nothing to start"), "{out}");
-    let (_, out) = w.nz(&["up", &w.fleet, "--plan"]);
-    println!("N15 up: {out}");
-    assert!(out.contains("nothing to do"), "{out}");
+    let (_, out) = w.nz(&["start", &format!("{}/...", w.fleet), "--plan"]);
+    println!("N15 start F/...: {out}");
+    assert!(out.contains("nothing to start"), "{out}");
     w.finish();
 }
 
@@ -1750,16 +1760,16 @@ fn e2e_inbox_signal_reaches_an_idle_lead_without_a_pane() {
     w.finish();
 }
 
-/// One restore after a Claude Code update (real Claude Code): the installed
+/// One muster after a Claude Code update (real Claude Code): the installed
 /// version reads newer than every worker's (a wrapper as the native binary
 /// answers `--version` with 2.1.999 and runs the real one for the rest), so
-/// `restore --jobs-only` relaunches each live member, the ship first, then
+/// `muster F/...` relaunches each live member, the ship first, then
 /// the commodore, then the admiral: the same session id, a new process on
 /// the binary the worker runs, its labels intact. The test's own members
-/// only; no multiplexer (`--jobs-only`).
+/// only; no multiplexer (muster runs the job steps alone).
 #[cfg(unix)]
 #[test]
-fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
+fn e2e_muster_relaunches_workers_older_than_the_installed_claude() {
     if !gated() {
         return;
     }
@@ -1776,18 +1786,18 @@ fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
     }).collect();
     let newer = w.base.join("bin").join("claude-newer");
     executable(&newer, &format!("#!/bin/sh\nfor a; do [ \"$a\" = --version ] && {{ echo '2.1.999 (Claude Code)'; exit 0; }}; done\nexec '{}' \"$@\"\n", w.native));
-    let restore = |form: &str| {
+    let muster = |form: &str| {
         let mut c = w.nz_cmd();
-        c.env("NIMITZ_NATIVE_CLAUDE_BIN", &newer).args(["restore", &w.fleet, "--jobs-only", form]);
+        c.env("NIMITZ_NATIVE_CLAUDE_BIN", &newer).args(["muster", &format!("{}/...", w.fleet), form]);
         E2e::run(c)
     };
-    let (code, plan) = restore("--plan");
+    let (code, plan) = muster("--plan");
     assert_eq!(code, 0, "{plan}");
     assert!(plan.contains("Claude Code updated to 2.1.999  ·  3 to relaunch"), "{plan}");
     for id in &ids {
         assert!(plan.lines().any(|l| l.trim_start().starts_with(&format!("{id} ")) && l.contains("-> relaunch (same id and history)")), "{id}:\n{plan}");
     }
-    let (code, out) = restore("--yes");
+    let (code, out) = muster("--yes");
     println!("{out}");
     assert_eq!(code, 0, "{out}");
     let order: Vec<&str> = out.lines().filter(|l| l.starts_with("[OK] ") && l.contains(" -> stopped ")).filter_map(|l| l.strip_prefix("[OK] ")?.split(':').next()).collect();
@@ -1801,11 +1811,11 @@ fn e2e_restore_relaunches_workers_older_than_the_installed_claude() {
     w.finish();
 }
 
-/// `nimitz start` on real Claude Code (no multiplexer: the jobs only): `-f`
+/// `nimitz restart` on real Claude Code (no multiplexer: the jobs only)
 /// relaunches a live, current ship (the same conversation, a new process,
-/// its labels); after a stop, a fleet-wide `start --all` wakes it by its id.
+/// its labels); after a stop, `start F/... --parked` wakes it by its id.
 #[test]
-fn e2e_start_f_relaunches_and_a_fleet_start_all_wakes_a_stopped_ship() {
+fn e2e_restart_relaunches_and_a_fleet_start_parked_wakes_a_stopped_ship() {
     if !gated() {
         return;
     }
@@ -1815,9 +1825,9 @@ fn e2e_start_f_relaunches_and_a_fleet_start_all_wakes_a_stopped_ship() {
     let ship = w.ship();
     let m = w.member(&ship).unwrap();
     let (sid, pid) = (m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["pid"].as_i64().unwrap());
-    let plan = w.ok(&["start", &ship, "-f", "--plan"]);
+    let plan = w.ok(&["restart", &ship, "--plan"]);
     assert!(plan.lines().any(|l| l.trim_start().starts_with("SHIP") && l.contains("relaunch")), "{plan}");
-    let out = w.ok(&["start", &ship, "-f", "--yes"]);
+    let out = w.ok(&["restart", &ship, "--yes"]);
     println!("{out}");
     let m = w.wait(60, || w.member(&ship).filter(|m| !m["session"]["pid"].is_null() && m["session"]["pid"].as_i64() != Some(pid))).unwrap_or_else(|| panic!("relaunched:\n{out}"));
     assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "the same conversation");
@@ -1825,7 +1835,7 @@ fn e2e_start_f_relaunches_and_a_fleet_start_all_wakes_a_stopped_ship() {
     w.wait(120, || w.member(&ship).filter(|m| m["status"] == "Idle")).expect("idle after the relaunch");
     w.ok(&["stop", &ship, "--yes"]);
     w.wait(30, || w.member(&ship).filter(|m| m["session"]["pid"].is_null())).expect("stopped");
-    let out = w.ok(&["start", &w.fleet, "--all", "--yes"]);
+    let out = w.ok(&["start", &format!("{}/...", w.fleet), "--parked", "--yes"]);
     println!("{out}");
     let m = w.wait(60, || w.member(&ship).filter(|m| !m["session"]["pid"].is_null())).unwrap_or_else(|| panic!("woken:\n{out}"));
     assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "woken by its id");
@@ -1880,7 +1890,7 @@ fn e2e_trust_lets_a_background_job_start_in_an_untrusted_repo() {
 
 /// 89. A fleet's harness on real Claude Code: a rule the user adds reaches a
 /// running ship at its next prompt (the whole text once, the hash
-/// recorded); an agent added to the harness is the ship's after `start -f`
+/// recorded); an agent added to the harness is the ship's after `restart`
 /// (its job's flags carry the fleet's plugin) and answers as itself.
 #[test]
 fn e2e_89_a_harness_rule_reaches_a_live_ship_and_its_agent_comes_with_a_relaunch() {
@@ -1909,9 +1919,9 @@ fn e2e_89_a_harness_rule_reaches_a_live_ship_and_its_agent_comes_with_a_relaunch
     let replies: Vec<String> = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["type"] == "assistant").flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default()).filter_map(|c| c["text"].as_str().map(str::to_string)).collect();
     assert!(replies.iter().any(|r| r.contains(&format!("ZEBRA{marker}"))), "the ship answered by the harness rule: {replies:?}");
     assert!(w.deliveries()[&job]["harness"].as_str().is_some_and(|h| h.len() == 64), "the hash delivered is recorded: {}", w.deliveries());
-    // 2. an agent: after `start -f`, from the fleet's plugin
+    // 2. an agent: after `restart`, from the fleet's plugin
     w.ok(&["harness", "add", "agent", src.join("echo.md").to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
-    println!("{}", w.ok(&["start", &w.ship(), "-f", "--yes"]));
+    println!("{}", w.ok(&["restart", &w.ship(), "--yes"]));
     // (a relaunch keeps the job id: its flags now carry the fleet's plugin)
     let flags_of = |j: &str| -> Vec<String> { serde_json::from_value(read_json(&w.env.claude_home.join("jobs").join(j).join("state.json"))["respawnFlags"].clone()).unwrap_or_default() };
     let m = w
@@ -2054,8 +2064,8 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
     // guard denied
     w.fleet_with_ship(&prompt, "auto");
     let kb = w.base.join("kb");
-    w.ok(&["fleet", "settings", "set", "kb.remote", remote.to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
-    w.ok(&["fleet", "settings", "set", "kb.dirs.e2e", kb.to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
+    w.ok(&["settings", "set", "kb.remote", remote.to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
+    w.ok(&["settings", "set", "kb.dirs.e2e", kb.to_str().unwrap(), "--fleet", &w.fleet, "--yes"]);
     println!("{}", w.ok(&["kb", "clone", "--fleet", &w.fleet, "--yes"]));
     let git = |dir: &Path, args: &[&str]| -> String {
         let mut c = w.scrubbed("git");
@@ -2150,7 +2160,7 @@ fn e2e_98_a_ship_keeps_a_note_with_kb_scribe_and_asks_kb_ref() {
 /// ship, and starts it (its hooks bind it); then this build, as if the user
 /// updated the binary on PATH: its `status` migrates (the one line), shows
 /// the ship live on the same job and session with the same lineage, and
-/// `start <ship> -f` relaunches it into the same conversation.
+/// `restart <ship>` relaunches it into the same conversation.
 #[test]
 fn e2e_97_an_update_from_0_4_migrates_and_the_ship_lives_on() {
     if !gated() {
@@ -2212,7 +2222,7 @@ fn e2e_97_an_update_from_0_4_migrates_and_the_ship_lives_on() {
     assert!(!w.ok(&["status"]).contains("migrated"), "the new binary has nothing to migrate after it");
 
     // the new build relaunches the old build's ship: the same conversation, a new process
-    let out = w.ok(&["start", &w.ship(), "-f", "--yes"]);
+    let out = w.ok(&["restart", &w.ship(), "--yes"]);
     println!("{out}");
     let m = w.wait(60, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null() && m["session"]["pid"].as_i64() != pid)).unwrap_or_else(|| panic!("relaunched:\n{out}"));
     assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "the same conversation: {m}");
@@ -2222,5 +2232,53 @@ fn e2e_97_an_update_from_0_4_migrates_and_the_ship_lives_on() {
     let now = r["identities"][w.ship()]["lineage"].as_array().cloned().unwrap_or_default();
     assert_eq!(now.first(), lineage.as_array().and_then(|l| l.first()), "the lineage keeps its start: {now:?}");
     assert_eq!(r["version"], 3);
+    w.finish();
+}
+
+/// 99. A ship restarts itself (0.7.3, docs/design/cli-ux.md section 4): its
+/// `nimitz restart <its own path> --yes` prints its report into the Bash
+/// tool's output and leaves the relaunch to the detached `__self-end`, which
+/// waits for the turn to end, survives the `claude stop` of the ship's job,
+/// and resumes the same session (no copy); the outcome note comes with the
+/// resume's SessionStart.
+#[test]
+fn e2e_99_a_ship_restarts_itself_through_the_detached_helper() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(99);
+    let prompt = format!("Use the Bash tool to run exactly this command, once: `nimitz restart {} --yes`. Do not ask. Then reply with the single word DONE.", w.ship());
+    w.fleet_with_ship(&prompt, "default");
+    let out = w.ok(&["start", &w.ship(), "--yes"]);
+    println!("{out}");
+    let m = w.wait(45, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null())).expect("ship live after start");
+    let (sid, job) = (m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["short_id"].as_str().unwrap_or("").to_string());
+    // the helper: it waits for the turn, then relaunches; its log says when it ran
+    let log = w.base.join("state").join("relaunch-self.log");
+    let ran = w.wait(300, || std::fs::read_to_string(&log).ok().filter(|t| t.lines().any(|l| l.ends_with(": ran") || l.contains(": failed") || l.contains(": gave up"))));
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    println!("relaunch-self.log:\n{text}");
+    assert!(ran.is_some_and(|t| t.lines().any(|l| l.ends_with(": ran"))), "the helper did not run the relaunch:\n{text}");
+    assert!(text.contains("its turn ended"), "it waited for the turn:\n{text}");
+    let m = w.wait(120, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null() && m["status"] == "Idle")).expect("the ship live again");
+    println!("member after: {m}");
+    // the same conversation, a new process; no copy row
+    assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "the same session id:\n{m}");
+    assert!(m["extra_rows"].as_array().is_none_or(|a| a.is_empty()), "no copy row:\n{m}");
+    assert!(!w.issue_codes().iter().any(|(c, _)| c == "copy.rows" || c == "lineage.broken" || c == "history.lost"), "{:?}", w.issue_codes());
+    let starts = w.session_starts(&sid);
+    assert!(starts.iter().any(|e| e["source"] == "resume"), "a resume of the same session: {starts:?}");
+    println!("job before {job}, after {}", m["session"]["short_id"]);
+    // the report reached the Bash tool's output, and the outcome the resume's context
+    let tx = std::fs::read_to_string(w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript")).unwrap();
+    assert!(tx.contains("runs after this command, once its turn ends"), "the report is not in the Bash output:\n{}", tx.lines().filter(|l| l.contains("nimitz restart")).collect::<Vec<_>>().join("\n"));
+    // the resume's SessionStart took the note (the hook hands it over once) ...
+    let note = w.base.join("state").join("self-end").join(format!("{}.txt", w.ship().replace('/', ".")));
+    assert!(w.wait(30, || Some(()).filter(|_| !note.exists())).is_some(), "the resume's SessionStart did not take the note");
+    // ... and the session has it: its next turn (an inbox prompt) carries it
+    w.ok(&["signal", &w.ship(), "--inbox", "Reply with the single word NOTED.", "--yes"]);
+    let tx = w.wait(180, || std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid)?).ok().filter(|t| t.contains("NOTED") && t.matches("NOTED").count() >= 2)).unwrap_or_default();
+    assert!(tx.contains("[nimitz self-end]"), "the outcome note is not in the resumed session's context:\n{}", tx.lines().rev().take(8).collect::<Vec<_>>().join("\n"));
+    assert!(!w.base.join("state").join("self-end").join(format!("{}.lock", w.ship().replace('/', "."))).exists(), "the lock is released");
     w.finish();
 }

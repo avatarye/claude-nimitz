@@ -144,17 +144,6 @@ fn every_role() -> Vec<nimitz_core::Role> {
 }
 
 /// Every `Comms` form, the same way.
-fn every_comms() -> Vec<nimitz_core::Comms> {
-    use nimitz_core::Comms;
-    let all = vec![Comms::Mode("commodore-only".into()), Comms::Allow { allow: vec!["MAIN/ARGOS/CLEAN".into(), "MAIN/BOREAL".into()] }];
-    for c in &all {
-        match c {
-            Comms::Mode(_) | Comms::Allow { .. } => {}
-        }
-    }
-    all
-}
-
 /// A populated example of each owned type, serialized, against the golden
 /// named for its artifact and current version: a field added, renamed or
 /// dropped moves the golden, and the message says what to do.
@@ -214,15 +203,9 @@ work = "plan"
     let event = json!({"ts": 1.5, "event": "SessionStart", "session_id": "s1", "source": "startup", "reason": "r", "agent_id": "a", "agent_type": "t",
         "tool_name": "SendMessage", "to": "x", "pid": 42, "labels": {"NIMITZ_ID": "MAIN"}, "rules": 5, "job": "ab12cd34", "kind": "bg", "entrypoint": "cli",
         "binding": "bound", "cwd": "/w"});
-    // the squadron once per comms form
-    let squadrons: String = std::iter::once(toml_of::<nimitz_core::SquadronConfig>(squadron))
-        .chain(every_comms().into_iter().map(|c| {
-            let mut sq: nimitz_core::SquadronConfig = toml::from_str(squadron).unwrap();
-            sq.comms = c;
-            toml::to_string_pretty(&sq).unwrap()
-        }))
-        .collect::<Vec<_>>()
-        .join("\n# ---\n");
+    // (`comms` is read and never written, 0.7.3: an older nimitz reads the
+    // missing field as its default, so no version step)
+    let squadrons = toml_of::<nimitz_core::SquadronConfig>(squadron);
     let main = nimitz_core::Id::admiral("MAIN");
     let shown = [
         ("fleet", "toml", "FleetConfig", toml_of::<nimitz_core::FleetConfig>(fleet)),
@@ -247,4 +230,16 @@ work = "plan"
     ];
     let failures: Vec<String> = shown.iter().filter_map(|(a, ext, ty, text)| pin(&shapes, a, ext, ty, text)).collect();
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// Every squadron.toml written before 0.7.3 holds `comms`: each of its forms
+/// still parses (read and ignored), and nothing writes it again.
+#[test]
+fn an_old_squadron_comms_still_parses_and_is_never_written() {
+    for comms in [r#""open""#, r#""commodore-only""#, r#"{ allow = ["MAIN/ARGOS/CLEAN", "MAIN/BOREAL"] }"#] {
+        let text = format!("squadron = \"ARGOS\"\nbrief = \"SQUADRON.md\"\ncomms = {comms}\n");
+        let sq: nimitz_core::SquadronConfig = toml::from_str(&text).unwrap_or_else(|e| panic!("{comms}: {e}"));
+        assert_eq!(sq.squadron, "ARGOS");
+        assert!(!toml::to_string_pretty(&sq).unwrap().contains("comms"), "{comms}");
+    }
 }

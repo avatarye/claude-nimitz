@@ -1,8 +1,8 @@
 //! A fleet's settings: `<NIMITZ_HOME>/<fleet>/settings.json`, beside
 //! fleet.toml but apart from it (its own format, so a key one machine does
 //! not know never stops another from loading the fleet). Members read it
-//! (`nimitz fleet settings get`); the fleet's admiral and the user change it
-//! (`nimitz fleet settings set`, planned). Keys are free; the ones nimitz
+//! (`nimitz settings get`); any caller changes it
+//! (`nimitz settings set`, planned). Keys are free; the ones nimitz
 //! reads are checked on a write:
 //!
 //! - `kb`: the fleet's knowledge base, `{"remote": "<git url>", "dirs":
@@ -137,21 +137,13 @@ pub fn problems(m: &Map<String, Value>, machines: &std::collections::BTreeMap<St
     out
 }
 
-/// The plan of `fleet settings set <key> <value>` (`None`: remove the key):
+/// The plan of `settings set <key> <value>` (`None`: remove the key):
 /// one write of the whole file. Refused while the file does not read here,
 /// or when the result breaks a key nimitz reads.
-pub fn plan_set(env: &Env, fleet: &str, key: &str, value: Option<Value>, by_user: bool) -> Plan {
+pub fn plan_set(env: &Env, fleet: &str, key: &str, value: Option<Value>) -> Plan {
     let fid = Id::admiral(fleet);
-    let mut plan = Plan { summary: format!("fleet settings set {key} ({fleet})"), ..Default::default() };
+    let mut plan = Plan { summary: format!("settings set {key} ({fleet})"), ..Default::default() };
     let refuse = |plan: &mut Plan, code: &str, msg: String| plan.refusals.push(Issue { code: code.into(), severity: Severity::Error, message: msg, fix: None, id: Some(fid.clone()) });
-    // where the KB is decides which repo nimitz commits to and pushes from:
-    // the user's alone
-    if key == "kb" || key.starts_with("kb.") {
-        if !by_user {
-            plan.refusals.push(Issue { code: "authority".into(), severity: Severity::Error, message: "the knowledge base's place (kb.*) is the user's to set: it names the repo every member commits to and pushes from".into(), fix: None, id: Some(fid) });
-            return plan;
-        }
-    }
     let f = match crate::config::load_fleet(env, fleet) {
         Ok(f) => f,
         Err(i) => {
@@ -206,14 +198,14 @@ pub fn kb(env: &Env, fleet: &str) -> Result<Kb, String> {
     let f = crate::config::load_fleet(env, fleet).map_err(|i| i.message)?;
     let m = load(&f)?;
     let Some(Value::Object(kb)) = m.get("kb") else {
-        return Err(format!("fleet {fleet} has no knowledge base (no kb in {}): the user sets one with `nimitz fleet settings set kb.remote <git url> --fleet {fleet}`", path(&f.dir).display()));
+        return Err(format!("fleet {fleet} has no knowledge base (no kb in {}): set one with `nimitz settings set kb.remote <git url> --fleet {fleet}`", path(&f.dir).display()));
     };
     let Some(label) = f.machine.clone() else {
         return Err(format!("this machine is not in fleet {fleet}'s [machines]"));
     };
     let remote = kb.get("remote").and_then(Value::as_str).map(|r| r.trim().to_string());
     let Some(dir) = kb.get("dirs").and_then(|d| d.get(&label)).and_then(Value::as_str) else {
-        return Err(format!("fleet {fleet}'s knowledge base has no folder on this machine ({label}): the user sets one with `nimitz fleet settings set kb.dirs '{{\"{label}\": \"<folder>\"}}' --fleet {fleet}` (with the other machines' folders too), then `nimitz kb clone --fleet {fleet}`"));
+        return Err(format!("fleet {fleet}'s knowledge base has no folder on this machine ({label}): set one with `nimitz settings set kb.dirs '{{\"{label}\": \"<folder>\"}}' --fleet {fleet}` (with the other machines' folders too), then `nimitz kb clone --fleet {fleet}`"));
     };
     Ok(Kb { fleet: f.config.fleet.clone(), label, dir: crate::config::expand_dir(dir.trim()), remote })
 }
@@ -252,38 +244,37 @@ mod tests {
             assert!(p.ok(), "{p:?}");
             assert!(crate::config::apply_config_plan(&env, p).verified);
         };
-        apply(&plan_set(&env, "MAIN", "kb.remote", Some(json!("git@github.com:u/kb.git")), true));
+        apply(&plan_set(&env, "MAIN", "kb.remote", Some(json!("git@github.com:u/kb.git"))));
         assert!(kb(&env, "MAIN").unwrap_err().contains("no folder on this machine (test-mac)"));
         // a machine the fleet does not list, a remote that is no text: refused
-        let p = plan_set(&env, "MAIN", "kb.dirs.elsewhere", Some(json!("/x")), true);
+        let p = plan_set(&env, "MAIN", "kb.dirs.elsewhere", Some(json!("/x")));
         assert!(p.refusals.iter().any(|r| r.message.contains("no machine elsewhere")), "{p:?}");
-        assert!(!plan_set(&env, "MAIN", "kb.remote", Some(json!(3)), true).ok());
+        assert!(!plan_set(&env, "MAIN", "kb.remote", Some(json!(3))).ok());
         for bad in ["../kb.git", "kb", "~/kb.git", "sub/dir:x", "a:repo"] {
-            assert!(!plan_set(&env, "MAIN", "kb.remote", Some(json!(bad)), true).ok(), "{bad}");
+            assert!(!plan_set(&env, "MAIN", "kb.remote", Some(json!(bad))).ok(), "{bad}");
         }
         for good in ["https://github.com/u/kb", "git@github.com:u/kb.git", "/srv/kb.git", "C:/kb.git", "C:\\kb.git", "\\\\server\\share\\kb.git", "ssh://h/kb", "file:///srv/kb.git"] {
-            assert!(plan_set(&env, "MAIN", "kb.remote", Some(json!(good)), true).ok(), "{good}");
+            assert!(plan_set(&env, "MAIN", "kb.remote", Some(json!(good))).ok(), "{good}");
         }
-        assert!(!plan_set(&env, "MAIN", "kb.color", Some(json!("x")), true).ok());
+        assert!(!plan_set(&env, "MAIN", "kb.color", Some(json!("x"))).ok());
         let dir = td.path().join("kb");
-        apply(&plan_set(&env, "MAIN", "kb.dirs.test-mac", Some(json!(dir.to_string_lossy())), true));
+        apply(&plan_set(&env, "MAIN", "kb.dirs.test-mac", Some(json!(dir.to_string_lossy()))));
         let k = kb(&env, "MAIN").unwrap();
         assert_eq!((k.label.as_str(), k.dir.clone(), k.remote.as_deref()), ("test-mac", dir, Some("git@github.com:u/kb.git")));
-        // kb.* is the user's alone; a folder is absolute
-        assert!(plan_set(&env, "MAIN", "kb.remote", Some(json!("x")), false).refusals.iter().any(|r| r.code == "authority"));
-        assert!(plan_set(&env, "MAIN", "notes.x", Some(json!(1)), false).ok(), "other keys: the admiral's too");
-        assert!(plan_set(&env, "MAIN", "kb.dirs.test-mac", Some(json!("kb")), true).refusals.iter().any(|r| r.message.contains("an absolute folder")));
+        // any key, any caller; a folder is absolute
+        assert!(plan_set(&env, "MAIN", "notes.x", Some(json!(1))).ok());
+        assert!(plan_set(&env, "MAIN", "kb.dirs.test-mac", Some(json!("kb"))).refusals.iter().any(|r| r.message.contains("an absolute folder")));
         // the same value again: nothing to write
-        assert!(plan_set(&env, "MAIN", "kb.remote", Some(json!("git@github.com:u/kb.git")), true).steps.is_empty());
+        assert!(plan_set(&env, "MAIN", "kb.remote", Some(json!("git@github.com:u/kb.git"))).steps.is_empty());
         // free keys are kept, and read back
-        apply(&plan_set(&env, "MAIN", "notes.channel", Some(json!("x")), true));
+        apply(&plan_set(&env, "MAIN", "notes.channel", Some(json!("x"))));
         let f = crate::config::load_fleet(&env, "MAIN").unwrap();
         assert_eq!(get(&load(&f).unwrap(), "notes.channel").unwrap(), Some(&json!("x")));
         // a file a newer nimitz wrote: never read as empty, never written over
         let p = path(&f.dir);
         std::fs::write(&p, "{\"format\": 2, \"kb\": {}}").unwrap();
         assert!(load(&f).unwrap_err().contains("newer than this nimitz reads"));
-        assert!(plan_set(&env, "MAIN", "x", Some(json!(1)), true).refusals.iter().any(|r| r.code == "settings.unreadable"));
+        assert!(plan_set(&env, "MAIN", "x", Some(json!(1))).refusals.iter().any(|r| r.code == "settings.unreadable"));
         std::fs::write(&p, "[1]").unwrap();
         assert!(load(&f).unwrap_err().contains("not a JSON object"));
     }

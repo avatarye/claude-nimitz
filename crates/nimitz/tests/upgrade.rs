@@ -160,7 +160,7 @@ fn a_0_4_0_install_migrates_on_its_first_command_then_runs() {
     let rec = w.json(&w.base.join("nimitz/main/machines/sandbox.json"));
     assert_eq!(rec["nimitz"], V);
     // nothing more to migrate: check and start --plan say no more about it
-    for args in [&["check"][..], &["start", "--plan"], &["start", "MAIN/ARGOS/CLEAN", "--plan"]] {
+    for args in [&["check"][..], &["start", "//...", "--plan"], &["start", "MAIN/ARGOS/CLEAN", "--plan"]] {
         let r = w.run(args);
         assert!(r.code == 0 || r.code == 1, "{args:?}: {}{}", r.out, r.err);
         assert!(!r.err.contains("migrat") && !r.out.contains("format.failed") && !r.out.contains("config.too_new"), "{args:?}: {}{}", r.out, r.err);
@@ -214,7 +214,7 @@ fn a_newer_nimitz_state_stops_every_command_but_doctor() {
 
 /// A 0.6 fleet that holds `[[aide]]` (format 2): it loads, the shared
 /// cleanup is due, said by `migrate --plan`, doctor and check, and run only
-/// by `migrate --shared --yes` (yours alone): the tables and their stamp
+/// by `migrate --shared --yes`: the tables and their stamp
 /// go, the rest of the file stays; a fleet stamped for a newer nimitz is
 /// refused.
 #[test]
@@ -238,13 +238,10 @@ fn the_aides_cleanup_waits_for_migrate_shared_yes() {
     assert!(doctor.out.contains("[WARN] MAIN: machine far: no nimitz >= 0.5.0 seen; update it"), "{}", doctor.out);
     let check = w.run(&["check", "MAIN"]);
     assert!(check.out.contains("aide.legacy") && !check.out.contains("format.shared"), "{}", check.out);
-    // the local run, and a member, never touch it
+    // the local run never touches it
     let local = w.run(&["migrate", "--yes"]);
     assert_eq!(local.code, 0, "{}{}", local.out, local.err);
     assert!(local.out.contains("migrate --shared --yes"), "{}", local.out);
-    let member = raw(&w.vars, &["migrate", "--shared", "--yes"], &[("NIMITZ_ID", "MAIN"), ("NIMITZ_ROLE", "admiral")], None);
-    assert_eq!(member.code, 1, "{}{}", member.out, member.err);
-    assert!(member.out.contains("yours alone"), "{}", member.out);
     assert_eq!(std::fs::read_to_string(&fleet_toml).unwrap(), text);
     // yours: the aides and their stamp gone, the rest as it was, the backup beside it
     let shared = w.run(&["migrate", "--shared", "--yes"]);
@@ -287,7 +284,7 @@ fn a_too_new_registry_stops_every_command_even_without_or_with_the_mark() {
     }
     // the mark set by hand: the first read of the registry stops the command
     std::fs::write(w.state("formats.json"), serde_json::json!({"nimitz": V, "artifacts": {}}).to_string()).unwrap();
-    for args in [&["status"][..], &["start", "MAIN/ARGOS/FRESH", "--yes"], &["start", "--plan"]] {
+    for args in [&["status"][..], &["start", "MAIN/ARGOS/FRESH", "--yes"], &["start", "//...", "--plan"]] {
         let r = w.run(args);
         assert_eq!(r.code, 1, "{args:?}: {}{}", r.out, r.err);
         assert!(r.err.contains("config.too_new") && r.err.contains("never reads this registry as an empty one"), "{args:?}: {}", r.err);
