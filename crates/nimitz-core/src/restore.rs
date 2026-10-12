@@ -709,7 +709,8 @@ fn verbs(rp: &mut RestorePlan) {
     const SKIPS: [&str; 1] = ["attach.old"];
     for f in rp.plan.found.iter_mut() {
         let steps: Vec<&RestoreStep> = rp.steps.iter().filter(|s| s.id() == &f.id).collect();
-        let failed = rp.plan.warnings.iter().any(|i| i.id.as_ref() == Some(&f.id) && i.severity == Severity::Error);
+        // (or held back by a refusal another member's row carries: one trust, said once)
+        let failed = rp.plan.warnings.iter().any(|i| i.id.as_ref() == Some(&f.id) && i.severity == Severity::Error) || (f.action.starts_with("not ") && f.action.ends_with("; see the fix"));
         let skipped = rp.plan.warnings.iter().any(|i| i.id.as_ref() == Some(&f.id) && SKIPS.contains(&i.code.as_str()));
         let launches = |s: &RestoreStep| match s {
             RestoreStep::Wake { steps, .. } => steps.iter().filter(|x| x.id.as_ref() == Some(&f.id)).any(|x| x.cmd.iter().any(|a| a == "--bg") && !x.cmd.iter().any(|a| a == "--resume")),
@@ -1238,7 +1239,11 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
     if !p.ok() {
         found(rp, id, state, "not started; see the fix");
         rep.failed += 1;
-        rp.plan.warnings.extend(p.refusals.into_iter().map(|i| Issue { severity: Severity::Error, ..i }));
+        for i in p.refusals {
+            if !rp.plan.warnings.iter().any(|w| same_trust(w, &i)) {
+                rp.plan.warnings.push(Issue { severity: Severity::Error, ..i });
+            }
+        }
         rp.plan.warnings.extend(p.warnings);
         return;
     }
@@ -1255,17 +1260,26 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
     // only the target's an exact path names (a fleet- or squadron-wide start
     // never trusts a folder the user did not name, a lead it launches first
     // included: that one is refused, its fix the trust)
+    // (the folder named is the one the trust is for: the data root, a parent's,
+    // its own; said once, however many members it holds back)
     let trusts: Vec<Step> = p.steps.iter().filter(|s| s.cmd.first().is_some_and(|c| c == "trust")).cloned().collect();
     if !trusts.is_empty() && !ctx.paths.iter().any(|p| p.member() == Some(id)) {
         found(rp, id, state, "not started; see the fix");
+        rep.failed += 1;
         for t in &trusts {
-            fail_with(rp, rep, Issue {
+            let folder = crate::env::canon(std::path::Path::new(&t.cmd[1]));
+            let fix = crate::trust::fix(&folder);
+            let paths = ctx.paths.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(" ");
+            let i = Issue {
                 code: "folder.untrusted".into(),
                 severity: Severity::Error,
-                message: format!("{id}'s folder is not trusted by Claude Code; a wider start does not trust it ({})", crate::trust::CONSEQUENCE),
-                fix: Some(format!("{}, then nimitz start {id}", crate::trust::fix(std::path::Path::new(&t.cmd[1])))),
+                message: format!("{} is not trusted by Claude Code; a wider start does not trust it ({})", folder.display(), crate::trust::CONSEQUENCE),
+                fix: Some(format!("{fix}, then nimitz start {paths}")),
                 id: Some(id.clone()),
-            });
+            };
+            if !rp.plan.warnings.iter().any(|w| same_trust(w, &i)) {
+                rp.plan.warnings.push(i);
+            }
         }
         return;
     }
@@ -1292,6 +1306,13 @@ fn plan_named(ctx: &Ctx, m: &Member, had_tab: bool, rep: &mut FleetReport, rp: &
         action.push_str(&tab_after_wake(ctx, m, cmd, m.cwd.as_deref().unwrap_or_default(), &session, rep, rp));
     }
     found(rp, id, state, action);
+}
+
+/// Two `folder.untrusted` issues whose fix trusts the same folder: one
+/// refusal, said once.
+fn same_trust(a: &Issue, b: &Issue) -> bool {
+    let trust = |i: &Issue| i.fix.as_deref().filter(|_| i.code == "folder.untrusted").map(|f| f.split(", then ").next().unwrap_or(f).to_string());
+    trust(a).is_some() && trust(a) == trust(b)
 }
 
 fn fail_with(rp: &mut RestorePlan, rep: &mut FleetReport, i: Issue) {

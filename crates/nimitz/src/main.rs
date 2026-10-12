@@ -107,10 +107,10 @@ const USAGES: &[(&str, &str)] = &[
     ("start", "  start <path>... [--fresh] [--parked] [--force]
                                    bring members up, the jobs only (no pane): what is down is woken by its
                                    exact id, top-down; a member a path names, and a lead under a ..., gets a
-                                   first launch when it never ran; a worker on an older Claude Code is relaunched. --fresh: a named
-                                   member's new conversation; --parked: the parked and stopped ships a ...
-                                   covers too; --force: a cold launch over a broken lineage or an untested
-                                   Claude Code"),
+                                   first launch when it never ran; a worker on an older Claude Code is
+                                   relaunched. --fresh: a named member's new conversation; --parked: the
+                                   parked and stopped ships a ... covers too; --force: a cold launch over a
+                                   broken lineage or an untested Claude Code"),
     ("restart", "  restart <path>... [--parked]     relaunch the live members (same id and history, every flag again; ships
                                    first; a turn in flight is dropped) and wake the ones that are down; a pane
                                    whose attach the relaunch ends is reattached"),

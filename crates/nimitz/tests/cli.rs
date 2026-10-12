@@ -2931,6 +2931,11 @@ fn a_wider_start_never_trusts_a_never_started_leads_folder() {
     }
     let wide = sb.run(&["start", "TOP/...", "--plan", "-v"]);
     assert!(wide.out.contains("a wider start does not trust it") && !wide.out.contains("to launch"), "{}", wide.out);
+    // the folder that lacks the trust is named (the data root, not a member's), once
+    let root = nimitz_core::os::canonical(&root).unwrap();
+    assert!(wide.out.contains(&format!("{} is not trusted by Claude Code; a wider start", root.display())) && !wide.out.contains("TOP's folder") && !wide.out.contains("TOP/SQ's folder"), "{}", wide.out);
+    assert_eq!(wide.out.matches("(folder.untrusted)").count(), 1, "said once:\n{}", wide.out);
+    assert!(wide.out.contains("2 refused"), "both held back:\n{}", wide.out);
     let exact = sb.run(&["start", "TOP", "--plan", "-v"]);
     assert!(exact.out.contains("trust ") && exact.out.contains("1 to launch") && !exact.out.contains("refuse"), "the exact path trusts it:\n{}", exact.out);
 }
