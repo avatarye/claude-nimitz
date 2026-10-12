@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.7.3 (unreleased)
+
+The commands, cleaned up: Perforce paths, four families, one `muster`, no
+authority checks. No old form is kept. Read **Upgrading** first.
+
+### Changed
+
+- **A path names one member.** `HOME` is the admiral, `HOME/GITHUB` the
+  commodore, `HOME/GITHUB/SHIP` a ship. `HOME/...` is everything under HOME,
+  the admiral included; `//...` (or `/...`) is every fleet, the ADMIRALTY
+  workspace never. A command takes several paths. `...` leaves parked ships
+  alone; `--parked` adds them. `--only` and `--all` are gone.
+- **Four families.**
+  - Fleet shape (configuration, nothing launched): `fleet`, `squadron`,
+    `ship` new|set|rm; `machine add|rm`; `settings get|set` (was `fleet
+    settings`); `harness`.
+  - Session control (jobs, never panes): `start [--fresh] [--parked]`,
+    `restart` (was `start -f`), `stop`, `rm`, `sweep`, `adopt`, `signal`.
+  - Pane control: `open [--tab]` (was `start -p`; wakes the member first),
+    `attach`, `close` (closes the member's pane; the member keeps running),
+    `layout` (the leads' tabs; `--here`, `--rename`, `--force`, `--ships`).
+  - Misc: `status [<path>...]`, `check`, `rules`, `doctor`, `init`, `trust`,
+    `migrate`, `kb`, `hook`, `sandbox`.
+- **`nimitz muster [<path>...]`**, the one command after a reboot, a Claude
+  Code update or a Herdr closure (default `//...`): relaunches workers on an
+  older Claude Code, wakes the leads and the ships that were active, and
+  puts every interactive member back in its Herdr pane (or its lead's tab).
+  One plan.
+- **A busy member is relaunched.** The plan says "busy: its turn in flight is
+  dropped" (or "waiting: its question is dropped"); `relaunch.busy` and the
+  needs-you skip are gone.
+- **A member that relaunches, stops or removes itself** does it last: its
+  own step runs in a detached `nimitz __self-end` after the command's report,
+  once its turn ends (10 minutes at most), and the outcome comes at its next
+  session start. `start.self` and `restore.self` are gone.
+- **No authority checks.** Every member may run every command on any member
+  or fleet; nothing is "the user's alone". The member's identity stays (its
+  own self-end, its kb sender id, its default fleet); partial labels warn.
+  kb-guard is unchanged.
+- **Any member may message any member.** The SendMessage chain-of-command
+  hook and the squadron `comms` setting are gone (`comms` in an existing
+  squadron.toml is read and ignored). The user's `signal` still types into a
+  lead's tab (`--inbox` for the inbox); a member's goes to the inbox, naming
+  its sender.
+- **Rules v10**: no "may run" lists or signal tables; roles describe the work.
+- **doctor** warns when Claude Code's cached copy of the plugin
+  (`~/.claude/plugins/cache/claude-nimitz/nimitz/<version>/`) is not this
+  binary's version, and its fix for a missing hook is the plugin update.
+
+### Fixed
+
+- Fix lines that said `nimitz status <id>` (status took no id; it now takes
+  paths).
+- `nimitz <cmd> --help` and `nimitz help <cmd>` print the command's usage.
+
+### Removed
+
+- `restore`, `relaunch`, `up`, `layout herdr`, the old `open` alias,
+  `start -p/-f/--tab/--only/--all/--jobs-only`, `fleet settings`,
+  `squadron --comms`.
+
+### Upgrading
+
+- Install both crates, then update the plugin: `claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins` in each live session (sessions load Claude Code's cached
+  copy, not the repo). `nimitz doctor` says when they differ.
+- Old forms and what replaces them:
+
+  | Before | 0.7.3 |
+  | --- | --- |
+  | `nimitz start F` (the whole fleet) | `nimitz start F/...` |
+  | `nimitz start F --all` | `nimitz start F/... --parked` |
+  | `nimitz start F --only` | `nimitz start F` |
+  | `nimitz start <id> -f` | `nimitz restart <id>` |
+  | `nimitz start <id> -p` | `nimitz open <id>` |
+  | `nimitz restore`, `nimitz up F` | `nimitz muster`, `nimitz start F/... --parked` |
+  | `nimitz relaunch <id>` | `nimitz restart <id>` |
+  | `nimitz layout herdr` | `nimitz layout //...` |
+  | `nimitz fleet settings get/set` | `nimitz settings get/set` |
+  | `nimitz stop` of a squadron with its ships | `nimitz stop F/SQ/...` |
+
+- Live members get rules v10 at their next prompt.
+
 ## 0.7.2 (2026-10-12)
 
 ### Changed
