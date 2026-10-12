@@ -449,13 +449,15 @@ fn any_member_starts_and_stops_any_member() {
 fn a_members_own_stop_runs_last_in_a_detached_helper() {
     let sb = Sb::new(false);
     let state = sb.base.join("state");
-    let (log, lock) = (state.join("relaunch-self.log"), state.join("relaunch-self.lock"));
+    let (log, lock) = (state.join("relaunch-self.log"), state.join("self-end").join("MAIN.ARGOS.CLEAN.lock"));
+    let lock_of = |id: &str| state.join("self-end").join(format!("{}.lock", id.replace('/', ".")));
     let me = "MAIN/ARGOS/CLEAN";
     let r = sb.run_as(me, &["stop", me, "--plan"]);
     assert!(r.code == 0 && r.out.contains("(self.end)") && r.out.contains("then, after this command"), "{}", r.out);
     assert!(!log.exists() && !lock.exists(), "--plan spawns nothing");
     // a helper pending: no second one
-    std::fs::write(&lock, format!("pid {}\n", std::process::id())).unwrap();
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    std::fs::write(&lock, format!("pid {} {}\n", std::process::id(), nimitz_core::evidence::now())).unwrap();
     let r = sb.run_as(me, &["stop", me, "--yes"]);
     assert!(r.code != 0 && r.out.contains("pending already"), "{}", r.out);
     std::fs::remove_file(&lock).unwrap();
@@ -476,6 +478,33 @@ fn a_members_own_stop_runs_last_in_a_detached_helper() {
     assert!(r.code == 0 && r.out.contains("(self.end)") && r.out.contains(&format!("nimitz stop {job}")), "{}", r.out);
     let r = sb.run_as("MAIN/ARGOS", &["stop", "MAIN", "--plan"]);
     assert!(r.code == 0 && !r.out.contains("self.end"), "{}", r.out);
+    // with no --yes, said; a caller with partial labels is found by its process (the test seam)
+    let r = sb.run_as("MAIN/ARGOS/NOLABEL", &["stop", "MAIN/ARGOS/NOLABEL"]);
+    assert!(r.out.contains("own stop runs with --yes") && !lock_of("MAIN/ARGOS/NOLABEL").exists(), "{}", r.out);
+    // (every sandbox worker is pid 1: NOLABEL's session file names this test's own process)
+    let sid = sb.member("MAIN/ARGOS/NOLABEL")["session"]["session_id"].as_str().unwrap().to_string();
+    let pid = std::process::id().to_string();
+    for e in std::fs::read_dir(sb.base.join("claude_home").join("sessions")).unwrap().flatten() {
+        let t = std::fs::read_to_string(e.path()).unwrap_or_default();
+        if t.contains(&sid) {
+            let mut v: Value = serde_json::from_str(&t).unwrap();
+            v["pid"] = Value::from(std::process::id());
+            std::fs::write(e.path(), v.to_string()).unwrap();
+        }
+    }
+    assert_eq!(sb.member("MAIN/ARGOS/NOLABEL")["session"]["pid"].as_i64(), Some(std::process::id() as i64));
+    let r = raw(&sb.vars, &["stop", "MAIN/ARGOS/NOLABEL", "--plan"], &[("NIMITZ_ROLE", "ship"), ("NIMITZ_TEST_ANCESTORS", &pid)], None);
+    assert!(r.out.contains("partial or disagree") && r.out.contains("(self.end)"), "pid {pid}: {}", r.out);
+    // a ship's `ship rm` of itself runs whole, last, in the helper; its notes go with it
+    let gone = |sb: &Sb| !sb.status()["fleets"].to_string().contains("MAIN/ARGOS/NOLABEL");
+    let r = sb.run_as("MAIN/ARGOS/NOLABEL", &["ship", "rm", "MAIN/ARGOS/NOLABEL", "--yes"]);
+    assert!(r.code == 0 && r.out.contains("`nimitz ship rm MAIN/ARGOS/NOLABEL` runs after this command"), "{}", r.out);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while (!gone(&sb) || lock_of("MAIN/ARGOS/NOLABEL").exists()) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(gone(&sb), "the helper removed it:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
+    assert!(!state.join("self-end").join("MAIN.ARGOS.NOLABEL.txt").exists(), "no note for a removed member");
     // a turn that does not end: the helper gives up (decision 5), nothing runs, the note says so
     let me = "MAIN/ARGOS/DRIFT";
     let sid = sb.member(me)["session"]["session_id"].as_str().unwrap().to_string();
@@ -491,7 +520,7 @@ fn a_members_own_stop_runs_last_in_a_detached_helper() {
     assert_eq!(r.code, 0, "{}", r.out);
     let note = state.join("self-end").join("MAIN.ARGOS.DRIFT.txt");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while (!note.exists() || lock.exists()) && std::time::Instant::now() < until {
+    while (!note.exists() || lock_of(me).exists()) && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     let note = std::fs::read_to_string(note).unwrap_or_default();

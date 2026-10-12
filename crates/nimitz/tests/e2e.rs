@@ -2270,6 +2270,6 @@ fn e2e_99_a_ship_restarts_itself_through_the_detached_helper() {
     w.ok(&["signal", &w.ship(), "--inbox", "Reply with the single word NOTED.", "--yes"]);
     let tx = w.wait(180, || std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid)?).ok().filter(|t| t.contains("NOTED") && t.matches("NOTED").count() >= 2)).unwrap_or_default();
     assert!(tx.contains("[nimitz self-end]"), "the outcome note is not in the resumed session's context:\n{}", tx.lines().rev().take(8).collect::<Vec<_>>().join("\n"));
-    assert!(!w.base.join("state").join("relaunch-self.lock").exists(), "the lock is released");
+    assert!(!w.base.join("state").join("self-end").join(format!("{}.lock", w.ship().replace('/', "."))).exists(), "the lock is released");
     w.finish();
 }

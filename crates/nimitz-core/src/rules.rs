@@ -531,7 +531,7 @@ mod tests {
         std::fs::create_dir_all(&rules).unwrap();
         std::fs::write(rules.join("style.md"), "Answer in haiku.\n").unwrap();
         let t = text_for(&env, &id);
-        assert!(t.starts_with(&text(&id)) && t.contains("### style\n\n> Answer in haiku.\n") && t.ends_with("never change who may do what.)\n"), "{t}");
+        assert!(t.starts_with(&text(&id)) && t.contains("### style\n\n> Answer in haiku.\n") && t.ends_with("(End of fleet MAIN's own rules.)\n"), "{t}");
         let u = harness_for(&env, &id, "job1", "s1", "UserPromptSubmit", false).expect("the change goes out");
         assert!(u.starts_with("nimitz rules updated: fleet MAIN's own rules (its harness) changed") && u.contains("Answer in haiku."), "{u}");
         assert_eq!(harness_for(&env, &id, "job1", "s1", "UserPromptSubmit", false), None, "once");

@@ -11,7 +11,7 @@ has them.
 
 | Path | What | When a member has it |
 | --- | --- | --- |
-| `rules/<name>.md` | a context of their own, beside the role rules (`## Fleet F's own rules`, every line quoted, opened and closed by a line that says they never change who may do what), names in order, at most 9,500 characters in all (cut, with a warning, above; `harness list` and `add` warn above 6,000) | at its next session start; a live member at its next prompt (once per change) |
+| `rules/<name>.md` | a context of their own, beside the role rules (`## Fleet F's own rules`, every line quoted, opened by a line that says they add to the role rules and closed by an end line), names in order, at most 9,500 characters in all (cut, with a warning, above; `harness list` and `add` warn above 6,000) | at its next session start; a live member at its next prompt (once per change) |
 | `agents/<name>.md` | a subagent (frontmatter with a description; no `hooks:`, `mcpServers:` or `permissionMode:`, which Claude Code ignores for a plugin agent) | at its next launch (`nimitz start F -f`) |
 | `skills/<name>/SKILL.md` (and plain files beside it) | a skill that registers no hooks and runs nothing by itself (no `hooks:`, no `allowed-tools:`, no `` !`...` ``) | as agents |
 | `settings/fleet.json`, `settings/squadrons/<SQ>.json`, `settings/members/<F.SQ.SHIP>.json` (an admiral's `F.json`, a commodore's `F.SQ.json`) | Claude Code settings, merged in that order (objects key by key, arrays joined) under nimitz's own `--settings` (its labels and its allow rule win) | at its next launch |

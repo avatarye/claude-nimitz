@@ -431,7 +431,12 @@ pub fn me_of(snap: &Snapshot, caller: &Caller) -> Option<Id> {
     if let Some(id) = verified(caller) {
         return Some(id.clone());
     }
-    let up = crate::evidence::ancestors();
+    // tests only (a debug build): the ancestry is given, as for `session_above`
+    let given = if cfg!(debug_assertions) { std::env::var("NIMITZ_TEST_ANCESTORS").ok() } else { None };
+    let up: Vec<i64> = match given {
+        Some(pids) => pids.split(',').filter_map(|p| p.trim().parse().ok()).collect(),
+        None => crate::evidence::ancestors(),
+    };
     members(snap).into_iter().map(|(_, m)| m).find(|m| m.session.as_ref().and_then(|s| s.pid).is_some_and(|p| p > 1 && up.contains(&p))).map(|m| m.id.clone())
 }
 

@@ -313,7 +313,14 @@ fn retire(ctx: &Ctx, id: &Id) -> i32 {
         }),
         out::Go::Run => match &me {
             Some(m) => crate::self_end::defer(ctx, m, &[verb.to_string(), "rm".into(), id.0.clone()]),
-            None => out::outcome(&plan, &nimitz_core::sessions::apply(&ctx.env, &plan)),
+            None => {
+                let code = out::outcome(&plan, &nimitz_core::sessions::apply(&ctx.env, &plan));
+                // a removed member's self-end notes go with it
+                if code == 0 {
+                    nimitz_core::self_end::forget_under(&ctx.env, id);
+                }
+                code
+            }
         },
     }
 }

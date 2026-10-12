@@ -343,8 +343,18 @@ pub fn stop(ctx: &Ctx) -> Result<i32, String> {
     }
     let plan = merged(format!("stop {}", ctx.args.pos.join(" ")), plans);
     let code = run::session_plan(ctx, plan.clone());
+    // its own stop, last: as a restart does, whatever the other steps came to,
+    // once the plan ran (`--yes`); a refused plan runs nothing, its own stop neither
     match (me, own) {
-        (Some(id), Some(what)) if plan.ok() && code == 0 && (ctx.plan_only() || ctx.yes()) => Ok(crate::self_end::defer(ctx, &id, &["stop".to_string(), what])),
+        (Some(id), Some(what)) if plan.ok() && (ctx.plan_only() || ctx.yes()) => Ok(code.max(crate::self_end::defer(ctx, &id, &["stop".to_string(), what]))),
+        (Some(id), Some(_)) if plan.ok() => {
+            out::line(&format!("[INFO] {id}'s own stop runs with --yes"));
+            Ok(code)
+        }
+        (Some(id), Some(_)) => {
+            out::line(&format!("[INFO] {id}'s own stop is not left to a helper: the plan is refused"));
+            Ok(code)
+        }
         _ => Ok(code),
     }
 }

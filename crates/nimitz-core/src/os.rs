@@ -286,6 +286,19 @@ pub fn spawn_detached(c: &mut Command) -> std::io::Result<()> {
     }
 }
 
+/// Does a detached child outlive the caller's job object? Always on Unix; on
+/// Windows only when the job allows breakaway (else a kill of the job takes it).
+pub fn detach_outlives_job() -> bool {
+    #[cfg(windows)]
+    {
+        win::may_break_away()
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
 /// Make `p` executable (a script nimitz writes); a no-op on Windows.
 pub fn make_executable(p: &Path) -> std::io::Result<()> {
     #[cfg(unix)]

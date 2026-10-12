@@ -880,7 +880,7 @@ fn r09b_an_update_drops_a_turn_in_flight_and_relaunches_the_caller_last() {
     let r = sb.run_as("MAIN", &["muster", "MAIN/...", "--yes"]);
     assert!(relaunched(&r.out).iter().all(|id| id != "MAIN") && r.out.contains("[INFO] MAIN: `nimitz restart MAIN` runs after this command"), "not in the run itself:\n{}", r.out);
     // the helper: last, once its turn ends, the same conversation
-    let lock = sb.base.join("state").join("relaunch-self.lock");
+    let lock = sb.base.join("state").join("self-end").join("MAIN.lock");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while (lock.exists() || worker(&sb, "MAIN") != "2.1.289") && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(250));

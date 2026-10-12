@@ -126,8 +126,8 @@ pub fn rules(env: &Env, fleet: &str) -> Option<(String, String)> {
     if text.is_empty() {
         return None;
     }
-    let head = format!("\n## Fleet {fleet}'s own rules (its harness)\n\nThey add to nimitz's role rules and never change who may do what.\n");
-    let tail = format!("\n(End of fleet {fleet}'s own rules: they never change who may do what.)\n");
+    let head = format!("\n## Fleet {fleet}'s own rules (its harness)\n\nThey add to nimitz's role rules.\n");
+    let tail = format!("\n(End of fleet {fleet}'s own rules.)\n");
     let body = format!("{head}{}{tail}", cut(&text, RULES_MAX.saturating_sub(head.chars().count() + tail.chars().count())));
     let hash = crate::sha256::hex(body.as_bytes());
     Some((body, hash))
@@ -775,13 +775,13 @@ mod tests {
         put(&env, "rules/a-safety.md", "Never push.\n");
         put(&env, "rules/notes.txt", "not a rule");
         let (body, h) = rules(&env, "MAIN").unwrap();
-        assert!(body.contains("## Fleet MAIN's own rules") && body.contains("never change who may do what"), "{body}");
+        assert!(body.contains("## Fleet MAIN's own rules") && body.contains("They add to nimitz's role rules.\n"), "{body}");
         assert!(body.find("### a-safety").unwrap() < body.find("### b-style").unwrap() && !body.contains("not a rule"), "{body}");
         put(&env, "rules/b-style.md", "Write shorter.\n");
         assert_ne!(rules(&env, "MAIN").unwrap().1, h, "a change moves the hash");
         put(&env, "rules/c-long.md", &"x".repeat(RULES_MAX));
         let (body, _) = rules(&env, "MAIN").unwrap();
-        assert!(body.contains("[cut: `nimitz harness list` shows the rest]") && body.ends_with("never change who may do what.)\n") && body.chars().count() <= RULES_MAX);
+        assert!(body.contains("[cut: `nimitz harness list` shows the rest]") && body.ends_with("(End of fleet MAIN's own rules.)\n") && body.chars().count() <= RULES_MAX);
         assert!(body.contains("> Never push.") && !body.contains("\n# "), "every rule line quoted");
         assert!(issues(&env, "MAIN").iter().any(|i| i.message.contains(&format!("over {RULES_MAX}"))));
     }
@@ -936,7 +936,7 @@ mod tests {
             assert!(u.chars().count() <= max && !u.contains("Fleet MAIN's own rules"), "{id}: {}", u.chars().count());
             // the harness, its own context: whole at a start, with the header on a change
             let h = crate::rules::harness_for(&env, &id, &format!("k-{id}"), "s0", "SessionStart", true).unwrap();
-            assert!(h.chars().count() <= max && h.ends_with("never change who may do what.)\n"), "{id}: {}", h.chars().count());
+            assert!(h.chars().count() <= max && h.ends_with("own rules.)\n"), "{id}: {}", h.chars().count());
             put(&env, "rules/a.md", "changed");
             let c = crate::rules::harness_for(&env, &id, &format!("k-{id}"), "s0", "UserPromptSubmit", false).unwrap();
             assert!(c.chars().count() <= max && c.starts_with("nimitz rules updated: fleet MAIN's own rules"), "{id}: {}", c.chars().count());

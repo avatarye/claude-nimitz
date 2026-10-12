@@ -86,7 +86,7 @@ pub struct View {
 }
 
 /// Issues a member is skipped for: shown as `skip`, with their fix.
-const SKIPS: [&str; 5] = ["relaunch.busy", "restore.self", "start.self", "needs-you", "attach.old"];
+const SKIPS: [&str; 1] = ["attach.old"];
 
 /// The verb of one raw step: what it does to its member.
 pub fn step_verb(s: &Step) -> &'static str {
@@ -371,13 +371,12 @@ pub fn run(p: &Plan, o: &Outcome, failed: &[Id]) {
     let v = View::of(p);
     let k = Paint(colour_on());
     let mut marks: BTreeMap<String, char> = BTreeMap::new();
-    let held: Vec<&Id> = o.issues.iter().filter(|i| i.code == "relaunch.busy").filter_map(|i| i.id.as_ref()).collect();
     for r in &v.rows {
         let Some(id) = &r.id else { continue };
         let ran_bad = o.ran.iter().any(|(s, rc, _)| s.id.as_ref() == Some(id) && *rc != 0);
         let mark = if failed.contains(id) || ran_bad || r.job == "refuse" {
             '✗'
-        } else if r.job == "skip" || held.contains(&id) {
+        } else if r.job == "skip" {
             '–'
         } else {
             '✓'
