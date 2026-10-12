@@ -31,7 +31,7 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
             let src = Path::new(ctx.args.need(2, "the file (a skill: its folder)")?);
             let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             let name = ctx.args.value("--name").map(str::to_string).unwrap_or(stem);
-            let scope = ctx.args.value("--for").map(|s| Id(s.to_string()));
+            let scope = ctx.args.value("--for").map(|s| crate::members::parse_one(s, "--for names the one squadron or member whose settings these are")).transpose()?;
             if (scope.is_some() || ctx.args.flag("--member")) && kind != Kind::Settings {
                 return Err("--for and --member go with settings (a squadron's, a member's)".into());
             }
@@ -79,7 +79,7 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
             let (what, rel) = match kind {
                 Kind::Settings => {
                     ctx.args.at_most(2)?;
-                    let scope = ctx.args.value("--for").map(|s| Id(s.to_string()));
+                    let scope = ctx.args.value("--for").map(|s| crate::members::parse_one(s, "--for names the one squadron or member whose settings these are")).transpose()?;
                     let rel = harness::settings_rel(scope.as_ref(), ctx.args.flag("--member"), &fleet)?;
                     (scope.map(|s| s.0).unwrap_or_else(|| fleet.clone()), rel)
                 }

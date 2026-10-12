@@ -12,7 +12,7 @@ use nimitz_core::kb::{self, Committed};
 /// `Err(Ok(code))`: refused, said already.
 pub fn fleet_of(ctx: &Ctx) -> Result<String, Result<i32, String>> {
     match (nimitz_core::sessions::verified(&ctx.caller), ctx.args.value("--fleet")) {
-        (_, Some(f)) => Ok(f.to_string()),
+        (_, Some(f)) => crate::members::fleet_name(f, "--fleet names the one fleet whose settings, knowledge base or harness it is").map_err(Err),
         (Some(id), None) => Ok(id.fleet().to_string()),
         (None, None) => Err(Err("name the fleet: --fleet F (inside a fleet member's session it is the member's own)".into())),
     }

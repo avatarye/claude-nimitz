@@ -68,11 +68,13 @@ const USAGES: &[(&str, &str)] = &[
     ("doctor", "  doctor [--fix]                   hooks, the plugin's cached copy, crossSessionInbound, native claude, trust,
                                    versions, formats, role briefs, the format steps due, the machines of each
                                    fleet"),
-    ("rules", "  rules [<id>]                     the role rules nimitz hands a member at session start"),
+    ("rules", "  rules [<path>...]                the role rules nimitz hands each member at session start (none: the
+                                   caller's own)"),
     ("status", "  status [<path>...] [--json]      the fleets, their members and issues (paths: only those members);
                                    down: taken down while active (a ... start wakes it); parked: retired by
                                    the daemon or not active (--parked wakes it)"),
-    ("check", "  check [<id>]                     integrity check of <id>, its parents and everything under it"),
+    ("check", "  check [<path>...]                integrity check of the members the paths cover, their parents and
+                                   everything under them (none: everything; //...: every fleet but ADMIRALTY)"),
     ("fleet", "  fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)"),
     ("squadron", "  squadron new|set|rm <F/SQ>       --brief T --mode M"),
     ("ship", "  ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B"),
@@ -115,18 +117,21 @@ const USAGES: &[(&str, &str)] = &[
     ("stop", "  stop <path|session>...           stop members (under a ...: the live ones, ships first), or one session by its id"),
     ("rm", "  rm <path|session>...             remove job rows (never transcripts): a member's stale rows, or one row by its id"),
     ("sweep", "  sweep [<path>...]                drop stale rows and copies of members (none: a member's own, else every one)"),
-    ("adopt", "  adopt <session> <id>             make a stowaway an identity's session"),
-    ("signal", "  signal <id> <text> [--inbox]     yours: typed into the member's tab (opened first when it has none), your own
+    ("adopt", "  adopt <session> <F|F/SQ|F/SQ/SHIP>
+                                   make a stowaway one member's session (one exact path, never a ...)"),
+    ("signal", "  signal <path> <text> [--inbox]   yours: typed into the member's tab (opened first when it has none), your own
                                    input; --inbox, or any member's signal: posted to its inbox as a request that
-                                   names the sender. A member that is down is refused, never woken"),
+                                   names the sender. One path: a member, or F/... or F/SQ/... for every live
+                                   member under it (never //...). A member named exactly that is down is
+                                   refused, never woken; under a ... it is skipped"),
     ("muster", "  muster [<path>...] [--parked]\n                                   the one command after a reboot, a Claude Code update or a Herdr closure\n                                   (no path: //...), one plan: workers on an older Claude Code relaunched\n                                   (restart //... relaunches every one), down leads and the active set's down\n                                   ships woken (--parked: the rest too), every member's pane reattached (its\n                                   own, else its lead tab); --here, --rename, --force as for layout. With no\n                                   multiplexer: the jobs, the pane steps skipped"),
-    ("open", "  open <id>... [--tab] [--force]   a pane for each member, focused (its pane, its tab, a split beside its
+    ("open", "  open <path>... [--tab] [--force] a pane for each member, focused (its pane, its tab, a split beside its
                                    commodore, a new tab); --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL,
                                    F.SQ.COMMODORE), reused or created; --force: a second tab beside a taken one.
                                    One that is down is woken first"),
-    ("attach", "  attach <id>                      attach this terminal (claude attach <its exact job>); one that is down is
+    ("attach", "  attach <F|F/SQ|F/SQ/SHIP>        attach this terminal (claude attach <its exact job>); one that is down is
                                    woken first (--plan, --yes); ctrl-z detaches; never from inside a Claude
-                                   Code session"),
+                                   Code session; one exact path, never a ..."),
     ("close", "  close <path>...                  close the panes that show those members (only a pane that runs its
                                    attach); the jobs run on"),
     ("layout", "  layout <path>... [--ships] [--here] [--rename] [--force]

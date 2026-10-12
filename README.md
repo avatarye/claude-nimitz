@@ -81,15 +81,15 @@ one plan. Design: [docs/design/cli-ux.md](docs/design/cli-ux.md).
 | `stop <path\|session>...` | Stop members (under a `...`: the live ones, ships first), or one session by its id |
 | `rm <path\|session>...` | Remove job rows, never transcripts |
 | `sweep [<path>...]` | Drop stale rows and copies of members |
-| `adopt <session> <id>` | Make a stowaway (a session in a fleet folder with no labels) an identity's session |
-| `signal <id> <text> [--inbox]` | Yours: typed into the member's tab, your own input; `--inbox`, or any member's signal: posted to its inbox, naming the sender. A member that is down is refused, never woken |
+| `adopt <session> <F\|F/SQ\|F/SQ/SHIP>` | Make a stowaway (a session in a fleet folder with no labels) one member's session (an exact path; a `...` is refused) |
+| `signal <path> <text> [--inbox]` | Yours: typed into the member's tab, your own input; `--inbox`, or any member's signal: posted to its inbox, naming the sender. One path: a member, or `F/...` / `F/SQ/...` for every live member under it (never `//...`: a turn in every fleet at once). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
 
 ### Pane control (Herdr)
 
 | Command | What it does |
 | --- | --- |
-| `open <id>... [--tab] [--force]` | A pane for each member, focused: its pane, its tab, a split beside its commodore, or a new tab. `--tab`: always its own tab (`F.SQ.SHIP`, `F.ADMIRAL`, `F.SQ.COMMODORE`); `--force`: a second tab beside a taken one. One that is down is woken first |
-| `attach <id>` | Attach this terminal (`claude attach <its exact job>`); one that is down is woken first; ctrl-z detaches; never from inside a Claude Code session |
+| `open <path>... [--tab] [--force]` | A pane for each member, focused: its pane, its tab, a split beside its commodore, or a new tab. `--tab`: always its own tab (`F.SQ.SHIP`, `F.ADMIRAL`, `F.SQ.COMMODORE`); `--force`: a second tab beside a taken one. One that is down is woken first |
+| `attach <F\|F/SQ\|F/SQ/SHIP>` | Attach this terminal (`claude attach <its exact job>`); one that is down is woken first; ctrl-z detaches; never from inside a Claude Code session. One terminal, one member: a `...` is refused |
 | `close <path>...` | Close the panes that show those members (only a pane that runs its attach); the jobs run on |
 | `layout <path>... [--ships] [--here] [--rename] [--force]` | The leads' tabs (`--ships`: each live ship's too); `--here`: in this Herdr session; `--rename`: give a tab that shows a member under another name its full name |
 
@@ -151,9 +151,9 @@ hands the outcome to the member's next session start.
 | `init [--label L]` | Data root, machine label, Claude Code's trust of the data root, doctor |
 | `doctor [--fix]` | The install: hooks, plugin, trust, Claude Code version, formats |
 | `status [<path>...] [--json]` | The fleets, their members and issues. `down`: taken down while active (a `...` start wakes it); `parked`: retired by the daemon or not active (`--parked` wakes it) |
-| `check [<id>]` | The problems of `<id>`, its parents and everything under it, each with its one fix |
+| `check [<path>...]` | The problems of the members the paths cover, their parents and everything under them, each with its one fix (none: everything; `//...`: every fleet but ADMIRALTY). `check F` and `check F/...` are the same: a check never hides a ship's errors |
 | `trust <folder>` | Claude Code's trust for the folder's git root (it lets the folder's `.claude` settings, hooks and MCP servers run) |
-| `rules [<id>]` | The role rules nimitz hands a member at session start |
+| `rules [<path>...]` | The role rules nimitz hands each member at session start (none: the caller's own) |
 | `sandbox create\|tick\|env <dir>` | A fake world for tests and demos |
 
 Removed in 0.7.3: `restore` (use `muster`), `relaunch` (`restart`), `up`
@@ -181,7 +181,7 @@ untested Claude Code as a warning), the machine and the last refresh.
 
 ## When something is wrong
 
-- `nimitz doctor` for the install, `nimitz check [<id>]` for a fleet: every
+- `nimitz doctor` for the install, `nimitz check [<path>...]` for a fleet: every
   problem comes with its one fix line.
 - Common fixes nimitz prints:
   - a drifted name or missing labels: `nimitz restart <id>`;
