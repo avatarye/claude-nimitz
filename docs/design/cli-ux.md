@@ -1,6 +1,10 @@
 # CLI UX: Perforce-style member paths, and session verbs apart from pane verbs
 
-Status: proposal, not built. Written against 0.7.1 (`dev` at 4df9b06).
+Status: WIP, paused (2026-10-12). To be redone from the commodore's agreed
+plan. New direction: no backward compatibility (no warning releases or
+migration paths, just switch); quick iteration over polish; four command
+families (fleet shape, session control, pane control, misc). The migration
+sections below (2.6, 3.5) are superseded by that. Earlier: proposal, not built. Written against 0.7.1 (`dev` at 4df9b06).
 Code references are to that tree.
 
 ## 0. The ask
