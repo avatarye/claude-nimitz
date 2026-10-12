@@ -49,6 +49,11 @@ authority checks. No old form is kept. Read **Upgrading** first.
   (`~/.claude/plugins/cache/claude-nimitz/nimitz/<version>/`) is not this
   binary's version, and its fix for a missing hook is the plugin update.
 
+- **Admiralty** shows the nimitz version in its status bar (both, flagged,
+  when admiralty's and the binary's differ); `m` types into the member's
+  own pane, a ship's too; `R` runs `muster`, `u` `start F/... --parked`.
+- **README**: a "Most used" section and one reference line per command.
+
 ### Fixed
 
 - Fix lines that said `nimitz status <id>` (status took no id; it now takes
@@ -76,13 +81,15 @@ authority checks. No old form is kept. Read **Upgrading** first.
   | `nimitz start F --only` | `nimitz start F` |
   | `nimitz start <id> -f` | `nimitz restart <id>` |
   | `nimitz start <id> -p` | `nimitz open <id>` |
+  | `nimitz start <id> -p --tab` | `nimitz open <id> --tab` |
   | `nimitz restore`, `nimitz up F` | `nimitz muster`, `nimitz start F/... --parked` |
   | `nimitz relaunch <id>` | `nimitz restart <id>` |
   | `nimitz layout herdr` | `nimitz layout //...` |
   | `nimitz fleet settings get/set` | `nimitz settings get/set` |
   | `nimitz stop` of a squadron with its ships | `nimitz stop F/SQ/...` |
 
-- Live members get rules v10 at their next prompt.
+- Live members get rules v10 at their next prompt, and a fleet's harness
+  rules once more as "changed" (their opening and closing lines are new).
 
 ## 0.7.2 (2026-10-12)
 
