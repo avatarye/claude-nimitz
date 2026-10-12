@@ -154,6 +154,8 @@ pub struct App {
     /// the version of the `nimitz` Admiralty runs (`nimitz --version`, read
     /// once off the UI thread: `read_nimitz_version`); `None` until it is read
     pub nimitz_version: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    /// how often the live loop refreshes (`--interval`; the status row shows it)
+    pub interval: std::time::Duration,
     pub state_path: Option<PathBuf>,
     /// an action running on the worker thread
     pub busy: Option<String>,
@@ -206,7 +208,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("w", "detail: open or close the floating detail panel (esc closes it too)"),
     ("R", "refresh now"),
     ("esc", "close what is open (a dialog, the detail panel, the / name filter); with nothing open and nothing running, quit"),
-    ("? / q", "help / quit"),
+    ("? / q", "these keys (? or esc closes them) / quit"),
 ];
 
 impl App {
@@ -256,6 +258,7 @@ impl App {
             detail_open: false,
             fixed_now: None,
             nimitz_version: Default::default(),
+            interval: std::time::Duration::from_secs(2),
             state_path,
             busy: None,
             detail_scroll: 0,

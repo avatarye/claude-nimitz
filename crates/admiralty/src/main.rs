@@ -163,7 +163,9 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
-    match run::run(app, make, Duration::from_secs_f64(interval.max(0.5))) {
+    app.interval = Duration::from_secs_f64(interval.max(0.5));
+    let every = app.interval;
+    match run::run(app, make, every) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e.to_string()),
     }

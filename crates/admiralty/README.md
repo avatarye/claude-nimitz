@@ -25,9 +25,14 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 ## Layout
 
-- Status bar (the ADMIRALTY line, at the bottom right above the key bar):
-  fleets, live sessions, how many need you, error and warning counts, the
-  multiplexer (or a MONITOR-ONLY badge), a Claude Code version warning.
+- Two status rows at the bottom, no key row. The ADMIRALTY row: fleets, live
+  sessions, how many need you, error and warning counts, the multiplexer (or a
+  MONITOR-ONLY badge), and `? keys` at its right. The row under it: the
+  `nimitz` version (`admiralty X · nimitz Y (mismatch)` as a warning when it
+  is not Admiralty's own), Claude Code's version and support (out of range: a
+  warning), the machine, the refresh interval, and `refreshed Ns ago  q quit`
+  at its right. Narrower, both shorten (`CC 2.1.296`, `nimitz Y ≠ X`).
+- The row under the fleet tabs is blank (no column names).
 - A tab bar on the top line: one tab per fleet (`1 HOME  2 MAIN ...`, with
   `!n` where members need you), then `unassigned` when a stowaway sits under the
   nimitz home in no fleet's folders. A tab shows only its fleet. `tab` /
@@ -115,7 +120,7 @@ on a fleet band also `layout F/... [--ships]`, `R` muster and removing a machine
 scoped to the row: member, squadron or fleet),
 `m` message (typed into the member's own pane, a ship's too), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
 from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
-flagged only, `R` refresh, `?` help, `q` quit. `esc` closes what is open, one
+flagged only, `R` refresh, `?` the keys panel (`?` or `esc` closes it), `q` quit. `esc` closes what is open, one
 thing at a time (a dialog or form, the detail panel, the `/` name filter), and
 with nothing open quits (not while an action runs: `q` quits then).
 
@@ -147,8 +152,8 @@ A squadron whose config does not load stays on screen with an orange bar
 and the error in full (file:line and the parser's words) above its members; a
 fleet's, in full at the top of its admiral's box.
 
-At 80x24 the header keeps the mux state, the footer keeps `? help` and `q/esc
-quit`, DETAIL keeps room for issue codes, the detail pane drops its picture to
+At 80x24 the ADMIRALTY row keeps the mux state and `? keys`, the row under it
+keeps the versions and `q quit`, DETAIL keeps room for issue codes, the detail pane drops its picture to
 show the reasons first (ctrl-e / ctrl-y scroll it), and help and the issues view
 wrap and scroll. The first frame comes from the session files alone; `claude
 agents` follows right after, and keys typed meanwhile are kept.

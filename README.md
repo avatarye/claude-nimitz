@@ -165,8 +165,10 @@ Removed in 0.7.3: `restore` (use `muster`), `relaunch` (`restart`), `up`
 Keys: `j`/`k` move, `tab` next fleet, `enter` jump to a pane, `a` start, `A` a
 pane for it, `x` more actions (stop, restart, sweep, rm, adopt; on a fleet: `R`
 muster, `u` up with the parked ships), `m` message, `!` what waits on you, `i`
-every issue with its fix, `c`/`e`/`D` create, edit, remove, `?` all keys, `q`
-quit.
+every issue with its fix, `c`/`e`/`D` create, edit, remove, `?` all keys (`?`
+again closes them), `q` quit. The two status rows at the bottom show the
+fleets' counts, then the nimitz and Claude Code versions (a mismatch or an
+untested Claude Code as a warning), the machine and the last refresh.
 
 ## Two rules
 
