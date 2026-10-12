@@ -165,3 +165,23 @@ agents` follows right after, and keys typed meanwhile are kept.
 `admiralty-form`, `admiralty-fleet-menu`,
 `admiralty-legacy`, `admiralty-broken-config`, `admiralty-sandbox-monitor-only`,
 `admiralty-narrow`, `admiralty-80x24`, `admiralty-help`.
+
+They are generated, never hand-taken:
+
+```
+cargo build -p admiralty -p nimitz
+uv run --with pillow tools/admiralty_screens.py [--font DIR] [--only admiralty-help ...]
+```
+
+The script runs the built TUI (`--demo`, `--demo-monitor`, or a fresh
+`admiralty sandbox create /tmp/adm-sb`, its ARGOS squadron.toml broken for
+`admiralty-broken-config`) in a private, detached tmux server at a fixed size
+(200x50; 100x30 narrow; 80x24), sends the keys that open each view, captures
+the pane's cells with their 24-bit colours (`tmux capture-pane -e`) and draws
+them with a JetBrainsMono Nerd Font (box drawing drawn as lines, so frames
+have no gaps). NIMITZ_HOME and NIMITZ_STATE point at a temp dir; nothing reads
+the real state. Each screen's size, source and keys are in its `SCREENS`
+table; change a key sequence there when a view moves.
+The font is found under the usual font folders, else pass `--font DIR` (or set
+`ADMIRALTY_SCREENS_FONT`) to a folder holding JetBrainsMono Nerd Font (Propo)
+Regular and Bold; the script refuses rather than draw without the icons.
