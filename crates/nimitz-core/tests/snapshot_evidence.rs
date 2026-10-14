@@ -453,7 +453,9 @@ fn a_live_job_carries_its_topic_and_never_the_idle_placeholder() {
 
     // model-written text reaches a terminal: no escape or other control codes
     w.patch(&w.job_file(&short), |v| v["detail"] = json!("Fixing\u{1b}[2J the \u{7}build\u{9b}31m now"));
-    assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("Fixing[2J the build31m now"));
+    assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("Fixing [2J the build 31m now"));
+    w.patch(&w.job_file(&short), |v| v["detail"] = json!("a \u{7} b"));
+    assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("a b"));
 
     // a blocked job's detail is its question: said once, as the question
     w.patch(&w.job_file(&short), |v| {

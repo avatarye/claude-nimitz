@@ -620,7 +620,8 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
 /// finished job's result when the detail is empty. Model-written text goes to
 /// a terminal: one line, no control characters.
 pub(crate) fn job_topic(job: &evidence::JobState) -> Option<String> {
-    let line = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c| !c.is_control()).collect::<String>();
+    // (control characters first: a line break or a BEL between two words leaves one space)
+    let line = |t: &str| t.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
     let needs = job.needs.as_deref().map(line);
     let detail = job.detail.as_deref().map(line).filter(|d| !d.is_empty() && !d.to_lowercase().starts_with("(idle") && Some(d) != needs.as_ref());
     let result = || job.result.as_deref().filter(|_| job.state.as_deref() == Some("done")).map(line).filter(|r| !r.is_empty());
