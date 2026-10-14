@@ -123,9 +123,9 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 (every fleet), `n/N`, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
 row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
-new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (stop, restart, sweep, rm, adopt, remove from config;
-on a fleet band also `layout F/... [--ships]`, `R` muster and removing a machine; sweep is
-scoped to the row: member, squadron or fleet),
+new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (every action of the row: start, open, stop, restart, sweep, rm, adopt, remove from config, message;
+on a fleet band also up, `layout F/... [--ships]`, `R` muster and removing a machine; a closed one says why; sweep is
+scoped to the row: member, squadron or fleet; the detail panel's ACTIONS lists the same entries in the same order, each with its own key),
 `m` message (typed into the member's own pane, a ship's too), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
 from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
 flagged only, `R` refresh, `?` the keys panel (`?` or `esc` closes it), `q` quit. `esc` closes what is open, one

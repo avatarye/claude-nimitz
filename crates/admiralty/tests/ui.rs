@@ -782,6 +782,69 @@ fn action_menu_greys_out_what_does_not_apply_with_the_reason() {
     assert!(matches!(t.app.modal, Some(Modal::Confirm(_))));
 }
 
+/// Issue #4: the detail panel's ACTIONS (`w`) and the action menu (`x`)
+/// list the same actions in the same order for every kind of row, and a
+/// closed one says why in both.
+#[test]
+fn w_and_x_list_the_same_actions_in_the_same_order_on_every_row_kind() {
+    use admiralty::view::Kind as K;
+    for (fixture, mux) in [(fixtures::demo(), true), (fixtures::demo_monitor_only(), false)] {
+        let mut t = fixture_app(fixture, mux);
+        // the first row of each kind, over every tab (a fold opened to reach it)
+        let mut seen: Vec<String> = vec![];
+        let want = |k: &K| match k {
+            K::FleetBand => Some("fleet band"),
+            K::SquadronBand => Some("squadron band"),
+            K::Member(nimitz_core::Role::Admiral) => Some("admiral"),
+            K::Member(nimitz_core::Role::Commodore) => Some("commodore"),
+            K::Member(nimitz_core::Role::Ship) => Some("ship"),
+            K::Stowaway => Some("stowaway"),
+            K::ExtraRow => Some("extra row"),
+            _ => None,
+        };
+        for tab_name in t.app.tabs() {
+            tab(&mut t.app, &tab_name);
+            // open every fold until nothing more opens
+            loop {
+                let shut: Vec<String> = t.app.rows.iter().filter(|r| !r.expanded && !r.node.children.is_empty()).map(|r| r.node.id.clone()).collect();
+                if shut.iter().all(|id| t.app.expanded.get(id) == Some(&true)) {
+                    break;
+                }
+                for id in shut {
+                    t.app.expanded.insert(id, true);
+                }
+                t.app.rebuild();
+            }
+            let rows: Vec<(String, &'static str)> = t.app.rows.iter().filter_map(|r| want(&r.node.kind).map(|w| (r.node.id.clone(), w))).collect();
+            for (id, what) in rows {
+                if seen.iter().any(|s| s == what) {
+                    continue;
+                }
+                seen.push(what.to_string());
+                goto(&mut t.app, &id);
+                let menu = t.app.action_menu();
+                let lines: Vec<String> = admiralty::detail::detail_lines(&t.app, 200).iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
+                let at = lines.iter().position(|l| l == "ACTIONS").unwrap_or_else(|| panic!("{what}: {lines:?}"));
+                // after the jump line (enter), one line per entry, then the footer
+                let listed: Vec<&String> = lines[at + 2..at + 2 + menu.len()].iter().collect();
+                let keys: Vec<String> = listed.iter().map(|l| l.trim_start().chars().take(4).collect::<String>().trim().to_string()).collect();
+                assert_eq!(keys, menu.iter().map(|i| i.main_key()).collect::<Vec<_>>(), "{what} ({id}): {listed:?}");
+                assert!(lines[at + 2 + menu.len()..].iter().any(|l| l.contains("this list as a menu")), "{what}: {lines:?}");
+                for (it, l) in menu.iter().zip(&listed) {
+                    match &it.enabled {
+                        Ok(()) => assert!(l.contains(&it.label), "{what}: {l} / {}", it.label),
+                        Err(why) if why == actions::MONITOR_ONLY => assert!(l.contains("monitor-only"), "{what}: {l}"),
+                        Err(why) => assert!(l.contains(why.as_str()), "{what}: {l} / {why}"),
+                    }
+                }
+            }
+        }
+        for what in ["fleet band", "squadron band", "admiral", "commodore", "ship", "stowaway", "extra row"] {
+            assert!(seen.iter().any(|s| s == what), "the fixture has no {what} row: {seen:?}");
+        }
+    }
+}
+
 #[test]
 fn message_goes_to_the_member_itself_a_ship_too() {
     let mut t = fixture_app(fixtures::demo(), true);

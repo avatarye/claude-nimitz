@@ -36,6 +36,8 @@ pub enum MenuAction {
     MachineRm(String),
     /// adopt this session as this identity (from a `legacy` issue's fix)
     AdoptAs(String, String),
+    /// `m`: type a message into the member's pane
+    Message,
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +46,18 @@ pub struct MenuItem {
     pub label: String,
     pub enabled: Result<(), String>,
     pub action: MenuAction,
+}
+
+impl MenuItem {
+    /// The key that runs it from the list: its own (`a`, `A`, `u`, `D`, `m`),
+    /// else `x` and its menu key.
+    pub fn main_key(&self) -> String {
+        match &self.action {
+            MenuAction::Act(a) => a.main_key(),
+            MenuAction::Message => "m".into(),
+            _ => format!("x {}", self.key),
+        }
+    }
 }
 
 pub enum Modal {
@@ -252,7 +266,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("a", "start it: nimitz start <id> (confirms)"),
     ("u", "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked; confirms)"),
     ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
-    ("x", "actions: stop, relaunch (restart), sweep, rm, adopt, remove; on a fleet: R bring the fleet back, layout, machines"),
+    ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines"),
     ("m", "message: typed into its pane (nimitz signal <id> <text>)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
@@ -798,13 +812,18 @@ impl App {
         })
     }
 
-    /// The action menu (`x`) for the selected row.
-    pub fn action_menu(&self) -> Vec<MenuItem> {
-        let mut v: Vec<MenuItem> = Act::MENU
-            .iter()
-            .filter(|a| !matches!(a, Act::Start | Act::Open | Act::Up))
-            .map(|a| MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(*a), action: MenuAction::Act(*a) })
-            .collect();
+    /// Every action of the selected row, in one order, each enabled or with
+    /// the reason it is not: the action menu (`x`) lists it, and the detail
+    /// panel's ACTIONS block (`w`) shows the same list with each entry's own
+    /// key (`MenuItem::main_key`). The fleet-wide entries (up, restore,
+    /// layout, a machine's removal) are on a fleet's row (`Target::Fleet`).
+    pub fn row_actions(&self) -> Vec<MenuItem> {
+        let fleet = match self.target() {
+            Target::Fleet(id) => Some(id),
+            _ => None,
+        };
+        let act = |a: Act| MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(a), action: MenuAction::Act(a) };
+        let mut v: Vec<MenuItem> = Act::MENU.iter().filter(|a| **a != Act::Up || fleet.is_some()).map(|a| act(*a)).collect();
         if let Some((sid, id)) = self.legacy_adopt() {
             if let Some(it) = v.iter_mut().find(|i| i.key == Act::Adopt.key()) {
                 it.label = format!("adopt this legacy session as {id}");
@@ -812,13 +831,21 @@ impl App {
                 it.action = MenuAction::AdoptAs(sid, id);
             }
         }
-        if let Target::Fleet(id) = self.target() {
-            for a in [Act::Restore, Act::Layout, Act::LayoutShips] {
-                v.push(MenuItem { key: a.key(), label: a.label().into(), enabled: self.available(a), action: MenuAction::Act(a) });
-            }
+        let (label, enabled) = match self.message_plan() {
+            Ok(p) => (format!("message {} in its pane", p.to), Ok(())),
+            Err(why) => ("message: type into its pane".to_string(), Err(why)),
+        };
+        v.push(MenuItem { key: 'm', label, enabled, action: MenuAction::Message });
+        if let Some(id) = fleet {
+            v.extend([Act::Restore, Act::Layout, Act::LayoutShips].map(act));
             v.push(MenuItem { key: 'M', label: "remove a machine from this fleet".into(), enabled: Ok(()), action: MenuAction::MachineRm(id.0) });
         }
         v
+    }
+
+    /// The action menu (`x`) for the selected row: `row_actions`.
+    pub fn action_menu(&self) -> Vec<MenuItem> {
+        self.row_actions()
     }
 
     /// The create menu (`c`) for where the cursor is.
@@ -921,6 +948,13 @@ impl App {
             MenuAction::AdoptAs(sid, id) => {
                 let short: String = sid.chars().take(8).collect();
                 self.open_form(Form::adopt(&sid, &short, &id));
+                None
+            }
+            MenuAction::Message => {
+                match self.message_plan() {
+                    Ok(plan) => self.modal = Some(Modal::Message { plan, text: String::new() }),
+                    Err(why) => self.notify(format!("message: not available. {why}"), st(mono::WARN)),
+                }
                 None
             }
         }
@@ -1233,10 +1267,7 @@ impl App {
                 Ok((_, a)) => return self.run_menu(a),
                 Err(why) => self.notify(format!("edit: {why}"), st(mono::WARN)),
             },
-            (KeyCode::Char('m'), _) => match self.message_plan() {
-                Ok(plan) => self.modal = Some(Modal::Message { plan, text: String::new() }),
-                Err(why) => self.notify(format!("message: not available. {why}"), st(mono::WARN)),
-            },
+            (KeyCode::Char('m'), _) => return self.run_menu(MenuAction::Message),
             _ => {}
         }
         None

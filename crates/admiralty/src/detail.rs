@@ -7,7 +7,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::actions::{find_member, Act, Target};
+use crate::actions::{find_member, Target};
 use crate::app::App;
 use crate::frames::{pad, truncate_spans, wrap};
 use crate::theme::{art, bold, mono, pane_color, pane_dot, severity_color, severity_word, st, status_style, status_word, Art};
@@ -405,11 +405,15 @@ fn extra_detail(owner: &str, s: &SessionInfo, now: f64) -> Vec<Line<'static>> {
 /// The ACTIONS block: each key, and what it does here or why it will not.
 fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
     let mut v = vec![blank(), heading("ACTIONS")];
-    // keys closed only for want of a multiplexer are listed once, at the end
+    // a key closed only for want of a multiplexer says so in its place; the
+    // reason in full is said once, at the end
     let mut no_mux: Vec<String> = vec![];
     let mut line = |v: &mut Vec<Line<'static>>, key: &str, r: Result<String, String>| match r {
         Ok(t) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::ACCENT)), Span::styled(t, st(mono::FG))])),
-        Err(why) if why == crate::actions::MONITOR_ONLY => no_mux.push(key.to_string()),
+        Err(why) if why == crate::actions::MONITOR_ONLY => {
+            no_mux.push(key.to_string());
+            v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::DIM)), Span::styled("monitor-only".to_string(), st(mono::WARN))]));
+        }
         Err(why) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::DIM)), Span::styled(why, st(mono::COMMENT))])),
     };
     let jump = match (&n.pane_id, app.bundle.as_ref().map(|b| b.mux_caps.focus).unwrap_or(false)) {
@@ -419,37 +423,19 @@ fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
         _ => Err("fold / unfold".into()),
     };
     line(&mut v, "\u{23ce}", jump);
-    let mut acts: Vec<Act> = vec![Act::Start, Act::Open, Act::Stop, Act::Relaunch, Act::Sweep, Act::Rm, Act::Adopt];
-    if matches!(n.kind, Kind::FleetBand) {
-        acts.insert(0, Act::Up);
-        acts.insert(1, Act::Restore);
-    }
-    let member_like = matches!(n.kind, Kind::Member(_) | Kind::FleetBand | Kind::SquadronBand);
-    for a in acts {
-        let r = app.available(a);
-        if a == Act::Adopt {
-            if let Some((_, id)) = app.legacy_adopt() {
-                line(&mut v, "x d", Ok(format!("adopt this legacy session as {id}")));
-                continue;
-            }
-        }
-        if r.is_ok() || (member_like && matches!(a, Act::Start | Act::Open)) {
-            line(&mut v, &a.main_key(), r.map(|_| a.label().to_string()));
-        }
-    }
-    if member_like {
-        match app.message_plan() {
-            Ok(p) => line(&mut v, "m", Ok(format!("message {} in its pane", p.to))),
-            Err(why) => line(&mut v, "m", Err(why)),
-        }
+    // the same list as the action menu (`x`), in its order, each with its own key
+    for it in app.row_actions() {
+        // a closed entry: what it is (its label's head), then why not
+        let what = it.label.split([':', '(']).next().unwrap_or_default().trim().to_string();
+        line(&mut v, &it.main_key(), it.enabled.map(|_| it.label).map_err(|why| if why == crate::actions::MONITOR_ONLY { why } else { format!("{what}: {why}") }));
     }
     if !no_mux.is_empty() {
         v.push(Line::from(vec![
-            Span::styled(format!("  {:<4}", no_mux.join(" ")), bold(mono::DIM)),
-            Span::styled(format!("  {}", crate::actions::MONITOR_ONLY), st(mono::WARN)),
+            Span::styled("      ".to_string(), bold(mono::DIM)),
+            Span::styled(crate::actions::MONITOR_ONLY.to_string(), st(mono::WARN)),
         ]));
     }
-    v.push(Line::styled("  x   all actions   c create   e edit   D remove from config", st(mono::COMMENT)));
+    v.push(Line::styled("  x   this list as a menu   c create   e edit", st(mono::COMMENT)));
     v
 }
 
