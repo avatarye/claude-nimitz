@@ -33,8 +33,9 @@
 ### Upgrading
 
 - Quit every Admiralty (and any long-running nimitz) started before the
-  upgrade; `nimitz doctor` lists them. If starts are blocked by
-  `registry.corrupt`, quit what it names, then run `nimitz doctor --fix`. Then install both crates and update
+  upgrade; `nimitz doctor` lists them (on Linux; elsewhere it says the check
+  was not done). If starts are blocked by `registry.corrupt`, quit what it
+  names, then run `nimitz doctor --fix`. Then install both crates and update
   the plugin (`claude plugin marketplace update claude-nimitz && claude
   plugin update nimitz@claude-nimitz`, then `/reload-plugins`).
 
