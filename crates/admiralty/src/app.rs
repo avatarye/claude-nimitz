@@ -71,6 +71,8 @@ pub enum Modal {
     Confirm(Pending),
     Message { plan: MessagePlan, text: String },
     Form(Box<Form>),
+    /// `space`: find a member or stowaway in every fleet
+    Finder(Box<crate::finder::Finder>),
 }
 
 pub enum Effect {
@@ -255,8 +257,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("gg / G", "top / bottom"),
     ("ctrl-d / ctrl-u", "half page down / up"),
     ("ctrl-e / ctrl-y", "scroll the detail panel (when open)"),
-    ("space", "fold / unfold"),
-    ("z", "show / hide the member's crew that finished over 30 min ago (+N finished)"),
+    ("space", "find a member or stowaway in every fleet by its path, name, status or topic (fuzzy, as fzf; all terms must match); enter puts the cursor on it"),
+    ("z", "fold / unfold; on a member with crew that finished over 30 min ago: show / hide them (+N finished)"),
     ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz open <id>, confirms); else fold / unfold"),
@@ -483,6 +485,9 @@ impl App {
             // (a squadron gone is forgotten: one made again starts fresh)
             self.sq_rank = now;
         }
+        if let Some(Modal::Finder(fd)) = self.modal.as_mut() {
+            fd.set_snapshot(&b.snap);
+        }
         self.bundle = Some(b);
         self.rebuild();
     }
@@ -615,6 +620,24 @@ impl App {
         }
     }
 
+    /// The finder's enter: the cursor on this member or stowaway, whatever
+    /// hides it now (another tab, a fold, the `/` filter, the state filter,
+    /// hidden stowaways). False when it is not in the list at all.
+    pub fn land(&mut self, row_id: &str, member: Option<&Id>) -> bool {
+        if row_id.starts_with("SW:") {
+            self.show_stowaways = true;
+            self.expanded.insert("STOW".into(), true);
+        }
+        if let (Some(id), Some(b)) = (member.filter(|id| id.squadron().is_some()), &self.bundle) {
+            let sq = b.snap.fleets.iter().filter(|f| f.id.fleet() == id.fleet()).flat_map(|f| f.squadrons.iter().map(move |s| (f, s))).find(|(_, s)| s.id.squadron() == id.squadron());
+            if let Some((f, s)) = sq {
+                self.fleet_states[FleetState::of_squadron(f, s).index()] = true;
+            }
+        }
+        self.reveal(row_id, member);
+        self.current().is_some_and(|r| r.node.id == row_id)
+    }
+
     /// The tabs as the view has them now.
     pub fn tabs(&self) -> Vec<String> {
         self.bundle.as_ref().map(|b| crate::view::tabs(&b.snap)).unwrap_or_default()
@@ -727,6 +750,24 @@ impl App {
         // closed with the cursor inside it: the cursor goes to the fold row
         if !open && !self.rows.iter().any(|r| r.node.id == id) {
             self.goto_id(&fold);
+        }
+    }
+
+    /// `z`: fold or unfold the row (as `space` did before the finder); on a
+    /// member with old crew, or on a crew row, the member's `+N finished`.
+    fn fold_key(&mut self) {
+        let Some(r) = self.current().cloned() else { return };
+        let id = &r.node.id;
+        let old_crew = id.strip_prefix("M:").is_some_and(|m| {
+            let now = self.now();
+            self.bundle.as_ref().and_then(|b| b.snap.fleets.iter().flat_map(crate::view::fleet_members).find(|x| x.id.0 == m).map(|x| crate::view::folded_crew(&x.crew, now, "") > 0)).unwrap_or(false)
+        });
+        if old_crew || (r.node.children.is_empty() && (id.starts_with("M:") || id.starts_with("C:") || id.starts_with("WF:"))) {
+            self.toggle_crew_fold();
+        } else if !r.node.children.is_empty() {
+            self.toggle();
+        } else {
+            self.notify("z: nothing to fold here", st(mono::COMMENT));
         }
     }
 
@@ -1091,12 +1132,13 @@ impl App {
                     form.validate(&self.ctx.env, &b.snap);
                 }
             }
+            Some(Modal::Finder(fd)) => fd.push(&one_line(text)),
             Some(_) => {}
             None if self.editing_filter => {
                 self.filter.push_str(&one_line(text));
                 self.rebuild();
             }
-            None => self.notify("A paste goes into the message box (m), a form or the filter (/); here it is ignored", st(mono::COMMENT)),
+            None => self.notify("A paste goes into the message box (m), a form, the filter (/) or the finder (space); here it is ignored", st(mono::COMMENT)),
         }
         self.after_input();
         None
@@ -1176,7 +1218,10 @@ impl App {
             (KeyCode::Char('y'), true) => self.detail_scroll = self.detail_scroll.saturating_sub(1),
             (KeyCode::Char('d'), true) | (KeyCode::PageDown, _) => self.cursor = (self.cursor + self.page / 2).min(last),
             (KeyCode::Char('u'), true) | (KeyCode::PageUp, _) => self.cursor = self.cursor.saturating_sub(self.page / 2),
-            (KeyCode::Char(' '), _) => self.toggle(),
+            (KeyCode::Char(' '), _) => match &self.bundle {
+                Some(b) => self.modal = Some(Modal::Finder(Box::new(crate::finder::Finder::new(&b.snap)))),
+                None => self.notify("loading ...", st(mono::COMMENT)),
+            },
             (KeyCode::Enter, _) => {
                 let (pane, kids) = self.current().map(|r| (r.node.pane_id.is_some(), !r.node.children.is_empty())).unwrap_or((false, false));
                 if pane || !kids {
@@ -1184,7 +1229,7 @@ impl App {
                 }
                 self.toggle();
             }
-            (KeyCode::Char('z'), false) => self.toggle_crew_fold(),
+            (KeyCode::Char('z'), false) => self.fold_key(),
             (KeyCode::Char('v'), false) => {
                 self.anim = !self.anim;
                 let msg = match (self.anim, self.anim_env_off) {
@@ -1278,6 +1323,45 @@ impl App {
         let down = matches!(k.code, KeyCode::Char('j') | KeyCode::Down);
         let up = matches!(k.code, KeyCode::Char('k') | KeyCode::Up);
         match m {
+            Modal::Finder(mut fd) => match k.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => {
+                    if let Some(c) = fd.selected().cloned() {
+                        if !self.land(&c.row_id, c.member.as_ref()) {
+                            self.notify(format!("{} is not in the list now", c.text.split("  ").next().unwrap_or_default()), st(mono::WARN));
+                        }
+                    }
+                }
+                KeyCode::Up => {
+                    fd.step(-1);
+                    self.modal = Some(Modal::Finder(fd));
+                }
+                KeyCode::Down => {
+                    fd.step(1);
+                    self.modal = Some(Modal::Finder(fd));
+                }
+                KeyCode::Char('p') if ctrl => {
+                    fd.step(-1);
+                    self.modal = Some(Modal::Finder(fd));
+                }
+                KeyCode::Char('n') if ctrl => {
+                    fd.step(1);
+                    self.modal = Some(Modal::Finder(fd));
+                }
+                KeyCode::Char('u') if ctrl => {
+                    fd.clear();
+                    self.modal = Some(Modal::Finder(fd));
+                }
+                KeyCode::Backspace => {
+                    fd.pop();
+                    self.modal = Some(Modal::Finder(fd));
+                }
+                KeyCode::Char(c) if !ctrl => {
+                    fd.push(&c.to_string());
+                    self.modal = Some(Modal::Finder(fd));
+                }
+                _ => self.modal = Some(Modal::Finder(fd)),
+            },
             Modal::Help { scroll } => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {}
                 _ if down => self.modal = Some(Modal::Help { scroll: scroll + 1 }),

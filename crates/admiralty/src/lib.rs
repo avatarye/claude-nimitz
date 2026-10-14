@@ -9,6 +9,7 @@ pub mod backend;
 pub mod app;
 pub mod data;
 pub mod detail;
+pub mod finder;
 pub mod fixtures;
 pub mod forms;
 pub mod frames;

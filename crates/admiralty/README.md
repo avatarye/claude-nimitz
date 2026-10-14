@@ -74,7 +74,7 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   member with tree guides. Crew show while running and for 30 minutes after
   they finish (a nested crew follows its parent; a running one keeps its
   parent in view); older finished crew fold into one `+N finished` row per
-  member, which `z` (or space on it) opens and closes, kept in the saved
+  member, which `z` opens and closes, kept in the saved
   state.
 - Status motion (in the live loop only): a busy member's status glyph spins (a
   pie that fills; `| / = \` in ASCII), one waiting on a background shell turns
@@ -124,8 +124,23 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 ## Keys
 
-`tab/shift-tab 1-9` fleet tabs, `j/k h/l gg/G ctrl-d/u space`, `/` filter
-(every fleet), `n/N`, `enter` jump to the pane,
+![finder](../../docs/screens/admiralty-finder.png)
+
+`space` opens the finder: every member of every fleet, one line each in tree
+order (its path `MAIN/ARGOS/SIGNAL`, its expected name `[MAIN.ARGOS]-SIGNAL`,
+its status word and its topic), then the stowaways by short id and name.
+Matching is fzf's (the `nucleo-matcher` crate, built in): space-separated terms
+must all match (`argos busy`), a letter at a word start scores higher, and a
+term that spells the path's word initials in order ranks first (`mas`:
+`MAIN/ARGOS/SIGNAL`; `hgn`: `HOME/GITHUB/NIMITZ_DEV`). `up/down` or
+`ctrl-n/ctrl-p` move, the matched letters are lit, and on a wide screen the
+selected one's detail shows beside the list. `enter` puts the cursor on its row
+(its fleet's tab, opening folds and clearing what hides it), so `enter` again
+jumps to its pane; `esc` leaves the cursor and the filter as they were.
+
+`tab/shift-tab 1-9` fleet tabs, `j/k h/l gg/G ctrl-d/u`, `z` fold / unfold (on
+a member with crew that finished over 30 min ago: its `+N finished`), `/` filter
+(every fleet), `n/N`, `space` the finder, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
 row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
 new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (every action of the row: start, open, stop, restart, sweep, rm, adopt, remove from config, message;

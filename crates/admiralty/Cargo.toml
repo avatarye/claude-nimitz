@@ -13,6 +13,7 @@ libc.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 unicode-width = { workspace = true }
+nucleo-matcher = "0.3.1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
