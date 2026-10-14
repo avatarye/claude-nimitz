@@ -196,9 +196,9 @@ pub fn too_new(env: &Env, raw: &str) -> Option<crate::formats::TooNew> {
     crate::formats::guard_json_bytes("registry", &env.registry_path(), raw.as_bytes(), "version").err()
 }
 
-/// The `registry` artifact's lift (`formats`): a 0.3.x (v1) file read and
-/// saved as version 2 by the load that has always read it (`registry.json.v1`
-/// keeps the old file).
+/// The `registry` artifact's lift (`formats`): a 0.3.x (v1) file read by
+/// the load that has always read it and saved in the current format (every
+/// write stamps it; `registry.json.v1` keeps the old file).
 pub fn lift_v1(env: &Env) -> Result<(), String> {
     update(env, |_| ()).map_err(|e| e.to_string())
 }
@@ -284,6 +284,10 @@ fn rebuild(env: &Env) -> (Registry, String) {
         Some(r) => (r, vec!["registry.json.bak".to_string()]),
         None => (fresh(env), vec![]),
     };
+    // a copy in an older shape is migrated before the events go on top, and
+    // the result is the format this nimitz writes, never the copy's (issue #1)
+    crate::migrate::registry_v2(env, &mut r);
+    stamp_current(&mut r);
     let since = r.updated_at;
     let copy = r.clone();
     let mut added = 0;
@@ -319,14 +323,151 @@ fn recover_locked(env: &Env) -> Registry {
     if std::fs::read_to_string(env.registry_path()).ok().is_some_and(|raw| too_new(env, &raw).is_some()) {
         return r;
     }
-    let ts = crate::evidence::now() as u64;
-    let kept = env.state.join(format!("registry.json.corrupt-{ts}"));
+    let kept = env.state.join(kept_name(crate::evidence::now(), std::process::id()));
     if std::fs::rename(env.registry_path(), &kept).is_err() {
         return r;
     }
     let _ = std::fs::write(note_path(&kept), &what);
     let _ = write_unlocked(env, &mut r);
     r
+}
+
+/// `registry.json.corrupt-<secs>.<micros>-<pid>`: two recoveries in one
+/// second (a burst of hooks) never take the same name.
+fn kept_name(now: f64, pid: u32) -> String {
+    let micros = (now * 1e6) as u64;
+    format!("registry.json.corrupt-{}.{:06}-{pid}", micros / 1_000_000, micros % 1_000_000)
+}
+
+/// The kept files (`registry.json.corrupt-*`, not their notes, not one
+/// archived as `.restored`), oldest name first.
+pub fn kept_files(env: &Env) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = std::fs::read_dir(&env.state)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    n.starts_with("registry.json.corrupt-") && !n.ends_with(".txt") && !n.ends_with(RESTORED)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    kept.sort();
+    kept
+}
+
+/// What a kept file is archived as once `restore_from_kept` has read it.
+const RESTORED: &str = ".restored";
+
+/// A kept file this nimitz reads (not too new for it): an older nimitz set
+/// it aside, it was never corrupt.
+fn readable_kept(env: &Env, k: &Path) -> Option<Registry> {
+    let raw = std::fs::read_to_string(k).ok()?;
+    if too_new(env, &raw).is_some() {
+        return None;
+    }
+    parse(&raw).ok()
+}
+
+/// Why a kept file is a newer nimitz's (`too_new`), when it is.
+fn kept_too_new(env: &Env, k: &Path) -> Option<crate::formats::TooNew> {
+    too_new(env, &std::fs::read_to_string(k).ok()?)
+}
+
+/// What `restore_from_kept` did, or would do.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Restored {
+    /// `MAIN/ARGOS/ARGOS: job 8a1b2c3d`, one per field filled
+    pub filled: Vec<String>,
+    /// the kept files archived (they read fine)
+    pub archived: Vec<PathBuf>,
+    /// the kept files left (they do not parse: still `registry.corrupt`)
+    pub left: Vec<PathBuf>,
+    /// the kept files a newer nimitz wrote: kept for it, never read here
+    pub newer: Vec<PathBuf>,
+}
+
+/// Fill what the registry lacks from the kept files that read fine (issue
+/// #1: an older nimitz set a good file aside and rebuilt it without jobs or
+/// folders): for each identity, a missing `cwd`, a missing `job`, and a
+/// lineage entry's missing `job`, from the newest kept file (by its
+/// `updated_at`) that has the identity on the same conversation (its
+/// `session`, or a lineage entry with the same session id). A value present
+/// is never overwritten, no identity is added or removed. Then those kept
+/// files are archived as `<name>.restored` (their notes too), so
+/// `registry.corrupt` clears; a kept file that does not parse stays.
+/// `dry`: say what would be done, change nothing.
+pub fn restore_from_kept(env: &Env, dry: bool) -> std::io::Result<Restored> {
+    let mut good: Vec<(PathBuf, Registry)> = vec![];
+    let mut out = Restored::default();
+    for k in kept_files(env) {
+        match readable_kept(env, &k) {
+            Some(r) => good.push((k, r)),
+            None if kept_too_new(env, &k).is_some() => out.newer.push(k),
+            None => out.left.push(k),
+        }
+    }
+    if good.is_empty() {
+        return Ok(out);
+    }
+    // newest first; on a tie, the newest name
+    good.sort_by(|a, b| b.1.updated_at.partial_cmp(&a.1.updated_at).unwrap_or(std::cmp::Ordering::Equal).then_with(|| b.0.cmp(&a.0)));
+    let fill = |r: &mut Registry| {
+        let mut filled = vec![];
+        for (id, rec) in r.identities.iter_mut() {
+            let ours: Vec<String> = rec.session.iter().cloned().chain(rec.lineage.iter().map(|l| l.session_id.clone())).collect();
+            for (_, kr) in &good {
+                let Some(old) = kr.identities.get(id) else { continue };
+                let same = old.session.as_ref().is_some_and(|s| ours.contains(s)) || old.lineage.iter().any(|l| ours.contains(&l.session_id));
+                if !same {
+                    continue;
+                }
+                if rec.cwd.is_empty() && !old.cwd.is_empty() {
+                    rec.cwd = old.cwd.clone();
+                    filled.push(format!("{id}: cwd {}", rec.cwd));
+                }
+                // the record's job: from a kept record on this very conversation
+                if rec.job.is_none() {
+                    let job = match (&old.session, &rec.session) {
+                        (Some(a), Some(b)) if a == b => old.job.clone(),
+                        _ => None,
+                    }
+                    .or_else(|| rec.session.as_ref().and_then(|s| old.lineage.iter().find(|l| &l.session_id == s)).and_then(|l| l.job.clone()));
+                    if let Some(j) = job {
+                        filled.push(format!("{id}: job {j}"));
+                        rec.job = Some(j);
+                    }
+                }
+                for l in rec.lineage.iter_mut().filter(|l| l.job.is_none()) {
+                    if let Some(o) = old.lineage.iter().find(|o| o.session_id == l.session_id && o.job.is_some()) {
+                        filled.push(format!("{id}: lineage {} job {}", &l.session_id[..l.session_id.len().min(8)], o.job.as_deref().unwrap_or_default()));
+                        l.job = o.job.clone();
+                        // the home that bound it comes with it: the write
+                        // stamps this home only on an entry that has none
+                        if l.home.is_none() {
+                            l.home = o.home.clone();
+                        }
+                    }
+                }
+            }
+        }
+        filled
+    };
+    if dry {
+        // the file as a writer sees it (every home's bindings), as `update` would
+        let mut r = load_checked(env, false)?.r;
+        out.filled = fill(&mut r);
+    } else {
+        out.filled = update(env, fill)?;
+        for (k, _) in &good {
+            let to = PathBuf::from(format!("{}{RESTORED}", k.display()));
+            std::fs::rename(k, &to)?;
+            let _ = std::fs::rename(note_path(k), note_path(&to));
+        }
+    }
+    out.archived = good.into_iter().map(|(k, _)| k).collect();
+    Ok(out)
 }
 
 fn note_path(kept: &Path) -> PathBuf {
@@ -339,18 +480,12 @@ fn note_path(kept: &Path) -> PathBuf {
 pub fn health(env: &Env) -> Vec<Issue> {
     let mut out = vec![];
     let reg = env.registry_path();
-    let mut kept: Vec<PathBuf> = std::fs::read_dir(&env.state)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    n.starts_with("registry.json.corrupt-") && !n.ends_with(".txt")
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    kept.sort();
+    let kept = kept_files(env);
+    // an older nimitz still running keeps setting the file aside (issue #1):
+    // the kept files say who, and quitting it comes first
+    let stale = if kept.is_empty() { vec![] } else { crate::os::stale_processes() };
+    let quit = (!stale.is_empty()).then(|| format!("{} is an older nimitz: quit it first, then ", stale.iter().map(crate::os::Stale::short).collect::<Vec<_>>().join(", ")));
+    let older = (!stale.is_empty()).then(|| format!(" ({} still runs)", stale.iter().map(crate::os::Stale::short).collect::<Vec<_>>().join(", "))).unwrap_or_default();
     // the file is gone but its last good copy is not: nimitz works from the
     // copy until the next write saves it (a reset removes both files)
     if !reg.exists() {
@@ -371,17 +506,39 @@ pub fn health(env: &Env) -> Vec<Issue> {
     }
     for k in &kept {
         let what = std::fs::read_to_string(note_path(k)).unwrap_or_else(|_| "rebuilt from what was left".into());
-        out.push(Issue {
-            code: "registry.corrupt".into(),
-            severity: Severity::Error,
-            message: format!(
-                "{} did not parse; the bad file is kept as {}; {what}. Lineages from before may be incomplete, so a start could lose a conversation",
-                reg.display(),
-                k.display()
+        // a newer nimitz's file, set aside by an older one: kept for it
+        if let Some(t) = kept_too_new(env, k) {
+            let x = t.needs.clone().map(|v| format!("nimitz {v}")).unwrap_or_else(|| "a newer nimitz".into());
+            out.push(Issue {
+                code: "registry.corrupt".into(),
+                severity: Severity::Warn,
+                message: format!("{} was set aside as {}{older}; it was written by {x} (format {}); keep it, this nimitz never reads it", reg.display(), k.display(), t.format),
+                fix: Some(format!("{}keep it; install {x} or newer to read it (its doctor --fix restores from it)", quit.clone().unwrap_or_default())),
+                id: None,
+            });
+            continue;
+        }
+        let (message, fix) = match readable_kept(env, k) {
+            // valid JSON this nimitz reads: an older nimitz could not (issue #1)
+            Some(r) => (
+                format!(
+                    "{} was set aside as {} by an older nimitz{older}; it reads fine (holds {} identities); {what}. The rebuild may lack a job or a folder it holds",
+                    reg.display(),
+                    k.display(),
+                    r.identities.len()
+                ),
+                format!("{}nimitz doctor --fix (fills what the registry lacks from it and archives it as .restored)", quit.clone().unwrap_or_default()),
             ),
-            fix: Some(format!("check the members with `nimitz status`, then rm {} {}", k.display(), note_path(k).display())),
-            id: None,
-        });
+            None => (
+                format!(
+                    "{} did not parse; the bad file is kept as {}{older}; {what}. Lineages from before may be incomplete, so a start could lose a conversation",
+                    reg.display(),
+                    k.display()
+                ),
+                format!("{}check the members with `nimitz status`, then rm {} {}", quit.clone().unwrap_or_default(), k.display(), note_path(k).display()),
+            ),
+        };
+        out.push(Issue { code: "registry.corrupt".into(), severity: Severity::Error, message, fix: Some(fix), id: None });
     }
     if let Some(r) = std::fs::read_to_string(&reg).ok().filter(|raw| too_new(env, raw).is_none()).and_then(|raw| parse(&raw).ok()).filter(|r| !r.unknown.records.is_empty()) {
         out.push(Issue {
@@ -820,9 +977,23 @@ fn lock_file(env: &Env) -> std::io::Result<File> {
     std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(env.registry_lock_path()).map_err(ctx)
 }
 
+/// `version: REGISTRY_VERSION` and a `min_nimitz` no lower than
+/// `REGISTRY_MIN_NIMITZ`.
+fn stamp_current(r: &mut Registry) {
+    r.version = r.version.max(REGISTRY_VERSION);
+    if !r.min_nimitz.as_deref().is_some_and(|m| crate::compat::older(REGISTRY_MIN_NIMITZ, m)) {
+        r.min_nimitz = Some(REGISTRY_MIN_NIMITZ.into());
+    }
+}
+
 /// Temp file next to registry.json, then rename (same device, atomic).
 /// Every save also writes `registry.json.bak` (the last good copy, for `recover`).
+/// Every write stamps the format this nimitz writes, whatever version was
+/// loaded (a v1 or v2 file, a rebuild seeded from an older copy): the file
+/// never goes back to an older shape (issue #1). A `min_nimitz` above ours
+/// (a newer nimitz that this one may still read wrote it) is kept.
 fn write_unlocked(env: &Env, r: &mut Registry) -> std::io::Result<()> {
+    stamp_current(r);
     r.updated_at = crate::evidence::now();
     let contents = render(r).map_err(std::io::Error::other)?;
     let path = env.registry_path();
@@ -916,6 +1087,194 @@ mod tests {
         assert!(h.len() == 1 && h[0].code == "registry.corrupt" && h[0].severity == Severity::Error, "{h:?}");
         assert!(h[0].message.contains("registry.json.bak") && h[0].message.contains("1 SessionStart"), "{}", h[0].message);
         assert_eq!(load(&env), r, "a second load reads the rebuilt file (stamps round-trip exactly: serde_json float_roundtrip)");
+    }
+
+    /// Issue #1: the shapes an older nimitz wrote are migrated, never set
+    /// aside, and a write after loading one saves the current format.
+    #[test]
+    fn older_registries_are_migrated_not_rejected_and_a_write_saves_the_current_format() {
+        let v1 = serde_json::json!({"version": 1, "machine": "m", "identities": {
+            "MAIN/ARGOS/ARGOS": {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/w", "current": "sid-1",
+                "lineage": [{"session_id": "sid-1", "bound_at": 1.0, "via": "launch"}]}}});
+        let v2 = serde_json::json!({"version": 2, "machine": "m", "updated_at": 1.0, "identities": {
+            "MAIN/ARGOS/ARGOS": {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/w", "session": "sid-1",
+                "lineage": [{"session_id": "sid-1", "at": 1.0, "via": "launch"}]}}});
+        for (old, was) in [(v1, 1), (v2, 2)] {
+            let (_td, env) = test_env();
+            std::fs::create_dir_all(&env.state).unwrap();
+            std::fs::write(env.registry_path(), old.to_string()).unwrap();
+            let r = load(&env);
+            assert_eq!(r.identities["MAIN/ARGOS/ARGOS"].session.as_deref(), Some("sid-1"), "v{was}");
+            update(&env, |r| bind(r, &Id::admiral("MAIN"), Role::Admiral, "[MAIN]-ADMIRAL", "/a", "a-1", "launch", 2.0)).unwrap();
+            let names: Vec<String> = std::fs::read_dir(&env.state).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            assert!(!names.iter().any(|n| n.contains("corrupt")), "v{was} never set aside: {names:?}");
+            assert!(health(&env).is_empty(), "v{was}: {:?}", health(&env));
+            for f in [env.registry_path(), bak_path(&env)] {
+                let on_disk = parse_file(&f).unwrap();
+                assert_eq!((on_disk.version, on_disk.min_nimitz.as_deref()), (REGISTRY_VERSION, Some(REGISTRY_MIN_NIMITZ)), "v{was}: {}", f.display());
+                assert_eq!(on_disk.identities.len(), 2);
+                assert_eq!(on_disk.identities["MAIN/ARGOS/ARGOS"].lineage[0].at, 1.0);
+            }
+        }
+    }
+
+    /// Issue #1: a v2 registry in memory (an older nimitz wrote the file) is
+    /// saved as the current format by every write, `save` too; a newer
+    /// `min_nimitz` that this nimitz may still read is kept.
+    #[test]
+    fn every_write_stamps_the_current_format() {
+        let (_td, env) = test_env();
+        let mut r = Registry { version: 2, machine: "m".into(), ..Default::default() };
+        save(&env, &r).unwrap();
+        let on_disk = parse_file(&env.registry_path()).unwrap();
+        assert_eq!((on_disk.version, on_disk.min_nimitz.as_deref()), (REGISTRY_VERSION, Some(REGISTRY_MIN_NIMITZ)));
+        r.min_nimitz = Some("0.6.0".into());
+        save(&env, &r).unwrap();
+        assert_eq!(parse_file(&env.registry_path()).unwrap().min_nimitz.as_deref(), Some("0.6.0"));
+    }
+
+    /// Issue #1: a rebuild seeded from an older last good copy (a v1 or v2
+    /// `.bak`) is the current format, and its records are migrated.
+    #[test]
+    fn a_rebuild_from_an_older_copy_is_the_current_format() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let v1 = serde_json::json!({"version": 1, "machine": "m", "identities": {
+            "MAIN/ARGOS/ARGOS": {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/w", "current": "sid-1",
+                "lineage": [{"session_id": "sid-1", "bound_at": 1.0, "via": "launch"}]}}});
+        std::fs::write(bak_path(&env), v1.to_string()).unwrap();
+        std::fs::write(env.registry_path(), "{garbage").unwrap();
+        let r = load(&env);
+        assert_eq!((r.version, r.min_nimitz.as_deref()), (REGISTRY_VERSION, Some(REGISTRY_MIN_NIMITZ)));
+        assert_eq!(r.identities["MAIN/ARGOS/ARGOS"].session.as_deref(), Some("sid-1"));
+        let on_disk = parse_file(&env.registry_path()).unwrap();
+        assert_eq!(on_disk.version, REGISTRY_VERSION);
+        assert!(health(&env).iter().any(|i| i.code == "registry.corrupt" && i.message.contains("registry.json.bak")));
+    }
+
+    /// Issue #1: four recoveries in six seconds; two in one second never
+    /// take one name, and `health` still finds every kept file.
+    #[test]
+    fn kept_files_never_collide_within_a_second() {
+        let (a, b, c) = (kept_name(1_791_905_021.25, 7), kept_name(1_791_905_021.75, 7), kept_name(1_791_905_021.25, 8));
+        assert_eq!(a, "registry.json.corrupt-1791905021.250000-7");
+        assert!(a != b && a != c && b != c);
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        for n in [&a, &b] {
+            std::fs::write(env.state.join(n), "{garbage").unwrap();
+        }
+        assert_eq!(health(&env).iter().filter(|i| i.code == "registry.corrupt").count(), 2);
+    }
+
+    /// Issue #1: a 0.3.x process set a good v3 file aside and rebuilt the
+    /// registry as v1, without jobs or folders. The kept file reads fine:
+    /// `health` says so, and the restore fills what the rebuild lacks (never
+    /// over a value it has, no identity added), then archives it. A kept
+    /// file that does not parse stays, and stays blocking.
+    #[test]
+    fn a_kept_file_that_reads_fine_restores_what_the_rebuild_lost_and_is_archived() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let ship = "MAIN/ARGOS/ARGOS";
+        let kept_v3 = serde_json::json!({"version": 3, "min_nimitz": "0.5.0", "machine": "m", "updated_at": 5.0, "identities": {
+            ship: {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/w/argos", "job": "aaaa1111", "session": "sid-2",
+                "lineage": [{"session_id": "sid-1", "job": "oldjob11", "via": "launch", "at": 1.0, "home": "/other/home"}, {"session_id": "sid-2", "job": "aaaa1111", "via": "resume", "at": 2.0}]},
+            "MAIN/ARGOS": {"role": "commodore", "name": "[MAIN.ARGOS]-COMMODORE", "cwd": "/w/sq", "job": "cccc2222", "session": "c-1",
+                "lineage": [{"session_id": "c-1", "job": "cccc2222", "via": "launch", "at": 1.0}]},
+            "MAIN/GONE": {"role": "commodore", "name": "[MAIN.GONE]-COMMODORE", "cwd": "/w/gone", "session": "g-1", "lineage": []}}});
+        let k = env.state.join("registry.json.corrupt-1791905021");
+        std::fs::write(&k, kept_v3.to_string()).unwrap();
+        std::fs::write(note_path(&k), "11 identities rebuilt from 11 SessionStart event(s)").unwrap();
+        // the 0.3.x rebuild: v1, no jobs, the ship's folder lost; the
+        // commodore keeps a folder of its own and is on another conversation
+        let v1 = serde_json::json!({"version": 1, "machine": "m", "identities": {
+            ship: {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "", "current": "sid-2",
+                "lineage": [{"session_id": "sid-1", "bound_at": 1.0, "via": "launch"}, {"session_id": "sid-2", "bound_at": 2.0, "via": "resume"}]},
+            "MAIN/ARGOS": {"role": "commodore", "name": "[MAIN.ARGOS]-COMMODORE", "cwd": "/w/sq2", "current": "c-9",
+                "lineage": [{"session_id": "c-9", "bound_at": 3.0, "via": "launch"}]}}});
+        std::fs::write(env.registry_path(), v1.to_string()).unwrap();
+        let h = health(&env);
+        let i = h.iter().find(|i| i.code == "registry.corrupt").expect("still blocking until archived");
+        assert!(i.message.contains("set aside") && i.message.contains("reads fine (holds 3 identities)"), "{}", i.message);
+        assert!(i.fix.as_deref().unwrap_or("").contains("nimitz doctor --fix"), "{i:?}");
+        // the plan first: nothing changes
+        let dry = restore_from_kept(&env, true).unwrap();
+        assert_eq!(dry.filled, [format!("{ship}: cwd /w/argos"), format!("{ship}: job aaaa1111"), format!("{ship}: lineage sid-1 job oldjob11"), format!("{ship}: lineage sid-2 job aaaa1111")]);
+        assert_eq!(dry.archived, [k.clone()]);
+        assert!(k.is_file() && parse_file(&env.registry_path()).unwrap().version == 1);
+        let done = restore_from_kept(&env, false).unwrap();
+        assert_eq!(done.filled, dry.filled);
+        let r = parse_file(&env.registry_path()).unwrap();
+        let rec = &r.identities[ship];
+        assert_eq!((rec.cwd.as_str(), rec.job.as_deref()), ("/w/argos", Some("aaaa1111")));
+        assert_eq!(rec.lineage.iter().map(|l| l.job.as_deref()).collect::<Vec<_>>(), [Some("oldjob11"), Some("aaaa1111")]);
+        // the home that bound an entry comes with its job; one the kept file
+        // does not say is stamped by the write, as any binding without one
+        assert_eq!(rec.lineage[0].home.as_deref(), Some("/other/home"));
+        assert_eq!(rec.lineage[1].home.as_deref(), Some(env.home.to_string_lossy().as_ref()));
+        let c = &r.identities["MAIN/ARGOS"];
+        assert_eq!((c.cwd.as_str(), c.job.as_deref()), ("/w/sq2", None), "another conversation: nothing taken, nothing overwritten");
+        assert_eq!(r.identities.len(), 2, "no identity added");
+        assert_eq!(r.version, REGISTRY_VERSION);
+        assert!(!k.exists() && PathBuf::from(format!("{}.restored", k.display())).is_file() && PathBuf::from(format!("{}.restored.txt", k.display())).is_file());
+        assert!(!health(&env).iter().any(|i| i.code == "registry.corrupt"), "{:?}", health(&env));
+        assert_eq!(restore_from_kept(&env, false).unwrap(), Restored::default(), "once is enough");
+        // a kept file that does not parse stays, and blocks
+        let bad = env.state.join("registry.json.corrupt-1791905099");
+        std::fs::write(&bad, "{garbage").unwrap();
+        let again = restore_from_kept(&env, false).unwrap();
+        assert_eq!((again.archived.len(), again.left), (0, vec![bad.clone()]));
+        assert!(bad.is_file());
+        let h = health(&env);
+        assert!(h.iter().any(|i| i.code == "registry.corrupt" && i.message.contains("did not parse")), "{h:?}");
+    }
+
+    /// Two kept files with one `updated_at`: the newest name wins. A kept
+    /// file a newer nimitz wrote is kept for it: a warning, never an rm, and
+    /// the restore leaves it.
+    #[test]
+    fn kept_files_tie_on_the_newest_name_and_a_newer_nimitz_s_file_is_kept() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let kept = |cwd: &str| serde_json::json!({"version": 3, "machine": "m", "updated_at": 5.0, "identities": {
+            "MAIN": {"role": "admiral", "name": "[MAIN]-ADMIRAL", "cwd": cwd, "session": "a-1", "lineage": [{"session_id": "a-1", "via": "launch", "at": 1.0}]}}}).to_string();
+        std::fs::write(env.state.join("registry.json.corrupt-1791905021.000001-7"), kept("/older-name")).unwrap();
+        std::fs::write(env.state.join("registry.json.corrupt-1791905021.500000-7"), kept("/newer-name")).unwrap();
+        let newer = env.state.join("registry.json.corrupt-1791905030.000000-7");
+        std::fs::write(&newer, serde_json::json!({"version": REGISTRY_VERSION + 1, "min_nimitz": "99.0.0", "machine": "m", "identities": {}}).to_string()).unwrap();
+        std::fs::write(env.registry_path(), serde_json::json!({"version": 3, "machine": "m", "identities": {
+            "MAIN": {"role": "admiral", "name": "[MAIN]-ADMIRAL", "cwd": "", "session": "a-1", "lineage": [{"session_id": "a-1", "via": "launch", "at": 1.0}]}}}).to_string()).unwrap();
+        let h = health(&env);
+        let i = h.iter().find(|i| i.message.contains(&newer.display().to_string())).unwrap();
+        assert_eq!(i.severity, Severity::Warn, "{i:?}");
+        assert!(i.message.contains("written by nimitz 99.0.0") && i.fix.as_deref().is_some_and(|f| f.contains("keep it; install nimitz 99.0.0 or newer") && !f.contains("rm ")), "{i:?}");
+        let done = restore_from_kept(&env, false).unwrap();
+        assert_eq!(done.filled, ["MAIN: cwd /newer-name"]);
+        assert_eq!((done.archived.len(), done.newer, done.left.len()), (2, vec![newer.clone()], 0));
+        assert!(newer.is_file());
+    }
+
+    /// Issue #1: while an older nimitz runs it sets each new file aside
+    /// again, so `registry.corrupt` names it and says to quit it first.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_kept_file_names_the_older_process_still_running() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.state.join("registry.json.corrupt-1"), "{garbage").unwrap();
+        let exe = env.state.join("admiralty");
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        let mut child = crate::os::tests::spawn_fresh(&exe, "30");
+        std::fs::remove_file(&exe).unwrap();
+        let h = health(&env);
+        let _ = child.kill();
+        let _ = child.wait();
+        let i = h.iter().find(|i| i.code == "registry.corrupt").unwrap();
+        let who = format!("pid {} (admiralty, executable replaced)", child.id());
+        assert!(i.message.contains(&who), "{}", i.message);
+        let fix = i.fix.as_deref().unwrap();
+        assert!(fix.contains(&who) && fix.contains("is an older nimitz: quit it first, then "), "{fix}");
     }
 
     #[cfg(unix)]

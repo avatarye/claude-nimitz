@@ -159,3 +159,12 @@ pub fn col_of(lines: &[String], line_has: &str, needle: &str) -> usize {
     let byte = l.find(needle).unwrap_or_else(|| panic!("no {needle} in {l}"));
     l[..byte].chars().count()
 }
+
+/// Is `l` a squadron's title bar? It ends its text on the ship icon and the
+/// ship count (`<ship icon> 6`, either icon set); a ship row has the icon
+/// before its name instead.
+pub fn is_sq_bar(l: &str) -> bool {
+    [admiralty::theme::NERD.ship, admiralty::theme::ASCII.ship].iter().any(|icon| {
+        l.match_indices(&format!("   {icon} ")).any(|(at, m)| l[at + m.len()..].starts_with(|c: char| c.is_ascii_digit()))
+    })
+}

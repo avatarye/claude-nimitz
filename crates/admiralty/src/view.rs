@@ -98,6 +98,21 @@ impl FleetState {
         }
     }
 
+    /// The status glyph a squadron's title bar shows before its word: the
+    /// member rows' glyph for the same state (`no commodore`: its lead is
+    /// stopped; `inactive`: nothing runs; `broken`: an error).
+    pub fn icon(self, icons: &Icons) -> &'static str {
+        match self {
+            FleetState::NeedsYou => icons.s_needs,
+            FleetState::Broken => icons.issue,
+            FleetState::Busy => icons.s_busy,
+            FleetState::Idle => icons.s_idle,
+            FleetState::NoAdmiral => icons.s_stopped,
+            FleetState::Inactive => icons.s_off,
+            FleetState::Elsewhere => icons.s_unknown,
+        }
+    }
+
     /// Every band sits on the one raised background: no tinted bands.
     pub fn tint(self) -> Color {
         mono::BG_HI
@@ -804,8 +819,9 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
     n.worst = worst_of(&sq.issues);
     n.issue_count = sq.issues.len();
     n.detail = vec![
-        Span::styled(state.squadron_label().to_string(), bold(color)),
-        Span::styled(format!("   ships {}", sq.ships.len()), st(mono::SOFT)),
+        // the rows' icons: the status glyph and the ship icon (issue #3)
+        Span::styled(format!("{} {}", state.icon(v.icons), state.squadron_label()), bold(color)),
+        Span::styled(format!("   {} {}", v.icons.ship, sq.ships.len()), st(mono::SOFT)),
     ];
     if let Some(i) = sq.issues.first() {
         n.detail.push(Span::styled(format!("   {} {}", v.icons.issue, i.code), bold(theme::severity_color(i.severity))));

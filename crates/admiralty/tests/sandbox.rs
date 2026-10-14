@@ -508,7 +508,7 @@ fn bug35_a_broken_config_is_a_red_frame_with_the_error_in_full() {
     let buf = draw(&mut app, 200, 60);
     let ls = lines(&buf);
     assert!(ls[0].contains("MAIN") && ls.iter().any(|l| l.contains("ADMIRAL ")), "the fleet stays on screen");
-    let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("ships ")).expect("the squadron stays on screen");
+    let y = ls.iter().position(|l| l.contains("ARGOS") && is_sq_bar(l)).expect("the squadron stays on screen");
     assert_eq!(buf[(1, y as u16)].bg, admiralty::theme::mono::ERROR, "its bar takes the error hue");
     let all = ls.join("\n");
     assert!(all.contains("squadron.toml") && all.contains(&at), "the file and line, in full:\n{all}");

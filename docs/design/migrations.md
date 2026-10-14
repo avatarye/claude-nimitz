@@ -182,9 +182,13 @@ Where the build differs from, or adds to, the sections above:
   the pure chain starts from; the registry's is 2. A 0.3.x (v1) file is
   brought to 2 by its `lift` (`registry::lift_v1`: the load that has always
   read it, saved; `registry.json.v1` kept), then 2 -> 3 runs. A load never
-  moves a file past the shape it read: `migrate::registry_v2` stamps 2, and
-  a writer keeps the version it read (a v2 registry the hook writes stays v2
-  for the runner, with its backup). A fresh registry is 3 with `min_nimitz`.
+  moves a file past the shape it read: `migrate::registry_v2` stamps 2.
+  Since 0.7.6 (issue #1) every write stamps the current version and
+  `min_nimitz` whatever it loaded (so the lift saves 3, logged `1->3`, and a
+  v2 file the hook writes before the runner is 3 with no `.pre-<version>`
+  backup, the steps being a restamp only): a writer that kept an
+  older version left the file in a shape the runner, which had marked the
+  registry done, never stepped again. A fresh registry is 3 with `min_nimitz`.
 - **Which commands migrate.** All but `hook`, `__notify`, `sandbox`,
   `migrate` (it lists and runs the steps itself, so `--plan` still sees the
   local ones) and the hidden `__*` helpers. A sandbox is made at this

@@ -42,11 +42,20 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     goto(&mut t.app, "F:MAIN");
     assert_eq!(t.app.current().unwrap().node.kind, Kind::FleetBand);
     // squadron bars: filled in the status colour, dark text
-    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
+    let kits = ls.iter().position(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
     let x = ls[kits].find("KITS").unwrap() as u16;
     assert_eq!((buf[(x, kits as u16)].bg, buf[(x, kits as u16)].fg), (mono::NEEDS, mono::INK), "KITS needs you");
     assert_eq!(buf[(0, (kits + 1) as u16)].fg, mono::LINE, "the sides stay neutral");
-    let argos = ls.iter().position(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
+    // issue #3: the rows' icons, the status glyph and the ship icon, in the same dark ink
+    let icons = t.app.icons;
+    let glyph = format!("{} needs you", icons.s_needs);
+    let ships = format!("   {} 2", icons.ship);
+    assert!(ls[kits].contains(&glyph) && ls[kits].contains(&ships) && !ls[kits].contains("ships "), "{}", ls[kits]);
+    for at in [ls[kits].find(&glyph).unwrap(), ls[kits].find(&ships).unwrap() + 3] {
+        let x = ls[kits][..at].chars().count() as u16;
+        assert_eq!((buf[(x, kits as u16)].bg, buf[(x, kits as u16)].fg), (mono::NEEDS, mono::INK), "the glyph at {x}: {}", ls[kits]);
+    }
+    let argos = ls.iter().position(|l| l.contains("ARGOS") && is_sq_bar(l)).unwrap();
     let b = t.app.bundle.clone().unwrap();
     let argos_sq = b.snap.fleets.iter().flat_map(|f| f.squadrons.iter()).find(|q| q.id.0 == "MAIN/ARGOS").unwrap();
     let members: Vec<&nimitz_core::Member> = std::iter::once(&argos_sq.commodore).chain(argos_sq.ships.iter()).collect();
@@ -62,7 +71,7 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     goto(&mut t.app, "SQ:MAIN/KITS");
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
-    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
+    let kits = ls.iter().position(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
     let x = ls[kits].find("KITS").unwrap() as u16;
     let c = &buf[(x, kits as u16)];
     assert_eq!((c.bg, c.fg), (mono::NEEDS, mono::INK), "selected: same fill, same text");
@@ -203,8 +212,8 @@ fn the_tab_carries_the_fleets_state_and_counts() {
     let ls = lines(&draw(&mut t.app, 200, 60));
     assert!(ls[0].contains("needs you") && ls[0].contains("!2 / *3 / -2 / x1"), "needs-you first: {}", ls[0]);
     let end = |l: &str| l.trim_end().chars().count();
-    let argos = ls.iter().find(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
-    let kits = ls.iter().find(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
+    let argos = ls.iter().find(|l| l.contains("ARGOS") && is_sq_bar(l)).unwrap();
+    let kits = ls.iter().find(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
     assert_eq!(end(argos), end(kits), "{argos}\n{kits}");
     let ls = lines(&draw(&mut t.app, 90, 40));
     assert!(ls[0].contains("!2") && !ls[0].contains("*4"), "narrow: {}", ls[0]);
@@ -720,7 +729,7 @@ fn pane_dots_at_row_start_in_herdr_colours() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     // KITS commodore's pane is blocked: needs you, and the dot takes the needs-you hue
-    let kits_bar = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
+    let kits_bar = ls.iter().position(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
     let y = kits_bar + 1 + ls[kits_bar + 1..].iter().position(|l| l.contains("COMMODORE ")).unwrap();
     assert_eq!(buf[(2, y as u16)].fg, mono::NEEDS);
     assert!(ls[y].contains("needs you"));
@@ -780,6 +789,84 @@ fn action_menu_greys_out_what_does_not_apply_with_the_reason() {
     assert!(s.contains("adopt is for stowaways"));
     keys(&mut t.app, "w");
     assert!(matches!(t.app.modal, Some(Modal::Confirm(_))));
+}
+
+/// Issue #4: the detail panel's ACTIONS (`w`) and the action menu (`x`)
+/// list the same actions in the same order for every kind of row, and a
+/// closed one says why in both.
+#[test]
+fn w_and_x_list_the_same_actions_in_the_same_order_on_every_row_kind() {
+    use admiralty::view::Kind as K;
+    for (fixture, mux) in [(fixtures::demo(), true), (fixtures::demo_monitor_only(), false)] {
+        let mut t = fixture_app(fixture, mux);
+        // the first row of each kind, over every tab (a fold opened to reach it)
+        let mut seen: Vec<String> = vec![];
+        let want = |k: &K| match k {
+            K::FleetBand => Some("fleet band"),
+            K::SquadronBand => Some("squadron band"),
+            K::Member(nimitz_core::Role::Admiral) => Some("admiral"),
+            K::Member(nimitz_core::Role::Commodore) => Some("commodore"),
+            K::Member(nimitz_core::Role::Ship) => Some("ship"),
+            K::Stowaway => Some("stowaway"),
+            K::ExtraRow => Some("extra row"),
+            _ => None,
+        };
+        for tab_name in t.app.tabs() {
+            tab(&mut t.app, &tab_name);
+            // open every fold until nothing more opens
+            loop {
+                let shut: Vec<String> = t.app.rows.iter().filter(|r| !r.expanded && !r.node.children.is_empty()).map(|r| r.node.id.clone()).collect();
+                if shut.iter().all(|id| t.app.expanded.get(id) == Some(&true)) {
+                    break;
+                }
+                for id in shut {
+                    t.app.expanded.insert(id, true);
+                }
+                t.app.rebuild();
+            }
+            let rows: Vec<(String, &'static str)> = t.app.rows.iter().filter_map(|r| want(&r.node.kind).map(|w| (r.node.id.clone(), w))).collect();
+            for (id, what) in rows {
+                if seen.iter().any(|s| s == what) {
+                    continue;
+                }
+                seen.push(what.to_string());
+                goto(&mut t.app, &id);
+                same_actions_in_w_and_x(&t.app, what);
+            }
+        }
+        // a legacy session (a stowaway an old fleet ran): `x d` adopts it as the
+        // identity its fix names, in both lists
+        goto(&mut t.app, "SW:ab99ab99-0000-4000-8000-000000000000");
+        assert!(t.app.legacy_adopt().is_some());
+        let listed = same_actions_in_w_and_x(&t.app, "legacy");
+        assert!(listed.iter().any(|l| l.trim_start().starts_with("x d") && l.contains("adopt this legacy session as MAIN/KITS")), "{listed:?}");
+        assert!(t.app.action_menu().iter().any(|i| i.key == 'd' && matches!(i.action, admiralty::app::MenuAction::AdoptAs(..)) && i.enabled.is_ok()));
+        for what in ["fleet band", "squadron band", "admiral", "commodore", "ship", "stowaway", "extra row"] {
+            assert!(seen.iter().any(|s| s == what), "the fixture has no {what} row: {seen:?}");
+        }
+    }
+}
+
+/// The detail panel's ACTIONS lines for the selected row, checked against
+/// its action menu: the same entries in the same order, each with its key,
+/// its label when open, its reason when closed.
+fn same_actions_in_w_and_x(app: &admiralty::app::App, what: &str) -> Vec<String> {
+    let menu = app.action_menu();
+    let lines: Vec<String> = admiralty::detail::detail_lines(app, 200).iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
+    let at = lines.iter().position(|l| l == "ACTIONS").unwrap_or_else(|| panic!("{what}: {lines:?}"));
+    // after the jump line (enter), one line per entry, then the footer
+    let listed: Vec<String> = lines[at + 2..at + 2 + menu.len()].to_vec();
+    let keys: Vec<String> = listed.iter().map(|l| l.trim_start().chars().take(4).collect::<String>().trim().to_string()).collect();
+    assert_eq!(keys, menu.iter().map(|i| i.main_key()).collect::<Vec<_>>(), "{what}: {listed:?}");
+    assert!(lines[at + 2 + menu.len()..].iter().any(|l| l.contains("this list as a menu")), "{what}: {lines:?}");
+    for (it, l) in menu.iter().zip(&listed) {
+        match &it.enabled {
+            Ok(()) => assert!(l.contains(&it.label), "{what}: {l} / {}", it.label),
+            Err(why) if why == actions::MONITOR_ONLY => assert!(l.contains("monitor-only"), "{what}: {l}"),
+            Err(why) => assert!(l.contains(why.as_str()), "{what}: {l} / {why}"),
+        }
+    }
+    listed
 }
 
 #[test]
@@ -1635,7 +1722,7 @@ fn a_squadron_that_gets_worse_pulses_its_bar_once() {
         t.app.anim_frame = f;
         let buf = draw(&mut t.app, 200, 60);
         let ls = lines(&buf);
-        let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
+        let y = ls.iter().position(|l| l.contains("ARGOS") && is_sq_bar(l)).unwrap();
         buf[(2, y as u16)].bg
     };
     assert_ne!(fill(&mut t, 105), mono::NEEDS, "mid-pulse: lighter");

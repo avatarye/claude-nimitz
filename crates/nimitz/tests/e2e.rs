@@ -1204,14 +1204,15 @@ fn e2e_12_v1_registry_migrates_and_a_live_start_binds_into_v2() {
     assert_eq!((st["status"].as_str(), st["session"]["short_id"].as_str()), (Some("Stopped"), Some(job.as_str())), "{st}");
     assert_eq!(read_json(&p)["version"], 1, "a read rewrote the file");
     assert!(!w.base.join("state").join("registry.json.v1").exists());
-    // a live start: the job comes from the row that runs `current`; a native resume; v2 saved
+    // a live start: the job comes from the row that runs `current`; a native resume; the
+    // current format saved (0.7.6, issue #1: every write stamps it)
     let out = w.ok(&["start", &w.ship(), "--yes"]);
     println!("{out}");
     assert!(out.contains(&format!("backgrounded \u{b7} {job}")), "{out}");
     let again = w.wait(45, || w.member(&w.ship()).filter(|m| !m["session"]["pid"].is_null())).expect("ship live after resume");
     assert_eq!((again["session"]["short_id"].as_str(), again["session"]["session_id"].as_str()), (Some(job.as_str()), Some(sid.as_str())));
     let r = read_json(&p);
-    assert_eq!(r["version"], 2, "{r}");
+    assert_eq!((r["version"].as_u64(), r["min_nimitz"].as_str()), (Some(3), Some("0.5.0")), "{r}");
     let me = &r["identities"][w.ship()];
     assert_eq!((me["job"].as_str(), me["session"].as_str()), (Some(job.as_str()), Some(sid.as_str())), "{me}");
     assert!(me.get("current").is_none() && me["lineage"][0].get("bound_at").is_none(), "v1 keys survived: {me}");
