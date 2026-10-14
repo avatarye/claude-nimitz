@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.7 (unreleased)
+
+### Added
+
+- **Admiralty's finder (#5).** `space` opens a fuzzy finder over every
+  member of every fleet: its full path (`MAIN/ARGOS/SIGNAL`), its name, its
+  status and its topic, and stowaways by short id. fzf-style matching, with
+  a term that spells a path's initials ranked first (`mas` finds
+  MAIN/ARGOS/SIGNAL, `hgn` HOME/GITHUB/NIMITZ_DEV); several words must all
+  match (`argos busy`). Enter puts the cursor on that row, switching fleet
+  tab; Esc leaves everything as it was. At 120 columns and wider the
+  selection's detail shows beside it.
+
+### Changed
+
+- **`z` folds** what `space` folded (fleets, squadrons, a member's rows), and
+  still opens a member's finished crew.
+- **`nimitz trust` waits up to 15 s** (was 5 s) for Claude Code's
+  `~/.claude.json.lock` before refusing, and says how long it waited.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). No format or rules change.
+
 ## 0.7.6 (2026-10-14)
 
 ### Fixed
