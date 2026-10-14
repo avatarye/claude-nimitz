@@ -612,6 +612,9 @@ impl App {
                 }
             }
         }
+        // the folds opened (and the caller's filters eased) show only after a
+        // rebuild; only then do `/` and flagged-only go, and only when they hide it
+        self.rebuild();
         if !self.goto_id(row_id) {
             self.filter.clear();
             self.flagged_only = false;

@@ -7,7 +7,7 @@
 //! `mas` puts `MAIN/ARGOS/SIGNAL` first, `hgn` `HOME/GITHUB/NIMITZ_DEV`.
 
 use nimitz_core::{Id, Snapshot};
-use nucleo_matcher::pattern::{Atom, CaseMatching, Normalization};
+use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::style::Style;
 
@@ -147,19 +147,37 @@ impl Finder {
 
     /// Match the query again; the selection goes to the best.
     pub fn refilter(&mut self) {
-        // each term on its own (fzf's syntax: 'exact, ^prefix, suffix$, !not)
-        let terms: Vec<(String, Atom)> = self.query.split_whitespace().map(|t| (t.to_lowercase(), Atom::parse(t, CaseMatching::Ignore, Normalization::Smart))).collect();
+        // fzf's syntax, term by term ('exact, ^prefix, suffix$, !not, `\ ` a
+        // space); a term with nothing after its operator (a `!` half typed) is
+        // left out until it has
+        let pat = Pattern::parse(&self.query, CaseMatching::Ignore, Normalization::Smart);
+        let terms: Vec<(Option<String>, &nucleo_matcher::pattern::Atom)> = pat
+            .atoms
+            .iter()
+            .map(|a| {
+                let text: String = a.needle_text().chars().collect();
+                let plain = !a.negative && a.kind == AtomKind::Fuzzy && text.chars().all(char::is_alphanumeric);
+                (plain.then(|| text.to_lowercase()), a)
+            })
+            .collect();
         let mut buf = vec![];
         let mut hits = vec![];
         'cand: for (i, c) in self.cands.iter().enumerate() {
             let (mut score, mut idx) = (0u32, vec![]);
-            for (raw, atom) in &terms {
+            // nucleo counts a non-ASCII line in graphemes (or bytes), the list
+            // in chars: its letters are lit on ASCII lines only
+            let ascii = c.text.is_ascii();
+            for (plain, atom) in &terms {
                 let mut own = vec![];
                 let Some(s) = atom.indices(Utf32Str::new(&c.text, &mut buf), &mut self.matcher, &mut own) else { continue 'cand };
                 score += s as u32;
-                // the path's initials, in order: above any fzf score, all of them above some
-                if let Some((at, all)) = raw.chars().all(char::is_alphanumeric).then(|| c.acronym(raw)).flatten() {
-                    score += if all { 2 * ACRONYM } else { ACRONYM };
+                if !ascii {
+                    own.clear();
+                }
+                // the path's initials, in order: above any fzf score; all of
+                // them (two or more: one letter is no acronym) above some
+                if let Some((at, all)) = plain.as_deref().and_then(|t| c.acronym(t)) {
+                    score += if all && c.initials.len() >= 2 { 2 * ACRONYM } else { ACRONYM };
                     own = at;
                 }
                 idx.extend(own);

@@ -338,7 +338,7 @@ fn edit(env: &Env, path: &Path, f: impl FnOnce(&mut Map<String, Value>) -> Resul
     let path = path.to_path_buf();
     let lock = PathBuf::from(format!("{}.lock", path.display()));
     let _held = crate::pins::dir_lock(&lock, STALE_S, WAIT).map_err(|e| match e.kind() {
-        std::io::ErrorKind::WouldBlock => format!("{} is held by another process for {} s; Claude Code is writing {}; try again", lock.display(), WAIT.as_secs(), path.display()),
+        std::io::ErrorKind::WouldBlock => format!("waited {} s for {}: another process holds it (Claude Code is writing {}); try again", WAIT.as_secs(), lock.display(), path.display()),
         _ => format!("{}: {e}", lock.display()),
     })?;
     // a linked config file is written where it points (Claude Code's own
@@ -525,7 +525,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         let e = write(&env, &dir).unwrap_err();
         assert!(t0.elapsed() >= WAIT, "waited {:?} first", t0.elapsed());
-        assert!(e.contains(&format!("is held by another process for {} s; Claude Code is writing {}; try again", WAIT.as_secs(), file(&env).display())), "{e}");
+        assert_eq!(e, format!("waited {} s for {}: another process holds it (Claude Code is writing {}); try again", WAIT.as_secs(), lock.display(), file(&env).display()));
         assert!(lock.exists(), "the holder's lock is left alone");
         assert_eq!(std::fs::read_to_string(file(&env)).unwrap(), "{}", "nothing written");
     }

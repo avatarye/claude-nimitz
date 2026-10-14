@@ -688,14 +688,19 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
     let right = detail_area(body);
     let r = if preview {
         let w = right.x.saturating_sub(body.x + 1).min(110);
-        let h = body.height.saturating_sub(1).min(fd.cands.len() as u16 + 7).max(8.min(body.height));
+        // never past the body (a short screen: the status rows stay clear)
+        let h = body.height.saturating_sub(1).min(fd.cands.len() as u16 + 7);
         Rect { x: body.x, y: body.y + 1, width: w, height: h }
     } else {
         centered(area, 110, fd.cands.len() as u16 + 7)
     };
     let inner_w = r.width.saturating_sub(2) as usize;
+    // a query wider than the line shows its end, where the cursor is
+    let room_q = inner_w.saturating_sub(4);
+    let q: Vec<char> = fd.query.chars().collect();
+    let shown_q = if q.len() > room_q { format!("\u{2026}{}", q[q.len() + 1 - room_q.max(1)..].iter().collect::<String>()) } else { fd.query.clone() };
     let mut lines = vec![
-        Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(fd.query.clone(), st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
+        Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(shown_q, st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
         Line::styled(format!("{} / {}", fd.hits.len(), fd.cands.len()), st(mono::COMMENT)),
     ];
     let room = (r.height as usize).saturating_sub(2 + lines.len() + 2);

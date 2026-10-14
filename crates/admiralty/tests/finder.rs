@@ -228,3 +228,80 @@ fn the_panel_shows_the_ranked_list_and_previews_the_selection() {
         assert!(s.contains("> mas") && !s.contains("identity    MAIN/ARGOS/SIGNAL"), "{s}");
     }
 }
+
+/// A row hidden only by a fold, the state filter or hidden stowaways is
+/// shown without clearing the `/` filter that does not hide it (review repro).
+#[test]
+fn enter_keeps_a_filter_that_does_not_hide_the_row() {
+    let mut t = fixture_app(world(), false);
+    tab(&mut t.app, "MAIN");
+    t.app.filter = "BS".into();
+    t.app.rebuild();
+    goto(&mut t.app, "SQ:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('z'));
+    assert!(!t.app.rows.iter().any(|r| r.node.id == "M:MAIN/ARGOS/BOLT"), "folded");
+    open(&mut t.app).push("argos/bolt");
+    press(&mut t.app, KeyCode::Enter);
+    assert_eq!(t.app.current().unwrap().node.id, "M:MAIN/ARGOS/BOLT");
+    assert_eq!(t.app.filter, "BS", "the filter stays");
+    // the state filter hides ARGOS
+    let b = t.app.bundle.clone().unwrap();
+    let f = &b.snap.fleets[0];
+    let sq = f.squadrons.iter().find(|s| s.id.0 == "MAIN/ARGOS").unwrap();
+    let i = admiralty::view::FleetState::of_squadron(f, sq).index();
+    t.app.fleet_states[i] = false;
+    t.app.rebuild();
+    assert!(!t.app.rows.iter().any(|r| r.node.id == "M:MAIN/ARGOS/BOOM"), "hidden by state");
+    open(&mut t.app).push("argos/boom");
+    press(&mut t.app, KeyCode::Enter);
+    assert_eq!(t.app.current().unwrap().node.id, "M:MAIN/ARGOS/BOOM");
+    assert!(t.app.fleet_states[i] && t.app.filter == "BS");
+    // hidden stowaways (no filter: a search never lists stowaways)
+    t.app.filter.clear();
+    t.app.flagged_only = true;
+    t.app.show_stowaways = false;
+    t.app.rebuild();
+    open(&mut t.app).push("ee11");
+    press(&mut t.app, KeyCode::Enter);
+    assert!(t.app.current().unwrap().node.id.starts_with("SW:ee11ee11"));
+    assert!(t.app.show_stowaways);
+}
+
+/// One letter is no acronym: `a` does not put the stowaway `ab99ab99` (one
+/// initial, all of it) above the members; a half typed `!` hides nothing;
+/// `!busy` leaves out the busy ones.
+#[test]
+fn one_letter_and_operators() {
+    let b = world();
+    let mut f = Finder::new(&b.snap);
+    let a = ranked(&mut f, "a");
+    assert!(!a[0].starts_with("SW:"), "{a:?}");
+    let all = f.cands.len();
+    assert_eq!(ranked(&mut f, "!").len(), all, "a lone ! is not yet a term");
+    assert_eq!(ranked(&mut f, "argos !").len(), ranked(&mut f, "argos").len());
+    let not_busy = ranked(&mut f, "argos !busy");
+    assert!(!not_busy.is_empty() && not_busy.iter().all(|id| b.snap.fleets.iter().flat_map(admiralty::view::fleet_members).any(|m| format!("M:{}", m.id.0) == *id && m.status != Status::Busy)), "{not_busy:?}");
+}
+
+/// A line with non-ASCII text lights no fzf letters (nucleo counts it in
+/// graphemes); the path's initials still light. A long query shows its end;
+/// a short screen keeps the panel off the status rows.
+#[test]
+fn non_ascii_lines_long_queries_and_short_screens() {
+    let mut b = world();
+    b.snap.fleets[0].admiral.topic = Some("caf\u{e9} \u{1f680} weekly".into());
+    let mut f = Finder::new(&b.snap);
+    f.push("weekly");
+    let h = f.hits.iter().find(|h| f.cands[h.cand].row_id == "M:MAIN").unwrap();
+    assert!(h.idx.is_empty(), "{:?}", h.idx);
+    let mut t = fixture_app(b, false);
+    let fd = open(&mut t.app);
+    fd.push(&"x".repeat(300));
+    fd.push("END");
+    let s = screen(&mut t.app, 200, 50);
+    assert!(s.contains("xxEND\u{2588}"), "{s}");
+    for h in [6u16, 8, 10] {
+        let ls = lines(&draw(&mut t.app, 200, h));
+        assert!(ls[h as usize - 2].contains("ADMIRALTY") && ls[h as usize - 1].contains("Nimitz"), "{h} rows:\n{}", ls.join("\n"));
+    }
+}
