@@ -223,3 +223,42 @@ mod tests {
         assert_eq!(quote(""), "''");
     }
 }
+
+/// The width human lines fit in: `COLUMNS` when set, else the terminal on
+/// stdout; none for a pipe (a line is never cut for a file or a script).
+pub fn width() -> Option<usize> {
+    if let Some(c) = std::env::var("COLUMNS").ok().and_then(|c| c.trim().parse::<usize>().ok()).filter(|c| *c > 0) {
+        return Some(c);
+    }
+    if json_mode() || !std::io::stdout().is_terminal() {
+        return None;
+    }
+    terminal_width()
+}
+
+#[cfg(unix)]
+fn terminal_width() -> Option<usize> {
+    // SAFETY: TIOCGWINSZ fills the winsize it is given and reads nothing else
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+    (r == 0 && ws.ws_col > 0).then_some(ws.ws_col as usize)
+}
+
+#[cfg(windows)]
+fn terminal_width() -> Option<usize> {
+    use windows_sys::Win32::System::Console::{GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE};
+    // SAFETY: the call fills the info it is given, for the process's own stdout
+    let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut info) };
+    let w = (info.srWindow.Right - info.srWindow.Left + 1) as i32;
+    (ok != 0 && w > 0).then_some(w as usize)
+}
+
+/// `s` cut to `n` characters, `...` marking the cut.
+pub fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    let keep = n.saturating_sub(3);
+    s.chars().take(keep).collect::<String>().trim_end().to_string() + "..."
+}

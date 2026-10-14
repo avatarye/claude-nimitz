@@ -150,7 +150,7 @@ hands the outcome to the member's next session start.
 | --- | --- |
 | `init [--label L]` | Data root, machine label, Claude Code's trust of the data root, doctor |
 | `doctor [--fix]` | The install: hooks, plugin, trust, Claude Code version, formats |
-| `status [<path>...] [--json]` | The fleets, their members and issues. `down`: taken down while active (a `...` start wakes it); `parked`: retired by the daemon or not active (`--parked` wakes it) |
+| `status [<path>...] [--json]` | The fleets, their members and issues; a live member's line ends in its topic, the one line Claude Code keeps on what the job is doing (`-- Inspecting ...`, cut to the terminal; `topic` in the JSON). `down`: taken down while active (a `...` start wakes it); `parked`: retired by the daemon or not active (`--parked` wakes it) |
 | `check [<path>...]` | The problems of the members the paths cover, their parents and everything under them, each with its one fix (none: everything; `//...`: every fleet but ADMIRALTY). `check F` and `check F/...` are the same: a check never hides a ship's errors |
 | `trust <folder>` | Claude Code's trust for the folder's git root (it lets the folder's `.claude` settings, hooks and MCP servers run) |
 | `rules [<path>...]` | The role rules nimitz hands each member at session start (none: the caller's own) |

@@ -62,6 +62,7 @@ fn member(id: Id, status: Status, reasons: &[&str], session: Option<SessionInfo>
         id,
         status,
         reasons: reasons.iter().map(|s| s.to_string()).collect(),
+        topic: None,
         session,
         extra_rows: vec![],
         crew: vec![],
@@ -112,6 +113,7 @@ fn fleet_main() -> Fleet {
         Some(session(&Id::admiral(f), "aa11aa11", Some(4100), "background", Some("idle"), None, 7200.0, true)),
     );
     admiral.crew = vec![crew("tm-scribe", None, "minutes-scribe", "general-purpose", true, true, 40.0)];
+    admiral.topic = Some("Collecting the squadrons' reports for the weekly brief".into());
 
     // ARGOS: a healthy, busy squadron
     let sq = Id::commodore(f, "ARGOS");
@@ -125,6 +127,7 @@ fn fleet_main() -> Fleet {
         Task { id: "1".into(), subject: "data importer".into(), status: "in_progress".into(), owner: Some("BOLT".into()) },
         Task { id: "2".into(), subject: "write squadron brief".into(), status: "completed".into(), owner: None },
     ];
+    commodore.topic = Some("Reviewing BOLT's importer plan against the squadron brief".into());
     let bolt_id = Id::ship(f, "ARGOS", "BOLT");
     let mut bolt = member(
         bolt_id.clone(),
@@ -138,20 +141,23 @@ fn fleet_main() -> Fleet {
         crew("sa-3", None, "summarize probe logs", "general-purpose", false, false, 2400.0),
     ];
     bolt.tasks = vec![Task { id: "7".into(), subject: "importer: parser edge cases".into(), status: "pending".into(), owner: None }];
+    bolt.topic = Some("Fixing the layout bug in the importer preview".into());
     let boom_id = Id::ship(f, "ARGOS", "BOOM");
-    let boom = member(
+    let mut boom = member(
         boom_id.clone(),
         Status::Idle,
         &["session file: status idle for 2h"],
         Some(session(&boom_id, "ad44ad44", Some(4320), "background", Some("idle"), None, 10800.0, true)),
     );
+    boom.topic = Some("Committed 3f9a2c1: probe logs rotate daily; 48/48 tests pass".into());
     let ingest_id = Id::ship(f, "ARGOS", "INGEST");
-    let ingest = member(
+    let mut ingest = member(
         ingest_id.clone(),
         Status::Busy,
         &["session file: status busy for 5m"],
         Some(session(&ingest_id, "ae55ae55", Some(4330), "background", Some("busy"), None, 600.0, true)),
     );
+    ingest.topic = Some("Indexing the October log batch".into());
     let argos = Squadron {
         id: sq,
         commodore,

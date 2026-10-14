@@ -749,12 +749,15 @@ pub struct JobState {
     pub detail: Option<String>,
     /// the question a job left for you
     pub needs: Option<String>,
+    /// a finished job's one-line result (`output.result`)
+    pub result: Option<String>,
 }
 
 pub fn read_job(env: &Env, cache: &mut FileCache, short_id: Option<&str>) -> JobState {
     let Some(id) = short_id else { return JobState::default() };
     let d = cache.json(&env.claude_home.join("jobs").join(id).join("state.json")).unwrap_or(Value::Null);
-    JobState { state: s(&d, "state"), detail: s(&d, "detail"), needs: s(&d, "needs") }
+    let result = d.get("output").and_then(|o| s(o, "result"));
+    JobState { state: s(&d, "state"), detail: s(&d, "detail"), needs: s(&d, "needs"), result }
 }
 
 // ------------------------------------------------------------------ transcripts

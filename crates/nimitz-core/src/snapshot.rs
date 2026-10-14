@@ -616,6 +616,16 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
 
 /// Claude Code's own idle hint in a job row ("send a prompt to start") is not
 /// a question for you (BUG-07).
+/// A live job's one-line topic: its `detail`, never the placeholder of a job
+/// not yet prompted ("(idle — send a prompt to start)"); a finished job's
+/// result when the detail is empty.
+pub(crate) fn job_topic(job: &evidence::JobState) -> Option<String> {
+    let line = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let detail = job.detail.as_deref().map(line).filter(|d| !d.is_empty() && !d.to_lowercase().starts_with("(idle"));
+    let result = || job.result.as_deref().filter(|_| job.state.as_deref() == Some("done")).map(line).filter(|r| !r.is_empty());
+    detail.or_else(result)
+}
+
 fn idle_hint(needs: &str) -> bool {
     let n = needs.trim().to_lowercase();
     n.starts_with("send a prompt") || n.starts_with("waiting for a prompt") || n.is_empty()
@@ -793,6 +803,7 @@ fn build_member(
     let session = primary.as_ref().map(info);
 
     // Status and the reasons for it, newest evidence first.
+    let mut topic = None;
     let status = match &primary {
         Some(p) if p.unreadable && !p.live() => {
             reasons.push(format!("session file for job {} cannot be read (mid-write?); the process may be live", p.short_id.as_deref().unwrap_or("?")));
@@ -800,6 +811,7 @@ fn build_member(
         }
         Some(p) if p.live() => {
             let job = evidence::read_job(env, &mut cache.files, p.short_id.as_deref());
+            topic = job_topic(&job);
             if let Some(w) = &p.waiting_for {
                 reasons.push(format!("session file: status waiting, waitingFor {w}"));
                 Status::NeedsYou
@@ -920,6 +932,7 @@ fn build_member(
         cwd,
         status,
         reasons,
+        topic,
         session,
         extra_rows,
         crew,

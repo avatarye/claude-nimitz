@@ -668,8 +668,9 @@ fn member_node(m: &Member, v: &View) -> Node {
         let running = m.crew.iter().filter(|c| c.running).count();
         if running > 0 {
             n.detail.push(Span::styled(format!("{running} crew running"), st(mono::BUSY)));
-        } else if let Some(r) = m.reasons.first() {
-            n.detail.push(Span::styled(r.clone(), st(mono::COMMENT)));
+        } else if let Some(t) = &m.topic {
+            // what the job is doing; the reasons stay in the detail pane
+            n.detail.push(Span::styled(t.clone(), st(mono::COMMENT)));
         }
     }
     let key = m.id.0.clone();

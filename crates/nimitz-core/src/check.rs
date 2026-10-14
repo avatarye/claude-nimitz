@@ -446,6 +446,7 @@ pub(crate) mod tests {
             cwd: cwd.map(|s| s.to_string()),
             status: Status::NotStarted,
             reasons: vec![],
+            topic: None,
             session: None,
             extra_rows: vec![],
             crew: vec![],

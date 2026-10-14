@@ -467,6 +467,9 @@ pub struct Member {
     pub status: Status,
     /// why the status is what it is, newest evidence first
     pub reasons: Vec<String>,
+    /// what a live job is doing, one line (its job row's `detail`; a
+    /// finished job's result when the detail is empty)
+    pub topic: Option<String>,
     pub session: Option<SessionInfo>,
     /// other job rows of this identity (stale rows, copies)
     pub extra_rows: Vec<SessionInfo>,

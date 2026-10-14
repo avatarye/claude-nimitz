@@ -446,7 +446,7 @@ mod tests {
             copy: None,
             terminal: None,
         };
-        Member { id: id.clone(), role: id.role(), expected_name: id.name(), cwd: Some("/f".into()), status, reasons: reasons.iter().map(|r| r.to_string()).collect(), session: Some(s), extra_rows: vec![], crew: vec![], tasks: vec![], issues: vec![], pane: None }
+        Member { id: id.clone(), role: id.role(), expected_name: id.name(), cwd: Some("/f".into()), status, topic: None, reasons: reasons.iter().map(|r| r.to_string()).collect(), session: Some(s), extra_rows: vec![], crew: vec![], tasks: vec![], issues: vec![], pane: None }
     }
 
     #[test]
