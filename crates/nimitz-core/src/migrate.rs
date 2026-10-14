@@ -395,8 +395,8 @@ pub fn registry_v2(env: &Env, r: &mut Registry) -> bool {
             }
         }
     }
-    // version 2: the chain's next step (`formats`, 2 -> 3) is the runner's,
-    // with its backup; a load never moves a file past the shape it read
+    // version 2: a load never moves a file past the shape it read; the
+    // write that saves it stamps the current format (`registry::write_unlocked`)
     r.version = 2;
     true
 }
@@ -442,13 +442,15 @@ mod tests {
         assert!(crate::registry::health(&env).is_empty(), "no corrupt copy was made");
         crate::registry::update(&env, |_| ()).unwrap();
         let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(env.registry_path()).unwrap()).unwrap();
-        assert_eq!(saved["version"], 2, "the v2 shape, with `retired`");
+        assert_eq!(saved["version"], crate::types::REGISTRY_VERSION, "the current shape (every write stamps it), with `retired`");
         assert!(saved["identities"].get("MAIN/ARGOS/~fixci").is_none());
         assert!(saved["retired"]["MAIN/ARGOS/~fixci"].is_object());
         assert!(crate::registry::v1_path(&env).is_file(), "the v1 file is kept once");
         // the update above stamped the file anew; everything else reads back as before
         let mut again = crate::registry::load(&env);
         again.updated_at = r.updated_at;
+        assert_eq!((again.version, again.min_nimitz.as_deref()), (crate::types::REGISTRY_VERSION, Some(crate::types::REGISTRY_MIN_NIMITZ)));
+        (again.version, again.min_nimitz) = (r.version, r.min_nimitz.clone());
         assert_eq!(again, r);
         // a registry with no tenders is written without a `retired` key
         let (_td2, env2) = test_env();

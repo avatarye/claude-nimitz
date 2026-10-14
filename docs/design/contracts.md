@@ -172,10 +172,14 @@ memory; the next write saves it; `check` says so, `registry.rebuilt`, Info,
 until then). Resetting the registry means removing both files.
 A `registry.json` that
 does not parse is never replaced in silence: it is kept as
-`registry.json.corrupt-<ts>` (with a `.txt` note), the registry is rebuilt from
+`registry.json.corrupt-<secs>.<micros>-<pid>` (with a `.txt` note), the registry is rebuilt from
 the `.bak` and the SessionStart lines in `events.jsonl` (the same binding rules
 as the hook, `registry::apply_event`), and `check` reports `registry.corrupt`
-until the kept file is removed. Version 2 (plan-v4 section 2): the anchor of an
+until the kept file is removed. The shapes an older nimitz wrote (v1, v2)
+read as they are and are never set aside; every write (a rebuild's too)
+saves the current version and `min_nimitz`, whatever version was loaded
+(0.7.6, issue #1: a 0.3.x Admiralty left running after an upgrade read each
+v2/v3 file as corrupt and rebuilt it as v1; `doctor` names such processes). Version 2 (plan-v4 section 2): the anchor of an
 identity is its **job** (the Claude Code short id); `session` is the conversation
 it runs now; `lineage` every conversation it had:
 
@@ -480,7 +484,7 @@ Each finding is an `Issue` with a stable `code`:
 | `rc.exposed` | a live session file of the member has a non-null `bridgeSessionId`: Remote Control is connected, and a resume reconnects it (Warn; fix: run `/remote-control` in that session to turn it off, or archive it on claude.ai/code) (M9) |
 | `ship.elsewhere` | a ship's managed folder is in use on another machine (lock file in the folder) |
 | `cc.version` | Claude Code outside `compat.toml`: newer than `max` (the highest tested) is a Warn and launches go ahead; below `min`, unknown, or a pre-release `prerelease = [...]` does not list is an Error |
-| `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<ts>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
+| `registry.corrupt` | `registry.json` did not parse: kept as `registry.json.corrupt-<secs>.<micros>-<pid>` and rebuilt (Error until the kept file is removed), or could not be kept aside |
 | `registry.readonly` | the state folder or `registry.json` is not writable (launches would not be recorded) |
 | `stowaway` | an unlabelled session under `NIMITZ_HOME` (outside ship folders), a lead's folder included (where a live one is listed as the lead's `lead.intruder` instead; a stopped one stays a stowaway). A ship's folder may be shared by several ships and by the user's own work: an unlabelled session there is the user's own and is not shown at all, unless it is a `copy` of a ship in that folder (plan-v4 section 6). `check` lists all, `check F` / `check F/SQ` / `check F/SQ/SHIP` those in the target's folders (fleet or squadron nimitz folders, or a member folder under the target). Fix per kind: a live background job, stop, then `rm`; a live process with no job (interactive, SDK), "end it in its terminal" (with its `tmux` pane when the session file names one); stopped: `rm` or `adopt` (an inherited `NIMITZ_HOME` alone is not a label) |
 | `legacy` | an unlabelled session named in `<fleet>/legacy.toml` (an old fleet-skill session, written by `migrate`). The name alone decides (another agent in a member's folder is a stowaway). Warn while live (start/up/relaunch of that member refuse with `legacy`; fix: stop it in the old fleet first, or `nimitz adopt <sid> <id>`; never `rm`), Info once stopped |

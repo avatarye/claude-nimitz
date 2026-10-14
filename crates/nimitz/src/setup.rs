@@ -343,6 +343,30 @@ fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
     }
 }
 
+/// Running nimitz and Admiralty processes older than the binaries installed
+/// now (issue #1): an Admiralty started before `cargo install` replaced it
+/// keeps the old nimitz-core in memory, and an old core reads a newer
+/// registry as corrupt, keeps it aside and rebuilds it in its old shape.
+/// The installed binaries are this nimitz and the `admiralty` beside it.
+fn stale_processes(r: &mut Report) {
+    let Ok(me) = std::env::current_exe() else { return };
+    let mut stale: Vec<String> = vec![];
+    for name in ["nimitz", "admiralty"] {
+        let installed = me.with_file_name(nimitz_core::os::exe_name(name));
+        for (pid, exe) in nimitz_core::os::running_named(&[name]) {
+            if let Some(why) = nimitz_core::os::stale_exe(&exe, &installed) {
+                stale.push(format!("{name} pid {pid} ({why})"));
+            }
+        }
+    }
+    if !stale.is_empty() {
+        r.warn(
+            &format!("{} process(es) run an older nimitz than the one installed: {}; an older nimitz reads a newer registry as corrupt, keeps it aside and rebuilds it in its old shape", stale.len(), stale.join("; ")),
+            Some("quit them (q in Admiralty, or kill <pid>), then start them again"),
+        );
+    }
+}
+
 fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     let mut r = Report { errors: 0, fixes: Plan { summary: "doctor fixes".into(), ..Default::default() } };
     let env = &ctx.env;
@@ -359,6 +383,7 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     } else {
         r.ok(&format!("machine label {}", reg.machine));
     }
+    stale_processes(&mut r);
     if env.home.is_dir() {
         if trusted(ctx, &env.home) {
             r.ok(&format!("Claude Code trusts {}", env.home.display()));

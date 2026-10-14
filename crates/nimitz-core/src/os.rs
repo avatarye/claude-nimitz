@@ -173,6 +173,56 @@ pub fn exe_of(pid: i64) -> Option<String> {
     }
 }
 
+/// The other running processes whose executable is named one of `names`
+/// (`nimitz`, `admiralty`): (pid, executable as the system gives it, with
+/// Linux's ` (deleted)` when the file was replaced since the process
+/// started). Linux only (`/proc`); elsewhere none: macOS and Windows would
+/// need a process walk (`proc_listallpids`, a toolhelp snapshot) that
+/// nothing else in nimitz needs, so `doctor` does not look there.
+pub fn running_named(names: &[&str]) -> Vec<(i64, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        let me = i64::from(std::process::id());
+        let Ok(rd) = std::fs::read_dir("/proc") else { return vec![] };
+        let mut out: Vec<(i64, String)> = rd
+            .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i64>().ok())
+            .filter(|pid| *pid != me)
+            .filter_map(|pid| Some((pid, exe_of(pid)?)))
+            .filter(|(_, exe)| Path::new(exe.trim_end_matches(DELETED)).file_name().and_then(|n| n.to_str()).is_some_and(|n| names.contains(&n)))
+            .collect();
+        out.sort();
+        out
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = names;
+        vec![]
+    }
+}
+
+/// What Linux appends to `/proc/<pid>/exe` once the file is gone.
+const DELETED: &str = " (deleted)";
+
+/// Why a process running `exe` (`running_named`) runs an older build than
+/// `installed`, the binary of that name installed now: its file was
+/// replaced or removed since it started (`cargo install` renames the new
+/// one over it), or it is another file older than the installed one. None
+/// when it runs the installed binary, or one at least as new.
+pub fn stale_exe(exe: &str, installed: &Path) -> Option<String> {
+    if let Some(was) = exe.strip_suffix(DELETED) {
+        return Some(format!("its executable {was} was replaced or removed after it started"));
+    }
+    let p = Path::new(exe);
+    if canonical(p).ok() == canonical(installed).ok() {
+        return None;
+    }
+    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (mtime(p), mtime(installed)) {
+        (Some(a), Some(b)) if a < b => Some(format!("it runs {exe}, older than {}", installed.display())),
+        _ => None,
+    }
+}
+
 /// The machine's host name as the system gives it (any case, maybe with a
 /// domain): `gethostname()`; on Windows the DNS host name.
 pub fn hostname() -> String {
@@ -713,6 +763,48 @@ mod tests {
             assert_eq!(v.get("Nimitz_Os_Probe").map(String::as_str), Some("1"));
         }
         std::env::remove_var("Nimitz_Os_Probe");
+    }
+
+    /// Issue #1: an Admiralty or nimitz still running after `cargo install`
+    /// replaced its binary runs the old code; `doctor` names it.
+    #[test]
+    fn a_replaced_or_older_executable_is_stale_and_the_installed_one_is_not() {
+        let d = std::env::temp_dir().join(format!("nimitz-os-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let (old, new) = (d.join("old").join("nimitz"), d.join("nimitz"));
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "old").unwrap();
+        let f = File::options().write(true).open(&old).unwrap();
+        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)).unwrap();
+        std::fs::write(&new, "new").unwrap();
+        assert_eq!(stale_exe(&new.to_string_lossy(), &new), None, "the installed binary");
+        assert!(stale_exe(&old.to_string_lossy(), &new).is_some_and(|w| w.contains("older than")));
+        assert_eq!(stale_exe(&new.to_string_lossy(), &old), None, "a newer one is not stale");
+        let gone = format!("{} (deleted)", new.display());
+        assert!(stale_exe(&gone, &new).is_some_and(|w| w.contains("replaced or removed")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The `/proc` walk finds a process by its executable's name, and a
+    /// binary removed under it reads ` (deleted)`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_running_process_whose_binary_was_replaced_is_found() {
+        let d = std::env::temp_dir().join(format!("nimitz-os-running-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let exe = d.join("admiralty");
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        let mut child = Command::new(&exe).arg("30").spawn().unwrap();
+        std::fs::remove_file(&exe).unwrap();
+        let pid = i64::from(child.id());
+        let found = running_named(&["admiralty"]).into_iter().find(|(p, _)| *p == pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&d);
+        let (_, at) = found.expect("the walk finds the child");
+        assert!(at.ends_with(" (deleted)"), "{at}");
+        assert!(stale_exe(&at, &exe).is_some());
+        assert!(!running_named(&["admiralty"]).iter().any(|(p, _)| *p == i64::from(std::process::id())));
     }
 
     #[test]

@@ -614,10 +614,11 @@ fn a_v1_registry_migrates_on_first_load_and_the_file_is_kept_on_the_first_write(
     assert!(std::fs::read_to_string(&p).unwrap().contains("\"current\""), "a read never writes");
     assert!(!registry::v1_path(&w.env).exists());
     assert!(registry::health(&w.env).is_empty());
-    // the next locked update saves v2 and keeps the v1 file
+    // the next locked update saves the current format (issue #1: every
+    // write stamps it) and keeps the v1 file
     registry::update(&w.env, |_| ()).unwrap();
     let saved: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
-    assert_eq!(saved["version"], json!(2));
+    assert_eq!(saved["version"], json!(nimitz_core::types::REGISTRY_VERSION));
     assert_eq!(saved["identities"][&id.0]["job"], json!(job));
     assert_eq!(saved["identities"][&id.0]["session"], json!(sid));
     assert!(registry::v1_path(&w.env).is_file());

@@ -144,7 +144,7 @@ pub static ARTIFACTS: &[Artifact] = &[
     Artifact { name: "legacy", path: "H/<fleet>/legacy.toml", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Toml("format"), steps: &[], find: legacy_files, wanted: None, lift: None },
     Artifact { name: "brief", path: "lead CLAUDE.md", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Own, steps: &[], find: nothing, wanted: None, lift: None },
     Artifact { name: "ship-lock", path: "<ship folder>/.nimitz-ship.lock", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Json("format"), steps: &[], find: ship_locks, wanted: None, lift: None },
-    Artifact { name: "registry", path: "S/registry.json", scope: Scope::Local, current: 3, oldest: 2, kept: Kept::Json("version"), steps: REGISTRY_STEPS, find: registry_file, wanted: None, lift: Some(("the 0.3.x registry, read and saved as version 2 (the old file kept as registry.json.v1)", crate::registry::lift_v1)) },
+    Artifact { name: "registry", path: "S/registry.json", scope: Scope::Local, current: 3, oldest: 2, kept: Kept::Json("version"), steps: REGISTRY_STEPS, find: registry_file, wanted: None, lift: Some(("the 0.3.x registry, read and saved in the current format (the old file kept as registry.json.v1)", crate::registry::lift_v1)) },
     Artifact { name: "active", path: "S/active.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Json("version"), steps: &[], find: active_file, wanted: None, lift: None },
     Artifact { name: "rules-delivered", path: "S/rules-delivered.json", scope: Scope::Local, current: 2, oldest: 1, kept: Kept::Manifest, steps: RULES_DELIVERED_STEPS, find: rules_delivered, wanted: None, lift: None },
     Artifact { name: "events", path: "S/events.jsonl", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: events_file, wanted: None, lift: None },
@@ -1207,7 +1207,7 @@ fn run_file(env: &Env, a: &Artifact, f: &Path, nimitz: &str, ran: &mut Ran) {
         if v >= want {
             return;
         }
-        let Some(d) = chain(a, f, v, want, false).into_iter().next() else {
+        let Some(mut d) = chain(a, f, v, want, false).into_iter().next() else {
             let d = Due { artifact: a.name, scope: a.scope, file: f.to_path_buf(), from: v, to: want, summary: "", min_nimitz: None, silent: false, cleanup: None };
             fail(env, nimitz, ran, d, format!("no step from version {v}"));
             return;
@@ -1219,7 +1219,11 @@ fn run_file(env: &Env, a: &Artifact, f: &Path, nimitz: &str, ran: &mut Ran) {
         let res = if v < a.oldest {
             a.lift.ok_or_else(|| "no lift".to_string()).and_then(|(_, lift)| lift(env)).and_then(|_| {
                 let now = std::fs::read(f).map_err(|e| e.to_string())?;
-                (a.version_of(&now).unwrap_or(0) >= a.oldest).then_some(true).ok_or_else(|| format!("still below version {}", a.oldest))
+                let to = a.version_of(&now).unwrap_or(0);
+                // a lift saves what its code writes now (the registry: the
+                // current format, issue #1), which may be past `oldest`
+                d.to = d.to.max(to);
+                (to >= a.oldest).then_some(true).ok_or_else(|| format!("still below version {}", a.oldest))
             })
         } else {
             let step = a.step_from(v).expect("chain found it");
