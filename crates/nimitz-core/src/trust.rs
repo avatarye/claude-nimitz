@@ -32,8 +32,12 @@ use std::time::Duration;
 /// config lock uses proper-lockfile's defaults: stale after 10 s, refreshed
 /// every 5 s; twice that, as for pins).
 const STALE_S: f64 = 20.0;
-/// How long nimitz waits for Claude Code to finish its own write.
-const WAIT: Duration = Duration::from_secs(5);
+/// How long nimitz waits for Claude Code to finish its own write (a busy
+/// machine's Claude Code was seen holding the lock over 5 s); tests wait less.
+#[cfg(not(test))]
+const WAIT: Duration = Duration::from_secs(15);
+#[cfg(test)]
+const WAIT: Duration = Duration::from_secs(1);
 /// Backups of the config file nimitz keeps.
 const KEEP_BACKUPS: usize = 5;
 
@@ -333,7 +337,10 @@ fn format_check_file(f: &Path) -> Result<usize, String> {
 fn edit(env: &Env, path: &Path, f: impl FnOnce(&mut Map<String, Value>) -> Result<bool, String>) -> Result<bool, String> {
     let path = path.to_path_buf();
     let lock = PathBuf::from(format!("{}.lock", path.display()));
-    let _held = crate::pins::dir_lock(&lock, STALE_S, WAIT).map_err(|e| format!("{e} (Claude Code is writing {}; try again)", path.display()))?;
+    let _held = crate::pins::dir_lock(&lock, STALE_S, WAIT).map_err(|e| match e.kind() {
+        std::io::ErrorKind::WouldBlock => format!("{} is held by another process for {} s; Claude Code is writing {}; try again", lock.display(), WAIT.as_secs(), path.display()),
+        _ => format!("{}: {e}", lock.display()),
+    })?;
     // a linked config file is written where it points (Claude Code's own
     // write follows the link too); a link to nothing is refused, never
     // replaced by a file of its own
@@ -518,7 +525,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         let e = write(&env, &dir).unwrap_err();
         assert!(t0.elapsed() >= WAIT, "waited {:?} first", t0.elapsed());
-        assert!(e.contains("is held by another process") && e.contains("try again"), "{e}");
+        assert!(e.contains(&format!("is held by another process for {} s; Claude Code is writing {}; try again", WAIT.as_secs(), file(&env).display())), "{e}");
         assert!(lock.exists(), "the holder's lock is left alone");
         assert_eq!(std::fs::read_to_string(file(&env)).unwrap(), "{}", "nothing written");
     }
