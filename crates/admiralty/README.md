@@ -27,11 +27,16 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 - Two status rows at the bottom, no key row. The ADMIRALTY row: fleets, live
   sessions, how many need you, error and warning counts, the multiplexer (or a
-  MONITOR-ONLY badge), and `? keys` at its right. The row under it: the
-  `nimitz` version (`admiralty X · nimitz Y (mismatch)` as a warning when it
-  is not Admiralty's own), Claude Code's version and support (out of range: a
-  warning), the machine, the refresh interval, and `refreshed Ns ago  q quit`
-  at its right. Narrower, both shorten (`CC 2.1.296`, `nimitz Y ≠ X`).
+  MONITOR-ONLY badge), and `? keys` at its right (`q` quit is in the `?`
+  panel). The row under it: `Nimitz: v0.7.5` (`Nimitz: vY (admiralty vX,
+  mismatch)` as a warning when it is not Admiralty's own, `Nimitz: …` until
+  `nimitz --version` answers, `Nimitz: ?` when it does not within 5 s),
+  `Claude Code: v2.1.296 (supported)` (out of range: `(unsupported)` as an
+  error, `(newer than tested, ...)` as a warning; `Claude Code: not found`), `Machine: home-server`, and the local date and time flush right
+  (`2026-10-14 15:42`). When no refresh has landed for three intervals,
+  `stale 12s` (a warning) sits before the clock; otherwise the refresh is not
+  shown. At 80 columns and below both shorten (`v0.7.5  CC v2.1.296
+  home-server ... 10-14 15:42`; narrower still, `15:42`).
 - The row under the fleet tabs is blank (no column names).
 - A tab bar on the top line: one tab per fleet (`1 HOME  2 MAIN ...`, with
   `!n` where members need you), then `unassigned` when a stowaway sits under the
@@ -97,7 +102,10 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   blocked, grey done, plain idle, faint unknown), the tree guides, the fold
   marker and the kind icon (admiral, commodore, ship, crew, teammate, stowaway,
   copy; a task's status); no issue mark there. DETAIL starts with the issue
-  glyph, coloured by severity, and the issue codes.
+  glyph, coloured by severity, and the issue codes; then what a member needing
+  you waits for, or `N crew running`; else its topic, the one line Claude Code
+  keeps on what the job is doing (a finished job's result); an `unknown`
+  member, its first reason. The reasons for a status are in the detail panel.
 - Crew: a member's subagents under it. The agents a Workflow run started sit
   under one row per run (the workflow's name, else its `wf_` run id; live /
   total; the newest agent's phase), open while one of them runs. A run, like a
@@ -153,7 +161,7 @@ and the error in full (file:line and the parser's words) above its members; a
 fleet's, in full at the top of its admiral's box.
 
 At 80x24 the ADMIRALTY row keeps the mux state and `? keys`, the row under it
-keeps the versions and `q quit`, DETAIL keeps room for issue codes, the detail pane drops its picture to
+keeps the versions and the clock, DETAIL keeps room for issue codes, the detail pane drops its picture to
 show the reasons first (ctrl-e / ctrl-y scroll it), and help and the issues view
 wrap and scroll. The first frame comes from the session files alone; `claude
 agents` follows right after, and keys typed meanwhile are kept.

@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Version 0.7.4 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.296).
+Version 0.7.5 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.296).
 
 A fleet has one **admiral**, squadrons each led by a **commodore**, and
 **ships** that do the long work in one folder. Every member is a Claude Code
@@ -150,7 +150,7 @@ hands the outcome to the member's next session start.
 | --- | --- |
 | `init [--label L]` | Data root, machine label, Claude Code's trust of the data root, doctor |
 | `doctor [--fix]` | The install: hooks, plugin, trust, Claude Code version, formats |
-| `status [<path>...] [--json]` | The fleets, their members and issues. `down`: taken down while active (a `...` start wakes it); `parked`: retired by the daemon or not active (`--parked` wakes it) |
+| `status [<path>...] [--json]` | The fleets, their members and issues; a live member's line ends in its topic, the one line Claude Code keeps on what the job is doing (`-- Inspecting ...`, cut to a terminal's width, never in a pipe; `topic` in the JSON). `down`: taken down while active (a `...` start wakes it); `parked`: retired by the daemon or not active (`--parked` wakes it) |
 | `check [<path>...]` | The problems of the members the paths cover, their parents and everything under them, each with its one fix (none: everything; `//...`: every fleet but ADMIRALTY). `check F` and `check F/...` are the same: a check never hides a ship's errors |
 | `trust <folder>` | Claude Code's trust for the folder's git root (it lets the folder's `.claude` settings, hooks and MCP servers run) |
 | `rules [<path>...]` | The role rules nimitz hands each member at session start (none: the caller's own) |
@@ -166,9 +166,12 @@ Keys: `j`/`k` move, `tab` next fleet, `enter` jump to a pane, `a` start, `A` a
 pane for it, `x` more actions (stop, restart, sweep, rm, adopt; on a fleet: `R`
 muster), `u` up a fleet with its parked ships, `m` message, `!` what waits on you, `i`
 every issue with its fix, `c`/`e`/`D` create, edit, remove, `?` all keys (`?`
-again closes them), `q` quit. The two status rows at the bottom show the
-fleets' counts, then the nimitz and Claude Code versions (a mismatch or an
-untested Claude Code as a warning), the machine and the last refresh.
+again closes them), `q` quit (in the `?` panel). The two status rows at the
+bottom show the fleets' counts and `? keys`, then `Nimitz: v0.7.5  Claude Code:
+v2.1.296 (supported)  Machine: home-server` (a mismatch or an out-of-range
+Claude Code as a warning) and the local date and time at the right, after
+`stale 12s` when no refresh has landed for three intervals. A member's DETAIL
+cell shows what its job is doing (its topic) when nothing else needs saying.
 
 ## Two rules
 

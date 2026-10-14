@@ -223,3 +223,54 @@ mod tests {
         assert_eq!(quote(""), "''");
     }
 }
+
+/// The width human lines fit in, on a terminal only: `COLUMNS` when set,
+/// else the terminal's own; none for a pipe or `--json` (a line is never cut
+/// for a file, a script or an agent reading it). `NIMITZ_COLUMNS` sets it
+/// anywhere (tests).
+pub fn width() -> Option<usize> {
+    let cols = |k: &str| std::env::var(k).ok().and_then(|c| c.trim().parse::<usize>().ok()).filter(|c| *c > 0);
+    if let Some(c) = cols("NIMITZ_COLUMNS") {
+        return Some(c);
+    }
+    if json_mode() || !std::io::stdout().is_terminal() {
+        return None;
+    }
+    cols("COLUMNS").or_else(terminal_width)
+}
+
+#[cfg(unix)]
+fn terminal_width() -> Option<usize> {
+    // SAFETY: TIOCGWINSZ fills the winsize it is given and reads nothing else
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let r = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) };
+    (r == 0 && ws.ws_col > 0).then_some(ws.ws_col as usize)
+}
+
+#[cfg(windows)]
+fn terminal_width() -> Option<usize> {
+    use windows_sys::Win32::System::Console::{GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE};
+    // SAFETY: the call fills the info it is given, for the process's own stdout
+    let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
+    let ok = unsafe { GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &mut info) };
+    let w = (info.srWindow.Right - info.srWindow.Left + 1) as i32;
+    (ok != 0 && w > 0).then_some(w as usize)
+}
+
+/// `s` cut to `n` terminal cells (a wide character takes two), `...` marking the cut.
+pub fn clip(s: &str, n: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= n {
+        return s.to_string();
+    }
+    let room = n.saturating_sub(3);
+    let mut used = 0;
+    let kept: String = s
+        .chars()
+        .take_while(|c| {
+            used += c.width().unwrap_or(0);
+            used <= room
+        })
+        .collect();
+    kept.trim_end().to_string() + "..."
+}

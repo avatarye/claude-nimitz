@@ -63,12 +63,14 @@ impl Row {
 /// session state; Claude Code's own: `CLAUDE_CODE_ENTRYPOINT`,
 /// `CLAUDE_CODE_MESSAGING_*` are per session, every other `CLAUDE_CODE_*` and
 /// `ANTHROPIC_*` is the user's config and passes): nimitz's identity and
-/// multiplexer names, every `HERDR_*`, `CLAUDE_PID`, `CLAUDECODE`,
+/// multiplexer names, `NIMITZ_COLUMNS`, every `HERDR_*`, `CLAUDE_PID`, `CLAUDECODE`,
 /// `CLAUDE_BG_*`, and the session-scoped `CLAUDE_CODE_*` below.
 pub fn scrub_child_env(c: &mut Command) {
     const NAMES: &[&str] = &[
         "NIMITZ_ID", "NIMITZ_ROLE", "NIMITZ_FLEET", "NIMITZ_SQUADRON", "NIMITZ_PARENT",
         "NIMITZ_MUX", "NIMITZ_HERDR_SESSION", "NIMITZ_HERDR_SOCKET", "NIMITZ_HOOK_PID", "NIMITZ_HOOK_SESSION_FILE",
+        // a test hook for the width human lines fit in: never a member's
+        "NIMITZ_COLUMNS",
         "CLAUDE_PID", "CLAUDECODE",
         "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
         "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",

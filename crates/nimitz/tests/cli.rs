@@ -2965,3 +2965,29 @@ fn a_wider_start_never_trusts_a_never_started_leads_folder() {
     let exact = sb.run(&["start", "TOP", "--plan", "-v"]);
     assert!(exact.out.contains("trust ") && exact.out.contains("1 to launch") && !exact.out.contains("refuse"), "the exact path trusts it:\n{}", exact.out);
 }
+
+#[test]
+fn status_shows_a_live_jobs_topic_on_its_line_cut_to_the_terminal() {
+    let sb = Sb::new(false);
+    let short = sb.member("MAIN/ARGOS/CLEAN")["session"]["short_id"].as_str().unwrap().to_string();
+    let job = sb.base.join("claude_home").join("jobs").join(&short).join("state.json");
+    let mut v: Value = serde_json::from_slice(&std::fs::read(&job).unwrap()).unwrap();
+    v["detail"] = Value::from("Inspecting what job rows and session files store, then writing the notes down");
+    std::fs::write(&job, serde_json::to_vec(&v).unwrap()).unwrap();
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["topic"], "Inspecting what job rows and session files store, then writing the notes down");
+    let whole = sb.run(&["status"]).out;
+    assert!(whole.lines().any(|l| l.contains("MAIN/ARGOS/CLEAN") && l.ends_with("-- Inspecting what job rows and session files store, then writing the notes down")), "{whole}");
+    // a pipe is never cut, even with COLUMNS exported (agents read these lines)
+    let piped = raw(&sb.vars, &["status"], &[("COLUMNS", "100")], None).out;
+    assert!(piped.lines().any(|l| l.ends_with("then writing the notes down")), "{piped}");
+    let cut = raw(&sb.vars, &["status"], &[("NIMITZ_COLUMNS", "100")], None).out;
+    let line = cut.lines().find(|l| l.contains("MAIN/ARGOS/CLEAN") && l.contains("-- Inspecting")).unwrap_or_else(|| panic!("{cut}"));
+    assert!(line.ends_with("...") && line.chars().count() <= 100.max(line.find(" -- ").unwrap() + 17), "{line}");
+    // cut by terminal cells: a wide character takes two
+    v["detail"] = Value::from("\u{691c}\u{67fb}".repeat(60));
+    std::fs::write(&job, serde_json::to_vec(&v).unwrap()).unwrap();
+    let cut = raw(&sb.vars, &["status"], &[("NIMITZ_COLUMNS", "120")], None).out;
+    let line = cut.lines().find(|l| l.contains("MAIN/ARGOS/CLEAN") && l.contains(" -- ")).unwrap_or_else(|| panic!("{cut}"));
+    let cells = line.chars().count() + line.chars().filter(|c| *c == '\u{691c}' || *c == '\u{67fb}').count();
+    assert!(line.ends_with("...") && cells <= 120, "{cells}: {line}");
+}

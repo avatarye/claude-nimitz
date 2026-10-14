@@ -339,7 +339,7 @@ fn renders_at_narrow_and_wide_sizes() {
         keys(&mut t.app, "w");
         let s = screen(&mut t.app, w, h);
         assert!(s.contains("ADMIRALTY"), "{w}x{h}");
-        assert!(s.contains("q quit"), "{w}x{h}");
+        assert!(s.contains("15:42"), "{w}x{h}");
         assert!(s.contains("detail"), "{w}x{h}");
     }
 }
@@ -517,45 +517,92 @@ fn help_has_a_legend_line_for_each_icon() {
 }
 
 #[test]
-fn the_status_rows_end_on_keys_and_quit_at_every_width() {
+fn the_status_rows_end_on_keys_and_the_clock_at_every_width() {
     for w in [40u16, 60, 80, 120, 200] {
         let mut t = demo();
         let ls = lines(&draw(&mut t.app, w, 24));
         // no key row: the ADMIRALTY row ends on `? keys` (from 60 columns),
-        // the row under it on `q quit`, both flush to the right edge
+        // the row under it on the local date and time (shorter as the
+        // window narrows), both flush to the right edge
         if w >= 60 {
             assert!(ls[22].trim_end().ends_with("? keys") && ls[22].chars().count() == w as usize, "{w}: {}", ls[22]);
         }
-        assert!(ls[23].trim_end().ends_with("q quit"), "{w}: {}", ls[23]);
+        let clock = match w {
+            0..=60 => " 15:42",
+            61..=119 => " 10-14 15:42",
+            _ => " 2026-10-14 15:42",
+        };
+        assert!(ls[23].trim_end().ends_with(clock), "{w}: {}", ls[23]);
+        assert!(!ls[23].contains("q quit") && !ls[23].contains("every ") && !ls[23].contains("ago"), "{w}: {}", ls[23]);
         assert!(!ls.iter().any(|l| l.contains("? help") || l.contains("q/esc")), "{w}: the key row is gone");
     }
 }
 
 /// The second status row: the nimitz version, Claude Code and its support,
-/// the machine, the refresh, in words, then short words at 80 columns.
+/// the machine, then the local date and time flush right; in words, then
+/// short words at 80 columns.
 #[test]
-fn the_second_status_row_names_versions_machine_and_refresh() {
+fn the_second_status_row_names_versions_machine_and_the_clock() {
     let mut t = fixture_app(fixtures::demo(), true);
     let ours = env!("CARGO_PKG_VERSION");
     *t.app.nimitz_version.lock().unwrap() = Some(ours.to_string());
     let snap = &mut t.app.bundle.as_mut().unwrap().snap;
     (snap.cc_version, snap.compat_ok) = (Some("2.1.291".into()), true);
     let ls = lines(&draw(&mut t.app, 120, 24));
-    assert!(ls[23].starts_with(&format!(" nimitz {ours}   Claude Code 2.1.291 (supported)   machine west-mac")), "{}", ls[23]);
-    assert!(ls[23].trim_end().ends_with("refreshed 0s ago  q quit"), "{}", ls[23]);
-    assert!(!ls[22].contains("Claude Code") && !ls[22].contains("nimitz"), "the ADMIRALTY row keeps the fleets: {}", ls[22]);
+    assert!(ls[23].starts_with(&format!(" Nimitz: v{ours}  Claude Code: v2.1.291 (supported)  Machine: west-mac ")), "{}", ls[23]);
+    assert!(ls[23].ends_with(" 2026-10-14 15:42 ") && ls[23].chars().count() == 120, "{}", ls[23]);
+    assert!(!ls[22].contains("Claude Code") && !ls[22].contains("Nimitz"), "the ADMIRALTY row keeps the fleets: {}", ls[22]);
     let ls = lines(&draw(&mut t.app, 80, 24));
-    assert!(ls[23].starts_with(&format!(" nimitz {ours}  CC 2.1.291  west-mac")) && ls[23].trim_end().ends_with("0s ago  q quit"), "{}", ls[23]);
+    assert!(ls[23].starts_with(&format!(" v{ours}  CC v2.1.291  west-mac ")) && ls[23].ends_with(" 10-14 15:42 "), "{}", ls[23]);
     // the mismatch, short at 80 columns, still a warning
     *t.app.nimitz_version.lock().unwrap() = Some("0.0.1".to_string());
     let ls = lines(&draw(&mut t.app, 80, 24));
-    assert!(ls[23].starts_with(&format!(" nimitz 0.0.1 \u{2260} {ours}")), "{}", ls[23]);
+    assert!(ls[23].starts_with(&format!(" v0.0.1 \u{2260} v{ours}")), "{}", ls[23]);
     // Claude Code out of range: on this row, never the ADMIRALTY one (in
     // words where they fit beside the mismatch)
     let snap = &mut t.app.bundle.as_mut().unwrap().snap;
     (snap.cc_version, snap.compat_ok) = (Some("2.1.280".into()), false);
     let ls = lines(&draw(&mut t.app, 200, 24));
-    assert!(ls[23].contains("Claude Code 2.1.280 outside the supported range") && !ls[22].contains("Claude Code"), "{}\n{}", ls[22], ls[23]);
+    assert!(ls[23].contains("Claude Code: v2.1.280 (unsupported)") && !ls[22].contains("Claude Code"), "{}\n{}", ls[22], ls[23]);
+    let buf = draw(&mut t.app, 200, 24);
+    let x = ls[23].find("Claude Code").unwrap() as u16;
+    assert_eq!(buf[(x, 23)].fg, admiralty::theme::mono::ERROR, "unsupported: an error");
+    // newer than tested: a warning
+    let snap = &mut t.app.bundle.as_mut().unwrap().snap;
+    (snap.cc_version, snap.compat_ok) = (Some("2.9.999".into()), false);
+    let buf = draw(&mut t.app, 200, 24);
+    let l = lines(&buf)[23].clone();
+    assert!(l.contains("Claude Code: v2.9.999 (newer than tested"), "{l}");
+    assert_eq!(buf[(l.find("Claude Code").unwrap() as u16, 23)].fg, admiralty::theme::mono::WARN, "newer: a warning");
+    // not installed: said so, never "(unsupported)"
+    let snap = &mut t.app.bundle.as_mut().unwrap().snap;
+    (snap.cc_version, snap.compat_ok) = (None, false);
+    let l = lines(&draw(&mut t.app, 200, 24))[23].clone();
+    assert!(l.contains("Claude Code: not found  Machine") && !l.contains("unsupported"), "{l}");
+}
+
+/// The refresh's age shows only when the data is stale (no load for more
+/// than 3 intervals), as a warning before the clock; the demo never says it.
+#[test]
+fn the_second_status_row_says_stale_only_when_no_load_landed_for_3_intervals() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    t.app.interval = std::time::Duration::from_secs(2);
+    let taken = t.app.bundle.as_ref().unwrap().snap.taken_at;
+    t.app.fixed_now = Some(taken + 6.0);
+    let l = lines(&draw(&mut t.app, 160, 24))[23].clone();
+    assert!(!l.contains("stale") && !l.contains("ago"), "3 intervals is not stale yet: {l}");
+    t.app.fixed_now = Some(taken + 12.0);
+    let l = lines(&draw(&mut t.app, 160, 24))[23].clone();
+    assert!(l.ends_with(" stale 12s  2026-10-14 15:42 "), "{l}");
+    let buf = draw(&mut t.app, 160, 24);
+    let x = l.find("stale").map(|i| l[..i].chars().count()).unwrap() as u16;
+    assert_eq!(buf[(x, 23)].fg, admiralty::theme::mono::WARN, "styled as a warning");
+    let l = lines(&draw(&mut t.app, 80, 24))[23].clone();
+    assert!(l.ends_with(" stale 12s  10-14 15:42 "), "{l}");
+    // the demo's data never refreshes, and is never stale
+    let mut d = demo();
+    d.app.fixed_now = Some(taken + 600.0);
+    assert!(!lines(&draw(&mut d.app, 160, 24))[23].contains("stale"));
 }
 
 /// `?` opens the keys panel and `?` closes it; its title says so.
@@ -948,7 +995,7 @@ fn at_80x24_the_essentials_stay_on_screen() {
     let ls = lines(&draw(&mut t.app, 80, 24));
     let status = &ls[ls.len() - 2];
     assert!((status.contains("MONITOR-ONLY") || status.contains("NO MUX")) && status.contains("? keys"), "the ADMIRALTY row keeps the mux state and the keys: {status}");
-    assert!(ls[23].contains("q quit"), "the last row keeps quit: {}", ls[23]);
+    assert!(ls[23].trim_end().ends_with("10-14 15:42"), "the last row keeps the clock: {}", ls[23]);
     let row = ls.iter().find(|l| l.contains("ANVIL-2")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
     assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
     // the floating panel, opened on the same small screen
@@ -1697,7 +1744,7 @@ fn in_herdrs_overlay_the_status_and_key_bars_stay_in_view() {
         let ls = lines(&draw(&mut t.app, w, h));
         let (rows, cols) = (h as usize - 2, w as usize - 2);
         assert!(ls[rows - 2].contains("ADMIRALTY"), "{w}x{h}: the status bar in view:\n{}", ls.join("\n"));
-        assert!(ls[rows - 1].contains("q quit"), "{w}x{h}: the second status row in view: {}", ls[rows - 1]);
+        assert!(ls[rows - 1].contains("15:42"), "{w}x{h}: the second status row in view: {}", ls[rows - 1]);
         assert!(ls[rows..].iter().all(|l| l.trim().is_empty()), "{w}x{h}: nothing under the border:\n{}", ls[rows..].join("\n"));
         assert!(ls.iter().all(|l| l.chars().skip(cols).all(|c| c == ' ')), "{w}x{h}: nothing under the right border");
     }
@@ -1901,7 +1948,7 @@ fn dump_renders_the_list_or_the_screen_plain_or_in_colour() {
 
 /// The second status row names the nimitz Admiralty runs: its version alone
 /// when it is Admiralty's own, both and flagged (a warning) when they differ;
-/// Admiralty's own until it is read.
+/// `…` (muted, nothing claimed) until it is read; the demo shows its own.
 #[test]
 fn the_status_row_shows_the_nimitz_version_and_flags_a_mismatch() {
     let mut t = fixture_app(fixtures::demo(), true);
@@ -1909,18 +1956,50 @@ fn the_status_row_shows_the_nimitz_version_and_flags_a_mismatch() {
     // the last row, under the ADMIRALTY one
     let top = |t: &mut common::TestApp| screen(&mut t.app, 240, 40).lines().last().unwrap_or("").to_string();
     let l = top(&mut t);
-    assert!(l.contains(&format!("admiralty {ours}")) && !l.contains("nimitz "), "not read yet: its own: {l}");
+    assert!(l.starts_with(" Nimitz: \u{2026}  ") && !l.contains("mismatch"), "not read yet: nothing claimed: {l}");
+    let mut d = demo();
+    let l = screen(&mut d.app, 240, 40).lines().last().unwrap_or("").to_string();
+    assert!(l.starts_with(&format!(" Nimitz: v{ours}  ")), "the demo shows its own release: {l}");
     *t.app.nimitz_version.lock().unwrap() = Some("?".to_string());
     let l = top(&mut t);
-    assert!(l.contains(" nimitz ?") && !l.contains("mismatch"), "the read failed: {l}");
+    assert!(l.starts_with(" Nimitz: ?  ") && !l.contains("mismatch"), "the read failed: {l}");
+    let buf = draw(&mut t.app, 240, 40);
+    assert_eq!(buf[(1, 39)].fg, admiralty::theme::mono::WARN, "an unknown nimitz is a warning");
     *t.app.nimitz_version.lock().unwrap() = Some(ours.to_string());
     let l = top(&mut t);
-    assert!(l.contains(&format!("nimitz {ours}")) && !l.contains("mismatch"), "{l}");
+    assert!(l.starts_with(&format!(" Nimitz: v{ours}  ")) && !l.contains("mismatch"), "{l}");
     *t.app.nimitz_version.lock().unwrap() = Some("0.0.1".to_string());
     let l = top(&mut t);
-    assert!(l.contains(&format!("admiralty {ours} \u{b7} nimitz 0.0.1 (mismatch)")), "{l}");
+    assert!(l.starts_with(&format!(" Nimitz: v0.0.1 (admiralty v{ours}, mismatch)  ")), "{l}");
     let buf = draw(&mut t.app, 240, 40);
     let y = 39u16;
-    let x = l.find("admiralty ").map(|i| l[..i].chars().count()).unwrap() as u16;
+    let x = l.find("Nimitz").map(|i| l[..i].chars().count()).unwrap() as u16;
     assert_eq!(buf[(x, y)].fg, admiralty::theme::mono::WARN, "styled as a warning");
+}
+
+/// A member's DETAIL cell, with no issue, question or running crew: its
+/// topic (what the job is doing), never the first reason (that stays in `w`).
+#[test]
+fn the_detail_cell_shows_the_topic_and_never_a_reason() {
+    let mut t = demo();
+    let ls = lines(&draw(&mut t.app, 200, 60));
+    let ingest = ls.iter().find(|l| l.contains("INGEST")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
+    assert!(ingest.contains("Indexing the October log batch") && !ingest.contains("session file"), "{ingest}");
+    let boom = ls.iter().find(|l| l.contains("BOOM")).unwrap();
+    assert!(boom.contains("Committed 3f9a2c1") && !boom.contains("status idle"), "{boom}");
+    // no topic: the cell stays empty
+    let docs = ls.iter().find(|l| l.contains("DOCS")).unwrap();
+    assert!(!docs.contains("job row completed"), "{docs}");
+    // a status nobody knows keeps its reason: never an empty cell
+    let mut b = fixtures::demo();
+    for f in b.snap.fleets.iter_mut() {
+        for m in f.members_mut().filter(|m| m.status == Status::Unknown) {
+            m.issues.clear();
+        }
+    }
+    let mut u = fixture_app(b, false);
+    tab(&mut u.app, "FORGE");
+    let ls = lines(&draw(&mut u.app, 200, 60));
+    let hammer = ls.iter().find(|l| l.contains("HAMMER")).unwrap();
+    assert!(hammer.contains("registry's current session id has no job row"), "{hammer}");
 }

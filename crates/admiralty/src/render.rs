@@ -294,7 +294,7 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
             return Line::from(Span::styled(format!(" {}", t.msg), t.style));
         }
     }
-    let Some(b) = &app.bundle else { return balanced(vec![], vec![], key_hint("q", "quit"), width) };
+    let Some(b) = &app.bundle else { return Line::raw("") };
     let w = |v: &[Span]| v.iter().map(|s| s.content.width()).sum::<usize>();
     let level = (0..3).find(|l| {
         let (e, _, r) = status_spans(app, b, *l);
@@ -306,52 +306,67 @@ fn bottom_line(app: &App, width: usize) -> Line<'static> {
 
 /// The second status row at a level of detail (0 words, 1 short words, 2
 /// letters): the nimitz Admiralty runs (flagged when it is not Admiralty's
-/// own), Claude Code and its support, the machine, the refresh interval and
-/// its age; as (what always shows, what shows when there is room, the right part).
+/// own), Claude Code and its support, the machine; at the right how stale the
+/// data is (only when no load landed for 3 intervals) and the local date and
+/// time; as (what always shows, what shows when there is room, the right part).
 fn status_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'static>>, Vec<Span<'static>>, Vec<Span<'static>>) {
     let pick = |full: String, short: String, tiny: String| match level {
         0 => full,
         1 => short,
         _ => tiny,
     };
-    let gap = if level == 0 { "   " } else { "  " };
+    let gap = "  ";
     let ours = env!("CARGO_PKG_VERSION");
     let mut v = vec![];
     match app.nimitz_version.lock().ok().and_then(|v| v.clone()) {
-        Some(n) if n == ours => v.push(Span::styled(format!(" nimitz {n}"), st(mono::MUTED))),
         // the read failed: the nimitz it runs is unknown
-        Some(n) if n == "?" => v.push(Span::styled(" nimitz ?".to_string(), bold(mono::WARN))),
-        Some(n) => v.push(Span::styled(pick(format!(" admiralty {ours} \u{b7} nimitz {n} (mismatch)"), format!(" nimitz {n} \u{2260} {ours}"), format!(" {n}\u{2260}{ours}")), bold(mono::WARN))),
-        // not read yet (or no answer): Admiralty's own
-        None => v.push(Span::styled(format!(" admiralty {ours}"), st(mono::MUTED))),
+        Some(n) if n == "?" => v.push(Span::styled(pick(" Nimitz: ?".into(), " v?".into(), " v?".into()), bold(mono::WARN))),
+        Some(n) if n != ours => v.push(Span::styled(
+            pick(format!(" Nimitz: v{n} (admiralty v{ours}, mismatch)"), format!(" v{n} \u{2260} v{ours}"), format!(" {n}\u{2260}{ours}")),
+            bold(mono::WARN),
+        )),
+        // not read yet, live: nothing claimed until `nimitz --version` answers
+        None if app.ctx.live => v.push(Span::styled(pick(" Nimitz: \u{2026}".into(), " v\u{2026}".into(), " v\u{2026}".into()), st(mono::MUTED))),
+        // the same, or the demo (which never reads it): Admiralty's own, the
+        // nimitz of its release
+        _ => v.push(Span::styled(pick(format!(" Nimitz: v{ours}"), format!(" v{ours}"), format!(" v{ours}")), st(mono::MUTED))),
     }
-    let ver = b.snap.cc_version.clone().unwrap_or("not found".into());
+    let ver = b.snap.cc_version.as_ref().map(|v| format!("v{v}")).unwrap_or("not found".into());
     if b.snap.compat_ok {
-        v.push(Span::styled(pick(format!("{gap}Claude Code {ver} (supported)"), format!("{gap}CC {ver}"), format!("{gap}CC {ver}")), st(mono::MUTED)));
+        v.push(Span::styled(pick(format!("{gap}Claude Code: {ver} (supported)"), format!("{gap}CC {ver}"), format!("{gap}CC {ver}")), st(mono::MUTED)));
     } else {
         let c = nimitz_core::compat::supported();
-        let newer = !ver.contains('-') && nimitz_core::compat::position(&c, &ver) == 1;
-        let (full, short) = if newer {
-            (format!("{gap}Claude Code {ver} newer than tested ({})", c.max), format!("{gap}CC {ver} untested"))
+        let raw = b.snap.cc_version.clone().unwrap_or_default();
+        let newer = !raw.is_empty() && !raw.contains('-') && nimitz_core::compat::position(&c, &raw) == 1;
+        let (full, short) = if raw.is_empty() {
+            (format!("{gap}Claude Code: not found"), format!("{gap}CC not found"))
+        } else if newer {
+            (format!("{gap}Claude Code: {ver} (newer than tested, v{})", c.max), format!("{gap}CC {ver} untested"))
         } else {
-            (format!("{gap}Claude Code {ver} outside the supported range"), format!("{gap}CC {ver} unsupported"))
+            (format!("{gap}Claude Code: {ver} (unsupported)"), format!("{gap}CC {ver} unsupported"))
         };
         v.push(Span::styled(pick(full, short, format!("{gap}CC!")), bold(if newer { mono::WARN } else { mono::ERROR })));
     }
     if let Some(m) = &b.snap.machine {
-        v.push(Span::styled(pick(format!("{gap}machine {m}"), format!("{gap}{m}"), format!("{gap}{m}")), st(mono::MUTED)));
+        v.push(Span::styled(pick(format!("{gap}Machine: {m}"), format!("{gap}{m}"), format!("{gap}{m}")), st(mono::MUTED)));
     }
-    let mut opt = vec![];
-    if app.ctx.live {
-        opt.push(Span::styled(format!("{gap}every {}", ago(app.interval.as_secs_f64())), st(mono::COMMENT)));
-    }
-    let age = ago(app.now() - b.snap.taken_at);
     let mut right = vec![];
-    if level < 2 {
-        right.push(Span::styled(pick(format!("refreshed {age} ago "), format!("{age} ago "), String::new()), st(mono::COMMENT)));
+    // a refresh that has not landed for 3 intervals: the rows may be old
+    let age = app.now() - b.snap.taken_at;
+    if app.ctx.live && age > 3.0 * app.interval.as_secs_f64() {
+        right.push(Span::styled(pick(format!("stale {}", ago(age)), format!("stale {}", ago(age)), "stale".into()), bold(mono::WARN)));
+        right.push(Span::raw(gap));
     }
-    right.extend(key_hint("q", "quit"));
-    (v, opt, right)
+    match app.wall() {
+        Some(w) => right.push(Span::styled(pick(w.full(), w.short(), w.time()) + " ", st(mono::MUTED))),
+        // no clock (the C library cannot say): the stale warning, if any, at the edge
+        None if !right.is_empty() => {
+            right.pop();
+            right.push(Span::raw(" "));
+        }
+        None => {}
+    }
+    (v, vec![], right)
 }
 
 /// Seconds as `2s`, `5m` or `3h`.

@@ -133,9 +133,16 @@ fn main() -> ExitCode {
         app.inset = (r.trim().parse().unwrap_or(0), c.trim().parse().unwrap_or(0));
     }
     app.fixed_now = fixed_now;
+    // the demo and a dump render the same clock every time
+    if fixed_now.is_some() || dump {
+        app.fixed_wall = Some(fixtures::WALL);
+    }
     // the nimitz it runs, read off the UI thread (the live view only)
     if app.ctx.live && !dump {
         app.read_nimitz_version();
+    } else if dump {
+        // a dump renders the same every time: Admiralty's own release
+        *app.nimitz_version.lock().unwrap() = Some(env!("CARGO_PKG_VERSION").to_string());
     }
     if dump {
         let mut src = make();

@@ -614,6 +614,20 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     snap
 }
 
+/// A live job's one-line topic: its `detail`, never the placeholder of a job
+/// not yet prompted ("(idle — send a prompt to start)") nor the question it
+/// left (a blocked job's detail is its `needs`, said once already); a
+/// finished job's result when the detail is empty. Model-written text goes to
+/// a terminal: one line, no control characters.
+pub(crate) fn job_topic(job: &evidence::JobState) -> Option<String> {
+    // (control characters first: a line break or a BEL between two words leaves one space)
+    let line = |t: &str| t.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+    let needs = job.needs.as_deref().map(line);
+    let detail = job.detail.as_deref().map(line).filter(|d| !d.is_empty() && !d.to_lowercase().starts_with("(idle") && Some(d) != needs.as_ref());
+    let result = || job.result.as_deref().filter(|_| job.state.as_deref() == Some("done")).map(line).filter(|r| !r.is_empty());
+    detail.or_else(result)
+}
+
 /// Claude Code's own idle hint in a job row ("send a prompt to start") is not
 /// a question for you (BUG-07).
 fn idle_hint(needs: &str) -> bool {
@@ -793,6 +807,7 @@ fn build_member(
     let session = primary.as_ref().map(info);
 
     // Status and the reasons for it, newest evidence first.
+    let mut topic = None;
     let status = match &primary {
         Some(p) if p.unreadable && !p.live() => {
             reasons.push(format!("session file for job {} cannot be read (mid-write?); the process may be live", p.short_id.as_deref().unwrap_or("?")));
@@ -800,6 +815,7 @@ fn build_member(
         }
         Some(p) if p.live() => {
             let job = evidence::read_job(env, &mut cache.files, p.short_id.as_deref());
+            topic = job_topic(&job);
             if let Some(w) = &p.waiting_for {
                 reasons.push(format!("session file: status waiting, waitingFor {w}"));
                 Status::NeedsYou
@@ -920,6 +936,7 @@ fn build_member(
         cwd,
         status,
         reasons,
+        topic,
         session,
         extra_rows,
         crew,

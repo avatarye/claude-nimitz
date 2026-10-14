@@ -95,6 +95,7 @@ pub fn fixture_app(b: Bundle, live: bool) -> TestApp {
     let ctx = Ctx { env: fixtures::demo_env(), mux: Box::new(mux.clone()), live, exit_after_jump: false };
     let mut app = App::new(ctx, Some(dir.path().join("ui.json")), true);
     app.fixed_now = Some(fixtures::NOW);
+    app.fixed_wall = Some(fixtures::WALL);
     app.apply(b);
     TestApp { app, dir, mux }
 }

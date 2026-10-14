@@ -441,3 +441,45 @@ fn workflow_agents_are_crew_under_their_run() {
     assert!(j.as_array().unwrap().iter().any(|c| c["workflow"] == "wf_sbx0001-aaa"));
     assert!(j.as_array().unwrap().iter().any(|c| c["agent_id"] == "survey-1" && c.get("workflow").is_none()));
 }
+
+#[test]
+fn a_live_job_carries_its_topic_and_never_the_idle_placeholder() {
+    let w = world();
+    let clean = w.ship(&w.snap(), "CLEAN");
+    let short = clean.session.as_ref().unwrap().short_id.clone().unwrap();
+
+    w.patch(&w.job_file(&short), |v| v["detail"] = json!("Inspecting what job rows\n and session files store"));
+    assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("Inspecting what job rows and session files store"));
+
+    // model-written text reaches a terminal: no escape or other control codes
+    w.patch(&w.job_file(&short), |v| v["detail"] = json!("Fixing\u{1b}[2J the \u{7}build\u{9b}31m now"));
+    assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("Fixing [2J the build 31m now"));
+    w.patch(&w.job_file(&short), |v| v["detail"] = json!("a \u{7} b"));
+    assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("a b"));
+
+    // a blocked job's detail is its question: said once, as the question
+    w.patch(&w.job_file(&short), |v| {
+        v["detail"] = json!("Ship it, or hold?");
+        v["needs"] = json!("Ship it, or hold?");
+    });
+    let m = w.ship(&w.snap(), "CLEAN");
+    assert_eq!((m.status, m.topic), (Status::NeedsYou, None));
+    w.patch(&w.job_file(&short), |v| v.as_object_mut().unwrap().remove("needs").map(|_| ()).unwrap());
+
+    // a job never prompted: Claude Code's placeholder is no topic
+    w.patch(&w.job_file(&short), |v| v["detail"] = json!("(idle — send a prompt to start)"));
+    assert_eq!(w.ship(&w.snap(), "CLEAN").topic, None);
+
+    // a finished job with no detail: its result
+    w.patch(&w.job_file(&short), |v| {
+        v["detail"] = json!("");
+        v["state"] = json!("done");
+        v["output"] = json!({"result": "Committed 7ca56aa locally"});
+    });
+    assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("Committed 7ca56aa locally"));
+
+    // the status JSON carries it; a stopped member has none
+    let snap = w.snap();
+    assert_eq!(serde_json::to_value(w.ship(&snap, "CLEAN")).unwrap()["topic"], json!("Committed 7ca56aa locally"));
+    assert_eq!(w.ship(&snap, "STOPPED").topic, None);
+}
