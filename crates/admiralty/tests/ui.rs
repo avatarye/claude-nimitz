@@ -179,7 +179,7 @@ fn collapsed_boxes_and_the_state_filter_note_sit_outside() {
     let mut t = demo();
     goto(&mut t.app, "STOW");
     let id = t.app.current().unwrap().node.id.clone();
-    press(&mut t.app, KeyCode::Char(' '));
+    press(&mut t.app, KeyCode::Char('z'));
     let ls = lines(&draw(&mut t.app, 200, 60));
     let s = ls.iter().position(|l| l.contains("STOWAWAYS")).unwrap();
     assert!(!ls.get(s + 1).is_some_and(|l| l.starts_with('\u{2502}')), "{id}: folded, a bar alone: {}", ls[s]);
@@ -434,10 +434,10 @@ fn vim_motion_and_folding() {
     goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
     keys(&mut t.app, "h");
     assert_eq!(t.app.current().unwrap().node.id, "SQ:MAIN/ARGOS");
-    // space toggles
-    press(&mut t.app, KeyCode::Char(' '));
+    // z toggles (space opens the finder)
+    press(&mut t.app, KeyCode::Char('z'));
     assert!(!t.app.rows.iter().any(|r| r.node.id == "M:MAIN/ARGOS/BOOM"));
-    press(&mut t.app, KeyCode::Char(' '));
+    press(&mut t.app, KeyCode::Char('z'));
     assert!(t.app.rows.iter().any(|r| r.node.id == "M:MAIN/ARGOS/BOOM"));
 }
 
@@ -1372,8 +1372,8 @@ fn old_finished_crew_fold_into_one_row_and_running_children_keep_their_parent() 
     press(&mut t.app, KeyCode::Char('z'));
     assert!(!crew_rows(&t.app, &id).contains(&"old audit".to_string()));
     assert_eq!(t.app.current().unwrap().node.id, format!("CF:{id}"), "the cursor moves to the fold row");
-    // space on the fold row works too
-    press(&mut t.app, KeyCode::Char(' '));
+    // z on the fold row opens it again
+    press(&mut t.app, KeyCode::Char('z'));
     assert!(crew_rows(&t.app, &id).contains(&"old audit".to_string()));
 }
 
@@ -1413,18 +1413,20 @@ fn a_newer_or_unreadable_ui_state_is_never_written_over() {
     }
 }
 
-/// A member with no crew older than the window has no fold: `z` says so and
-/// changes nothing (the member stays as it was).
+/// A member with no crew older than the window has no fold: `z` folds and
+/// unfolds the member itself, as `space` did before the finder.
 #[test]
-fn z_on_a_member_with_no_old_crew_says_so() {
+fn z_on_a_member_with_no_old_crew_folds_the_member() {
     let mut t = demo();
     let b = t.app.bundle.clone().unwrap();
     let id = b.snap.fleets.iter().flat_map(admiralty::view::fleet_members).find(|m| !m.crew.is_empty() && admiralty::view::folded_crew(&m.crew, fixtures::NOW, "") == 0).map(|m| m.id.0.clone()).expect("a member with only recent crew");
     goto(&mut t.app, &format!("M:{id}"));
-    let before = t.app.expanded.clone();
+    let open = t.app.current().unwrap().expanded;
     press(&mut t.app, KeyCode::Char('z'));
-    assert!(toast(&t.app).contains("no crew that finished over 30 min ago"), "{}", toast(&t.app));
-    assert_eq!(t.app.expanded, before, "nothing opened or saved");
+    assert!(!toast(&t.app).contains("no crew"), "{}", toast(&t.app));
+    assert_eq!(t.app.current().unwrap().expanded, !open, "the member folds or unfolds");
+    press(&mut t.app, KeyCode::Char('z'));
+    assert_eq!(t.app.current().unwrap().expanded, open, "and back");
 }
 
 /// `z` on a collapsed member whose fold was open opens both again (it never

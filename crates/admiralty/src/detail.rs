@@ -79,6 +79,20 @@ pub fn detail_with_art(app: &App, width: usize, compact: bool) -> Vec<Line<'stat
     out
 }
 
+/// The finder's preview of the member or stowaway it has selected (its row
+/// need not be in the list): the detail pane's lines, without the ACTIONS.
+pub fn preview_lines(app: &App, row_id: &str, width: usize) -> Vec<Line<'static>> {
+    let Some(b) = &app.bundle else { return vec![] };
+    let now = app.now();
+    if let Some(id) = row_id.strip_prefix("M:") {
+        return find_member(&b.snap, &nimitz_core::Id(id.to_string())).map(|m| member_detail(app, m, now, width)).unwrap_or_default();
+    }
+    if let Some(sid) = row_id.strip_prefix("SW:") {
+        return b.snap.stowaways.iter().find(|s| s.session_id == sid).map(|s| stowaway_detail(&b.snap, s, now, width)).unwrap_or_default();
+    }
+    vec![]
+}
+
 pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let (Some(r), Some(b)) = (app.current(), &app.bundle) else { return vec![Line::styled("loading ...", st(mono::COMMENT))] };
     let snap = &b.snap;
@@ -128,7 +142,7 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             kv("last write", format!("{} ago", r.node.age)),
             blank(),
             Line::styled(format!("Crew of this conversation that finished over {} min ago.", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::SOFT)),
-            Line::styled("z (or space) shows or hides them; the choice is kept per member.", st(mono::SOFT)),
+            Line::styled("z shows or hides them; the choice is kept per member.", st(mono::SOFT)),
         ],
         (Kind::Workflow, _) => vec![
             Line::styled(r.node.name.clone(), bold(mono::FG)),
@@ -138,7 +152,7 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             kv("run", r.node.detail.get(1).map(|s| s.content.trim().to_string()).unwrap_or_default()),
             kv("last write", format!("{} ago", r.node.age)),
             blank(),
-            Line::styled("The agents a Workflow run started in this session; space opens or closes it.", st(mono::COMMENT)),
+            Line::styled("The agents a Workflow run started in this session; z opens or closes it.", st(mono::COMMENT)),
         ],
         (Kind::Crew, _) => vec![
             Line::styled(r.node.name.clone(), bold(mono::FG)),

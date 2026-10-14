@@ -46,6 +46,7 @@ SCREENS: dict[str, tuple[int, int, str, list[str]]] = {
     "admiralty-80x24": (80, 24, "demo-monitor", ["2", "/ANVIL", "<Enter>", "n", "<Escape>", "w"]),
     "admiralty-narrow": (100, 30, "demo", []),
     "admiralty-help": (200, 50, "demo", ["?"]),
+    "admiralty-finder": (200, 50, "demo", ["<Space>", "argos busy"]),
     "admiralty-issues-view": (200, 50, "demo", ["i", "j", "j"]),
     "admiralty-issue-detail": (200, 50, "demo", ["2", "/HAMMER", "<Enter>", "n", "<Escape>", "w"]),
     "admiralty-confirm": (200, 50, "demo", ["/DOCS", "<Enter>", "n", "<Escape>", "a"]),

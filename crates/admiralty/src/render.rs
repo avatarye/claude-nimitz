@@ -14,7 +14,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{shell, MessagePlan, Pending};
 use crate::app::{App, MenuItem, Modal, NeedItem, HELP};
-use crate::detail::{badge, detail_with_art};
+use crate::detail::{badge, detail_with_art, preview_lines};
+use crate::finder::Finder;
 use crate::forms::{FieldKind, Form};
 use crate::frames::{layout, pad, selectable, wrap};
 use crate::theme::{bold, mono, severity_color, severity_word, st};
@@ -69,6 +70,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         Some(Modal::Message { plan, text }) => draw_message(f, area, plan, text),
         Some(Modal::FleetFilter { sel }) => draw_fleet_filter(f, area, &app.fleet_states, *sel),
         Some(Modal::Form(form)) => draw_form(f, area, form),
+        Some(Modal::Finder(fd)) => draw_finder(app, f, area, body, fd),
         None => {}
     }
 }
@@ -677,6 +679,72 @@ fn draw_menu(f: &mut Frame, area: Rect, title: &str, items: &[MenuItem], sel: us
     let r = centered(area, 104, lines.len() as u16 + 2);
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(lines).block(modal_block(title.to_string(), mono::ACCENT)), r);
+}
+
+/// The finder: the query, the ranked list with the matched letters lit, and
+/// beside it (when the screen is wide enough) the selected one's detail.
+fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
+    let preview = body.width >= 120;
+    let right = detail_area(body);
+    let r = if preview {
+        let w = right.x.saturating_sub(body.x + 1).min(110);
+        // never past the body (a short screen: the status rows stay clear)
+        let h = body.height.saturating_sub(1).min(fd.cands.len() as u16 + 7);
+        Rect { x: body.x, y: body.y + 1, width: w, height: h }
+    } else {
+        centered(area, 110, fd.cands.len() as u16 + 7)
+    };
+    let inner_w = r.width.saturating_sub(2) as usize;
+    // a query wider than the line shows its end, where the cursor is
+    let room_q = inner_w.saturating_sub(4);
+    let q: Vec<char> = fd.query.chars().collect();
+    let shown_q = if q.len() > room_q { format!("\u{2026}{}", q[q.len() + 1 - room_q.max(1)..].iter().collect::<String>()) } else { fd.query.clone() };
+    let mut lines = vec![
+        Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(shown_q, st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
+        Line::styled(format!("{} / {}", fd.hits.len(), fd.cands.len()), st(mono::COMMENT)),
+    ];
+    let room = (r.height as usize).saturating_sub(2 + lines.len() + 2);
+    let start = (fd.sel + 1).saturating_sub(room);
+    for (i, h) in fd.hits.iter().enumerate().skip(start).take(room) {
+        let c = &fd.cands[h.cand];
+        let mut spans: Vec<Span<'static>> = vec![Span::raw("  ")];
+        let mut run = String::new();
+        let mut run_style = None;
+        for (k, ch) in c.text.chars().enumerate() {
+            let hit = h.idx.binary_search(&(k as u32)).is_ok();
+            let style = if hit { bold(mono::ACCENT).add_modifier(Modifier::UNDERLINED) } else { c.style_at(k) };
+            if run_style.is_some_and(|s| s != style) {
+                spans.push(Span::styled(std::mem::take(&mut run), run_style.unwrap()));
+            }
+            run_style = Some(style);
+            run.push(ch);
+        }
+        if let Some(s) = run_style {
+            spans.push(Span::styled(run, s));
+        }
+        lines.push(selectable(Line::from(crate::frames::truncate_spans(spans, inner_w)), i == fd.sel));
+    }
+    if fd.hits.is_empty() {
+        lines.push(Line::styled("  nothing matches", st(mono::SOFT)));
+    }
+    // the keys line at the bottom (inside the border: two lines fewer)
+    while lines.len() < (r.height as usize).saturating_sub(4) {
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::raw(""));
+    lines.push(keys_line(&[("\u{2191}\u{2193} ctrl-n/p", "move"), ("enter", "go to it"), ("esc", "close"), ("ctrl-u", "clear")]));
+    f.render_widget(Clear, r);
+    f.render_widget(Paragraph::new(lines).block(modal_block("find: path, name, status, topic".into(), mono::ACCENT)), r);
+    if let Some(c) = fd.selected().filter(|_| preview) {
+        let detail = preview_lines(app, &c.row_id, right.width.saturating_sub(2) as usize);
+        f.render_widget(Clear, right);
+        f.render_widget(
+            Paragraph::new(detail).wrap(Wrap { trim: false }).style(Style::new().bg(mono::BG)).block(
+                Block::bordered().border_type(BorderType::Rounded).border_style(st(mono::ACCENT)).title(Span::styled(" detail ", bold(mono::ACCENT))),
+            ),
+            right,
+        );
+    }
 }
 
 fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {

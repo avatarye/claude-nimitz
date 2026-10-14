@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Version 0.7.6 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.300).
+Version 0.7.7 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.300).
 
 A fleet has one **admiral**, squadrons each led by a **commodore**, and
 **ships** that do the long work in one folder. Every member is a Claude Code
@@ -162,7 +162,9 @@ Removed in 0.7.3: `restore` (use `muster`), `relaunch` (`restart`), `up`
 
 ## Admiralty
 
-Keys: `j`/`k` move, `tab` next fleet, `enter` jump to a pane, `a` start, `A` a
+Keys: `j`/`k` move, `tab` next fleet, `space` find a member in every fleet
+(fuzzy, as fzf: `mas` finds `MAIN/ARGOS/SIGNAL`, `argos busy` the busy ones of
+ARGOS; `enter` puts the cursor on it), `z` fold / unfold, `enter` jump to a pane, `a` start, `A` a
 pane for it, `x` more actions (stop, restart, sweep, rm, adopt; on a fleet: `R`
 muster), `u` up a fleet with its parked ships, `m` message, `!` what waits on you, `i`
 every issue with its fix, `c`/`e`/`D` create, edit, remove, `?` all keys (`?`
