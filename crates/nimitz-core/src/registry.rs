@@ -339,6 +339,123 @@ fn kept_name(now: f64, pid: u32) -> String {
     format!("registry.json.corrupt-{}.{:06}-{pid}", micros / 1_000_000, micros % 1_000_000)
 }
 
+/// The kept files (`registry.json.corrupt-*`, not their notes, not one
+/// archived as `.restored`), oldest name first.
+pub fn kept_files(env: &Env) -> Vec<PathBuf> {
+    let mut kept: Vec<PathBuf> = std::fs::read_dir(&env.state)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    n.starts_with("registry.json.corrupt-") && !n.ends_with(".txt") && !n.ends_with(RESTORED)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    kept.sort();
+    kept
+}
+
+/// What a kept file is archived as once `restore_from_kept` has read it.
+const RESTORED: &str = ".restored";
+
+/// A kept file this nimitz reads (not too new for it): an older nimitz set
+/// it aside, it was never corrupt.
+fn readable_kept(env: &Env, k: &Path) -> Option<Registry> {
+    let raw = std::fs::read_to_string(k).ok()?;
+    if too_new(env, &raw).is_some() {
+        return None;
+    }
+    parse(&raw).ok()
+}
+
+/// What `restore_from_kept` did, or would do.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Restored {
+    /// `MAIN/ARGOS/ARGOS: job 8a1b2c3d`, one per field filled
+    pub filled: Vec<String>,
+    /// the kept files archived (they read fine)
+    pub archived: Vec<PathBuf>,
+    /// the kept files left (they do not parse: still `registry.corrupt`)
+    pub left: Vec<PathBuf>,
+}
+
+/// Fill what the registry lacks from the kept files that read fine (issue
+/// #1: an older nimitz set a good file aside and rebuilt it without jobs or
+/// folders): for each identity, a missing `cwd`, a missing `job`, and a
+/// lineage entry's missing `job`, from the newest kept file (by its
+/// `updated_at`) that has the identity on the same conversation (its
+/// `session`, or a lineage entry with the same session id). A value present
+/// is never overwritten, no identity is added or removed. Then those kept
+/// files are archived as `<name>.restored` (their notes too), so
+/// `registry.corrupt` clears; a kept file that does not parse stays.
+/// `dry`: say what would be done, change nothing.
+pub fn restore_from_kept(env: &Env, dry: bool) -> std::io::Result<Restored> {
+    let mut good: Vec<(PathBuf, Registry)> = vec![];
+    let mut out = Restored::default();
+    for k in kept_files(env) {
+        match readable_kept(env, &k) {
+            Some(r) => good.push((k, r)),
+            None => out.left.push(k),
+        }
+    }
+    if good.is_empty() {
+        return Ok(out);
+    }
+    good.sort_by(|a, b| b.1.updated_at.partial_cmp(&a.1.updated_at).unwrap_or(std::cmp::Ordering::Equal));
+    let fill = |r: &mut Registry| {
+        let mut filled = vec![];
+        for (id, rec) in r.identities.iter_mut() {
+            let ours: Vec<String> = rec.session.iter().cloned().chain(rec.lineage.iter().map(|l| l.session_id.clone())).collect();
+            for (_, kr) in &good {
+                let Some(old) = kr.identities.get(id) else { continue };
+                let same = old.session.as_ref().is_some_and(|s| ours.contains(s)) || old.lineage.iter().any(|l| ours.contains(&l.session_id));
+                if !same {
+                    continue;
+                }
+                if rec.cwd.is_empty() && !old.cwd.is_empty() {
+                    rec.cwd = old.cwd.clone();
+                    filled.push(format!("{id}: cwd {}", rec.cwd));
+                }
+                // the record's job: from a kept record on this very conversation
+                if rec.job.is_none() {
+                    let job = match (&old.session, &rec.session) {
+                        (Some(a), Some(b)) if a == b => old.job.clone(),
+                        _ => None,
+                    }
+                    .or_else(|| rec.session.as_ref().and_then(|s| old.lineage.iter().find(|l| &l.session_id == s)).and_then(|l| l.job.clone()));
+                    if let Some(j) = job {
+                        filled.push(format!("{id}: job {j}"));
+                        rec.job = Some(j);
+                    }
+                }
+                for l in rec.lineage.iter_mut().filter(|l| l.job.is_none()) {
+                    if let Some(j) = old.lineage.iter().find(|o| o.session_id == l.session_id).and_then(|o| o.job.clone()) {
+                        filled.push(format!("{id}: lineage {} job {j}", &l.session_id[..l.session_id.len().min(8)]));
+                        l.job = Some(j);
+                    }
+                }
+            }
+        }
+        filled
+    };
+    if dry {
+        // the file as a writer sees it (every home's bindings), as `update` would
+        let mut r = load_checked(env, false)?.r;
+        out.filled = fill(&mut r);
+    } else {
+        out.filled = update(env, fill)?;
+        for (k, _) in &good {
+            let to = PathBuf::from(format!("{}{RESTORED}", k.display()));
+            std::fs::rename(k, &to)?;
+            let _ = std::fs::rename(note_path(k), note_path(&to));
+        }
+    }
+    out.archived = good.into_iter().map(|(k, _)| k).collect();
+    Ok(out)
+}
+
 fn note_path(kept: &Path) -> PathBuf {
     PathBuf::from(format!("{}.txt", kept.display()))
 }
@@ -349,18 +466,12 @@ fn note_path(kept: &Path) -> PathBuf {
 pub fn health(env: &Env) -> Vec<Issue> {
     let mut out = vec![];
     let reg = env.registry_path();
-    let mut kept: Vec<PathBuf> = std::fs::read_dir(&env.state)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    let n = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    n.starts_with("registry.json.corrupt-") && !n.ends_with(".txt")
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    kept.sort();
+    let kept = kept_files(env);
+    // an older nimitz still running keeps setting the file aside (issue #1):
+    // the kept files say who, and quitting it comes first
+    let stale = if kept.is_empty() { vec![] } else { crate::os::stale_processes() };
+    let quit = (!stale.is_empty()).then(|| format!("{} is an older nimitz: quit it first, then ", stale.iter().map(crate::os::Stale::short).collect::<Vec<_>>().join(", ")));
+    let older = (!stale.is_empty()).then(|| format!(" ({} still runs)", stale.iter().map(crate::os::Stale::short).collect::<Vec<_>>().join(", "))).unwrap_or_default();
     // the file is gone but its last good copy is not: nimitz works from the
     // copy until the next write saves it (a reset removes both files)
     if !reg.exists() {
@@ -381,17 +492,27 @@ pub fn health(env: &Env) -> Vec<Issue> {
     }
     for k in &kept {
         let what = std::fs::read_to_string(note_path(k)).unwrap_or_else(|_| "rebuilt from what was left".into());
-        out.push(Issue {
-            code: "registry.corrupt".into(),
-            severity: Severity::Error,
-            message: format!(
-                "{} did not parse; the bad file is kept as {}; {what}. Lineages from before may be incomplete, so a start could lose a conversation",
-                reg.display(),
-                k.display()
+        let (message, fix) = match readable_kept(env, k) {
+            // valid JSON this nimitz reads: an older nimitz could not (issue #1)
+            Some(r) => (
+                format!(
+                    "{} was set aside as {} by an older nimitz{older}; it reads fine (holds {} identities); {what}. The rebuild may lack a job or a folder it holds",
+                    reg.display(),
+                    k.display(),
+                    r.identities.len()
+                ),
+                format!("{}nimitz doctor --fix (fills what the registry lacks from it and archives it as .restored)", quit.clone().unwrap_or_default()),
             ),
-            fix: Some(format!("check the members with `nimitz status`, then rm {} {}", k.display(), note_path(k).display())),
-            id: None,
-        });
+            None => (
+                format!(
+                    "{} did not parse; the bad file is kept as {}{older}; {what}. Lineages from before may be incomplete, so a start could lose a conversation",
+                    reg.display(),
+                    k.display()
+                ),
+                format!("{}check the members with `nimitz status`, then rm {} {}", quit.clone().unwrap_or_default(), k.display(), note_path(k).display()),
+            ),
+        };
+        out.push(Issue { code: "registry.corrupt".into(), severity: Severity::Error, message, fix: Some(fix), id: None });
     }
     if let Some(r) = std::fs::read_to_string(&reg).ok().filter(|raw| too_new(env, raw).is_none()).and_then(|raw| parse(&raw).ok()).filter(|r| !r.unknown.records.is_empty()) {
         out.push(Issue {
@@ -1018,6 +1139,87 @@ mod tests {
             std::fs::write(env.state.join(n), "{garbage").unwrap();
         }
         assert_eq!(health(&env).iter().filter(|i| i.code == "registry.corrupt").count(), 2);
+    }
+
+    /// Issue #1: a 0.3.x process set a good v3 file aside and rebuilt the
+    /// registry as v1, without jobs or folders. The kept file reads fine:
+    /// `health` says so, and the restore fills what the rebuild lacks (never
+    /// over a value it has, no identity added), then archives it. A kept
+    /// file that does not parse stays, and stays blocking.
+    #[test]
+    fn a_kept_file_that_reads_fine_restores_what_the_rebuild_lost_and_is_archived() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let ship = "MAIN/ARGOS/ARGOS";
+        let kept_v3 = serde_json::json!({"version": 3, "min_nimitz": "0.5.0", "machine": "m", "updated_at": 5.0, "identities": {
+            ship: {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/w/argos", "job": "aaaa1111", "session": "sid-2",
+                "lineage": [{"session_id": "sid-1", "job": "oldjob11", "via": "launch", "at": 1.0}, {"session_id": "sid-2", "job": "aaaa1111", "via": "resume", "at": 2.0}]},
+            "MAIN/ARGOS": {"role": "commodore", "name": "[MAIN.ARGOS]-COMMODORE", "cwd": "/w/sq", "job": "cccc2222", "session": "c-1",
+                "lineage": [{"session_id": "c-1", "job": "cccc2222", "via": "launch", "at": 1.0}]},
+            "MAIN/GONE": {"role": "commodore", "name": "[MAIN.GONE]-COMMODORE", "cwd": "/w/gone", "session": "g-1", "lineage": []}}});
+        let k = env.state.join("registry.json.corrupt-1791905021");
+        std::fs::write(&k, kept_v3.to_string()).unwrap();
+        std::fs::write(note_path(&k), "11 identities rebuilt from 11 SessionStart event(s)").unwrap();
+        // the 0.3.x rebuild: v1, no jobs, the ship's folder lost; the
+        // commodore keeps a folder of its own and is on another conversation
+        let v1 = serde_json::json!({"version": 1, "machine": "m", "identities": {
+            ship: {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "", "current": "sid-2",
+                "lineage": [{"session_id": "sid-1", "bound_at": 1.0, "via": "launch"}, {"session_id": "sid-2", "bound_at": 2.0, "via": "resume"}]},
+            "MAIN/ARGOS": {"role": "commodore", "name": "[MAIN.ARGOS]-COMMODORE", "cwd": "/w/sq2", "current": "c-9",
+                "lineage": [{"session_id": "c-9", "bound_at": 3.0, "via": "launch"}]}}});
+        std::fs::write(env.registry_path(), v1.to_string()).unwrap();
+        let h = health(&env);
+        let i = h.iter().find(|i| i.code == "registry.corrupt").expect("still blocking until archived");
+        assert!(i.message.contains("set aside") && i.message.contains("reads fine (holds 3 identities)"), "{}", i.message);
+        assert!(i.fix.as_deref().unwrap_or("").contains("nimitz doctor --fix"), "{i:?}");
+        // the plan first: nothing changes
+        let dry = restore_from_kept(&env, true).unwrap();
+        assert_eq!(dry.filled, [format!("{ship}: cwd /w/argos"), format!("{ship}: job aaaa1111"), format!("{ship}: lineage sid-1 job oldjob11"), format!("{ship}: lineage sid-2 job aaaa1111")]);
+        assert_eq!(dry.archived, [k.clone()]);
+        assert!(k.is_file() && parse_file(&env.registry_path()).unwrap().version == 1);
+        let done = restore_from_kept(&env, false).unwrap();
+        assert_eq!(done.filled, dry.filled);
+        let r = parse_file(&env.registry_path()).unwrap();
+        let rec = &r.identities[ship];
+        assert_eq!((rec.cwd.as_str(), rec.job.as_deref()), ("/w/argos", Some("aaaa1111")));
+        assert_eq!(rec.lineage.iter().map(|l| l.job.as_deref()).collect::<Vec<_>>(), [Some("oldjob11"), Some("aaaa1111")]);
+        let c = &r.identities["MAIN/ARGOS"];
+        assert_eq!((c.cwd.as_str(), c.job.as_deref()), ("/w/sq2", None), "another conversation: nothing taken, nothing overwritten");
+        assert_eq!(r.identities.len(), 2, "no identity added");
+        assert_eq!(r.version, REGISTRY_VERSION);
+        assert!(!k.exists() && PathBuf::from(format!("{}.restored", k.display())).is_file() && PathBuf::from(format!("{}.restored.txt", k.display())).is_file());
+        assert!(!health(&env).iter().any(|i| i.code == "registry.corrupt"), "{:?}", health(&env));
+        assert_eq!(restore_from_kept(&env, false).unwrap(), Restored::default(), "once is enough");
+        // a kept file that does not parse stays, and blocks
+        let bad = env.state.join("registry.json.corrupt-1791905099");
+        std::fs::write(&bad, "{garbage").unwrap();
+        let again = restore_from_kept(&env, false).unwrap();
+        assert_eq!((again.archived.len(), again.left), (0, vec![bad.clone()]));
+        assert!(bad.is_file());
+        let h = health(&env);
+        assert!(h.iter().any(|i| i.code == "registry.corrupt" && i.message.contains("did not parse")), "{h:?}");
+    }
+
+    /// Issue #1: while an older nimitz runs it sets each new file aside
+    /// again, so `registry.corrupt` names it and says to quit it first.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_kept_file_names_the_older_process_still_running() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.state.join("registry.json.corrupt-1"), "{garbage").unwrap();
+        let exe = env.state.join("admiralty");
+        std::fs::copy("/bin/sleep", &exe).unwrap();
+        let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
+        std::fs::remove_file(&exe).unwrap();
+        let h = health(&env);
+        let _ = child.kill();
+        let _ = child.wait();
+        let i = h.iter().find(|i| i.code == "registry.corrupt").unwrap();
+        let who = format!("pid {} (admiralty, executable replaced)", child.id());
+        assert!(i.message.contains(&who), "{}", i.message);
+        let fix = i.fix.as_deref().unwrap();
+        assert!(fix.contains(&who) && fix.contains("is an older nimitz: quit it first, then "), "{fix}");
     }
 
     #[cfg(unix)]

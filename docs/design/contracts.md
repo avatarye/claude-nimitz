@@ -179,7 +179,15 @@ until the kept file is removed. The shapes an older nimitz wrote (v1, v2)
 read as they are and are never set aside; every write (a rebuild's too)
 saves the current version and `min_nimitz`, whatever version was loaded
 (0.7.6, issue #1: a 0.3.x Admiralty left running after an upgrade read each
-v2/v3 file as corrupt and rebuilt it as v1; `doctor` names such processes). Version 2 (plan-v4 section 2): the anchor of an
+v2/v3 file as corrupt and rebuilt it as v1; `doctor` names such processes,
+and `registry.corrupt` names them while a kept file exists: quit them first).
+A kept file this nimitz reads was set aside by an older one, not corrupt:
+`check` says so, and `doctor --fix` fills from it what the registry lacks
+(an identity's missing `cwd` or `job`, a lineage entry's missing `job`, from
+the newest such file with the identity on the same conversation; never over
+a value, never an identity added or removed), then archives it as
+`<name>.restored`, which clears `registry.corrupt`. A kept file that does not
+parse stays, and starts stay blocked until it is removed. Version 2 (plan-v4 section 2): the anchor of an
 identity is its **job** (the Claude Code short id); `session` is the conversation
 it runs now; `lineage` every conversation it had:
 

@@ -831,27 +831,42 @@ fn w_and_x_list_the_same_actions_in_the_same_order_on_every_row_kind() {
                 }
                 seen.push(what.to_string());
                 goto(&mut t.app, &id);
-                let menu = t.app.action_menu();
-                let lines: Vec<String> = admiralty::detail::detail_lines(&t.app, 200).iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
-                let at = lines.iter().position(|l| l == "ACTIONS").unwrap_or_else(|| panic!("{what}: {lines:?}"));
-                // after the jump line (enter), one line per entry, then the footer
-                let listed: Vec<&String> = lines[at + 2..at + 2 + menu.len()].iter().collect();
-                let keys: Vec<String> = listed.iter().map(|l| l.trim_start().chars().take(4).collect::<String>().trim().to_string()).collect();
-                assert_eq!(keys, menu.iter().map(|i| i.main_key()).collect::<Vec<_>>(), "{what} ({id}): {listed:?}");
-                assert!(lines[at + 2 + menu.len()..].iter().any(|l| l.contains("this list as a menu")), "{what}: {lines:?}");
-                for (it, l) in menu.iter().zip(&listed) {
-                    match &it.enabled {
-                        Ok(()) => assert!(l.contains(&it.label), "{what}: {l} / {}", it.label),
-                        Err(why) if why == actions::MONITOR_ONLY => assert!(l.contains("monitor-only"), "{what}: {l}"),
-                        Err(why) => assert!(l.contains(why.as_str()), "{what}: {l} / {why}"),
-                    }
-                }
+                same_actions_in_w_and_x(&t.app, what);
             }
         }
+        // a legacy session (a stowaway an old fleet ran): `x d` adopts it as the
+        // identity its fix names, in both lists
+        goto(&mut t.app, "SW:ab99ab99-0000-4000-8000-000000000000");
+        assert!(t.app.legacy_adopt().is_some());
+        let listed = same_actions_in_w_and_x(&t.app, "legacy");
+        assert!(listed.iter().any(|l| l.trim_start().starts_with("x d") && l.contains("adopt this legacy session as MAIN/KITS")), "{listed:?}");
+        assert!(t.app.action_menu().iter().any(|i| i.key == 'd' && matches!(i.action, admiralty::app::MenuAction::AdoptAs(..)) && i.enabled.is_ok()));
         for what in ["fleet band", "squadron band", "admiral", "commodore", "ship", "stowaway", "extra row"] {
             assert!(seen.iter().any(|s| s == what), "the fixture has no {what} row: {seen:?}");
         }
     }
+}
+
+/// The detail panel's ACTIONS lines for the selected row, checked against
+/// its action menu: the same entries in the same order, each with its key,
+/// its label when open, its reason when closed.
+fn same_actions_in_w_and_x(app: &admiralty::app::App, what: &str) -> Vec<String> {
+    let menu = app.action_menu();
+    let lines: Vec<String> = admiralty::detail::detail_lines(app, 200).iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
+    let at = lines.iter().position(|l| l == "ACTIONS").unwrap_or_else(|| panic!("{what}: {lines:?}"));
+    // after the jump line (enter), one line per entry, then the footer
+    let listed: Vec<String> = lines[at + 2..at + 2 + menu.len()].to_vec();
+    let keys: Vec<String> = listed.iter().map(|l| l.trim_start().chars().take(4).collect::<String>().trim().to_string()).collect();
+    assert_eq!(keys, menu.iter().map(|i| i.main_key()).collect::<Vec<_>>(), "{what}: {listed:?}");
+    assert!(lines[at + 2 + menu.len()..].iter().any(|l| l.contains("this list as a menu")), "{what}: {lines:?}");
+    for (it, l) in menu.iter().zip(&listed) {
+        match &it.enabled {
+            Ok(()) => assert!(l.contains(&it.label), "{what}: {l} / {}", it.label),
+            Err(why) if why == actions::MONITOR_ONLY => assert!(l.contains("monitor-only"), "{what}: {l}"),
+            Err(why) => assert!(l.contains(why.as_str()), "{what}: {l} / {why}"),
+        }
+    }
+    listed
 }
 
 #[test]

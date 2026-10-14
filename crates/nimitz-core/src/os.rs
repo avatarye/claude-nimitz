@@ -200,6 +200,44 @@ pub fn running_named(names: &[&str]) -> Vec<(i64, String)> {
     }
 }
 
+/// Does `running_named` look at the processes on this OS (`/proc`)?
+pub const SCANS_PROCESSES: bool = cfg!(target_os = "linux");
+
+/// A running nimitz or Admiralty older than the one installed (`stale_exe`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Stale {
+    pub pid: i64,
+    pub name: &'static str,
+    /// its executable was replaced or removed after it started
+    pub replaced: bool,
+    pub why: String,
+}
+
+impl Stale {
+    /// `pid 176935 (admiralty, executable replaced)`
+    pub fn short(&self) -> String {
+        format!("pid {} ({}, {})", self.pid, self.name, if self.replaced { "executable replaced" } else { "an older build" })
+    }
+}
+
+/// The running nimitz and Admiralty processes older than the binaries
+/// installed now: those beside this process's own executable (issue #1: an
+/// old core reads a newer registry as corrupt and rebuilds it in its old
+/// shape). None where `SCANS_PROCESSES` is false.
+pub fn stale_processes() -> Vec<Stale> {
+    let Ok(me) = std::env::current_exe() else { return vec![] };
+    let mut out = vec![];
+    for name in ["nimitz", "admiralty"] {
+        let installed = me.with_file_name(exe_name(name));
+        for (pid, exe) in running_named(&[name]) {
+            if let Some(why) = stale_exe(&exe, &installed) {
+                out.push(Stale { pid, name, replaced: exe.ends_with(DELETED), why });
+            }
+        }
+    }
+    out
+}
+
 /// What Linux appends to `/proc/<pid>/exe` once the file is gone.
 const DELETED: &str = " (deleted)";
 

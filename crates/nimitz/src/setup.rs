@@ -349,22 +349,50 @@ fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
 /// registry as corrupt, keeps it aside and rebuilds it in its old shape.
 /// The installed binaries are this nimitz and the `admiralty` beside it.
 fn stale_processes(r: &mut Report) {
-    let Ok(me) = std::env::current_exe() else { return };
-    let mut stale: Vec<String> = vec![];
-    for name in ["nimitz", "admiralty"] {
-        let installed = me.with_file_name(nimitz_core::os::exe_name(name));
-        for (pid, exe) in nimitz_core::os::running_named(&[name]) {
-            if let Some(why) = nimitz_core::os::stale_exe(&exe, &installed) {
-                stale.push(format!("{name} pid {pid} ({why})"));
-            }
-        }
+    if !nimitz_core::os::SCANS_PROCESSES {
+        // macOS and Windows would need a process walk nimitz has nowhere else
+        r.info("older-process check: not done on this OS (quit every Admiralty and long-running nimitz started before an upgrade)", None);
+        return;
     }
+    let stale: Vec<String> = nimitz_core::os::stale_processes().iter().map(|s| format!("{} pid {} ({})", s.name, s.pid, s.why)).collect();
     if !stale.is_empty() {
         r.warn(
             &format!("{} process(es) run an older nimitz than the one installed: {}; an older nimitz reads a newer registry as corrupt, keeps it aside and rebuilds it in its old shape", stale.len(), stale.join("; ")),
             Some("quit them (q in Admiralty, or kill <pid>), then start them again"),
         );
     }
+}
+
+/// The registry files set aside as corrupt (issue #1). One that reads fine
+/// was set aside by an older nimitz: `--fix` fills what the registry lacks
+/// from it (`registry::restore_from_kept`) and archives it. One that does
+/// not parse stays an error, with its own fix.
+fn kept_registries(env: &nimitz_core::env::Env, r: &mut Report) {
+    let plan = match nimitz_core::registry::restore_from_kept(env, true) {
+        Ok(p) => p,
+        Err(e) => {
+            r.err(&format!("registry: the kept files could not be read: {e}"), None);
+            return;
+        }
+    };
+    for k in &plan.left {
+        r.err(&format!("registry: {} did not parse when it was set aside, and still does not; starts are blocked until it is removed", k.display()), Some(&format!("check the members with `nimitz status`, then rm {}*", k.display())));
+    }
+    if plan.archived.is_empty() {
+        return;
+    }
+    let names: Vec<String> = plan.archived.iter().map(|k| k.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+    let fields = if plan.filled.is_empty() { "nothing is missing from the registry".to_string() } else { format!("{} missing field(s) can be filled from them: {}", plan.filled.len(), plan.filled.join(", ")) };
+    r.err(
+        &format!("registry: {} kept file(s) set aside by an older nimitz read fine ({}); {fields}; starts are blocked until they are archived", names.len(), names.join(", ")),
+        Some("nimitz doctor --fix (quit any older nimitz first, see above)"),
+    );
+    r.fixes.steps.push(Step {
+        id: None,
+        cmd: vec!["registry-restore".into()],
+        cwd: None,
+        why: format!("fill what the registry lacks from {} (never over a value it has), then archive them as .restored", names.join(", ")),
+    });
 }
 
 fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
@@ -384,6 +412,7 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         r.ok(&format!("machine label {}", reg.machine));
     }
     stale_processes(&mut r);
+    kept_registries(env, &mut r);
     if env.home.is_dir() {
         if trusted(ctx, &env.home) {
             r.ok(&format!("Claude Code trusts {}", env.home.display()));
@@ -595,6 +624,16 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             out::Go::Exit(c) => return c.max(1),
             out::Go::Run => {
                 for s in &fixes.steps {
+                    if s.cmd[0] == "registry-restore" {
+                        match nimitz_core::registry::restore_from_kept(&ctx.env, false) {
+                            Ok(done) => {
+                                out::ok(&format!("fixed: {} field(s) filled, {} kept file(s) archived", done.filled.len(), done.archived.len()));
+                                r.errors -= 1;
+                            }
+                            Err(e) => out::error(&format!("fix failed: {e}")),
+                        }
+                        continue;
+                    }
                     if s.cmd[0] == "trust" {
                         match nimitz_core::trust::write(&ctx.env, Path::new(&s.cmd[1])) {
                             Ok(_) => {
