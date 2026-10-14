@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.5 (unreleased)
+
+### Changed
+
+- **What each member is working on.** Admiralty's DETAIL column shows a
+  member's current topic (Claude Code's own one-line summary of the job,
+  `detail` in its job file; a finished job's result) instead of the status
+  reasons, which stay in the `w` pane; issue codes, the needs-you question
+  and running crew still come first. `nimitz status` ends each member's line
+  with `-- <topic>`, cut to the terminal width, and `status --json` carries
+  `topic`.
+- **Admiralty's second status row** reads `Nimitz: v0.7.5  Claude Code:
+  v2.1.296 (supported)  Machine: <label>`, then the date and time at the
+  right. A version mismatch and an unsupported Claude Code stay flagged; the
+  refresh age shows only when the data is stale (`stale 12s`). `q quit` is in
+  the `?` panel.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). No format or rules change.
+
 ## 0.7.4 (2026-10-12)
 
 ### Changed
