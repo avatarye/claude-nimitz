@@ -176,7 +176,7 @@ pub fn exe_of(pid: i64) -> Option<String> {
 /// The other running processes whose executable is named one of `names`
 /// (`nimitz`, `admiralty`): (pid, executable as the system gives it, with
 /// Linux's ` (deleted)` when the file was replaced since the process
-/// started). Linux only (`/proc`); elsewhere none: macOS and Windows would
+/// started). Only this user's processes. Linux only (`/proc`); elsewhere none: macOS and Windows would
 /// need a process walk (`proc_listallpids`, a toolhelp snapshot) that
 /// nothing else in nimitz needs, so `doctor` does not look there.
 pub fn running_named(names: &[&str]) -> Vec<(i64, String)> {
@@ -186,7 +186,7 @@ pub fn running_named(names: &[&str]) -> Vec<(i64, String)> {
         let Ok(rd) = std::fs::read_dir("/proc") else { return vec![] };
         let mut out: Vec<(i64, String)> = rd
             .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i64>().ok())
-            .filter(|pid| *pid != me)
+            .filter(|pid| *pid != me && owned_by_me(Path::new(&format!("/proc/{pid}"))))
             .filter_map(|pid| Some((pid, exe_of(pid)?)))
             .filter(|(_, exe)| Path::new(exe.trim_end_matches(DELETED)).file_name().and_then(|n| n.to_str()).is_some_and(|n| names.contains(&n)))
             .collect();
@@ -226,7 +226,21 @@ impl Stale {
 /// this process's own executable and this build's version, each other
 /// executable asked its version once (`version_at`). None where
 /// `SCANS_PROCESSES` is false.
+/// Scanned once per process (`check` asks for every kept file); unit tests
+/// scan each time, as they start the processes they look for.
 pub fn stale_processes() -> Vec<Stale> {
+    #[cfg(test)]
+    {
+        scan_stale()
+    }
+    #[cfg(not(test))]
+    {
+        static SCAN: std::sync::OnceLock<Vec<Stale>> = std::sync::OnceLock::new();
+        SCAN.get_or_init(scan_stale).clone()
+    }
+}
+
+fn scan_stale() -> Vec<Stale> {
     let Ok(me) = std::env::current_exe() else { return vec![] };
     let mut asked: std::collections::HashMap<std::path::PathBuf, Option<String>> = Default::default();
     let mut version_of = |p: &Path| asked.entry(p.to_path_buf()).or_insert_with(|| version_at(p)).clone();
@@ -248,25 +262,41 @@ pub fn stale_processes() -> Vec<Stale> {
 /// Run with an empty environment and given 2 s; None when it does not answer.
 pub fn version_at(exe: &Path) -> Option<String> {
     let probe = if exe.file_stem().is_some_and(|n| n == "nimitz") { exe.to_path_buf() } else { exe.with_file_name(exe_name("nimitz")) };
-    if !probe.is_file() {
+    // never another user's binary
+    if !probe.is_file() || !owned_by_me(&probe) {
         return None;
     }
     let mut child = Command::new(&probe).arg("--version").env_clear().stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+    // the output within the limit, read on a thread: a child of the probe
+    // that keeps its stdout open never holds doctor past it
+    let mut out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut out, &mut text);
+        let _ = tx.send(text);
+    });
+    let text = rx.recv_timeout(std::time::Duration::from_secs(2)).ok();
+    if !matches!(child.try_wait(), Ok(Some(_))) {
+        let _ = child.kill();
     }
-    let mut text = String::new();
-    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut text).ok()?;
-    text.trim().strip_prefix("nimitz ").map(|v| v.trim().to_string()).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+    let _ = child.wait();
+    text?.trim().strip_prefix("nimitz ").map(|v| v.trim().to_string()).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+}
+
+/// Is `p` (a file, or a `/proc/<pid>` folder: its process) this user's?
+/// Elsewhere than Unix: yes (nothing there probes another user's binaries).
+fn owned_by_me(p: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(p).is_ok_and(|m| m.uid() == unsafe { libc::geteuid() })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = p;
+        true
+    }
 }
 
 /// What Linux appends to `/proc/<pid>/exe` once the file is gone.
@@ -760,7 +790,7 @@ pub(crate) mod win {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -893,7 +923,7 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         let exe = d.join("admiralty");
         std::fs::copy("/bin/sleep", &exe).unwrap();
-        let mut child = Command::new(&exe).arg("30").spawn().unwrap();
+        let mut child = spawn_fresh(&exe, "30");
         std::fs::remove_file(&exe).unwrap();
         let pid = i64::from(child.id());
         let found = running_named(&["admiralty"]).into_iter().find(|(p, _)| *p == pid);
@@ -904,6 +934,20 @@ mod tests {
         assert!(at.ends_with(" (deleted)"), "{at}");
         assert!(stale_exe(&at, &exe, "0.7.6", &mut |_: &Path| None).is_some());
         assert!(!running_named(&["admiralty"]).iter().any(|(p, _)| *p == i64::from(std::process::id())));
+    }
+
+    /// Start a binary just written: another test's fork may hold it open for
+    /// writing a moment (ETXTBSY), so try again.
+    #[cfg(target_os = "linux")]
+    pub fn spawn_fresh(exe: &Path, arg: &str) -> std::process::Child {
+        for _ in 0..50 {
+            match Command::new(exe).arg(arg).spawn() {
+                Ok(c) => return c,
+                Err(e) if e.raw_os_error() == Some(26) => std::thread::sleep(std::time::Duration::from_millis(20)),
+                Err(e) => panic!("{}: {e}", exe.display()),
+            }
+        }
+        panic!("{} stays busy", exe.display())
     }
 
     #[test]

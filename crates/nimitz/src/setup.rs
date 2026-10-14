@@ -375,6 +375,9 @@ fn kept_registries(env: &nimitz_core::env::Env, r: &mut Report) {
             return;
         }
     };
+    for k in &plan.newer {
+        r.warn(&format!("registry: {} was written by a newer nimitz and set aside by an older one; this nimitz never reads it", k.display()), Some("keep it; install that newer nimitz to read it"));
+    }
     for k in &plan.left {
         r.err(&format!("registry: {} did not parse when it was set aside, and still does not; starts are blocked until it is removed", k.display()), Some(&format!("check the members with `nimitz status`, then rm {}*", k.display())));
     }
@@ -382,10 +385,24 @@ fn kept_registries(env: &nimitz_core::env::Env, r: &mut Report) {
         return;
     }
     let names: Vec<String> = plan.archived.iter().map(|k| k.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect();
+    // an older nimitz still running sets the restored file aside again: it goes first
+    let stale = nimitz_core::os::stale_processes();
+    if !stale.is_empty() {
+        r.err(
+            &format!(
+                "registry: {} kept file(s) set aside by an older nimitz read fine ({}), but {} still runs: a restore now would be set aside again",
+                names.len(),
+                names.join(", "),
+                stale.iter().map(nimitz_core::os::Stale::short).collect::<Vec<_>>().join(", ")
+            ),
+            Some("quit them, then nimitz doctor --fix"),
+        );
+        return;
+    }
     let fields = if plan.filled.is_empty() { "nothing is missing from the registry".to_string() } else { format!("{} missing field(s) can be filled from them: {}", plan.filled.len(), plan.filled.join(", ")) };
     r.err(
         &format!("registry: {} kept file(s) set aside by an older nimitz read fine ({}); {fields}; starts are blocked until they are archived", names.len(), names.join(", ")),
-        Some("nimitz doctor --fix (quit any older nimitz first, see above)"),
+        Some("nimitz doctor --fix"),
     );
     r.fixes.steps.push(Step {
         id: None,

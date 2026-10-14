@@ -370,6 +370,11 @@ fn readable_kept(env: &Env, k: &Path) -> Option<Registry> {
     parse(&raw).ok()
 }
 
+/// Why a kept file is a newer nimitz's (`too_new`), when it is.
+fn kept_too_new(env: &Env, k: &Path) -> Option<crate::formats::TooNew> {
+    too_new(env, &std::fs::read_to_string(k).ok()?)
+}
+
 /// What `restore_from_kept` did, or would do.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Restored {
@@ -379,6 +384,8 @@ pub struct Restored {
     pub archived: Vec<PathBuf>,
     /// the kept files left (they do not parse: still `registry.corrupt`)
     pub left: Vec<PathBuf>,
+    /// the kept files a newer nimitz wrote: kept for it, never read here
+    pub newer: Vec<PathBuf>,
 }
 
 /// Fill what the registry lacks from the kept files that read fine (issue
@@ -397,13 +404,15 @@ pub fn restore_from_kept(env: &Env, dry: bool) -> std::io::Result<Restored> {
     for k in kept_files(env) {
         match readable_kept(env, &k) {
             Some(r) => good.push((k, r)),
+            None if kept_too_new(env, &k).is_some() => out.newer.push(k),
             None => out.left.push(k),
         }
     }
     if good.is_empty() {
         return Ok(out);
     }
-    good.sort_by(|a, b| b.1.updated_at.partial_cmp(&a.1.updated_at).unwrap_or(std::cmp::Ordering::Equal));
+    // newest first; on a tie, the newest name
+    good.sort_by(|a, b| b.1.updated_at.partial_cmp(&a.1.updated_at).unwrap_or(std::cmp::Ordering::Equal).then_with(|| b.0.cmp(&a.0)));
     let fill = |r: &mut Registry| {
         let mut filled = vec![];
         for (id, rec) in r.identities.iter_mut() {
@@ -431,9 +440,14 @@ pub fn restore_from_kept(env: &Env, dry: bool) -> std::io::Result<Restored> {
                     }
                 }
                 for l in rec.lineage.iter_mut().filter(|l| l.job.is_none()) {
-                    if let Some(j) = old.lineage.iter().find(|o| o.session_id == l.session_id).and_then(|o| o.job.clone()) {
-                        filled.push(format!("{id}: lineage {} job {j}", &l.session_id[..l.session_id.len().min(8)]));
-                        l.job = Some(j);
+                    if let Some(o) = old.lineage.iter().find(|o| o.session_id == l.session_id && o.job.is_some()) {
+                        filled.push(format!("{id}: lineage {} job {}", &l.session_id[..l.session_id.len().min(8)], o.job.as_deref().unwrap_or_default()));
+                        l.job = o.job.clone();
+                        // the home that bound it comes with it: the write
+                        // stamps this home only on an entry that has none
+                        if l.home.is_none() {
+                            l.home = o.home.clone();
+                        }
                     }
                 }
             }
@@ -492,6 +506,18 @@ pub fn health(env: &Env) -> Vec<Issue> {
     }
     for k in &kept {
         let what = std::fs::read_to_string(note_path(k)).unwrap_or_else(|_| "rebuilt from what was left".into());
+        // a newer nimitz's file, set aside by an older one: kept for it
+        if let Some(t) = kept_too_new(env, k) {
+            let x = t.needs.clone().map(|v| format!("nimitz {v}")).unwrap_or_else(|| "a newer nimitz".into());
+            out.push(Issue {
+                code: "registry.corrupt".into(),
+                severity: Severity::Warn,
+                message: format!("{} was set aside as {}{older}; it was written by {x} (format {}); keep it, this nimitz never reads it", reg.display(), k.display(), t.format),
+                fix: Some(format!("{}keep it; install {x} or newer to read it (its doctor --fix restores from it)", quit.clone().unwrap_or_default())),
+                id: None,
+            });
+            continue;
+        }
         let (message, fix) = match readable_kept(env, k) {
             // valid JSON this nimitz reads: an older nimitz could not (issue #1)
             Some(r) => (
@@ -1153,7 +1179,7 @@ mod tests {
         let ship = "MAIN/ARGOS/ARGOS";
         let kept_v3 = serde_json::json!({"version": 3, "min_nimitz": "0.5.0", "machine": "m", "updated_at": 5.0, "identities": {
             ship: {"role": "ship", "name": "[MAIN.ARGOS]-ARGOS", "cwd": "/w/argos", "job": "aaaa1111", "session": "sid-2",
-                "lineage": [{"session_id": "sid-1", "job": "oldjob11", "via": "launch", "at": 1.0}, {"session_id": "sid-2", "job": "aaaa1111", "via": "resume", "at": 2.0}]},
+                "lineage": [{"session_id": "sid-1", "job": "oldjob11", "via": "launch", "at": 1.0, "home": "/other/home"}, {"session_id": "sid-2", "job": "aaaa1111", "via": "resume", "at": 2.0}]},
             "MAIN/ARGOS": {"role": "commodore", "name": "[MAIN.ARGOS]-COMMODORE", "cwd": "/w/sq", "job": "cccc2222", "session": "c-1",
                 "lineage": [{"session_id": "c-1", "job": "cccc2222", "via": "launch", "at": 1.0}]},
             "MAIN/GONE": {"role": "commodore", "name": "[MAIN.GONE]-COMMODORE", "cwd": "/w/gone", "session": "g-1", "lineage": []}}});
@@ -1183,6 +1209,10 @@ mod tests {
         let rec = &r.identities[ship];
         assert_eq!((rec.cwd.as_str(), rec.job.as_deref()), ("/w/argos", Some("aaaa1111")));
         assert_eq!(rec.lineage.iter().map(|l| l.job.as_deref()).collect::<Vec<_>>(), [Some("oldjob11"), Some("aaaa1111")]);
+        // the home that bound an entry comes with its job; one the kept file
+        // does not say is stamped by the write, as any binding without one
+        assert_eq!(rec.lineage[0].home.as_deref(), Some("/other/home"));
+        assert_eq!(rec.lineage[1].home.as_deref(), Some(env.home.to_string_lossy().as_ref()));
         let c = &r.identities["MAIN/ARGOS"];
         assert_eq!((c.cwd.as_str(), c.job.as_deref()), ("/w/sq2", None), "another conversation: nothing taken, nothing overwritten");
         assert_eq!(r.identities.len(), 2, "no identity added");
@@ -1200,6 +1230,31 @@ mod tests {
         assert!(h.iter().any(|i| i.code == "registry.corrupt" && i.message.contains("did not parse")), "{h:?}");
     }
 
+    /// Two kept files with one `updated_at`: the newest name wins. A kept
+    /// file a newer nimitz wrote is kept for it: a warning, never an rm, and
+    /// the restore leaves it.
+    #[test]
+    fn kept_files_tie_on_the_newest_name_and_a_newer_nimitz_s_file_is_kept() {
+        let (_td, env) = test_env();
+        std::fs::create_dir_all(&env.state).unwrap();
+        let kept = |cwd: &str| serde_json::json!({"version": 3, "machine": "m", "updated_at": 5.0, "identities": {
+            "MAIN": {"role": "admiral", "name": "[MAIN]-ADMIRAL", "cwd": cwd, "session": "a-1", "lineage": [{"session_id": "a-1", "via": "launch", "at": 1.0}]}}}).to_string();
+        std::fs::write(env.state.join("registry.json.corrupt-1791905021.000001-7"), kept("/older-name")).unwrap();
+        std::fs::write(env.state.join("registry.json.corrupt-1791905021.500000-7"), kept("/newer-name")).unwrap();
+        let newer = env.state.join("registry.json.corrupt-1791905030.000000-7");
+        std::fs::write(&newer, serde_json::json!({"version": REGISTRY_VERSION + 1, "min_nimitz": "99.0.0", "machine": "m", "identities": {}}).to_string()).unwrap();
+        std::fs::write(env.registry_path(), serde_json::json!({"version": 3, "machine": "m", "identities": {
+            "MAIN": {"role": "admiral", "name": "[MAIN]-ADMIRAL", "cwd": "", "session": "a-1", "lineage": [{"session_id": "a-1", "via": "launch", "at": 1.0}]}}}).to_string()).unwrap();
+        let h = health(&env);
+        let i = h.iter().find(|i| i.message.contains(&newer.display().to_string())).unwrap();
+        assert_eq!(i.severity, Severity::Warn, "{i:?}");
+        assert!(i.message.contains("written by nimitz 99.0.0") && i.fix.as_deref().is_some_and(|f| f.contains("keep it; install nimitz 99.0.0 or newer") && !f.contains("rm ")), "{i:?}");
+        let done = restore_from_kept(&env, false).unwrap();
+        assert_eq!(done.filled, ["MAIN: cwd /newer-name"]);
+        assert_eq!((done.archived.len(), done.newer, done.left.len()), (2, vec![newer.clone()], 0));
+        assert!(newer.is_file());
+    }
+
     /// Issue #1: while an older nimitz runs it sets each new file aside
     /// again, so `registry.corrupt` names it and says to quit it first.
     #[cfg(target_os = "linux")]
@@ -1210,7 +1265,7 @@ mod tests {
         std::fs::write(env.state.join("registry.json.corrupt-1"), "{garbage").unwrap();
         let exe = env.state.join("admiralty");
         std::fs::copy("/bin/sleep", &exe).unwrap();
-        let mut child = std::process::Command::new(&exe).arg("30").spawn().unwrap();
+        let mut child = crate::os::tests::spawn_fresh(&exe, "30");
         std::fs::remove_file(&exe).unwrap();
         let h = health(&env);
         let _ = child.kill();
