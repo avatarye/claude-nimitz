@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.7.6 (unreleased)
+
+### Fixed
+
+- **registry.json set aside as corrupt and rebuilt in old formats (#1).** An
+  older nimitz still running on the machine (an Admiralty 0.3.x left open
+  across the upgrade: its binary replaced, its old code in memory) cannot
+  read the newer registry, sets it aside and rebuilds it in the 0.3.x shape;
+  0.7.x then saved that as version 2, and the loop went on, blocking every
+  start. Now every write stamps the current version (3) and `min_nimitz`, a
+  rebuild migrates an older `.bak` first, and kept files are named
+  `corrupt-<secs>.<micros>-<pid>` so a burst never collides. `nimitz doctor`
+  warns about nimitz and Admiralty processes whose binary was replaced or
+  removed after they started (Linux), naming their pids: quit them.
+- **`start --force` over a failed lineage** removes the failed row after the
+  cold launch, as `--fresh` does, so the member gets no `copy.rows` (#2).
+- **Admiralty's `w` and `x`** list the same actions in the same order, from
+  one list; a closed action shows its reason in both (#4).
+
+### Changed
+
+- Admiralty's squadron bar shows the status glyph and the ship icon, like
+  the rows (`<glyph> busy   <ship> 6`) (#3).
+
+### Upgrading
+
+- Quit every Admiralty (and any long-running nimitz) started before the
+  upgrade; `nimitz doctor` lists them. Then install both crates and update
+  the plugin (`claude plugin marketplace update claude-nimitz && claude
+  plugin update nimitz@claude-nimitz`, then `/reload-plugins`).
+
 ## 0.7.5 (2026-10-14)
 
 ### Changed
