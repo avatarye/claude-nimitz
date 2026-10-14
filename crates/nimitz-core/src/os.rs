@@ -226,8 +226,9 @@ impl Stale {
 /// this process's own executable and this build's version, each other
 /// executable asked its version once (`version_at`). None where
 /// `SCANS_PROCESSES` is false.
-/// Scanned once per process (`check` asks for every kept file); unit tests
-/// scan each time, as they start the processes they look for.
+/// A scan is reused for 10 s: Admiralty runs `check` on every refresh, and
+/// a process quit or started since is seen at the next scan. Unit tests scan
+/// each time, as they start the processes they look for.
 pub fn stale_processes() -> Vec<Stale> {
     #[cfg(test)]
     {
@@ -235,8 +236,16 @@ pub fn stale_processes() -> Vec<Stale> {
     }
     #[cfg(not(test))]
     {
-        static SCAN: std::sync::OnceLock<Vec<Stale>> = std::sync::OnceLock::new();
-        SCAN.get_or_init(scan_stale).clone()
+        static SCAN: std::sync::Mutex<Option<(std::time::Instant, Vec<Stale>)>> = std::sync::Mutex::new(None);
+        let mut last = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+        match last.as_ref() {
+            Some((at, found)) if at.elapsed() < std::time::Duration::from_secs(10) => found.clone(),
+            _ => {
+                let found = scan_stale();
+                *last = Some((std::time::Instant::now(), found.clone()));
+                found
+            }
+        }
     }
 }
 
