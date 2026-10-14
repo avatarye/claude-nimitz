@@ -597,7 +597,15 @@ fn start_member(env: &Env, plan: &mut Plan, snap: &Snapshot, id: &Id, opts: Star
                 );
                 return;
             }
+            let before = plan.steps.len();
             cold_launch(env, plan, &fod, id, m.role, &mode, &cwd);
+            // the failed row goes after the launch, as `--fresh`'s do: left,
+            // it would be a copy row (`copy.rows`) straight away (issue #2)
+            if plan.steps.len() > before && p.pid.is_none() {
+                if let Some(short) = &p.short_id {
+                    plan.steps.push(step(id, crate::claude::rm(env, short), "drop the failed row: its lineage starts over (--force)"));
+                }
+            }
         }
         // stopped or parked with a row: wake it by its exact id (rows 4, 5)
         Some(_) => match wake_steps(env, m, &mode, &cwd) {

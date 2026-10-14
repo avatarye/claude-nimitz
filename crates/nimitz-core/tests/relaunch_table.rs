@@ -343,9 +343,16 @@ fn row8_failed_row_needs_force_then_cold_launches() {
     assert!(forced.ok(), "{:?}", forced.refusals);
     let steps = w.steps_of(&forced, &id);
     assert!(steps[0].cmd.contains(&"--bg".to_string()) && !steps[0].cmd.contains(&"--resume".to_string()), "{:?}", steps[0].cmd);
+    // issue #2: the failed row goes after the launch, as --fresh's do
+    let old = w.member(&snap, &id).session.unwrap().short_id.expect("the failed row has a short id");
+    assert_eq!(steps.len(), 2, "{steps:?}");
+    assert!(steps[1].cmd.contains(&"rm".to_string()) && steps[1].cmd.contains(&old), "{:?}", steps[1].cmd);
     let out = sessions::apply(&w.env, &forced);
     assert!(out.verified, "{:?}", out.issues);
-    assert!(w.member(&w.snap(), &id).session.unwrap().pid.is_some());
+    let m = w.member(&w.snap(), &id);
+    assert!(m.session.as_ref().unwrap().pid.is_some());
+    assert!(m.extra_rows.is_empty(), "{:?}", m.extra_rows);
+    assert!(!has(&sessions::session_issues(&w.env, &m), "copy.rows"), "{:?}", codes(&sessions::session_issues(&w.env, &m)));
 }
 
 // ------------------------------------------------------------------ row 9
