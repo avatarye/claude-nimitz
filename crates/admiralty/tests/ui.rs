@@ -42,11 +42,20 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     goto(&mut t.app, "F:MAIN");
     assert_eq!(t.app.current().unwrap().node.kind, Kind::FleetBand);
     // squadron bars: filled in the status colour, dark text
-    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
+    let kits = ls.iter().position(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
     let x = ls[kits].find("KITS").unwrap() as u16;
     assert_eq!((buf[(x, kits as u16)].bg, buf[(x, kits as u16)].fg), (mono::NEEDS, mono::INK), "KITS needs you");
     assert_eq!(buf[(0, (kits + 1) as u16)].fg, mono::LINE, "the sides stay neutral");
-    let argos = ls.iter().position(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
+    // issue #3: the rows' icons, the status glyph and the ship icon, in the same dark ink
+    let icons = t.app.icons;
+    let glyph = format!("{} needs you", icons.s_needs);
+    let ships = format!("   {} 2", icons.ship);
+    assert!(ls[kits].contains(&glyph) && ls[kits].contains(&ships) && !ls[kits].contains("ships "), "{}", ls[kits]);
+    for at in [ls[kits].find(&glyph).unwrap(), ls[kits].find(&ships).unwrap() + 3] {
+        let x = ls[kits][..at].chars().count() as u16;
+        assert_eq!((buf[(x, kits as u16)].bg, buf[(x, kits as u16)].fg), (mono::NEEDS, mono::INK), "the glyph at {x}: {}", ls[kits]);
+    }
+    let argos = ls.iter().position(|l| l.contains("ARGOS") && is_sq_bar(l)).unwrap();
     let b = t.app.bundle.clone().unwrap();
     let argos_sq = b.snap.fleets.iter().flat_map(|f| f.squadrons.iter()).find(|q| q.id.0 == "MAIN/ARGOS").unwrap();
     let members: Vec<&nimitz_core::Member> = std::iter::once(&argos_sq.commodore).chain(argos_sq.ships.iter()).collect();
@@ -62,7 +71,7 @@ fn the_fleet_is_its_tab_the_admiral_a_heavy_box_squadrons_filled_bars() {
     goto(&mut t.app, "SQ:MAIN/KITS");
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
-    let kits = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
+    let kits = ls.iter().position(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
     let x = ls[kits].find("KITS").unwrap() as u16;
     let c = &buf[(x, kits as u16)];
     assert_eq!((c.bg, c.fg), (mono::NEEDS, mono::INK), "selected: same fill, same text");
@@ -203,8 +212,8 @@ fn the_tab_carries_the_fleets_state_and_counts() {
     let ls = lines(&draw(&mut t.app, 200, 60));
     assert!(ls[0].contains("needs you") && ls[0].contains("!2 / *3 / -2 / x1"), "needs-you first: {}", ls[0]);
     let end = |l: &str| l.trim_end().chars().count();
-    let argos = ls.iter().find(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
-    let kits = ls.iter().find(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
+    let argos = ls.iter().find(|l| l.contains("ARGOS") && is_sq_bar(l)).unwrap();
+    let kits = ls.iter().find(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
     assert_eq!(end(argos), end(kits), "{argos}\n{kits}");
     let ls = lines(&draw(&mut t.app, 90, 40));
     assert!(ls[0].contains("!2") && !ls[0].contains("*4"), "narrow: {}", ls[0]);
@@ -720,7 +729,7 @@ fn pane_dots_at_row_start_in_herdr_colours() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     // KITS commodore's pane is blocked: needs you, and the dot takes the needs-you hue
-    let kits_bar = ls.iter().position(|l| l.contains("KITS") && l.contains("ships ")).unwrap();
+    let kits_bar = ls.iter().position(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
     let y = kits_bar + 1 + ls[kits_bar + 1..].iter().position(|l| l.contains("COMMODORE ")).unwrap();
     assert_eq!(buf[(2, y as u16)].fg, mono::NEEDS);
     assert!(ls[y].contains("needs you"));
@@ -1698,7 +1707,7 @@ fn a_squadron_that_gets_worse_pulses_its_bar_once() {
         t.app.anim_frame = f;
         let buf = draw(&mut t.app, 200, 60);
         let ls = lines(&buf);
-        let y = ls.iter().position(|l| l.contains("ARGOS") && l.contains("ships ")).unwrap();
+        let y = ls.iter().position(|l| l.contains("ARGOS") && is_sq_bar(l)).unwrap();
         buf[(2, y as u16)].bg
     };
     assert_ne!(fill(&mut t, 105), mono::NEEDS, "mid-pulse: lighter");

@@ -64,7 +64,12 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   error (an issue at Error, or a config that does not load), yellow warning
   (an issue at Warn), green busy, else neutral (idle, stopped, parked, not
   started; info issues do not count), a muted grey that still reads as a bar.
-  The text on the bar is dark (`INK`, at least 5.9:1 on every fill). The sides
+  The bar reads `▾ <flag> ARGOS   <status glyph> busy   <ship icon> 6  ...counts`:
+  the same icons as the rows (the status glyph of the squadron's state: needs
+  you, an issue mark for broken, busy, idle, stopped for no commodore, off for
+  inactive; then the ship icon and the number of ships; `ADMIRALTY_ICONS=ascii`:
+  `* busy   S 6`). The text and the icons on the bar are dark (`INK`, at least
+  5.9:1 on every fill). The sides
   stay neutral. Ships are rows; crew, tasks and extra job rows sit under their
   member with tree guides. Crew show while running and for 30 minutes after
   they finish (a nested crew follows its parent; a running one keeps its
