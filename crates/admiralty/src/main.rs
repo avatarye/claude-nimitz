@@ -133,6 +133,10 @@ fn main() -> ExitCode {
         app.inset = (r.trim().parse().unwrap_or(0), c.trim().parse().unwrap_or(0));
     }
     app.fixed_now = fixed_now;
+    // the demo and a dump render the same clock every time
+    if fixed_now.is_some() || dump {
+        app.fixed_wall = Some(fixtures::WALL);
+    }
     // the nimitz it runs, read off the UI thread (the live view only)
     if app.ctx.live && !dump {
         app.read_nimitz_version();

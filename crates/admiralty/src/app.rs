@@ -109,6 +109,53 @@ pub fn one_line(text: &str) -> String {
     text.replace("\r\n", " ").replace(['\n', '\r'], " ")
 }
 
+/// A local date and time to the minute: the clock at the right of the
+/// second status row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wall {
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+}
+
+impl Wall {
+    /// The machine's local time now.
+    #[cfg(unix)]
+    pub fn now() -> Wall {
+        // SAFETY: localtime_r fills the tm it is given from the time it is given
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        let t = unsafe { libc::time(std::ptr::null_mut()) };
+        unsafe { libc::localtime_r(&t, &mut tm) };
+        Wall { year: tm.tm_year + 1900, month: (tm.tm_mon + 1) as u8, day: tm.tm_mday as u8, hour: tm.tm_hour as u8, minute: tm.tm_min as u8 }
+    }
+
+    /// The machine's local time now.
+    #[cfg(windows)]
+    pub fn now() -> Wall {
+        // SAFETY: GetLocalTime fills the SYSTEMTIME it is given
+        let mut st: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
+        unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut st) };
+        Wall { year: st.wYear as i32, month: st.wMonth as u8, day: st.wDay as u8, hour: st.wHour as u8, minute: st.wMinute as u8 }
+    }
+
+    /// `2026-10-14 15:42`
+    pub fn full(&self) -> String {
+        format!("{:04}-{:02}-{:02} {:02}:{:02}", self.year, self.month, self.day, self.hour, self.minute)
+    }
+
+    /// `10-14 15:42`
+    pub fn short(&self) -> String {
+        format!("{:02}-{:02} {:02}:{:02}", self.month, self.day, self.hour, self.minute)
+    }
+
+    /// `15:42`
+    pub fn time(&self) -> String {
+        format!("{:02}:{:02}", self.hour, self.minute)
+    }
+}
+
 pub struct App {
     /// the rows the last draw put on screen (`None` before the first draw):
     /// the animation ticks only for an animated row among them
@@ -151,6 +198,8 @@ pub struct App {
     pub detail_open: bool,
     /// fixtures: a frozen clock so ages never move
     pub fixed_now: Option<f64>,
+    /// fixtures: the local date and time the status row shows, frozen
+    pub fixed_wall: Option<Wall>,
     /// the version of the `nimitz` Admiralty runs (`nimitz --version`, read
     /// once off the UI thread: `read_nimitz_version`); `None` until it is
     /// read, `?` when the binary does not answer
@@ -257,6 +306,7 @@ impl App {
             icons: if ascii { &ASCII } else { &NERD },
             detail_open: false,
             fixed_now: None,
+            fixed_wall: None,
             nimitz_version: Default::default(),
             interval: std::time::Duration::from_secs(2),
             state_path,
@@ -274,6 +324,11 @@ impl App {
 
     pub fn now(&self) -> f64 {
         self.fixed_now.unwrap_or_else(nimitz_core::evidence::now)
+    }
+
+    /// The local date and time the status row shows.
+    pub fn wall(&self) -> Wall {
+        self.fixed_wall.unwrap_or_else(Wall::now)
     }
 
     pub fn monitor_only(&self) -> bool {

@@ -81,7 +81,7 @@ fn bug36_at_80x24_the_issue_code_quit_and_help_are_visible() {
     goto(&mut app, "M:MAIN/ARGOS/NOLABEL");
     let sc = screen(&mut app, 80, 24);
     assert!(sc.contains("labels.missing"), "the issue code is cut to `…` at 80 columns:\n{sc}");
-    assert!(sc.contains("q quit") || sc.contains("? help"), "the footer loses help and quit at 80 columns:\n{sc}");
+    assert!(sc.contains("? keys"), "the footer loses the keys (q quit among them) at 80 columns:\n{sc}");
 }
 
 #[test]

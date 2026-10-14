@@ -11,6 +11,8 @@ use crate::data::Bundle;
 
 /// The demo clock; ages in tests and screenshots never move.
 pub const NOW: f64 = 1_790_000_000.0;
+/// The local date and time the fixtures' status row shows.
+pub const WALL: crate::app::Wall = crate::app::Wall { year: 2026, month: 10, day: 14, hour: 15, minute: 42 };
 
 fn labels(id: &Id) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
