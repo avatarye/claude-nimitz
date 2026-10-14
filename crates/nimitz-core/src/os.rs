@@ -216,21 +216,25 @@ pub struct Stale {
 impl Stale {
     /// `pid 176935 (admiralty, executable replaced)`
     pub fn short(&self) -> String {
-        format!("pid {} ({}, {})", self.pid, self.name, if self.replaced { "executable replaced" } else { "an older build" })
+        format!("pid {} ({}, {})", self.pid, self.name, if self.replaced { "executable replaced" } else { "an older version" })
     }
 }
 
-/// The running nimitz and Admiralty processes older than the binaries
-/// installed now: those beside this process's own executable (issue #1: an
-/// old core reads a newer registry as corrupt and rebuilds it in its old
-/// shape). None where `SCANS_PROCESSES` is false.
+/// The running nimitz and Admiralty processes that run older code than
+/// this one (issue #1: an old core reads a newer registry as corrupt and
+/// rebuilds it in its old shape): `stale_exe` against the binaries beside
+/// this process's own executable and this build's version, each other
+/// executable asked its version once (`version_at`). None where
+/// `SCANS_PROCESSES` is false.
 pub fn stale_processes() -> Vec<Stale> {
     let Ok(me) = std::env::current_exe() else { return vec![] };
+    let mut asked: std::collections::HashMap<std::path::PathBuf, Option<String>> = Default::default();
+    let mut version_of = |p: &Path| asked.entry(p.to_path_buf()).or_insert_with(|| version_at(p)).clone();
     let mut out = vec![];
     for name in ["nimitz", "admiralty"] {
         let installed = me.with_file_name(exe_name(name));
         for (pid, exe) in running_named(&[name]) {
-            if let Some(why) = stale_exe(&exe, &installed) {
+            if let Some(why) = stale_exe(&exe, &installed, env!("CARGO_PKG_VERSION"), &mut version_of) {
                 out.push(Stale { pid, name, replaced: exe.ends_with(DELETED), why });
             }
         }
@@ -238,27 +242,56 @@ pub fn stale_processes() -> Vec<Stale> {
     out
 }
 
+/// The nimitz version of the build at `exe`: `nimitz --version` (`nimitz
+/// X.Y.Z`), the nimitz itself or, for an Admiralty (it has no `--version`,
+/// and an older one would start its TUI), the nimitz installed beside it.
+/// Run with an empty environment and given 2 s; None when it does not answer.
+pub fn version_at(exe: &Path) -> Option<String> {
+    let probe = if exe.file_stem().is_some_and(|n| n == "nimitz") { exe.to_path_buf() } else { exe.with_file_name(exe_name("nimitz")) };
+    if !probe.is_file() {
+        return None;
+    }
+    let mut child = Command::new(&probe).arg("--version").env_clear().stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut text).ok()?;
+    text.trim().strip_prefix("nimitz ").map(|v| v.trim().to_string()).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()))
+}
+
 /// What Linux appends to `/proc/<pid>/exe` once the file is gone.
 const DELETED: &str = " (deleted)";
 
-/// Why a process running `exe` (`running_named`) runs an older build than
-/// `installed`, the binary of that name installed now: its file was
-/// replaced or removed since it started (`cargo install` renames the new
-/// one over it), or it is another file older than the installed one. None
-/// when it runs the installed binary, or one at least as new.
-pub fn stale_exe(exe: &str, installed: &Path) -> Option<String> {
+/// Why a process running `exe` (`running_named`) runs older code than
+/// this nimitz (`mine`, its version): its file was replaced or removed since
+/// it started (`cargo install` renames the new one over it), or it is
+/// another file whose version (`version_of`) is lower. None when it runs
+/// `installed`, the same version (another build of it, a test worktree's),
+/// a newer one, or one that does not say.
+pub fn stale_exe(exe: &str, installed: &Path, mine: &str, version_of: &mut dyn FnMut(&Path) -> Option<String>) -> Option<String> {
     if let Some(was) = exe.strip_suffix(DELETED) {
         return Some(format!("its executable {was} was replaced or removed after it started"));
     }
     let p = Path::new(exe);
-    if canonical(p).ok() == canonical(installed).ok() {
+    let same = match (canonical(p), canonical(installed)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => p == installed,
+    };
+    if same {
         return None;
     }
-    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    match (mtime(p), mtime(installed)) {
-        (Some(a), Some(b)) if a < b => Some(format!("it runs {exe}, older than {}", installed.display())),
-        _ => None,
-    }
+    let v = version_of(p)?;
+    crate::compat::older(&v, mine).then(|| format!("it runs {exe}, nimitz {v}, older than this nimitz {mine}"))
 }
 
 /// The machine's host name as the system gives it (any case, maybe with a
@@ -804,22 +837,50 @@ mod tests {
     }
 
     /// Issue #1: an Admiralty or nimitz still running after `cargo install`
-    /// replaced its binary runs the old code; `doctor` names it.
+    /// replaced its binary runs the old code; `doctor` names it. Another
+    /// path of a lower version is old code too; the same version at another
+    /// path (a test worktree's build) never is.
     #[test]
-    fn a_replaced_or_older_executable_is_stale_and_the_installed_one_is_not() {
-        let d = std::env::temp_dir().join(format!("nimitz-os-stale-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        let (old, new) = (d.join("old").join("nimitz"), d.join("nimitz"));
-        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
-        std::fs::write(&old, "old").unwrap();
-        let f = File::options().write(true).open(&old).unwrap();
-        f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)).unwrap();
-        std::fs::write(&new, "new").unwrap();
-        assert_eq!(stale_exe(&new.to_string_lossy(), &new), None, "the installed binary");
-        assert!(stale_exe(&old.to_string_lossy(), &new).is_some_and(|w| w.contains("older than")));
-        assert_eq!(stale_exe(&new.to_string_lossy(), &old), None, "a newer one is not stale");
-        let gone = format!("{} (deleted)", new.display());
-        assert!(stale_exe(&gone, &new).is_some_and(|w| w.contains("replaced or removed")));
+    fn a_replaced_or_lower_version_executable_is_stale_and_the_same_version_is_not() {
+        let installed = Path::new("/opt/nimitz/bin/nimitz");
+        let ask = |v: Option<&'static str>| move |_: &Path| v.map(str::to_string);
+        assert_eq!(stale_exe("/opt/nimitz/bin/nimitz", installed, "0.7.6", &mut ask(Some("0.3.1"))), None, "the installed binary");
+        assert!(stale_exe("/old/nimitz", installed, "0.7.6", &mut ask(Some("0.3.1"))).is_some_and(|w| w.contains("nimitz 0.3.1, older than this nimitz 0.7.6")));
+        assert_eq!(stale_exe("/ci/wt/target/debug/nimitz", installed, "0.7.6", &mut ask(Some("0.7.6"))), None, "the same version elsewhere");
+        assert_eq!(stale_exe("/new/nimitz", installed, "0.7.6", &mut ask(Some("0.8.0"))), None, "a newer one");
+        assert_eq!(stale_exe("/mute/nimitz", installed, "0.7.6", &mut ask(None)), None, "one that does not say");
+        let gone = format!("{} (deleted)", installed.display());
+        assert!(stale_exe(&gone, installed, "0.7.6", &mut ask(Some("0.7.6"))).is_some_and(|w| w.contains("replaced or removed")));
+    }
+
+    /// `version_at` asks the nimitz itself, or the nimitz beside an Admiralty
+    /// (never the Admiralty: an old one would start its TUI).
+    #[cfg(unix)]
+    #[test]
+    fn the_version_comes_from_nimitz_and_an_admiralty_s_nimitz() {
+        let d = std::env::temp_dir().join(format!("nimitz-os-version-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        for (dir, v) in [("same", env!("CARGO_PKG_VERSION")), ("old", "0.3.1")] {
+            std::fs::create_dir_all(d.join(dir)).unwrap();
+            let n = d.join(dir).join("nimitz");
+            std::fs::write(&n, format!("#!/bin/sh\necho nimitz {v}\n")).unwrap();
+            make_executable(&n).unwrap();
+            std::fs::write(d.join(dir).join("admiralty"), "#!/bin/sh\nsleep 30\n").unwrap();
+            make_executable(&d.join(dir).join("admiralty")).unwrap();
+        }
+        // a script just written may be busy for a moment (another test's fork holds it): ask again
+        let version_at = |p: &Path| (0..5).find_map(|_| version_at(p));
+        assert_eq!(version_at(&d.join("same").join("nimitz")).as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(version_at(&d.join("old").join("admiralty")).as_deref(), Some("0.3.1"), "its nimitz answers");
+        let installed = d.join("installed").join("nimitz");
+        let mut ask = |p: &Path| version_at(p);
+        for name in ["nimitz", "admiralty"] {
+            let same = d.join("same").join(name);
+            assert_eq!(stale_exe(&same.to_string_lossy(), &installed, env!("CARGO_PKG_VERSION"), &mut ask), None, "same version, another path: {name}");
+            let old = d.join("old").join(name);
+            assert!(stale_exe(&old.to_string_lossy(), &installed, env!("CARGO_PKG_VERSION"), &mut ask).is_some(), "{name}");
+        }
+        assert_eq!(version_at(&d.join("none").join("nimitz")), None);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -841,7 +902,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         let (_, at) = found.expect("the walk finds the child");
         assert!(at.ends_with(" (deleted)"), "{at}");
-        assert!(stale_exe(&at, &exe).is_some());
+        assert!(stale_exe(&at, &exe, "0.7.6", &mut |_: &Path| None).is_some());
         assert!(!running_named(&["admiralty"]).iter().any(|(p, _)| *p == i64::from(std::process::id())));
     }
 
