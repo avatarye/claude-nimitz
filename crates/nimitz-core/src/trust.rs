@@ -505,6 +505,24 @@ mod tests {
         assert!(!lock.exists(), "the dead holder's lock was taken over, then released");
     }
 
+    /// A live holder that keeps the lock past the wait: the write refuses
+    /// after waiting (never at once), says why, and writes nothing.
+    #[test]
+    fn a_lock_held_past_the_wait_refuses_after_it() {
+        let (td, env) = test_env();
+        let dir = crate::env::canon(td.path()).join("p");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(file(&env), "{}").unwrap();
+        let lock = PathBuf::from(format!("{}.lock", file(&env).display()));
+        std::fs::create_dir(&lock).unwrap();
+        let t0 = std::time::Instant::now();
+        let e = write(&env, &dir).unwrap_err();
+        assert!(t0.elapsed() >= WAIT, "waited {:?} first", t0.elapsed());
+        assert!(e.contains("is held by another process") && e.contains("try again"), "{e}");
+        assert!(lock.exists(), "the holder's lock is left alone");
+        assert_eq!(std::fs::read_to_string(file(&env)).unwrap(), "{}", "nothing written");
+    }
+
     #[test]
     fn a_backup_is_kept_and_the_mode_stays() {
         let (td, env) = test_env();
