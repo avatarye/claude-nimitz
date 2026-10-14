@@ -1,6 +1,6 @@
 {
   "name": "nimitz",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "description": "claude-nimitz: fleets of Claude Code sessions. Hooks bind each session to its identity and log signals; skills tell each role how to use the nimitz command.",
   "author": {
     "name": "Yongqing Ye"
