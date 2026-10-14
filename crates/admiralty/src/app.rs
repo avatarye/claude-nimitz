@@ -121,23 +121,26 @@ pub struct Wall {
 }
 
 impl Wall {
-    /// The machine's local time now.
+    /// The machine's local time now (`None`: the C library cannot say).
     #[cfg(unix)]
-    pub fn now() -> Wall {
-        // SAFETY: localtime_r fills the tm it is given from the time it is given
+    pub fn now() -> Option<Wall> {
+        // SAFETY: localtime_r fills the tm it is given from the time it is
+        // given, and returns null when it cannot
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };
         let t = unsafe { libc::time(std::ptr::null_mut()) };
-        unsafe { libc::localtime_r(&t, &mut tm) };
-        Wall { year: tm.tm_year + 1900, month: (tm.tm_mon + 1) as u8, day: tm.tm_mday as u8, hour: tm.tm_hour as u8, minute: tm.tm_min as u8 }
+        if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+            return None;
+        }
+        Some(Wall { year: tm.tm_year + 1900, month: (tm.tm_mon + 1) as u8, day: tm.tm_mday as u8, hour: tm.tm_hour as u8, minute: tm.tm_min as u8 })
     }
 
     /// The machine's local time now.
     #[cfg(windows)]
-    pub fn now() -> Wall {
+    pub fn now() -> Option<Wall> {
         // SAFETY: GetLocalTime fills the SYSTEMTIME it is given
         let mut st: windows_sys::Win32::Foundation::SYSTEMTIME = unsafe { std::mem::zeroed() };
         unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut st) };
-        Wall { year: st.wYear as i32, month: st.wMonth as u8, day: st.wDay as u8, hour: st.wHour as u8, minute: st.wMinute as u8 }
+        Some(Wall { year: st.wYear as i32, month: st.wMonth as u8, day: st.wDay as u8, hour: st.wHour as u8, minute: st.wMinute as u8 })
     }
 
     /// `2026-10-14 15:42`
@@ -263,10 +266,17 @@ pub const HELP: &[(&str, &str)] = &[
 
 impl App {
     /// Read the `nimitz` binary's version once, on a thread of its own (the
-    /// top bar shows it when it is there; a binary that does not answer
-    /// leaves it unknown).
+    /// status row shows it when it is there; a binary that does not answer,
+    /// or not within 5 s, leaves it unknown: `?`).
     pub fn read_nimitz_version(&self) {
         let slot = self.nimitz_version.clone();
+        let late = self.nimitz_version.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            if let Ok(mut s) = late.lock() {
+                s.get_or_insert_with(|| "?".to_string());
+            }
+        });
         std::thread::spawn(move || {
             let bin = crate::actions::nimitz_bin();
             let out = std::process::Command::new(&bin).arg("--version").stdin(std::process::Stdio::null()).output();
@@ -326,9 +336,9 @@ impl App {
         self.fixed_now.unwrap_or_else(nimitz_core::evidence::now)
     }
 
-    /// The local date and time the status row shows.
-    pub fn wall(&self) -> Wall {
-        self.fixed_wall.unwrap_or_else(Wall::now)
+    /// The local date and time the status row shows (`None`: no clock).
+    pub fn wall(&self) -> Option<Wall> {
+        self.fixed_wall.or_else(Wall::now)
     }
 
     pub fn monitor_only(&self) -> bool {

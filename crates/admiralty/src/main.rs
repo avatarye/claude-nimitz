@@ -140,6 +140,9 @@ fn main() -> ExitCode {
     // the nimitz it runs, read off the UI thread (the live view only)
     if app.ctx.live && !dump {
         app.read_nimitz_version();
+    } else if dump {
+        // a dump renders the same every time: Admiralty's own release
+        *app.nimitz_version.lock().unwrap() = Some(env!("CARGO_PKG_VERSION").to_string());
     }
     if dump {
         let mut src = make();

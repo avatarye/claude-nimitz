@@ -325,8 +325,10 @@ fn status_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'sta
             pick(format!(" Nimitz: v{n} (admiralty v{ours}, mismatch)"), format!(" v{n} \u{2260} v{ours}"), format!(" {n}\u{2260}{ours}")),
             bold(mono::WARN),
         )),
-        // the same, or not read yet (the demo never reads it): Admiralty's own,
-        // the nimitz of its release
+        // not read yet, live: nothing claimed until `nimitz --version` answers
+        None if app.ctx.live => v.push(Span::styled(pick(" Nimitz: \u{2026}".into(), " v\u{2026}".into(), " v\u{2026}".into()), st(mono::MUTED))),
+        // the same, or the demo (which never reads it): Admiralty's own, the
+        // nimitz of its release
         _ => v.push(Span::styled(pick(format!(" Nimitz: v{ours}"), format!(" v{ours}"), format!(" v{ours}")), st(mono::MUTED))),
     }
     let ver = b.snap.cc_version.as_ref().map(|v| format!("v{v}")).unwrap_or("not found".into());
@@ -336,7 +338,9 @@ fn status_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'sta
         let c = nimitz_core::compat::supported();
         let raw = b.snap.cc_version.clone().unwrap_or_default();
         let newer = !raw.is_empty() && !raw.contains('-') && nimitz_core::compat::position(&c, &raw) == 1;
-        let (full, short) = if newer {
+        let (full, short) = if raw.is_empty() {
+            (format!("{gap}Claude Code: not found"), format!("{gap}CC not found"))
+        } else if newer {
             (format!("{gap}Claude Code: {ver} (newer than tested, v{})", c.max), format!("{gap}CC {ver} untested"))
         } else {
             (format!("{gap}Claude Code: {ver} (unsupported)"), format!("{gap}CC {ver} unsupported"))
@@ -353,8 +357,15 @@ fn status_spans(app: &App, b: &crate::data::Bundle, level: u8) -> (Vec<Span<'sta
         right.push(Span::styled(pick(format!("stale {}", ago(age)), format!("stale {}", ago(age)), "stale".into()), bold(mono::WARN)));
         right.push(Span::raw(gap));
     }
-    let wall = app.wall();
-    right.push(Span::styled(pick(wall.full(), wall.short(), wall.time()) + " ", st(mono::MUTED)));
+    match app.wall() {
+        Some(w) => right.push(Span::styled(pick(w.full(), w.short(), w.time()) + " ", st(mono::MUTED))),
+        // no clock (the C library cannot say): the stale warning, if any, at the edge
+        None if !right.is_empty() => {
+            right.pop();
+            right.push(Span::raw(" "));
+        }
+        None => {}
+    }
     (v, vec![], right)
 }
 

@@ -564,6 +564,21 @@ fn the_second_status_row_names_versions_machine_and_the_clock() {
     (snap.cc_version, snap.compat_ok) = (Some("2.1.280".into()), false);
     let ls = lines(&draw(&mut t.app, 200, 24));
     assert!(ls[23].contains("Claude Code: v2.1.280 (unsupported)") && !ls[22].contains("Claude Code"), "{}\n{}", ls[22], ls[23]);
+    let buf = draw(&mut t.app, 200, 24);
+    let x = ls[23].find("Claude Code").unwrap() as u16;
+    assert_eq!(buf[(x, 23)].fg, admiralty::theme::mono::ERROR, "unsupported: an error");
+    // newer than tested: a warning
+    let snap = &mut t.app.bundle.as_mut().unwrap().snap;
+    (snap.cc_version, snap.compat_ok) = (Some("2.9.999".into()), false);
+    let buf = draw(&mut t.app, 200, 24);
+    let l = lines(&buf)[23].clone();
+    assert!(l.contains("Claude Code: v2.9.999 (newer than tested"), "{l}");
+    assert_eq!(buf[(l.find("Claude Code").unwrap() as u16, 23)].fg, admiralty::theme::mono::WARN, "newer: a warning");
+    // not installed: said so, never "(unsupported)"
+    let snap = &mut t.app.bundle.as_mut().unwrap().snap;
+    (snap.cc_version, snap.compat_ok) = (None, false);
+    let l = lines(&draw(&mut t.app, 200, 24))[23].clone();
+    assert!(l.contains("Claude Code: not found  Machine") && !l.contains("unsupported"), "{l}");
 }
 
 /// The refresh's age shows only when the data is stale (no load for more
@@ -1933,7 +1948,7 @@ fn dump_renders_the_list_or_the_screen_plain_or_in_colour() {
 
 /// The second status row names the nimitz Admiralty runs: its version alone
 /// when it is Admiralty's own, both and flagged (a warning) when they differ;
-/// Admiralty's own (the nimitz of its release) until it is read.
+/// `…` (muted, nothing claimed) until it is read; the demo shows its own.
 #[test]
 fn the_status_row_shows_the_nimitz_version_and_flags_a_mismatch() {
     let mut t = fixture_app(fixtures::demo(), true);
@@ -1941,7 +1956,10 @@ fn the_status_row_shows_the_nimitz_version_and_flags_a_mismatch() {
     // the last row, under the ADMIRALTY one
     let top = |t: &mut common::TestApp| screen(&mut t.app, 240, 40).lines().last().unwrap_or("").to_string();
     let l = top(&mut t);
-    assert!(l.starts_with(&format!(" Nimitz: v{ours}  ")) && !l.contains("mismatch"), "not read yet: its own: {l}");
+    assert!(l.starts_with(" Nimitz: \u{2026}  ") && !l.contains("mismatch"), "not read yet: nothing claimed: {l}");
+    let mut d = demo();
+    let l = screen(&mut d.app, 240, 40).lines().last().unwrap_or("").to_string();
+    assert!(l.starts_with(&format!(" Nimitz: v{ours}  ")), "the demo shows its own release: {l}");
     *t.app.nimitz_version.lock().unwrap() = Some("?".to_string());
     let l = top(&mut t);
     assert!(l.starts_with(" Nimitz: ?  ") && !l.contains("mismatch"), "the read failed: {l}");
@@ -1972,4 +1990,16 @@ fn the_detail_cell_shows_the_topic_and_never_a_reason() {
     // no topic: the cell stays empty
     let docs = ls.iter().find(|l| l.contains("DOCS")).unwrap();
     assert!(!docs.contains("job row completed"), "{docs}");
+    // a status nobody knows keeps its reason: never an empty cell
+    let mut b = fixtures::demo();
+    for f in b.snap.fleets.iter_mut() {
+        for m in f.members_mut().filter(|m| m.status == Status::Unknown) {
+            m.issues.clear();
+        }
+    }
+    let mut u = fixture_app(b, false);
+    tab(&mut u.app, "FORGE");
+    let ls = lines(&draw(&mut u.app, 200, 60));
+    let hammer = ls.iter().find(|l| l.contains("HAMMER")).unwrap();
+    assert!(hammer.contains("registry's current session id has no job row"), "{hammer}");
 }

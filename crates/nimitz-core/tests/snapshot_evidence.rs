@@ -451,6 +451,19 @@ fn a_live_job_carries_its_topic_and_never_the_idle_placeholder() {
     w.patch(&w.job_file(&short), |v| v["detail"] = json!("Inspecting what job rows\n and session files store"));
     assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("Inspecting what job rows and session files store"));
 
+    // model-written text reaches a terminal: no escape or other control codes
+    w.patch(&w.job_file(&short), |v| v["detail"] = json!("Fixing\u{1b}[2J the \u{7}build\u{9b}31m now"));
+    assert_eq!(w.ship(&w.snap(), "CLEAN").topic.as_deref(), Some("Fixing[2J the build31m now"));
+
+    // a blocked job's detail is its question: said once, as the question
+    w.patch(&w.job_file(&short), |v| {
+        v["detail"] = json!("Ship it, or hold?");
+        v["needs"] = json!("Ship it, or hold?");
+    });
+    let m = w.ship(&w.snap(), "CLEAN");
+    assert_eq!((m.status, m.topic), (Status::NeedsYou, None));
+    w.patch(&w.job_file(&short), |v| v.as_object_mut().unwrap().remove("needs").map(|_| ()).unwrap());
+
     // a job never prompted: Claude Code's placeholder is no topic
     w.patch(&w.job_file(&short), |v| v["detail"] = json!("(idle — send a prompt to start)"));
     assert_eq!(w.ship(&w.snap(), "CLEAN").topic, None);

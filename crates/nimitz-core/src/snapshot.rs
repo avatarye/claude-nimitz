@@ -614,18 +614,21 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     snap
 }
 
-/// Claude Code's own idle hint in a job row ("send a prompt to start") is not
-/// a question for you (BUG-07).
 /// A live job's one-line topic: its `detail`, never the placeholder of a job
-/// not yet prompted ("(idle — send a prompt to start)"); a finished job's
-/// result when the detail is empty.
+/// not yet prompted ("(idle — send a prompt to start)") nor the question it
+/// left (a blocked job's detail is its `needs`, said once already); a
+/// finished job's result when the detail is empty. Model-written text goes to
+/// a terminal: one line, no control characters.
 pub(crate) fn job_topic(job: &evidence::JobState) -> Option<String> {
-    let line = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
-    let detail = job.detail.as_deref().map(line).filter(|d| !d.is_empty() && !d.to_lowercase().starts_with("(idle"));
+    let line = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").chars().filter(|c| !c.is_control()).collect::<String>();
+    let needs = job.needs.as_deref().map(line);
+    let detail = job.detail.as_deref().map(line).filter(|d| !d.is_empty() && !d.to_lowercase().starts_with("(idle") && Some(d) != needs.as_ref());
     let result = || job.result.as_deref().filter(|_| job.state.as_deref() == Some("done")).map(line).filter(|r| !r.is_empty());
     detail.or_else(result)
 }
 
+/// Claude Code's own idle hint in a job row ("send a prompt to start") is not
+/// a question for you (BUG-07).
 fn idle_hint(needs: &str) -> bool {
     let n = needs.trim().to_lowercase();
     n.starts_with("send a prompt") || n.starts_with("waiting for a prompt") || n.is_empty()

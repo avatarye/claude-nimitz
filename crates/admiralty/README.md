@@ -29,10 +29,10 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   sessions, how many need you, error and warning counts, the multiplexer (or a
   MONITOR-ONLY badge), and `? keys` at its right (`q` quit is in the `?`
   panel). The row under it: `Nimitz: v0.7.5` (`Nimitz: vY (admiralty vX,
-  mismatch)` as a warning when it is not Admiralty's own, `Nimitz: ?` when
-  `nimitz --version` does not answer), `Claude Code: v2.1.296 (supported)`
-  (out of range: `(unsupported)`, or `(newer than tested, ...)`, as a
-  warning), `Machine: home-server`, and the local date and time flush right
+  mismatch)` as a warning when it is not Admiralty's own, `Nimitz: …` until
+  `nimitz --version` answers, `Nimitz: ?` when it does not within 5 s),
+  `Claude Code: v2.1.296 (supported)` (out of range: `(unsupported)` as an
+  error, `(newer than tested, ...)` as a warning; `Claude Code: not found`), `Machine: home-server`, and the local date and time flush right
   (`2026-10-14 15:42`). When no refresh has landed for three intervals,
   `stale 12s` (a warning) sits before the clock; otherwise the refresh is not
   shown. At 80 columns and below both shorten (`v0.7.5  CC v2.1.296
@@ -104,8 +104,8 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   copy; a task's status); no issue mark there. DETAIL starts with the issue
   glyph, coloured by severity, and the issue codes; then what a member needing
   you waits for, or `N crew running`; else its topic, the one line Claude Code
-  keeps on what the job is doing (a finished job's result). The reasons for a
-  status are in the detail panel.
+  keeps on what the job is doing (a finished job's result); an `unknown`
+  member, its first reason. The reasons for a status are in the detail panel.
 - Crew: a member's subagents under it. The agents a Workflow run started sit
   under one row per run (the workflow's name, else its `wf_` run id; live /
   total; the newest agent's phase), open while one of them runs. A run, like a

@@ -224,16 +224,19 @@ mod tests {
     }
 }
 
-/// The width human lines fit in: `COLUMNS` when set, else the terminal on
-/// stdout; none for a pipe (a line is never cut for a file or a script).
+/// The width human lines fit in, on a terminal only: `COLUMNS` when set,
+/// else the terminal's own; none for a pipe or `--json` (a line is never cut
+/// for a file, a script or an agent reading it). `NIMITZ_COLUMNS` sets it
+/// anywhere (tests).
 pub fn width() -> Option<usize> {
-    if let Some(c) = std::env::var("COLUMNS").ok().and_then(|c| c.trim().parse::<usize>().ok()).filter(|c| *c > 0) {
+    let cols = |k: &str| std::env::var(k).ok().and_then(|c| c.trim().parse::<usize>().ok()).filter(|c| *c > 0);
+    if let Some(c) = cols("NIMITZ_COLUMNS") {
         return Some(c);
     }
     if json_mode() || !std::io::stdout().is_terminal() {
         return None;
     }
-    terminal_width()
+    cols("COLUMNS").or_else(terminal_width)
 }
 
 #[cfg(unix)]
@@ -254,11 +257,20 @@ fn terminal_width() -> Option<usize> {
     (ok != 0 && w > 0).then_some(w as usize)
 }
 
-/// `s` cut to `n` characters, `...` marking the cut.
+/// `s` cut to `n` terminal cells (a wide character takes two), `...` marking the cut.
 pub fn clip(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= n {
         return s.to_string();
     }
-    let keep = n.saturating_sub(3);
-    s.chars().take(keep).collect::<String>().trim_end().to_string() + "..."
+    let room = n.saturating_sub(3);
+    let mut used = 0;
+    let kept: String = s
+        .chars()
+        .take_while(|c| {
+            used += c.width().unwrap_or(0);
+            used <= room
+        })
+        .collect();
+    kept.trim_end().to_string() + "..."
 }

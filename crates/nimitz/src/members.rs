@@ -199,7 +199,7 @@ fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize
     // what a live job is doing, on its line, cut to the terminal (never under 12 characters)
     let topic = match &m.topic {
         Some(t) => {
-            let room = out::width().map(|w| w.saturating_sub(head.chars().count() + 5).max(12)).unwrap_or(usize::MAX);
+            let room = out::width().map(|w| w.saturating_sub(unicode_width::UnicodeWidthStr::width(head.as_str()) + 5).max(12)).unwrap_or(usize::MAX);
             format!("  -- {}", out::clip(t, room))
         }
         None => String::new(),

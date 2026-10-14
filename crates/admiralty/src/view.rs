@@ -671,6 +671,9 @@ fn member_node(m: &Member, v: &View) -> Node {
         } else if let Some(t) = &m.topic {
             // what the job is doing; the reasons stay in the detail pane
             n.detail.push(Span::styled(t.clone(), st(mono::COMMENT)));
+        } else if let Some(r) = m.reasons.first().filter(|_| m.status == Status::Unknown) {
+            // a status nobody knows says why, never an empty cell
+            n.detail.push(Span::styled(r.clone(), st(mono::COMMENT)));
         }
     }
     let key = m.id.0.clone();
