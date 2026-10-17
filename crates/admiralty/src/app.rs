@@ -67,7 +67,8 @@ pub enum Modal {
     Needs { items: Vec<NeedItem>, sel: usize },
     /// `i`: every issue, worst first
     Issues { sel: usize },
-    Menu { title: String, items: Vec<MenuItem>, sel: usize },
+    /// `detail`: the row's detail panel sits below the list (`x`, not `c`)
+    Menu { title: String, items: Vec<MenuItem>, sel: usize, detail: bool },
     Confirm(Pending),
     Message { plan: MessagePlan, text: String },
     Form(Box<Form>),
@@ -213,8 +214,6 @@ pub struct App {
     pub modal: Option<Modal>,
     pub toast: Option<Toast>,
     pub icons: &'static Icons,
-    /// the floating detail panel (`w`); closed at start
-    pub detail_open: bool,
     /// fixtures: a frozen clock so ages never move
     pub fixed_now: Option<f64>,
     /// fixtures: the local date and time the status row shows, frozen
@@ -228,7 +227,8 @@ pub struct App {
     pub state_path: Option<PathBuf>,
     /// an action running on the worker thread
     pub busy: Option<String>,
-    /// lines the detail pane is scrolled down (ctrl-e / ctrl-y); 0 on a new row
+    /// lines the actions menu's detail panel is scrolled down (ctrl-e /
+    /// ctrl-y, PgDn / PgUp); 0 on a new row and each time the menu opens
     pub detail_scroll: usize,
     detail_for: Option<String>,
     pub page: usize,
@@ -249,6 +249,9 @@ fn full_name(r: &Row) -> String {
     }
 }
 
+/// Lines PgDn / PgUp scroll the detail under the actions menu.
+const DETAIL_PAGE: usize = 5;
+
 pub const HELP: &[(&str, &str)] = &[
     ("tab / shift-tab", "next / previous fleet tab (each fleet, then unassigned stowaways)"),
     ("1 - 9", "fleet tab N"),
@@ -256,27 +259,25 @@ pub const HELP: &[(&str, &str)] = &[
     ("h / l", "fold or go to parent / unfold or go to first child"),
     ("gg / G", "top / bottom"),
     ("ctrl-d / ctrl-u", "half page down / up"),
-    ("ctrl-e / ctrl-y", "scroll the detail panel (when open)"),
-    ("space", "find a member or stowaway in every fleet by its path, name, status or topic (fuzzy, as fzf; all terms must match); enter puts the cursor on it"),
+    ("space", "find a member or stowaway in every fleet by its path, name, status or topic (fuzzy, as fzf; all terms must match); enter puts the cursor on it, ctrl-o jumps to its pane"),
     ("z", "fold / unfold; on a member with crew that finished over 30 min ago: show / hide them (+N finished)"),
     ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz open <id>, confirms); else fold / unfold"),
     ("J / K", "next / previous row with a pane"),
-    ("!", "everything waiting on you"),
-    ("i", "every issue, with its fix command"),
+    ("!", "everything waiting on you (enter: its row; ctrl-o: its pane)"),
+    ("i", "every issue, with its fix command (enter: its row; ctrl-o: its pane)"),
     ("a", "start it: nimitz start <id> (confirms)"),
     ("u", "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked; confirms)"),
     ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
-    ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines"),
+    ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines; the row's detail below them (ctrl-e / ctrl-y or PgDn / PgUp scroll it)"),
     ("m", "message: typed into its pane (nimitz signal <id> <text>)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
     ("f / F", "filter squadrons by state / flagged rows only"),
-    ("w", "detail: open or close the floating detail panel (esc closes it too)"),
     ("R", "refresh now"),
-    ("esc", "close what is open (a dialog, the detail panel, the / name filter); with nothing open and nothing running, quit"),
+    ("esc", "close what is open (a dialog, the / name filter); with nothing open and nothing running, quit"),
     ("? / q", "these keys (? or esc closes them) / quit"),
 ];
 
@@ -330,7 +331,6 @@ impl App {
             modal: None,
             toast: None,
             icons: if ascii { &ASCII } else { &NERD },
-            detail_open: false,
             fixed_now: None,
             fixed_wall: None,
             nimitz_version: Default::default(),
@@ -888,6 +888,13 @@ impl App {
     }
 
     /// The action menu (`x`) for the selected row: `row_actions`.
+    /// `x`: the row's actions, its detail in a panel below them.
+    pub fn open_actions(&mut self) {
+        let title = self.current().map(|r| full_name(&r)).unwrap_or_default();
+        self.detail_scroll = 0;
+        self.modal = Some(Modal::Menu { title: format!("actions: {title}"), items: self.action_menu(), sel: 0, detail: true });
+    }
+
     pub fn action_menu(&self) -> Vec<MenuItem> {
         self.row_actions()
     }
@@ -1217,8 +1224,9 @@ impl App {
             (KeyCode::Char('l') | KeyCode::Right, _) => self.unfold(),
             (KeyCode::Char('G') | KeyCode::End, _) => self.cursor = last,
             (KeyCode::Home, _) => self.cursor = 0,
-            (KeyCode::Char('e'), true) => self.detail_scroll += 1,
-            (KeyCode::Char('y'), true) => self.detail_scroll = self.detail_scroll.saturating_sub(1),
+            // ctrl-e / ctrl-y scroll the detail under `x`; on the list they do
+            // nothing (not `e` edit, not `y` yank)
+            (KeyCode::Char('e') | KeyCode::Char('y'), true) => {}
             (KeyCode::Char('d'), true) | (KeyCode::PageDown, _) => self.cursor = (self.cursor + self.page / 2).min(last),
             (KeyCode::Char('u'), true) | (KeyCode::PageUp, _) => self.cursor = self.cursor.saturating_sub(self.page / 2),
             (KeyCode::Char(' '), _) => match &self.bundle {
@@ -1245,9 +1253,7 @@ impl App {
             (KeyCode::Char('/'), _) => self.editing_filter = true,
             // esc closes what is open, one thing at a time; with nothing open it quits
             (KeyCode::Esc, _) => {
-                if self.detail_open {
-                    self.detail_open = false;
-                } else if !self.filter.is_empty() {
+                if !self.filter.is_empty() {
                     self.filter.clear();
                     self.rebuild();
                 } else if let Some(b) = &self.busy {
@@ -1289,10 +1295,6 @@ impl App {
                 self.rebuild();
             }
             (KeyCode::Char('R'), _) => return Some(Effect::Refresh),
-            (KeyCode::Char('w'), _) => {
-                self.detail_open = !self.detail_open;
-                self.detail_scroll = 0;
-            }
             (KeyCode::Char('y'), _) => self.yank(),
             (KeyCode::Char('a'), _) => return self.start_act(Act::Start),
             (KeyCode::Char('u'), _) => {
@@ -1306,11 +1308,8 @@ impl App {
             }
             (KeyCode::Char('A'), _) => return self.start_act(Act::Open),
             (KeyCode::Char('D'), _) => return self.start_act(Act::ConfigRm),
-            (KeyCode::Char('x'), _) => {
-                let title = self.current().map(|r| full_name(&r)).unwrap_or_default();
-                self.modal = Some(Modal::Menu { title: format!("actions: {title}"), items: self.action_menu(), sel: 0 });
-            }
-            (KeyCode::Char('c'), _) => self.modal = Some(Modal::Menu { title: "create".into(), items: self.create_menu(), sel: 0 }),
+            (KeyCode::Char('x'), _) => self.open_actions(),
+            (KeyCode::Char('c'), _) => self.modal = Some(Modal::Menu { title: "create".into(), items: self.create_menu(), sel: 0, detail: false }),
             (KeyCode::Char('e'), _) => match self.edit_action() {
                 Ok((_, a)) => return self.run_menu(a),
                 Err(why) => self.notify(format!("edit: {why}"), st(mono::WARN)),
@@ -1328,6 +1327,15 @@ impl App {
         match m {
             Modal::Finder(mut fd) => match k.code {
                 KeyCode::Esc => {}
+                // ctrl-o: straight to its pane, as enter on its row would
+                KeyCode::Char('o') if ctrl => {
+                    if let Some(c) = fd.selected().cloned() {
+                        if self.land(&c.row_id, c.member.as_ref()) {
+                            return self.jump();
+                        }
+                        self.notify(format!("{} is not in the list now", c.text.split("  ").next().unwrap_or_default()), st(mono::WARN));
+                    }
+                }
                 KeyCode::Enter => {
                     if let Some(c) = fd.selected().cloned() {
                         if !self.land(&c.row_id, c.member.as_ref()) {
@@ -1404,6 +1412,16 @@ impl App {
                         self.reveal(&row, Some(&id));
                     }
                 }
+                KeyCode::Char('o') if ctrl => {
+                    if let Some(it) = items.get(sel) {
+                        let id = Id(it.row_id.trim_start_matches("M:").to_string());
+                        let row = it.row_id.clone();
+                        self.reveal(&row, Some(&id));
+                        if self.current().is_some_and(|r| r.node.id == row) {
+                            return self.jump();
+                        }
+                    }
+                }
                 _ => self.modal = Some(Modal::Needs { items, sel }),
             },
             Modal::Issues { mut sel } => {
@@ -1425,7 +1443,9 @@ impl App {
                         }
                         self.modal = Some(Modal::Issues { sel });
                     }
-                    KeyCode::Enter => {
+                    // enter: its row; ctrl-o: its member's pane, as enter on that row
+                    _ if k.code == KeyCode::Enter || (ctrl && k.code == KeyCode::Char('o')) => {
+                        let pane = k.code != KeyCode::Enter;
                         if let Some(i) = issues.get(sel) {
                             match &i.id {
                                 Some(id) => {
@@ -1434,6 +1454,9 @@ impl App {
                                         _ => format!("M:{}", id.0),
                                     };
                                     self.reveal(&row, Some(id));
+                                    if pane && self.current().is_some_and(|r| r.node.id == row) {
+                                        return self.jump();
+                                    }
                                 }
                                 None if i.code == "stowaway" => {
                                     self.show_stowaways = true;
@@ -1447,9 +1470,28 @@ impl App {
                     _ => self.modal = Some(Modal::Issues { sel }),
                 }
             }
-            Modal::Menu { title, items, mut sel } => {
+            Modal::Menu { title, items, mut sel, detail } => {
                 let pick = match k.code {
                     KeyCode::Esc | KeyCode::Char('q') => return None,
+                    // the detail panel below the actions scrolls; a control
+                    // key never picks an entry
+                    KeyCode::Char('e') if detail && ctrl => {
+                        self.detail_scroll += 1;
+                        None
+                    }
+                    KeyCode::Char('y') if detail && ctrl => {
+                        self.detail_scroll = self.detail_scroll.saturating_sub(1);
+                        None
+                    }
+                    KeyCode::PageDown if detail => {
+                        self.detail_scroll += DETAIL_PAGE;
+                        None
+                    }
+                    KeyCode::PageUp if detail => {
+                        self.detail_scroll = self.detail_scroll.saturating_sub(DETAIL_PAGE);
+                        None
+                    }
+                    KeyCode::Char(_) if ctrl => None,
                     _ if down => {
                         sel = (sel + 1).min(items.len().saturating_sub(1));
                         None
@@ -1467,10 +1509,10 @@ impl App {
                         Ok(()) => return self.run_menu(it.action),
                         Err(why) => {
                             self.notify(format!("{}: not available. {why}", it.label), st(mono::WARN));
-                            self.modal = Some(Modal::Menu { title, items, sel });
+                            self.modal = Some(Modal::Menu { title, items, sel, detail });
                         }
                     },
-                    None => self.modal = Some(Modal::Menu { title, items, sel }),
+                    None => self.modal = Some(Modal::Menu { title, items, sel, detail }),
                 }
             }
             Modal::Confirm(p) => match k.code {

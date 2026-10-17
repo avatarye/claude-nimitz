@@ -530,7 +530,9 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `step.failed` | a step of an applied plan failed (or a lock could not be taken); nothing after it ran |
 
 Session codes from the snapshot, besides section 7's: `job.unreadable` (a job
-row's `state.json` does not parse; start refuses), `folder.moved` (the
+row's `state.json` does not parse; start refuses), `session.unreadable` (Warn,
+the machine's: a live process's `sessions/<pid>.json` Claude Code cannot parse,
+by its own rule, so every resume is a copy; issue #6), `folder.moved` (the
 session's saved folder is gone or untrusted while the member's folder moved;
 fix `nimitz relaunch <id>`), `labels.mismatch` also for a session carrying an
 identity's labels in another folder (it is not that identity's session).

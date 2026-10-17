@@ -16,7 +16,7 @@ const USAGE: &str = "usage:
   admiralty dump [--width N] [--sandbox DIR | --demo | --fixture FILE]   the list as plain text
        [--ansi]                     with its colours (24-bit ANSI)
        [--height N]                 the whole screen N rows tall, as the TUI draws it
-       [--select ID [--detail]]     the cursor on a row (`MAIN/ARGOS/BOLT` or a row id `M:MAIN/ARGOS/BOLT`), its detail panel open
+       [--select ID [--detail]]     the cursor on a row (`MAIN/ARGOS/BOLT` or a row id `M:MAIN/ARGOS/BOLT`), its actions menu (`x`) open, the row's detail below it
   admiralty sandbox create [--herdr]|env DIR                             a fake world (fake claude, optional fake herdr)
   admiralty herdr toggle|watch                                           the Herdr plugin's action and overlay pane
 
@@ -153,9 +153,12 @@ fn main() -> ExitCode {
                 return fail(&format!("no row {row} to select"));
             }
         }
-        // the whole screen: a height asked for, or a detail panel (it floats over the list)
+        // the whole screen: a height asked for, or the actions menu with the
+        // row's detail below it
         if height.is_some() || detail {
-            app.detail_open = detail;
+            if detail {
+                app.open_actions();
+            }
             let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height.unwrap_or(48))).expect("a test terminal");
             if let Err(e) = term.draw(|f| render::draw(&mut app, f)) {
                 return fail(&e.to_string());

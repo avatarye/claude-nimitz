@@ -1591,6 +1591,43 @@ fn failure_fix(step: &Step, text: &str, after_rm: bool) -> Option<String> {
     }
 }
 
+/// Why Claude Code started a copy, when the job was not live: it could not
+/// check (issue #6).
+struct CopyCause {
+    why: String,
+    fix: String,
+}
+
+/// The cause of a copy that is no race with the daemon (issue #6): a session
+/// file Claude Code cannot parse (2.1.296 then cannot check whether any session
+/// runs, and every resume is a copy), or its own note that it could not check.
+/// None: the copy says the job was live or restarting.
+fn copy_cause(env: &Env, text: &str) -> Option<CopyCause> {
+    let plain = crate::claude::plain(text);
+    // the reason Claude Code gives, before "so this started a copy"
+    let copy_line = plain.lines().find(|l| l.contains("started a copy")).unwrap_or_default();
+    let reason = copy_line.split_once("so this started a copy").map(|(r, _)| r.trim()).unwrap_or_default();
+    let unverified = reason.contains("could not check");
+    // another reason (the job is running, the daemon's race): no file to blame
+    if !reason.is_empty() && !unverified {
+        return None;
+    }
+    let said = if unverified { format!(" (Claude Code: {})", copy_line.trim()) } else { String::new() };
+    let bad: Vec<_> = crate::evidence::unparseable_sessions(env).into_iter().filter(|b| b.blocks).collect();
+    if !bad.is_empty() {
+        let files: Vec<String> = bad.iter().map(|b| b.describe()).collect();
+        let fix: Vec<String> = bad.iter().map(|b| b.fix()).collect();
+        return Some(CopyCause {
+            why: format!("it could not check whether the job is running, because it cannot parse the session file {}{said}", files.join(", ")),
+            fix: fix.join("; "),
+        });
+    }
+    unverified.then(|| CopyCause {
+        why: format!("it could not check whether the job is running (Claude Code: {})", copy_line.trim()),
+        fix: "nimitz doctor  # names a session file Claude Code cannot parse".into(),
+    })
+}
+
 /// The session id a `--resume <id>` step continues.
 fn resumed_id(step: &Step) -> Option<String> {
     let i = step.cmd.iter().position(|a| a == "--resume")?;
@@ -1962,11 +1999,17 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             Kind::Relaunch => resumed_id(step),
             _ => None,
         };
+        // a copy Claude Code started because it could not check the job at
+        // all (issue #6: another session's file it cannot parse) is no race:
+        // a second wake is only a second copy
+        let mut cause: Option<CopyCause> = None;
         if rc == 0 {
             if let (Some(session_id), Some(copy)) = (wake_of.as_ref(), crate::claude::copy_started(&text)) {
+                cause = copy_cause(env, &text);
+                let again = if cause.is_some() { "" } else { "; then wake once more" };
                 for cmd in [crate::claude::stop(env, &copy), crate::claude::rm(env, &copy)] {
                     let (rc2, t) = crate::claude::run(&cmd, None);
-                    out.ran.push((Step { id: step.id.clone(), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of the wake; then wake once more") }, rc2, t));
+                    out.ran.push((Step { id: step.id.clone(), cmd, cwd: None, why: format!("remove the copy {copy} Claude Code started instead of the wake{again}") }, rc2, t));
                     extra_ran += 1;
                 }
                 let gone = row_gone_within(env, &copy, 3.0);
@@ -1974,7 +2017,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 // the daemon restarted the job itself meanwhile (cli-31): no
                 // second wake (it would be a copy); the failure below says so
                 let live = || find_row_by_session(env, session_id).is_some_and(|r| r.live());
-                if !live() {
+                if cause.is_none() && !live() {
                     if let Some(job) = find_row_by_session(env, session_id).and_then(|r| r.short_id) {
                         wait_settled(env, &job, WAKE_RETRY_SETTLE_S);
                     }
@@ -1982,7 +2025,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 }
                 // only once the copy is gone: a relaunch's copy carries the
                 // member's name and labels, and is never left behind unsaid
-                if gone && !live() {
+                if cause.is_none() && gone && !live() {
                     copy_removed = None;
                     (rc, text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
                     out.ran.push((step.clone(), rc, text.clone()));
@@ -2020,13 +2063,21 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                             row_gone_within(env, &copy, 3.0)
                         }
                     };
-                    out.issues.push(issue(
-                        "step.failed",
-                        Severity::Error,
-                        format!("Claude Code started a copy as {copy} instead of {}; the copy is {}", resumed.as_deref().map(|r| format!("resuming {r}")).unwrap_or_else(|| "a new job".into()), if gone { "stopped and removed" } else { "still there" }),
-                        Some(if gone { format!("nimitz start {id}  # in a moment; the job was live or restarting") } else { format!("nimitz stop {copy}, then nimitz rm {copy}") }),
-                        Some(id.clone()),
-                    ));
+                    let instead = resumed.as_deref().map(|r| format!("resuming {r}")).unwrap_or_else(|| "a new job".into());
+                    let left = if gone { "stopped and removed" } else { "still there" };
+                    let (message, fix) = match cause.take().or_else(|| copy_cause(env, &text)) {
+                        // not a live job: the files Claude Code could not read
+                        // are the cause, and a retry is no fix (issue #6)
+                        Some(c) => (
+                            format!("Claude Code started a copy as {copy} instead of {instead}: {}; the copy is {left}", c.why),
+                            if gone { format!("{}; then nimitz start {id}", c.fix) } else { format!("nimitz stop {copy}, then nimitz rm {copy}; {}", c.fix) },
+                        ),
+                        None => (
+                            format!("Claude Code started a copy as {copy} instead of {instead}; the copy is {left}"),
+                            if gone { format!("nimitz start {id}  # in a moment; the job was live or restarting") } else { format!("nimitz stop {copy}, then nimitz rm {copy}") },
+                        ),
+                    };
+                    out.issues.push(issue("step.failed", Severity::Error, message, Some(fix), Some(id.clone())));
                     return out;
                 }
                 // the job it names must be the one expected: the resumed job, or
@@ -2381,6 +2432,29 @@ pub fn find_row(env: &Env, short: &str) -> Option<crate::evidence::SessionRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #6: a broken file is blamed only when Claude Code says it could
+    /// not check, or gives no reason; "already running" (the daemon's race)
+    /// keeps today's handling and its second wake.
+    #[test]
+    fn a_copy_blames_a_broken_file_only_when_claude_code_could_not_check() {
+        let (_td, env) = crate::config::tests::test_env();
+        let sessions = env.claude_home.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let running = "note: session s1 is already running in the background, so this started a copy as dc74d940. `claude attach x` opens the original.";
+        let unverified = "backgrounded \u{b7} dc74d940\nnote: could not check whether session s1 is running, so this started a copy as dc74d940.";
+        let bare = "started a copy of that conversation as dc74d940";
+        assert!(copy_cause(&env, running).is_none() && copy_cause(&env, bare).is_none());
+        let c = copy_cause(&env, unverified).expect("Claude Code's own note");
+        assert!(c.why.contains("could not check whether session s1") && c.fix.starts_with("nimitz doctor"), "{}", c.why);
+        let me = std::process::id();
+        std::fs::write(sessions.join(format!("{me}.json")), format!(r#"{{"pid":{me}}}}}"#)).unwrap();
+        assert!(copy_cause(&env, running).is_none(), "another reason: no file to blame");
+        for t in [unverified, bare] {
+            let c = copy_cause(&env, t).expect("the file");
+            assert!(c.why.contains(&format!("{me}.json")), "{}", c.why);
+        }
+    }
 
     /// The sandbox's always-alive pid (1, or 4, System, on Windows) is never
     /// waited on; a live process is waited on to the limit; a dead one is gone.

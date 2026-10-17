@@ -1730,6 +1730,79 @@ fn g8_a_copy_note_fails_the_step_and_removes_the_copy_in_the_same_run() {
     assert!(after.issues.is_empty(), "{:?}", after.issues);
 }
 
+/// Issue #6: ANOTHER session's file has a stray `}` behind its object (a
+/// shorter status written over a longer one). Claude Code 2.1.296 then cannot
+/// check whether the job runs and starts a copy. The copy goes, no second wake
+/// (it would only be a second copy), and the refusal names that file, its pid
+/// and its owner, never "the job was live" with a retry for a fix. `check` of
+/// the member names it too.
+#[test]
+fn issue6_a_copy_from_another_sessions_corrupt_file_names_the_file_not_a_retry() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let job = w.member(&w.snap(), &id).session.unwrap().short_id.unwrap();
+    // a live process's file (this test's own pid: alive, started before the write)
+    let me = std::process::id();
+    let bad = w.env.claude_home.join("sessions").join(format!("{me}.json"));
+    let obj = format!(r#"{{"pid":{me},"sessionId":"0f0f0f0f-0000-4000-8000-000000000001","name":"[MAIN.ARGOS]-COMMODORE","kind":"interactive","cwd":"/tmp"}}"#);
+    std::fs::write(&bad, format!("{obj}}}")).unwrap();
+    // nimitz itself still reads it (the first object)
+    assert!(evidence::first_json(&std::fs::read(&bad).unwrap()).is_some());
+    let snap = w.snap();
+    let warn = nimitz_core::check::check(&w.env, &snap, Some(&id)).into_iter().find(|i| i.code == "session.unreadable").expect("check of the member names the file");
+    assert!(warn.message.contains(&format!("{me}.json")) && warn.message.contains(&format!("pid {me}")) && warn.message.contains("[MAIN.ARGOS]-COMMODORE"), "{}", warn.message);
+    assert_eq!(warn.severity, Severity::Warn, "a warning: it never blocks a plan on its own");
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let out = sessions::apply(&w.env, &plan);
+    assert!(!out.verified);
+    let i = out.issues.iter().find(|i| i.code == "step.failed").expect("the step failed");
+    assert!(i.message.contains(&format!("{me}.json")) && i.message.contains("cannot parse") && i.message.contains("could not check whether session"), "{}", i.message);
+    assert!(i.message.contains("stopped and removed"), "{}", i.message);
+    let fix = i.fix.clone().unwrap_or_default();
+    assert!(!fix.contains("in a moment") && fix.contains(&format!("{me}.json")) && fix.contains(&format!("(from byte {})", obj.len())), "{fix}");
+    assert!(fix.contains(&format!("restart the session that owns it (pid {me})")) && fix.ends_with(&format!("then nimitz start {id}")), "{fix}");
+    let resumes = out.ran.iter().filter(|(s, _, _)| s.cmd.iter().any(|a| a == "--resume")).count();
+    assert_eq!(resumes, 1, "no second wake: {:?}", out.ran.iter().map(|(s, _, _)| s.cmd.join(" ")).collect::<Vec<_>>());
+    let copy = claude::copy_started(&out.ran[0].2).expect("a copy");
+    assert!(!w.rows().iter().any(|r| r.short_id.as_deref() == Some(&copy)), "the copy row is gone");
+    // the file repaired, the same start wakes the member's own job
+    std::fs::write(&bad, obj).unwrap();
+    let snap = w.snap();
+    assert!(!nimitz_core::check::check(&w.env, &snap, Some(&id)).iter().any(|i| i.code == "session.unreadable"));
+    let out = sessions::apply(&w.env, &w.start(&snap, &id, false));
+    assert!(out.verified, "{:?}", out.issues);
+    assert_eq!(w.member(&w.snap(), &id).session.and_then(|s| s.short_id).as_deref(), Some(job.as_str()));
+}
+
+/// Issue #6, Claude Code's own rule: an unparseable file it skips (a dead
+/// process's, or one older than its live pid's process) blocks nothing. No
+/// warning, no copy: the start wakes the member's own job.
+#[test]
+fn issue6_a_stale_unparseable_session_file_blocks_nothing() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let job = w.member(&w.snap(), &id).session.unwrap().short_id.unwrap();
+    let mut c = std::process::Command::new("true").spawn().unwrap();
+    let dead = c.id();
+    c.wait().unwrap();
+    let sessions = w.env.claude_home.join("sessions");
+    std::fs::write(sessions.join(format!("{dead}.json")), format!(r#"{{"pid":{dead},"sessionId":"x"}}}}"#)).unwrap();
+    // this process is alive, but the file is an hour older than it
+    let me = std::process::id();
+    let old = sessions.join(format!("{me}.json"));
+    std::fs::write(&old, "{\"pid\":").unwrap();
+    std::fs::File::options().write(true).open(&old).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)).unwrap();
+    let bad = evidence::unparseable_sessions(&w.env);
+    assert_eq!(bad.len(), 2, "{bad:?}");
+    assert!(bad.iter().all(|b| !b.blocks), "{bad:?}");
+    let snap = w.snap();
+    assert!(!nimitz_core::check::check(&w.env, &snap, None).iter().any(|i| i.code == "session.unreadable"));
+    let out = sessions::apply(&w.env, &w.start(&snap, &id, false));
+    assert!(out.verified, "{:?}", out.issues);
+    assert_eq!(w.member(&w.snap(), &id).session.and_then(|s| s.short_id).as_deref(), Some(job.as_str()));
+}
+
 /// r3-e2e finding 12: a wake right after a stop, under load, raced the
 /// daemon's bookkeeping and answered with a copy while the job stayed
 /// stopped. The copy goes, the job is waited for, and the wake runs once

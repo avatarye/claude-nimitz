@@ -21,8 +21,8 @@ use crate::frames::{layout, pad, selectable, wrap};
 use crate::theme::{bold, mono, severity_color, severity_word, st};
 use crate::view::FleetState;
 
-/// Where the floating detail panel sits over the list: the right part of the
-/// body, full height, 45% of the width (48 to 90 columns, never the whole list).
+/// Where the finder's detail panel sits beside its list: the right part of
+/// the body, full height, 45% of the width (48 to 90 columns, never the whole list).
 pub fn detail_area(body: Rect) -> Rect {
     let w = (body.width * 45 / 100).clamp(48, 90).min(body.width.saturating_sub(4)).max(body.width.min(20));
     Rect { x: body.x + body.width - w, y: body.y, width: w, height: body.height }
@@ -39,34 +39,18 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1), Constraint::Length(1)]).areas(area);
     f.render_widget(Paragraph::new(top_line(app, top.width as usize)).style(Style::new().bg(mono::BG_HI)), top);
     f.render_widget(Paragraph::new(tab_line(app, tabs.width as usize)).style(Style::new().bg(mono::BG)), tabs);
-    // the list takes the whole body; `w` floats the detail panel over its right part
+    // the list takes the whole body (a row's detail is under `x`)
     draw_list(app, f, body);
-    if app.detail_open {
-        let right = detail_area(body);
-        let compact = right.height < 16;
-        let detail = detail_with_art(app, right.width.saturating_sub(2) as usize, compact);
-        let room = right.height.saturating_sub(2) as usize;
-        app.detail_scroll = app.detail_scroll.min(detail.len().saturating_sub(room));
-        let more = detail.len() > room + app.detail_scroll;
-        let title = if more || app.detail_scroll > 0 { " detail  ctrl-e/ctrl-y scroll  w/esc close " } else { " detail  w/esc close " };
-        f.render_widget(Clear, right);
-        f.render_widget(
-            Paragraph::new(detail).scroll((app.detail_scroll as u16, 0)).wrap(Wrap { trim: false }).style(Style::new().bg(mono::BG)).block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .border_style(st(mono::ACCENT))
-                    .title(Span::styled(title, bold(mono::ACCENT))),
-            ),
-            right,
-        );
-    }
     f.render_widget(Paragraph::new(bottom_line(app, bottom.width as usize)).style(Style::new().bg(mono::BG_HI)), bottom);
     match &app.modal {
         Some(Modal::Help { scroll }) => draw_help(f, area, *scroll, app.icons),
         Some(Modal::Confirm(p)) => draw_confirm(f, area, p, app.ctx.live),
         Some(Modal::Needs { items, sel }) => draw_needs(f, area, items, *sel),
         Some(Modal::Issues { sel }) => draw_issues(app, f, area, *sel),
-        Some(Modal::Menu { title, items, sel }) => draw_menu(f, area, title, items, *sel),
+        Some(Modal::Menu { title, items, sel, detail }) => {
+            let (title, items, sel, detail) = (title.clone(), items.clone(), *sel, *detail);
+            draw_menu(app, f, area, body, &title, &items, sel, detail)
+        }
         Some(Modal::Message { plan, text }) => draw_message(f, area, plan, text),
         Some(Modal::FleetFilter { sel }) => draw_fleet_filter(f, area, &app.fleet_states, *sel),
         Some(Modal::Form(form)) => draw_form(f, area, form),
@@ -589,7 +573,7 @@ fn draw_fleet_filter(f: &mut Frame, area: Rect, on: &[bool; 7], sel: usize) {
 }
 
 fn draw_needs(f: &mut Frame, area: Rect, items: &[NeedItem], sel: usize) {
-    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "go to it"), ("esc", "back")]), Line::raw("")];
+    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "back")]), Line::raw("")];
     if items.is_empty() {
         lines.push(Line::styled("  nothing is waiting on you", st(mono::COMMENT)));
     }
@@ -614,7 +598,7 @@ fn draw_issues(app: &App, f: &mut Frame, area: Rect, sel: usize) {
     let r = centered(area, area.width.saturating_sub(4).max(40), area.height.saturating_sub(2));
     let inner_h = r.height.saturating_sub(2) as usize;
     let width = r.width.saturating_sub(2) as usize;
-    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "go"), ("y", "yank fix"), ("esc", "back")]), Line::raw("")];
+    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("y", "yank fix"), ("esc", "back")]), Line::raw("")];
     if issues.is_empty() {
         lines.push(Line::styled("  No issues. Every fleet's shape matches its config.", st(mono::MUTED)));
     }
@@ -659,7 +643,8 @@ fn draw_issues(app: &App, f: &mut Frame, area: Rect, sel: usize) {
     );
 }
 
-fn draw_menu(f: &mut Frame, area: Rect, title: &str, items: &[MenuItem], sel: usize) {
+/// A menu's lines: one per entry (a closed one says why), then its keys.
+fn menu_lines(items: &[MenuItem], sel: usize) -> Vec<Line<'static>> {
     let mut lines = vec![];
     for (i, it) in items.iter().enumerate() {
         let (ks, ls) = match &it.enabled {
@@ -676,9 +661,61 @@ fn draw_menu(f: &mut Frame, area: Rect, title: &str, items: &[MenuItem], sel: us
     }
     lines.push(Line::raw(""));
     lines.push(keys_line(&[("key or enter", "choose (each confirms first)"), ("esc", "close")]));
-    let r = centered(area, 104, lines.len() as u16 + 2);
+    lines
+}
+
+/// A menu; the actions menu (`detail`) has the row's detail in a panel below
+/// it, as tall as the body leaves room for, scrolled by `app.detail_scroll`.
+#[allow(clippy::too_many_arguments)]
+fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, items: &[MenuItem], sel: usize, detail: bool) {
+    let lines = menu_lines(items, sel);
+    let menu_h = lines.len() as u16 + 2;
+    // under the menu, the room the body leaves: a panel only when it holds
+    // a few lines (borders and three)
+    let left = body.height.saturating_sub(menu_h);
+    if !detail || left < 5 {
+        let r = centered(area, 104, menu_h);
+        f.render_widget(Clear, r);
+        f.render_widget(Paragraph::new(lines).block(modal_block(title.to_string(), mono::ACCENT)), r);
+        return;
+    }
+    let w = 104.min(area.width.saturating_sub(2));
+    // a short panel drops the picture and the blank lines: the reasons first
+    let mut text = detail_with_art(app, w.saturating_sub(2) as usize, left < 16);
+    if let Some(hint) = crate::detail::jump_hint(app) {
+        text.extend([Line::raw(""), hint]);
+    }
+    let det_h = left.min(text.len() as u16 + 2);
+    let x = area.x + (area.width - w) / 2;
+    let y = body.y + (body.height - menu_h - det_h) / 2;
+    let r = Rect { x, y, width: w, height: menu_h };
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(lines).block(modal_block(title.to_string(), mono::ACCENT)), r);
+    let below = Rect { x, y: y + menu_h, width: w, height: det_h };
+    app.detail_scroll = app.detail_scroll.min(rows_of(&text, below.width.saturating_sub(2)).saturating_sub(det_h.saturating_sub(2) as usize));
+    detail_box(f, below, text, Some(app.detail_scroll));
+}
+
+/// Screen rows `text` takes, wrapped at `width`.
+fn rows_of(text: &[Line], width: u16) -> usize {
+    text.iter().map(|l| l.width().max(1).div_ceil(width.max(1) as usize)).sum()
+}
+
+/// The detail panel (under the actions menu, beside the finder): rounded,
+/// scrolled down `scroll` lines when it scrolls (its title then names the
+/// keys, if there is more than it shows).
+fn detail_box(f: &mut Frame, r: Rect, text: Vec<Line<'static>>, scroll: Option<usize>) {
+    let room = r.height.saturating_sub(2) as usize;
+    let more = scroll.is_some_and(|s| rows_of(&text, r.width.saturating_sub(2)) > room + s || s > 0);
+    let title = if more { " detail  ctrl-e/ctrl-y PgDn/PgUp scroll " } else { " detail " };
+    let scroll = scroll.unwrap_or(0);
+    f.render_widget(Clear, r);
+    f.render_widget(
+        Paragraph::new(text).scroll((scroll as u16, 0)).wrap(Wrap { trim: false }).style(Style::new().bg(mono::BG)).block(
+            Block::bordered().border_type(BorderType::Rounded).border_style(st(mono::ACCENT)).title(Span::styled(title, bold(mono::ACCENT))),
+        ),
+        r,
+    );
 }
 
 /// The finder: the query, the ranked list with the matched letters lit, and
@@ -732,18 +769,11 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
         lines.push(Line::raw(""));
     }
     lines.push(Line::raw(""));
-    lines.push(keys_line(&[("\u{2191}\u{2193} ctrl-n/p", "move"), ("enter", "go to it"), ("esc", "close"), ("ctrl-u", "clear")]));
+    lines.push(keys_line(&[("\u{2191}\u{2193} ctrl-n/p", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "close"), ("ctrl-u", "clear")]));
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(lines).block(modal_block("find: path, name, status, topic".into(), mono::ACCENT)), r);
     if let Some(c) = fd.selected().filter(|_| preview) {
-        let detail = preview_lines(app, &c.row_id, right.width.saturating_sub(2) as usize);
-        f.render_widget(Clear, right);
-        f.render_widget(
-            Paragraph::new(detail).wrap(Wrap { trim: false }).style(Style::new().bg(mono::BG)).block(
-                Block::bordered().border_type(BorderType::Rounded).border_style(st(mono::ACCENT)).title(Span::styled(" detail ", bold(mono::ACCENT))),
-            ),
-            right,
-        );
+        detail_box(f, right, preview_lines(app, &c.row_id, right.width.saturating_sub(2) as usize), None);
     }
 }
 
@@ -911,7 +941,7 @@ mod separator_tests {
             MenuItem { key: 'l', label: "layout --ships: and a tab attaching each live ship".into(), enabled: Err(crate::actions::MONITOR_ONLY.into()), action: MenuAction::NewFleet },
         ];
         let mut t = Terminal::new(TestBackend::new(140, 12)).unwrap();
-        t.draw(|f| draw_menu(f, f.area(), "x", &items, 0)).unwrap();
+        t.draw(|f| f.render_widget(Paragraph::new(menu_lines(&items, 0)), f.area())).unwrap();
         let shown = text(t.backend().buffer());
         assert!(shown.contains("stale job rows  no stale job rows"), "{shown}");
         assert!(shown.contains("each live ship  monitor-only: no multiplexer"), "{shown}");

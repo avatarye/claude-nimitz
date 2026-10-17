@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Version 0.7.7 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.302).
+Version 0.7.8 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.302).
 
 A fleet has one **admiral**, squadrons each led by a **commodore**, and
 **ships** that do the long work in one folder. Every member is a Claude Code
@@ -164,9 +164,10 @@ Removed in 0.7.3: `restore` (use `muster`), `relaunch` (`restart`), `up`
 
 Keys: `j`/`k` move, `tab` next fleet, `space` find a member in every fleet
 (fuzzy, as fzf: `mas` finds `MAIN/ARGOS/SIGNAL`, `argos busy` the busy ones of
-ARGOS; `enter` puts the cursor on it), `z` fold / unfold, `enter` jump to a pane, `a` start, `A` a
-pane for it, `x` more actions (stop, restart, sweep, rm, adopt; on a fleet: `R`
-muster), `u` up a fleet with its parked ships, `m` message, `!` what waits on you, `i`
+ARGOS; `enter` puts the cursor on it, `ctrl-o` jumps to its pane; `!` and `i`
+the same), `z` fold / unfold, `enter` jump to a pane, `a` start, `A` a
+pane for it, `x` more actions with the row's detail below them (stop,
+restart, sweep, rm, adopt; on a fleet: `R` muster), `u` up a fleet with its parked ships, `m` message, `!` what waits on you, `i`
 every issue with its fix, `c`/`e`/`D` create, edit, remove, `?` all keys (`?`
 again closes them), `q` quit (in the `?` panel). The two status rows at the
 bottom show the fleets' counts and `? keys`, then `Nimitz: v0.7.5  Claude Code:
@@ -194,6 +195,12 @@ cell shows what its job is doing (its topic) when nothing else needs saying.
   - `folder.untrusted`: `nimitz trust <folder>` (`ship new` and `start` plan it for you);
   - `tab.taken` (its tab runs something else): ctrl-z or quit it there, then `nimitz open <id>`;
   - copies or stale rows: `nimitz sweep <id>`;
+  - `session.unreadable` (a start answers `started a copy ... cannot parse
+    the session file ~/.claude/sessions/<pid>.json`): a live session's status
+    file is broken, and Claude Code then resumes nothing on the machine.
+    Remove what follows its first JSON object (the fix names the byte), or
+    restart the session that owns it. A dead process's broken file is
+    harmless (`nimitz doctor` lists it as info);
   - a stowaway: `nimitz adopt <session> <id>`, or stop and `rm` it;
   - `tab.resumed` (Herdr reopened a conversation in a pane): `/exit` in that pane, then `nimitz start <id>`.
 - Never `/exit` inside an attach: it opens the agent view; ctrl-z detaches.

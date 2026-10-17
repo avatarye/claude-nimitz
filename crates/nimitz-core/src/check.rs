@@ -396,6 +396,9 @@ fn check_scoped(env: &Env, snap: &Snapshot, id: Option<&Id>, tree: bool) -> Vec<
     }
     if id.is_none() {
         out.extend(snap.issues.iter().cloned());
+    } else {
+        // a broken session file breaks every member's resume (issue #6)
+        out.extend(snap.issues.iter().filter(|i| i.code == "session.unreadable").cloned());
     }
 
     // one line per finding: a config error rides on the fleet, its members and

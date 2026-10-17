@@ -345,49 +345,77 @@ fn several_fleets_in_config_order_and_an_elsewhere_fleet_is_folded() {
 fn renders_at_narrow_and_wide_sizes() {
     for (w, h) in [(100, 30), (200, 50), (60, 20), (300, 80)] {
         let mut t = demo();
-        keys(&mut t.app, "w");
+        assert!(screen(&mut t.app, w, h).contains("ADMIRALTY"), "{w}x{h}");
+        keys(&mut t.app, "x");
         let s = screen(&mut t.app, w, h);
-        assert!(s.contains("ADMIRALTY"), "{w}x{h}");
         assert!(s.contains("15:42"), "{w}x{h}");
-        assert!(s.contains("detail"), "{w}x{h}");
+        assert!(s.contains("actions: "), "{w}x{h}");
     }
 }
 
+/// 0.7.8: no `w` panel. `x` shows the row's actions and, below them, its
+/// detail (what `w` showed, minus its ACTIONS), at 80 and 120 columns alike;
+/// a long detail scrolls (ctrl-e / ctrl-y, PgDn / PgUp).
 #[test]
-fn the_detail_panel_floats_over_the_list_on_w_and_follows_the_cursor() {
+fn x_shows_the_actions_with_the_rows_detail_below_and_w_opens_nothing() {
     let mut t = demo();
-    // closed at start: the list takes the whole width
-    assert!(!t.app.detail_open);
     let ls = lines(&draw(&mut t.app, 200, 50));
-    assert!(!ls.iter().any(|l| l.contains("w/esc close")), "no detail panel until `w`");
     let band = ls.iter().find(|l| l.contains("ADMIRAL ")).unwrap();
     assert!(band.trim_end().chars().count() > 190, "the list spans the window: {band}");
-    // `w` floats it over the right part; the list keeps its rows
     keys(&mut t.app, "w");
-    let ls = lines(&draw(&mut t.app, 200, 50));
-    let y = ls.iter().position(|l| l.contains(" detail ") && l.contains("w/esc close")).expect("the panel's title");
-    assert!(y <= 2, "it starts at the top of the body");
-    assert!(ls[y].find(" detail ").unwrap() > 100, "on the right: {}", ls[y]);
-    assert!(ls.iter().any(|l| l.contains("ADMIRAL ")), "the list is still there");
-    // it follows the cursor row
+    assert!(t.app.modal.is_none(), "w opens nothing");
+    assert!(!screen(&mut t.app, 200, 50).contains(" detail "), "no detail panel on the list");
     goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
-    assert!(screen(&mut t.app, 200, 50).contains("[MAIN.ARGOS]-BOOM"), "the detail panel names it in full");
-    goto(&mut t.app, "M:MAIN/KITS/PIPELINE");
-    let s = screen(&mut t.app, 200, 50);
-    assert!(s.contains("NEEDS YOU") || s.contains("PIPELINE"), "{s}");
-    // esc closes it; `w` toggles; nothing advertises the old split keys
+    keys(&mut t.app, "x");
+    for (w, h) in [(80u16, 24u16), (120, 40), (200, 50)] {
+        let ls = lines(&draw(&mut t.app, w, h));
+        let menu = ls.iter().position(|l| l.contains("actions: [MAIN.ARGOS]-BOOM")).unwrap_or_else(|| panic!("{w}x{h}: the menu\n{}", ls.join("\n")));
+        let det = ls.iter().position(|l| l.contains(" detail ")).unwrap_or_else(|| panic!("{w}x{h}: the detail\n{}", ls.join("\n")));
+        assert!(det > menu + 5, "{w}x{h}: the detail sits below the menu");
+        let s = ls.join("\n");
+        assert!(s.contains("identity    MAIN/ARGOS/BOOM") && s.contains("WHY THIS STATUS"), "{w}x{h}: the row's detail\n{s}");
+        assert!(!s.contains("ACTIONS"), "{w}x{h}: no ACTIONS block under the menu\n{s}");
+        assert!(ls[h as usize - 1].trim_end().ends_with("15:42"), "{w}x{h}: the status rows stay clear\n{s}");
+    }
+    // the panel ends with what enter on the row does
     press(&mut t.app, KeyCode::Esc);
-    assert!(!t.app.detail_open);
-    keys(&mut t.app, "ww");
-    assert!(!t.app.detail_open);
-    let s = screen(&mut t.app, 200, 50);
-    assert!(!s.contains("v/s"), "{s}");
-    assert!(admiralty::app::HELP.iter().any(|(k, d)| *k == "w" && d.contains("detail")));
+    goto(&mut t.app, "M:MAIN");
+    keys(&mut t.app, "x");
+    assert!(screen(&mut t.app, 200, 50).contains("\u{23ce} on the row  jump to its pane p1"));
+    press(&mut t.app, KeyCode::Esc);
+    let mut m = fixture_app(fixtures::demo_monitor_only(), false);
+    goto(&mut m.app, "M:FORGE/IRON/ANVIL");
+    keys(&mut m.app, "x");
+    assert!(screen(&mut m.app, 200, 50).contains("\u{23ce} on the row  monitor-only"));
+    goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
+    keys(&mut t.app, "x");
+    // a long detail scrolls at 80x24, and the keys say so
+    assert!(screen(&mut t.app, 80, 24).contains("ctrl-e/ctrl-y PgDn/PgUp scroll"));
+    let top = screen(&mut t.app, 80, 24);
+    press(&mut t.app, KeyCode::PageDown);
+    assert!(t.app.detail_scroll > 0 && screen(&mut t.app, 80, 24) != top, "PgDn scrolls the detail");
+    ctrl(&mut t.app, 'y');
+    let back = t.app.detail_scroll;
+    ctrl(&mut t.app, 'e');
+    assert_eq!(t.app.detail_scroll, back + 1, "ctrl-e scrolls one line");
+    assert!(matches!(t.app.modal, Some(Modal::Menu { .. })), "a control key picks no entry");
+    // esc closes it; the next `x` starts at the top
+    press(&mut t.app, KeyCode::Esc);
+    assert!(t.app.modal.is_none());
+    keys(&mut t.app, "x");
+    assert_eq!(t.app.detail_scroll, 0);
+    press(&mut t.app, KeyCode::Esc);
+    // `c` is a plain menu: no detail
+    keys(&mut t.app, "c");
+    assert!(!screen(&mut t.app, 200, 50).contains(" detail "));
+    press(&mut t.app, KeyCode::Esc);
+    assert!(!admiralty::app::HELP.iter().any(|(k, _)| *k == "w"));
+    assert!(admiralty::app::HELP.iter().any(|(k, d)| *k == "x" && d.contains("detail")));
     assert!(!admiralty::app::HELP.iter().any(|(k, _)| k.contains("v / s")));
     // `s` and `v` no longer do anything on the list
     let before = t.app.rows.len();
-    keys(&mut t.app, "sv");
-    assert!(t.app.modal.is_none() && !t.app.detail_open && t.app.rows.len() == before);
+    keys(&mut t.app, "s");
+    assert!(t.app.modal.is_none() && t.app.rows.len() == before);
 }
 
 #[test]
@@ -403,7 +431,7 @@ fn a_saved_state_with_the_old_split_setting_still_loads() {
     let app = admiralty::app::App::new(ctx, Some(state), true);
     assert!(app.flagged_only, "the rest of the saved state came back");
     assert_eq!(app.tab.as_deref(), Some("FORGE"));
-    assert!(!app.detail_open, "the detail panel starts closed whatever was saved");
+    assert!(app.modal.is_none(), "nothing opens at start whatever was saved");
 }
 
 // ------------------------------------------------------------------ keys
@@ -633,9 +661,8 @@ fn help_lists_every_key() {
     for k in ["gg / G", "ctrl-d / ctrl-u", "J / K", "c / e / D", "f / F"] {
         assert!(s.contains(k), "help shows {k}");
     }
-    for k in ["w  ", "floating detail panel"] {
-        assert!(s.contains(k), "help shows {k}");
-    }
+    assert!(s.contains("the row's detail below them"), "help says x shows the detail");
+    assert!(!s.contains("floating detail panel"), "no w panel in help");
     press(&mut t.app, KeyCode::Esc);
     assert!(t.app.modal.is_none());
 }
@@ -698,7 +725,7 @@ fn broken_shapes_are_marked_on_their_rows_and_in_the_detail_pane() {
         assert!(c == mono::ERROR || c == mono::WARN, "{row} mark is coloured by severity");
     }
     goto(&mut t.app, "M:FORGE/IRON/ANVIL");
-    keys(&mut t.app, "w");
+    keys(&mut t.app, "x");
     let s = screen(&mut t.app, 200, 60);
     assert!(s.contains("WHY THIS STATUS"));
     assert!(s.contains("ISSUES (2)"));
@@ -791,11 +818,11 @@ fn action_menu_greys_out_what_does_not_apply_with_the_reason() {
     assert!(matches!(t.app.modal, Some(Modal::Confirm(_))));
 }
 
-/// Issue #4: the detail panel's ACTIONS (`w`) and the action menu (`x`)
-/// list the same actions in the same order for every kind of row, and a
-/// closed one says why in both.
+/// Issue #4, one panel since 0.7.8: on every kind of row `x` lists the
+/// row's actions in order, a closed one with why, and the row's detail below
+/// them with no ACTIONS block of its own.
 #[test]
-fn w_and_x_list_the_same_actions_in_the_same_order_on_every_row_kind() {
+fn x_lists_the_actions_over_the_rows_detail_on_every_row_kind() {
     use admiralty::view::Kind as K;
     for (fixture, mux) in [(fixtures::demo(), true), (fixtures::demo_monitor_only(), false)] {
         let mut t = fixture_app(fixture, mux);
@@ -831,15 +858,15 @@ fn w_and_x_list_the_same_actions_in_the_same_order_on_every_row_kind() {
                 }
                 seen.push(what.to_string());
                 goto(&mut t.app, &id);
-                same_actions_in_w_and_x(&t.app, what);
+                actions_over_detail(&mut t.app, what);
             }
         }
         // a legacy session (a stowaway an old fleet ran): `x d` adopts it as the
-        // identity its fix names, in both lists
+        // identity its fix names
         goto(&mut t.app, "SW:ab99ab99-0000-4000-8000-000000000000");
         assert!(t.app.legacy_adopt().is_some());
-        let listed = same_actions_in_w_and_x(&t.app, "legacy");
-        assert!(listed.iter().any(|l| l.trim_start().starts_with("x d") && l.contains("adopt this legacy session as MAIN/KITS")), "{listed:?}");
+        let listed = actions_over_detail(&mut t.app, "legacy");
+        assert!(listed.iter().any(|l| l.trim_start().starts_with("d ") && l.contains("adopt this legacy session as MAIN/KITS")), "{listed:?}");
         assert!(t.app.action_menu().iter().any(|i| i.key == 'd' && matches!(i.action, admiralty::app::MenuAction::AdoptAs(..)) && i.enabled.is_ok()));
         for what in ["fleet band", "squadron band", "admiral", "commodore", "ship", "stowaway", "extra row"] {
             assert!(seen.iter().any(|s| s == what), "the fixture has no {what} row: {seen:?}");
@@ -847,25 +874,38 @@ fn w_and_x_list_the_same_actions_in_the_same_order_on_every_row_kind() {
     }
 }
 
-/// The detail panel's ACTIONS lines for the selected row, checked against
-/// its action menu: the same entries in the same order, each with its key,
-/// its label when open, its reason when closed.
-fn same_actions_in_w_and_x(app: &admiralty::app::App, what: &str) -> Vec<String> {
+/// `x` on the selected row, drawn at 200x50 and closed again: its menu lines
+/// (one per entry, in the menu's order, with its key, its label when open,
+/// the start of why when closed), above the row's detail.
+fn actions_over_detail(app: &mut admiralty::app::App, what: &str) -> Vec<String> {
     let menu = app.action_menu();
-    let lines: Vec<String> = admiralty::detail::detail_lines(app, 200).iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect()).collect();
-    let at = lines.iter().position(|l| l == "ACTIONS").unwrap_or_else(|| panic!("{what}: {lines:?}"));
-    // after the jump line (enter), one line per entry, then the footer
-    let listed: Vec<String> = lines[at + 2..at + 2 + menu.len()].to_vec();
-    let keys: Vec<String> = listed.iter().map(|l| l.trim_start().chars().take(4).collect::<String>().trim().to_string()).collect();
-    assert_eq!(keys, menu.iter().map(|i| i.main_key()).collect::<Vec<_>>(), "{what}: {listed:?}");
-    assert!(lines[at + 2 + menu.len()..].iter().any(|l| l.contains("this list as a menu")), "{what}: {lines:?}");
+    keys(app, "x");
+    let ls = lines(&draw(app, 200, 50));
+    press(app, KeyCode::Esc);
+    let s = ls.join("\n");
+    // the menu's inside: what sits between its borders
+    let inner = |l: &String| -> String { l.split('\u{2503}').nth(1).unwrap_or_default().to_string() };
+    let top = ls.iter().position(|l| l.contains("actions: ")).unwrap_or_else(|| panic!("{what}: no menu\n{s}"));
+    let listed: Vec<String> = ls[top + 1..top + 1 + menu.len()].iter().map(inner).collect();
     for (it, l) in menu.iter().zip(&listed) {
+        assert!(l.trim_start().starts_with(&format!("{}   ", it.key)), "{what}: {l} / {}", it.key);
+        let head: String = it.label.chars().take(30).collect();
+        assert!(l.contains(&head), "{what}: {l} / {}", it.label);
         match &it.enabled {
-            Ok(()) => assert!(l.contains(&it.label), "{what}: {l} / {}", it.label),
+            Ok(()) => {}
+            // the reason may run past the menu's edge after a long label:
+            // its start is there
+            _ if it.label.chars().count() > 70 => {}
             Err(why) if why == actions::MONITOR_ONLY => assert!(l.contains("monitor-only"), "{what}: {l}"),
-            Err(why) => assert!(l.contains(why.as_str()), "{what}: {l} / {why}"),
+            Err(why) => {
+                let start: String = why.chars().take(12).collect();
+                assert!(l.contains(&start), "{what}: {l} / {why}");
+            }
         }
     }
+    let det = ls.iter().position(|l| l.contains(" detail ")).unwrap_or_else(|| panic!("{what}: no detail panel\n{s}"));
+    assert!(det > top + menu.len(), "{what}: the detail is below the menu\n{s}");
+    assert!(!s.contains("ACTIONS"), "{what}: no ACTIONS block\n{s}");
     listed
 }
 
@@ -1085,8 +1125,8 @@ fn at_80x24_the_essentials_stay_on_screen() {
     assert!(ls[23].trim_end().ends_with("10-14 15:42"), "the last row keeps the clock: {}", ls[23]);
     let row = ls.iter().find(|l| l.contains("ANVIL-2")).unwrap_or_else(|| panic!("{}", ls.join("\n")));
     assert!(row.contains("name.drift"), "DETAIL keeps the issue code: {row}");
-    // the floating panel, opened on the same small screen
-    keys(&mut t.app, "w");
+    // the actions menu and the detail below it, on the same small screen
+    keys(&mut t.app, "x");
     let ls = lines(&draw(&mut t.app, 80, 24));
     let s = ls.join("\n");
     assert!(s.contains("WHY THIS STATUS"), "a short detail pane still shows the reasons:\n{s}");
@@ -1485,9 +1525,8 @@ fn esc_closes_what_is_open_then_quits() {
     keys(&mut t.app, "?");
     assert!(t.app.modal.is_some());
     assert!(press(&mut t.app, KeyCode::Esc).is_none() && t.app.modal.is_none(), "esc closes help");
-    keys(&mut t.app, "w");
-    assert!(t.app.detail_open);
-    assert!(press(&mut t.app, KeyCode::Esc).is_none() && !t.app.detail_open, "esc closes the detail panel");
+    keys(&mut t.app, "x");
+    assert!(press(&mut t.app, KeyCode::Esc).is_none() && t.app.modal.is_none(), "esc closes the actions menu and its detail");
     keys(&mut t.app, "/kits");
     assert!(press(&mut t.app, KeyCode::Esc).is_none(), "esc while typing the filter ends it");
     keys(&mut t.app, "/kits");
@@ -2091,4 +2130,93 @@ fn the_detail_cell_shows_the_topic_and_never_a_reason() {
     let ls = lines(&draw(&mut u.app, 200, 60));
     let hammer = ls.iter().find(|l| l.contains("HAMMER")).unwrap();
     assert!(hammer.contains("registry's current session id has no job row"), "{hammer}");
+}
+
+/// 0.7.8: in each picker (`space`, `!`, `i`), ctrl-o jumps to the selected
+/// member's pane by the path enter on its row takes (focus its pane; a member
+/// with none: `nimitz open`, confirmed), live and demo alike; enter still only
+/// puts the cursor on the row, and esc still closes.
+#[test]
+fn ctrl_o_in_each_picker_does_what_enter_on_the_row_does() {
+    // what a key left: the mux calls, the toast, the dialog open
+    fn outcome(t: &TestApp) -> (Vec<String>, String, String) {
+        let modal = match &t.app.modal {
+            Some(Modal::Confirm(p)) => format!("confirm {}", p.command),
+            Some(_) => "other".into(),
+            None => String::new(),
+        };
+        (t.mux.calls.lock().unwrap().clone(), toast(&t.app), modal)
+    }
+    // the reference: enter on the member's own row
+    let row_enter = |row: &str, live: bool| {
+        let mut t = fixture_app(fixtures::demo(), live);
+        let id = row.strip_prefix("M:").map(|i| Id(i.to_string()));
+        assert!(t.app.land(row, id.as_ref()), "{row}");
+        press(&mut t.app, KeyCode::Enter);
+        outcome(&t)
+    };
+    // open a picker, select the entry for `row`, press `key`
+    let pick = |picker: &str, row: &str, live: bool, key: Option<char>| {
+        let mut t = fixture_app(fixtures::demo(), live);
+        match picker {
+            "space" => {
+                press(&mut t.app, KeyCode::Char(' '));
+                let Some(Modal::Finder(f)) = t.app.modal.as_mut() else { panic!() };
+                f.push(row.strip_prefix("M:").unwrap());
+                assert_eq!(f.selected().map(|c| c.row_id.as_str()), Some(row));
+            }
+            "!" => {
+                let items = t.app.needs();
+                let sel = items.iter().position(|i| i.row_id == row).unwrap_or_else(|| panic!("{row} needs you"));
+                t.app.modal = Some(Modal::Needs { items, sel });
+            }
+            _ => {
+                let id = row.strip_prefix("M:").unwrap();
+                let sel = t.app.issues().iter().position(|i| i.id.as_ref().is_some_and(|x| x.0 == id)).unwrap_or_else(|| panic!("{row} has an issue"));
+                t.app.modal = Some(Modal::Issues { sel });
+            }
+        }
+        let before = outcome(&t);
+        match key {
+            Some(c) => ctrl(&mut t.app, c),
+            None => press(&mut t.app, KeyCode::Enter),
+        };
+        let cursor = t.app.current().map(|r| r.node.id.clone()).unwrap_or_default();
+        (before, outcome(&t), cursor)
+    };
+    for live in [false, true] {
+        for (picker, row) in [("space", "M:MAIN/KITS/PIPELINE"), ("space", "M:FORGE/IRON/QUENCH"), ("!", "M:MAIN/KITS/PIPELINE"), ("i", "M:FORGE"), ("i", "M:FORGE/IRON/QUENCH")] {
+            let want = row_enter(row, live);
+            assert!(want != (vec![], String::new(), String::new()), "{picker} {row}: enter on the row does something");
+            let (_, got, cursor) = pick(picker, row, live, Some('o'));
+            assert_eq!(got, want, "{picker} {row} live={live}: ctrl-o is the row's enter");
+            assert_eq!(cursor, row);
+            // enter: only the row, nothing jumps
+            let (before, after, cursor) = pick(picker, row, live, None);
+            assert_eq!(cursor, row, "{picker}: enter goes to the row");
+            assert_eq!((after.0, after.2.as_str()), (before.0, ""), "{picker} {row}: enter jumps nowhere");
+        }
+    }
+    // a member whose row folds on enter (it has crew, no pane): ctrl-o still
+    // goes for its pane, never folds
+    let (_, got, cursor) = pick("space", "M:FORGE/IRON/ANVIL", false, Some('o'));
+    assert_eq!(cursor, "M:FORGE/IRON/ANVIL");
+    assert!(got.1.contains("No pane to jump to"), "{got:?}");
+    // esc closes each picker as before
+    let mut t = demo();
+    for k in [' ', '!', 'i'] {
+        press(&mut t.app, KeyCode::Char(k));
+        assert!(t.app.modal.is_some());
+        press(&mut t.app, KeyCode::Esc);
+        assert!(t.app.modal.is_none(), "{k}: esc closes it");
+    }
+    // the footers and the help say so
+    for k in [' ', '!', 'i'] {
+        press(&mut t.app, KeyCode::Char(k));
+        assert!(screen(&mut t.app, 200, 50).contains("ctrl-o pane"), "{k}: its footer names ctrl-o");
+        press(&mut t.app, KeyCode::Esc);
+    }
+    for k in ["space", "!", "i"] {
+        assert!(admiralty::app::HELP.iter().any(|(h, d)| *h == k && d.contains("ctrl-o")), "help: {k}");
+    }
 }
