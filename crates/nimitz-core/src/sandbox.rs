@@ -1392,6 +1392,17 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                     return 0;
                 }
             };
+            // issue #6 (2.1.296): a session file that does not parse leaves
+            // Claude Code unable to check whether the job runs ("unverified"):
+            // every resume of a stopped job starts a copy, with this note
+            if !row.live() && !crate::evidence::unparseable_sessions_in(&claude_home(&base).join("sessions")).is_empty() {
+                let saved_name = row.short_id.as_deref().and_then(|s| job_state(&base, s)).and_then(|j| j.get("name").and_then(|v| v.as_str()).map(str::to_string));
+                let short = start(&base, &cwd, &saved_name.unwrap_or_else(|| row.name.clone()), &mode, a.settings.as_ref(), "fork", a.settings.is_some());
+                record_fork(&base, &short, &row.session_id);
+                println!("backgrounded \u{b7} {short}");
+                eprintln!("note: could not check whether session {target} is running, so this started a copy as {short}.");
+                return 0;
+            }
             // A prompt is not a flag: `--bg --resume <id> [prompt]` keeps the id (probe 2c1).
             let flags = a.name.is_some() || a.mode.is_some() || a.model.is_some() || a.settings.is_some() || a.fork;
             let saved = row.short_id.as_deref().and_then(|s| job_state(&base, s));

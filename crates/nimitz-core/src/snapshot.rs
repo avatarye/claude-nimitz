@@ -543,6 +543,20 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         };
         if i.id.is_some() { legacy.push(i) } else { snap.issues.push(i) }
     }
+    // A session file Claude Code cannot parse (issue #6): nimitz still reads
+    // it, but Claude Code then cannot tell whether any session is running, so
+    // every resume on this machine starts a copy. A machine issue, whoever
+    // owns the file; named with its owner so the fix is findable.
+    for b in evidence::unparseable_sessions(env) {
+        let owner = b.session_id.as_deref().and_then(|sid| reg.identities.iter().find(|(_, rec)| rec.session_ids().any(|s| s == sid))).map(|(id, _)| format!(", member {id}")).unwrap_or_default();
+        snap.issues.push(Issue {
+            code: "session.unreadable".into(),
+            severity: Severity::Warn,
+            message: format!("Claude Code cannot parse session file {}{owner}; while it stays broken, every resume on this machine starts a copy instead", b.describe()),
+            fix: Some(b.fix()),
+            id: None,
+        });
+    }
     for f in &mut snap.fleets {
         f.members_mut().for_each(|m| m.issues.extend(legacy.iter().filter(|i| i.id.as_ref() == Some(&m.id)).cloned()));
     }

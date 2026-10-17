@@ -702,6 +702,86 @@ pub fn corrupt_jobs(env: &Env) -> Vec<String> {
     out
 }
 
+/// A session file Claude Code cannot parse (issue #6). nimitz reads the first
+/// JSON value and ignores the rest (`first_json`), but Claude Code parses the
+/// whole file: bytes left behind the object (a shorter status written over a
+/// longer one, not truncated) leave 2.1.296 unable to check whether ANY
+/// session is running, so every `--bg --resume` on the machine starts a copy
+/// ("could not check whether session X is running").
+#[derive(Clone, Debug, PartialEq)]
+pub struct BadSessionFile {
+    pub path: PathBuf,
+    /// from the file name, else from the object nimitz can still read
+    pub pid: Option<i64>,
+    /// the session's name, when the object nimitz reads carries one
+    pub name: Option<String>,
+    pub session_id: Option<String>,
+    /// the strict parser's complaint
+    pub why: String,
+}
+
+impl BadSessionFile {
+    /// `/home/u/.claude/sessions/61336.json (pid 61336, [MAIN.ARGOS]-COMMODORE: trailing characters at line 1 column 580)`
+    pub fn describe(&self) -> String {
+        let who: Vec<String> = [self.pid.map(|p| format!("pid {p}")), self.name.clone().filter(|n| !n.is_empty())].into_iter().flatten().collect();
+        let who = if who.is_empty() { String::new() } else { format!("{}: ", who.join(", ")) };
+        format!("{} ({who}{})", self.path.display(), self.why)
+    }
+    /// What clears it: the object nimitz reads is the file's real content, so
+    /// what follows it can go; else the session that owns it rewrites it.
+    pub fn fix(&self) -> String {
+        let owner = self.pid.map(|p| format!("restart the session that owns it (pid {p})")).unwrap_or_else(|| "restart the session that owns it".into());
+        if self.session_id.is_some() {
+            format!("delete what follows the first JSON object in {}, or {owner}", self.path.display())
+        } else {
+            format!("{owner}; if that process is gone, delete {}", self.path.display())
+        }
+    }
+}
+
+/// The session files (`<claude home>/sessions/*.json`) a strict JSON parse
+/// rejects, as Claude Code reads them. One read: a file caught mid-write is
+/// in the list too (`unparseable_sessions_settled` reads twice).
+pub fn unparseable_sessions(env: &Env) -> Vec<BadSessionFile> {
+    unparseable_sessions_in(&env.claude_home.join("sessions"))
+}
+
+/// `unparseable_sessions` of one sessions folder.
+pub fn unparseable_sessions_in(dir: &Path) -> Vec<BadSessionFile> {
+    let Ok(rd) = fs::read_dir(dir) else { return vec![] };
+    let mut out: Vec<BadSessionFile> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json") && p.is_file())
+        .filter_map(|p| {
+            let raw = fs::read(&p).ok()?;
+            let err = serde_json::from_slice::<Value>(&raw).err()?;
+            let d = first_json(&raw);
+            let stem = p.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+            Some(BadSessionFile {
+                pid: stem.parse::<i64>().ok().or_else(|| d.as_ref().and_then(|d| d.get("pid")).and_then(|v| v.as_i64())),
+                name: d.as_ref().and_then(|d| s(d, "name")),
+                session_id: d.as_ref().and_then(|d| s(d, "sessionId")),
+                why: if raw.iter().all(|b| b.is_ascii_whitespace()) { "empty".into() } else { err.to_string() },
+                path: p,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// `unparseable_sessions`, read twice a moment apart: only the files that
+/// stay broken (a write in progress is not a corrupt file).
+pub fn unparseable_sessions_settled(env: &Env) -> Vec<BadSessionFile> {
+    let first = unparseable_sessions(env);
+    if first.is_empty() {
+        return first;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    unparseable_sessions(env).into_iter().filter(|b| first.iter().any(|f| f.path == b.path)).collect()
+}
+
 /// Rows from `claude agents --json --all` output.
 pub fn parse_cli_rows(v: &Value) -> Vec<SessionRow> {
     v.as_array()
