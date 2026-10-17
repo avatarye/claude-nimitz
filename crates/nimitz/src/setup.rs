@@ -623,8 +623,13 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     }
     // nimitz reads past bytes left behind a session file's object; Claude
     // Code does not, and then every resume on the machine is a copy (issue #6)
-    for b in nimitz_core::evidence::unparseable_sessions_settled(env) {
-        r.err(&format!("Claude Code cannot parse session file {}; while it stays broken, every resume on this machine starts a copy", b.describe()), Some(&b.fix()));
+    for b in nimitz_core::evidence::unparseable_sessions(env) {
+        if b.blocks {
+            r.err(&format!("Claude Code cannot parse session file {}; while it stays broken, every resume on this machine starts a copy", b.describe()), Some(&b.fix()));
+        } else {
+            // Claude Code skips a file whose process is gone (or newer than it)
+            r.info(&format!("a stale unreadable session file, harmless: {}", b.describe()), Some(&b.fix()));
+        }
     }
     match nimitz_core::trust::format_check(env) {
         Ok(n) => r.ok(&format!("pinned formats: Claude Code's trust table reads as nimitz writes it ({n} trusted folder key(s))")),

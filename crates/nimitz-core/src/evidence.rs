@@ -705,81 +705,106 @@ pub fn corrupt_jobs(env: &Env) -> Vec<String> {
 /// A session file Claude Code cannot parse (issue #6). nimitz reads the first
 /// JSON value and ignores the rest (`first_json`), but Claude Code parses the
 /// whole file: bytes left behind the object (a shorter status written over a
-/// longer one, not truncated) leave 2.1.296 unable to check whether ANY
+/// longer one, not truncated) can leave it unable to check whether ANY
 /// session is running, so every `--bg --resume` on the machine starts a copy
 /// ("could not check whether session X is running").
+///
+/// Claude Code (2.1.302) reads only `<pid>.json` files, and gives up on one
+/// only when it still fails after a 25 ms re-read, its pid is alive and that
+/// process started no later than the file's mtime + 2 s (`blocks`). Every
+/// other unparseable file it skips, and never removes: harmless.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BadSessionFile {
     pub path: PathBuf,
-    /// from the file name, else from the object nimitz can still read
-    pub pid: Option<i64>,
+    /// from the file name
+    pub pid: i64,
     /// the session's name, when the object nimitz reads carries one
     pub name: Option<String>,
     pub session_id: Option<String>,
     /// the strict parser's complaint
     pub why: String,
+    /// where the first JSON object ends, when one parses (what follows it is
+    /// left over from an earlier, longer write)
+    pub object_end: Option<usize>,
+    /// Claude Code gives up on it: every resume on the machine is a copy
+    pub blocks: bool,
 }
 
 impl BadSessionFile {
     /// `/home/u/.claude/sessions/61336.json (pid 61336, [MAIN.ARGOS]-COMMODORE: trailing characters at line 1 column 580)`
     pub fn describe(&self) -> String {
-        let who: Vec<String> = [self.pid.map(|p| format!("pid {p}")), self.name.clone().filter(|n| !n.is_empty())].into_iter().flatten().collect();
-        let who = if who.is_empty() { String::new() } else { format!("{}: ", who.join(", ")) };
-        format!("{} ({who}{})", self.path.display(), self.why)
+        let name = self.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(", {n}")).unwrap_or_default();
+        format!("{} (pid {}{name}: {})", self.path.display(), self.pid, self.why)
     }
     /// What clears it: the object nimitz reads is the file's real content, so
-    /// what follows it can go; else the session that owns it rewrites it.
+    /// what follows it can go; a live owner rewrites it when it restarts.
     pub fn fix(&self) -> String {
-        let owner = self.pid.map(|p| format!("restart the session that owns it (pid {p})")).unwrap_or_else(|| "restart the session that owns it".into());
-        if self.session_id.is_some() {
-            format!("delete what follows the first JSON object in {}, or {owner}", self.path.display())
-        } else {
-            format!("{owner}; if that process is gone, delete {}", self.path.display())
+        let owner = (self.blocks || crate::os::pid_alive(self.pid)).then(|| format!("restart the session that owns it (pid {})", self.pid));
+        match (self.object_end, owner) {
+            (Some(at), Some(o)) => format!("remove what follows the first JSON object in {} (from byte {at}), or {o}", self.path.display()),
+            (Some(at), None) => format!("remove what follows the first JSON object in {} (from byte {at})", self.path.display()),
+            (None, Some(o)) => o,
+            (None, None) => format!("delete {} (its process is gone)", self.path.display()),
         }
     }
 }
 
-/// The session files (`<claude home>/sessions/*.json`) a strict JSON parse
-/// rejects, as Claude Code reads them. One read: a file caught mid-write is
-/// in the list too (`unparseable_sessions_settled` reads twice).
+/// The session files (`<claude home>/sessions/<pid>.json`) a strict JSON
+/// parse rejects twice, 25 ms apart, with the same mtime and length (a file
+/// caught mid-write is none), each marked with whether Claude Code gives up
+/// on it (`blocks`).
 pub fn unparseable_sessions(env: &Env) -> Vec<BadSessionFile> {
     unparseable_sessions_in(&env.claude_home.join("sessions"))
 }
 
 /// `unparseable_sessions` of one sessions folder.
 pub fn unparseable_sessions_in(dir: &Path) -> Vec<BadSessionFile> {
+    // a failing read: its bytes, mtime and length
+    let bad = |p: &Path| -> Option<(Vec<u8>, SystemTime, u64)> {
+        let m = fs::metadata(p).ok()?;
+        let raw = fs::read(p).ok()?;
+        serde_json::from_slice::<Value>(&raw).is_err().then(|| (raw, m.modified().unwrap_or(UNIX_EPOCH), m.len()))
+    };
     let Ok(rd) = fs::read_dir(dir) else { return vec![] };
-    let mut out: Vec<BadSessionFile> = rd
+    let first: Vec<(PathBuf, i64, SystemTime, u64)> = rd
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json") && p.is_file())
         .filter_map(|p| {
-            let raw = fs::read(&p).ok()?;
-            let err = serde_json::from_slice::<Value>(&raw).err()?;
-            let d = first_json(&raw);
-            let stem = p.file_stem().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default();
+            let name = p.file_name()?.to_str()?;
+            let pid = name.strip_suffix(".json").filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))?.parse::<i64>().ok()?;
+            let (_, mtime, len) = bad(&p)?;
+            Some((p, pid, mtime, len))
+        })
+        .collect();
+    if first.is_empty() {
+        return vec![];
+    }
+    std::thread::sleep(std::time::Duration::from_millis(25));
+    let mut out: Vec<BadSessionFile> = first
+        .into_iter()
+        .filter_map(|(p, pid, mtime, len)| {
+            let (raw, mtime2, len2) = bad(&p)?;
+            if (mtime2, len2) != (mtime, len) {
+                return None;
+            }
+            let mut it = serde_json::Deserializer::from_slice(&raw).into_iter::<Value>();
+            let d = it.next().and_then(|v| v.ok());
+            let object_end = d.as_ref().map(|_| it.byte_offset());
+            let mtime_ms = mtime.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).ok();
+            let blocks = crate::os::pid_alive(pid) && crate::os::started_in_time(crate::os::process_birth_ms(pid), mtime_ms);
             Some(BadSessionFile {
-                pid: stem.parse::<i64>().ok().or_else(|| d.as_ref().and_then(|d| d.get("pid")).and_then(|v| v.as_i64())),
+                pid,
                 name: d.as_ref().and_then(|d| s(d, "name")),
                 session_id: d.as_ref().and_then(|d| s(d, "sessionId")),
-                why: if raw.iter().all(|b| b.is_ascii_whitespace()) { "empty".into() } else { err.to_string() },
+                why: if raw.iter().all(|b| b.is_ascii_whitespace()) { "empty".into() } else { serde_json::from_slice::<Value>(&raw).err().map(|e| e.to_string()).unwrap_or_default() },
+                object_end,
+                blocks,
                 path: p,
             })
         })
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
-}
-
-/// `unparseable_sessions`, read twice a moment apart: only the files that
-/// stay broken (a write in progress is not a corrupt file).
-pub fn unparseable_sessions_settled(env: &Env) -> Vec<BadSessionFile> {
-    let first = unparseable_sessions(env);
-    if first.is_empty() {
-        return first;
-    }
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    unparseable_sessions(env).into_iter().filter(|b| first.iter().any(|f| f.path == b.path)).collect()
 }
 
 /// Rows from `claude agents --json --all` output.
@@ -1211,6 +1236,69 @@ fn trusted_roots(cache: &mut FileCache, f: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #6: Claude Code's rule for a session file it gives up on: a
+    /// `<pid>.json` that still fails a strict parse after a re-read, whose pid
+    /// is alive and whose process started no later than the file's mtime +
+    /// 2 s. Any other is listed as harmless, or not at all.
+    #[test]
+    fn a_bad_session_file_blocks_only_by_claude_codes_rule() {
+        let td = tempfile::tempdir().unwrap();
+        let d = td.path();
+        let me = std::process::id();
+        let obj = format!(r#"{{"pid":{me},"sessionId":"s1","name":"[MAIN.ARGOS]-COMMODORE"}}"#);
+        // live, older than the write, a stray byte behind its object
+        std::fs::write(d.join(format!("{me}.json")), format!("{obj}}}")).unwrap();
+        // not a pid's name: Claude Code never reads it
+        std::fs::write(d.join("cc33dupe.json"), "{").unwrap();
+        std::fs::write(d.join(format!("{me}.json.tmp")), "{").unwrap();
+        // a good file
+        std::fs::write(d.join("1.json"), "{}").unwrap();
+        // a dead process's
+        let mut c = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
+        let dead = c.id();
+        c.wait().unwrap();
+        std::fs::write(d.join(format!("{dead}.json")), "").unwrap();
+        let bad = super::unparseable_sessions_in(d);
+        assert_eq!(bad.iter().map(|b| b.pid).collect::<Vec<_>>(), { let mut v = vec![me as i64, dead as i64]; v.sort_by_key(|p| d.join(format!("{p}.json"))); v }, "{bad:?}");
+        let live = bad.iter().find(|b| b.pid == me as i64).unwrap();
+        assert!(live.blocks && live.object_end == Some(obj.len()) && live.name.as_deref() == Some("[MAIN.ARGOS]-COMMODORE"), "{live:?}");
+        assert!(live.fix().contains(&format!("(from byte {})", obj.len())) && live.fix().contains(&format!("pid {me}")), "{}", live.fix());
+        let gone = bad.iter().find(|b| b.pid == dead as i64).unwrap();
+        assert!(!gone.blocks && gone.why == "empty" && !gone.fix().contains("restart"), "{gone:?} {}", gone.fix());
+        // the live pid's file, written long before its process started: skipped
+        let f = d.join(format!("{me}.json"));
+        std::fs::File::options().write(true).open(&f).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)).unwrap();
+        if crate::os::process_birth_ms(me as i64).is_some() {
+            assert!(!super::unparseable_sessions_in(d).iter().any(|b| b.blocks), "older than its process");
+        }
+        // repaired: not listed
+        std::fs::write(&f, &obj).unwrap();
+        assert!(!super::unparseable_sessions_in(d).iter().any(|b| b.pid == me as i64));
+    }
+
+    /// A file still being written (its mtime or length moves between the two
+    /// reads) is not listed.
+    #[test]
+    fn a_session_file_caught_mid_write_is_not_listed() {
+        let td = tempfile::tempdir().unwrap();
+        let f = td.path().join(format!("{}.json", std::process::id()));
+        std::fs::write(&f, "{").unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (s2, f2) = (stop.clone(), f.clone());
+        let w = std::thread::spawn(move || {
+            let mut n = 1;
+            while !s2.load(std::sync::atomic::Ordering::Relaxed) {
+                n += 1;
+                std::fs::write(&f2, "{".repeat(n % 50 + 1)).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        });
+        let seen = super::unparseable_sessions_in(td.path());
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        w.join().unwrap();
+        assert!(seen.is_empty(), "{seen:?}");
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn the_ancestors_start_at_the_parent() {

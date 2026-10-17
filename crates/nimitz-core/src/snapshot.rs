@@ -547,7 +547,7 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     // it, but Claude Code then cannot tell whether any session is running, so
     // every resume on this machine starts a copy. A machine issue, whoever
     // owns the file; named with its owner so the fix is findable.
-    for b in evidence::unparseable_sessions(env) {
+    for b in evidence::unparseable_sessions(env).into_iter().filter(|b| b.blocks) {
         let owner = b.session_id.as_deref().and_then(|sid| reg.identities.iter().find(|(_, rec)| rec.session_ids().any(|s| s == sid))).map(|(id, _)| format!(", member {id}")).unwrap_or_default();
         snap.issues.push(Issue {
             code: "session.unreadable".into(),

@@ -1486,11 +1486,19 @@ fn doctor_flags_a_changed_format() {
     std::fs::write(jobs.join("state.json"), r#"{"sessionId": "0a0a0a0a-0000-4000-8000-000000000000", "state": "done", "cwd": "/w"}"#).unwrap();
     let d = sb.run(&["doctor"]);
     assert!(!d.out.contains("lacks") && d.out.contains("carry every field nimitz reads"), "{}", d.out);
-    // issue #6: a stray byte behind the object: nimitz reads it, Claude Code does not
-    std::fs::write(&one, r#"{"pid": 61336, "sessionId": "x", "status": "idle", "kind": "bg", "name": "[MAIN.ARGOS]-COMMODORE"}}"#).unwrap();
+    // issue #6: a stray byte behind the object of a live process's file
+    // (this test's): nimitz reads it, Claude Code does not
+    let me = std::process::id();
+    let live = sess.join(format!("{me}.json"));
+    std::fs::write(&live, format!(r#"{{"pid": {me}, "sessionId": "x", "status": "idle", "kind": "bg", "name": "[MAIN.ARGOS]-COMMODORE"}}}}"#)).unwrap();
     let d = sb.run(&["doctor"]);
-    assert!(d.code != 0 && d.out.contains("cannot parse session file") && d.out.contains(&one.display().to_string()) && d.out.contains("[MAIN.ARGOS]-COMMODORE"), "{}", d.out);
-    assert!(d.out.contains("delete what follows the first JSON object"), "{}", d.out);
+    assert!(d.code != 0 && d.out.contains("cannot parse session file") && d.out.contains(&live.display().to_string()) && d.out.contains("[MAIN.ARGOS]-COMMODORE"), "{}", d.out);
+    assert!(d.out.contains("remove what follows the first JSON object") && d.out.contains("from byte"), "{}", d.out);
+    // a dead process's: harmless, an info line only
+    std::fs::remove_file(&live).unwrap();
+    std::fs::write(sess.join("999999999.json"), "{").unwrap();
+    let d = sb.run(&["doctor"]);
+    assert!(!d.out.contains("cannot parse session file") && d.out.contains("a stale unreadable session file, harmless"), "{}", d.out);
 }
 
 #[test]

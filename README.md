@@ -195,11 +195,12 @@ cell shows what its job is doing (its topic) when nothing else needs saying.
   - `folder.untrusted`: `nimitz trust <folder>` (`ship new` and `start` plan it for you);
   - `tab.taken` (its tab runs something else): ctrl-z or quit it there, then `nimitz open <id>`;
   - copies or stale rows: `nimitz sweep <id>`;
-  - every start answers `started a copy ... cannot parse the session file
-    ~/.claude/sessions/N.json`: another session's status file is broken, and
-    Claude Code then resumes nothing on the machine. Delete what follows its
-    first JSON object, or restart the session that owns it (`nimitz doctor`
-    and `nimitz check` name it);
+  - `session.unreadable` (a start answers `started a copy ... cannot parse
+    the session file ~/.claude/sessions/<pid>.json`): a live session's status
+    file is broken, and Claude Code then resumes nothing on the machine.
+    Remove what follows its first JSON object (the fix names the byte), or
+    restart the session that owns it. A dead process's broken file is
+    harmless (`nimitz doctor` lists it as info);
   - a stowaway: `nimitz adopt <session> <id>`, or stop and `rm` it;
   - `tab.resumed` (Herdr reopened a conversation in a pane): `/exit` in that pane, then `nimitz start <id>`.
 - Never `/exit` inside an attach: it opens the agent view; ctrl-z detaches.

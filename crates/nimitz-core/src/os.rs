@@ -105,6 +105,28 @@ pub fn process_started_ms(pid: i64) -> Option<i64> {
     }
 }
 
+/// When process `pid` started (epoch ms), wherever it can be read: the
+/// creation time on Windows; on Linux the boot time (`/proc/stat` `btime`)
+/// plus its start ticks. None elsewhere and for a pid that cannot be read.
+pub fn process_birth_ms(pid: i64) -> Option<i64> {
+    #[cfg(windows)]
+    {
+        win::started_ms(pid)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let btime: i64 = std::fs::read_to_string("/proc/stat").ok()?.lines().find_map(|l| l.strip_prefix("btime ")).and_then(|v| v.trim().parse().ok())?;
+        let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        let hz = if hz > 0 { hz as i64 } else { 100 };
+        Some(btime * 1000 + start_ticks(pid)? as i64 * 1000 / hz)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
 /// When process `pid` started, in clock ticks since boot (`/proc/<pid>/stat`
 /// field 22, what Claude Code writes as a session file's `procStart` on
 /// Linux). None elsewhere and for a pid that cannot be read.
