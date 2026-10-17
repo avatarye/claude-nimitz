@@ -573,7 +573,7 @@ fn draw_fleet_filter(f: &mut Frame, area: Rect, on: &[bool; 7], sel: usize) {
 }
 
 fn draw_needs(f: &mut Frame, area: Rect, items: &[NeedItem], sel: usize) {
-    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "go to it"), ("esc", "back")]), Line::raw("")];
+    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "back")]), Line::raw("")];
     if items.is_empty() {
         lines.push(Line::styled("  nothing is waiting on you", st(mono::COMMENT)));
     }
@@ -598,7 +598,7 @@ fn draw_issues(app: &App, f: &mut Frame, area: Rect, sel: usize) {
     let r = centered(area, area.width.saturating_sub(4).max(40), area.height.saturating_sub(2));
     let inner_h = r.height.saturating_sub(2) as usize;
     let width = r.width.saturating_sub(2) as usize;
-    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "go"), ("y", "yank fix"), ("esc", "back")]), Line::raw("")];
+    let mut lines = vec![keys_line(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("y", "yank fix"), ("esc", "back")]), Line::raw("")];
     if issues.is_empty() {
         lines.push(Line::styled("  No issues. Every fleet's shape matches its config.", st(mono::MUTED)));
     }
@@ -766,7 +766,7 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
         lines.push(Line::raw(""));
     }
     lines.push(Line::raw(""));
-    lines.push(keys_line(&[("\u{2191}\u{2193} ctrl-n/p", "move"), ("enter", "go to it"), ("esc", "close"), ("ctrl-u", "clear")]));
+    lines.push(keys_line(&[("\u{2191}\u{2193} ctrl-n/p", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "close"), ("ctrl-u", "clear")]));
     f.render_widget(Clear, r);
     f.render_widget(Paragraph::new(lines).block(modal_block("find: path, name, status, topic".into(), mono::ACCENT)), r);
     if let Some(c) = fd.selected().filter(|_| preview) {

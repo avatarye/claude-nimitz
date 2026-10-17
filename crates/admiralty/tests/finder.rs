@@ -217,7 +217,7 @@ fn the_panel_shows_the_ranked_list_and_previews_the_selection() {
         let ls = lines(&buf);
         let s = ls.join("\n");
         assert!(s.contains("> mas"), "{s}");
-        assert!(s.contains(&format!("/ {all}")) && s.contains("enter go to it"), "{s}");
+        assert!(s.contains(&format!("/ {all}")) && s.contains("enter row") && s.contains("ctrl-o pane"), "{s}");
         let y = ls.iter().position(|l| l.contains("MAIN/ARGOS/SIGNAL  [MAIN.ARGOS]-SIGNAL")).expect("the best line");
         let x = ls[y].find("MAIN/ARGOS/SIGNAL").unwrap();
         let x = ls[y][..x].chars().count() as u16;

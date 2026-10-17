@@ -2119,3 +2119,92 @@ fn the_detail_cell_shows_the_topic_and_never_a_reason() {
     let hammer = ls.iter().find(|l| l.contains("HAMMER")).unwrap();
     assert!(hammer.contains("registry's current session id has no job row"), "{hammer}");
 }
+
+/// 0.7.8: in each picker (`space`, `!`, `i`), ctrl-o jumps to the selected
+/// member's pane by the path enter on its row takes (focus its pane; a member
+/// with none: `nimitz open`, confirmed), live and demo alike; enter still only
+/// puts the cursor on the row, and esc still closes.
+#[test]
+fn ctrl_o_in_each_picker_does_what_enter_on_the_row_does() {
+    // what a key left: the mux calls, the toast, the dialog open
+    fn outcome(t: &TestApp) -> (Vec<String>, String, String) {
+        let modal = match &t.app.modal {
+            Some(Modal::Confirm(p)) => format!("confirm {}", p.command),
+            Some(_) => "other".into(),
+            None => String::new(),
+        };
+        (t.mux.calls.lock().unwrap().clone(), toast(&t.app), modal)
+    }
+    // the reference: enter on the member's own row
+    let row_enter = |row: &str, live: bool| {
+        let mut t = fixture_app(fixtures::demo(), live);
+        let id = row.strip_prefix("M:").map(|i| Id(i.to_string()));
+        assert!(t.app.land(row, id.as_ref()), "{row}");
+        press(&mut t.app, KeyCode::Enter);
+        outcome(&t)
+    };
+    // open a picker, select the entry for `row`, press `key`
+    let pick = |picker: &str, row: &str, live: bool, key: Option<char>| {
+        let mut t = fixture_app(fixtures::demo(), live);
+        match picker {
+            "space" => {
+                press(&mut t.app, KeyCode::Char(' '));
+                let Some(Modal::Finder(f)) = t.app.modal.as_mut() else { panic!() };
+                f.push(row.strip_prefix("M:").unwrap());
+                assert_eq!(f.selected().map(|c| c.row_id.as_str()), Some(row));
+            }
+            "!" => {
+                let items = t.app.needs();
+                let sel = items.iter().position(|i| i.row_id == row).unwrap_or_else(|| panic!("{row} needs you"));
+                t.app.modal = Some(Modal::Needs { items, sel });
+            }
+            _ => {
+                let id = row.strip_prefix("M:").unwrap();
+                let sel = t.app.issues().iter().position(|i| i.id.as_ref().is_some_and(|x| x.0 == id)).unwrap_or_else(|| panic!("{row} has an issue"));
+                t.app.modal = Some(Modal::Issues { sel });
+            }
+        }
+        let before = outcome(&t);
+        match key {
+            Some(c) => ctrl(&mut t.app, c),
+            None => press(&mut t.app, KeyCode::Enter),
+        };
+        let cursor = t.app.current().map(|r| r.node.id.clone()).unwrap_or_default();
+        (before, outcome(&t), cursor)
+    };
+    for live in [false, true] {
+        for (picker, row) in [("space", "M:MAIN/KITS/PIPELINE"), ("space", "M:FORGE/IRON/QUENCH"), ("!", "M:MAIN/KITS/PIPELINE"), ("i", "M:FORGE"), ("i", "M:FORGE/IRON/QUENCH")] {
+            let want = row_enter(row, live);
+            assert!(want != (vec![], String::new(), String::new()), "{picker} {row}: enter on the row does something");
+            let (_, got, cursor) = pick(picker, row, live, Some('o'));
+            assert_eq!(got, want, "{picker} {row} live={live}: ctrl-o is the row's enter");
+            assert_eq!(cursor, row);
+            // enter: only the row, nothing jumps
+            let (before, after, cursor) = pick(picker, row, live, None);
+            assert_eq!(cursor, row, "{picker}: enter goes to the row");
+            assert_eq!((after.0, after.2.as_str()), (before.0, ""), "{picker} {row}: enter jumps nowhere");
+        }
+    }
+    // a member whose row folds on enter (it has crew, no pane): ctrl-o still
+    // goes for its pane, never folds
+    let (_, got, cursor) = pick("space", "M:FORGE/IRON/ANVIL", false, Some('o'));
+    assert_eq!(cursor, "M:FORGE/IRON/ANVIL");
+    assert!(got.1.contains("No pane to jump to"), "{got:?}");
+    // esc closes each picker as before
+    let mut t = demo();
+    for k in [' ', '!', 'i'] {
+        press(&mut t.app, KeyCode::Char(k));
+        assert!(t.app.modal.is_some());
+        press(&mut t.app, KeyCode::Esc);
+        assert!(t.app.modal.is_none(), "{k}: esc closes it");
+    }
+    // the footers and the help say so
+    for k in [' ', '!', 'i'] {
+        press(&mut t.app, KeyCode::Char(k));
+        assert!(screen(&mut t.app, 200, 50).contains("ctrl-o pane"), "{k}: its footer names ctrl-o");
+        press(&mut t.app, KeyCode::Esc);
+    }
+    for k in ["space", "!", "i"] {
+        assert!(admiralty::app::HELP.iter().any(|(h, d)| *h == k && d.contains("ctrl-o")), "help: {k}");
+    }
+}

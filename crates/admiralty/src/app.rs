@@ -259,14 +259,14 @@ pub const HELP: &[(&str, &str)] = &[
     ("h / l", "fold or go to parent / unfold or go to first child"),
     ("gg / G", "top / bottom"),
     ("ctrl-d / ctrl-u", "half page down / up"),
-    ("space", "find a member or stowaway in every fleet by its path, name, status or topic (fuzzy, as fzf; all terms must match); enter puts the cursor on it"),
+    ("space", "find a member or stowaway in every fleet by its path, name, status or topic (fuzzy, as fzf; all terms must match); enter puts the cursor on it, ctrl-o jumps to its pane"),
     ("z", "fold / unfold; on a member with crew that finished over 30 min ago: show / hide them (+N finished)"),
     ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz open <id>, confirms); else fold / unfold"),
     ("J / K", "next / previous row with a pane"),
-    ("!", "everything waiting on you"),
-    ("i", "every issue, with its fix command"),
+    ("!", "everything waiting on you (enter: its row; ctrl-o: its pane)"),
+    ("i", "every issue, with its fix command (enter: its row; ctrl-o: its pane)"),
     ("a", "start it: nimitz start <id> (confirms)"),
     ("u", "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked; confirms)"),
     ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
@@ -1327,6 +1327,15 @@ impl App {
         match m {
             Modal::Finder(mut fd) => match k.code {
                 KeyCode::Esc => {}
+                // ctrl-o: straight to its pane, as enter on its row would
+                KeyCode::Char('o') if ctrl => {
+                    if let Some(c) = fd.selected().cloned() {
+                        if self.land(&c.row_id, c.member.as_ref()) {
+                            return self.jump();
+                        }
+                        self.notify(format!("{} is not in the list now", c.text.split("  ").next().unwrap_or_default()), st(mono::WARN));
+                    }
+                }
                 KeyCode::Enter => {
                     if let Some(c) = fd.selected().cloned() {
                         if !self.land(&c.row_id, c.member.as_ref()) {
@@ -1403,6 +1412,16 @@ impl App {
                         self.reveal(&row, Some(&id));
                     }
                 }
+                KeyCode::Char('o') if ctrl => {
+                    if let Some(it) = items.get(sel) {
+                        let id = Id(it.row_id.trim_start_matches("M:").to_string());
+                        let row = it.row_id.clone();
+                        self.reveal(&row, Some(&id));
+                        if self.current().is_some_and(|r| r.node.id == row) {
+                            return self.jump();
+                        }
+                    }
+                }
                 _ => self.modal = Some(Modal::Needs { items, sel }),
             },
             Modal::Issues { mut sel } => {
@@ -1424,7 +1443,9 @@ impl App {
                         }
                         self.modal = Some(Modal::Issues { sel });
                     }
-                    KeyCode::Enter => {
+                    // enter: its row; ctrl-o: its member's pane, as enter on that row
+                    _ if k.code == KeyCode::Enter || (ctrl && k.code == KeyCode::Char('o')) => {
+                        let pane = k.code != KeyCode::Enter;
                         if let Some(i) = issues.get(sel) {
                             match &i.id {
                                 Some(id) => {
@@ -1433,6 +1454,9 @@ impl App {
                                         _ => format!("M:{}", id.0),
                                     };
                                     self.reveal(&row, Some(id));
+                                    if pane && self.current().is_some_and(|r| r.node.id == row) {
+                                        return self.jump();
+                                    }
                                 }
                                 None if i.code == "stowaway" => {
                                     self.show_stowaways = true;

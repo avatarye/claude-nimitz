@@ -164,7 +164,8 @@ Removed in 0.7.3: `restore` (use `muster`), `relaunch` (`restart`), `up`
 
 Keys: `j`/`k` move, `tab` next fleet, `space` find a member in every fleet
 (fuzzy, as fzf: `mas` finds `MAIN/ARGOS/SIGNAL`, `argos busy` the busy ones of
-ARGOS; `enter` puts the cursor on it), `z` fold / unfold, `enter` jump to a pane, `a` start, `A` a
+ARGOS; `enter` puts the cursor on it, `ctrl-o` jumps to its pane; `!` and `i`
+the same), `z` fold / unfold, `enter` jump to a pane, `a` start, `A` a
 pane for it, `x` more actions with the row's detail below them (stop,
 restart, sweep, rm, adopt; on a fleet: `R` muster), `u` up a fleet with its parked ships, `m` message, `!` what waits on you, `i`
 every issue with its fix, `c`/`e`/`D` create, edit, remove, `?` all keys (`?`

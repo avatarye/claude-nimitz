@@ -137,13 +137,18 @@ term that spells the path's word initials in order ranks first (`mas`:
 `ctrl-n/ctrl-p` move, the matched letters are lit, and on a wide screen the
 selected one's detail shows beside the list. `enter` puts the cursor on its row
 (its fleet's tab, opening folds and clearing what hides it), so `enter` again
-jumps to its pane; `esc` leaves the cursor and the filter as they were.
+jumps to its pane; `ctrl-o` does both at once: straight to its pane, the way
+`enter` on its row goes (focus the pane; a member with none gets one with
+`nimitz open`, confirmed). `esc` leaves the cursor and the filter as they were.
+`!` and `i` take `ctrl-o` the same way (`enter` there puts the cursor on the row).
+Not shift+enter: tmux 3.4 drops it and Herdr passes it only from a terminal
+speaking the kitty keyboard protocol, while `ctrl-o` arrives everywhere.
 
 `tab/shift-tab 1-9` fleet tabs, `j/k h/l gg/G ctrl-d/u`, `z` fold / unfold (on
 a member with crew that finished over 30 min ago: its `+N finished`), `/` filter
 (every fleet), `n/N`, `space` the finder, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
-row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
+row, `ctrl-o` to its pane, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
 new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (every action of the row: start, open, stop, restart, sweep, rm, adopt, remove from config, message;
 on a fleet band also up, `layout F/... [--ships]`, `R` muster and removing a machine; a closed one says why; sweep is
 scoped to the row: member, squadron or fleet; the row's detail sits below the menu),
