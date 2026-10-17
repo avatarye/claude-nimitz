@@ -97,7 +97,7 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let (Some(r), Some(b)) = (app.current(), &app.bundle) else { return vec![Line::styled("loading ...", st(mono::COMMENT))] };
     let snap = &b.snap;
     let now = app.now();
-    let mut v = match (&r.node.kind, app.target()) {
+    match (&r.node.kind, app.target()) {
         (Kind::FleetBand, Target::Fleet(id)) => match snap.fleets.iter().find(|f| f.id == id) {
             Some(f) => fleet_detail(f, now, width),
             None => broken_detail(snap, &id, width),
@@ -171,11 +171,7 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             kv("owner", r.node.detail.iter().map(|s| s.content.to_string()).collect::<String>()),
         ],
         _ => vec![],
-    };
-    if matches!(r.node.kind, Kind::FleetBand | Kind::SquadronBand | Kind::Member(_) | Kind::Stowaway | Kind::ExtraRow) {
-        v.extend(actions_block(app, &r.node));
     }
-    v
 }
 
 /// A fleet or squadron whose config does not load: the errors in full.
@@ -413,43 +409,6 @@ fn extra_detail(owner: &str, s: &SessionInfo, now: f64) -> Vec<Line<'static>> {
         heading("SESSION"),
     ];
     v.extend(session_lines(s, now, None));
-    v
-}
-
-/// The ACTIONS block: each key, and what it does here or why it will not.
-fn actions_block(app: &App, n: &Node) -> Vec<Line<'static>> {
-    let mut v = vec![blank(), heading("ACTIONS")];
-    // a key closed only for want of a multiplexer says so in its place; the
-    // reason in full is said once, at the end
-    let mut no_mux: Vec<String> = vec![];
-    let mut line = |v: &mut Vec<Line<'static>>, key: &str, r: Result<String, String>| match r {
-        Ok(t) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::ACCENT)), Span::styled(t, st(mono::FG))])),
-        Err(why) if why == crate::actions::MONITOR_ONLY => {
-            no_mux.push(key.to_string());
-            v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::DIM)), Span::styled("monitor-only".to_string(), st(mono::WARN))]));
-        }
-        Err(why) => v.push(Line::from(vec![Span::styled(format!("  {key:<4}"), bold(mono::DIM)), Span::styled(why, st(mono::COMMENT))])),
-    };
-    let jump = match (&n.pane_id, app.bundle.as_ref().map(|b| b.mux_caps.focus).unwrap_or(false)) {
-        (Some(p), true) => Ok(format!("jump to its pane {p}")),
-        (_, false) if matches!(n.kind, Kind::Member(_) | Kind::Stowaway) => Err(crate::actions::MONITOR_ONLY.to_string()),
-        (None, true) if matches!(n.kind, Kind::Member(_) | Kind::Stowaway) => Err("no pane hosts this session".into()),
-        _ => Err("fold / unfold".into()),
-    };
-    line(&mut v, "\u{23ce}", jump);
-    // the same list as the action menu (`x`), in its order, each with its own key
-    for it in app.row_actions() {
-        // a closed entry: what it is (its label's head), then why not
-        let what = it.label.split([':', '(']).next().unwrap_or_default().trim().to_string();
-        line(&mut v, &it.main_key(), it.enabled.map(|_| it.label).map_err(|why| if why == crate::actions::MONITOR_ONLY { why } else { format!("{what}: {why}") }));
-    }
-    if !no_mux.is_empty() {
-        v.push(Line::from(vec![
-            Span::styled("      ".to_string(), bold(mono::DIM)),
-            Span::styled(crate::actions::MONITOR_ONLY.to_string(), st(mono::WARN)),
-        ]));
-    }
-    v.push(Line::styled("  x   this list as a menu   c create   e edit", st(mono::COMMENT)));
     v
 }
 

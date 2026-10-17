@@ -42,20 +42,20 @@ SB = "/tmp/adm-sb"  # the sandbox path shown in the sandbox screens
 # name: (cols, rows, source, keys). A key is literal text, or <Name> for a tmux
 # key name (<Enter>, <Escape>, <Tab>, <C-e>), or <sleep:S>.
 SCREENS: dict[str, tuple[int, int, str, list[str]]] = {
-    "admiralty-wide": (200, 50, "demo", ["w"]),
-    "admiralty-80x24": (80, 24, "demo-monitor", ["2", "/ANVIL", "<Enter>", "n", "<Escape>", "w"]),
+    "admiralty-wide": (200, 50, "demo", []),
+    "admiralty-80x24": (80, 24, "demo-monitor", ["2", "/ANVIL", "<Enter>", "n", "<Escape>", "x"]),
     "admiralty-narrow": (100, 30, "demo", []),
     "admiralty-help": (200, 50, "demo", ["?"]),
     "admiralty-finder": (200, 50, "demo", ["<Space>", "argos busy"]),
     "admiralty-issues-view": (200, 50, "demo", ["i", "j", "j"]),
-    "admiralty-issue-detail": (200, 50, "demo", ["2", "/HAMMER", "<Enter>", "n", "<Escape>", "w"]),
+    "admiralty-issue-detail": (200, 50, "demo", ["2", "/HAMMER", "<Enter>", "n", "<Escape>", "x"]),
     "admiralty-confirm": (200, 50, "demo", ["/DOCS", "<Enter>", "n", "<Escape>", "a"]),
     "admiralty-actions-menu": (200, 50, "demo", ["/BOLT", "<Enter>", "n", "<Escape>", "x"]),
     "admiralty-fleet-menu": (200, 50, "demo", ["gg", "x"]),
     "admiralty-form": (200, 50, "demo", ["c", "s", "OPS", "<Tab>", "Release builds and their notes"]),
-    "admiralty-legacy": (200, 50, "demo", ["G", "w"]),
-    "admiralty-broken-config": (200, 50, "sandbox-broken", ["3", "j", "j", "j", "j", "j", "j", "j", "w"]),
-    "admiralty-sandbox-monitor-only": (200, 50, "sandbox", ["3", "/NOLABEL", "<Enter>", "n", "<Escape>", "w"]),
+    "admiralty-legacy": (200, 50, "demo", ["G", "x"]),
+    "admiralty-broken-config": (200, 50, "sandbox-broken", ["3", "j", "j", "j", "j", "j", "j", "j", "x"]),
+    "admiralty-sandbox-monitor-only": (200, 50, "sandbox", ["3", "/NOLABEL", "<Enter>", "n", "<Escape>", "x"]),
 }
 
 

@@ -103,24 +103,25 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   number, so a terminal that draws it two cells wide does not cover the
   number. `?` has a legend for every icon.
 - Columns NAME / STATUS / AGE / DETAIL line up across all boxes (the kind is in
-  the detail panel). NAME starts with the pane dot (green working, pink
+  row's detail, under `x`). NAME starts with the pane dot (green working, pink
   blocked, grey done, plain idle, faint unknown), the tree guides, the fold
   marker and the kind icon (admiral, commodore, ship, crew, teammate, stowaway,
   copy; a task's status); no issue mark there. DETAIL starts with the issue
   glyph, coloured by severity, and the issue codes; then what a member needing
   you waits for, or `N crew running`; else its topic, the one line Claude Code
   keeps on what the job is doing (a finished job's result); an `unknown`
-  member, its first reason. The reasons for a status are in the detail panel.
+  member, its first reason. The reasons for a status are in the row's detail
+  (under `x`).
 - Crew: a member's subagents under it. The agents a Workflow run started sit
   under one row per run (the workflow's name, else its `wf_` run id; live /
   total; the newest agent's phase), open while one of them runs. A run, like a
   crew, folds into `+N finished` once all its agents finished over 30 min ago.
-- Detail panel (`w` opens and closes it, `esc` closes it; closed at start, so
-  the list takes the full width): it floats over the right of the list and
-  follows the cursor row. A large
-  picture of the row's kind, status, WHY THIS STATUS (core's reasons), ISSUES
-  with their `nimitz` fix commands, the session, and what each key does here or
-  why it will not.
+- The row's detail is under its actions: `x` opens the actions menu with a
+  panel below it (the list keeps the full width otherwise). A large picture of
+  the row's kind, status, WHY THIS STATUS (core's reasons), ISSUES with their
+  `nimitz` fix commands and the session. The panel takes what room the menu
+  leaves; a long one scrolls (`ctrl-e` / `ctrl-y` a line, `PgDn` / `PgUp`
+  five), and its title says so.
 
 ## Keys
 
@@ -145,11 +146,11 @@ a member with crew that finished over 30 min ago: its `+N finished`), `/` filter
 row, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
 new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (every action of the row: start, open, stop, restart, sweep, rm, adopt, remove from config, message;
 on a fleet band also up, `layout F/... [--ships]`, `R` muster and removing a machine; a closed one says why; sweep is
-scoped to the row: member, squadron or fleet; the detail panel's ACTIONS lists the same entries in the same order, each with its own key),
+scoped to the row: member, squadron or fleet; the row's detail sits below the menu),
 `m` message (typed into the member's own pane, a ship's too), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
-from config, `y` yank the session id, `w` the detail panel (`esc` closes it), `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
+from config, `y` yank the session id, `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
 flagged only, `R` refresh, `?` the keys panel (`?` or `esc` closes it), `q` quit. `esc` closes what is open, one
-thing at a time (a dialog or form, the detail panel, the `/` name filter), and
+thing at a time (a dialog, menu or form, the `/` name filter), and
 with nothing open quits (not while an action runs: `q` quits then).
 
 Every action and form shows the exact `nimitz` command and core's plan steps
@@ -181,8 +182,8 @@ and the error in full (file:line and the parser's words) above its members; a
 fleet's, in full at the top of its admiral's box.
 
 At 80x24 the ADMIRALTY row keeps the mux state and `? keys`, the row under it
-keeps the versions and the clock, DETAIL keeps room for issue codes, the detail pane drops its picture to
-show the reasons first (ctrl-e / ctrl-y scroll it), and help and the issues view
+keeps the versions and the clock, DETAIL keeps room for issue codes, the detail under `x` drops its picture to
+show the reasons first (ctrl-e / ctrl-y, PgDn / PgUp scroll it), and help and the issues view
 wrap and scroll. The first frame comes from the session files alone; `claude
 agents` follows right after, and keys typed meanwhile are kept.
 
