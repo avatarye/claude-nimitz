@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.7.8 (unreleased)
+
+### Fixed
+
+- **A start that "started a copy" because of another session's file (#6).**
+  When any `~/.claude/sessions/*.json` holds more than one JSON object (a
+  stray `}`), Claude Code cannot check whether a session is already open and
+  every resume on the machine starts a copy. nimitz read only the first
+  object and never saw it. Now the refusal names that file and its owner
+  (pid, session, member) with the fix (delete what follows the first JSON
+  object, or restart the session that owns it), the automatic second wake is
+  skipped, and `check` (Warn `session.unreadable`) and `doctor` (Error) flag
+  the file.
+
+### Changed
+
+- **Admiralty: `x` shows the row's detail** in a panel under its actions
+  (scroll: ctrl-e/ctrl-y, PgDn/PgUp); the `w` panel and its key are gone.
+- **Admiralty: `ctrl-o` jumps to the pane** from the finder (`space`), the
+  needs-you list (`!`) and the issues list (`i`), waking the member if
+  needed; Enter still goes to the row.
+- Tested up to Claude Code 2.1.302.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). No format or rules change.
+
 ## 0.7.7 (2026-10-14)
 
 ### Added
