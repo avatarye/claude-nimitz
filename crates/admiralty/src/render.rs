@@ -681,7 +681,10 @@ fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, 
     }
     let w = 104.min(area.width.saturating_sub(2));
     // a short panel drops the picture and the blank lines: the reasons first
-    let text = detail_with_art(app, w.saturating_sub(2) as usize, left < 16);
+    let mut text = detail_with_art(app, w.saturating_sub(2) as usize, left < 16);
+    if let Some(hint) = crate::detail::jump_hint(app) {
+        text.extend([Line::raw(""), hint]);
+    }
     let det_h = left.min(text.len() as u16 + 2);
     let x = area.x + (area.width - w) / 2;
     let y = body.y + (body.height - menu_h - det_h) / 2;

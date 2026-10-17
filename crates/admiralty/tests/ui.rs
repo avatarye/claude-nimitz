@@ -377,6 +377,18 @@ fn x_shows_the_actions_with_the_rows_detail_below_and_w_opens_nothing() {
         assert!(!s.contains("ACTIONS"), "{w}x{h}: no ACTIONS block under the menu\n{s}");
         assert!(ls[h as usize - 1].trim_end().ends_with("15:42"), "{w}x{h}: the status rows stay clear\n{s}");
     }
+    // the panel ends with what enter on the row does
+    press(&mut t.app, KeyCode::Esc);
+    goto(&mut t.app, "M:MAIN");
+    keys(&mut t.app, "x");
+    assert!(screen(&mut t.app, 200, 50).contains("\u{23ce} on the row  jump to its pane p1"));
+    press(&mut t.app, KeyCode::Esc);
+    let mut m = fixture_app(fixtures::demo_monitor_only(), false);
+    goto(&mut m.app, "M:FORGE/IRON/ANVIL");
+    keys(&mut m.app, "x");
+    assert!(screen(&mut m.app, 200, 50).contains("\u{23ce} on the row  monitor-only"));
+    goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
+    keys(&mut t.app, "x");
     // a long detail scrolls at 80x24, and the keys say so
     assert!(screen(&mut t.app, 80, 24).contains("ctrl-e/ctrl-y PgDn/PgUp scroll"));
     let top = screen(&mut t.app, 80, 24);

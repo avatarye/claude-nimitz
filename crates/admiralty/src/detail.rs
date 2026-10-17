@@ -412,6 +412,21 @@ fn extra_detail(owner: &str, s: &SessionInfo, now: f64) -> Vec<Line<'static>> {
     v
 }
 
+/// The last line of the detail under `x`: what enter on the row does (the
+/// ACTIONS block's first line before 0.7.8). None on a row that only folds.
+pub fn jump_hint(app: &App) -> Option<Line<'static>> {
+    let n = &app.current()?.node;
+    let focus = app.bundle.as_ref().map(|b| b.mux_caps.focus).unwrap_or(false);
+    let session = matches!(n.kind, Kind::Member(_) | Kind::Stowaway);
+    let (text, style) = match (&n.pane_id, focus) {
+        (Some(p), true) => (format!("jump to its pane {p}"), st(mono::FG)),
+        (_, false) if session => (crate::actions::MONITOR_ONLY.to_string(), st(mono::WARN)),
+        (None, true) if session => ("no pane hosts this session".to_string(), st(mono::COMMENT)),
+        _ => return None,
+    };
+    Some(Line::from(vec![Span::styled("\u{23ce} on the row  ".to_string(), bold(mono::ACCENT)), Span::styled(text, style)]))
+}
+
 /// Style for a `[demo]` / `[monitor-only]` style badge.
 pub fn badge(text: &str, bg: ratatui::style::Color) -> Span<'static> {
     Span::styled(format!(" {text} "), Style::new().fg(mono::BG).bg(bg).add_modifier(Modifier::BOLD))
