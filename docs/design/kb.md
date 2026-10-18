@@ -73,9 +73,13 @@ invisible character) is off limits.
 ## 3. Who writes it: the plugin's subagents
 
 `plugin/agents/kb-scribe.md` and `kb-ref.md` (Sonnet), with their procedures
-preloaded as the skills `kb-ingest` and `kb-query` (`user-invocable: false`).
-Claude Code namespaces them: a member runs `nimitz:kb-scribe` with a note's
-JSON (its `sender` the member) and `nimitz:kb-ref` with a question; the
+preloaded as the skills `kb-ingest` and `kb-query` (`user-invocable: false`),
+named in each agent's `skills:` by their plugin names, `nimitz:kb-ingest` and
+`nimitz:kb-query`: an exact name skips Claude Code's fallbacks for a bare one
+(the agent's plugin prefix, then any skill ending in `:<name>`), and e2e #100
+checks the preload. Claude Code namespaces them: a member runs
+`nimitz:kb-scribe` with a note's JSON (its `sender` the member) and
+`nimitz:kb-ref` with a question; the
 rules (v7) say so. kb-ref reads one commit: `kb head`, then `--at <sha>` on
 every `show` and `grep`.
 
