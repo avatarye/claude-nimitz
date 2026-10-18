@@ -55,11 +55,14 @@ had the focus (half the tab when that pane is one of two, the whole tab when it
 was zoomed) while it draws the box over the whole tab, so Admiralty took the
 pane's width one time and the tab's the next. The watch zooms its own pane off
 and on before it draws (`herdr pane zoom <own pane> --off`, then `--on`), and
-Herdr then sizes the terminal to the box: it always fills it. Closing an
+Herdr then sizes the terminal to the box: it always fills it. It does so only
+in its own overlay (a plugin pane, or one labelled `Admiralty`): `admiralty
+herdr watch` run by hand in an ordinary pane zooms nothing. Closing an
 overlay also drops the zoom of the pane under it, so the toggle notes that
-zoom (`$HERDR_PLUGIN_STATE_DIR/zoom`) and gives it back once the overlay is
-gone, whether the toggle closed it or the watch quit (`admiralty herdr rezoom`,
-started as it quits); a jump to another pane of the tab leaves it off. See
+zoom (`$HERDR_PLUGIN_STATE_DIR/zoom-<tab>`, one per tab) and gives it back
+once the overlay is gone (it waits up to 5 s for it), whether the toggle
+closed it or the watch quit (`admiralty herdr rezoom <overlay> <tab>`, started
+detached as it quits); a jump to another pane of the tab leaves it off. See
 `docs/design/herdr-overlay-size.md`.
 
 The state dir (`$HERDR_PLUGIN_STATE_DIR/pane_id`) holds the id of the watch pane the
@@ -106,7 +109,7 @@ can also go in a file, read when `ADMIRALTY_ARGS` is unset, with no restart:
 | --- | --- | --- |
 | `ADMIRALTY_ARGS` | the `args` file, else none | extra arguments, e.g. `--sandbox /tmp/aw-sb` |
 | `ADMIRALTY_EXIT_AFTER_JUMP` | `1` | `0` keeps the watch up after a jump |
-| `ADMIRALTY_INSET` | `0,0` | rows,columns at the bottom and right that Admiralty leaves blank. The watch sizes its terminal to the overlay's box, so nothing hides under the border; before 0.7.9 the default was `2,2` |
+| `ADMIRALTY_INSET` | `0,0` | rows,columns at the bottom and right that Admiralty leaves blank. The watch sizes its terminal to the overlay's box, so nothing hides under the border; `2,2` when that zoom fails (a Herdr without `pane zoom --on/--off`), as before 0.7.9 |
 
 The `ADMIRALTY_WATCH_*` names of 0.3.0 still work when the new ones are unset.
 
