@@ -175,6 +175,10 @@ v2.1.296 (supported)  Machine: home-server` (a mismatch or an out-of-range
 Claude Code as a warning) and the local date and time at the right, after
 `stale 12s` when no refresh has landed for three intervals. A member's DETAIL
 cell shows what its job is doing (its topic) when nothing else needs saying.
+Every row reads the same way: NAME says who (a member, a crew's agent type or
+its own name, a task's `#id` and owner), DETAIL what it is doing, STATUS in the
+member glyphs (a crew is busy, idle, done or failed). NAME, STATUS and AGE keep
+fixed widths; DETAIL takes the rest of a wide or fullscreen terminal.
 
 ## Two rules
 

@@ -73,7 +73,7 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   stay neutral. Ships are rows; crew, tasks and extra job rows sit under their
   member with tree guides. Crew show while running and for 30 minutes after
   they finish (a nested crew follows its parent; a running one keeps its
-  parent in view); older finished crew fold into one `+N finished` row per
+  parent in view); older ones fold into one `+N done` row per
   member, which `z` opens and closes, kept in the saved
   state.
 - Status motion (in the live loop only): a busy member's status glyph spins (a
@@ -88,7 +88,7 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   anim_frames -- <dir> <cols> <rows> <frames>` writes the frames' cells as
   JSON, for a preview GIF drawn with a fixed-grid font.
 - Spacing: a blank line between the boxes, a column of padding inside each,
-  two spaces between columns. It is the first thing to go: below 103 columns
+  two spaces between columns. It is the first thing to go: below 71 columns
   (where it would cost NAME or DETAIL their room) the padding and gaps go, and
   the blank lines go whenever the list does not fit the height.
 - A STOWAWAYS box for unlabelled sessions in fleet scope, on the tab of
@@ -103,19 +103,30 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   number, so a terminal that draws it two cells wide does not cover the
   number. `?` has a legend for every icon.
 - Columns NAME / STATUS / AGE / DETAIL line up across all boxes (the kind is in
-  row's detail, under `x`). NAME starts with the pane dot (green working, pink
+  row's detail, under `x`). NAME, STATUS and AGE grow to 29, 14 and 5
+  columns and stop there; DETAIL takes all the rest, however wide the
+  terminal (NAME is 20 at 80 columns). A name too long for NAME ends in `…`
+  (in a search, a full name is cut from the left instead). NAME starts with the pane dot (green working, pink
   blocked, grey done, plain idle, faint unknown), the tree guides, the fold
   marker and the kind icon (admiral, commodore, ship, crew, teammate, stowaway,
   copy; a task's status); no issue mark there. DETAIL starts with the issue
   glyph, coloured by severity, and the issue codes; then what a member needing
-  you waits for, or `N crew running`; else its topic, the one line Claude Code
+  you waits for, or `N crew busy` (`, N failed`); else its topic, the one line Claude Code
   keeps on what the job is doing (a finished job's result); an `unknown`
   member, its first reason. The reasons for a status are in the row's detail
   (under `x`).
+- Crew and tasks read like members: NAME who (a crew's own name, a
+  teammate's, else its agent type without a plugin prefix: `code-reviewer`
+  for `feature-dev:code-reviewer`; a task's `#id` and its owner), DETAIL what
+  it does (the crew's description, after its Workflow phase; the task's
+  subject), STATUS in the member glyphs: busy (its log written in the last
+  90 s), idle (a teammate between turns), done, failed (the log's last entry
+  is an API error; only its last 16 KiB are read); a task busy, done or
+  pending. `/` matches a crew's name, description or type.
 - Crew: a member's subagents under it. The agents a Workflow run started sit
   under one row per run (the workflow's name, else its `wf_` run id; live /
   total; the newest agent's phase), open while one of them runs. A run, like a
-  crew, folds into `+N finished` once all its agents finished over 30 min ago.
+  crew, folds into `+N done` once all its agents finished over 30 min ago.
 - The row's detail is under its actions: `x` opens the actions menu with a
   panel below it (the list keeps the full width otherwise). A large picture of
   the row's kind, status, WHY THIS STATUS (core's reasons), ISSUES with their
@@ -145,7 +156,7 @@ Not shift+enter: tmux 3.4 drops it and Herdr passes it only from a terminal
 speaking the kitty keyboard protocol, while `ctrl-o` arrives everywhere.
 
 `tab/shift-tab 1-9` fleet tabs, `j/k h/l gg/G ctrl-d/u`, `z` fold / unfold (on
-a member with crew that finished over 30 min ago: its `+N finished`), `/` filter
+a member with crew done over 30 min ago: its `+N done`), `/` filter
 (every fleet), `n/N`, `space` the finder, `enter` jump to the pane,
 `J/K` rows with a pane, `!` waiting on you, `i` every issue (enter goes to the
 row, `ctrl-o` to its pane, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
