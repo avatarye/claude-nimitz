@@ -124,16 +124,16 @@ fn a_squadrons_colour_is_its_worst_member_in_the_theme_order() {
     assert_eq!(c(&[with(Status::Stopped, Some(Severity::Error)), with(Status::NeedsYou, None)]), mono::NEEDS);
 }
 
-/// Spacing goes first: below 91 columns no padding and single gaps; the
+/// Spacing goes first: below 71 columns no padding and single gaps; the
 /// blank lines between boxes stay at any width while the list fits the
 /// height, and go (all of them, the one before STOWAWAYS too) when it does not.
 #[test]
 fn spacing_collapses_before_content() {
     use admiralty::frames::{spacing_for, ROOMY, TIGHT};
     assert_eq!(spacing_for(200), ROOMY);
-    assert_eq!(spacing_for(91), ROOMY);
-    assert_eq!((spacing_for(90).pad, spacing_for(90).gap), (TIGHT.pad, TIGHT.gap));
-    assert_eq!((spacing_for(80).pad, spacing_for(80).gap), (TIGHT.pad, TIGHT.gap));
+    assert_eq!(spacing_for(80), ROOMY);
+    assert_eq!(spacing_for(71), ROOMY);
+    assert_eq!((spacing_for(70).pad, spacing_for(70).gap), (TIGHT.pad, TIGHT.gap));
     for w in [56, 55, 50, 30] {
         assert_eq!((spacing_for(w).pad, spacing_for(w).gap), (TIGHT.pad, TIGHT.gap), "{w}: no spacing where columns are cut");
     }
@@ -319,9 +319,33 @@ fn column_widths_grow_to_their_maxima_and_keep_detail_on_narrow_screens() {
     let narrow = col_widths(96);
     assert!(narrow[3] >= 20, "DETAIL keeps room at 100 columns: {narrow:?}");
     let wide = col_widths(400);
-    assert_eq!(wide, COL_MAX);
+    assert_eq!(wide[..3], COL_MAX[..3]);
+    assert_eq!(wide[3], 400 - 3 - COL_MAX[..3].iter().sum::<u16>(), "DETAIL takes all the rest");
     let tiny = col_widths(10);
     assert_eq!(tiny, COL_MIN);
+}
+
+/// NAME, STATUS and AGE stop at their maxima; DETAIL takes the rest of the
+/// row at 80, 120 and 200 columns (and a fullscreen terminal).
+#[test]
+fn name_status_and_age_are_capped_and_detail_fills_the_row() {
+    let t = demo();
+    for (w, name) in [(80u16, 20usize), (120, 29), (200, 29)] {
+        let ls: Vec<String> = admiralty::frames::frame_lines(&t.app.rows, w, usize::MAX, t.app.icons)
+            .into_iter()
+            .map(|(l, _)| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        let row = ls.iter().find(|l| l.contains("COMMODORE") && l.contains("Reviewing BOLT")).unwrap_or_else(|| panic!("{w}: the commodore row:\n{}", ls.join("\n")));
+        let cells: Vec<char> = row.chars().collect();
+        assert_eq!(cells.len(), w as usize, "{w}: a row is the width: {row}");
+        // `│ ` then NAME, two spaces, STATUS (14), two spaces, AGE (5), two spaces
+        let status_x = 2 + name + 2;
+        let detail_x = status_x + 14 + 2 + 5 + 2;
+        let at = |x: usize| cells[x..].iter().collect::<String>();
+        assert!(at(status_x).starts_with(&format!("{} busy", t.app.icons.s_busy)), "{w}: STATUS at {status_x}: {row}");
+        assert!(at(detail_x).starts_with("Reviewing BOLT"), "{w}: DETAIL at {detail_x}: {row}");
+        assert_eq!(&at(w as usize - 2), " \u{2502}", "{w}: DETAIL runs to the border: {row}");
+    }
 }
 
 #[test]
