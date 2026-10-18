@@ -50,6 +50,21 @@ Herdr's own keys do not fire, so this toggle could never close it, and
 either. An overlay covers the tab like a zoomed pane, has an id, and leaves Herdr's
 keys working. It takes the whole tab, not a floating box.
 
+Its size: Herdr 0.9.3 starts an overlay's terminal at the size of the pane that
+had the focus (half the tab when that pane is one of two, the whole tab when it
+was zoomed) while it draws the box over the whole tab, so Admiralty took the
+pane's width one time and the tab's the next. The watch zooms its own pane off
+and on before it draws (`herdr pane zoom <own pane> --off`, then `--on`), and
+Herdr then sizes the terminal to the box: it always fills it. It does so only
+in its own overlay (a plugin pane, or one labelled `Admiralty`): `admiralty
+herdr watch` run by hand in an ordinary pane zooms nothing. Closing an
+overlay also drops the zoom of the pane under it, so the toggle notes that
+zoom (`$HERDR_PLUGIN_STATE_DIR/zoom-<tab>`, one per tab) and gives it back
+once the overlay is gone (it waits up to 5 s for it), whether the toggle
+closed it or the watch quit (`admiralty herdr rezoom <overlay> <tab>`, started
+detached as it quits); a jump to another pane of the tab leaves it off. See
+`docs/design/herdr-overlay-size.md`.
+
 The state dir (`$HERDR_PLUGIN_STATE_DIR/pane_id`) holds the id of the watch pane the
 toggle opened. A stale id fails `pane get`; an id that now names another pane fails
 the label check (`Admiralty`), so the toggle never closes a pane it did not open.
@@ -94,7 +109,7 @@ can also go in a file, read when `ADMIRALTY_ARGS` is unset, with no restart:
 | --- | --- | --- |
 | `ADMIRALTY_ARGS` | the `args` file, else none | extra arguments, e.g. `--sandbox /tmp/aw-sb` |
 | `ADMIRALTY_EXIT_AFTER_JUMP` | `1` | `0` keeps the watch up after a jump |
-| `ADMIRALTY_INSET` | `2,2` | rows,columns at the bottom and right that Admiralty leaves blank: with the sidebar shown, Herdr 0.9.3 hides the overlay terminal's last 2 rows and columns under its border (the status and key bars would vanish); `0,0` when the sidebar is hidden |
+| `ADMIRALTY_INSET` | `0,0` | rows,columns at the bottom and right that Admiralty leaves blank. The watch sizes its terminal to the overlay's box, so nothing hides under the border; `2,2` when that zoom fails (a Herdr without `pane zoom --on/--off`), as before 0.7.9 |
 
 The `ADMIRALTY_WATCH_*` names of 0.3.0 still work when the new ones are unset.
 

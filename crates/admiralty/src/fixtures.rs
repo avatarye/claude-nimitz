@@ -78,14 +78,16 @@ fn issue(code: &str, sev: Severity, msg: &str, fix: Option<&str>, id: Option<&Id
     Issue { code: code.into(), severity: sev, message: msg.into(), fix: fix.map(String::from), id: id.cloned() }
 }
 
-fn crew(agent_id: &str, parent: Option<&str>, label: &str, agent_type: &str, teammate: bool, running: bool, age_s: f64) -> Crew {
+fn crew(agent_id: &str, parent: Option<&str>, label: &str, description: &str, agent_type: &str, teammate: bool, running: bool, age_s: f64) -> Crew {
     Crew {
         agent_id: agent_id.into(),
         parent_id: parent.map(String::from),
         label: label.into(),
         agent_type: Some(agent_type.into()),
+        description: Some(description.into()),
         teammate,
         running,
+        failed: false,
         last_write: NOW - age_s,
         workflow: None,
         workflow_name: None,
@@ -114,7 +116,7 @@ fn fleet_main() -> Fleet {
         &["session file: status idle for 4m", "pid 4100 alive"],
         Some(session(&Id::admiral(f), "aa11aa11", Some(4100), "background", Some("idle"), None, 7200.0, true)),
     );
-    admiral.crew = vec![crew("tm-scribe", None, "minutes-scribe", "general-purpose", true, true, 40.0)];
+    admiral.crew = vec![crew("tm-scribe", None, "minutes-scribe", "Take the minutes of the fleet review", "general-purpose", true, true, 40.0)];
     admiral.topic = Some("Collecting the squadrons' reports for the weekly brief".into());
 
     // ARGOS: a healthy, busy squadron
@@ -138,9 +140,10 @@ fn fleet_main() -> Fleet {
         Some(session(&bolt_id, "ac33ac33", Some(4310), "background", Some("busy"), None, 9000.0, true)),
     );
     bolt.crew = vec![
-        crew("sa-1", None, "fix layout bug", "general-purpose", false, true, 60.0),
-        crew("sa-2", Some("sa-1"), "run unit tests", "Explore", false, true, 20.0),
-        crew("sa-3", None, "summarize probe logs", "general-purpose", false, false, 2400.0),
+        crew("sa-1", None, "fix layout bug", "fix layout bug", "general-purpose", false, true, 60.0),
+        crew("sa-2", Some("sa-1"), "run unit tests", "run unit tests", "Explore", false, true, 20.0),
+        crew("sa-3", None, "summarize probe logs", "summarize probe logs", "general-purpose", false, false, 2400.0),
+        Crew { failed: true, ..crew("sa-4", None, "review the importer diff", "review the importer diff", "feature-dev:code-reviewer", false, false, 240.0) },
     ];
     bolt.tasks = vec![Task { id: "7".into(), subject: "importer: parser edge cases".into(), status: "pending".into(), owner: None }];
     bolt.topic = Some("Fixing the layout bug in the importer preview".into());

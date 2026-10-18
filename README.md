@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Version 0.7.8 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.302).
+Version 0.7.9 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.302).
 
 A fleet has one **admiral**, squadrons each led by a **commodore**, and
 **ships** that do the long work in one folder. Every member is a Claude Code
@@ -175,6 +175,10 @@ v2.1.296 (supported)  Machine: home-server` (a mismatch or an out-of-range
 Claude Code as a warning) and the local date and time at the right, after
 `stale 12s` when no refresh has landed for three intervals. A member's DETAIL
 cell shows what its job is doing (its topic) when nothing else needs saying.
+Every row reads the same way: NAME says who (a member, a crew's agent type or
+its own name, a task's `#id` and owner), DETAIL what it is doing, STATUS in the
+member glyphs (a crew is busy, idle, done or failed). NAME, STATUS and AGE keep
+fixed widths; DETAIL takes the rest of a wide or fullscreen terminal.
 
 ## Two rules
 

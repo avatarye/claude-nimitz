@@ -436,8 +436,15 @@ pub struct Crew {
     pub parent_id: Option<String>,
     pub label: String,
     pub agent_type: Option<String>,
+    /// what it was asked to do (the Agent call's `description`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub teammate: bool,
     pub running: bool,
+    /// its log ends in an API error (the last entry an assistant one with
+    /// `isApiErrorMessage`): it stopped on a failure
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failed: bool,
     pub last_write: f64,
     /// the Workflow run that started it (`wf_<run>`); none for a plain subagent
     #[serde(default, skip_serializing_if = "Option::is_none")]

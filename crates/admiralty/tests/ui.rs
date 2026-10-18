@@ -124,16 +124,16 @@ fn a_squadrons_colour_is_its_worst_member_in_the_theme_order() {
     assert_eq!(c(&[with(Status::Stopped, Some(Severity::Error)), with(Status::NeedsYou, None)]), mono::NEEDS);
 }
 
-/// Spacing goes first: below 91 columns no padding and single gaps; the
+/// Spacing goes first: below 71 columns no padding and single gaps; the
 /// blank lines between boxes stay at any width while the list fits the
 /// height, and go (all of them, the one before STOWAWAYS too) when it does not.
 #[test]
 fn spacing_collapses_before_content() {
     use admiralty::frames::{spacing_for, ROOMY, TIGHT};
     assert_eq!(spacing_for(200), ROOMY);
-    assert_eq!(spacing_for(91), ROOMY);
-    assert_eq!((spacing_for(90).pad, spacing_for(90).gap), (TIGHT.pad, TIGHT.gap));
-    assert_eq!((spacing_for(80).pad, spacing_for(80).gap), (TIGHT.pad, TIGHT.gap));
+    assert_eq!(spacing_for(80), ROOMY);
+    assert_eq!(spacing_for(71), ROOMY);
+    assert_eq!((spacing_for(70).pad, spacing_for(70).gap), (TIGHT.pad, TIGHT.gap));
     for w in [56, 55, 50, 30] {
         assert_eq!((spacing_for(w).pad, spacing_for(w).gap), (TIGHT.pad, TIGHT.gap), "{w}: no spacing where columns are cut");
     }
@@ -319,9 +319,47 @@ fn column_widths_grow_to_their_maxima_and_keep_detail_on_narrow_screens() {
     let narrow = col_widths(96);
     assert!(narrow[3] >= 20, "DETAIL keeps room at 100 columns: {narrow:?}");
     let wide = col_widths(400);
-    assert_eq!(wide, COL_MAX);
+    assert_eq!(wide[..3], COL_MAX[..3]);
+    assert_eq!(wide[3], 400 - 3 - COL_MAX[..3].iter().sum::<u16>(), "DETAIL takes all the rest");
     let tiny = col_widths(10);
     assert_eq!(tiny, COL_MIN);
+}
+
+/// NAME, STATUS and AGE stop at their maxima; DETAIL takes the rest of the
+/// row at 80, 120 and 200 columns (and a fullscreen terminal).
+#[test]
+fn name_status_and_age_are_capped_and_detail_fills_the_row() {
+    let t = demo();
+    for (w, name) in [(80u16, 20usize), (120, 29), (200, 29)] {
+        let ls: Vec<String> = admiralty::frames::frame_lines(&t.app.rows, w, usize::MAX, t.app.icons)
+            .into_iter()
+            .map(|(l, _)| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        let row = ls.iter().find(|l| l.contains("COMMODORE") && l.contains("Reviewing BOLT")).unwrap_or_else(|| panic!("{w}: the commodore row:\n{}", ls.join("\n")));
+        let cells: Vec<char> = row.chars().collect();
+        assert_eq!(cells.len(), w as usize, "{w}: a row is the width: {row}");
+        // `│ ` then NAME, two spaces, STATUS (14), two spaces, AGE (5), two spaces
+        let status_x = 2 + name + 2;
+        let detail_x = status_x + 14 + 2 + 5 + 2;
+        let at = |x: usize| cells[x..].iter().collect::<String>();
+        assert!(at(status_x).starts_with(&format!("{} busy", t.app.icons.s_busy)), "{w}: STATUS at {status_x}: {row}");
+        assert!(at(detail_x).starts_with("Reviewing BOLT"), "{w}: DETAIL at {detail_x}: {row}");
+        assert_eq!(&at(w as usize - 2), " \u{2502}", "{w}: DETAIL runs to the border: {row}");
+    }
+}
+
+/// Below the columns' minimums (33 columns) a row is cut at the width: no
+/// line is ever wider than the list.
+#[test]
+fn rows_never_overflow_a_narrow_list() {
+    use unicode_width::UnicodeWidthStr;
+    let t = demo();
+    for w in [12u16, 16, 20, 26, 32, 33] {
+        for (l, _) in admiralty::frames::frame_lines(&t.app.rows, w, usize::MAX, t.app.icons) {
+            let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+            assert!(text.width() <= w as usize, "{w}: {} wide: {text}", text.width());
+        }
+    }
 }
 
 #[test]
@@ -1360,7 +1398,7 @@ fn the_state_filter_hides_squadrons_on_a_fleet_tab() {
 // ------------------------------------------------------------------ crew window
 
 fn crew_of(id: &str, parent: Option<&str>, label: &str, running: bool, age_s: f64) -> nimitz_core::Crew {
-    nimitz_core::Crew { agent_id: id.into(), parent_id: parent.map(String::from), label: label.into(), agent_type: Some("general-purpose".into()), teammate: false, running, last_write: fixtures::NOW - age_s, workflow: None, workflow_name: None, phase: None }
+    nimitz_core::Crew { agent_id: id.into(), parent_id: parent.map(String::from), label: label.into(), agent_type: Some("general-purpose".into()), description: Some(label.into()), teammate: false, running, failed: false, last_write: fixtures::NOW - age_s, workflow: None, workflow_name: None, phase: None }
 }
 
 /// The demo's BOLT, with crew of every age: running (sa-1, its child sa-2),
@@ -1386,24 +1424,29 @@ fn crew_world() -> (admiralty::data::Bundle, String) {
     (b, id)
 }
 
+/// A member's crew rows by what they do (DETAIL), its fold row by its name.
 fn crew_rows(app: &admiralty::app::App, id: &str) -> Vec<String> {
-    app.rows.iter().filter(|r| r.node.id.starts_with(&format!("C:{id}:")) || r.node.id == format!("CF:{id}")).map(|r| r.node.name.clone()).collect()
+    app.rows
+        .iter()
+        .filter(|r| r.node.id.starts_with(&format!("C:{id}:")) || r.node.id == format!("CF:{id}"))
+        .map(|r| if r.node.id.starts_with("CF:") { r.node.name.clone() } else { r.node.detail.iter().map(|s| s.content.to_string()).collect() })
+        .collect()
 }
 
 /// Running crew and crew finished within 30 min show; older finished crew
-/// fold into one `+N finished` row; a running child keeps its old parent in
-/// view; the member's "N crew running" counts every running crew.
+/// fold into one `+N done` row; a running child keeps its old parent in
+/// view; the member's "N crew busy" counts every running crew.
 #[test]
 fn old_finished_crew_fold_into_one_row_and_running_children_keep_their_parent() {
     let (b, id) = crew_world();
     let mut t = fixture_app(b, false);
     goto(&mut t.app, &format!("M:{id}"));
     let rows = crew_rows(&t.app, &id);
-    assert_eq!(rows, ["fix layout bug", "old parent", "recent review", "+2 finished"], "{rows:?}");
+    assert_eq!(rows, ["review the importer diff", "fix layout bug", "old parent", "recent review", "+2 done"], "{rows:?}");
     let parent = t.app.rows.iter().find(|r| r.node.id == format!("C:{id}:old-b")).unwrap();
-    assert_eq!(parent.node.children.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["kid still running"], "nested crew follow their parent");
+    assert_eq!(parent.node.children.iter().map(|c| c.detail[0].content.to_string()).collect::<Vec<_>>(), ["kid still running"], "nested crew follow their parent");
     let member = t.app.rows.iter().find(|r| r.node.id == format!("M:{id}")).unwrap();
-    assert!(member.node.detail.iter().any(|s| s.content.contains("3 crew running")), "{:?}", member.node.detail);
+    assert!(member.node.detail.iter().any(|s| s.content.contains("3 crew busy")), "{:?}", member.node.detail);
     // z on the member opens the fold; z on a crew row inside it closes it again
     press(&mut t.app, KeyCode::Char('z'));
     let rows = crew_rows(&t.app, &id);
@@ -1415,6 +1458,44 @@ fn old_finished_crew_fold_into_one_row_and_running_children_keep_their_parent() 
     // z on the fold row opens it again
     press(&mut t.app, KeyCode::Char('z'));
     assert!(crew_rows(&t.app, &id).contains(&"old audit".to_string()));
+}
+
+/// Crew and task rows follow the member rows: NAME who it is (the crew's own
+/// name, else its agent type without a plugin prefix; a task's number and
+/// owner), DETAIL what it does, STATUS a member glyph and word.
+#[test]
+fn crew_and_task_rows_name_who_and_say_what_in_member_glyphs() {
+    use admiralty::view::{crew_work, Work};
+    let (mut b, id) = crew_world();
+    for f in &mut b.snap.fleets {
+        for c in f.members_mut().flat_map(|m| m.crew.iter_mut()) {
+            if c.agent_id == "tm-scribe" {
+                c.running = false;
+            }
+        }
+    }
+    let mut t = fixture_app(b, false);
+    let icons = t.app.icons;
+    let row = |t: &TestApp, rid: &str| t.app.rows.iter().find(|r| r.node.id == rid).unwrap_or_else(|| panic!("{rid}")).node.clone();
+    goto(&mut t.app, &format!("M:{id}"));
+    let cells = |n: &admiralty::view::Node| (n.name.clone(), n.status.0.clone(), n.detail.iter().map(|s| s.content.to_string()).collect::<String>());
+    let g = |w: Work| format!("{} {}", w.glyph(icons), w.word());
+    assert_eq!(cells(&row(&t, &format!("C:{id}:sa-1"))), ("general-purpose".into(), g(Work::Busy), "fix layout bug".into()));
+    assert_eq!(cells(&row(&t, &format!("C:{id}:sa-4"))), ("code-reviewer".into(), g(Work::Failed), "review the importer diff".into()), "a plugin's type, short; failed");
+    assert_eq!(cells(&row(&t, &format!("CF:{id}"))).1, g(Work::Done));
+    assert_eq!(cells(&row(&t, &format!("T:{id}:7"))), ("#7".into(), g(Work::Pending), "importer: parser edge cases".into()));
+    // the commodore is folded: its tasks are its row's children
+    let commodore = row(&t, "M:MAIN/ARGOS");
+    let task = |tid: &str| commodore.children.iter().find(|n| n.id == tid).unwrap().clone();
+    assert_eq!(cells(&task("T:MAIN/ARGOS:1")), ("#1 BOLT".into(), g(Work::Busy), "data importer".into()));
+    assert_eq!(cells(&task("T:MAIN/ARGOS:2")).1, g(Work::Done));
+    // a teammate keeps its own name, and between turns it is idle
+    let admiral = row(&t, "M:MAIN");
+    assert_eq!(cells(admiral.children.iter().find(|n| n.id == "C:MAIN:tm-scribe").unwrap()), ("minutes-scribe".into(), g(Work::Idle), "Take the minutes of the fleet review".into()));
+    let c = nimitz_core::Crew { failed: true, running: true, ..crew_of("x", None, "x", true, 1.0) };
+    assert_eq!(crew_work(&c), Work::Failed, "an API error is the last word");
+    let untyped = nimitz_core::Crew { agent_type: Some(String::new()), ..crew_of("y", None, "look around", false, 1.0) };
+    assert_eq!(admiralty::view::crew_name(&untyped), "look around", "an empty type: the label");
 }
 
 /// The fold's state is kept per member in the saved UI state.
@@ -1509,12 +1590,12 @@ fn a_filter_shows_the_old_crew_it_matches_and_unknown_ages_fold() {
     let mut t = fixture_app(b, false);
     goto(&mut t.app, &format!("M:{id}"));
     let fold = t.app.rows.iter().find(|r| r.node.id == format!("CF:{id}")).expect("the fold");
-    assert_eq!((fold.node.name.as_str(), fold.node.age.as_str()), ("+2 finished", "?"));
+    assert_eq!((fold.node.name.as_str(), fold.node.age.as_str()), ("+2 done", "?"));
     keys(&mut t.app, "/old audit");
     press(&mut t.app, KeyCode::Enter);
     goto(&mut t.app, &format!("M:{id}"));
     let rows = crew_rows(&t.app, &id);
-    assert!(rows.contains(&"old audit".to_string()) && rows.contains(&"+1 finished".to_string()), "{rows:?}");
+    assert!(rows.contains(&"old audit".to_string()) && rows.contains(&"+1 done".to_string()), "{rows:?}");
 }
 
 /// esc closes what is open, one thing at a time (a dialog, the detail
@@ -1852,7 +1933,7 @@ fn the_dim_glyph_passes_contrast_and_the_word_keeps_its_colour() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     let y = ls.iter().position(|l| l.contains("fix layout bug")).unwrap();
-    let x = ls[y].find("running").unwrap();
+    let x = ls[y].find("busy").unwrap();
     let x = ls[y][..x].chars().count() as u16;
     assert_eq!(buf[(x, y as u16)].fg, mono::BUSY, "the word keeps its colour");
     assert_eq!(buf[(x - 2, y as u16)].fg, BUSY_DIM, "the glyph is the dim one");

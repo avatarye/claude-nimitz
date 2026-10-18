@@ -927,8 +927,11 @@ fn build_member(
                 parent_id: r.parent_id.clone(),
                 label: r.label.clone(),
                 agent_type: r.agent_type.clone(),
+                description: r.description.clone(),
                 teammate: r.teammate,
-                running: now - r.last_write < ACTIVE_WINDOW_S,
+                // an API error is its last word: it stopped, however recent
+                running: now - r.last_write < ACTIVE_WINDOW_S && !r.failed,
+                failed: r.failed,
                 last_write: r.last_write,
                 workflow: r.workflow.clone(),
                 workflow_name: r.workflow_name.clone(),

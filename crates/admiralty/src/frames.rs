@@ -16,12 +16,14 @@ use crate::theme::{bold, mono, pane_color, pane_dot, st, Icons};
 use crate::view::{Row, Section};
 
 //                 NAME STATUS AGE DETAIL
-pub const COL_MIN: [u16; 4] = [24, 12, 4, 0];
-pub const COL_MAX: [u16; 4] = [58, 14, 5, 96];
+pub const COL_MIN: [u16; 4] = [12, 12, 4, 0];
+/// NAME, STATUS and AGE stop here however wide the window: DETAIL takes all
+/// the rest (no maximum)
+pub const COL_MAX: [u16; 4] = [29, 14, 5, u16::MAX];
 /// how the columns grow: the small fixed ones first, then NAME and DETAIL take
 /// turns, so a narrow window still shows some DETAIL (column, up to width)
 /// DETAIL first gets enough for an issue code or two
-const GROW: [(usize, u16); 7] = [(3, 22), (1, 14), (2, 5), (0, 40), (3, 40), (0, 58), (3, 96)];
+const GROW: [(usize, u16); 7] = [(3, 22), (1, 14), (2, 5), (0, 20), (3, 40), (0, 29), (3, u16::MAX)];
 /// The room around the content: blank lines between boxes, padding inside a
 /// box (columns each side), the gap between columns.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -37,7 +39,7 @@ pub const TIGHT: Spacing = Spacing { blank: false, pad: 0, gap: 1 };
 pub const ROOMY: Spacing = Spacing { blank: true, pad: 1, gap: 2 };
 /// NAME keeps this much, and DETAIL the room for an issue code or two
 /// (its first step in `GROW`), before the padding and gaps go.
-const KEEP_NAME: u16 = 40;
+const KEEP_NAME: u16 = 20;
 const KEEP_DETAIL: u16 = 22;
 
 impl Spacing {
@@ -54,7 +56,7 @@ impl Spacing {
 /// The spacing a list `width` columns wide affords: the padding and wider
 /// gaps while STATUS and AGE keep their tight widths, NAME keeps
 /// `KEEP_NAME` and DETAIL `KEEP_DETAIL` columns (or all they had tight):
-/// from 91 columns. The blank lines between boxes are on here: `layout` drops them
+/// from 71 columns. The blank lines between boxes are on here: `layout` drops them
 /// only when the list does not fit the height.
 pub fn spacing_for(width: usize) -> Spacing {
     let tight = col_widths_gap(TIGHT.inner(width) as u16, TIGHT.gap as u16);
@@ -268,6 +270,11 @@ fn row_spans_anim(r: &Row, w: &[u16; 4], inner: usize, gap: usize, icons: &Icons
     if dw < room {
         out.push(Span::raw(" ".repeat(room - dw)));
     }
+    // below the columns' minimums (33 columns) NAME, STATUS and AGE alone are
+    // wider than the row: cut it, never past the box's border
+    if used > inner {
+        return truncate_spans(out, inner);
+    }
     out
 }
 
@@ -328,6 +335,10 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
     }
     right.push(fill(pad_right));
     let room = width.saturating_sub(2);
+    // a band too narrow for its counts cuts them too: never past its corner
+    if spans_width(&right) > room {
+        right = truncate_spans(right, room);
+    }
     let right_w = spans_width(&right);
     let left = truncate_spans(left, room.saturating_sub(right_w + 1));
     let used = spans_width(&left);
