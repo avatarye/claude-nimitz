@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.7.9 (unreleased)
+
+### Changed
+
+- **Admiralty's columns:** NAME, STATUS and AGE have fixed maximum widths
+  (NAME half its old width: 29 at 120 columns, 20 at 80) and never grow on
+  a wide terminal; DETAIL takes all the rest.
+- **Crew and task rows read like member rows:** NAME is the crew's name or
+  agent type (without a `plugin:` prefix), DETAIL what it is doing (its
+  description), and the status uses the member glyphs: busy, idle (a
+  teammate waiting), done, and a new `failed` when the agent's log ends on
+  an API error. The fold row reads `+N done`; a member's detail says `N
+  crew busy, N failed`.
+
+### Fixed
+
+- **The Herdr overlay sometimes drew at the width of a pane, not the box.**
+  Herdr 0.9.3 starts the overlay's terminal at the size of the pane that had
+  focus and corrects it only on a resize; Admiralty now makes Herdr resize it
+  at once, so it always fills the box. The inset default is 0,0, and a zoom
+  the user had set is restored when the overlay closes.
+  docs/design/herdr-overlay-size.md describes it for Herdr upstream.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`); restart Admiralty and its Herdr overlay. No format or
+  rules change.
+
 ## 0.7.8 (2026-10-17)
 
 ### Fixed
