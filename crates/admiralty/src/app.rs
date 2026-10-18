@@ -260,7 +260,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("gg / G", "top / bottom"),
     ("ctrl-d / ctrl-u", "half page down / up"),
     ("space", "find a member or stowaway in every fleet by its path, name, status or topic (fuzzy, as fzf; all terms must match); enter puts the cursor on it, ctrl-o jumps to its pane"),
-    ("z", "fold / unfold; on a member with crew that finished over 30 min ago: show / hide them (+N finished)"),
+    ("z", "fold / unfold; on a member with crew done over 30 min ago: show / hide them (+N done)"),
     ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
     ("enter", "jump to the row's pane; a member with none: a pane for it (nimitz open <id>, confirms); else fold / unfold"),
@@ -716,7 +716,7 @@ impl App {
         }
     }
 
-    /// `z`: open or close the `+N finished` row of the member the cursor is
+    /// `z`: open or close the `+N done` row of the member the cursor is
     /// in (its own row, a crew row, or the fold); kept in the saved state.
     fn toggle_crew_fold(&mut self) {
         let Some(id) = self.current().map(|r| r.node.id.clone()) else { return };
@@ -737,7 +737,7 @@ impl App {
             return;
         }
         if count("") == 0 {
-            self.notify(format!("{member} has no crew that finished over {} min ago", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::COMMENT));
+            self.notify(format!("{member} has no crew done over {} min ago", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::COMMENT));
             return;
         }
         let fold = crate::view::crew_fold_id(&member);
@@ -757,7 +757,7 @@ impl App {
     }
 
     /// `z`: fold or unfold the row (as `space` did before the finder); on a
-    /// member with old crew, or on a crew row, the member's `+N finished`.
+    /// member with old crew, or on a crew row, the member's `+N done`.
     fn fold_key(&mut self) {
         let Some(r) = self.current().cloned() else { return };
         let id = &r.node.id;

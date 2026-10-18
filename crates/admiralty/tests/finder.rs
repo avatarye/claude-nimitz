@@ -196,7 +196,7 @@ fn space_finds_z_folds_and_the_help_says_so() {
     assert_eq!(t.app.rows.len(), n);
     let help = admiralty::app::HELP;
     assert!(help.iter().any(|(k, d)| *k == "space" && d.contains("find")), "{help:?}");
-    assert!(help.iter().any(|(k, d)| *k == "z" && d.contains("fold / unfold") && d.contains("finished")), "{help:?}");
+    assert!(help.iter().any(|(k, d)| *k == "z" && d.contains("fold / unfold") && d.contains("+N done")), "{help:?}");
     let mut t = demo();
     press(&mut t.app, KeyCode::Char('?'));
     let s = screen(&mut t.app, 200, 80);

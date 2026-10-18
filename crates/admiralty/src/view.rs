@@ -260,6 +260,9 @@ pub struct Node {
     /// per DETAIL span, its rank when the cell is too narrow: spans go whole,
     /// the highest rank first; empty: cut the end
     pub drop_rank: Vec<u8>,
+    /// the detail pane's key / value lines for a row with no member of its
+    /// own (crew, tasks)
+    pub facts: Vec<(&'static str, String)>,
     pub children: Vec<Node>,
 }
 
@@ -291,6 +294,7 @@ impl Node {
             title_right: vec![],
             counts: vec![],
             drop_rank: vec![],
+            facts: vec![],
             children: vec![],
         }
     }
@@ -372,27 +376,126 @@ pub fn age_or_unknown(seconds: f64) -> String {
     }
 }
 
+/// What a crew or a task is doing, in the member rows' status glyphs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Work {
+    Busy,
+    /// a teammate between turns: it waits for a message
+    Idle,
+    Done,
+    /// its log ends in an API error
+    Failed,
+    /// a task nobody started
+    Pending,
+}
+
+impl Work {
+    pub fn word(self) -> &'static str {
+        match self {
+            Work::Busy => "busy",
+            Work::Idle => "idle",
+            Work::Done => "done",
+            Work::Failed => "failed",
+            Work::Pending => "pending",
+        }
+    }
+
+    pub fn glyph(self, icons: &Icons) -> &'static str {
+        match self {
+            Work::Busy => icons.s_busy,
+            Work::Idle => icons.s_idle,
+            Work::Done => icons.s_stopped,
+            Work::Failed => icons.issue,
+            Work::Pending => icons.s_off,
+        }
+    }
+
+    pub fn style(self) -> Style {
+        match self {
+            Work::Busy => st(mono::BUSY),
+            Work::Idle => st(mono::FG),
+            Work::Done => st(mono::COMMENT),
+            Work::Failed => st(mono::ERROR),
+            Work::Pending => st(mono::MUTED),
+        }
+    }
+
+    /// The STATUS cell: glyph and word, in the state's colour.
+    pub fn status(self, icons: &Icons) -> (String, Style) {
+        (format!("{} {}", self.glyph(icons), self.word()), self.style())
+    }
+}
+
+/// A crew's state: failed when its log ends in an API error, busy while it
+/// writes, idle for a teammate between turns, else done.
+pub fn crew_work(c: &Crew) -> Work {
+    if c.failed {
+        Work::Failed
+    } else if c.running {
+        Work::Busy
+    } else if c.teammate {
+        Work::Idle
+    } else {
+        Work::Done
+    }
+}
+
+/// An agent type without its plugin's prefix (`feature-dev:code-reviewer`:
+/// `code-reviewer`).
+pub fn short_type(t: &str) -> &str {
+    t.rsplit(':').next().unwrap_or(t)
+}
+
+/// The name Claude Code gave a crew (a teammate's), if any: its label when
+/// that is neither its description nor its id.
+fn crew_given_name(c: &Crew) -> Option<&str> {
+    Some(c.label.as_str()).filter(|l| !l.is_empty() && Some(*l) != c.description.as_deref() && *l != c.agent_id)
+}
+
+/// A crew row's NAME: its own name, else its agent type, else its label.
+pub fn crew_name(c: &Crew) -> String {
+    crew_given_name(c).or(c.agent_type.as_deref().map(short_type)).unwrap_or(&c.label).to_string()
+}
+
 fn crew_node(parent: &str, c: &Crew, kids: &HashMap<String, Vec<&Crew>>, now: f64, icons: &Icons, depth: usize) -> Node {
-    let style = if c.running { st(mono::BUSY) } else { st(mono::COMMENT) };
+    let work = crew_work(c);
+    let style = work.style();
     let mut n = Node::new(format!("C:{parent}:{}", c.agent_id), Kind::Crew);
     n.icon = if c.teammate { icons.teammate } else { icons.crew };
     n.icon_style = style;
-    n.name = c.label.clone();
+    n.name = crew_name(c);
     n.name_style = style;
-    n.status = (if c.running { "> running".into() } else { ". finished".into() }, style);
-    if c.running {
+    n.status = work.status(icons);
+    if work == Work::Busy {
         n.anim = Anim::SpinDim;
     }
     n.age = if c.last_write > 0.0 { age_or_unknown(now - c.last_write) } else { "?".into() };
     n.kind_text = if c.teammate { "teammate".into() } else { "crew".into() };
+    // what it does: its description (a named crew without one: its type)
+    let does = c.description.clone().or_else(|| crew_given_name(c).and(c.agent_type.clone())).unwrap_or_default();
     let phase = c.phase.as_ref().map(|p| format!("{p}  ")).unwrap_or_default();
-    n.detail = vec![Span::styled(format!("{phase}{}", c.agent_type.clone().unwrap_or_default()), st(mono::COMMENT))];
+    n.detail = vec![Span::styled(format!("{phase}{does}"), st(if work == Work::Failed { mono::ERROR } else { mono::COMMENT }))];
+    n.facts = vec![
+        ("state", work.word().to_string()),
+        ("kind", n.kind_text.clone()),
+        ("type", c.agent_type.clone().unwrap_or_default()),
+        ("does", c.description.clone().unwrap_or_default()),
+    ];
+    if let Some(p) = &c.phase {
+        n.facts.push(("phase", p.clone()));
+    }
     if depth < 32 {
         if let Some(ch) = kids.get(&c.agent_id) {
             n.children = ch.iter().map(|k| crew_node(parent, k, kids, now, icons, depth + 1)).collect();
         }
     }
     n
+}
+
+/// Does the filter `q` (lowercase, not empty) match crew `c`: its label, its
+/// description or its type?
+pub fn crew_matches(c: &Crew, q: &str) -> bool {
+    [Some(c.label.as_str()), c.description.as_deref(), c.agent_type.as_deref()].into_iter().flatten().any(|t| t.to_lowercase().contains(q))
 }
 
 /// Finished crew stay in view this long after their last write; older ones
@@ -432,7 +535,7 @@ fn crew_roots<'a>(crew: &'a [Crew], now: f64, q: &str) -> (HashMap<String, Vec<&
         .map(|c| {
             let mut all = vec![];
             subtree(c, &kids, 0, &mut all);
-            let visible = c.running || now - c.last_write < CREW_RECENT_S || all.iter().any(|x| x.running) || (!q.is_empty() && all.iter().any(|x| x.label.to_lowercase().contains(q)));
+            let visible = c.running || now - c.last_write < CREW_RECENT_S || all.iter().any(|x| x.running) || (!q.is_empty() && all.iter().any(|x| crew_matches(x, q)));
             (c, visible)
         })
         .collect();
@@ -460,7 +563,7 @@ fn run_visible(agents: &[&Crew], now: f64, q: &str) -> bool {
     let last = agents.iter().map(|c| c.last_write).fold(0.0, f64::max);
     agents.iter().any(|c| c.running)
         || now - last < CREW_RECENT_S
-        || (!q.is_empty() && agents.iter().any(|c| c.label.to_lowercase().contains(q) || c.workflow_name.as_deref().is_some_and(|n| n.to_lowercase().contains(q))))
+        || (!q.is_empty() && agents.iter().any(|c| crew_matches(c, q) || c.workflow_name.as_deref().is_some_and(|n| n.to_lowercase().contains(q))))
 }
 
 /// The id of member `parent`'s row for Workflow run `run`.
@@ -474,13 +577,14 @@ pub fn workflow_row_id(parent: &str, run: &str) -> String {
 fn workflow_node(parent: &str, run: &str, agents: &[&Crew], now: f64, icons: &Icons) -> Node {
     let live = agents.iter().filter(|c| c.running).count();
     let newest = agents.iter().max_by(|a, b| a.last_write.partial_cmp(&b.last_write).unwrap_or(std::cmp::Ordering::Equal));
-    let style = if live > 0 { st(mono::BUSY) } else { st(mono::COMMENT) };
+    let work = if live > 0 { Work::Busy } else if agents.iter().any(|c| c.failed) { Work::Failed } else { Work::Done };
+    let style = work.style();
     let mut n = Node::new(workflow_row_id(parent, run), Kind::Workflow);
     n.icon = icons.crew;
     n.icon_style = style;
     n.name = agents.iter().find_map(|c| c.workflow_name.clone()).unwrap_or_else(|| run.to_string());
     n.name_style = style;
-    n.status = (if live > 0 { "> running".into() } else { ". finished".into() }, style);
+    n.status = work.status(icons);
     if live > 0 {
         n.anim = Anim::SpinDim;
     }
@@ -494,7 +598,8 @@ fn workflow_node(parent: &str, run: &str, agents: &[&Crew], now: f64, icons: &Ic
     let owned: Vec<Crew> = agents.iter().map(|c| (*c).clone()).collect();
     let (kids, roots) = crew_roots(&owned, now, "");
     let mut children: Vec<Node> = roots.into_iter().map(|(c, _)| crew_node(parent, c, &kids, now, icons, 0)).collect();
-    children.sort_by(|a, b| a.name.cmp(&b.name));
+    let text = |n: &Node| n.detail.iter().map(|s| s.content.as_ref()).collect::<String>();
+    children.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| text(a).cmp(&text(b))));
     n.children = children;
     n.default_expand = live > 0;
     n
@@ -530,7 +635,9 @@ fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons, q: &str) -> 
             old.push(node);
         }
     }
-    let by = |a: &Node, b: &Node| a.kind_text.cmp(&b.kind_text).then(a.name.cmp(&b.name));
+    // crew of one type in the order of what they do
+    let text = |n: &Node| n.detail.iter().map(|s| s.content.as_ref()).collect::<String>();
+    let by = |a: &Node, b: &Node| a.kind_text.cmp(&b.kind_text).then(a.name.cmp(&b.name)).then_with(|| text(a).cmp(&text(b)));
     shown.sort_by(by);
     if !old.is_empty() {
         old.sort_by(by);
@@ -538,32 +645,48 @@ fn crew_nodes(parent: &str, crew: &[Crew], now: f64, icons: &Icons, q: &str) -> 
         let mut n = Node::new(crew_fold_id(parent), Kind::CrewFold);
         n.icon = icons.crew;
         n.icon_style = style;
-        n.name = format!("+{} finished", old.len());
+        n.name = format!("+{} done", old.len());
         n.name_style = style;
-        n.status = (". finished".into(), style);
+        n.status = Work::Done.status(icons);
         n.age = if youngest > 0.0 { age_or_unknown(now - youngest) } else { "?".into() };
         n.kind_text = "crew".into();
-        n.detail = vec![Span::styled(format!("finished over {} min ago; z shows them", (CREW_RECENT_S / 60.0) as u64), style)];
+        n.detail = vec![Span::styled(format!("done over {} min ago; z shows them", (CREW_RECENT_S / 60.0) as u64), style)];
         n.children = old;
         shown.push(n);
     }
     shown
 }
 
+/// A task's state: `completed` done, `in_progress` busy, anything else pending.
+pub fn task_work(t: &Task) -> Work {
+    match t.status.as_str() {
+        "completed" => Work::Done,
+        "in_progress" => Work::Busy,
+        _ => Work::Pending,
+    }
+}
+
+/// A task row, as a crew row: NAME who it is (`#7`, and its owner), DETAIL
+/// what it is about, STATUS in the member glyphs.
 fn task_node(parent: &str, t: &Task, icons: &Icons) -> Node {
-    let (icon, c) = match t.status.as_str() {
-        "completed" => (icons.completed, mono::COMMENT),
-        "in_progress" => (icons.in_progress, mono::BUSY),
-        _ => (icons.pending, mono::MUTED),
+    let work = task_work(t);
+    let icon = match work {
+        Work::Done => icons.completed,
+        Work::Busy => icons.in_progress,
+        _ => icons.pending,
     };
     let mut n = Node::new(format!("T:{parent}:{}", t.id), Kind::Task);
     n.icon = icon;
-    n.icon_style = st(c);
-    n.name = t.subject.clone();
+    n.icon_style = work.style();
+    n.name = match &t.owner {
+        Some(o) if !o.is_empty() => format!("#{} {o}", t.id),
+        _ => format!("#{}", t.id),
+    };
     n.name_style = st(mono::SOFT);
-    n.status = (t.status.replace('_', " "), st(c));
+    n.status = work.status(icons);
     n.kind_text = "task".into();
-    n.detail = vec![Span::styled(t.owner.clone().unwrap_or_default(), st(mono::COMMENT))];
+    n.detail = vec![Span::styled(t.subject.clone(), st(mono::COMMENT))];
+    n.facts = vec![("state", work.word().to_string()), ("status", t.status.clone()), ("owner", t.owner.clone().unwrap_or_default()), ("about", t.subject.clone())];
     n
 }
 
@@ -682,7 +805,11 @@ fn member_node(m: &Member, v: &View) -> Node {
     } else if n.detail.is_empty() {
         let running = m.crew.iter().filter(|c| c.running).count();
         if running > 0 {
-            n.detail.push(Span::styled(format!("{running} crew running"), st(mono::BUSY)));
+            let failed = m.crew.iter().filter(|c| c.failed).count();
+            n.detail.push(Span::styled(format!("{running} crew busy"), st(mono::BUSY)));
+            if failed > 0 {
+                n.detail.push(Span::styled(format!(", {failed} failed"), st(mono::ERROR)));
+            }
         } else if let Some(t) = &m.topic {
             // what the job is doing; the reasons stay in the detail pane
             n.detail.push(Span::styled(t.clone(), st(mono::COMMENT)));
@@ -983,7 +1110,7 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
             || m.id.0.to_lowercase().contains(&q)
             || m.expected_name.to_lowercase().contains(&q)
             || m.session.as_ref().map(|s| s.name.to_lowercase().contains(&q)).unwrap_or(false)
-            || m.crew.iter().any(|c| c.label.to_lowercase().contains(&q))
+            || m.crew.iter().any(|c| crew_matches(c, &q))
     };
     // a name filter searches every fleet; otherwise the tab's fleet only
     let on_tab = |fleet: &str| !q.is_empty() || v.tab.map(|t| t == fleet).unwrap_or(true);

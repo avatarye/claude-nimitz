@@ -1384,7 +1384,7 @@ fn the_state_filter_hides_squadrons_on_a_fleet_tab() {
 // ------------------------------------------------------------------ crew window
 
 fn crew_of(id: &str, parent: Option<&str>, label: &str, running: bool, age_s: f64) -> nimitz_core::Crew {
-    nimitz_core::Crew { agent_id: id.into(), parent_id: parent.map(String::from), label: label.into(), agent_type: Some("general-purpose".into()), teammate: false, running, last_write: fixtures::NOW - age_s, workflow: None, workflow_name: None, phase: None }
+    nimitz_core::Crew { agent_id: id.into(), parent_id: parent.map(String::from), label: label.into(), agent_type: Some("general-purpose".into()), description: Some(label.into()), teammate: false, running, failed: false, last_write: fixtures::NOW - age_s, workflow: None, workflow_name: None, phase: None }
 }
 
 /// The demo's BOLT, with crew of every age: running (sa-1, its child sa-2),
@@ -1410,24 +1410,29 @@ fn crew_world() -> (admiralty::data::Bundle, String) {
     (b, id)
 }
 
+/// A member's crew rows by what they do (DETAIL), its fold row by its name.
 fn crew_rows(app: &admiralty::app::App, id: &str) -> Vec<String> {
-    app.rows.iter().filter(|r| r.node.id.starts_with(&format!("C:{id}:")) || r.node.id == format!("CF:{id}")).map(|r| r.node.name.clone()).collect()
+    app.rows
+        .iter()
+        .filter(|r| r.node.id.starts_with(&format!("C:{id}:")) || r.node.id == format!("CF:{id}"))
+        .map(|r| if r.node.id.starts_with("CF:") { r.node.name.clone() } else { r.node.detail.iter().map(|s| s.content.to_string()).collect() })
+        .collect()
 }
 
 /// Running crew and crew finished within 30 min show; older finished crew
-/// fold into one `+N finished` row; a running child keeps its old parent in
-/// view; the member's "N crew running" counts every running crew.
+/// fold into one `+N done` row; a running child keeps its old parent in
+/// view; the member's "N crew busy" counts every running crew.
 #[test]
 fn old_finished_crew_fold_into_one_row_and_running_children_keep_their_parent() {
     let (b, id) = crew_world();
     let mut t = fixture_app(b, false);
     goto(&mut t.app, &format!("M:{id}"));
     let rows = crew_rows(&t.app, &id);
-    assert_eq!(rows, ["fix layout bug", "old parent", "recent review", "+2 finished"], "{rows:?}");
+    assert_eq!(rows, ["review the importer diff", "fix layout bug", "old parent", "recent review", "+2 done"], "{rows:?}");
     let parent = t.app.rows.iter().find(|r| r.node.id == format!("C:{id}:old-b")).unwrap();
-    assert_eq!(parent.node.children.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["kid still running"], "nested crew follow their parent");
+    assert_eq!(parent.node.children.iter().map(|c| c.detail[0].content.to_string()).collect::<Vec<_>>(), ["kid still running"], "nested crew follow their parent");
     let member = t.app.rows.iter().find(|r| r.node.id == format!("M:{id}")).unwrap();
-    assert!(member.node.detail.iter().any(|s| s.content.contains("3 crew running")), "{:?}", member.node.detail);
+    assert!(member.node.detail.iter().any(|s| s.content.contains("3 crew busy")), "{:?}", member.node.detail);
     // z on the member opens the fold; z on a crew row inside it closes it again
     press(&mut t.app, KeyCode::Char('z'));
     let rows = crew_rows(&t.app, &id);
@@ -1439,6 +1444,42 @@ fn old_finished_crew_fold_into_one_row_and_running_children_keep_their_parent() 
     // z on the fold row opens it again
     press(&mut t.app, KeyCode::Char('z'));
     assert!(crew_rows(&t.app, &id).contains(&"old audit".to_string()));
+}
+
+/// Crew and task rows follow the member rows: NAME who it is (the crew's own
+/// name, else its agent type without a plugin prefix; a task's number and
+/// owner), DETAIL what it does, STATUS a member glyph and word.
+#[test]
+fn crew_and_task_rows_name_who_and_say_what_in_member_glyphs() {
+    use admiralty::view::{crew_work, Work};
+    let (mut b, id) = crew_world();
+    for f in &mut b.snap.fleets {
+        for c in f.members_mut().flat_map(|m| m.crew.iter_mut()) {
+            if c.agent_id == "tm-scribe" {
+                c.running = false;
+            }
+        }
+    }
+    let mut t = fixture_app(b, false);
+    let icons = t.app.icons;
+    let row = |t: &TestApp, rid: &str| t.app.rows.iter().find(|r| r.node.id == rid).unwrap_or_else(|| panic!("{rid}")).node.clone();
+    goto(&mut t.app, &format!("M:{id}"));
+    let cells = |n: &admiralty::view::Node| (n.name.clone(), n.status.0.clone(), n.detail.iter().map(|s| s.content.to_string()).collect::<String>());
+    let g = |w: Work| format!("{} {}", w.glyph(icons), w.word());
+    assert_eq!(cells(&row(&t, &format!("C:{id}:sa-1"))), ("general-purpose".into(), g(Work::Busy), "fix layout bug".into()));
+    assert_eq!(cells(&row(&t, &format!("C:{id}:sa-4"))), ("code-reviewer".into(), g(Work::Failed), "review the importer diff".into()), "a plugin's type, short; failed");
+    assert_eq!(cells(&row(&t, &format!("CF:{id}"))).1, g(Work::Done));
+    assert_eq!(cells(&row(&t, &format!("T:{id}:7"))), ("#7".into(), g(Work::Pending), "importer: parser edge cases".into()));
+    // the commodore is folded: its tasks are its row's children
+    let commodore = row(&t, "M:MAIN/ARGOS");
+    let task = |tid: &str| commodore.children.iter().find(|n| n.id == tid).unwrap().clone();
+    assert_eq!(cells(&task("T:MAIN/ARGOS:1")), ("#1 BOLT".into(), g(Work::Busy), "data importer".into()));
+    assert_eq!(cells(&task("T:MAIN/ARGOS:2")).1, g(Work::Done));
+    // a teammate keeps its own name, and between turns it is idle
+    let admiral = row(&t, "M:MAIN");
+    assert_eq!(cells(admiral.children.iter().find(|n| n.id == "C:MAIN:tm-scribe").unwrap()), ("minutes-scribe".into(), g(Work::Idle), "Take the minutes of the fleet review".into()));
+    let c = nimitz_core::Crew { failed: true, running: true, ..crew_of("x", None, "x", true, 1.0) };
+    assert_eq!(crew_work(&c), Work::Failed, "an API error is the last word");
 }
 
 /// The fold's state is kept per member in the saved UI state.
@@ -1533,12 +1574,12 @@ fn a_filter_shows_the_old_crew_it_matches_and_unknown_ages_fold() {
     let mut t = fixture_app(b, false);
     goto(&mut t.app, &format!("M:{id}"));
     let fold = t.app.rows.iter().find(|r| r.node.id == format!("CF:{id}")).expect("the fold");
-    assert_eq!((fold.node.name.as_str(), fold.node.age.as_str()), ("+2 finished", "?"));
+    assert_eq!((fold.node.name.as_str(), fold.node.age.as_str()), ("+2 done", "?"));
     keys(&mut t.app, "/old audit");
     press(&mut t.app, KeyCode::Enter);
     goto(&mut t.app, &format!("M:{id}"));
     let rows = crew_rows(&t.app, &id);
-    assert!(rows.contains(&"old audit".to_string()) && rows.contains(&"+1 finished".to_string()), "{rows:?}");
+    assert!(rows.contains(&"old audit".to_string()) && rows.contains(&"+1 done".to_string()), "{rows:?}");
 }
 
 /// esc closes what is open, one thing at a time (a dialog, the detail
@@ -1876,7 +1917,7 @@ fn the_dim_glyph_passes_contrast_and_the_word_keeps_its_colour() {
     let buf = draw(&mut t.app, 200, 60);
     let ls = lines(&buf);
     let y = ls.iter().position(|l| l.contains("fix layout bug")).unwrap();
-    let x = ls[y].find("running").unwrap();
+    let x = ls[y].find("busy").unwrap();
     let x = ls[y][..x].chars().count() as u16;
     assert_eq!(buf[(x, y as u16)].fg, mono::BUSY, "the word keeps its colour");
     assert_eq!(buf[(x - 2, y as u16)].fg, BUSY_DIM, "the glyph is the dim one");

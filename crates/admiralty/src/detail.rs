@@ -36,8 +36,8 @@ pub fn art_for(n: &Node) -> Art {
         Kind::Note => Art::Issue,
         Kind::Crew if n.kind_text == "teammate" => Art::Teammate,
         Kind::Crew | Kind::CrewFold | Kind::Workflow => Art::Crew,
-        Kind::Task if n.status.0 == "completed" => Art::TaskDone,
-        Kind::Task if n.status.0 == "in progress" => Art::TaskWip,
+        Kind::Task if n.status.0.ends_with(crate::view::Work::Done.word()) => Art::TaskDone,
+        Kind::Task if n.status.0.ends_with(crate::view::Work::Busy.word()) => Art::TaskWip,
         Kind::Task => Art::TaskTodo,
         Kind::Member(r) => match r {
             nimitz_core::Role::Admiral => Art::Admiral,
@@ -141,35 +141,32 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             blank(),
             kv("last write", format!("{} ago", r.node.age)),
             blank(),
-            Line::styled(format!("Crew of this conversation that finished over {} min ago.", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::SOFT)),
+            Line::styled(format!("Crew of this conversation done over {} min ago.", (crate::view::CREW_RECENT_S / 60.0) as u64), st(mono::SOFT)),
             Line::styled("z shows or hides them; the choice is kept per member.", st(mono::SOFT)),
         ],
         (Kind::Workflow, _) => vec![
             Line::styled(r.node.name.clone(), bold(mono::FG)),
             blank(),
-            kv("state", r.node.status.0.trim_start_matches(['>', '.', ' ']).to_string()),
+            kv("state", r.node.status.0.split_once(' ').map(|(_, w)| w.to_string()).unwrap_or_default()),
             kv("agents", r.node.detail.first().map(|s| s.content.to_string()).unwrap_or_default()),
             kv("run", r.node.detail.get(1).map(|s| s.content.trim().to_string()).unwrap_or_default()),
             kv("last write", format!("{} ago", r.node.age)),
             blank(),
             Line::styled("The agents a Workflow run started in this session; z opens or closes it.", st(mono::COMMENT)),
         ],
-        (Kind::Crew, _) => vec![
-            Line::styled(r.node.name.clone(), bold(mono::FG)),
-            blank(),
-            kv("state", r.node.status.0.trim_start_matches(['>', '.', ' ']).to_string()),
-            kv("kind", r.node.kind_text.clone()),
-            kv("type", r.node.detail.iter().map(|s| s.content.to_string()).collect::<String>()),
-            kv("last write", format!("{} ago", r.node.age)),
-            blank(),
-            Line::styled("Crew run inside their session; reach them through it.", st(mono::COMMENT)),
-        ],
-        (Kind::Task, _) => vec![
-            Line::styled(r.node.name.clone(), bold(mono::FG)),
-            blank(),
-            kv("status", r.node.status.0.clone()),
-            kv("owner", r.node.detail.iter().map(|s| s.content.to_string()).collect::<String>()),
-        ],
+        (Kind::Crew, _) => {
+            let mut v = vec![Line::styled(r.node.name.clone(), bold(mono::FG)), blank()];
+            v.extend(r.node.facts.iter().filter(|(_, x)| !x.is_empty()).map(|(k, x)| kv(k, x.clone())));
+            v.push(kv("last write", format!("{} ago", r.node.age)));
+            v.push(blank());
+            v.push(Line::styled("Crew run inside their session; reach them through it.", st(mono::COMMENT)));
+            v
+        }
+        (Kind::Task, _) => {
+            let mut v = vec![Line::styled(r.node.name.clone(), bold(mono::FG)), blank()];
+            v.extend(r.node.facts.iter().filter(|(_, x)| !x.is_empty()).map(|(k, x)| kv(k, x.clone())));
+            v
+        }
         _ => vec![],
     }
 }
@@ -358,11 +355,18 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
         }
     }
     if !m.crew.is_empty() {
-        let run = m.crew.iter().filter(|c| c.running).count();
+        use crate::view::{crew_work, Work};
+        // how many in each state, the busy first; zero counts left out
+        let counts: Vec<String> = [Work::Busy, Work::Failed, Work::Idle, Work::Done]
+            .into_iter()
+            .map(|w| (w, m.crew.iter().filter(|c| crew_work(c) == w).count()))
+            .filter(|(_, n)| *n > 0)
+            .map(|(w, n)| format!("{n} {}", w.word()))
+            .collect();
         v.push(blank());
         let runs: std::collections::BTreeSet<&str> = m.crew.iter().filter_map(|c| c.workflow.as_deref()).collect();
         let wf = if runs.is_empty() { String::new() } else { format!(" ({} in {} workflow run{})", m.crew.iter().filter(|c| c.workflow.is_some()).count(), runs.len(), if runs.len() == 1 { "" } else { "s" }) };
-        v.push(heading(&format!("CREW  {run} running, {} finished{wf}", m.crew.len() - run)));
+        v.push(heading(&format!("CREW  {}{wf}", counts.join(", "))));
     }
     if !m.tasks.is_empty() {
         v.push(blank());

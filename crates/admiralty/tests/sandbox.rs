@@ -692,7 +692,7 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
 
 /// A Workflow run's agents sit under one row per run, under the member: the
 /// workflow's name, live / total, the newest agent's phase, open while one
-/// runs; a run that finished long ago folds into `+N finished` as one.
+/// runs; a run that finished long ago folds into `+N done` as one.
 #[test]
 fn workflow_agents_show_under_a_row_per_run() {
     let w = world();
@@ -712,6 +712,6 @@ fn workflow_agents_show_under_a_row_per_run() {
     let m = app.bundle.as_ref().unwrap().snap.fleets.iter().flat_map(admiralty::view::fleet_members).find(|m| m.id.0 == "MAIN/ARGOS").unwrap().clone();
     assert_eq!(admiralty::view::folded_crew(&m.crew, nimitz_core::evidence::now(), ""), 1);
     let s = screen(&mut app, 200, 80);
-    assert!(s.contains("sandbox-fanout") && s.contains("L0:lane zero") && s.contains("+1 finished"), "{s}");
+    assert!(s.contains("sandbox-fanout") && s.contains("L0:lane zero") && s.contains("+1 done"), "{s}");
 }
 

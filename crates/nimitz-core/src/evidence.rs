@@ -1064,9 +1064,12 @@ pub struct SubAgentRec {
     pub parent_id: Option<String>,
     pub label: String,
     pub agent_type: Option<String>,
+    pub description: Option<String>,
     pub team: Option<String>,
     pub teammate: bool,
     pub last_write: f64,
+    /// the log's last entry is an API error (`ends_in_api_error`)
+    pub failed: bool,
     /// the Workflow run that started it (`wf_<run>`), with the workflow's
     /// name when known and the agent's phase
     pub workflow: Option<String>,
@@ -1134,27 +1137,49 @@ fn read_agent_dir(cache: &mut FileCache, dir: &Path, also: Option<&Path>) -> Vec
         let Some(agent_id) = fname.strip_prefix("agent-").and_then(|r| r.strip_suffix(".meta.json")) else { continue };
         let m = cache.json(&e.path()).unwrap_or(Value::Null);
         let log = format!("agent-{agent_id}.jsonl");
-        let last = [Some(dir.join(&log)), also.map(|a| a.join(&log))]
+        // the newer of the two logs: its time is the crew's last write
+        let newest = [Some(dir.join(&log)), also.map(|a| a.join(&log))]
             .into_iter()
             .flatten()
-            .filter_map(|p| mtime_secs(&p))
-            .reduce(f64::max)
-            .or_else(|| mtime_secs(&e.path()))
-            .unwrap_or(0.0);
+            .filter_map(|p| mtime_secs(&p).map(|t| (t, p)))
+            .reduce(|a, b| if b.0 > a.0 { b } else { a });
+        let last = newest.as_ref().map(|(t, _)| *t).or_else(|| mtime_secs(&e.path())).unwrap_or(0.0);
         out.push(SubAgentRec {
             agent_id: agent_id.to_string(),
             parent_id: s(&m, "parentAgentId"),
             label: s(&m, "name").or_else(|| s(&m, "description")).unwrap_or(agent_id.to_string()),
             agent_type: s(&m, "agentType"),
+            description: s(&m, "description"),
             team: s(&m, "teamName"),
             teammate: s(&m, "taskKind").as_deref() == Some("in_process_teammate"),
             last_write: last,
+            failed: newest.is_some_and(|(_, p)| ends_in_api_error(&p)),
             workflow: None,
             workflow_name: None,
             phase: s(&m, "workflowPhase"),
         });
     }
     out
+}
+
+/// Does the log at `p` end in an API error: its last line an assistant entry
+/// with `isApiErrorMessage`? Only the file's last 16 KiB are read.
+pub fn ends_in_api_error(p: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 16 * 1024;
+    let Ok(mut f) = fs::File::open(p) else { return false };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).is_err() {
+        return false;
+    }
+    let mut buf = vec![];
+    if f.take(TAIL).read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let Some(line) = text.lines().rev().find(|l| !l.trim().is_empty()) else { return false };
+    let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return false };
+    v.get("type").and_then(Value::as_str) == Some("assistant") && v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true)
 }
 
 /// A Workflow run's name: `workflowName` in `workflows/<run>.json` (written
@@ -1335,6 +1360,30 @@ mod tests {
             let recs = read_subagents(&env, &mut FileCache::default(), sid);
             assert_eq!(recs.iter().map(|r| r.agent_id.as_str()).collect::<Vec<_>>(), ["x1"], "{real} vs {decoy}");
         }
+    }
+
+    /// A crew's description is its own field, and a log whose last entry is
+    /// an API error marks it failed; an error earlier in the log does not.
+    #[test]
+    fn a_crew_has_its_description_and_fails_on_a_last_api_error() {
+        let td = tempfile::tempdir().unwrap();
+        let vars: HashMap<String, String> = [("NIMITZ_CLAUDE_HOME".to_string(), td.path().to_string_lossy().into_owned())].into();
+        let env = Env::from_vars(&vars);
+        let sid = "5e55e55e-0000-4000-8000-000000000002";
+        let dir = td.path().join("projects/-p").join(sid).join("subagents");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(td.path().join("projects/-p").join(format!("{sid}.jsonl")), "{}\n").unwrap();
+        let err = r#"{"type":"assistant","isApiErrorMessage":true,"message":{"stop_reason":"stop_sequence"}}"#;
+        let ok = r#"{"type":"assistant","message":{"stop_reason":"end_turn"}}"#;
+        for (id, log) in [("ok", format!("{err}\n{ok}\n")), ("bad", format!("{ok}\n{err}\n\n")), ("none", String::new())] {
+            fs::write(dir.join(format!("agent-{id}.meta.json")), format!(r#"{{"agentType":"Explore","description":"look at {id}"}}"#)).unwrap();
+            if !log.is_empty() {
+                fs::write(dir.join(format!("agent-{id}.jsonl")), log).unwrap();
+            }
+        }
+        let mut recs: Vec<(String, Option<String>, bool)> = read_subagents(&env, &mut FileCache::default(), sid).into_iter().map(|r| (r.agent_id, r.description, r.failed)).collect();
+        recs.sort();
+        assert_eq!(recs, [("bad".into(), Some("look at bad".into()), true), ("none".into(), Some("look at none".into()), false), ("ok".into(), Some("look at ok".into()), false)]);
     }
 
     /// Windows reuses pids: a crashed session's leftover `sessions/<pid>.json`
