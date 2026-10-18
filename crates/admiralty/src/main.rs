@@ -18,7 +18,7 @@ const USAGE: &str = "usage:
        [--height N]                 the whole screen N rows tall, as the TUI draws it
        [--select ID [--detail]]     the cursor on a row (`MAIN/ARGOS/BOLT` or a row id `M:MAIN/ARGOS/BOLT`), its actions menu (`x`) open, the row's detail below it
   admiralty sandbox create [--herdr]|env DIR                             a fake world (fake claude, optional fake herdr)
-  admiralty herdr toggle|watch                                           the Herdr plugin's action and overlay pane
+  admiralty herdr toggle|watch|rezoom ID                                 the Herdr plugin's action, overlay pane, and zoom restore
 
 env: NIMITZ_HOME, NIMITZ_STATE, NIMITZ_CLAUDE_HOME, NIMITZ_MUX ... (contracts.md section 2),
      ADMIRALTY_ICONS=ascii (no Nerd Font), ADMIRALTY_STATE (where folds and filters are saved),
@@ -33,12 +33,17 @@ enum Source {
 
 fn main() -> ExitCode {
     let mut args: Vec<String> = nimitz_core::os::args();
+    let mut watch = false;
     // the Herdr plugin's commands (herdr-plugin/herdr-plugin.toml)
     if args.first().map(String::as_str) == Some("herdr") {
         let vars: HashMap<String, String> = nimitz_core::os::env_vars();
         match args.get(1).map(String::as_str) {
             Some("toggle") => return code(herdr_plugin::toggle(&vars)),
+            Some("rezoom") if args.len() == 3 => return code(herdr_plugin::rezoom(&vars, &args[2])),
             Some("watch") => {
+                watch = true;
+                // the terminal the overlay's box, before the TUI reads its size
+                herdr_plugin::fill_overlay(&vars);
                 let (env, extra) = herdr_plugin::watch_setup(&vars);
                 for (k, v) in env {
                     std::env::set_var(k, v);
@@ -46,7 +51,7 @@ fn main() -> ExitCode {
                 std::env::remove_var("ADMIRALTY_WATCH_EXIT_AFTER_JUMP");
                 args = extra; // the TUI, with the overlay's extra arguments
             }
-            _ => return fail(&format!("usage: admiralty herdr toggle|watch\n{USAGE}")),
+            _ => return fail(&format!("usage: admiralty herdr toggle|watch|rezoom ID\n{USAGE}")),
         }
     }
     match args.first().map(String::as_str) {
@@ -128,7 +133,7 @@ fn main() -> ExitCode {
         }
     };
     let mut app = App::new(ctx, state_path, ascii);
-    // rows,cols the terminal never shows (Herdr's overlay: watch.sh sets 2,2)
+    // rows,cols the terminal never shows (0,0 in Herdr's overlay since 0.7.9)
     if let Some((r, c)) = vars.get("ADMIRALTY_INSET").and_then(|v| v.split_once(',')) {
         app.inset = (r.trim().parse().unwrap_or(0), c.trim().parse().unwrap_or(0));
     }
@@ -175,7 +180,11 @@ fn main() -> ExitCode {
     }
     app.interval = Duration::from_secs_f64(interval.max(0.5));
     let every = app.interval;
-    match run::run(app, make, every) {
+    let ran = run::run(app, make, every);
+    if watch {
+        herdr_plugin::rezoom_later(&vars);
+    }
+    match ran {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => fail(&e.to_string()),
     }
