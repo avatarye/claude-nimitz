@@ -104,6 +104,8 @@ pub struct FileCache {
     roots: HashMap<PathBuf, (SystemTime, Vec<String>)>,
     /// lineage transcripts not found, and when (`transcript_missing_cached`)
     missing: HashMap<String, f64>,
+    /// `ends_in_api_error` per crew log, by mtime and length
+    api_errors: HashMap<PathBuf, (SystemTime, u64, bool)>,
     events: EventTail,
 }
 
@@ -127,6 +129,21 @@ impl FileCache {
         let v = first_json(&fs::read(p).ok()?)?;
         self.json.insert(p.to_path_buf(), (m, v.clone()));
         Some(v)
+    }
+
+    /// `ends_in_api_error`, read again only when the log's mtime or length
+    /// changed (a refresh every 2 s reads no unchanged log).
+    pub fn ends_in_api_error(&mut self, p: &Path) -> bool {
+        let Ok(md) = fs::metadata(p) else { return false };
+        let key = (md.modified().unwrap_or(SystemTime::UNIX_EPOCH), md.len());
+        if let Some((t, len, v)) = self.api_errors.get(p) {
+            if (*t, *len) == key {
+                return *v;
+            }
+        }
+        let v = ends_in_api_error(p);
+        self.api_errors.insert(p.to_path_buf(), (key.0, key.1, v));
+        v
     }
 }
 
@@ -1153,7 +1170,7 @@ fn read_agent_dir(cache: &mut FileCache, dir: &Path, also: Option<&Path>) -> Vec
             team: s(&m, "teamName"),
             teammate: s(&m, "taskKind").as_deref() == Some("in_process_teammate"),
             last_write: last,
-            failed: newest.is_some_and(|(_, p)| ends_in_api_error(&p)),
+            failed: newest.is_some_and(|(_, p)| cache.ends_in_api_error(&p)),
             workflow: None,
             workflow_name: None,
             phase: s(&m, "workflowPhase"),
@@ -1162,8 +1179,10 @@ fn read_agent_dir(cache: &mut FileCache, dir: &Path, also: Option<&Path>) -> Vec
     out
 }
 
-/// Does the log at `p` end in an API error: its last line an assistant entry
-/// with `isApiErrorMessage`? Only the file's last 16 KiB are read.
+/// Does the log at `p` end in an API error: its last entry an assistant one
+/// with `isApiErrorMessage`? Entries Claude Code writes after a turn
+/// (`attachment`, `system`, `file-history-snapshot`) are passed over. Only
+/// the file's last 16 KiB are read.
 pub fn ends_in_api_error(p: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 16 * 1024;
@@ -1177,9 +1196,17 @@ pub fn ends_in_api_error(p: &Path) -> bool {
         return false;
     }
     let text = String::from_utf8_lossy(&buf);
-    let Some(line) = text.lines().rev().find(|l| !l.trim().is_empty()) else { return false };
-    let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return false };
-    v.get("type").and_then(Value::as_str) == Some("assistant") && v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true)
+    const AFTER: [&str; 3] = ["attachment", "system", "file-history-snapshot"];
+    for line in text.lines().rev().filter(|l| !l.trim().is_empty()) {
+        // the window's first line may be cut: it, or any line that does not read, ends the search
+        let Ok(v) = serde_json::from_str::<Value>(line.trim()) else { return false };
+        let kind = v.get("type").and_then(Value::as_str).unwrap_or_default();
+        if AFTER.contains(&kind) {
+            continue;
+        }
+        return kind == "assistant" && v.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true);
+    }
+    false
 }
 
 /// A Workflow run's name: `workflowName` in `workflows/<run>.json` (written
@@ -1363,7 +1390,9 @@ mod tests {
     }
 
     /// A crew's description is its own field, and a log whose last entry is
-    /// an API error marks it failed; an error earlier in the log does not.
+    /// an API error marks it failed (entries written after a turn passed
+    /// over); an error earlier in the log does not. The answer is cached by
+    /// mtime and length.
     #[test]
     fn a_crew_has_its_description_and_fails_on_a_last_api_error() {
         let td = tempfile::tempdir().unwrap();
@@ -1375,15 +1404,24 @@ mod tests {
         fs::write(td.path().join("projects/-p").join(format!("{sid}.jsonl")), "{}\n").unwrap();
         let err = r#"{"type":"assistant","isApiErrorMessage":true,"message":{"stop_reason":"stop_sequence"}}"#;
         let ok = r#"{"type":"assistant","message":{"stop_reason":"end_turn"}}"#;
-        for (id, log) in [("ok", format!("{err}\n{ok}\n")), ("bad", format!("{ok}\n{err}\n\n")), ("none", String::new())] {
+        let after = r#"{"type":"attachment"}"#.to_string() + "\n" + r#"{"type":"system","subtype":"x"}"#;
+        for (id, log) in [("ok", format!("{err}\n{ok}\n")), ("bad", format!("{ok}\n{err}\n{after}\n\n")), ("none", String::new())] {
             fs::write(dir.join(format!("agent-{id}.meta.json")), format!(r#"{{"agentType":"Explore","description":"look at {id}"}}"#)).unwrap();
             if !log.is_empty() {
                 fs::write(dir.join(format!("agent-{id}.jsonl")), log).unwrap();
             }
         }
-        let mut recs: Vec<(String, Option<String>, bool)> = read_subagents(&env, &mut FileCache::default(), sid).into_iter().map(|r| (r.agent_id, r.description, r.failed)).collect();
+        let mut cache = FileCache::default();
+        let mut recs: Vec<(String, Option<String>, bool)> = read_subagents(&env, &mut cache, sid).into_iter().map(|r| (r.agent_id, r.description, r.failed)).collect();
         recs.sort();
         assert_eq!(recs, [("bad".into(), Some("look at bad".into()), true), ("none".into(), Some("look at none".into()), false), ("ok".into(), Some("look at ok".into()), false)]);
+        assert_eq!(cache.api_errors.len(), 2, "both logs read once");
+        // the cached answer holds while mtime and length do; a longer log is read again
+        let bad = dir.join("agent-bad.jsonl");
+        cache.api_errors.insert(bad.clone(), (fs::metadata(&bad).unwrap().modified().unwrap(), fs::metadata(&bad).unwrap().len(), false));
+        assert!(!cache.ends_in_api_error(&bad), "unchanged: the cache answers");
+        fs::write(&bad, format!("{err}\n{ok}\n{err}\n")).unwrap();
+        assert!(cache.ends_in_api_error(&bad), "changed: read again");
     }
 
     /// Windows reuses pids: a crashed session's leftover `sessions/<pid>.json`
