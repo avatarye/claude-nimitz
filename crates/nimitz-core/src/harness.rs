@@ -82,9 +82,10 @@ pub fn dir(env: &Env, fleet: &str) -> PathBuf {
     env.fleet_dir(fleet).join("harness")
 }
 
-/// Is `n` a name a harness file may have (`[A-Za-z0-9_-]`, 1 to 64)?
+/// Is `n` a name a harness file may have (`[A-Za-z0-9_-]`, 1 to 64, never a
+/// Windows device name: `agents/nul.md` is the device)?
 pub fn valid_name(n: &str) -> bool {
-    (1..=64).contains(&n.len()) && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    (1..=64).contains(&n.len()) && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') && crate::os::windows_safe_name(n)
 }
 
 /// The names under `<harness>/<folder>`: `*.md` files (rules, agents) or
@@ -477,10 +478,22 @@ const AGENT_KEYS: [&str; 5] = ["name", "description", "tools", "model", "color"]
 /// frontmatter holds more than a name and a description (`hooks:`,
 /// `allowed-tools:`, ...), or it runs a command by itself (`` !` ``).
 pub fn skill_problem(text: &str) -> Option<String> {
-    if let Err(p) = read_frontmatter(text, &SKILL_KEYS) {
-        return Some(format!("{p} (a skill's hooks or allowed-tools would run programs: the user's own)"));
+    match read_frontmatter(text, &SKILL_KEYS) {
+        Err(p) => return Some(format!("{p} (a skill's hooks or allowed-tools would run programs: the user's own)")),
+        Ok((pairs, _)) => {
+            if let Some(p) = name_problem(&pairs) {
+                return Some(p);
+            }
+        }
     }
     skill_file_problem(text)
+}
+
+/// A frontmatter `name:` is a bare name (`valid_name`): Claude Code adds the
+/// plugin's `fleet-<fleet>:` itself, and a `:` of its own would read as
+/// another plugin's namespace.
+fn name_problem(pairs: &[(String, String)]) -> Option<String> {
+    pairs.iter().find(|(k, v)| k == "name" && !valid_name(v)).map(|(_, v)| format!("name: {v:?} is no bare name (1 to 64 of A-Z a-z 0-9 _ -, no `:`: the plugin's prefix comes from nimitz)"))
 }
 
 /// What a skill's other files must be: text that runs nothing either.
@@ -495,7 +508,7 @@ pub fn agent_problem(text: &str) -> Option<String> {
     match read_frontmatter(text, &AGENT_KEYS) {
         Err(p) => Some(p),
         Ok((pairs, _)) if !pairs.iter().any(|(k, v)| k == "description" && !v.trim().is_empty()) => Some("an agent's frontmatter has a description".into()),
-        Ok(_) => None,
+        Ok((pairs, _)) => name_problem(&pairs),
     }
 }
 
@@ -534,6 +547,10 @@ fn plugin_files(env: &Env, fleet: &str) -> Vec<(String, Vec<u8>)> {
             let n = e.file_name().to_string_lossy().into_owned();
             if n.contains(".archived") {
                 continue; // (taken out with `harness rm`)
+            }
+            if !crate::os::windows_safe_name(&n) {
+                ok = false; // (the plugin is the same tree on every machine)
+                continue;
             }
             match read_plain(&h, &e.path()) {
                 Some(b) if !n.starts_with('.') && n == "SKILL.md" => match rewritten(&String::from_utf8_lossy(&b), &SKILL_KEYS) {
@@ -631,7 +648,9 @@ pub fn issues(env: &Env, fleet: &str) -> Vec<Issue> {
             let p = e.path();
             let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
             let rel = p.strip_prefix(&h).unwrap_or(&p).display().to_string();
-            if m.file_type().is_symlink() {
+            if !crate::os::windows_safe_name(&e.file_name().to_string_lossy()) {
+                warn(format!("{rel}: a name Windows cannot hold (a `:`, one of <>\"|?*, a final dot or space, or a device name such as nul; left out)"));
+            } else if m.file_type().is_symlink() {
                 warn(format!("{rel} is a link: a harness holds no links (left out)"));
             } else if m.is_dir() {
                 stack.push(p);
@@ -687,7 +706,7 @@ fn take(p: &Path) -> Result<String, String> {
 /// (its files, flat). `place` is where settings go (`settings_rel`).
 pub fn item_files(kind: Kind, name: &str, src: &Path, place: Option<PathBuf>) -> Result<Vec<(PathBuf, String)>, String> {
     if !valid_name(name) {
-        return Err(format!("{name:?}: a name is 1 to 64 of A-Z a-z 0-9 _ -"));
+        return Err(format!("{name:?}: a name is 1 to 64 of A-Z a-z 0-9 _ -, never a Windows device name (con, nul, com1, ...)"));
     }
     match kind {
         Kind::Rule => {
@@ -713,6 +732,9 @@ pub fn item_files(kind: Kind, name: &str, src: &Path, place: Option<PathBuf>) ->
                 let n = e.file_name().to_string_lossy().into_owned();
                 if n.starts_with('.') {
                     return Err(format!("{}: a harness skill holds no hidden files", e.path().display()));
+                }
+                if !crate::os::windows_safe_name(&n) {
+                    return Err(format!("{}: a name Windows cannot hold (a `:`, one of <>\"|?*, a final dot or space, or a device name such as nul)", e.path().display()));
                 }
                 let t = take(&e.path())?;
                 if let Some(pr) = if n == "SKILL.md" { skill_problem(&t) } else { skill_file_problem(&t) } {
@@ -820,6 +842,17 @@ mod tests {
     }
 
     #[test]
+    fn a_harness_name_is_never_namespaced_or_a_windows_device() {
+        for ok in ["reviewer", "kb-ingest", "Deploy_2", "console", "com10"] {
+            assert!(valid_name(ok), "{ok}");
+        }
+        for bad in ["", "nimitz:kb-ingest", "fleet-home:reviewer", "a/b", "a.md", "nul", "CON", "Aux", "com1", "lpt9", &"x".repeat(65)] {
+            assert!(!valid_name(bad), "{bad:?}");
+        }
+        assert!(item_files(Kind::Agent, "nul", Path::new("/nonexistent"), None).unwrap_err().contains("Windows device"));
+    }
+
+    #[test]
     fn agents_and_skills_become_a_plugin_of_what_a_harness_may_give() {
         let (td, env) = test_env();
         make_fleet(&env);
@@ -841,6 +874,45 @@ mod tests {
         for s in ["hooked", "runner", "tools", "indent", "quoted", "spaced", "flow", "fence"] {
             assert!(!p.join("skills").join(s).exists(), "{s} left out");
             assert!(issues(&env, "MAIN").iter().any(|i| i.message.starts_with(&format!("skill {s}:"))), "{s}");
+        }
+        // every name in the plugin tree is one Windows takes: no `:` (a
+        // stream), no device name; a namespaced or device name is left out
+        put(&env, "agents/nul.md", "---\nname: nul\ndescription: d\n---\nx\n");
+        put(&env, "agents/colon.md", "---\nname: fleet-main:colon\ndescription: d\n---\nx\n");
+        put(&env, "skills/aux/SKILL.md", "---\nname: aux\ndescription: d\n---\nx\n");
+        put(&env, "skills/namespaced/SKILL.md", "---\nname: nimitz:kb-ingest\ndescription: d\n---\nx\n");
+        #[cfg(unix)]
+        {
+            put(&env, "agents/a:b.md", "---\nname: ab\ndescription: d\n---\nx\n");
+            put(&env, "skills/streamed/SKILL.md", "---\nname: streamed\ndescription: d\n---\nx\n");
+            put(&env, "skills/streamed/notes.md:x", "n");
+            put(&env, "skills/devices/SKILL.md", "---\nname: devices\ndescription: d\n---\nx\n");
+            put(&env, "skills/devices/con.md", "n");
+        }
+        let p = plugin(&env, "MAIN").unwrap();
+        let mut stack = vec![p.clone()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).unwrap().flatten() {
+                assert!(crate::os::windows_safe_name(&e.file_name().to_string_lossy()), "{}", e.path().display());
+                if e.path().is_dir() {
+                    stack.push(e.path());
+                }
+            }
+        }
+        for gone in ["agents/nul.md", "agents/colon.md", "agents/a:b.md", "skills/aux", "skills/namespaced", "skills/streamed", "skills/devices"] {
+            assert!(!p.join(gone).exists(), "{gone} left out");
+        }
+        let msgs: Vec<String> = issues(&env, "MAIN").into_iter().map(|i| i.message).collect();
+        for want in ["agents/nul.md: a name Windows cannot hold", "agent colon: name: \"fleet-main:colon\" is no bare name", "skill namespaced: name: \"nimitz:kb-ingest\"", "skills/aux: a name Windows"] {
+            assert!(msgs.iter().any(|m| m.contains(want)), "{want}: {msgs:?}");
+        }
+        #[cfg(unix)]
+        for want in ["agents/a:b.md: a name Windows", "skills/streamed/notes.md:x: a name Windows", "skills/devices/con.md: a name Windows"] {
+            assert!(msgs.iter().any(|m| m.contains(want)), "{want}: {msgs:?}");
+        }
+        for rel in ["agents/nul.md", "agents/colon.md", "skills/aux", "skills/namespaced", "skills/streamed", "skills/devices", "agents/a:b.md"] {
+            let at = dir(&env, "MAIN").join(rel);
+            let _ = std::fs::remove_file(&at).or_else(|_| std::fs::remove_dir_all(&at));
         }
         let made = std::fs::metadata(p.join(".nimitz-stamp")).unwrap().modified().unwrap();
         assert_eq!(plugin(&env, "MAIN").unwrap(), p);

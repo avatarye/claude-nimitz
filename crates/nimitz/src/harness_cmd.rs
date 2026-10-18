@@ -86,7 +86,7 @@ pub fn harness(ctx: &Ctx) -> Result<i32, String> {
                 _ => {
                     let what = ctx.args.need(2, "the name")?;
                     if !harness::valid_name(what) {
-                        return Err(format!("{what:?}: a name is 1 to 64 of A-Z a-z 0-9 _ -"));
+                        return Err(format!("{what:?}: a name is 1 to 64 of A-Z a-z 0-9 _ -, never a Windows device name (con, nul, com1, ...)"));
                     }
                     let rel = match kind {
                         Kind::Skill => Path::new("skills").join(what),
