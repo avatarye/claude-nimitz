@@ -348,6 +348,20 @@ fn name_status_and_age_are_capped_and_detail_fills_the_row() {
     }
 }
 
+/// Below the columns' minimums (33 columns) a row is cut at the width: no
+/// line is ever wider than the list.
+#[test]
+fn rows_never_overflow_a_narrow_list() {
+    use unicode_width::UnicodeWidthStr;
+    let t = demo();
+    for w in [12u16, 16, 20, 26, 32, 33] {
+        for (l, _) in admiralty::frames::frame_lines(&t.app.rows, w, usize::MAX, t.app.icons) {
+            let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+            assert!(text.width() <= w as usize, "{w}: {} wide: {text}", text.width());
+        }
+    }
+}
+
 #[test]
 fn several_fleets_in_config_order_and_an_elsewhere_fleet_is_folded() {
     let mut t = demo();
@@ -1480,6 +1494,8 @@ fn crew_and_task_rows_name_who_and_say_what_in_member_glyphs() {
     assert_eq!(cells(admiral.children.iter().find(|n| n.id == "C:MAIN:tm-scribe").unwrap()), ("minutes-scribe".into(), g(Work::Idle), "Take the minutes of the fleet review".into()));
     let c = nimitz_core::Crew { failed: true, running: true, ..crew_of("x", None, "x", true, 1.0) };
     assert_eq!(crew_work(&c), Work::Failed, "an API error is the last word");
+    let untyped = nimitz_core::Crew { agent_type: Some(String::new()), ..crew_of("y", None, "look around", false, 1.0) };
+    assert_eq!(admiralty::view::crew_name(&untyped), "look around", "an empty type: the label");
 }
 
 /// The fold's state is kept per member in the saved UI state.

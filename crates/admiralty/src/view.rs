@@ -452,9 +452,10 @@ fn crew_given_name(c: &Crew) -> Option<&str> {
     Some(c.label.as_str()).filter(|l| !l.is_empty() && Some(*l) != c.description.as_deref() && *l != c.agent_id)
 }
 
-/// A crew row's NAME: its own name, else its agent type, else its label.
+/// A crew row's NAME: its own name, else its agent type, else (no type, or
+/// an empty one) its label.
 pub fn crew_name(c: &Crew) -> String {
-    crew_given_name(c).or(c.agent_type.as_deref().map(short_type)).unwrap_or(&c.label).to_string()
+    crew_given_name(c).or(c.agent_type.as_deref().map(short_type).filter(|t| !t.is_empty())).unwrap_or(&c.label).to_string()
 }
 
 fn crew_node(parent: &str, c: &Crew, kids: &HashMap<String, Vec<&Crew>>, now: f64, icons: &Icons, depth: usize) -> Node {

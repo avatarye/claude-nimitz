@@ -270,6 +270,11 @@ fn row_spans_anim(r: &Row, w: &[u16; 4], inner: usize, gap: usize, icons: &Icons
     if dw < room {
         out.push(Span::raw(" ".repeat(room - dw)));
     }
+    // below the columns' minimums (33 columns) NAME, STATUS and AGE alone are
+    // wider than the row: cut it, never past the box's border
+    if used > inner {
+        return truncate_spans(out, inner);
+    }
     out
 }
 
@@ -330,6 +335,10 @@ fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: boo
     }
     right.push(fill(pad_right));
     let room = width.saturating_sub(2);
+    // a band too narrow for its counts cuts them too: never past its corner
+    if spans_width(&right) > room {
+        right = truncate_spans(right, room);
+    }
     let right_w = spans_width(&right);
     let left = truncate_spans(left, room.saturating_sub(right_w + 1));
     let used = spans_width(&left);
