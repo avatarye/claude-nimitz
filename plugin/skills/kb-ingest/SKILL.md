@@ -1,6 +1,6 @@
 ---
 name: kb-ingest
-description: kb-scribe's procedure: ingest one note into the fleet knowledge base, unattended, ending in one nimitz kb commit. Loaded by the kb-scribe subagent; not for direct use.
+description: Loaded by nimitz:kb-scribe; to take a note, run that agent; not for direct use. kb-scribe's procedure: ingest one note into the fleet knowledge base, unattended, ending in one nimitz kb commit.
 user-invocable: false
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: kb-query
-description: kb-ref's procedure: answer one question from the fleet knowledge base at one commit, read-only, with citations, gaps and confidence. Loaded by the kb-ref subagent; not for direct use.
+description: Loaded by nimitz:kb-ref; to ask, run that agent; not for direct use. kb-ref's procedure: answer one question from the fleet knowledge base at one commit, read-only, with citations, gaps and confidence.
 user-invocable: false
 ---
 
