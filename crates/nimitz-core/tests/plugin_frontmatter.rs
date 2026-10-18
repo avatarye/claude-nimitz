@@ -95,3 +95,33 @@ fn the_frontmatter_nimitz_writes_is_strict_yaml() {
         assert_eq!(y["name"].as_str(), Some("x"));
     }
 }
+
+/// Every file and folder name in the plugin is one Windows takes (no `:`,
+/// which opens a stream, no device name), and every frontmatter `name` is
+/// bare: Claude Code adds the plugin's `nimitz:` itself.
+#[test]
+fn every_plugin_name_is_windows_safe_and_bare() {
+    let mut stack = vec![plugin()];
+    let mut bad = vec![];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            if !nimitz_core::os::windows_safe_name(&e.file_name().to_string_lossy()) {
+                bad.push(e.path().display().to_string());
+            }
+            if e.path().is_dir() {
+                stack.push(e.path());
+            }
+        }
+    }
+    let mut files = vec![];
+    markdown(&plugin(), &mut files);
+    for f in &files {
+        let Some(b) = block(&std::fs::read_to_string(f).unwrap()) else { continue };
+        let Ok(y) = strict(&b) else { continue };
+        let name = y["name"].as_str().unwrap_or_default();
+        if !nimitz_core::harness::valid_name(name) {
+            bad.push(format!("{}: name {name:?}", f.display()));
+        }
+    }
+    assert!(bad.is_empty(), "names Windows or Claude Code would misread:\n{}", bad.join("\n"));
+}
