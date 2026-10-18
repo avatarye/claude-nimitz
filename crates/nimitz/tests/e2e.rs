@@ -2350,3 +2350,71 @@ fn e2e_100_the_kb_agents_come_with_their_skills() {
     }
     w.finish();
 }
+
+/// 101. The preload after `/reload-plugins` (#7's Windows report): the ship
+/// starts on plugin 0.0.1 (old markers), the plugin is rewritten as 0.0.2
+/// (new markers), the user types `/reload-plugins` in the attached session,
+/// then the ship runs both KB agents: each has the new skill text as a meta
+/// message, never the old one, and quotes the new marker.
+#[test]
+fn e2e_101_the_kb_agents_come_with_their_skills_after_a_reload() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(101);
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+    let plug = w.base.join("plugin");
+    let tag = format!("{}{}", std::process::id(), nimitz_core::evidence::now() as u64);
+    let marker = |p: &str, gen: &str| format!("{p}{gen}{tag}");
+    let put = |ver: &str, gen: &str| {
+        for rel in ["agents/kb-scribe.md", "agents/kb-ref.md"] {
+            write(&plug.join(rel), &std::fs::read_to_string(repo.join(rel)).unwrap());
+        }
+        for (skill, p) in [("kb-ingest", "KBI"), ("kb-query", "KBQ")] {
+            let rel = format!("skills/{skill}/SKILL.md");
+            write(&plug.join(&rel), &format!("{}\nMarker: {}\n", std::fs::read_to_string(repo.join(&rel)).unwrap(), marker(p, gen)));
+        }
+        write(&plug.join(".claude-plugin/plugin.json"), &format!(r#"{{"name": "nimitz", "version": "{ver}", "description": "nimitz e2e: the KB agents"}}"#));
+    };
+    put("0.0.1", "OLD");
+    executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --model '{}' --plugin-dir '{}' \"$@\"\n", w.native, cheap_model(), plug.display()));
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let m = w.start_ship_idle();
+    let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
+    put("0.0.2", "NEW");
+    w.attach(&w.ship_dir(), &job, &format!("[{}.SQ]-SHIP", w.fleet));
+    w.type_line("/reload-plugins");
+    let reloaded = w.wait(60, || std::fs::read_to_string(w.transcript(&w.ship_dir(), &sid)?).ok().filter(|t| t.contains("Reloaded: ")));
+    assert!(reloaded.is_some(), "/reload-plugins did not report a reload");
+    let ask = "This is a test of how you were set up: it is not a note and not a question for the knowledge base. Use no tool at all: run nothing and read no file. \
+               A skill was loaded with you, and its text ends with a line that starts with `Marker: `. Reply with that line exactly as it is, and nothing else. \
+               If no such skill text is in your context, reply NO-SKILL.";
+    w.type_line(&format!("This is an end-to-end test. Use the Agent tool twice, in the foreground, one after the other, and ask nothing: first subagent_type nimitz:kb-scribe, then subagent_type nimitz:kb-ref, each with exactly this prompt: {ask} Use no other tool. Then reply with what each one returned."));
+    let lines = |t: &str| -> Vec<Value> { t.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect() };
+    let content = |v: &Value| -> Vec<Value> { v["message"]["content"].as_array().cloned().unwrap_or_default() };
+    let subs = w
+        .wait(400, || {
+            let dir = w.transcript(&w.ship_dir(), &sid)?.with_extension("").join("subagents");
+            let subs: Vec<String> = std::fs::read_dir(&dir).ok()?.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "jsonl")).filter_map(|e| std::fs::read_to_string(e.path()).ok()).collect();
+            let answered = subs.iter().filter(|t| lines(t).iter().any(|v| v["type"] == "assistant" && content(v).iter().any(|c| c["text"].is_string()))).count();
+            (answered >= 2 && w.member(&w.ship())?["status"] == "Idle").then_some(subs)
+        })
+        .expect("both agents answered and the ship is idle");
+    w.detach();
+    assert!(subs.iter().all(|t| !t.contains(&marker("KBI", "OLD")) && !t.contains(&marker("KBQ", "OLD"))), "an agent preloaded the skill text from before the reload");
+    for (skill, p) in [("kb-ingest", "KBI"), ("kb-query", "KBQ")] {
+        let new = marker(p, "NEW");
+        let Some(t) = subs.iter().find(|t| t.contains(new.as_str())) else {
+            panic!("after the reload no subagent saw {skill}'s marker: its skill was not preloaded\n{}", subs.iter().map(|t| t.chars().take(3000).collect::<String>()).collect::<Vec<_>>().join("\n---\n"));
+        };
+        let vs = lines(t);
+        let preloaded = vs.iter().any(|v| v["type"] == "user" && v["isMeta"] == true && v["message"].to_string().contains(&format!("Marker: {new}")));
+        let quoted = vs.iter().any(|v| v["type"] == "assistant" && content(v).iter().any(|c| c["text"].as_str().is_some_and(|x| x.contains(new.as_str()))));
+        let tools: Vec<String> = vs.iter().flat_map(|v| content(v)).filter(|c| c["type"] == "tool_use").map(|c| format!("{} {}", c["name"], c["input"])).collect();
+        println!("[OK] e2e #101: {skill} after the reload: preloaded {preloaded}, quoted {quoted}, tools {tools:?}");
+        assert!(preloaded, "{skill}'s text is not a meta message in the agent's transcript");
+        assert!(quoted, "the agent did not quote {skill}'s marker");
+        assert!(!tools.iter().any(|x| x.contains("SKILL.md")), "the agent read the skill's file: {tools:?}");
+    }
+    w.finish();
+}

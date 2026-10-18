@@ -6,11 +6,12 @@
 
 - **kb-scribe and kb-ref may run without their skill (#7).** Their `skills:`
   named `kb-ingest` and `kb-query` bare; they now name `nimitz:kb-ingest` and
-  `nimitz:kb-query`, the exact names Claude Code resolves first. (On Linux
-  the bare names resolved too; on Windows the preload was missing, so the
-  exact name is the hardening; e2e #100 proves the preload on real Claude
-  Code: each agent quotes a marker from its preloaded skill without reading
-  it.)
+  `nimitz:kb-query`, the exact names Claude Code resolves first, before any
+  fallback. On Linux the bare names resolved too, also after a
+  `/reload-plugins`; the Windows report's missing preload is not reproduced
+  yet, so the exact name is a hardening. e2e #100 proves the preload on real
+  Claude Code (each agent quotes a marker from its preloaded skill without
+  reading it), and e2e #101 proves it after a `/reload-plugins`.
 - The two skills say who loads them: "Loaded by nimitz:kb-scribe; to take a
   note, run that agent; not for direct use" (and kb-ref's), so a member does
   not try to call them. Claude Code cannot hide a skill from the session and
@@ -20,8 +21,7 @@
 
 - Install both crates and update the plugin (`claude plugin marketplace
   update claude-nimitz && claude plugin update nimitz@claude-nimitz`), then
-  restart the sessions that use the KB agents (a `/reload-plugins` may not be
-  enough; see #7).
+  `/reload-plugins` in each live session. No format or rules change.
 
 ## 0.7.9 (2026-10-18)
 
