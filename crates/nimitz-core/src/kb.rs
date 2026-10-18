@@ -130,6 +130,10 @@ pub fn off_limits(rel: &str) -> Option<String> {
     if rel.split('/').any(|p| p.ends_with('.') || p.ends_with(' ') || p.contains(':') || p.contains('~') || p.chars().any(|c| c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{00ad}' | '\u{034f}' | '\u{180e}' | '\u{fe00}'..='\u{fe0f}' | '\u{1160}' | '\u{3164}' | '\u{e0000}'..='\u{e007f}'))) {
         return Some("a name that another file system reads as another (a trailing dot or space, `:`, `~`, an invisible character)".into());
     }
+    // a name a Windows clone cannot check out: <>"|?*\ or a device (nul.md, aux/)
+    if rel.split('/').any(|p| !p.is_empty() && !crate::os::windows_safe_name(p)) {
+        return Some("a name Windows cannot hold (one of <>\"|?*\\, or a device name: con, prn, aux, nul, com0-9, lpt0-9)".into());
+    }
     let low = rel.to_lowercase();
     if let Some(o) = OFF_LIMITS.iter().find(|o| {
         let o = o.to_lowercase();
@@ -801,10 +805,11 @@ mod tests {
         assert!(show(d, Some("beef"), "wiki/page.md").is_err(), "a branch is no commit id");
         assert_eq!(show(d, Some(&h[..8]), "wiki/page.md").unwrap(), "Alpha beta\n");
         assert!(grep(d, None, "a\nb", None).is_err());
-        for p in ["CLAUDE.md.", "wiki/CLAUDE~1.MD", "wiki/x.md:stream", "wiki/C\u{200c}LAUDE.md", "wiki/x.md "] {
+        for p in ["CLAUDE.md.", "wiki/CLAUDE~1.MD", "wiki/x.md:stream", "wiki/C\u{200c}LAUDE.md", "wiki/x.md ", "wiki/aux.md", "wiki/NUL", "raw/con/x.md", "wiki/com1.md", "wiki/a?b.md", "wiki/a*b.md", "wiki/a|b.md", "wiki/a\"b.md", "wiki/a<b>.md", "wiki/a\\b.md"] {
             assert!(off_limits(p).is_some(), "{p}");
         }
         assert!(off_limits("wiki/notes-2026.md").is_none());
+        assert!(off_limits("wiki/auxiliary.md").is_none() && off_limits("wiki/console.md").is_none() && off_limits("raw/.keep").is_none());
     }
 
     #[test]

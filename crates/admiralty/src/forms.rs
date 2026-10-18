@@ -340,7 +340,7 @@ impl Form {
             if v.trim().is_empty() {
                 Some(format!("{what} is required"))
             } else if !nimitz_core::config::valid_name(v.trim()) {
-                Some(format!("{what} must be UPPERCASE letters, digits or _"))
+                Some(format!("{what} must be UPPERCASE letters, digits or _, and no Windows device name (CON, NUL, COM1, ...)"))
             } else {
                 None
             }
@@ -349,7 +349,7 @@ impl Form {
             if nimitz_core::config::valid_label(v.trim()) {
                 None
             } else {
-                Some("a machine label is a-z 0-9 . _ -".into())
+                Some("a machine label is a-z 0-9 . _ -, and no Windows device name or final dot".into())
             }
         };
         let mut errs: BTreeMap<&'static str, String> = BTreeMap::new();

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.11 (unreleased)
+
+### Fixed
+
+- **Names Windows cannot hold are refused** wherever a name becomes a file
+  or folder: fleet, squadron and ship names, machine labels, harness agent
+  and skill names (and a skill's own files), and knowledge-base paths. One
+  check (`os::windows_safe_name`) rejects `<>:"/\|?*`, control characters, a
+  final dot or space, and the device names CON, PRN, AUX, NUL, COM0-9 and
+  LPT0-9 (also with an extension). An audit after #7 found no colon reaching
+  a Windows file name; device names did. A harness agent's or skill's
+  frontmatter `name` must be a plain name (no `plugin:` prefix); one that is
+  not is left out and reported. Unit tests walk the generated harness plugin
+  and the nimitz plugin's own tree.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). A fleet, squadron or ship named like a Windows device
+  (e.g. `NUL`, `COM1`) no longer validates; rename it. No format or rules
+  change.
+
 ## 0.7.10 (2026-10-18)
 
 ### Fixed
