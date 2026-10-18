@@ -509,6 +509,24 @@ pub fn name_on_disk(p: &Path) -> std::path::PathBuf {
     names.into_iter().find(|n| n.eq_ignore_ascii_case(&name)).map(|n| parent.join(n)).unwrap_or_else(|| p.to_path_buf())
 }
 
+/// Can `name` be one file or folder name on Windows, on every platform (a
+/// fleet's folder and a knowledge base reach Windows by sync or clone)? Not
+/// empty, `.` or `..`; none of `<>:"/\|?*` (`:` opens a stream) or a control
+/// character; no trailing dot or space (Windows drops them); and not a
+/// device name (CON, PRN, AUX, NUL, COM0-9, LPT0-9, in any case, before the
+/// first dot: `nul.md` is the device too).
+pub fn windows_safe_name(name: &str) -> bool {
+    if name.is_empty() || name == "." || name == ".." || name.ends_with(['.', ' ']) {
+        return false;
+    }
+    if name.chars().any(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')) {
+        return false;
+    }
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ').to_ascii_uppercase();
+    let numbered = |p: &str| stem.strip_prefix(p).is_some_and(|n| matches!(n, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "\u{b9}" | "\u{b2}" | "\u{b3}"));
+    !(matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT"))
+}
+
 /// `std::fs::canonicalize`, but on Windows in the plain form (`C:\x`, not
 /// `\\?\C:\x`): the form users type, other programs take, and nimitz
 /// compares paths in.
@@ -823,6 +841,16 @@ pub(crate) mod win {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn a_windows_safe_name_has_no_stream_colon_reserved_character_or_device() {
+        for ok in ["HOME", "home", "fleet-home", "kb-ingest", "F.SQ.SHIP.lock", "MAIN%2FARGOS.json", "console", "nul-x", "com10", "lpt", "aux_1", "a.b", ".hidden", "ünï"] {
+            assert!(windows_safe_name(ok), "{ok}");
+        }
+        for bad in ["", ".", "..", "nimitz:kb-ingest", "fleet-home:reviewer", "C:", "x.md:stream", "a/b", "a\\b", "a<b", "a>b", "a\"b", "a|b", "a?b", "a*b", "a\u{0}b", "a\tb", "x.", "x ", "CON", "con", "Con.md", "NUL", "nul.json", "nul.tar.gz", "AUX", "PRN", "COM1", "com9.txt", "COM0", "LPT1", "lpt9", "COM\u{b9}", "CONIN$", "conout$.log", "NUL .md"] {
+            assert!(!windows_safe_name(bad), "{bad:?}");
+        }
+    }
 
     #[test]
     fn this_process_is_alive_and_a_dead_pid_is_not() {

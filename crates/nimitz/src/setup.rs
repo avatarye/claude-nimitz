@@ -152,7 +152,7 @@ pub fn init(ctx: &Ctx) -> Result<i32, String> {
     let label = ctx.args.value("--label").map(str::to_string).unwrap_or_else(|| crate::crud::machine_label(ctx));
     let mut plan = Plan { summary: format!("init nimitz on this machine as {label}"), ..Default::default() };
     if !nimitz_core::config::valid_label(&label) {
-        plan.refusals.push(refusal("config.invalid", format!("machine label {label:?} is not [a-z0-9._-]+"), Some("nimitz init --label <label>".into()), None));
+        plan.refusals.push(refusal("config.invalid", format!("machine label {label:?} is not {}", nimitz_core::config::LABEL_RULE), Some("nimitz init --label <label>".into()), None));
     }
     // registry::load fills in a label when there is no file yet; only a saved one counts.
     let saved = ctx.env.registry_path().is_file();

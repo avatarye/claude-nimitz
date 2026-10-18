@@ -125,7 +125,7 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         plan.refusals.push(Issue { code: "config.invalid".into(), severity: Severity::Error, message: msg, fix: None, id: None })
     };
     if !valid_name(into) {
-        refuse(&mut plan, format!("target fleet name {into:?} is not [A-Z0-9_]+"));
+        refuse(&mut plan, format!("target fleet name {into:?} is not {}", config::NAME_RULE));
         return (plan, report);
     }
     let fid = Id::admiral(into);

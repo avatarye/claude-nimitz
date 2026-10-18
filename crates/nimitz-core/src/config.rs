@@ -8,15 +8,22 @@ fn issue(code: &str, severity: Severity, message: String, fix: Option<String>, i
     Issue { code: code.into(), severity, message, fix, id }
 }
 
-/// `[A-Z0-9_]+` (fleet, squadron and ship names).
+/// `[A-Z0-9_]+` (fleet, squadron and ship names), never a Windows device
+/// name (each becomes a folder or a file name: `os::windows_safe_name`).
 pub fn valid_name(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_') && crate::os::windows_safe_name(s)
 }
 
-/// Machine labels: lowercase, `[a-z0-9._-]+`.
+/// Machine labels: lowercase, `[a-z0-9._-]+`, a name Windows takes
+/// (`machines/<label>.json`: no device name, no trailing dot).
 pub fn valid_label(s: &str) -> bool {
-    !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_'))
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-' | b'_')) && crate::os::windows_safe_name(s)
 }
+
+/// What `valid_name` says, for a message.
+pub const NAME_RULE: &str = "[A-Z0-9_]+, never a Windows device name (CON, PRN, AUX, NUL, COM0-9, LPT0-9)";
+/// What `valid_label` says, for a message.
+pub const LABEL_RULE: &str = "[a-z0-9._-]+, never a Windows device name (con, nul, ...) or ending in a dot";
 
 /// Ship names that would take another role's address (`[F.SQ]-COMMODORE`).
 pub const RESERVED_SHIP_NAMES: [&str; 2] = ["COMMODORE", "ADMIRAL"];
@@ -276,7 +283,7 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
     let inv = |msg: String, id: Option<Id>| issue("config.invalid", Severity::Error, msg, None, id);
 
     if !valid_name(&c.fleet) {
-        out.push(inv(format!("fleet name {:?} is not [A-Z0-9_]+", c.fleet), Some(fid.clone())));
+        out.push(inv(format!("fleet name {:?} is not {NAME_RULE}", c.fleet), Some(fid.clone())));
     }
     if f.dir.file_name().map(|n| n.to_string_lossy().to_string()) != Some(c.fleet.to_lowercase()) {
         out.push(inv(
@@ -286,7 +293,7 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
     }
     for (label, m) in &c.machines {
         if !valid_label(label) {
-            out.push(inv(format!("machine label {label:?} is not [a-z0-9._-]+"), Some(fid.clone())));
+            out.push(inv(format!("machine label {label:?} is not {LABEL_RULE}"), Some(fid.clone())));
         }
         if m.hostname.is_empty() {
             out.push(inv(format!("machine {label:?} has an empty hostname"), Some(fid.clone())));
@@ -308,7 +315,7 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
     for (sd, sq) in &f.squadrons {
         let sqid = Id::commodore(&c.fleet, &sq.squadron);
         if !valid_name(&sq.squadron) {
-            out.push(inv(format!("squadron name {:?} is not [A-Z0-9_]+", sq.squadron), Some(sqid.clone())));
+            out.push(inv(format!("squadron name {:?} is not {NAME_RULE}", sq.squadron), Some(sqid.clone())));
         }
         if sq_names.contains(&sq.squadron.as_str()) {
             out.push(inv(format!("squadron {:?} is defined twice", sq.squadron), Some(sqid.clone())));
@@ -324,7 +331,7 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
         for (i, ship) in sq.ships.iter().enumerate() {
             let shid = Id::ship(&c.fleet, &sq.squadron, &ship.name);
             if !valid_name(&ship.name) {
-                out.push(inv(format!("ship name {:?} is not [A-Z0-9_]+", ship.name), Some(shid.clone())));
+                out.push(inv(format!("ship name {:?} is not {NAME_RULE}", ship.name), Some(shid.clone())));
             }
             if reserved_ship_name(&ship.name) {
                 out.push(inv(format!("ship name {:?} is reserved: {shid} would answer to a role's address", ship.name), Some(shid.clone())));
@@ -629,14 +636,14 @@ pub fn plan_fleet_new(env: &Env, fleet: &str, machine_label: &str) -> Plan {
     let mut plan = Plan { summary: format!("create fleet {fleet}"), ..Default::default() };
     let id = Id::admiral(fleet);
     if !valid_name(fleet) {
-        refuse(&mut plan, "config.invalid", format!("fleet name {fleet:?} is not [A-Z0-9_]+"), None, Some(id.clone()));
+        refuse(&mut plan, "config.invalid", format!("fleet name {fleet:?} is not {NAME_RULE}"), None, Some(id.clone()));
     }
     // the Herdr workspace of the hub is never a fleet's (restore-scenarios.md R-35)
     if fleet == crate::restore::ADMIRALTY_WORKSPACE {
         refuse(&mut plan, "config.invalid", format!("fleet name {fleet:?} is reserved: it is the Admiralty's own workspace"), None, Some(id.clone()));
     }
     if !valid_label(machine_label) {
-        refuse(&mut plan, "config.invalid", format!("machine label {machine_label:?} is not [a-z0-9._-]+"), None, Some(id.clone()));
+        refuse(&mut plan, "config.invalid", format!("machine label {machine_label:?} is not {LABEL_RULE}"), None, Some(id.clone()));
     }
     let dir = env.fleet_dir(fleet);
     if dir.join("fleet.toml").is_file() {
@@ -670,7 +677,7 @@ pub fn plan_squadron_new(env: &Env, fleet: &str, sq: &str, brief: &str, mode: Op
     let mut plan = Plan { summary: format!("create squadron {fleet}/{sq}"), ..Default::default() };
     let id = Id::commodore(fleet, sq);
     if !valid_name(sq) {
-        refuse(&mut plan, "config.invalid", format!("squadron name {sq:?} is not [A-Z0-9_]+"), None, Some(id.clone()));
+        refuse(&mut plan, "config.invalid", format!("squadron name {sq:?} is not {NAME_RULE}"), None, Some(id.clone()));
         return plan;
     }
     // the squadron's default permission mode for its ships (`--mode`)
@@ -822,7 +829,7 @@ pub fn plan_ship_new(env: &Env, fleet: &str, sq: &str, ship: ShipDef) -> Plan {
     let mut plan = Plan { summary: format!("add ship {fleet}/{sq}/{}", ship.name), ..Default::default() };
     let id = Id::ship(fleet, sq, &ship.name);
     if !valid_name(&ship.name) {
-        refuse(&mut plan, "config.invalid", format!("ship name {:?} is not [A-Z0-9_]+", ship.name), None, Some(id.clone()));
+        refuse(&mut plan, "config.invalid", format!("ship name {:?} is not {NAME_RULE}", ship.name), None, Some(id.clone()));
         return plan;
     }
     if reserved_ship_name(&ship.name) {
@@ -978,7 +985,7 @@ pub fn plan_machine_add_on(env: &Env, fleet: &str, label: &str, hostname: Option
     let mut plan = Plan { summary: format!("add machine {label} to {fleet}"), ..Default::default() };
     let fid = Id::admiral(fleet);
     if !valid_label(label) {
-        refuse(&mut plan, "config.invalid", format!("machine label {label:?} is not [a-z0-9._-]+"), None, Some(fid.clone()));
+        refuse(&mut plan, "config.invalid", format!("machine label {label:?} is not {LABEL_RULE}"), None, Some(fid.clone()));
         return plan;
     }
     let f = match load_fleet_for_write(env, fleet) {
@@ -1644,6 +1651,33 @@ pub(crate) mod tests {
             assert!(validate(&env, &f).iter().any(|i| i.message.contains("reserved")), "{name}");
         }
         assert!(!reserved_ship_name("COMMODORES"));
+    }
+
+    /// A fleet, squadron or ship name is a folder (`<home>/<fleet>`,
+    /// `squadrons/<sq>`, `ships/<sq>/<ship>`) and part of state file names,
+    /// and a label is `machines/<label>.json`: none may be a Windows device.
+    #[test]
+    fn windows_device_names_are_refused_as_names_and_labels() {
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        for name in ["CON", "PRN", "AUX", "NUL", "COM1", "COM9", "LPT1", "LPT0"] {
+            assert!(!valid_name(name), "{name}");
+            assert!(!plan_fleet_new(&env, name, "test-mac").ok(), "{name}");
+            assert!(!plan_squadron_new(&env, "MAIN", name, "brief", None).ok(), "{name}");
+            let ship = ShipDef { name: name.into(), prompt: Some("p".into()), dirs: [("test-mac".to_string(), "managed".to_string())].into(), ..Default::default() };
+            assert!(!plan_ship_new(&env, "MAIN", "ARGOS", ship.clone()).ok(), "{name}");
+            let mut f = load_fleet(&env, "MAIN").unwrap();
+            f.squadrons[0].1.ships.push(ship);
+            assert!(validate(&env, &f).iter().any(|i| i.message.contains("Windows device")), "{name}");
+            let label = name.to_lowercase();
+            assert!(!valid_label(&label) && !valid_label(&format!("{label}.lan")), "{label}");
+            assert!(!plan_machine_add_on(&env, "MAIN", &label, Some("h"), vec![]).ok(), "{label}");
+        }
+        assert!(!valid_label("box.") && !valid_label("nimitz:box"));
+        for ok in ["CONSOLE", "COM10", "NULL", "AUX_1", "LPT"] {
+            assert!(valid_name(ok), "{ok}");
+        }
+        assert!(valid_label("console") && valid_label("home-windows") && valid_label("box.lan"));
     }
 
     #[test]
