@@ -4,7 +4,7 @@ members = ["crates/nimitz-core", "crates/nimitz-mux", "crates/nimitz", "crates/a
 
 [workspace.package]
 edition = "2021"
-version = "0.7.9"
+version = "0.7.10"
 publish = false
 
 [workspace.dependencies]
