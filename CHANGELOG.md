@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.10 (unreleased)
+
+### Fixed
+
+- **kb-scribe and kb-ref ran without their skill on Windows (#7).** Both
+  skills' frontmatter was invalid YAML (an unquoted `: ` in `description`).
+  Claude Code retries a failed frontmatter by quoting such values, but that
+  retry works only on LF lines: on a Windows checkout with CRLF line ends
+  the skills lost their name and description and no agent could preload
+  them ("Skill … specified in frontmatter was not found"). Both
+  descriptions are now valid YAML; a unit test strictly parses every plugin
+  frontmatter, LF and CRLF; e2e #100 writes the plugin with CRLF and proves
+  each agent's preload on real Claude Code (it quotes a marker from its
+  skill, makes no tool call, and Claude Code logs no frontmatter error), and
+  #101 proves it after a `/reload-plugins`. `.gitattributes` keeps
+  `plugin/**/*.md` LF. The agents also name their skills
+  `nimitz:kb-ingest` and `nimitz:kb-query` (a hardening; the bare names
+  resolve too).
+- The two skills say who loads them: "Loaded by nimitz:kb-scribe; to take a
+  note, run that agent; not for direct use" (and kb-ref's), so a member does
+  not try to call them. Claude Code cannot hide a skill from the session and
+  still preload it into an agent.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`), then
+  `/reload-plugins` in each live session. No format or rules change.
+- A Windows checkout used as the plugin's directory marketplace keeps its
+  CRLF copies until `git add --renormalize .` (or a fresh checkout); the
+  quoting fix works either way.
+
 ## 0.7.9 (2026-10-18)
 
 ### Changed
