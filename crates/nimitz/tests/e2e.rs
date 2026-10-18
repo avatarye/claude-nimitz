@@ -2284,11 +2284,13 @@ fn e2e_99_a_ship_restarts_itself_through_the_detached_helper() {
     w.finish();
 }
 
-/// 100. The KB agents' skills are preloaded (#7): each SKILL.md under test
-/// ends with its own marker line; a ship hands each agent a prompt that asks
-/// for the marker with no tool call. The skill's text (with the marker) is a
-/// meta message in the subagent's own transcript, the agent quotes it, and
-/// neither the agent nor the ship read the file or ran the skill.
+/// 100. The KB agents' skills are preloaded (#7): each file under test is
+/// written with CRLF line ends, as a Windows checkout has them, and each
+/// SKILL.md ends with its own marker line; a ship hands each agent a prompt
+/// that asks for the marker with no tool call. The skill's text (with the
+/// marker) is a meta message in the subagent's own transcript, the agent
+/// quotes it with no tool call, the ship never ran the skill, and Claude
+/// Code's debug log has both preloads and no frontmatter that failed to parse.
 #[test]
 fn e2e_100_the_kb_agents_come_with_their_skills() {
     if !gated() {
@@ -2299,15 +2301,19 @@ fn e2e_100_the_kb_agents_come_with_their_skills() {
     let plug = w.base.join("plugin");
     let tag = format!("{}{}", std::process::id(), nimitz_core::evidence::now() as u64);
     let markers = [("kb-ingest", format!("KBI{tag}")), ("kb-query", format!("KBQ{tag}"))];
+    // CRLF, as a Windows checkout with core.autocrlf has them: Claude Code's
+    // fallback for frontmatter that is not strict YAML works on LF lines only
+    let crlf = |t: String| t.replace("\r\n", "\n").replace('\n', "\r\n");
     for rel in ["agents/kb-scribe.md", "agents/kb-ref.md"] {
-        write(&plug.join(rel), &std::fs::read_to_string(repo.join(rel)).unwrap());
+        write(&plug.join(rel), &crlf(std::fs::read_to_string(repo.join(rel)).unwrap()));
     }
     for (skill, marker) in &markers {
         let rel = format!("skills/{skill}/SKILL.md");
-        write(&plug.join(&rel), &format!("{}\nMarker: {marker}\n", std::fs::read_to_string(repo.join(&rel)).unwrap()));
+        write(&plug.join(&rel), &crlf(format!("{}\nMarker: {marker}\n", std::fs::read_to_string(repo.join(&rel)).unwrap())));
     }
     write(&plug.join(".claude-plugin/plugin.json"), r#"{"name": "nimitz", "version": "0.0.0-e2e", "description": "nimitz e2e: the KB agents"}"#);
-    executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --model '{}' --plugin-dir '{}' \"$@\"\n", w.native, cheap_model(), plug.display()));
+    let debug = w.base.join("claude-debug.log");
+    executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --model '{}' --plugin-dir '{}' --debug-file '{}' \"$@\"\n", w.native, cheap_model(), plug.display(), debug.display()));
     let ask = "This is a test of how you were set up: it is not a note and not a question for the knowledge base. Use no tool at all: run nothing and read no file. \
                A skill was loaded with you, and its text ends with a line that starts with `Marker: `. Reply with that line exactly as it is, and nothing else. \
                If no such skill text is in your context, reply NO-SKILL.";
@@ -2343,10 +2349,19 @@ fn e2e_100_the_kb_agents_come_with_their_skills() {
         println!("[OK] e2e #100: {skill}: preloaded {preloaded}, quoted {quoted}, tools {tools:?}");
         assert!(preloaded, "{skill}'s text is not a meta message in the agent's transcript");
         assert!(quoted, "the agent did not quote {skill}'s marker");
-        assert!(!tools.iter().any(|x| x.contains("SKILL.md")), "the agent read the skill's file: {tools:?}");
+        assert!(tools.is_empty(), "the agent made tool calls: {tools:?}");
         // the ship never had the marker to pass on: no Skill call, no marker in its own prompts
         let ship_calls: Vec<String> = lines(&ship_tx).iter().flat_map(|v| content(v)).filter(|c| c["type"] == "tool_use").map(|c| format!("{} {}", c["name"], c["input"])).collect();
         assert!(!ship_calls.iter().any(|x| x.contains(marker.as_str()) || x.starts_with("\"Skill\"") || x.contains("SKILL.md")), "the ship handed the marker over: {ship_calls:?}");
+    }
+    // Claude Code's own log: both skills preloaded by their plugin names, and
+    // no frontmatter of the plugin under test failed to parse (#7)
+    let log = std::fs::read_to_string(&debug).unwrap_or_default();
+    let plug_s = plug.display().to_string();
+    let failed: Vec<&str> = log.lines().filter(|l| l.contains("Failed to parse YAML frontmatter") && l.contains(plug_s.as_str())).collect();
+    assert!(failed.is_empty(), "a frontmatter of the plugin did not parse:\n{}", failed.join("\n"));
+    for skill in ["nimitz:kb-ingest", "nimitz:kb-query"] {
+        assert!(log.contains(&format!("Preloaded skill '{skill}'")), "the debug log ({}) has no preload of {skill}", debug.display());
     }
     w.finish();
 }
@@ -2377,7 +2392,8 @@ fn e2e_101_the_kb_agents_come_with_their_skills_after_a_reload() {
         write(&plug.join(".claude-plugin/plugin.json"), &format!(r#"{{"name": "nimitz", "version": "{ver}", "description": "nimitz e2e: the KB agents"}}"#));
     };
     put("0.0.1", "OLD");
-    executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --model '{}' --plugin-dir '{}' \"$@\"\n", w.native, cheap_model(), plug.display()));
+    let debug = w.base.join("claude-debug.log");
+    executable(&w.base.join("bin").join("claude-cheap"), &format!("#!/bin/sh\nexec '{}' --model '{}' --plugin-dir '{}' --debug-file '{}' \"$@\"\n", w.native, cheap_model(), plug.display(), debug.display()));
     w.fleet_with_ship(OK_PROMPT, "default");
     let m = w.start_ship_idle();
     let (job, sid) = (m["session"]["short_id"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string());
@@ -2414,7 +2430,16 @@ fn e2e_101_the_kb_agents_come_with_their_skills_after_a_reload() {
         println!("[OK] e2e #101: {skill} after the reload: preloaded {preloaded}, quoted {quoted}, tools {tools:?}");
         assert!(preloaded, "{skill}'s text is not a meta message in the agent's transcript");
         assert!(quoted, "the agent did not quote {skill}'s marker");
-        assert!(!tools.iter().any(|x| x.contains("SKILL.md")), "the agent read the skill's file: {tools:?}");
+        assert!(tools.is_empty(), "the agent made tool calls: {tools:?}");
+    }
+    // Claude Code's own log: both skills preloaded by their plugin names, and
+    // no frontmatter of the plugin under test failed to parse (#7)
+    let log = std::fs::read_to_string(&debug).unwrap_or_default();
+    let plug_s = plug.display().to_string();
+    let failed: Vec<&str> = log.lines().filter(|l| l.contains("Failed to parse YAML frontmatter") && l.contains(plug_s.as_str())).collect();
+    assert!(failed.is_empty(), "a frontmatter of the plugin did not parse:\n{}", failed.join("\n"));
+    for skill in ["nimitz:kb-ingest", "nimitz:kb-query"] {
+        assert!(log.contains(&format!("Preloaded skill '{skill}'")), "the debug log ({}) has no preload of {skill}", debug.display());
     }
     w.finish();
 }
