@@ -32,7 +32,9 @@
   could lose) (#9); `check` warns (`prompt.file`) about a prompt file
   outside the squadron folder or missing.
 - **A member's `signal --type`** types into the target's pane, led by
-  `[nimitz signal from <id>]`; the inbox stays the default.
+  `[nimitz signal from <id>]`; the inbox stays the default. A target waiting
+  on the user (a question or a permission prompt) is never typed into: the
+  text goes to its inbox.
 - **README:** "Most used" is the human's set (muster, restart, open, status,
   stop); the rest is under "Agents run these".
 
@@ -42,8 +44,10 @@
   update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
   `/reload-plugins`). Live members get rules v11 at their next prompt. A
   squadron given an `--effort` is stamped `format = 2`, `min_nimitz =
-  "0.7.12"`: update nimitz on every machine before setting one (older
-  versions refuse that squadron, never damage it).
+  "0.7.12"`: update nimitz on every machine before setting one. An older
+  nimitz refuses that squadron and every config change to its fleet (the
+  fleet's other squadrons still load and launch there) and never damages
+  it; the plan warns (`format.raise`) when it names other machines.
 
 ## 0.7.11 (2026-10-18)
 
