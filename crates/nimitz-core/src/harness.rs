@@ -16,7 +16,7 @@
 //!
 //! A harness is the admiral's to change, so what it may hold is narrow and
 //! held at every launch, not only by `add` (a file put there by hand is read
-//! the same way): settings are an allowlist (`model`, `outputStyle`,
+//! the same way): settings are an allowlist (`model`, `outputStyle`, `effortLevel`,
 //! `permissions.allow|ask|deny`, `env` names that steer no program or
 //! credential; a deny or ask that would stop `nimitz` is dropped), a skill
 //! never registers hooks nor runs a command on its own (`hooks:`,
@@ -39,7 +39,12 @@ pub const RULES_SOFT: usize = 6_000;
 
 /// The settings keys a harness may set (anything else is the user's own
 /// Claude Code settings).
-pub const ALLOWED: [&str; 4] = ["model", "outputStyle", "permissions", "env"];
+pub const ALLOWED: [&str; 5] = ["model", "outputStyle", "effortLevel", "permissions", "env"];
+
+/// The `effortLevel` a settings file takes (Claude Code 2.1.302's schema:
+/// `max` is per session only, `--effort max`, and a settings `max` is
+/// silently dropped). A ship's `--effort` (`config::effort`) wins over it.
+pub const EFFORT_SETTING_LEVELS: [&str; 4] = ["low", "medium", "high", "xhigh"];
 
 /// The `env` a harness may set: its own names, `FLEET_*` (a fleet's
 /// conventions for its members' tools and prompts). Anything else could
@@ -213,6 +218,15 @@ pub fn filter_settings(v: &Value) -> (Value, Vec<String>) {
             "model" | "outputStyle" if val.is_string() => {
                 keep.insert(k.clone(), val.clone());
             }
+            "effortLevel" => match val.as_str() {
+                Some(e) if EFFORT_SETTING_LEVELS.contains(&e) => {
+                    keep.insert(k.clone(), val.clone());
+                }
+                _ => dropped.push(format!(
+                    "effortLevel {val}: a settings file takes {} (max is per session: `nimitz ship set <id> --effort max`)",
+                    EFFORT_SETTING_LEVELS.join(", ")
+                )),
+            },
             "env" => {
                 let mut e = Map::new();
                 for (n, x) in val.as_object().into_iter().flatten() {
@@ -1014,5 +1028,29 @@ mod tests {
             assert!(c.chars().count() <= max && c.starts_with("nimitz rules updated: fleet MAIN's own rules"), "{id}: {}", c.chars().count());
             put(&env, "rules/a.md", &format!("0{}", "y".repeat(RULES_MAX - 10)));
         }
+    }
+
+    /// `effortLevel` is a harness's to set (Claude Code 2.1.302's settings
+    /// take low to xhigh; `max` is per session, so it is dropped, said why).
+    #[test]
+    fn a_harness_sets_effort_level_but_not_max() {
+        let (keep, dropped) = filter_settings(&json!({"effortLevel": "high"}));
+        assert_eq!(keep, json!({"effortLevel": "high"}));
+        assert!(dropped.is_empty());
+        for bad in [json!("max"), json!("huge"), json!(3)] {
+            let (keep, dropped) = filter_settings(&json!({"effortLevel": bad}));
+            assert_eq!(keep, json!({}), "{bad}");
+            assert!(dropped[0].contains("low, medium, high, xhigh"), "{dropped:?}");
+        }
+        // a member's harness effortLevel is its launch effort below a ship's own --effort
+        let (_td, env) = test_env();
+        make_fleet(&env);
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        put(&env, "settings/fleet.json", r#"{"effortLevel": "medium"}"#);
+        let f = crate::config::load_fleet(&env, "MAIN").unwrap();
+        assert_eq!(crate::config::launch_effort(&env, &f, &id).as_deref(), Some("medium"));
+        let v: Value = serde_json::from_str(&crate::claude::settings_json(&env, &id, true)).unwrap();
+        assert_eq!(v["effortLevel"], "medium", "through --settings");
+        assert!(!crate::claude::launch_bg(&env, &id, "", Some("go")).contains(&"--effort".to_string()));
     }
 }

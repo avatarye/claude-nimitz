@@ -71,6 +71,7 @@ fn member(id: Id, status: Status, reasons: &[&str], session: Option<SessionInfo>
         tasks: vec![],
         issues: vec![],
         pane: None,
+        effort: None,
     }
 }
 

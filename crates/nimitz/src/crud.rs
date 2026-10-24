@@ -76,12 +76,16 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
     let (fleet, sq) = (parts[0], parts[1]);
     let plan = match verb {
         "new" => {
-            ctx.args.allow(&["--brief", "--mode"])?;
-            config::plan_squadron_new(&ctx.env, fleet, sq, ctx.args.value("--brief").unwrap_or(""), ctx.args.value("--mode"))
+            ctx.args.allow(&["--brief", "--mode", "--effort"])?;
+            config::plan_squadron_new_with(&ctx.env, fleet, sq, ctx.args.value("--brief").unwrap_or(""), ctx.args.value("--mode"), ctx.args.value("--effort"))
         }
         "set" => {
-            ctx.args.allow(&["--brief", "--mode"])?;
-            config::plan_squadron_set(&ctx.env, &id, ctx.args.value("--brief"), ctx.args.value("--mode"))
+            ctx.args.allow(&["--brief", "--mode", "--effort"])?;
+            let mut p = config::plan_squadron_set(&ctx.env, &id, ctx.args.value("--brief"), ctx.args.value("--mode"), ctx.args.value("--effort"));
+            if ctx.args.value("--effort").is_some() && !p.steps.is_empty() {
+                effort_pending(ctx, &mut p, &id);
+            }
+            p
         }
         "rm" => {
             ctx.args.allow(&[])?;
@@ -94,7 +98,30 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
 
 // ------------------------------------------------------------------ ship
 
-const SHIP_FLAGS: &[&str] = &["--dir", "--no-dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--edit"];
+const SHIP_FLAGS: &[&str] = &["--dir", "--no-dir", "--machine", "--prompt", "--prompt-file", "--mode", "--effort", "--depends", "--edit"];
+
+/// The live ships under `id` (a ship, or a squadron's ships) whose `--effort`
+/// a config change moves: a live job keeps the effort it launched with (and a
+/// wake keeps it too: Claude Code keeps `--effort` in its `respawnFlags`), so
+/// the plan says it applies at the next restart, and names it (`effort.pending`).
+/// Never a restart itself.
+fn effort_pending(ctx: &Ctx, plan: &mut Plan, id: &Id) {
+    let snap = ctx.snap();
+    let live = snap
+        .fleets
+        .iter()
+        .flat_map(|f| f.squadrons.iter().flat_map(|sq| sq.ships.iter()))
+        .filter(|m| nimitz_core::sessions::inside(&m.id, id) && m.session.as_ref().is_some_and(|s| s.pid.is_some()));
+    for m in live {
+        plan.warnings.push(nimitz_core::Issue {
+            code: "effort.pending".into(),
+            severity: nimitz_core::Severity::Info,
+            message: "live now: its new effort applies at its next restart (a wake keeps the effort it launched with)".into(),
+            fix: Some(nimitz_core::sessions::restart_cmd(&m.id)),
+            id: Some(m.id.clone()),
+        });
+    }
+}
 
 /// `$VISUAL`, else `$EDITOR`, else vi (notepad on Windows).
 fn editor(ctx: &Ctx) -> String {
@@ -193,6 +220,10 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk) -> Resu
             def.permission_mode.insert(label.into(), m.into());
         }
     }
+    if let Some(e) = ctx.args.value("--effort") {
+        // '' clears it; core's plan refuses a level Claude Code does not take
+        def.effort = Some(e.to_string()).filter(|e| !e.is_empty());
+    }
     if let Some(d) = ctx.args.value("--depends") {
         def.depends_on = d.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect();
     }
@@ -256,13 +287,20 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                         if def.dirs.get(&label) != before.dirs.get(&label) {
                             trust_step(ctx, &mut p, &id, Some(&label), def.dirs.get(&label).map(String::as_str));
                         }
-                        p.warnings.push(nimitz_core::Issue {
-                            code: "config.pending".into(),
-                            severity: nimitz_core::Severity::Info,
-                            message: "the change takes effect at the ship's next relaunch".into(),
-                            fix: Some(nimitz_core::sessions::restart_cmd(&id)),
-                            id: Some(id.clone()),
-                        });
+                        let notes = p.warnings.len();
+                        if def.effort != before.effort {
+                            effort_pending(ctx, &mut p, &id);
+                        }
+                        // (the effort's own note says it for a live ship)
+                        if p.warnings.len() == notes {
+                            p.warnings.push(nimitz_core::Issue {
+                                code: "config.pending".into(),
+                                severity: nimitz_core::Severity::Info,
+                                message: "the change takes effect at the ship's next relaunch".into(),
+                                fix: Some(nimitz_core::sessions::restart_cmd(&id)),
+                                id: Some(id.clone()),
+                            });
+                        }
                     }
                     p
                 }

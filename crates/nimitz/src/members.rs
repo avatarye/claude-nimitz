@@ -195,7 +195,8 @@ fn member_line(env: &nimitz_core::env::Env, m: &Member, depth: usize, col: usize
     let why = m.reasons.first().cloned().unwrap_or_default();
     let pane = m.pane.as_ref().map(|p| format!("  pane {p}")).unwrap_or_default();
     let pinned = if m.session.as_ref().is_some_and(|s| s.pinned) { "  pinned" } else { "" };
-    let head = format!("{pad}{:<width$} {:<11} {:<9} {why}{pane}{pinned}", m.id.0, status_word(m.status, in_set), sess);
+    let effort = m.effort.as_ref().map(|e| format!("  effort {e}")).unwrap_or_default();
+    let head = format!("{pad}{:<width$} {:<11} {:<9} {why}{pane}{pinned}{effort}", m.id.0, status_word(m.status, in_set), sess);
     // what a live job is doing, on its line, cut to the terminal (never under 12 characters)
     let topic = match &m.topic {
         Some(t) => {

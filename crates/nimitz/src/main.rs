@@ -76,8 +76,9 @@ const USAGES: &[(&str, &str)] = &[
     ("check", "  check [<path>...]                integrity check of the members the paths cover, their parents and
                                    everything under them (none: everything; //...: every fleet but ADMIRALTY)"),
     ("fleet", "  fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)"),
-    ("squadron", "  squadron new|set|rm <F/SQ>       --brief T --mode M"),
-    ("ship", "  ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B"),
+    ("squadron", "  squadron new|set|rm <F/SQ>       --brief T --mode M --effort E (its ships' default; a ship's own wins)"),
+    ("ship", "  ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
+                                   --effort low|medium|high|xhigh|max ('' clears it; a live ship takes it at its restart)"),
     ("machine", "  machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
                                    rm warns about live members when <label> is this machine"),
     ("settings", "  settings get [<key>]             the fleet's settings.json (a dotted key: kb.remote)
@@ -86,7 +87,7 @@ const USAGES: &[(&str, &str)] = &[
     ("harness", "  harness list                     the fleet's harness: its rules, agents, skills and settings (a member: its own)
   harness add rule|agent|skill|settings <file|folder> [--name N] [--for F/SQ|F/SQ/SHIP [--member]]
                                    into the fleet's harness (--plan|--yes); settings: model, outputStyle,
-                                   permissions, env only
+                                   effortLevel, permissions, env only
   harness rm rule|agent|skill <name> | harness rm settings [--for ID [--member]]
                                    out of it (kept as .archived)
   harness push                     make this machine's harness plugin again; say what is live and what needs restart"),

@@ -187,6 +187,11 @@ pub struct ShipDef {
     pub dirs: BTreeMap<String, String>,
     #[serde(default)]
     pub permission_mode: BTreeMap<String, String>,
+    /// `claude --effort` for every launch and relaunch (`config::EFFORT_LEVELS`;
+    /// None: the squadron's, else Claude Code's own). Since 0.7.12: a file
+    /// that holds one is stamped (`formats::squadron_stamp`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -207,6 +212,10 @@ pub struct SquadronConfig {
     pub comms: Comms,
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// the default `--effort` of the squadron's ships (a ship's own wins);
+    /// since 0.7.12, stamped as `ShipDef::effort`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     #[serde(default)]
     pub ships: Vec<ShipDef>,
 }
@@ -485,6 +494,11 @@ pub struct Member {
     pub issues: Vec<Issue>,
     /// set by the TUI/CLI from the mux, never by core
     pub pane: Option<String>,
+    /// the effort level its next launch or relaunch asks for (`config::launch_effort`:
+    /// the ship's `--effort`, its squadron's, else a harness `effortLevel`); a
+    /// live session may run another (an `/effort` in it, or a change since)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

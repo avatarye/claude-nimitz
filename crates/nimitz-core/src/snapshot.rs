@@ -960,6 +960,7 @@ fn build_member(
         tasks,
         issues: vec![],
         pane: None,
+        effort: crate::config::launch_effort(env, fc, id),
     };
     // Every member carries its own issues: the session rules, then what needs
     // the registry (name.taken is added by the caller once every member's rows

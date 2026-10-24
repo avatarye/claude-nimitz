@@ -238,6 +238,21 @@ fn models_in(files: &[std::path::PathBuf]) -> Option<Vec<String>> {
     })
 }
 
+/// `--effort <level>` when the member's config sets one (`config::effort`: a
+/// ship's own, else its squadron's; an unknown level is not passed, `check`
+/// warns). On every launch and relaunch; a wake (`resume_bg`, no flags)
+/// keeps it, since Claude Code keeps `--effort` in the job's `respawnFlags`
+/// (2.1.302), so a change applies at the next relaunch (`nimitz restart`).
+/// `CLAUDE_EFFORT` (the launching session's own) stays scrubbed.
+fn effort_args(env: &Env, id: &Id) -> Vec<String> {
+    crate::config::load_fleet(env, id.fleet())
+        .ok()
+        .and_then(|f| crate::config::effort(&f, id))
+        .filter(|e| crate::config::EFFORT_LEVELS.contains(&e.as_str()))
+        .map(|e| vec!["--effort".to_string(), e])
+        .unwrap_or_default()
+}
+
 fn mode_args(mode: &str) -> Vec<String> {
     if mode.is_empty() {
         vec![]
@@ -267,11 +282,12 @@ pub fn lead_prompt(id: &Id) -> String {
 }
 
 
-/// Cold launch of any member: `claude --bg --name N --permission-mode M --settings S [prompt]`
+/// Cold launch of any member: `claude --bg --name N --permission-mode M [--effort E] --settings S [prompt]`
 /// (a ship's prompt comes from squadron.toml, a lead's from `lead_prompt`).
 pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--name".into(), id.name()];
     c.extend(mode_args(mode));
+    c.extend(effort_args(env, id));
     c.extend(["--settings".into(), settings_json(env, id, true)]);
     c.extend(harness_args(env, id));
     if let Some(p) = prompt.filter(|p| !p.is_empty()) {
@@ -285,6 +301,7 @@ pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<St
 pub fn relaunch_bg(env: &Env, id: &Id, mode: &str, from_session: &str) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--resume".into(), from_session.into(), "--name".into(), id.name()];
     c.extend(mode_args(mode));
+    c.extend(effort_args(env, id));
     c.extend(["--settings".into(), settings_json(env, id, true)]);
     c.extend(harness_args(env, id));
     c

@@ -212,22 +212,25 @@ fn respawn_flags(name: &str, mode: &str, settings: Option<&str>) -> Value {
     json!(f)
 }
 
-/// `--model M` added to a job's `respawnFlags` (a launch that named one);
-/// nothing without one.
-fn note_model(base: &Path, short: &str, model: Option<&str>) {
-    let Some(m) = model else { return };
+/// `--model M` and `--effort E` added to a job's `respawnFlags` (a launch
+/// that named them; Claude Code keeps both for a restart); nothing without.
+fn note_flags(base: &Path, short: &str, model: Option<&str>, effort: Option<&str>) {
+    let extra: Vec<Value> = [("--model", model), ("--effort", effort)].into_iter().filter_map(|(f, v)| v.map(|v| [json!(f), json!(v)])).flatten().collect();
+    if extra.is_empty() {
+        return;
+    }
     if let Some(mut j) = job_state(base, short) {
         if let Some(a) = j.get_mut("respawnFlags").and_then(|a| a.as_array_mut()) {
-            a.extend([json!("--model"), json!(m)]);
+            a.extend(extra);
         }
         save_job(base, short, &j);
     }
 }
 
-/// The `--model` a job's `respawnFlags` keep, if any.
-fn model_of(row: &Value) -> Option<String> {
+/// The value of `flag` (`--model`, `--effort`) a job's `respawnFlags` keep, if any.
+fn kept_flag(row: &Value, flag: &str) -> Option<String> {
     let argv: Vec<&str> = row.get("respawnFlags").and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-    argv.windows(2).find(|w| w[0] == "--model").map(|w| w[1].to_string())
+    argv.windows(2).find(|w| w[0] == flag).map(|w| w[1].to_string())
 }
 
 /// What a job's `respawnFlags` say: (name, mode, settings).
@@ -742,6 +745,7 @@ struct Args {
     name: Option<String>,
     mode: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
     settings: Option<String>,
     resume: Option<String>,
     session_id: Option<String>,
@@ -751,7 +755,7 @@ struct Args {
 }
 
 fn parse(args: &[String]) -> Args {
-    let mut a = Args { bg: false, print: false, name: None, mode: None, model: None, settings: None, resume: None, session_id: None, cont: false, fork: false, prompt: None };
+    let mut a = Args { bg: false, print: false, name: None, mode: None, model: None, effort: None, settings: None, resume: None, session_id: None, cont: false, fork: false, prompt: None };
     let mut i = 0;
     while i < args.len() {
         let take = |i: &mut usize| -> Option<String> {
@@ -766,6 +770,7 @@ fn parse(args: &[String]) -> Args {
             "--name" => a.name = take(&mut i),
             "--permission-mode" => a.mode = take(&mut i),
             "--model" => a.model = take(&mut i),
+            "--effort" => a.effort = take(&mut i),
             "--settings" => {
                 // several --settings (the wrapper's, then yours) merge, later keys winning
                 let next = take(&mut i);
@@ -1125,10 +1130,10 @@ fn inside(base: &Path, short: &str, verb: &str, arg: Option<&str>) -> i32 {
             let Some(name) = arg else { return 2 };
             j["name"] = json!(name);
             j["nameSource"] = json!("user");
-            let model = model_of(&j);
+            let (model, effort) = (kept_flag(&j, "--model"), kept_flag(&j, "--effort"));
             j["respawnFlags"] = respawn_flags(name, mode.as_deref().unwrap_or(""), settings.as_deref());
             save_job(base, short, &j);
-            note_model(base, short, model.as_deref());
+            note_flags(base, short, model.as_deref(), effort.as_deref());
             if let Some(mut d) = read_json(&session_path(base, short)) {
                 d["name"] = json!(name);
                 write_json(&session_path(base, short), &d);
@@ -1145,7 +1150,7 @@ fn inside(base: &Path, short: &str, verb: &str, arg: Option<&str>) -> i32 {
                               "forkedFrom": old, "tokens": 0, "inFlight": {"tasks": 0, "queued": 0},
                               "respawnFlags": respawn_flags(&name, mode.as_deref().unwrap_or(""), settings.as_deref())});
             save_job(base, &new_short, &nrow);
-            note_model(base, &new_short, model_of(&j).as_deref());
+            note_flags(base, &new_short, kept_flag(&j, "--model").as_deref(), kept_flag(&j, "--effort").as_deref());
             write_session_file(base, &new_short, &new, &row.cwd, &name, t);
             if !labels.is_empty() {
                 fire(base, job_hook(base, &new_short, "SessionStart", &new, Some("fork"), &row.cwd), &labels);
@@ -1351,7 +1356,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             // no --name: the sandbox leaves the name empty (an unnamed agent)
             let name = a.name.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "startup", a.settings.is_some());
-            note_model(&base, &short, a.model.as_deref());
+            note_flags(&base, &short, a.model.as_deref(), a.effort.as_deref());
             println!("{short}");
             0
         }
@@ -1372,12 +1377,12 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                         w["copy_once_relaunch"] = json!(false);
                         write_json(&base.join("world.json"), &w);
                         let short = start(&base, &cwd, &name, &a.mode.clone().unwrap_or_default(), a.settings.as_ref(), "startup", a.settings.is_some());
-                        note_model(&base, &short, a.model.as_deref());
+                        note_flags(&base, &short, a.model.as_deref(), a.effort.as_deref());
                         println!("note: session {target} is already running in the background, so this started a copy as {short}");
                         return 0;
                     }
                     let short = start_as(&base, &cwd, &name, &a.mode.clone().unwrap_or_default(), a.settings.as_ref(), "resume", a.settings.is_some(), Some(target));
-                    note_model(&base, &short, a.model.as_deref());
+                    note_flags(&base, &short, a.model.as_deref(), a.effort.as_deref());
                     println!("resumed {target} as {short}");
                     return 0;
                 }
@@ -1405,7 +1410,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                 return 0;
             }
             // A prompt is not a flag: `--bg --resume <id> [prompt]` keeps the id (probe 2c1).
-            let flags = a.name.is_some() || a.mode.is_some() || a.model.is_some() || a.settings.is_some() || a.fork;
+            let flags = a.name.is_some() || a.mode.is_some() || a.model.is_some() || a.effort.is_some() || a.settings.is_some() || a.fork;
             let saved = row.short_id.as_deref().and_then(|s| job_state(&base, s));
             let saved_name = saved.as_ref().and_then(|j| j.get("name").and_then(|v| v.as_str()).map(str::to_string));
 
@@ -1424,7 +1429,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
                     j["respawnFlags"] = respawn_flags("", &mode, a.settings.as_deref());
                     save_job(&base, &short, &j);
                 }
-                note_model(&base, &short, a.model.as_deref());
+                note_flags(&base, &short, a.model.as_deref(), a.effort.as_deref());
                 if a.name.is_some() {
                     eprintln!("note: --name is ignored for a copy of a running session");
                 }
@@ -1491,7 +1496,7 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
             let name = a.name.clone().unwrap_or_else(|| copy_name(&base, saved_name.as_deref().unwrap_or(&row.name)));
             let mode = a.mode.clone().unwrap_or_default();
             let short = start(&base, &cwd, &name, &mode, a.settings.as_ref(), "fork", a.settings.is_some());
-            note_model(&base, &short, a.model.as_deref());
+            note_flags(&base, &short, a.model.as_deref(), a.effort.as_deref());
             record_fork(&base, &short, &row.session_id);
             // `--fork-session` copies the conversation (cli-13); other flags
             // alone start an empty copy (BUG-53)

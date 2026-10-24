@@ -456,6 +456,7 @@ pub(crate) mod tests {
             tasks: vec![],
             issues: vec![],
             pane: None,
+            effort: None,
         }
     }
 

@@ -136,8 +136,8 @@ hands the outcome to the member's next session start.
 | Command | What it does |
 | --- | --- |
 | `fleet new\|set\|rm <F>` | A fleet (new: `--machine L`; set: `--admiral-mode M`) |
-| `squadron new\|set\|rm <F/SQ>` | A squadron (`--brief T --mode M`) |
-| `ship new\|set\|rm <F/SQ/SHIP>` | A ship (`--dir PATH\|managed --machine L --prompt T\|--prompt-file P --mode M --depends A,B`) |
+| `squadron new\|set\|rm <F/SQ>` | A squadron (`--brief T --mode M --effort E`: `--mode` and `--effort` are its ships' defaults) |
+| `ship new\|set\|rm <F/SQ/SHIP>` | A ship (`--dir PATH\|managed --machine L --prompt T\|--prompt-file P --mode M --effort E --depends A,B`). `--effort low\|medium\|high\|xhigh\|max` is passed as `claude --effort` on every launch and relaunch (a wake keeps it); `''` clears it. A live ship takes a new one at `nimitz restart <id>`. A squadron.toml that sets an effort needs nimitz 0.7.12 on every machine: an older one refuses that squadron (`config.too_new`) |
 | `machine add\|rm <F> <label>` | Run a fleet on another machine too (add: `--hostname H`, `--dir F/SQ/SHIP=PATH`) |
 | `settings get [<key>]` · `settings set <key> <value>` | The fleet's `settings.json` (`--fleet F`), e.g. `kb.remote`, `kb.dirs.<machine>` |
 | `harness list\|add\|rm\|push` | What every member of one fleet gets beyond nimitz's role rules: rules, agents, skills, settings ([docs/design/harness.md](docs/design/harness.md)) |

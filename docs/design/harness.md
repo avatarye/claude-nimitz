@@ -20,7 +20,10 @@ A harness is the admiral's to change, so what it holds is narrow, and held at
 every launch (a file put in the folder by hand gives no more than `add`
 takes; `check` names what is dropped, `harness.invalid`):
 
-- settings: `model`, `outputStyle`, `permissions.allow|ask|deny`, and `env`
+- settings: `model`, `outputStyle`, `effortLevel` (`low`, `medium`, `high`,
+  `xhigh`: what Claude Code's settings take; `max` is per session, a ship's
+  `--effort max`, and a ship's or its squadron's `--effort` wins over it),
+  `permissions.allow|ask|deny`, and `env`
   names `FLEET_*` only (any other variable could steer what programs run,
   where traffic goes or credentials). A `deny` or `ask` that could match a
   member's `nimitz` at all (`Bash`, a pattern whose fixed start is `nimitz`

@@ -3004,3 +3004,67 @@ fn status_shows_a_live_jobs_topic_on_its_line_cut_to_the_terminal() {
     let cells = line.chars().count() + line.chars().filter(|c| *c == '\u{691c}' || *c == '\u{67fb}').count();
     assert!(line.ends_with("...") && cells <= 120, "{cells}: {line}");
 }
+
+/// Issue #8: a ship's effort is set by `ship set --effort` (or its squadron's
+/// default), stored stamped, shown by `status`, and carried as `--effort` by
+/// every launch and relaunch; a wake keeps it (the job's `respawnFlags`).
+#[test]
+fn a_ships_effort_is_stored_stamped_shown_and_launched() {
+    let sb = Sb::new(false);
+    let sq_toml = || std::fs::read_to_string(sb.base.join("nimitz").join("main").join("squadrons").join("argos").join("squadron.toml")).unwrap();
+    let respawn = |id: &str| {
+        let short = sb.member(id)["session"]["short_id"].as_str().unwrap().to_string();
+        let job = sb.base.join("claude_home").join("jobs").join(&short).join("state.json");
+        let v: Value = serde_json::from_slice(&std::fs::read(&job).unwrap()).unwrap();
+        v["respawnFlags"].as_array().unwrap().iter().map(|x| x.as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join(" ")
+    };
+    assert!(!sq_toml().contains("format = 2"), "no effort: format 1, every nimitz reads it");
+    // an unknown level is refused, the valid ones listed
+    let r = sb.run(&["ship", "set", "MAIN/ARGOS/CLEAN", "--effort", "huge", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("low, medium, high, xhigh, max"), "{}", r.out);
+    let r = sb.run(&["squadron", "set", "MAIN/ARGOS", "--effort", "ultra", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    // a live ship: the plan says it applies at the restart, and names it; nothing restarts
+    let before = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].clone();
+    let r = sb.run(&["ship", "set", "MAIN/ARGOS/CLEAN", "--effort", "high", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("effort.pending") && r.out.contains("nimitz restart MAIN/ARGOS/CLEAN"), "{}", r.out);
+    assert!(!r.out.contains("config.pending"), "one note: {}", r.out);
+    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")) && sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"] == before, "no restart of its own");
+    // stored, and the file stamped so an older nimitz refuses it cleanly
+    let t = sq_toml();
+    assert!(t.starts_with(&format!("format = 2\nmin_nimitz = \"{}\"\n", nimitz_core::formats::squadron_effort_min())), "{t}");
+    assert!(t.contains("effort = \"high\""), "{t}");
+    // status: JSON and text
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["effort"], "high");
+    assert!(sb.run(&["status"]).out.lines().any(|l| l.contains("MAIN/ARGOS/CLEAN") && l.contains("effort high")));
+    // restart: the relaunch carries it (-v shows the command), and the job keeps it
+    let r = sb.run(&["restart", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert!(r.out.contains("--effort high"), "{}", r.out);
+    let r = sb.run(&["restart", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(respawn("MAIN/ARGOS/CLEAN").contains("--effort high"), "{}", respawn("MAIN/ARGOS/CLEAN"));
+    // a stop and a wake (no flags) keep it
+    assert_eq!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 0);
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("--resume") && !r.out.contains("--effort"), "a native wake, no flags:\n{}", r.out);
+    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
+    assert!(respawn("MAIN/ARGOS/CLEAN").contains("--effort high"), "{}", respawn("MAIN/ARGOS/CLEAN"));
+    // the squadron's default reaches the ships without their own; a ship's own wins
+    let r = sb.run(&["squadron", "set", "MAIN/ARGOS", "--effort", "low", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(sb.member("MAIN/ARGOS/NOLABEL")["effort"], "low");
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["effort"], "high");
+    assert!(sb.member("MAIN/ARGOS")["effort"].is_null(), "a lead takes no squadron effort");
+    let r = sb.run(&["restart", "MAIN/ARGOS/NOLABEL", "--plan"]);
+    assert!(r.out.contains("--effort low"), "{}", r.out);
+    // cleared ('' as for --mode): the last one takes the stamp with it
+    assert_eq!(sb.run(&["ship", "set", "MAIN/ARGOS/CLEAN", "--effort", "", "--yes"]).code, 0);
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["effort"], "low");
+    assert_eq!(sb.run(&["squadron", "set", "MAIN/ARGOS", "--effort=", "--yes"]).code, 0);
+    assert!(sb.member("MAIN/ARGOS/CLEAN")["effort"].is_null());
+    let t = sq_toml();
+    assert!(!t.contains("effort") && !t.contains("format = 2"), "{t}");
+}

@@ -57,16 +57,41 @@ squadron = "ARGOS"                  # uppercase, unique in the fleet
 brief = "SQUADRON.md"
 comms = "open"                      # "open" | "commodore-only" | { allow = ["MAIN/BOLT/BOOM"] }
 permission_mode = "bypassPermissions"   # default for ships
+effort = "high"                     # optional default for ships (0.7.12)
 
 [[ships]]
 name = "ARGOS"                      # uppercase
 prompt = "You are ..."              # or prompt_file = "prompts/ARGOS.md"
 depends_on = []
+effort = "xhigh"                    # optional: low|medium|high|xhigh|max (0.7.12)
 [ships.dirs]                        # machine label -> folder; "managed" = NIMITZ_HOME/<fleet>/ships/<SQ>/<SHIP>
 west-mac = "/Users/.../AcmeAssetGen"
 home-server = "managed"
 [ships.permission_mode]             # optional per machine
 ```
+
+**Effort (0.7.12, issue #8).** A ship's `effort`, else its squadron's, is
+passed as `claude --effort <level>` on every cold launch and every relaunch
+(`restart`, `muster`, a relabel), from `claude::launch_bg`/`relaunch_bg`
+(`config::effort`). A wake is the native `--bg --resume <id>` with no flags:
+Claude Code 2.1.302 keeps `--effort` in the job's `respawnFlags` (a value flag
+a restart re-applies; an `/effort` in the session rewrites it there), so the
+woken job keeps the effort it launched with, and a changed effort applies at
+the next relaunch: `ship set --effort` on a live ship (and `squadron set
+--effort` on its live ships) says so (`effort.pending`, fix `nimitz restart
+<id>`) and restarts nothing. Levels are `config::EFFORT_LEVELS`, what
+`claude --effort` takes (an unknown one Claude Code ignores with a warning,
+so nimitz refuses it in a plan, warns on a hand-edited one in `check`, and
+never passes it); `''` clears. Leads take none from the squadron. Below
+`--effort`, a harness `effortLevel` (low to xhigh) reaches every member
+through `--settings`. `status --json` gives a member's `effort` (the one its
+next launch asks for: `config::launch_effort`), `status` prints
+`effort <level>` on its line. A squadron.toml that holds an `effort` is
+written at format 2 with `min_nimitz = "0.7.12"` (`formats::stamp_squadron`),
+one without at format 1: nimitz 0.5.0 to 0.7.11 refuse the first before the
+strict parse (`config.too_new`, that squadron and its ships only: "needs
+nimitz >= 0.7.12 ... update nimitz here"), the rest of the fleet still loads
+there, and they never rewrite it.
 
 A ship with no `dirs` entry for this machine does not run here. A `dirs` value
 is `managed`, an absolute path or `~/...` (`config::normalize_ship_dir`; empty,
@@ -128,7 +153,8 @@ the version checks; a denylist): nimitz's identity and multiplexer names
 `_EXECPATH`, `_MESSAGING_SOCKET`, `_MESSAGING_TOKEN`, `_SESSION_ID`,
 `_BRIDGE_SESSION_ID`, `_CHILD_SESSION`, `_SESSION_ATTENDED`, `_SDK_HAS_OAUTH_REFRESH`,
 `_SDK_READS_SESSION_STATE`, `_HOST_WORKTREE*`, `CLAUDE_BRIDGE_*`, `CLAUDE_JOB_DIR` and
-`CLAUDE_EFFORT` (the launching session's own). Everything else passes: the user's
+`CLAUDE_EFFORT` (the launching session's own; a ship's own effort is
+`--effort`, section 3). Everything else passes: the user's
 `CLAUDE_CODE_*` and `ANTHROPIC_*` config (auth, proxy, provider, tuning;
 Claude Code copies a job's provider settings from the launching command),
 and nimitz's own config. A member's labels go only through `--settings`,
