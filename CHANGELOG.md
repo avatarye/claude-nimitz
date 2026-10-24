@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.7.12 (unreleased)
+
+### Added
+
+- **A ship's effort level (#8).** `ship new|set --effort
+  low|medium|high|xhigh|max` (and `squadron new|set --effort`, a default for
+  its ships; `''` clears it), passed as `claude --effort` on every launch,
+  restart and muster (a wake keeps the launch's flags). On a live ship the
+  plan says it applies at the next `nimitz restart <id>`. Shown in `status`
+  (`--json`: `effort`) and Admiralty's detail. A harness may set
+  `effortLevel` (low to xhigh) as a default below it. `CLAUDE_EFFORT` is
+  still kept out of every launch.
+
+### Changed
+
+- **Leads run fleet management themselves (rules v11).** An admiral or a
+  commodore plans, applies (`--yes`) and reports routine work without
+  waiting for the user: start, restart and stop of any member (a busy ship
+  too), ship and squadron new|set, ship rm, rm, sweep, adopt, harness
+  add|rm, settings set (not `kb.*`) and `kb clone`. Still the user's OK:
+  `fleet rm`, `squadron rm`, `machine rm`, a trust, `migrate --shared`, any
+  `--force`, `--fresh` or step that drops a conversation, and `settings set
+  kb.*`. Ships change no fleet shape unless a lead asks.
+- **A lead may edit its own unit's brief and prompts by hand (#9):** an
+  admiral its fleet's CLAUDE.md and its squadrons' SQUADRON.md and prompts/;
+  a commodore its SQUADRON.md, CLAUDE.md and prompts/. Settings still change
+  only through nimitz; never another unit's files, never machine state.
+- **`--prompt-file` copies the file into the squadron's `prompts/`** and
+  stores that relative path (it stored an absolute path, which a temp folder
+  could lose) (#9); `check` warns (`prompt.file`) about a prompt file
+  outside the squadron folder or missing.
+- **A member's `signal --type`** types into the target's pane, led by
+  `[nimitz signal from <id>]`; the inbox stays the default.
+- **README:** "Most used" is the human's set (muster, restart, open, status,
+  stop); the rest is under "Agents run these".
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). Live members get rules v11 at their next prompt. A
+  squadron given an `--effort` is stamped `format = 2`, `min_nimitz =
+  "0.7.12"`: update nimitz on every machine before setting one (older
+  versions refuse that squadron, never damage it).
+
 ## 0.7.11 (2026-10-18)
 
 ### Fixed
