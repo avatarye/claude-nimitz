@@ -57,16 +57,64 @@ squadron = "ARGOS"                  # uppercase, unique in the fleet
 brief = "SQUADRON.md"
 comms = "open"                      # "open" | "commodore-only" | { allow = ["MAIN/BOLT/BOOM"] }
 permission_mode = "bypassPermissions"   # default for ships
+effort = "high"                     # optional default for ships (0.7.12)
 
 [[ships]]
 name = "ARGOS"                      # uppercase
 prompt = "You are ..."              # or prompt_file = "prompts/ARGOS.md"
 depends_on = []
+effort = "xhigh"                    # optional: low|medium|high|xhigh|max (0.7.12)
 [ships.dirs]                        # machine label -> folder; "managed" = NIMITZ_HOME/<fleet>/ships/<SQ>/<SHIP>
 west-mac = "/Users/.../AcmeAssetGen"
 home-server = "managed"
 [ships.permission_mode]             # optional per machine
 ```
+
+**Prompt files (0.7.12, issue #9).** A `prompt_file` is relative to the
+squadron folder (or, as an older nimitz stored it, absolute). `ship new|set
+--prompt-file P` takes P into the squadron: a P already in its `prompts/` is
+stored relative as it is; any other is copied to `prompts/<SHIP>.txt`
+(`.md` for a `.md` source; a write step in the plan) and that path stored,
+so a prompt never lives in a temp folder or on one machine only (any `ship
+set` also takes in a stored one outside the squadron folder, the case
+`check` warns about; one elsewhere in the squadron folder stays where it
+is). A P that does not read refuses, and so does a copy onto another ship's
+prompt file. A relative P on the command line is the squadron's own file
+when one exists there, else one of the current folder (both: the
+squadron's, with a warning). `ship rm`
+removes the ship's entry only and leaves its prompt file (as it leaves its
+folder). `check` warns `prompt.file` for a `prompt_file` outside the
+squadron folder or missing (fix `nimitz ship set <id> --prompt-file
+<path>`).
+
+**Effort (0.7.12, issue #8).** A ship's `effort`, else its squadron's, is
+passed as `claude --effort <level>` on every cold launch and every relaunch
+(`restart`, `muster`, a relabel), from `claude::launch_bg`/`relaunch_bg`
+(`config::effort`). A wake is the native `--bg --resume <id>` with no flags:
+Claude Code 2.1.302 keeps `--effort` in the job's `respawnFlags` (a value flag
+a restart re-applies; an `/effort` in the session rewrites it there), so the
+woken job keeps the effort it launched with, and a changed effort applies at
+the next relaunch: `ship set --effort` on a live ship (and `squadron set
+--effort` on its live ships) says so (`effort.pending`, fix `nimitz restart
+<id>`) and restarts nothing. Levels are `config::EFFORT_LEVELS`, what
+`claude --effort` takes (an unknown one Claude Code ignores with a warning,
+so nimitz refuses it in a plan, warns on a hand-edited one in `check`, and
+never passes it); `''` clears. Leads take none from the squadron. Below
+`--effort`, a harness `effortLevel` (low to xhigh) reaches every member
+through `--settings`. `status --json` gives a member's `effort` (the one its
+next launch asks for: `config::launch_effort`), `status` prints
+`effort <level>` on its line. A squadron.toml that holds an `effort` is
+written at format 2 with `min_nimitz = "0.7.12"` (`formats::stamp_squadron`),
+one without at format 1: nimitz 0.5.0 to 0.7.11 refuse the first before the
+strict parse (`config.too_new`: "needs nimitz >= 0.7.12 ... update nimitz
+here") and never rewrite it. There, that squadron and its ships are
+unreadable, while the fleet's other squadrons still load, show and launch;
+but every config write to the whole fleet (`fleet`, `squadron`, `ship`,
+`machine` new|set|rm, any squadron's) refuses until that machine updates
+(`load_fleet_for_write` refuses while any squadron of the fleet does not
+read). A plan that takes a squadron from format 1 to 2 says so
+(`format.raise`, Warn, naming the fleet's other machines); a lead runs it
+and reports it.
 
 A ship with no `dirs` entry for this machine does not run here. A `dirs` value
 is `managed`, an absolute path or `~/...` (`config::normalize_ship_dir`; empty,
@@ -128,7 +176,8 @@ the version checks; a denylist): nimitz's identity and multiplexer names
 `_EXECPATH`, `_MESSAGING_SOCKET`, `_MESSAGING_TOKEN`, `_SESSION_ID`,
 `_BRIDGE_SESSION_ID`, `_CHILD_SESSION`, `_SESSION_ATTENDED`, `_SDK_HAS_OAUTH_REFRESH`,
 `_SDK_READS_SESSION_STATE`, `_HOST_WORKTREE*`, `CLAUDE_BRIDGE_*`, `CLAUDE_JOB_DIR` and
-`CLAUDE_EFFORT` (the launching session's own). Everything else passes: the user's
+`CLAUDE_EFFORT` (the launching session's own; a ship's own effort is
+`--effort`, section 3). Everything else passes: the user's
 `CLAUDE_CODE_*` and `ANTHROPIC_*` config (auth, proxy, provider, tuning;
 Claude Code copies a job's provider settings from the launching command),
 and nimitz's own config. A member's labels go only through `--settings`,

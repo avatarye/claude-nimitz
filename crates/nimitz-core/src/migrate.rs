@@ -113,7 +113,7 @@ fn ship_from_agent(env: &Env, old_fleet: &str, a: &Value, merge: &Merge, label_m
         .and_then(|d| d.as_array())
         .map(|d| d.iter().filter_map(|x| x.as_str()).map(|x| x.to_uppercase()).collect())
         .unwrap_or_default();
-    Some(ShipDef { name, prompt, prompt_file: None, depends_on, dirs, permission_mode })
+    Some(ShipDef { name, prompt, prompt_file: None, depends_on, dirs, permission_mode, effort: None })
 }
 
 /// Read each old fleet dir and plan the new layout under NIMITZ_HOME/<into>/.
@@ -290,7 +290,7 @@ pub fn plan_from_fleet_skill(env: &Env, old_dirs: &[PathBuf], into: &str) -> (Pl
         let sd = fleet_dir.join("squadrons").join(sq.squadron.to_lowercase());
         let brief = fleet_md.unwrap_or_else(|| config::squadron_md(into, &sq.squadron, ""));
         plan.steps.push(step_mkdir(Some(sqid.clone()), &sd, "commodore's folder"));
-        plan.steps.push(step_write(Some(sqid.clone()), &sd.join("squadron.toml"), toml_out(&sq), "squadron settings"));
+        plan.steps.push(step_write(Some(sqid.clone()), &sd.join("squadron.toml"), crate::config::squadron_toml(&sq), "squadron settings"));
         plan.steps.push(step_write(Some(sqid.clone()), &sd.join("SQUADRON.md"), brief, "the old FLEET.md as the brief"));
         plan.steps.push(step_write(Some(sqid.clone()), &sd.join("CLAUDE.md"), config::commodore_claude_md(into, &sq.squadron), "commodore brief"));
     }

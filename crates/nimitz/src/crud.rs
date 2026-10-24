@@ -76,12 +76,16 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
     let (fleet, sq) = (parts[0], parts[1]);
     let plan = match verb {
         "new" => {
-            ctx.args.allow(&["--brief", "--mode"])?;
-            config::plan_squadron_new(&ctx.env, fleet, sq, ctx.args.value("--brief").unwrap_or(""), ctx.args.value("--mode"))
+            ctx.args.allow(&["--brief", "--mode", "--effort"])?;
+            config::plan_squadron_new_with(&ctx.env, fleet, sq, ctx.args.value("--brief").unwrap_or(""), ctx.args.value("--mode"), ctx.args.value("--effort"))
         }
         "set" => {
-            ctx.args.allow(&["--brief", "--mode"])?;
-            config::plan_squadron_set(&ctx.env, &id, ctx.args.value("--brief"), ctx.args.value("--mode"))
+            ctx.args.allow(&["--brief", "--mode", "--effort"])?;
+            let mut p = config::plan_squadron_set(&ctx.env, &id, ctx.args.value("--brief"), ctx.args.value("--mode"), ctx.args.value("--effort"));
+            if ctx.args.value("--effort").is_some() && !p.steps.is_empty() {
+                effort_pending(ctx, &mut p, &id);
+            }
+            p
         }
         "rm" => {
             ctx.args.allow(&[])?;
@@ -94,7 +98,30 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
 
 // ------------------------------------------------------------------ ship
 
-const SHIP_FLAGS: &[&str] = &["--dir", "--no-dir", "--machine", "--prompt", "--prompt-file", "--mode", "--depends", "--edit"];
+const SHIP_FLAGS: &[&str] = &["--dir", "--no-dir", "--machine", "--prompt", "--prompt-file", "--mode", "--effort", "--depends", "--edit"];
+
+/// The live ships under `id` (a ship, or a squadron's ships) whose `--effort`
+/// a config change moves: a live job keeps the effort it launched with (and a
+/// wake keeps it too: Claude Code keeps `--effort` in its `respawnFlags`), so
+/// the plan says it applies at the next restart, and names it (`effort.pending`).
+/// Never a restart itself.
+fn effort_pending(ctx: &Ctx, plan: &mut Plan, id: &Id) {
+    let snap = ctx.snap();
+    let live = snap
+        .fleets
+        .iter()
+        .flat_map(|f| f.squadrons.iter().flat_map(|sq| sq.ships.iter()))
+        .filter(|m| nimitz_core::sessions::inside(&m.id, id) && m.session.as_ref().is_some_and(|s| s.pid.is_some()));
+    for m in live {
+        plan.warnings.push(nimitz_core::Issue {
+            code: "effort.pending".into(),
+            severity: nimitz_core::Severity::Info,
+            message: "live now: its new effort applies at its next restart (a wake keeps the effort it launched with)".into(),
+            fix: Some(nimitz_core::sessions::restart_cmd(&m.id)),
+            id: Some(m.id.clone()),
+        });
+    }
+}
 
 /// `$VISUAL`, else `$EDITOR`, else vi (notepad on Windows).
 fn editor(ctx: &Ctx) -> String {
@@ -158,7 +185,7 @@ fn absolute_dir(d: &str) -> String {
 }
 
 /// Apply the ship flags to a definition, for the machine `label`.
-fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk) -> Result<(), String> {
+fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk, sq: &str) -> Result<(), String> {
     for l in ctx.args.values("--no-dir") {
         if def.dirs.remove(&l).is_none() {
             return Err(format!("{} has no folder for machine {l:?}", def.name));
@@ -183,7 +210,16 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk) -> Resu
         def.prompt_file = None;
     }
     if let Some(p) = ctx.args.value("--prompt-file") {
-        def.prompt_file = Some(p.into());
+        // relative: the squadron's own file (`prompts/X.md`) when there is
+        // one, else a file of the current folder; core copies one from
+        // outside `prompts/` into it (`config::plan_ship_set`)
+        let sq_dir = f.squadrons.iter().find(|(_, s)| s.squadron == sq).map(|(d, _)| d.clone());
+        let own = sq_dir.as_ref().is_some_and(|d| d.join(p).is_file());
+        let here = !config::is_absolute_dir(p) && !p.starts_with('~') && Path::new(p).is_file();
+        if own && here && sq_dir.as_ref().is_some_and(|d| nimitz_core::env::canon(&d.join(p)) != nimitz_core::env::canon(Path::new(&absolute_dir(p)))) {
+            out::warn(&format!("--prompt-file {p}: both the squadron's {} and ./{p} exist; the squadron's is used (give an absolute path for the other)", sq_dir.as_ref().unwrap().join(p).display()));
+        }
+        def.prompt_file = Some(if own || p.starts_with('~') || config::is_absolute_dir(p) { p.to_string() } else { absolute_dir(p) });
         def.prompt = None;
     }
     if let Some(m) = ctx.args.value("--mode") {
@@ -192,6 +228,10 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk) -> Resu
         } else {
             def.permission_mode.insert(label.into(), m.into());
         }
+    }
+    if let Some(e) = ctx.args.value("--effort") {
+        // '' clears it; core's plan refuses a level Claude Code does not take
+        def.effort = Some(e.to_string()).filter(|e| !e.is_empty());
     }
     if let Some(d) = ctx.args.value("--depends") {
         def.depends_on = d.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect();
@@ -224,7 +264,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 return Err("ship new needs --dir <folder|managed>".into());
             }
             let mut def = ShipDef { name: name.into(), ..Default::default() };
-            edit_ship(ctx, &mut def, &label, &f)?;
+            edit_ship(ctx, &mut def, &label, &f, sq)?;
             if let Some(p) = prompt_from_editor(ctx, None, true)? {
                 def.prompt = Some(p);
             }
@@ -244,7 +284,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 Some(mut def) => {
                     let before = def.clone();
                     let current = config::ship_prompt(&f, &id);
-                    edit_ship(ctx, &mut def, &label, &f)?;
+                    edit_ship(ctx, &mut def, &label, &f, sq)?;
                     if let Some(p) = prompt_from_editor(ctx, current.as_deref(), false)? {
                         def.prompt = Some(p);
                         def.prompt_file = None;
@@ -256,13 +296,20 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                         if def.dirs.get(&label) != before.dirs.get(&label) {
                             trust_step(ctx, &mut p, &id, Some(&label), def.dirs.get(&label).map(String::as_str));
                         }
-                        p.warnings.push(nimitz_core::Issue {
-                            code: "config.pending".into(),
-                            severity: nimitz_core::Severity::Info,
-                            message: "the change takes effect at the ship's next relaunch".into(),
-                            fix: Some(nimitz_core::sessions::restart_cmd(&id)),
-                            id: Some(id.clone()),
-                        });
+                        let notes = p.warnings.len();
+                        if def.effort != before.effort {
+                            effort_pending(ctx, &mut p, &id);
+                        }
+                        // (the effort's own note says it for a live ship)
+                        if p.warnings.len() == notes {
+                            p.warnings.push(nimitz_core::Issue {
+                                code: "config.pending".into(),
+                                severity: nimitz_core::Severity::Info,
+                                message: "the change takes effect at the ship's next relaunch".into(),
+                                fix: Some(nimitz_core::sessions::restart_cmd(&id)),
+                                id: Some(id.clone()),
+                            });
+                        }
                     }
                     p
                 }

@@ -9,5 +9,5 @@
   only when you cannot go on; otherwise pick the safe default, say what you
   chose, and continue.
 - Your work is your folder's: leave the fleet's shape (fleets, squadrons,
-  ships) to the leads and the user. `nimitz sweep {ID}` drops your own stale
+  ships) to the leads, unless a lead asks you. `nimitz sweep {ID}` drops your own stale
   copy rows.

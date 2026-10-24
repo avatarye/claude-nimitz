@@ -1,14 +1,12 @@
-format = 1
-min_nimitz = "0.5.0"
+# a squadron.toml as nimitz 0.7.11 writes it: format 1 (no stamp), no effort
 squadron = "ARGOS"
 brief = "SQUADRON.md"
 permission_mode = "acceptEdits"
 
 [[ships]]
 name = "CLEAN"
-prompt = "hi"
-prompt_file = "p.md"
-depends_on = ["MAIN/ARGOS/OTHER"]
+prompt = "You are the ship CLEAN."
+depends_on = []
 
 [ships.dirs]
 work = "managed"

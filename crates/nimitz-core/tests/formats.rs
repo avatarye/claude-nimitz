@@ -162,17 +162,19 @@ os = "macos"
 permission_mode = "plan"
 "#;
     let squadron = r#"
-format = 1
-min_nimitz = "0.5.0"
+format = 2
+min_nimitz = "0.7.12"
 squadron = "ARGOS"
 brief = "SQUADRON.md"
 comms = "open"
 permission_mode = "acceptEdits"
+effort = "high"
 [[ships]]
 name = "CLEAN"
 prompt = "hi"
 prompt_file = "p.md"
 depends_on = ["MAIN/ARGOS/OTHER"]
+effort = "max"
 [ships.dirs]
 work = "managed"
 [ships.permission_mode]

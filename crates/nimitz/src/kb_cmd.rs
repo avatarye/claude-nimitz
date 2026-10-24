@@ -42,7 +42,7 @@ pub fn kb(ctx: &Ctx) -> Result<i32, String> {
     let k = fleet_settings::kb(&ctx.env, &fleet)?;
     let dir = &k.dir;
     if !dir.join(".git").exists() {
-        return Err(format!("fleet {fleet}'s knowledge base is not cloned on this machine ({}); the user runs: nimitz kb clone --fleet {fleet} --yes", dir.display()));
+        return Err(format!("fleet {fleet}'s knowledge base is not cloned on this machine ({}): run nimitz kb clone --fleet {fleet} --plan, then --yes", dir.display()));
     }
     // the folder is the KB's clone, not another repo the settings point at
     if let Some(remote) = &k.remote {

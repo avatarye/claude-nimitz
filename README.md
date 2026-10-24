@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Version 0.7.11 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.302).
+Version 0.7.12 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.302).
 
 A fleet has one **admiral**, squadrons each led by a **commodore**, and
 **ships** that do the long work in one folder. Every member is a Claude Code
@@ -43,20 +43,19 @@ after an update migrates this machine's files by itself; the CHANGELOG's
 | When | Run |
 | --- | --- |
 | After a reboot, a Claude Code update or a Herdr closure | `nimitz muster` |
-| Talk to a member | `nimitz open F/SQ/SHIP` (its pane, focused; ctrl-z detaches) |
-| Bring members up | `nimitz start F/...` |
 | Relaunch members (same conversation, a new process) | `nimitz restart F/SQ/SHIP` |
+| Talk to a member | `nimitz open F/SQ/SHIP` (its pane, focused; ctrl-z detaches) |
 | See everything | `nimitz status`, or `admiralty` |
 | Stop members | `nimitz stop F/SQ/...` |
-| Message a member | `nimitz signal F/SQ/SHIP "text"` |
-| Lay out the leads' tabs | `nimitz layout F/...` |
-| A fleet's problems, each with its fix | `nimitz check` |
-| After an install or an upgrade | `nimitz doctor` |
 
-Every command that changes something shows its plan first: `--plan` only
-looks, `--yes` runs without the question, `-v` shows the commands.
-`nimitz help <command>` (or `nimitz <command> --help`) prints one command's
-usage.
+The rest is the leads' work: an admiral or commodore runs fleet management
+itself (`--plan`, `--yes`, then a report) and asks you first only for `fleet
+rm`, `squadron rm`, `machine rm`, a folder's trust, `migrate --shared`,
+`--force`, `--fresh` (or anything else that drops a conversation) and
+`settings set kb.*`. Every command that changes something shows its plan
+first: `--plan` only looks, `--yes` runs without the question, `-v` shows the
+commands. `nimitz help <command>` (or `nimitz <command> --help`) prints one
+command's usage.
 
 ## Paths
 
@@ -66,7 +65,7 @@ included; `//...` names every fleet (never ADMIRALTY; `/...` works too, as
 MSYS turns `//` into `/`). A command takes several paths; a member matched
 twice counts once; a path that matches nothing is refused. No `*`.
 
-## Commands
+## Agents run these (the command reference)
 
 Four families: fleet shape changes config only, session control changes jobs
 and never panes, pane control changes panes only, and `muster` does both as
@@ -82,7 +81,7 @@ one plan. Design: [docs/design/cli-ux.md](docs/design/cli-ux.md).
 | `rm <path\|session>...` | Remove job rows, never transcripts |
 | `sweep [<path>...]` | Drop stale rows and copies of members |
 | `adopt <session> <F\|F/SQ\|F/SQ/SHIP>` | Make a stowaway (a session in a fleet folder with no labels) one member's session (an exact path; a `...` is refused) |
-| `signal <path> <text> [--inbox]` | Yours: typed into the member's tab, your own input; `--inbox`, or any member's signal: posted to its inbox, naming the sender. One path: a member, or `F/...` / `F/SQ/...` for every live member under it but the sender (never `//...`: a turn in every fleet at once); all or nothing, behind one gate (any refusal sends none). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
+| `signal <path> <text> [--inbox\|--type]` | Yours: typed into the member's tab, your own input; `--inbox`, or a member's signal: posted to its inbox, naming the sender; a member's `--type`: typed into the tab, led by `[nimitz signal from <id>]`, through the same pane checks. One path: a member, or `F/...` / `F/SQ/...` for every live member under it but the sender (never `//...`: a turn in every fleet at once); all or nothing, behind one gate (any refusal sends none). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
 
 ### Pane control (Herdr)
 
@@ -136,8 +135,8 @@ hands the outcome to the member's next session start.
 | Command | What it does |
 | --- | --- |
 | `fleet new\|set\|rm <F>` | A fleet (new: `--machine L`; set: `--admiral-mode M`) |
-| `squadron new\|set\|rm <F/SQ>` | A squadron (`--brief T --mode M`) |
-| `ship new\|set\|rm <F/SQ/SHIP>` | A ship (`--dir PATH\|managed --machine L --prompt T\|--prompt-file P --mode M --depends A,B`) |
+| `squadron new\|set\|rm <F/SQ>` | A squadron (`--brief T --mode M --effort E`: `--mode` and `--effort` are its ships' defaults) |
+| `ship new\|set\|rm <F/SQ/SHIP>` | A ship (`--dir PATH\|managed --machine L --prompt T\|--prompt-file P --mode M --effort E --depends A,B`). `--effort low\|medium\|high\|xhigh\|max` is passed as `claude --effort` on every launch and relaunch (a wake keeps it); `''` clears it. A live ship takes a new one at `nimitz restart <id>`. A squadron.toml that sets an effort needs nimitz 0.7.12 on every machine: an older one refuses that squadron (`config.too_new`) and every config change to its fleet, while the fleet's other squadrons still run there; the plan that sets the first effort warns (`format.raise`) |
 | `machine add\|rm <F> <label>` | Run a fleet on another machine too (add: `--hostname H`, `--dir F/SQ/SHIP=PATH`) |
 | `settings get [<key>]` · `settings set <key> <value>` | The fleet's `settings.json` (`--fleet F`), e.g. `kb.remote`, `kb.dirs.<machine>` |
 | `harness list\|add\|rm\|push` | What every member of one fleet gets beyond nimitz's role rules: rules, agents, skills, settings ([docs/design/harness.md](docs/design/harness.md)) |
@@ -185,9 +184,11 @@ fixed widths; DETAIL takes the rest of a wide or fullscreen terminal.
 - Never start, resume or stop a member with `claude` yourself (`--resume`,
   `--bg`, `-c`, `stop`, `rm`): it makes copies and stowaways nimitz cannot
   manage. `nimitz start` does it right.
-- Plan first: read the plan (`--plan`), then run it (`--yes`). Never `--force`
-  unless you mean it. Every member may run every command; the plan is what
-  stands before a change.
+- Plan, then run: read the plan (`--plan`), then run it (`--yes`). Every
+  member may run every command; the leads run routine fleet management
+  themselves and wait for your OK only for `fleet rm`, `squadron rm`,
+  `machine rm`, a folder's trust, `migrate --shared`, `--force`, `--fresh`
+  (or anything else that drops a conversation) and `settings set kb.*`.
 
 ## When something is wrong
 

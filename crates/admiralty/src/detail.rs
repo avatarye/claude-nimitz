@@ -313,6 +313,9 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
     if let Some(c) = &m.cwd {
         v.push(kv("folder", c.clone()));
     }
+    if let Some(e) = &m.effort {
+        v.push(kv("effort", e.clone()));
+    }
     if let Some(w) = m.session.as_ref().and_then(|s| s.waiting_for.clone()) {
         v.push(blank());
         v.push(Line::styled("NEEDS YOU", bold(mono::NEEDS)));

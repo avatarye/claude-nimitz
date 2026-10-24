@@ -139,7 +139,7 @@ impl Artifact {
 /// Every file nimitz owns and reads back (docs/design/migrations.md section 2).
 pub static ARTIFACTS: &[Artifact] = &[
     Artifact { name: "fleet", path: "H/<fleet>/fleet.toml", scope: Scope::Shared, current: 2, oldest: 1, kept: Kept::Toml("format"), steps: FLEET_STEPS, find: fleet_files, wanted: Some(fleet_wanted), lift: None },
-    Artifact { name: "squadron", path: "H/<fleet>/squadrons/<sq>/squadron.toml", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Toml("format"), steps: &[], find: squadron_files, wanted: None, lift: None },
+    Artifact { name: "squadron", path: "H/<fleet>/squadrons/<sq>/squadron.toml", scope: Scope::Shared, current: 2, oldest: 1, kept: Kept::Toml("format"), steps: SQUADRON_STEPS, find: squadron_files, wanted: Some(squadron_wanted), lift: None },
     Artifact { name: "fleet-settings", path: "H/<fleet>/settings.json", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Json("format"), steps: &[], find: settings_files, wanted: None, lift: None },
     Artifact { name: "legacy", path: "H/<fleet>/legacy.toml", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Toml("format"), steps: &[], find: legacy_files, wanted: None, lift: None },
     Artifact { name: "brief", path: "lead CLAUDE.md", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Own, steps: &[], find: nothing, wanted: None, lift: None },
@@ -174,6 +174,16 @@ static FLEET_STEPS: &[Step] = &[Step {
     summary: "format = 2 and min_nimitz = \"0.5.0\" (0.5 and 0.6: a fleet that held [[aide]]; 0.7 wants no fleet at 2, so it never runs)",
     min_nimitz: Some("0.5.0"),
     apply: Apply::Bytes(fleet_1_2),
+}];
+
+static SQUADRON_STEPS: &[Step] = &[Step {
+    artifact: "squadron",
+    from: 1,
+    to: 2,
+    scope: Scope::Shared,
+    summary: "format = 2 and min_nimitz = \"0.7.12\" (a squadron that sets an effort, its own or a ship's; one without stays 1, so an older nimitz still reads it)",
+    min_nimitz: Some(SQUADRON_EFFORT_SINCE),
+    apply: Apply::Bytes(squadron_1_2),
 }];
 
 static REGISTRY_STEPS: &[Step] = &[
@@ -214,6 +224,62 @@ pub fn fleet_1_2(bytes: &[u8]) -> Result<Vec<u8>, String> {
     let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
     toml::from_str::<toml::Table>(text).map_err(|e| format!("does not parse: {}", e.message().trim()))?;
     Ok(stamp_toml(text, 2, Some("0.5.0")).into_bytes())
+}
+
+/// The first nimitz that reads an `effort` in a squadron.toml (0.7.12). Older
+/// ones parse squadron.toml strictly (`deny_unknown_fields`), so a squadron
+/// that holds one is written at format 2 with this `min_nimitz`: 0.5.0 to
+/// 0.7.11 refuse it (`config.too_new`, that squadron only) instead of failing
+/// on the unknown key; one without stays format 1, read by every nimitz.
+pub const SQUADRON_EFFORT_SINCE: &str = "0.7.12";
+
+/// The `min_nimitz` a squadron with an effort is stamped with:
+/// `SQUADRON_EFFORT_SINCE`, or this nimitz when it is older (a build before
+/// the release's version bump must still read what it writes).
+pub fn squadron_effort_min() -> &'static str {
+    if crate::compat::older(NIMITZ, SQUADRON_EFFORT_SINCE) {
+        NIMITZ
+    } else {
+        SQUADRON_EFFORT_SINCE
+    }
+}
+
+/// Does a squadron hold an effort (its own default or a ship's)?
+pub fn squadron_uses_effort(sq: &SquadronConfig) -> bool {
+    sq.effort.is_some() || sq.ships.iter().any(|s| s.effort.is_some())
+}
+
+/// `sq` at the lowest format that holds it (migrations.md section 5): 2 with
+/// `min_nimitz` when it holds an effort, else 1 (no stamp: the 2 an effort
+/// needed goes with the last effort).
+pub fn stamp_squadron(sq: &mut SquadronConfig) {
+    if squadron_uses_effort(sq) {
+        sq.format = Some(2);
+        sq.min_nimitz = Some(squadron_effort_min().to_string());
+    } else if sq.format == Some(2) {
+        sq.format = None;
+        sq.min_nimitz = None;
+    }
+}
+
+/// `squadron`: 2 when the file holds an `effort` (top level or a ship's), else 1.
+fn squadron_wanted(bytes: &[u8]) -> u32 {
+    let Some(t) = std::str::from_utf8(bytes).ok().and_then(|s| toml::from_str::<toml::Table>(s).ok()) else { return 1 };
+    let ship_has = |v: &toml::Value| v.as_table().is_some_and(|s| s.contains_key("effort"));
+    let ships = t.get("ships").and_then(toml::Value::as_array).is_some_and(|a| a.iter().any(ship_has));
+    if t.contains_key("effort") || ships {
+        2
+    } else {
+        1
+    }
+}
+
+/// `squadron` 1 -> 2: `format = 2` and `min_nimitz` (`squadron_effort_min`)
+/// above the first table; the rest of the file, comments included, as it was.
+pub fn squadron_1_2(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| e.to_string())?;
+    toml::from_str::<toml::Table>(text).map_err(|e| format!("does not parse: {}", e.message().trim()))?;
+    Ok(stamp_toml(text, 2, Some(squadron_effort_min())).into_bytes())
 }
 
 /// `text` with `format = N` (and `min_nimitz`) as its first keys: any of the
@@ -1764,8 +1830,8 @@ mod tests {
         assert!(guard_toml("fleet", p, "fleet = \"MAIN\"\n").is_ok(), "absent: read");
         assert!(guard_toml("fleet", p, "fleet = [broken").is_ok(), "not TOML: the strict parse says why");
         // a format above the one this nimitz knows, with no min_nimitz
-        let fmt = guard_toml("squadron", p, "format = 2\nsquadron = \"A\"\n").unwrap_err();
-        assert!(fmt.to_string().contains("is format 2, newer than this nimitz reads"), "{fmt}");
+        let fmt = guard_toml("squadron", p, "format = 3\nsquadron = \"A\"\n").unwrap_err();
+        assert!(fmt.to_string().contains("is format 3, newer than this nimitz reads"), "{fmt}");
         let reg = serde_json::json!({"version": REGISTRY_VERSION + 1, "machine": "m"});
         assert!(guard_json("registry", p, &reg, "version").is_err());
         assert!(guard_json("registry", p, &serde_json::json!({"version": 2}), "version").is_ok());
@@ -2100,5 +2166,38 @@ mod tests {
         assert_eq!(Manifest::load(&env).unwrap().nimitz, "9.0.0", "the newer mark stays");
         assert!(!up_to_date(&env), "so every run checks again");
         assert!(issues(&env).iter().any(|i| i.code == "config.too_new"));
+    }
+
+    /// A squadron with an effort is format 2 with `min_nimitz` (0.7.12); one
+    /// without stays 1. An older nimitz (it knows squadron format 1: 0.5.0 to
+    /// 0.7.11) refuses the first before its strict parse (`config.too_new`)
+    /// and still reads the second.
+    #[test]
+    fn a_squadron_with_an_effort_is_stamped_for_older_readers() {
+        let p = Path::new("/h/main/squadrons/argos/squadron.toml");
+        let mut sq = SquadronConfig { squadron: "ARGOS".into(), ships: vec![ShipDef { name: "S".into(), ..Default::default() }], ..Default::default() };
+        stamp_squadron(&mut sq);
+        assert_eq!((sq.format, sq.min_nimitz.as_deref()), (None, None));
+        let plain = crate::config::toml_out(&sq);
+        assert_eq!(squadron_wanted(plain.as_bytes()), 1);
+        assert!(guard_known("squadron", 1, p, &toml_stamp(&plain, "format")).is_ok(), "an older nimitz reads it");
+        sq.ships[0].effort = Some("high".into());
+        stamp_squadron(&mut sq);
+        assert_eq!((sq.format, sq.min_nimitz.as_deref()), (Some(2), Some(squadron_effort_min())));
+        let text = crate::config::toml_out(&sq);
+        assert_eq!(squadron_wanted(text.as_bytes()), 2);
+        let old = guard_known("squadron", 1, p, &toml_stamp(&text, "format")).unwrap_err();
+        assert_eq!(old.format, 2);
+        assert!(guard("squadron", p, &toml_stamp(&text, "format")).is_ok(), "this nimitz reads its own");
+        // the step on an unstamped file: the stamp on top, the rest as it was
+        let hand = "squadron = \"ARGOS\"\neffort = \"low\"\n";
+        assert_eq!(squadron_wanted(hand.as_bytes()), 2);
+        let out = String::from_utf8(squadron_1_2(hand.as_bytes()).unwrap()).unwrap();
+        assert_eq!(out, format!("format = 2\nmin_nimitz = \"{}\"\n{hand}", squadron_effort_min()));
+        assert_eq!(SQUADRON_EFFORT_SINCE, "0.7.12");
+        // the last effort gone: back to 1, no stamp
+        sq.ships[0].effort = None;
+        stamp_squadron(&mut sq);
+        assert_eq!((sq.format, sq.min_nimitz.as_deref()), (None, None));
     }
 }

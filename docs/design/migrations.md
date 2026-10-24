@@ -16,7 +16,7 @@ its fixture, or when a type's shape moves without a version.
 | Artifact | Where | Scope | Version kept in | 0.4.0 | 0.5.0 |
 | --- | --- | --- | --- | --- | --- |
 | `fleet` | `H/<fleet>/fleet.toml` | shared | `format = N` (absent = 1) | 1 | 2 when it holds `[[aide]]` (else 1); 0.7.0: 1 (the aides cleanup takes a format 2 back) |
-| `squadron` | `H/<fleet>/squadrons/<sq>/squadron.toml` | shared | `format = N` (absent = 1) | 1 | 1 |
+| `squadron` | `H/<fleet>/squadrons/<sq>/squadron.toml` | shared | `format = N` (absent = 1) | 1 | 1; 0.7.12: 2 when it holds an `effort` (else 1) |
 | `fleet-settings` | `H/<fleet>/settings.json` | shared | `format` key (absent = 1) | (none) | (0.7.0: born at 1) |
 | `legacy` | `H/<fleet>/legacy.toml` | shared | `format = N` (absent = 1) | 1 | 1 |
 | `brief` | lead `CLAUDE.md` | shared | the rules version marker | (text) | (unchanged mechanism: `rules::briefs`) |
@@ -59,6 +59,23 @@ from a real 0.4.0 install for N = the 0.4.0 version).
 - `fleet` 1 -> 2: **shared**, never automatic: `format = 2` and
   `min_nimitz = "0.5.0"`, needed only when a fleet holds `[[aide]]`
   (section 4).
+
+0.7.12:
+
+- `squadron` 1 -> 2: **shared**, never automatic: `format = 2` and
+  `min_nimitz = "0.7.12"`, needed only when a squadron holds an `effort`
+  (its own or a ship's; issue #8). nimitz writes it so itself
+  (`formats::stamp_squadron`, every squadron.toml writer) and takes a
+  squadron back to 1 when its last effort goes, so a squadron without one
+  stays readable by every nimitz; the step is for a hand edit, which
+  `check` names `format.shared`. 0.5.0 to 0.7.11 know squadron format 1
+  only: they refuse a format 2 squadron before the strict parse
+  (`config.too_new`), where without the stamp their strict parse would fail
+  on the unknown `effort` key. That squadron and its ships are unreadable
+  there; the fleet's other squadrons still load and launch, but every config
+  write to the fleet refuses there until it updates (`load_fleet_for_write`).
+  A plan that raises a squadron to 2 warns `format.raise`, naming the
+  fleet's other machines.
 
 ### Cleanups (0.7.0: the aides are gone)
 

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 /// Bump when the rules text changes in a way members must pick up, and add
 /// the version's entry to `CHANGELOG`.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 /// What changed in each rules version, oldest first (one entry per version;
 /// a member on v{N} gets the entries after N with the new text).
@@ -91,6 +91,15 @@ pub const CHANGELOG: &[(u32, &str)] = &[
          members are named by paths (`F`, `F/SQ`, `F/SQ/SHIP`; `F/...` everything under one); the user attaches with `nimitz open <id>`; \
          `start` (jobs only), `restart` (relaunch), `stop`, and `muster` (after a reboot, an update or a Herdr closure); \
          a command that stops or relaunches you runs that step last, after your turn ends",
+    ),
+    (
+        11,
+        "a lead may edit its own unit's brief and prompts by hand (an admiral: its fleet's CLAUDE.md, its squadrons' SQUADRON.md and prompts/; \
+         a commodore: its SQUADRON.md, CLAUDE.md and prompts/), never another unit's files nor machine state; settings change only through nimitz; \
+         `ship new|set --prompt-file` copies the file into the squadron's prompts/; \
+         leads run fleet management themselves (`--plan`, `--yes`, then a report; start, restart, stop, ship and squadron new|set, ship rm, rm, sweep, adopt, \
+         harness add|rm, settings set, kb clone); the user's OK is needed only for fleet rm, squadron rm, machine rm, trust, migrate --shared, \
+         --force, --fresh or anything that drops a conversation, and settings set kb.*; `nimitz signal --type` types into a member's pane",
     ),
 ];
 
@@ -485,6 +494,19 @@ mod tests {
             assert!(!r.contains("may not") && !r.contains("Never another") && !r.contains("comms") && !r.contains("-p`") && !r.contains(" -f`"), "{r}");
         }
         assert!(s.contains("`nimitz sweep HOME/GITHUB/DEV`"), "{s}");
+        // v11 (issue #9): settings through nimitz; a lead's own unit's brief and prompts by hand
+        for r in [&t, &a, &s] {
+            assert!(r.contains("Change fleet and squadron settings only through nimitz commands") && r.contains("A lead\n  may edit its own unit's brief and prompts by hand") && r.contains("never another unit's files,\n  never machine state"), "{r}");
+            assert!(!r.contains("Never edit fleet files"), "{r}");
+            // and agent-first: the user's OK for a few steps only, none for routine work
+            assert!(r.contains("These wait for the user's OK first: `fleet rm`,\n  `squadron rm`, `machine rm`, a plan that trusts a folder, `migrate\n  --shared`, any `--force`, `--fresh`") && r.contains("`settings set kb.*`"), "{r}");
+            assert!(r.contains("run the fix unless it\n  is one of those") && r.contains("`--type`\n  types into its pane"), "{r}");
+            assert!(!r.contains("show the plan to the user") && !r.contains("unless the user\n  names it") && !r.contains("only when you need it") && !r.contains("still\n  runs only once"), "{r}");
+        }
+        for r in [&t, &a] {
+            assert!(r.contains("You run the fleet's management yourself, with no wait for the user") && r.contains("(a busy ship too)") && r.contains("`kb clone`"), "{r}");
+        }
+        assert!(!s.contains("management yourself") && s.contains("to the leads, unless a lead asks you"), "{s}");
         // `start`, `restart`, `muster` are in the leads' rules, not a ship's
         for r in [&t, &a] {
             assert!(r.contains("`nimitz start <path>`") && r.contains("`nimitz restart <path>`") && r.contains("`nimitz muster`"), "{r}");

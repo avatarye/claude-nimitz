@@ -2638,6 +2638,34 @@ fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
         let c = line["message"]["content"].as_str().unwrap();
         assert!(c.contains("[nimitz signal]") && c.contains("boxed") && c.contains(sender) && c.contains("not the user's approval"), "{c}");
     }
+    // a member's `--type`: typed into the pane through the same checks, led
+    // by who sent it (never read as the user's own input); never with --inbox
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS", "typed by a ship", "--type", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("[nimitz signal from MAIN/ARGOS/CLEAN] typed by a ship")), "{:?}", sb.prompts("w1:p2"));
+    assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "--type: not the inbox");
+    assert_eq!(sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS", "x", "--type", "--inbox", "--yes"]).code, 2);
+    // waiting on the user (a permission prompt): a member's --type is never
+    // typed (its Enter would answer the dialog), it goes to the inbox and says so
+    let sid = sb.member("MAIN/ARGOS")["session"]["session_id"].as_str().unwrap().to_string();
+    for e in std::fs::read_dir(sb.base.join("claude_home").join("sessions")).unwrap().flatten() {
+        let mut v: Value = serde_json::from_slice(&std::fs::read(e.path()).unwrap()).unwrap_or_default();
+        if v["sessionId"] == sid.as_str() {
+            v["status"] = Value::from("waiting");
+            v["waitingFor"] = Value::from("approve Bash");
+            std::fs::write(e.path(), v.to_string()).unwrap();
+        }
+    }
+    let typed_before = sb.prompts("w1:p2").len();
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS", "while it waits", "--type", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("is waiting on the user (its question is the user's to answer), so nothing is typed"), "{}", r.out);
+    assert_eq!(sb.prompts("w1:p2").len(), typed_before, "nothing typed into the waiting pane");
+    let line: Value = serde_json::from_str(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().trim()).unwrap();
+    assert!(line["message"]["content"].as_str().unwrap().contains("while it waits"), "{line}");
+    // a member with no tab of its own: attached first, then typed, as for yours
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS/CLEAN", "hello", "--type", "--plan"]);
+    assert!(r.out.contains("has no tab yet"), "no pane of its own: one is attached first, as for yours:\n{}", r.out);
 }
 
 /// A lead on a Claude Code older than the verified line format gets the
@@ -3003,4 +3031,95 @@ fn status_shows_a_live_jobs_topic_on_its_line_cut_to_the_terminal() {
     let line = cut.lines().find(|l| l.contains("MAIN/ARGOS/CLEAN") && l.contains(" -- ")).unwrap_or_else(|| panic!("{cut}"));
     let cells = line.chars().count() + line.chars().filter(|c| *c == '\u{691c}' || *c == '\u{67fb}').count();
     assert!(line.ends_with("...") && cells <= 120, "{cells}: {line}");
+}
+
+/// Issue #8: a ship's effort is set by `ship set --effort` (or its squadron's
+/// default), stored stamped, shown by `status`, and carried as `--effort` by
+/// every launch and relaunch; a wake keeps it (the job's `respawnFlags`).
+#[test]
+fn a_ships_effort_is_stored_stamped_shown_and_launched() {
+    let sb = Sb::new(false);
+    let sq_toml = || std::fs::read_to_string(sb.base.join("nimitz").join("main").join("squadrons").join("argos").join("squadron.toml")).unwrap();
+    let respawn = |id: &str| {
+        let short = sb.member(id)["session"]["short_id"].as_str().unwrap().to_string();
+        let job = sb.base.join("claude_home").join("jobs").join(&short).join("state.json");
+        let v: Value = serde_json::from_slice(&std::fs::read(&job).unwrap()).unwrap();
+        v["respawnFlags"].as_array().unwrap().iter().map(|x| x.as_str().unwrap_or("").to_string()).collect::<Vec<_>>().join(" ")
+    };
+    assert!(!sq_toml().contains("format = 2"), "no effort: format 1, every nimitz reads it");
+    // an unknown level is refused, the valid ones listed
+    let r = sb.run(&["ship", "set", "MAIN/ARGOS/CLEAN", "--effort", "huge", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("low, medium, high, xhigh, max"), "{}", r.out);
+    let r = sb.run(&["squadron", "set", "MAIN/ARGOS", "--effort", "ultra", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    // a live ship: the plan says it applies at the restart, and names it; nothing restarts
+    let before = sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"].clone();
+    let r = sb.run(&["ship", "set", "MAIN/ARGOS/CLEAN", "--effort", "high", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("effort.pending") && r.out.contains("nimitz restart MAIN/ARGOS/CLEAN"), "{}", r.out);
+    assert!(!r.out.contains("config.pending"), "one note: {}", r.out);
+    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")) && sb.member("MAIN/ARGOS/CLEAN")["session"]["session_id"] == before, "no restart of its own");
+    // stored, and the file stamped so an older nimitz refuses it cleanly
+    let t = sq_toml();
+    assert!(t.starts_with(&format!("format = 2\nmin_nimitz = \"{}\"\n", nimitz_core::formats::squadron_effort_min())), "{t}");
+    assert!(t.contains("effort = \"high\""), "{t}");
+    // status: JSON and text
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["effort"], "high");
+    assert!(sb.run(&["status"]).out.lines().any(|l| l.contains("MAIN/ARGOS/CLEAN") && l.contains("effort high")));
+    // restart: the relaunch carries it (-v shows the command), and the job keeps it
+    let r = sb.run(&["restart", "MAIN/ARGOS/CLEAN", "--plan"]);
+    assert!(r.out.contains("--effort high"), "{}", r.out);
+    let r = sb.run(&["restart", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(respawn("MAIN/ARGOS/CLEAN").contains("--effort high"), "{}", respawn("MAIN/ARGOS/CLEAN"));
+    // a stop and a wake (no flags) keep it
+    assert_eq!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--yes"]).code, 0);
+    let r = sb.run(&["start", "MAIN/ARGOS/CLEAN", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("--resume") && !r.out.contains("--effort"), "a native wake, no flags:\n{}", r.out);
+    assert!(live(&sb.member("MAIN/ARGOS/CLEAN")));
+    assert!(respawn("MAIN/ARGOS/CLEAN").contains("--effort high"), "{}", respawn("MAIN/ARGOS/CLEAN"));
+    // the squadron's default reaches the ships without their own; a ship's own wins
+    let r = sb.run(&["squadron", "set", "MAIN/ARGOS", "--effort", "low", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(sb.member("MAIN/ARGOS/NOLABEL")["effort"], "low");
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["effort"], "high");
+    assert!(sb.member("MAIN/ARGOS")["effort"].is_null(), "a lead takes no squadron effort");
+    let r = sb.run(&["restart", "MAIN/ARGOS/NOLABEL", "--plan"]);
+    assert!(r.out.contains("--effort low"), "{}", r.out);
+    // cleared ('' as for --mode): the last one takes the stamp with it
+    assert_eq!(sb.run(&["ship", "set", "MAIN/ARGOS/CLEAN", "--effort", "", "--yes"]).code, 0);
+    assert_eq!(sb.member("MAIN/ARGOS/CLEAN")["effort"], "low");
+    assert_eq!(sb.run(&["squadron", "set", "MAIN/ARGOS", "--effort=", "--yes"]).code, 0);
+    assert!(sb.member("MAIN/ARGOS/CLEAN")["effort"].is_null());
+    let t = sq_toml();
+    assert!(!t.contains("effort") && !t.contains("format = 2"), "{t}");
+}
+
+/// Issue #9: `ship new --prompt-file` with a file outside the squadron (a
+/// job's temp folder, relative to the current folder) copies it into the
+/// squadron's `prompts/` and stores that relative path; `check` warns about
+/// one an older nimitz stored outside.
+#[test]
+fn a_prompt_file_is_copied_into_the_squadrons_prompts() {
+    let sb = Sb::new(false);
+    let work = sb.base.join("job-tmp");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("p.txt"), "You are NEWSHIP.").unwrap();
+    let sq = sb.base.join("nimitz").join("main").join("squadrons").join("argos");
+    let mut c = Command::new(EXE);
+    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_VERBOSE", "1").envs(&sb.vars).current_dir(&work);
+    let o = c.args(["ship", "new", "MAIN/ARGOS/NEWSHIP", "--dir", "managed", "--prompt-file", "p.txt", "--yes"]).stdin(Stdio::null()).output().unwrap();
+    let out = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(out.contains("copied from") && out.contains("prompts/NEWSHIP.txt"), "the plan shows the copy:\n{out}");
+    let t = std::fs::read_to_string(sq.join("squadron.toml")).unwrap();
+    assert!(t.contains("prompt_file = \"prompts/NEWSHIP.txt\""), "{t}");
+    assert_eq!(std::fs::read_to_string(sq.join("prompts").join("NEWSHIP.txt")).unwrap(), "You are NEWSHIP.");
+    // an absolute path an older nimitz stored: check warns, with the fix
+    let abs = work.join("p.txt").to_string_lossy().into_owned();
+    std::fs::write(sq.join("squadron.toml"), t.replace("prompt_file = \"prompts/NEWSHIP.txt\"", &format!("prompt_file = {:?}", abs))).unwrap();
+    let r = sb.run(&["check", "MAIN/ARGOS/NEWSHIP"]);
+    assert!(r.out.contains("(prompt.file)") && r.out.contains("outside the squadron folder") && r.out.contains("nimitz ship set MAIN/ARGOS/NEWSHIP --prompt-file <path>"), "{}", r.out);
 }

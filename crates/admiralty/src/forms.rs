@@ -397,7 +397,7 @@ impl Form {
             FormKind::EditFleet(f) => nimitz_core::config::plan_fleet_set(env, f, set_mode(self.get("mode"))),
             FormKind::EditSquadron(id) => {
                 let brief = Some(self.get("brief").trim()).filter(|b| !b.is_empty());
-                nimitz_core::config::plan_squadron_set(env, id, brief, set_mode(self.get("mode")))
+                nimitz_core::config::plan_squadron_set(env, id, brief, set_mode(self.get("mode")), None)
             }
             FormKind::MachineRm(f) => {
                 if let Some(e) = label_err(self.get("machine")) {
