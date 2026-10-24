@@ -70,8 +70,12 @@ from a real 0.4.0 install for N = the 0.4.0 version).
   stays readable by every nimitz; the step is for a hand edit, which
   `check` names `format.shared`. 0.5.0 to 0.7.11 know squadron format 1
   only: they refuse a format 2 squadron before the strict parse
-  (`config.too_new`, that squadron alone), where without the stamp their
-  strict parse would fail on the unknown `effort` key.
+  (`config.too_new`), where without the stamp their strict parse would fail
+  on the unknown `effort` key. That squadron and its ships are unreadable
+  there; the fleet's other squadrons still load and launch, but every config
+  write to the fleet refuses there until it updates (`load_fleet_for_write`).
+  A plan that raises a squadron to 2 warns `format.raise`, naming the
+  fleet's other machines.
 
 ### Cleanups (0.7.0: the aides are gone)
 

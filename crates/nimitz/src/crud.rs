@@ -214,7 +214,11 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk, sq: &st
         // one, else a file of the current folder; core copies one from
         // outside `prompts/` into it (`config::plan_ship_set`)
         let sq_dir = f.squadrons.iter().find(|(_, s)| s.squadron == sq).map(|(d, _)| d.clone());
-        let own = sq_dir.is_some_and(|d| d.join(p).is_file());
+        let own = sq_dir.as_ref().is_some_and(|d| d.join(p).is_file());
+        let here = !config::is_absolute_dir(p) && !p.starts_with('~') && Path::new(p).is_file();
+        if own && here && sq_dir.as_ref().is_some_and(|d| nimitz_core::env::canon(&d.join(p)) != nimitz_core::env::canon(Path::new(&absolute_dir(p)))) {
+            out::warn(&format!("--prompt-file {p}: both the squadron's {} and ./{p} exist; the squadron's is used (give an absolute path for the other)", sq_dir.as_ref().unwrap().join(p).display()));
+        }
         def.prompt_file = Some(if own || p.starts_with('~') || config::is_absolute_dir(p) { p.to_string() } else { absolute_dir(p) });
         def.prompt = None;
     }

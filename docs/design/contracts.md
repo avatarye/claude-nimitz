@@ -75,10 +75,13 @@ squadron folder (or, as an older nimitz stored it, absolute). `ship new|set
 --prompt-file P` takes P into the squadron: a P already in its `prompts/` is
 stored relative as it is; any other is copied to `prompts/<SHIP>.txt`
 (`.md` for a `.md` source; a write step in the plan) and that path stored,
-so a prompt never lives in a temp folder or on one machine only (a `ship
-set` also takes in a stored one that lies outside `prompts/`). A P that does
-not read refuses. A relative P on the command line is the squadron's own
-file when one exists there, else one of the current folder. `ship rm`
+so a prompt never lives in a temp folder or on one machine only (any `ship
+set` also takes in a stored one outside the squadron folder, the case
+`check` warns about; one elsewhere in the squadron folder stays where it
+is). A P that does not read refuses, and so does a copy onto another ship's
+prompt file. A relative P on the command line is the squadron's own file
+when one exists there, else one of the current folder (both: the
+squadron's, with a warning). `ship rm`
 removes the ship's entry only and leaves its prompt file (as it leaves its
 folder). `check` warns `prompt.file` for a `prompt_file` outside the
 squadron folder or missing (fix `nimitz ship set <id> --prompt-file
@@ -103,9 +106,15 @@ next launch asks for: `config::launch_effort`), `status` prints
 `effort <level>` on its line. A squadron.toml that holds an `effort` is
 written at format 2 with `min_nimitz = "0.7.12"` (`formats::stamp_squadron`),
 one without at format 1: nimitz 0.5.0 to 0.7.11 refuse the first before the
-strict parse (`config.too_new`, that squadron and its ships only: "needs
-nimitz >= 0.7.12 ... update nimitz here"), the rest of the fleet still loads
-there, and they never rewrite it.
+strict parse (`config.too_new`: "needs nimitz >= 0.7.12 ... update nimitz
+here") and never rewrite it. There, that squadron and its ships are
+unreadable, while the fleet's other squadrons still load, show and launch;
+but every config write to the whole fleet (`fleet`, `squadron`, `ship`,
+`machine` new|set|rm, any squadron's) refuses until that machine updates
+(`load_fleet_for_write` refuses while any squadron of the fleet does not
+read). A plan that takes a squadron from format 1 to 2 says so
+(`format.raise`, Warn, naming the fleet's other machines); a lead runs it
+and reports it.
 
 A ship with no `dirs` entry for this machine does not run here. A `dirs` value
 is `managed`, an absolute path or `~/...` (`config::normalize_ship_dir`; empty,

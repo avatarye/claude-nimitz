@@ -600,8 +600,13 @@ struct Delivery<'a> {
 /// One member's delivery and its steps in `plan`, or its refusal there.
 fn prepare<'a>(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, via: &'a Member, body: String, text: &str, plan: &mut Plan) -> Option<Delivery<'a>> {
     let why = "type into its attached tab".to_string();
-    // a member's signal goes to the inbox unless it asks to type (`--type`)
-    let inbox = ctx.args.flag("--inbox") || (ctx.caller != Caller::User && !ctx.args.flag("--type"));
+    // a member's signal goes to the inbox unless it asks to type (`--type`);
+    // never typed into one waiting on the user (a question or a permission
+    // prompt: the text and its Enter would answer it), but posted to its
+    // inbox, which waits for the dialog (the user's own signal types as before)
+    let waiting = waiting_on_user(via);
+    let held_back = ctx.caller != Caller::User && ctx.args.flag("--type") && waiting;
+    let inbox = ctx.args.flag("--inbox") || (ctx.caller != Caller::User && !ctx.args.flag("--type")) || held_back;
     // its attached tab first: text typed there is the user's own input
     let shown = via.session.as_ref().filter(|_| !inbox && mux.caps().type_text).and_then(|s| run::shown_in(mux, &s.session_id));
     // a pane known by its attach alone takes typing only while it runs
@@ -616,7 +621,9 @@ fn prepare<'a>(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, via: &'a Member, body: Stri
             match crate::notify::inbox_target(&ctx.env, &via.id, s) {
                 Ok((socks, pid)) => {
                     let at = socks.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" or ");
-                    let what = if inbox { "post it into its inbox (the first socket its own process listens on), as a request".to_string() } else { format!("{}'s tab cannot be typed into: post it into its inbox (the first socket its own process listens on), as a request, not your input", via.id) };
+                    let what = if held_back {
+                        format!("{} is waiting on the user (its question is the user's to answer), so nothing is typed: post it into its inbox instead, as a request", via.id)
+                    } else if inbox { "post it into its inbox (the first socket its own process listens on), as a request".to_string() } else { format!("{}'s tab cannot be typed into: post it into its inbox (the first socket its own process listens on), as a request, not your input", via.id) };
                     plan.steps.push(Step { id: Some(via.id.clone()), cmd: vec!["inbox".into(), at, body.clone()], cwd: None, why: what });
                     return Some(Delivery { via, reach: Reach::Inbox(socks, pid), body, job });
                 }
@@ -625,6 +632,10 @@ fn prepare<'a>(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, via: &'a Member, body: Stri
         }
     }
     let inbox_why = no_inbox.map(|w| format!("; its inbox cannot be used: {w}")).unwrap_or_default();
+    if held_back {
+        plan.refusals.push(refusal("signal.waiting", format!("{} is waiting on the user: its question is the user's to answer; nothing is typed{inbox_why}", via.id), None, Some(via.id.clone())));
+        return None;
+    }
     if inbox {
         plan.refusals.push(refusal("inbox.none", format!("{} has no inbox to post to{inbox_why}", via.id), None, Some(via.id.clone())));
         return None;
@@ -664,6 +675,36 @@ fn prepare<'a>(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, via: &'a Member, body: Stri
             Some(Delivery { via, reach: Reach::NewTab, body, job })
         }
     }
+}
+
+/// Is `m` waiting on the user (a question or a permission prompt)? Typed
+/// text and its Enter would answer that dialog.
+fn waiting_on_user(m: &Member) -> bool {
+    m.status == Status::NeedsYou || m.session.as_ref().is_some_and(|s| s.waiting_for.is_some() || s.status.as_deref() == Some("waiting"))
+}
+
+/// A member's `--type`, just before typing: the target read again, and when
+/// it waits on the user now (it started after the plan), its inbox instead,
+/// said so; refused with no inbox. None: type on. The user's own signal is
+/// never held back.
+fn held_back_now(ctx: &Ctx, d: &Delivery) -> Option<i32> {
+    if ctx.caller == Caller::User || !ctx.args.flag("--type") {
+        return None;
+    }
+    let snap = ctx.snap();
+    let now = member(&snap, &d.via.id).filter(|m| waiting_on_user(m))?;
+    let id = &d.via.id;
+    let posted = now.session.as_ref().ok_or_else(|| "no session".to_string()).and_then(|s| crate::notify::inbox_target(&ctx.env, id, s)).and_then(|(socks, pid)| nimitz_core::inbox::send(&ctx.env, &socks, pid, &d.body));
+    Some(match posted {
+        Ok(sock) => {
+            out::ok(&format!("{id} is waiting on the user now (its question is the user's to answer), so nothing is typed: posted to its inbox {} instead, as a request", sock.display()));
+            0
+        }
+        Err(w) => {
+            out::issue(&refusal("signal.waiting", format!("{id} is waiting on the user: its question is the user's to answer; nothing is typed; its inbox cannot be used: {w}"), None, Some(id.clone())));
+            1
+        }
+    })
 }
 
 /// Deliver one member's signal (the plan ran); its exit code.
@@ -722,6 +763,10 @@ fn deliver(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, d: &Delivery, text: &str) -> i3
             }
         },
     };
+    // (it may have started waiting on the user since the plan)
+    if let Some(code) = held_back_now(ctx, d) {
+        return code;
+    }
     let job = &d.job;
     let check = if recheck { nimitz_mux::attach_check(mux, &pane, job) } else { nimitz_mux::AttachCheck::Exact };
     if check != nimitz_mux::AttachCheck::Exact {

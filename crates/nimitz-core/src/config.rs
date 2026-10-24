@@ -684,6 +684,34 @@ pub(crate) fn toml_out<T: serde::Serialize>(v: &T) -> String {
     toml::to_string_pretty(v).unwrap_or_default()
 }
 
+/// A plan that takes a squadron.toml from format 1 to 2 (its first effort, or
+/// a new squadron with one) cuts off every machine on an older nimitz: say so,
+/// naming the fleet's other machines (`format.raise`, Warn: a lead runs the
+/// plan itself and reports it).
+pub(crate) fn warn_format_raise(f: &FleetOnDisk, old: Option<&SquadronConfig>, new: &SquadronConfig, id: &Id, plan: &mut Plan) {
+    if old.is_some_and(crate::formats::squadron_uses_effort) || !crate::formats::squadron_uses_effort(new) {
+        return;
+    }
+    let others: Vec<String> = f.config.machines.iter().filter(|(l, _)| Some(*l) != f.machine.as_ref()).map(|(l, m)| format!("{l} ({})", m.hostname)).collect();
+    if others.is_empty() {
+        return;
+    }
+    plan.warnings.push(issue(
+        "format.raise",
+        Severity::Warn,
+        format!(
+            "squadron {}/{} becomes format 2 (it sets an effort): {} need nimitz >= {} to read this squadron; until they update, they refuse it, and every config change to fleet {} there",
+            f.config.fleet,
+            new.squadron,
+            others.join(", "),
+            crate::formats::SQUADRON_EFFORT_SINCE,
+            f.config.fleet
+        ),
+        None,
+        Some(id.clone()),
+    ));
+}
+
 /// A squadron.toml as written: at the lowest format that holds it
 /// (`formats::stamp_squadron`: 2 and `min_nimitz` when it sets an effort).
 pub(crate) fn squadron_toml(sq: &SquadronConfig) -> String {
@@ -794,6 +822,7 @@ pub fn plan_squadron_new_with(env: &Env, fleet: &str, sq: &str, brief: &str, mod
         ships: vec![],
         ..Default::default()
     };
+    warn_format_raise(&f, None, &config, &id, &mut plan);
     plan.steps = vec![
         step_mkdir(Some(id.clone()), &sd, "commodore's folder"),
         step_write(Some(id.clone()), &sd.join("squadron.toml"), squadron_toml(&config), "squadron settings"),
@@ -859,8 +888,9 @@ fn in_prompts(sq_dir: &Path, p: &Path) -> bool {
 /// relative to the squadron folder, as it is; any other is copied there
 /// (`prompt_file_for`, a write step in the plan) and that relative path is
 /// stored, so a prompt never lives in a folder that goes away (a job's temp
-/// folder) or on one machine only. A file that does not read refuses.
-fn adopt_prompt_file(sq_dir: &Path, id: &Id, ship: &mut ShipDef, plan: &mut Plan) {
+/// folder) or on one machine only. A file that does not read refuses, and so
+/// does a copy onto another ship's prompt file (`others`: the squadron's ships).
+fn adopt_prompt_file(sq_dir: &Path, others: &[ShipDef], id: &Id, ship: &mut ShipDef, plan: &mut Plan) {
     let Some(pf) = ship.prompt_file.clone() else { return };
     let src = prompt_path(sq_dir, &pf);
     let text = match std::fs::read_to_string(&src) {
@@ -878,6 +908,17 @@ fn adopt_prompt_file(sq_dir: &Path, id: &Id, ship: &mut ShipDef, plan: &mut Plan
         return;
     }
     let to = prompt_file_for(&ship.name, &src);
+    let target = crate::env::canon(&sq_dir.join(&to));
+    if let Some(o) = others.iter().find(|o| o.name != ship.name && o.prompt_file.as_deref().is_some_and(|pf| crate::env::canon(&prompt_path(sq_dir, pf)) == target)) {
+        refuse(
+            plan,
+            "config.invalid",
+            format!("{id}: the copy would go to {to}, which is ship {}'s prompt file", o.name),
+            Some(format!("nimitz ship set {}/{}/{} --prompt-file <its own file>", id.fleet(), id.squadron().unwrap_or_default(), o.name)),
+            Some(id.clone()),
+        );
+        return;
+    }
     plan.steps.push(step_mkdir(Some(id.clone()), &sq_dir.join("prompts"), "the squadron's prompts folder"));
     plan.steps.push(step_write(Some(id.clone()), &sq_dir.join(&to), text, &format!("the prompt, copied from {}", src.display())));
     ship.prompt_file = Some(to);
@@ -891,7 +932,8 @@ fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, mut sq: SquadronConfig, id: &
     }
     let mut ship = ship.clone();
     if new_prompt {
-        adopt_prompt_file(sq_dir, id, &mut ship, plan);
+        let others = sq.ships.clone();
+        adopt_prompt_file(sq_dir, &others, id, &mut ship, plan);
         if !plan.ok() {
             return;
         }
@@ -974,6 +1016,8 @@ fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, mut sq: SquadronConfig, id: &
         let managed = f.dir.join("ships").join(sq.squadron.to_lowercase()).join(ship.name.to_lowercase());
         plan.steps.push(step_mkdir(Some(id.clone()), &managed, "managed ship folder"));
     }
+    let old = f.squadrons.iter().find(|(_, s)| s.squadron == sq.squadron).map(|(_, s)| s);
+    warn_format_raise(f, old, &sq, id, plan);
     plan.steps.push(step_write(Some(id.clone()), &sq_dir.join("squadron.toml"), squadron_toml(&sq), "squadron settings"));
 }
 
@@ -1052,11 +1096,13 @@ pub fn plan_ship_set(env: &Env, id: &Id, ship: ShipDef) -> Plan {
         refuse(&mut plan, "config.missing", format!("no ship {id}"), Some(format!("nimitz ship new {id}")), Some(id.clone()));
         return plan;
     };
-    // a new prompt_file, or one that still lies outside prompts/ (an older nimitz stored the path)
+    // a new prompt_file, or one outside the squadron folder (an older nimitz
+    // stored the path; `check` warns `prompt.file`, and this is its fix); one
+    // elsewhere in the squadron folder is left where it is
     let new_prompt = ship.prompt.is_none()
         && ship.prompt_file.as_deref().is_some_and(|pf| {
             let p = prompt_path(sd, pf);
-            ship.prompt_file != sqc.ships[pos].prompt_file || (p.is_file() && !in_prompts(sd, &p))
+            ship.prompt_file != sqc.ships[pos].prompt_file || (p.is_file() && !crate::env::canon(&p).starts_with(crate::env::canon(sd)))
         });
     let mut new_sq = sqc.clone();
     new_sq.ships[pos] = ship.clone();
@@ -1340,6 +1386,7 @@ pub fn plan_squadron_set(env: &Env, id: &Id, brief: Option<&str>, mode: Option<&
         plan.steps.push(step_write(Some(id.clone()), &dir.join(file), squadron_md(&fleet, &sq, b), "the brief"));
     }
     if &c != s {
+        warn_format_raise(&f, Some(s), &c, id, &mut plan);
         plan.steps.insert(0, step_write(Some(id.clone()), &dir.join("squadron.toml"), squadron_toml(&c), "squadron settings"));
     }
     if !plan.ok() {
@@ -1968,6 +2015,23 @@ pub(crate) mod tests {
         assert_eq!(find_ship(&load_fleet(&env, "MAIN").unwrap(), &id).unwrap().2.prompt_file.as_deref(), Some("prompts/other.txt"));
         // a file that does not read refuses
         assert!(!plan_ship_set(&env, &id, def(&tmp.join("nope.txt").to_string_lossy())).ok());
+        // a copy onto another ship's prompt file refuses (BRAVO keeps prompts/ARGOS.md)
+        let bravo = ShipDef { name: "BRAVO".into(), prompt_file: Some("prompts/ARGOS.md".into()), dirs: [("test-mac".to_string(), "managed".to_string())].into(), ..Default::default() };
+        apply_ok(&env, &plan_ship_new(&env, "MAIN", "ARGOS", bravo));
+        let clash = plan_ship_set(&env, &id, def(&tmp.join("brief.md").to_string_lossy()));
+        assert!(!clash.ok() && clash.refusals[0].message.contains("which is ship BRAVO's prompt file"), "{:?}", clash.refusals);
+        // an unrelated set leaves a prompt file elsewhere in the squadron folder where it is
+        std::fs::write(sd.join("root.txt"), "In the squadron root.").unwrap();
+        apply_ok(&env, &plan_ship_set(&env, &id, def("root.txt")));
+        let f = load_fleet(&env, "MAIN").unwrap();
+        assert_eq!(find_ship(&f, &id).unwrap().2.prompt_file.as_deref(), Some("prompts/ARGOS.txt"), "given: taken into prompts/");
+        let mut stored = find_ship(&f, &id).unwrap().2.clone();
+        stored.prompt_file = Some("root.txt".into());
+        let mut sqc = f.squadrons[0].1.clone();
+        *sqc.ships.iter_mut().find(|s| s.name == "ARGOS").unwrap() = stored.clone();
+        std::fs::write(sd.join("squadron.toml"), toml_out(&sqc)).unwrap();
+        let p = plan_ship_set(&env, &id, ShipDef { depends_on: vec!["BRAVO".into()], ..stored });
+        assert!(p.steps.iter().all(|s| !s.why.contains("copied from")), "{:?}", p.steps);
 
         // check: a prompt_file outside the squadron folder (an older nimitz stored it), or missing
         let outside = tmp.join("outside.txt");
@@ -2144,7 +2208,17 @@ pub(crate) mod tests {
         let argv = |relaunch: bool| if relaunch { crate::claude::relaunch_bg(&env, &id, "", "sid") } else { crate::claude::launch_bg(&env, &id, "", Some("go")) };
         assert!(!argv(false).contains(&"--effort".to_string()), "none set: no flag");
 
-        apply_ok(&env, &plan_ship_set(&env, &id, def(Some("xhigh"))));
+        // format 1 -> 2 cuts off the fleet's other machines on an older nimitz: the plan says so
+        let p = plan_ship_set(&env, &id, def(Some("xhigh")));
+        assert!(p.warnings.iter().all(|i| i.code != "format.raise"), "no other machine: nothing to say");
+        apply_ok(&env, &plan_machine_add_on(&env, "MAIN", "box2", Some("box2-host"), vec![]));
+        let p = plan_ship_set(&env, &id, def(Some("xhigh")));
+        let w: Vec<&Issue> = p.warnings.iter().filter(|i| i.code == "format.raise").collect();
+        assert!(w.len() == 1 && w[0].severity == Severity::Warn && w[0].message.contains("box2 (box2-host) need nimitz >= 0.7.12 to read this squadron") && !w[0].message.contains("test-mac"), "{w:?}");
+        apply_ok(&env, &p);
+        assert!(plan_ship_set(&env, &id, def(Some("high"))).warnings.iter().all(|i| i.code != "format.raise"), "already format 2");
+        assert!(plan_squadron_set(&env, &Id::commodore("MAIN", "ARGOS"), None, None, Some("low")).warnings.iter().all(|i| i.code != "format.raise"));
+        assert!(plan_squadron_new_with(&env, "MAIN", "NEWSQ", "", None, Some("low")).warnings.iter().any(|i| i.code == "format.raise"), "a new squadron with an effort too");
         let t = sq_file();
         assert!(t.starts_with(&format!("format = 2\nmin_nimitz = \"{}\"\n", crate::formats::squadron_effort_min())), "{t}");
         let f = load_fleet(&env, "MAIN").unwrap();

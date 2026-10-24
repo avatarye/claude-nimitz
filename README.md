@@ -136,7 +136,7 @@ hands the outcome to the member's next session start.
 | --- | --- |
 | `fleet new\|set\|rm <F>` | A fleet (new: `--machine L`; set: `--admiral-mode M`) |
 | `squadron new\|set\|rm <F/SQ>` | A squadron (`--brief T --mode M --effort E`: `--mode` and `--effort` are its ships' defaults) |
-| `ship new\|set\|rm <F/SQ/SHIP>` | A ship (`--dir PATH\|managed --machine L --prompt T\|--prompt-file P --mode M --effort E --depends A,B`). `--effort low\|medium\|high\|xhigh\|max` is passed as `claude --effort` on every launch and relaunch (a wake keeps it); `''` clears it. A live ship takes a new one at `nimitz restart <id>`. A squadron.toml that sets an effort needs nimitz 0.7.12 on every machine: an older one refuses that squadron (`config.too_new`) |
+| `ship new\|set\|rm <F/SQ/SHIP>` | A ship (`--dir PATH\|managed --machine L --prompt T\|--prompt-file P --mode M --effort E --depends A,B`). `--effort low\|medium\|high\|xhigh\|max` is passed as `claude --effort` on every launch and relaunch (a wake keeps it); `''` clears it. A live ship takes a new one at `nimitz restart <id>`. A squadron.toml that sets an effort needs nimitz 0.7.12 on every machine: an older one refuses that squadron (`config.too_new`) and every config change to its fleet, while the fleet's other squadrons still run there; the plan that sets the first effort warns (`format.raise`) |
 | `machine add\|rm <F> <label>` | Run a fleet on another machine too (add: `--hostname H`, `--dir F/SQ/SHIP=PATH`) |
 | `settings get [<key>]` · `settings set <key> <value>` | The fleet's `settings.json` (`--fleet F`), e.g. `kb.remote`, `kb.dirs.<machine>` |
 | `harness list\|add\|rm\|push` | What every member of one fleet gets beyond nimitz's role rules: rules, agents, skills, settings ([docs/design/harness.md](docs/design/harness.md)) |
@@ -186,8 +186,9 @@ fixed widths; DETAIL takes the rest of a wide or fullscreen terminal.
   manage. `nimitz start` does it right.
 - Plan, then run: read the plan (`--plan`), then run it (`--yes`). Every
   member may run every command; the leads run routine fleet management
-  themselves and wait for your OK only for the few steps listed under "Most
-  used" (`--force` among them).
+  themselves and wait for your OK only for `fleet rm`, `squadron rm`,
+  `machine rm`, a folder's trust, `migrate --shared`, `--force`, `--fresh`
+  (or anything else that drops a conversation) and `settings set kb.*`.
 
 ## When something is wrong
 

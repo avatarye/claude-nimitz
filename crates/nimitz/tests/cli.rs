@@ -2645,6 +2645,24 @@ fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
     assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("[nimitz signal from MAIN/ARGOS/CLEAN] typed by a ship")), "{:?}", sb.prompts("w1:p2"));
     assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "--type: not the inbox");
     assert_eq!(sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS", "x", "--type", "--inbox", "--yes"]).code, 2);
+    // waiting on the user (a permission prompt): a member's --type is never
+    // typed (its Enter would answer the dialog), it goes to the inbox and says so
+    let sid = sb.member("MAIN/ARGOS")["session"]["session_id"].as_str().unwrap().to_string();
+    for e in std::fs::read_dir(sb.base.join("claude_home").join("sessions")).unwrap().flatten() {
+        let mut v: Value = serde_json::from_slice(&std::fs::read(e.path()).unwrap()).unwrap_or_default();
+        if v["sessionId"] == sid.as_str() {
+            v["status"] = Value::from("waiting");
+            v["waitingFor"] = Value::from("approve Bash");
+            std::fs::write(e.path(), v.to_string()).unwrap();
+        }
+    }
+    let typed_before = sb.prompts("w1:p2").len();
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS", "while it waits", "--type", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("is waiting on the user (its question is the user's to answer), so nothing is typed"), "{}", r.out);
+    assert_eq!(sb.prompts("w1:p2").len(), typed_before, "nothing typed into the waiting pane");
+    let line: Value = serde_json::from_str(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap().trim()).unwrap();
+    assert!(line["message"]["content"].as_str().unwrap().contains("while it waits"), "{line}");
     // a member with no tab of its own: attached first, then typed, as for yours
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS/CLEAN", "hello", "--type", "--plan"]);
     assert!(r.out.contains("has no tab yet"), "no pane of its own: one is attached first, as for yours:\n{}", r.out);
