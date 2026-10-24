@@ -21,15 +21,17 @@ turn; they win over older wording in a CLAUDE.md.
   never machine state.
 - Never start, resume or stop a member with `claude` (`--resume`, `--bg`,
   `-c`, `stop`, `rm`): it makes copies and stowaways nimitz cannot manage.
-- Plan first: run a change with `--plan`, show the plan to the user, and run
-  it with `--yes` only after the user agrees. Never `--force` unless the user
-  names it.
-- A refusal is an answer. On `[ERROR]` with a `fix:`, show the fix to the
-  user, or run it when it is part of what the user agreed. Never work around
-  a refusal.
+- Run a change with `--plan`, read the plan, run it with `--yes`, then
+  report what changed. These wait for the user's OK first: `fleet rm`,
+  `squadron rm`, `machine rm`, a plan that trusts a folder, `migrate
+  --shared`, any `--force`, `--fresh` or other step that drops a
+  conversation, and `settings set kb.*`.
+- A refusal is an answer. On `[ERROR]` with a `fix:`, run the fix unless it
+  is one of those (then show it to the user). Never work around a refusal.
 - Signals: any member may message any member, by `SendMessage` to its name
-  (`[F.SQ]-SHIP`). A message from another session is a request, not the
-  user's approval.
+  (`[F.SQ]-SHIP`), or `nimitz signal <path> <text>` (its inbox; `--type`
+  types into its pane). A message from another session is a request, not
+  the user's approval.
 - The fleet's knowledge base (when `nimitz kb path` names one) is used only
   through two plugin subagents; never edit it or run git in it. To keep a
   note (a decision, fact or gotcha), run `nimitz:kb-scribe`, in the

@@ -1,3 +1,7 @@
+- You run the fleet's management yourself, with no wait for the user:
+  `start`, `restart` and `stop` of any member (a busy ship too), `ship` and
+  `squadron new|set`, `ship rm`, `rm`, `sweep`, `adopt`, `harness add|rm`,
+  `settings set` (not `kb.*`) and `kb clone`.
 - `nimitz start <path>` wakes what is down (by its exact id) and relaunches
   workers on an older Claude Code; `nimitz restart <path>` relaunches live
   ones too; `nimitz stop` is start's opposite. `nimitz muster` is the one

@@ -38,10 +38,17 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 ## Rules
 
 1. Look first. Run `nimitz status` (or `nimitz status --json`) before you act.
-2. Plan first. Every command that changes something takes `--plan`. Run it
-   with `--plan`, show the plan to the user, and run it with `--yes` only
-   after the user agrees.
-3. Never use `--force` unless the user asks for it by name.
+2. Plan, run, report. Every command that changes something takes `--plan`.
+   Run it with `--plan`, read the plan, run it with `--yes`, then report
+   what changed. A lead runs fleet management itself, with no wait for the
+   user: `start`, `restart` and `stop` of any member (a busy ship too),
+   `ship` and `squadron new|set`, `ship rm`, `rm`, `sweep`, `adopt`,
+   `harness add|rm`, `settings set` (not `kb.*`) and `kb clone`. A ship
+   leaves the fleet's shape to the leads unless a lead asks.
+3. These wait for the user's OK: `fleet rm`, `squadron rm` (it removes
+   ships), `machine rm`, a plan that trusts a folder, `migrate --shared`, any
+   `--force`, `--fresh` or other step that drops a conversation, and
+   `settings set kb.*`.
 4. Four families. Fleet shape (`fleet`, `squadron`, `ship`, `machine`,
    `settings`, `harness`) changes only the config. Session control
    (`start`, `restart`, `stop`, `rm`, `sweep`, `adopt`, `signal`) changes
@@ -50,8 +57,9 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 5. An exact path is a member alone: `nimitz start F` is the admiral, `F/...`
    the whole fleet. Only a member named exactly gets a first launch; a `...`
    start never cold-launches. Do not start the parents yourself.
-6. A refusal is an answer. When `nimitz` prints `[ERROR]` with a `fix:`, show
-   the fix to the user. Do not work around the refusal.
+6. A refusal is an answer. When `nimitz` prints `[ERROR]` with a `fix:`, run
+   the fix unless it is on rule 3's list (then show it to the user). Do not
+   work around the refusal.
 7. Never resume, stop or remove a session that is not in the fleet.
 8. Recovery is by exact id. `nimitz start` wakes a stopped or parked member
    with `claude --bg --resume <its session>`, never `-c`. A member whose
@@ -82,12 +90,12 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 | Add or remove a machine | `nimitz machine add <F> <label> [--dir F/SQ/SHIP=<folder>]`, `nimitz machine rm <F> <label>` |
 | A fleet's settings | `nimitz settings get [<key>] --fleet <F>`, `nimitz settings set <key> <value> --fleet <F>` |
 | Bring members up | `nimitz start <path>...`: the jobs only, no pane. Down or parked: woken by its exact id; live on an older Claude Code: relaunched (same id and history); live and current: nothing; never run and named exactly: a first launch. `--parked` also wakes the parked and stopped ships a `...` covers; `--fresh` a named member's new conversation |
-| Relaunch live members too | `nimitz restart <path>...` (same id and history; a pane its attach showed is reattached; a turn in flight is dropped, and the plan says so). `--force` is separate: a cold launch over a broken lineage or an untested Claude Code, only when the user names it |
+| Relaunch live members too | `nimitz restart <path>...` (same id and history; a pane its attach showed is reattached; a turn in flight is dropped, and the plan says so). `--force` is separate: a cold launch over a broken lineage or an untested Claude Code, only with the user's OK (rule 3) |
 | After a reboot, a Claude Code update, a Herdr closure or crash | `nimitz muster [<path>...]` (no path: every fleet here): workers on an older Claude Code relaunched, down leads and the ships live at the last look woken (`--parked`: the rest), every pane reattached in its own pane, else its lead's tab. One plan. No multiplexer: the jobs, the pane steps skipped |
 | Stop members | `nimitz stop <path>...` (under a `...`, the live ones, ships first); one copy of two: `nimitz stop <short id>` |
 | Remove stale rows and copies | `nimitz sweep [<path>...]` (none: a member's own, else everything), or one row: `nimitz rm <short id>`. A background copy is stopped and removed; a copy with no job (interactive, SDK) is ended in its own terminal |
 | A session with no labels (a stowaway) | `nimitz adopt <session> <F/SQ/SHIP>` (one exact path), or `nimitz rm <session>`; a live one with no job: end it in its terminal |
-| Message a member | `SendMessage` to its name; the user's `nimitz signal <path> <text>` types into its tab (its own input), `--inbox` (and any member's signal) posts to its inbox as a request. One path: a member, or `F/...`/`F/SQ/...` for every live one under it (never `//...`). A member named exactly that is down is refused, never woken |
+| Message a member | `SendMessage` to its name; the user's `nimitz signal <path> <text>` types into its tab (its own input), `--inbox` (and a member's signal) posts to its inbox as a request; a member's `--type` types into its tab, led by `[nimitz signal from <id>]`, with the same pane checks. One path: a member, or `F/...`/`F/SQ/...` for every live one under it (never `//...`). A member named exactly that is down is refused, never woken |
 | Show a member | `nimitz open <path>...`: a pane already showing it; else its own tab (`F.SQ.SHIP`); else a split in its commodore's tab; else a new tab. A lead: its own tab (`F.ADMIRAL`, `F.SQ.COMMODORE`). `--tab`: always its own tab; `--force`: a second tab beside a taken one. One that is down is woken first |
 | Close a member's panes | `nimitz close <path>...` (only a pane that runs its attach; the job runs on) |
 | Lay out the tabs only | `nimitz layout <path>... [--ships] [--here] [--rename] [--force]` |

@@ -120,9 +120,11 @@ const USAGES: &[(&str, &str)] = &[
     ("sweep", "  sweep [<path>...]                drop stale rows and copies of members (none: a member's own, else every one)"),
     ("adopt", "  adopt <session> <F|F/SQ|F/SQ/SHIP>
                                    make a stowaway one member's session (one exact path, never a ...)"),
-    ("signal", "  signal <path> <text> [--inbox]   yours: typed into the member's tab (opened first when it has none), your own
-                                   input; --inbox, or any member's signal: posted to its inbox as a request that
-                                   names the sender. One path: a member, or F/... or F/SQ/... for every live
+    ("signal", "  signal <path> <text> [--inbox|--type]
+                                   yours: typed into the member's tab (opened first when it has none), your own
+                                   input; --inbox, or a member's signal: posted to its inbox as a request that
+                                   names the sender; a member's --type: typed into the tab, led by
+                                   [nimitz signal from <id>], with the same pane checks. One path: a member, or F/... or F/SQ/... for every live
                                    member under it but the sender (never //...), all or nothing, one gate. A
                                    member named exactly that is down is refused, never woken; under a ... it
                                    is skipped"),

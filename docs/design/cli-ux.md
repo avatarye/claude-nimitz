@@ -20,7 +20,9 @@ compatibility: old forms are removed outright. Code references are to
    `parked`; `--parked` adds those.
 4. **`signal --type`** for your own voice (6.4, 6.5)? Recommended: yes, the user's
    `signal` types into a shown tab (today's behaviour), `--inbox` forces the
-   inbox; a member's `signal` always uses the inbox.
+   inbox; a member's `signal` always uses the inbox. (0.7.12: a member's
+   `signal --type` types into the tab through the same pane checks, the text
+   led by `[nimitz signal from <id>]`; the inbox stays its default.)
 5. **Self-relaunch idle-wait timeout**: cut the turn, or give up?
    Recommended: give up after 10 minutes, log it, and say so at the
    member's next prompt; never cut a turn the caller is still in.

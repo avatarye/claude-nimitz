@@ -2638,6 +2638,16 @@ fn a_notice_and_a_signal_go_to_the_leads_inbox_not_its_pane() {
         let c = line["message"]["content"].as_str().unwrap();
         assert!(c.contains("[nimitz signal]") && c.contains("boxed") && c.contains(sender) && c.contains("not the user's approval"), "{c}");
     }
+    // a member's `--type`: typed into the pane through the same checks, led
+    // by who sent it (never read as the user's own input); never with --inbox
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS", "typed by a ship", "--type", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("[nimitz signal from MAIN/ARGOS/CLEAN] typed by a ship")), "{:?}", sb.prompts("w1:p2"));
+    assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "--type: not the inbox");
+    assert_eq!(sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS", "x", "--type", "--inbox", "--yes"]).code, 2);
+    // a member with no tab of its own: attached first, then typed, as for yours
+    let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS/CLEAN", "hello", "--type", "--plan"]);
+    assert!(r.out.contains("has no tab yet"), "no pane of its own: one is attached first, as for yours:\n{}", r.out);
 }
 
 /// A lead on a Claude Code older than the verified line format gets the

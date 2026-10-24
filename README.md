@@ -43,20 +43,19 @@ after an update migrates this machine's files by itself; the CHANGELOG's
 | When | Run |
 | --- | --- |
 | After a reboot, a Claude Code update or a Herdr closure | `nimitz muster` |
-| Talk to a member | `nimitz open F/SQ/SHIP` (its pane, focused; ctrl-z detaches) |
-| Bring members up | `nimitz start F/...` |
 | Relaunch members (same conversation, a new process) | `nimitz restart F/SQ/SHIP` |
+| Talk to a member | `nimitz open F/SQ/SHIP` (its pane, focused; ctrl-z detaches) |
 | See everything | `nimitz status`, or `admiralty` |
 | Stop members | `nimitz stop F/SQ/...` |
-| Message a member | `nimitz signal F/SQ/SHIP "text"` |
-| Lay out the leads' tabs | `nimitz layout F/...` |
-| A fleet's problems, each with its fix | `nimitz check` |
-| After an install or an upgrade | `nimitz doctor` |
 
-Every command that changes something shows its plan first: `--plan` only
-looks, `--yes` runs without the question, `-v` shows the commands.
-`nimitz help <command>` (or `nimitz <command> --help`) prints one command's
-usage.
+The rest is the leads' work: an admiral or commodore runs fleet management
+itself (`--plan`, `--yes`, then a report) and asks you first only for `fleet
+rm`, `squadron rm`, `machine rm`, a folder's trust, `migrate --shared`,
+`--force`, `--fresh` (or anything else that drops a conversation) and
+`settings set kb.*`. Every command that changes something shows its plan
+first: `--plan` only looks, `--yes` runs without the question, `-v` shows the
+commands. `nimitz help <command>` (or `nimitz <command> --help`) prints one
+command's usage.
 
 ## Paths
 
@@ -66,7 +65,7 @@ included; `//...` names every fleet (never ADMIRALTY; `/...` works too, as
 MSYS turns `//` into `/`). A command takes several paths; a member matched
 twice counts once; a path that matches nothing is refused. No `*`.
 
-## Commands
+## Agents run these (the command reference)
 
 Four families: fleet shape changes config only, session control changes jobs
 and never panes, pane control changes panes only, and `muster` does both as
@@ -82,7 +81,7 @@ one plan. Design: [docs/design/cli-ux.md](docs/design/cli-ux.md).
 | `rm <path\|session>...` | Remove job rows, never transcripts |
 | `sweep [<path>...]` | Drop stale rows and copies of members |
 | `adopt <session> <F\|F/SQ\|F/SQ/SHIP>` | Make a stowaway (a session in a fleet folder with no labels) one member's session (an exact path; a `...` is refused) |
-| `signal <path> <text> [--inbox]` | Yours: typed into the member's tab, your own input; `--inbox`, or any member's signal: posted to its inbox, naming the sender. One path: a member, or `F/...` / `F/SQ/...` for every live member under it but the sender (never `//...`: a turn in every fleet at once); all or nothing, behind one gate (any refusal sends none). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
+| `signal <path> <text> [--inbox\|--type]` | Yours: typed into the member's tab, your own input; `--inbox`, or a member's signal: posted to its inbox, naming the sender; a member's `--type`: typed into the tab, led by `[nimitz signal from <id>]`, through the same pane checks. One path: a member, or `F/...` / `F/SQ/...` for every live member under it but the sender (never `//...`: a turn in every fleet at once); all or nothing, behind one gate (any refusal sends none). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
 
 ### Pane control (Herdr)
 
@@ -185,9 +184,10 @@ fixed widths; DETAIL takes the rest of a wide or fullscreen terminal.
 - Never start, resume or stop a member with `claude` yourself (`--resume`,
   `--bg`, `-c`, `stop`, `rm`): it makes copies and stowaways nimitz cannot
   manage. `nimitz start` does it right.
-- Plan first: read the plan (`--plan`), then run it (`--yes`). Never `--force`
-  unless you mean it. Every member may run every command; the plan is what
-  stands before a change.
+- Plan, then run: read the plan (`--plan`), then run it (`--yes`). Every
+  member may run every command; the leads run routine fleet management
+  themselves and wait for your OK only for the few steps listed under "Most
+  used" (`--force` among them).
 
 ## When something is wrong
 
