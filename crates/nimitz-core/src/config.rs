@@ -353,6 +353,21 @@ pub fn validate(env: &Env, f: &FleetOnDisk) -> Vec<Issue> {
             if ship_names[..i].contains(&ship.name.as_str()) {
                 out.push(inv(format!("ship {:?} is defined twice in {}", ship.name, sq.squadron), Some(shid.clone())));
             }
+            if let (None, Some(pf)) = (&ship.prompt, &ship.prompt_file) {
+                let p = prompt_path(sd, pf);
+                let fix = Some(format!("nimitz ship set {shid} --prompt-file <path>"));
+                if !p.is_file() {
+                    out.push(issue("prompt.file", Severity::Warn, format!("ship {shid}'s prompt_file {} is missing (cold launch will refuse)", p.display()), fix, Some(shid.clone())));
+                } else if !crate::env::canon(&p).starts_with(crate::env::canon(sd)) {
+                    out.push(issue(
+                        "prompt.file",
+                        Severity::Warn,
+                        format!("ship {shid}'s prompt_file {} is outside the squadron folder (other machines do not have it, and a temp folder goes away): `ship set --prompt-file` copies it into prompts/", p.display()),
+                        fix,
+                        Some(shid.clone()),
+                    ));
+                }
+            }
             if ship.prompt.is_none() && ship.prompt_file.is_none() {
                 out.push(issue(
                     "config.invalid",
@@ -588,8 +603,7 @@ pub fn ship_prompt(f: &FleetOnDisk, id: &Id) -> Option<String> {
         return Some(p.clone());
     }
     let pf = ship.prompt_file.as_ref()?;
-    let path = if Path::new(pf).is_absolute() { PathBuf::from(pf) } else { sd.join(pf) };
-    std::fs::read_to_string(path).ok()
+    std::fs::read_to_string(prompt_path(sd, pf)).ok()
 }
 
 /// Permission mode for a member on this machine. Empty when nothing sets one:
@@ -819,11 +833,73 @@ pub fn is_absolute_dir(d: &str) -> bool {
     d.starts_with('/') || d.starts_with("~/") || d.starts_with("~\\") || d.starts_with(r"\\") || drive
 }
 
+/// Where a ship's prompt file lives once nimitz has it: `prompts/<SHIP>.md`
+/// for a `.md` source, else `prompts/<SHIP>.txt`, relative to the squadron folder.
+pub fn prompt_file_for(ship: &str, source: &Path) -> String {
+    let ext = if source.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")) { "md" } else { "txt" };
+    format!("prompts/{ship}.{ext}")
+}
+
+/// A `prompt_file` as it resolves: relative to the squadron folder, or absolute.
+pub fn prompt_path(sq_dir: &Path, pf: &str) -> PathBuf {
+    if is_absolute_dir(pf) {
+        expand_dir(pf)
+    } else {
+        sq_dir.join(pf)
+    }
+}
+
+/// Is `p` in the squadron's `prompts/` (real paths)?
+fn in_prompts(sq_dir: &Path, p: &Path) -> bool {
+    let canon = |x: &Path| crate::env::canon(x);
+    canon(p).starts_with(canon(&sq_dir.join("prompts")))
+}
+
+/// A new `prompt_file` (issue #9): one in the squadron's `prompts/` is stored
+/// relative to the squadron folder, as it is; any other is copied there
+/// (`prompt_file_for`, a write step in the plan) and that relative path is
+/// stored, so a prompt never lives in a folder that goes away (a job's temp
+/// folder) or on one machine only. A file that does not read refuses.
+fn adopt_prompt_file(sq_dir: &Path, id: &Id, ship: &mut ShipDef, plan: &mut Plan) {
+    let Some(pf) = ship.prompt_file.clone() else { return };
+    let src = prompt_path(sq_dir, &pf);
+    let text = match std::fs::read_to_string(&src) {
+        Ok(t) => t,
+        Err(e) => {
+            refuse(plan, "config.invalid", format!("{id}: prompt file {} does not read: {e}", src.display()), Some(format!("nimitz ship set {id} --prompt-file <a file that exists>")), Some(id.clone()));
+            return;
+        }
+    };
+    if in_prompts(sq_dir, &src) {
+        let canon = crate::env::canon(&src);
+        if let Ok(rel) = canon.strip_prefix(crate::env::canon(sq_dir)) {
+            ship.prompt_file = Some(rel.to_string_lossy().replace('\\', "/"));
+        }
+        return;
+    }
+    let to = prompt_file_for(&ship.name, &src);
+    plan.steps.push(step_mkdir(Some(id.clone()), &sq_dir.join("prompts"), "the squadron's prompts folder"));
+    plan.steps.push(step_write(Some(id.clone()), &sq_dir.join(&to), text, &format!("the prompt, copied from {}", src.display())));
+    ship.prompt_file = Some(to);
+}
+
 /// Shared tail of ship new/set: check the effort and the folders, rewrite squadron.toml, make managed folders.
-fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, sq: SquadronConfig, id: &Id, ship: &ShipDef, plan: &mut Plan) {
+/// `new_prompt`: the ship's `prompt_file` is new, so it is taken into the squadron's `prompts/`.
+fn plan_ship_write(f: &FleetOnDisk, sq_dir: &Path, mut sq: SquadronConfig, id: &Id, ship: &ShipDef, new_prompt: bool, plan: &mut Plan) {
     if ship.effort.is_some() && effort_change(plan, ship.effort.as_deref(), id).is_none() {
         return;
     }
+    let mut ship = ship.clone();
+    if new_prompt {
+        adopt_prompt_file(sq_dir, id, &mut ship, plan);
+        if !plan.ok() {
+            return;
+        }
+        if let Some(s) = sq.ships.iter_mut().find(|s| s.name == ship.name) {
+            s.prompt_file = ship.prompt_file.clone();
+        }
+    }
+    let ship = &ship;
     for (label, d) in &ship.dirs {
         if let Err(why) = normalize_ship_dir(f, d) {
             refuse(plan, "config.invalid", format!("{id} on {label}: {why}"), None, Some(id.clone()));
@@ -942,7 +1018,7 @@ pub fn plan_ship_new(env: &Env, fleet: &str, sq: &str, ship: ShipDef) -> Plan {
     let mut new_sq = sqc.clone();
     new_sq.ships.push(ship.clone());
     let sd = sd.clone();
-    plan_ship_write(&f, &sd, new_sq, &id, &ship, &mut plan);
+    plan_ship_write(&f, &sd, new_sq, &id, &ship, ship.prompt_file.is_some(), &mut plan);
     plan
 }
 
@@ -976,10 +1052,16 @@ pub fn plan_ship_set(env: &Env, id: &Id, ship: ShipDef) -> Plan {
         refuse(&mut plan, "config.missing", format!("no ship {id}"), Some(format!("nimitz ship new {id}")), Some(id.clone()));
         return plan;
     };
+    // a new prompt_file, or one that still lies outside prompts/ (an older nimitz stored the path)
+    let new_prompt = ship.prompt.is_none()
+        && ship.prompt_file.as_deref().is_some_and(|pf| {
+            let p = prompt_path(sd, pf);
+            ship.prompt_file != sqc.ships[pos].prompt_file || (p.is_file() && !in_prompts(sd, &p))
+        });
     let mut new_sq = sqc.clone();
     new_sq.ships[pos] = ship.clone();
     let sd = sd.clone();
-    plan_ship_write(&f, &sd, new_sq, id, &ship, &mut plan);
+    plan_ship_write(&f, &sd, new_sq, id, &ship, new_prompt, &mut plan);
     plan
 }
 
@@ -1847,6 +1929,57 @@ pub(crate) mod tests {
         std::fs::create_dir_all(f.squadrons[0].0.join("prompts")).unwrap();
         std::fs::write(f.squadrons[0].0.join("prompts/argos.md"), "From file.").unwrap();
         assert_eq!(ship_prompt(&f2, &id), Some("From file.".into()));
+    }
+
+    /// Issue #9: a `prompt_file` from outside the squadron's `prompts/` is
+    /// copied there (`prompts/<SHIP>.txt`, `.md` kept) and stored relative;
+    /// one inside is kept; `check` warns about one outside or missing.
+    #[test]
+    fn a_prompt_file_is_taken_into_the_squadrons_prompts() {
+        let (td, env) = test_env();
+        make_fleet(&env);
+        let id = Id::ship("MAIN", "ARGOS", "ARGOS");
+        let sd = env.fleet_dir("MAIN").join("squadrons/argos");
+        let tmp = td.path().join("job-tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("argos-prompt.txt"), "From a temp folder.").unwrap();
+        std::fs::write(tmp.join("brief.md"), "# From markdown").unwrap();
+        let def = |pf: &str| {
+            let f = load_fleet(&env, "MAIN").unwrap();
+            ShipDef { prompt: None, prompt_file: Some(pf.into()), ..find_ship(&f, &id).unwrap().2.clone() }
+        };
+        let src = tmp.join("argos-prompt.txt").to_string_lossy().into_owned();
+        let plan = plan_ship_set(&env, &id, def(&src));
+        assert!(plan.steps.iter().any(|s| s.cmd[0] == "write" && s.cmd[1].ends_with("prompts/ARGOS.txt") && s.cmd[2] == "From a temp folder." && s.why.contains("copied from")), "{:?}", plan.steps);
+        apply_ok(&env, &plan);
+        let f = load_fleet(&env, "MAIN").unwrap();
+        assert_eq!(find_ship(&f, &id).unwrap().2.prompt_file.as_deref(), Some("prompts/ARGOS.txt"));
+        assert_eq!(ship_prompt(&f, &id).as_deref(), Some("From a temp folder."));
+        std::fs::remove_file(tmp.join("argos-prompt.txt")).ok();
+        assert_eq!(ship_prompt(&load_fleet(&env, "MAIN").unwrap(), &id).as_deref(), Some("From a temp folder."), "the temp file gone, the prompt stays");
+        // a markdown source keeps its extension
+        apply_ok(&env, &plan_ship_set(&env, &id, def(&tmp.join("brief.md").to_string_lossy())));
+        assert_eq!(find_ship(&load_fleet(&env, "MAIN").unwrap(), &id).unwrap().2.prompt_file.as_deref(), Some("prompts/ARGOS.md"));
+        // one already in prompts/: kept as it is, nothing copied
+        std::fs::write(sd.join("prompts/other.txt"), "Kept.").unwrap();
+        let plan = plan_ship_set(&env, &id, def("prompts/other.txt"));
+        assert!(plan.steps.iter().all(|s| !s.why.contains("copied from")), "{:?}", plan.steps);
+        apply_ok(&env, &plan);
+        assert_eq!(find_ship(&load_fleet(&env, "MAIN").unwrap(), &id).unwrap().2.prompt_file.as_deref(), Some("prompts/other.txt"));
+        // a file that does not read refuses
+        assert!(!plan_ship_set(&env, &id, def(&tmp.join("nope.txt").to_string_lossy())).ok());
+
+        // check: a prompt_file outside the squadron folder (an older nimitz stored it), or missing
+        let outside = tmp.join("outside.txt");
+        std::fs::write(&outside, "Outside.").unwrap();
+        let mut f = load_fleet(&env, "MAIN").unwrap();
+        f.squadrons[0].1.ships[0].prompt_file = Some(outside.to_string_lossy().into_owned());
+        let w: Vec<Issue> = validate(&env, &f).into_iter().filter(|i| i.code == "prompt.file").collect();
+        assert!(w.len() == 1 && w[0].severity == Severity::Warn && w[0].message.contains("outside the squadron folder") && w[0].fix.as_deref() == Some("nimitz ship set MAIN/ARGOS/ARGOS --prompt-file <path>"), "{w:?}");
+        f.squadrons[0].1.ships[0].prompt_file = Some("prompts/gone.txt".into());
+        assert!(validate(&env, &f).iter().any(|i| i.code == "prompt.file" && i.message.contains("is missing")));
+        f.squadrons[0].1.ships[0].prompt_file = Some("prompts/other.txt".into());
+        assert!(validate(&env, &f).iter().all(|i| i.code != "prompt.file"));
     }
 
     #[test]

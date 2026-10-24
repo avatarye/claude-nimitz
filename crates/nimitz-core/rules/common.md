@@ -13,7 +13,12 @@ turn; they win over older wording in a CLAUDE.md.
 - Every member may run every `nimitz` command on any member: `status
   --json` (the picture), `check <id>` (problems), `rules` (these rules). A
   path names one member (`F`, `F/SQ`, `F/SQ/SHIP`), or everything under one
-  (`F/...`, `F/SQ/...`). Never edit fleet files.
+  (`F/...`, `F/SQ/...`).
+- Change fleet and squadron settings only through nimitz commands. A lead
+  may edit its own unit's brief and prompts by hand (an admiral: its fleet's
+  CLAUDE.md and its squadrons' SQUADRON.md and prompts/; a commodore: its
+  SQUADRON.md, its CLAUDE.md and prompts/); never another unit's files,
+  never machine state.
 - Never start, resume or stop a member with `claude` (`--resume`, `--bg`,
   `-c`, `stop`, `rm`): it makes copies and stowaways nimitz cannot manage.
 - Plan first: run a change with `--plan`, show the plan to the user, and run

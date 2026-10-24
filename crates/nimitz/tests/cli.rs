@@ -3068,3 +3068,30 @@ fn a_ships_effort_is_stored_stamped_shown_and_launched() {
     let t = sq_toml();
     assert!(!t.contains("effort") && !t.contains("format = 2"), "{t}");
 }
+
+/// Issue #9: `ship new --prompt-file` with a file outside the squadron (a
+/// job's temp folder, relative to the current folder) copies it into the
+/// squadron's `prompts/` and stores that relative path; `check` warns about
+/// one an older nimitz stored outside.
+#[test]
+fn a_prompt_file_is_copied_into_the_squadrons_prompts() {
+    let sb = Sb::new(false);
+    let work = sb.base.join("job-tmp");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join("p.txt"), "You are NEWSHIP.").unwrap();
+    let sq = sb.base.join("nimitz").join("main").join("squadrons").join("argos");
+    let mut c = Command::new(EXE);
+    c.env_clear().env("PATH", "/usr/bin:/bin").env("NIMITZ_VERBOSE", "1").envs(&sb.vars).current_dir(&work);
+    let o = c.args(["ship", "new", "MAIN/ARGOS/NEWSHIP", "--dir", "managed", "--prompt-file", "p.txt", "--yes"]).stdin(Stdio::null()).output().unwrap();
+    let out = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert_eq!(o.status.code(), Some(0), "{out}");
+    assert!(out.contains("copied from") && out.contains("prompts/NEWSHIP.txt"), "the plan shows the copy:\n{out}");
+    let t = std::fs::read_to_string(sq.join("squadron.toml")).unwrap();
+    assert!(t.contains("prompt_file = \"prompts/NEWSHIP.txt\""), "{t}");
+    assert_eq!(std::fs::read_to_string(sq.join("prompts").join("NEWSHIP.txt")).unwrap(), "You are NEWSHIP.");
+    // an absolute path an older nimitz stored: check warns, with the fix
+    let abs = work.join("p.txt").to_string_lossy().into_owned();
+    std::fs::write(sq.join("squadron.toml"), t.replace("prompt_file = \"prompts/NEWSHIP.txt\"", &format!("prompt_file = {:?}", abs))).unwrap();
+    let r = sb.run(&["check", "MAIN/ARGOS/NEWSHIP"]);
+    assert!(r.out.contains("(prompt.file)") && r.out.contains("outside the squadron folder") && r.out.contains("nimitz ship set MAIN/ARGOS/NEWSHIP --prompt-file <path>"), "{}", r.out);
+}

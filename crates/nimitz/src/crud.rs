@@ -185,7 +185,7 @@ fn absolute_dir(d: &str) -> String {
 }
 
 /// Apply the ship flags to a definition, for the machine `label`.
-fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk) -> Result<(), String> {
+fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk, sq: &str) -> Result<(), String> {
     for l in ctx.args.values("--no-dir") {
         if def.dirs.remove(&l).is_none() {
             return Err(format!("{} has no folder for machine {l:?}", def.name));
@@ -210,7 +210,12 @@ fn edit_ship(ctx: &Ctx, def: &mut ShipDef, label: &str, f: &FleetOnDisk) -> Resu
         def.prompt_file = None;
     }
     if let Some(p) = ctx.args.value("--prompt-file") {
-        def.prompt_file = Some(p.into());
+        // relative: the squadron's own file (`prompts/X.md`) when there is
+        // one, else a file of the current folder; core copies one from
+        // outside `prompts/` into it (`config::plan_ship_set`)
+        let sq_dir = f.squadrons.iter().find(|(_, s)| s.squadron == sq).map(|(d, _)| d.clone());
+        let own = sq_dir.is_some_and(|d| d.join(p).is_file());
+        def.prompt_file = Some(if own || p.starts_with('~') || config::is_absolute_dir(p) { p.to_string() } else { absolute_dir(p) });
         def.prompt = None;
     }
     if let Some(m) = ctx.args.value("--mode") {
@@ -255,7 +260,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 return Err("ship new needs --dir <folder|managed>".into());
             }
             let mut def = ShipDef { name: name.into(), ..Default::default() };
-            edit_ship(ctx, &mut def, &label, &f)?;
+            edit_ship(ctx, &mut def, &label, &f, sq)?;
             if let Some(p) = prompt_from_editor(ctx, None, true)? {
                 def.prompt = Some(p);
             }
@@ -275,7 +280,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
                 Some(mut def) => {
                     let before = def.clone();
                     let current = config::ship_prompt(&f, &id);
-                    edit_ship(ctx, &mut def, &label, &f)?;
+                    edit_ship(ctx, &mut def, &label, &f, sq)?;
                     if let Some(p) = prompt_from_editor(ctx, current.as_deref(), false)? {
                         def.prompt = Some(p);
                         def.prompt_file = None;

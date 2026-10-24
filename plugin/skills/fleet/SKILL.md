@@ -5,9 +5,13 @@ description: Run claude-nimitz fleets with the nimitz command. Use when the user
 
 # Fleet: run fleets with `nimitz`
 
-`nimitz` holds every rule. This skill tells you which command to run. Do not
-edit fleet files by hand. Do not run `claude --bg`, `claude stop` or
-`claude rm` yourself for a fleet member.
+`nimitz` holds every rule. This skill tells you which command to run.
+Change fleet and squadron settings only through nimitz commands. A lead may
+edit its own unit's brief and prompts by hand (an admiral: its fleet's
+CLAUDE.md and its squadrons' SQUADRON.md and prompts/; a commodore: its
+SQUADRON.md, its CLAUDE.md and prompts/); never another unit's files, never
+machine state. Do not run `claude --bg`, `claude stop` or `claude rm`
+yourself for a fleet member.
 
 ## Words
 
@@ -71,7 +75,7 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 | A command's own usage | `nimitz <command> --help`, `nimitz help <command>` |
 | New fleet | `nimitz fleet new <F> [--machine <label>]` |
 | New squadron | `nimitz squadron new <F/SQ> --brief "<text>" [--mode <permission mode>]` |
-| New ship | `nimitz ship new <F/SQ/SHIP> --dir <folder\|managed> [--prompt "<text>"] [--mode <permission mode>] [--depends A,B]` (no prompt flag on a terminal: `$EDITOR` opens) |
+| New ship | `nimitz ship new <F/SQ/SHIP> --dir <folder\|managed> [--prompt "<text>"\|--prompt-file <file>] [--mode <permission mode>] [--effort <level>] [--depends A,B]` (no prompt flag on a terminal: `$EDITOR` opens; a `--prompt-file` from outside the squadron's `prompts/` is copied there as `prompts/<SHIP>.txt`, or `.md`) |
 | Change a ship | `nimitz ship set <F/SQ/SHIP> [same flags]` (takes effect at its next relaunch) |
 | Retire a ship | `nimitz ship rm <F/SQ/SHIP>` (stops it, removes job rows, keeps transcripts) |
 | Delete a squadron or fleet | `nimitz squadron rm <F/SQ>`, `nimitz fleet rm <F>` (only when empty and not live) |
