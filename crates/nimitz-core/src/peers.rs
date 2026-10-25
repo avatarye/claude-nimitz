@@ -97,20 +97,30 @@ pub fn clean(raw: &str) -> String {
     one
 }
 
-/// A `--from` claim, cleaned (`clean`), or why it is refused: empty, not
-/// printable ASCII (a lookalike letter or slash), a `[` or `]`, or it
-/// mimics a fleet identity (a member's path `F/SQ/SHIP`, a session name
-/// `[F.SQ]-SHIP` or `[F]-ADMIRAL`, a fleet name alone) or nimitz or the user
-/// (`user`, `the user`, `nimitz` as the whole claim).
+/// A `--from` claim (spaces at its ends trimmed), or why it is refused: a
+/// claim is a short plain label, and anything else is refused, never
+/// rewritten: empty; a control character or a newline; over `CLAIM_MAX`
+/// characters; not printable ASCII (a lookalike letter or slash, a format
+/// character), a `[`, `]`, `"` or backtick; or it mimics a fleet identity (a
+/// member's path `F/SQ/SHIP`, a session name `[F.SQ]-SHIP` or
+/// `[F]-ADMIRAL`, a fleet name alone) or nimitz or the user (`user`, `the
+/// user`, `nimitz` as the whole claim).
 pub fn claim(raw: &str) -> Result<String, String> {
-    let c = clean(raw);
+    let c = raw.trim_matches(' ');
+    let plain = "(name the app or the person in a short plain label, e.g. specto:rasel)";
     if c.is_empty() {
-        return Err("--from is empty (nothing is left after removing control characters)".into());
+        return Err(format!("--from is empty {plain}"));
     }
-    if let Some(bad) = c.chars().find(|ch| !(' '..='~').contains(ch) || matches!(ch, '[' | ']')) {
-        return Err(format!("--from {c:?} holds {bad:?}: a claim is printable ASCII with no [ or ] (name the app or the person, e.g. specto:rasel)"));
+    if c.chars().any(|ch| ch.is_control() || matches!(ch, '\u{2028}' | '\u{2029}')) {
+        return Err(format!("--from holds a control character or a newline: a claim is one plain line {plain}"));
     }
-    let c = neutralize(&c);
+    if c.chars().count() > CLAIM_MAX {
+        return Err(format!("--from is {} characters: a claim is at most {CLAIM_MAX} {plain}", c.chars().count()));
+    }
+    if let Some(bad) = c.chars().find(|ch| !(' '..='~').contains(ch) || matches!(ch, '[' | ']' | '"' | '`')) {
+        return Err(format!("--from {c:?} holds {bad:?}: a claim is printable ASCII with no [, ], \" or ` {plain}"));
+    }
+    let c = neutralize(c);
     let refuse = |what: &str| Err(format!("--from {c:?} looks like {what}: a claim may not mimic a fleet identity, nimitz or the user (name the app or the person in lowercase, e.g. specto:rasel)"));
     let words = c.to_lowercase().split(|ch: char| !ch.is_alphanumeric()).filter(|w| !w.is_empty()).collect::<Vec<_>>().join(" ");
     let words = words.strip_prefix("the ").unwrap_or(&words);
@@ -301,14 +311,19 @@ mod tests {
 
     #[test]
     fn a_claim_is_one_short_line_of_data() {
-        assert_eq!(claim("spec\u{1b}to\n:rasel\r\t\"x\"").unwrap(), "spec to :rasel x");
-        assert_eq!(claim("a\u{200b}b").unwrap(), "ab", "format characters go");
-        assert!(claim("x\u{2066}y\u{2069}\u{061c}\u{180e}\u{fffa}\u{e0020}z").is_ok_and(|c| c == "xyz"));
+        // refused, never rewritten
+        for c in ["spec\u{1b}to", "specto:\nrasel", "a\rb", "a\tb", "a\u{2028}b"] {
+            assert!(claim(c).unwrap_err().contains("control character or a newline"), "{c:?}");
+        }
+        for c in ["a\u{200b}b", "x\u{2066}y", "\u{061c}x", "x\u{180e}", "x\u{fffa}", "x\u{e0020}", "say \"hi\"", "a`b"] {
+            assert!(claim(c).unwrap_err().contains("printable ASCII"), "{c:?}");
+        }
+        assert!(claim(&"x".repeat(CLAIM_MAX + 1)).unwrap_err().contains("at most 64"));
+        assert_eq!(claim(&"x".repeat(CLAIM_MAX)).map(|c| c.len()), Ok(CLAIM_MAX));
+        assert_eq!(claim("  specto:rasel ").as_deref(), Ok("specto:rasel"));
         assert_eq!(claim("lowercase").as_deref(), Ok("lowercase"));
         assert!(claim("CI").unwrap_err().contains("lowercase"));
-        let long = claim(&"x".repeat(200)).unwrap();
-        assert_eq!(long.chars().count(), CLAIM_MAX);
-        assert!(long.ends_with("..."));
+        assert!(claim("").is_err() && claim("   ").is_err());
     }
 
     #[test]

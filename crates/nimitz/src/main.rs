@@ -128,8 +128,10 @@ const USAGES: &[(&str, &str)] = &[
                                    sender; their --type: typed into the tab, led by [nimitz signal from <who>],
                                    with the same pane checks, never into one waiting on the user. The sender is
                                    what nimitz verifies: a member's id, else the Claude Code session above it
-                                   (its own session file); --from <label> (non-members only) is a claim, shown
-                                   quoted and unverified, refused when it mimics a member, nimitz or the user.
+                                   (its own session file), else an unidentified process; a non-member's header
+                                   adds \"; not a fleet member, unverified\". --from <label> (non-members only,
+                                   a short plain ASCII label) is a claim, shown quoted (says it is \"<label>\"),
+                                   refused when it mimics a member, nimitz or the user.
                                    One path: a member, or F/... or F/SQ/... for every live member under it but
                                    the sender (never //...), all or nothing, one gate. A member named exactly
                                    that is down is refused, never woken; under a ... it is skipped.

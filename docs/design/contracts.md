@@ -415,7 +415,8 @@ with `CLAUDECODE` or `CLAUDE_CODE_SESSION_ID` set and no labels, the Claude
 Code session above the caller (the session file of the nearest ancestor
 process, its `procStart` its own; with the env's session id, the file must
 name the same one): `claude session <short> ("<its name>")`, else `claude
-session <id> (not verified)`; else a plain terminal, the user. The ancestry
+session <id> (not verified)`; else `unidentified process` (a plain terminal,
+the user, among them). The ancestry
 is read whatever the env says, so a session that strips `CLAUDECODE` and
 `CLAUDE_CODE_SESSION_ID` is still a Claude Code caller (a debug build reads
 only `NIMITZ_TEST_ANCESTORS`, none given: no ancestors). This raises the bar;
@@ -426,13 +427,19 @@ terminal is the user's voice: a Claude Code caller or one with `--from`
 signals as a member does (the inbox by default; `--type` led by `[nimitz
 signal from <who>]`, never typed into one waiting on the user, checked at plan
 time and again before typing). `--from <label>` is for non-members only (a
-member's signal always names its id): format characters (Unicode Cf, the
-tag block) dropped, control characters and newlines made spaces, quotes and
-backticks removed, 64 characters at most; refused unless printable ASCII
-with no `[` or `]` (no lookalike slash, bracket or letter), and when it mimics a fleet
-identity (a path with a `/`, a well-formed id, a `[F.SQ]-NAME` form) or
-nimitz or the user (the whole claim); it follows the verified identity as
-`, says it is "<label>"; unverified`. In the text, the claim and every
+member's signal always names its id): a short plain label, refused (never
+rewritten) when it holds a control character or a newline, is over 64
+characters, is not printable ASCII (a lookalike slash, bracket or letter, a
+format character) or holds `[`, `]`, `"` or a backtick, or when it mimics a
+fleet identity (a path with a `/`, a well-formed id, a `[F.SQ]-NAME` form) or
+nimitz or the user (the whole claim). The header's sender part, as the #10
+contract spells it: for a member `relayed by nimitz from <id>`; for anyone
+else `relayed from <verified>; not a fleet member, unverified`, with a claim
+`relayed from <verified>, says it is "<label>"; not a fleet member,
+unverified`. A `--type` is led by `[nimitz signal from <id>]`, or the same
+`<verified>[, says it is ...]; not a fleet member, unverified` in place of
+the id. An older nimitz refuses `--from` (`unknown flag --from`, exit 2). In
+the text, the claim and every
 session name a header shows, format characters are dropped and every
 `[nimitz` (fullwidth too) becomes `[(quoted) nimitz`, so no sender can forge
 nimitz's own header. A session name is matched as its file has it.
