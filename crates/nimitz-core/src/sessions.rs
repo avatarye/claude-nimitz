@@ -52,6 +52,10 @@ pub fn session_above_id(env: &Env, vars: &HashMap<String, String>) -> Option<Str
 
 /// The session file of the nearest Claude Code process above this one (one
 /// whose `procStart` names another process is a stale file: skipped).
+pub fn session_above_file(env: &Env, vars: &HashMap<String, String>) -> Option<serde_json::Value> {
+    session_above(env, vars)
+}
+
 fn session_above(env: &Env, vars: &HashMap<String, String>) -> Option<serde_json::Value> {
     // tests only (a debug build): the ancestry is given, a sandbox has no
     // Claude Code above it. A release build never reads it, so no caller

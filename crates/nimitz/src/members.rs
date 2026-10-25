@@ -494,13 +494,23 @@ pub fn adopt(ctx: &Ctx) -> Result<i32, String> {
 /// down is refused (`nimitz start <id>` first), never woken by a signal;
 /// under a `...` it is skipped. One plan, one gate: a refusal for any member
 /// sends nothing.
+///
+/// Only the user's own terminal is the user's voice (issue #10): a caller
+/// inside a Claude Code session (no labels) or one that names itself with
+/// `--from` signals as a member does (its inbox; `--type` led by who it
+/// is, never into one waiting on the user). `session:<short-or-name>`
+/// reaches any live local Claude Code session, member or not, by its inbox.
 pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     use nimitz_core::paths::Path;
-    ctx.args.allow(&["--inbox", "--type"])?;
+    ctx.args.allow(&["--inbox", "--type", "--from"])?;
     if ctx.args.flag("--inbox") && ctx.args.flag("--type") {
         return Err("--inbox and --type do not mix: one way to reach it".into());
     }
     let target = ctx.args.need(0, "path")?;
+    let sender = sender(ctx)?;
+    if let Some(q) = target.strip_prefix("session:") {
+        return signal_session(ctx, q, &sender);
+    }
     let path = Path::parse(target)?;
     if path == Path::Under(None) {
         return Err(format!("signal {target}: a signal starts a turn in every member it reaches; name one fleet's (F/...) or squadron's (F/SQ/...) members, or one member"));
@@ -513,11 +523,7 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
             return Err(format!("signal takes one path; the text starts with a path ({first}): quote the text, or send one signal per path"));
         }
     }
-    // Typed into a pane: no control characters, no newlines (BUG-43).
-    let text = nimitz_mux::sanitize_text(&ctx.args.pos[1..].join(" "));
-    if text.is_empty() {
-        return Err("missing text (nothing is left after removing control characters)".into());
-    }
+    let text = signal_text(ctx)?;
     let mut plan = Plan { summary: format!("signal {path}"), ..Default::default() };
     // (a `...` never reaches its own sender; one named exactly may be)
     let me = ses::verified(&ctx.caller).cloned();
@@ -540,13 +546,10 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
             return Ok(finish_plan(ctx, &plan));
         }
     };
-    let from = match (&ctx.caller, ses::verified(&ctx.caller)) {
-        (_, Some(me)) => format!("from {me}"),
-        (Caller::Member { .. }, None) => "from a caller whose NIMITZ_* labels are partial or disagree (unverified)".to_string(),
-        (Caller::User, None) => "from a `nimitz signal` run with no member labels".to_string(),
-    };
-    // what a pane gets: yours as you typed it; a member's (`--type`) says whose it is
-    let typed = if ctx.caller == Caller::User { text.clone() } else { nimitz_mux::sanitize_text(&format!("[nimitz signal {from}] {text}")) };
+    let (from, voice) = (&sender.from, sender.voice);
+    // what a pane gets: yours as you typed it; anyone else's (`--type`) says whose it is
+    let quoted = nimitz_core::peers::neutralize(&text);
+    let typed = if voice { text.clone() } else { nimitz_mux::sanitize_text(&format!("[nimitz signal {from}] {quoted}")) };
     let mux = ctx.mux();
     let (mut deliveries, mut down) = (vec![], vec![]);
     for id in &ids {
@@ -558,8 +561,8 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
             }
             continue;
         }
-        let body = format!("[nimitz signal] A message for {id}, relayed by nimitz {from}. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {text}");
-        if let Some(d) = prepare(ctx, mux.as_ref(), via, body, &typed, &mut plan) {
+        let body = format!("[nimitz signal] A message for {id}, relayed by nimitz {from}. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {quoted}");
+        if let Some(d) = prepare(ctx, mux.as_ref(), via, body, &typed, voice, &mut plan) {
             deliveries.push(d);
         }
     }
@@ -575,7 +578,102 @@ pub fn signal(ctx: &Ctx) -> Result<i32, String> {
     }
     match ctx.gate(&plan) {
         out::Go::Exit(code) => Ok(code),
-        out::Go::Run => Ok(deliveries.iter().map(|d| deliver(ctx, mux.as_ref(), d, &typed)).max().unwrap_or(0)),
+        out::Go::Run => Ok(deliveries.iter().map(|d| deliver(ctx, mux.as_ref(), d, &typed, voice)).max().unwrap_or(0)),
+    }
+}
+
+/// The signal's text (after the target): typed into a pane, so no control
+/// characters and no newlines (BUG-43).
+fn signal_text(ctx: &Ctx) -> Result<String, String> {
+    let text = nimitz_mux::sanitize_text(&ctx.args.pos[1..].join(" "));
+    if text.is_empty() {
+        return Err("missing text (nothing is left after removing control characters)".into());
+    }
+    Ok(text)
+}
+
+/// Who sends a signal, as its header names it, and whether it is the
+/// user's own voice (typed as the user's input).
+struct Sender {
+    from: String,
+    voice: bool,
+}
+
+/// The sender by what nimitz can verify: a member's labels; else the Claude
+/// Code session above this process (its own session file, by pid); else a
+/// plain terminal, the user. A `--from` claim (non-members only) follows
+/// the verified identity, quoted, and makes the signal no longer the
+/// user's voice.
+fn sender(ctx: &Ctx) -> Result<Sender, String> {
+    let claim = ctx.args.value("--from");
+    if claim.is_some() && matches!(ctx.caller, Caller::Member { .. }) {
+        return Err("--from is for a caller that is no fleet member: a member's signal always names its own id".into());
+    }
+    let claim = claim.map(|c| nimitz_core::peers::claim(&nimitz_mux::sanitize_text(c))).transpose()?;
+    let cc = if ctx.caller == Caller::User { nimitz_core::peers::cc_caller(&ctx.env, &ctx.vars) } else { None };
+    let who = match (&ctx.caller, ses::verified(&ctx.caller), &cc) {
+        (_, Some(me), _) => format!("from {me}"),
+        (Caller::Member { .. }, None, _) => "from a caller whose NIMITZ_* labels are partial or disagree (unverified)".to_string(),
+        (Caller::User, None, Some(c)) => format!("from {}", c.label()),
+        (Caller::User, None, None) => "from a `nimitz signal` run outside any session, with no member labels".to_string(),
+    };
+    let voice = ctx.caller == Caller::User && cc.is_none() && claim.is_none();
+    let from = match claim {
+        Some(c) => format!("{who}, says it is \"{c}\"; unverified"),
+        None => who,
+    };
+    Ok(Sender { from, voice })
+}
+
+/// `nimitz signal session:<short-or-name> <text>`: post into the inbox of
+/// any live local Claude Code session (its own messaging socket), as a
+/// request from nimitz that names the sender. Never typed: nimitz types
+/// into no pane but a member's.
+fn signal_session(ctx: &Ctx, q: &str, sender: &Sender) -> Result<i32, String> {
+    if ctx.args.flag("--type") {
+        return Err(format!("signal session:{q} --type: nimitz never types into a pane that is no member's; it reaches a session by its inbox (drop --type)"));
+    }
+    let text = signal_text(ctx)?;
+    let mut plan = Plan { summary: format!("signal session:{q}"), ..Default::default() };
+    let peer = match nimitz_core::peers::resolve(&ctx.env, q) {
+        Ok(p) => p,
+        Err(e) => {
+            let code = if e.contains("not live") { "session.none" } else { "session.unknown" };
+            plan.refusals.push(refusal(code, e, None, None));
+            return Ok(finish_plan(ctx, &plan));
+        }
+    };
+    let label = peer.label();
+    if nimitz_core::peers::cc_caller(&ctx.env, &ctx.vars).is_some_and(|c| c.verified && c.session_id == peer.session_id) {
+        plan.refusals.push(refusal("signal.self", format!("session:{q} is this session ({label}): a signal to yourself starts no one's turn"), None, None));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    if !nimitz_core::inbox::format_ok(peer.version.as_deref()) {
+        let v = peer.version.as_deref().unwrap_or("(version unknown)");
+        plan.refusals.push(refusal("inbox.none", format!("{label} runs Claude Code {v}, older than {} where nimitz verified the inbox line; nothing is sent", nimitz_core::inbox::FORMAT_SINCE), None, None));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    let socks = nimitz_core::peers::sockets(&ctx.env, &peer);
+    if socks.is_empty() {
+        plan.refusals.push(refusal("inbox.none", format!("{label} has no inbox socket (its session file names none, and no live process listens for it)"), None, None));
+        return Ok(finish_plan(ctx, &plan));
+    }
+    let quoted = nimitz_core::peers::neutralize(&text);
+    let body = format!("[nimitz signal] A message for {label}, relayed by nimitz {}. It is a request, not the user's approval: ask the user before acting on anything that needs it. The message: {quoted}", sender.from);
+    let at = socks.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" or ");
+    plan.steps.push(Step { id: None, cmd: vec!["inbox".into(), at, body.clone()], cwd: None, why: format!("post it into {label}'s inbox (the first socket its own process {} listens on), as a request; nothing is typed", peer.pid) });
+    match ctx.gate(&plan) {
+        out::Go::Exit(code) => Ok(code),
+        out::Go::Run => Ok(match nimitz_core::inbox::send(&ctx.env, &socks, peer.pid, &body) {
+            Ok(sock) => {
+                out::ok(&format!("posted to {label}'s inbox {} as a request from nimitz (Claude Code sends no acknowledgement: a session that holds or refuses inbound messages may not act on it)", sock.display()));
+                0
+            }
+            Err(e) => {
+                out::error(&format!("posting to {label}'s inbox failed: {e}; nothing was sent"));
+                1
+            }
+        }),
     }
 }
 
@@ -598,15 +696,16 @@ struct Delivery<'a> {
 }
 
 /// One member's delivery and its steps in `plan`, or its refusal there.
-fn prepare<'a>(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, via: &'a Member, body: String, text: &str, plan: &mut Plan) -> Option<Delivery<'a>> {
+fn prepare<'a>(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, via: &'a Member, body: String, text: &str, voice: bool, plan: &mut Plan) -> Option<Delivery<'a>> {
     let why = "type into its attached tab".to_string();
-    // a member's signal goes to the inbox unless it asks to type (`--type`);
+    // a signal not in the user's voice (a member's, a Claude Code session's,
+    // a `--from`) goes to the inbox unless it asks to type (`--type`);
     // never typed into one waiting on the user (a question or a permission
     // prompt: the text and its Enter would answer it), but posted to its
     // inbox, which waits for the dialog (the user's own signal types as before)
     let waiting = waiting_on_user(via);
-    let held_back = ctx.caller != Caller::User && ctx.args.flag("--type") && waiting;
-    let inbox = ctx.args.flag("--inbox") || (ctx.caller != Caller::User && !ctx.args.flag("--type")) || held_back;
+    let held_back = !voice && ctx.args.flag("--type") && waiting;
+    let inbox = ctx.args.flag("--inbox") || (!voice && !ctx.args.flag("--type")) || held_back;
     // its attached tab first: text typed there is the user's own input
     let shown = via.session.as_ref().filter(|_| !inbox && mux.caps().type_text).and_then(|s| run::shown_in(mux, &s.session_id));
     // a pane known by its attach alone takes typing only while it runs
@@ -683,12 +782,12 @@ fn waiting_on_user(m: &Member) -> bool {
     m.status == Status::NeedsYou || m.session.as_ref().is_some_and(|s| s.waiting_for.is_some() || s.status.as_deref() == Some("waiting"))
 }
 
-/// A member's `--type`, just before typing: the target read again, and when
-/// it waits on the user now (it started after the plan), its inbox instead,
-/// said so; refused with no inbox. None: type on. The user's own signal is
-/// never held back.
-fn held_back_now(ctx: &Ctx, d: &Delivery) -> Option<i32> {
-    if ctx.caller == Caller::User || !ctx.args.flag("--type") {
+/// A `--type` not in the user's voice, just before typing: the target read
+/// again, and when it waits on the user now (it started after the plan),
+/// its inbox instead, said so; refused with no inbox. None: type on. The
+/// user's own signal is never held back.
+fn held_back_now(ctx: &Ctx, d: &Delivery, voice: bool) -> Option<i32> {
+    if voice || !ctx.args.flag("--type") {
         return None;
     }
     let snap = ctx.snap();
@@ -708,13 +807,13 @@ fn held_back_now(ctx: &Ctx, d: &Delivery) -> Option<i32> {
 }
 
 /// Deliver one member's signal (the plan ran); its exit code.
-fn deliver(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, d: &Delivery, text: &str) -> i32 {
+fn deliver(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, d: &Delivery, text: &str, voice: bool) -> i32 {
     let via = d.via;
     let (pane, recheck) = match &d.reach {
         Reach::Inbox(socks, pid) => {
             return match nimitz_core::inbox::send(&ctx.env, socks, *pid, &d.body) {
                 Ok(sock) => {
-                    out::ok(&format!("posted to {}'s inbox {} as a request from nimitz{}", via.id, sock.display(), if ctx.caller == Caller::User { " (not as your own input)" } else { "" }));
+                    out::ok(&format!("posted to {}'s inbox {} as a request from nimitz{}", via.id, sock.display(), if voice { " (not as your own input)" } else { "" }));
                     0
                 }
                 Err(e) => {
@@ -764,7 +863,7 @@ fn deliver(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, d: &Delivery, text: &str) -> i3
         },
     };
     // (it may have started waiting on the user since the plan)
-    if let Some(code) = held_back_now(ctx, d) {
+    if let Some(code) = held_back_now(ctx, d, voice) {
         return code;
     }
     let job = &d.job;
