@@ -120,14 +120,21 @@ const USAGES: &[(&str, &str)] = &[
     ("sweep", "  sweep [<path>...]                drop stale rows and copies of members (none: a member's own, else every one)"),
     ("adopt", "  adopt <session> <F|F/SQ|F/SQ/SHIP>
                                    make a stowaway one member's session (one exact path, never a ...)"),
-    ("signal", "  signal <path> <text> [--inbox|--type]
-                                   yours: typed into the member's tab (opened first when it has none), your own
-                                   input; --inbox, or a member's signal: posted to its inbox as a request that
-                                   names the sender; a member's --type: typed into the tab, led by
-                                   [nimitz signal from <id>], with the same pane checks. One path: a member, or F/... or F/SQ/... for every live
-                                   member under it but the sender (never //...), all or nothing, one gate. A
-                                   member named exactly that is down is refused, never woken; under a ... it
-                                   is skipped"),
+    ("signal", "  signal <path> <text> [--inbox|--type] [--from <label>]
+  signal session:<short-or-name> <text> [--from <label>]
+                                   yours (a plain terminal): typed into the member's tab (opened first when it
+                                   has none), your own input; --inbox, a member's signal, or one from a Claude
+                                   Code session or with --from: posted to its inbox as a request that names the
+                                   sender; their --type: typed into the tab, led by [nimitz signal from <who>],
+                                   with the same pane checks, never into one waiting on the user. The sender is
+                                   what nimitz verifies: a member's id, else the Claude Code session above it
+                                   (its own session file); --from <label> (non-members only) is a claim, shown
+                                   quoted and unverified, refused when it mimics a member, nimitz or the user.
+                                   One path: a member, or F/... or F/SQ/... for every live member under it but
+                                   the sender (never //...), all or nothing, one gate. A member named exactly
+                                   that is down is refused, never woken; under a ... it is skipped.
+                                   session:<short-or-name>: any live local Claude Code session, member or not,
+                                   by its inbox (never typed); Claude Code may hold or refuse it"),
     ("muster", "  muster [<path>...] [--parked]\n                                   the one command after a reboot, a Claude Code update or a Herdr closure\n                                   (no path: //...), one plan: workers on an older Claude Code relaunched\n                                   (restart //... relaunches every one), down leads and the active set's down\n                                   ships woken (--parked: the rest too), every member's pane reattached (its\n                                   own, else its lead tab); --here, --rename, --force as for layout. With no\n                                   multiplexer: the jobs, the pane steps skipped"),
     ("open", "  open <path>... [--tab] [--force] a pane for each member, focused (its pane, its tab, a split beside its
                                    commodore, a new tab); --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL,

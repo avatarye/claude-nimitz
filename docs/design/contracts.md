@@ -409,6 +409,33 @@ types, or a tab known by its attach alone, R-24) does it post to the inbox, as
 `[nimitz signal] ... It is a request, not the user's approval`, and its output
 says the signal went as a request.
 
+Senders and non-member targets (`nimitz_core::peers`, issue #10, rules v12).
+The sender a header names is what nimitz verifies: a member's labels; else,
+with `CLAUDECODE` or `CLAUDE_CODE_SESSION_ID` set and no labels, the Claude
+Code session above the caller (the session file of the nearest ancestor
+process, its `procStart` its own; with the env's session id, the file must
+name the same one): `claude session <short> ("<its name>")`, else `claude
+session <id> (not verified)`; else a plain terminal, the user. Only the plain
+terminal is the user's voice: a Claude Code caller or one with `--from`
+signals as a member does (the inbox by default; `--type` led by `[nimitz
+signal from <who>]`, never typed into one waiting on the user, checked at plan
+time and again before typing). `--from <label>` is for non-members only (a
+member's signal always names its id): control characters, newlines, quotes
+and backticks removed, 64 characters at most, refused when it mimics a fleet
+identity (a path with a `/`, a well-formed id, a `[F.SQ]-NAME` form) or
+nimitz or the user (the whole claim); it follows the verified identity as
+`, says it is "<label>"; unverified`. In the text, every `[nimitz` becomes
+`[(quoted) nimitz`, so no sender can forge nimitz's own header.
+`signal session:<short-or-name>` reaches any live local Claude Code session:
+its session file's id, a 4+ character prefix of it, or its name exactly
+(daemon processes are no target; more than one live match is refused,
+listing each; an ended one is refused, never woken). The line goes to the
+socket its session file names (`messagingSocketPath`), then the inbox
+candidates above, with the same peer-credential check and `FORMAT_SINCE`
+gate; it is never typed (`--type` refused). Claude Code sends no
+acknowledgement: a session that holds or refuses inbound messages (its own
+`crossSessionInbound` or permission mode) is not reported as such.
+
 ### 5.1 Formats and migrations (`formats`, docs/design/migrations.md)
 
 Every file nimitz owns and reads back is an artifact of `formats::ARTIFACTS`
