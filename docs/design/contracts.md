@@ -415,21 +415,31 @@ with `CLAUDECODE` or `CLAUDE_CODE_SESSION_ID` set and no labels, the Claude
 Code session above the caller (the session file of the nearest ancestor
 process, its `procStart` its own; with the env's session id, the file must
 name the same one): `claude session <short> ("<its name>")`, else `claude
-session <id> (not verified)`; else a plain terminal, the user. Only the plain
+session <id> (not verified)`; else a plain terminal, the user. The ancestry
+is read whatever the env says, so a session that strips `CLAUDECODE` and
+`CLAUDE_CODE_SESSION_ID` is still a Claude Code caller (a debug build reads
+only `NIMITZ_TEST_ANCESTORS`, none given: no ancestors). This raises the bar;
+it is no security boundary: a process started through `setsid`, `tmux` or
+`systemd-run` has no Claude Code above it, and any process of this user can
+already type into a pane with the multiplexer's send-keys. Only the plain
 terminal is the user's voice: a Claude Code caller or one with `--from`
 signals as a member does (the inbox by default; `--type` led by `[nimitz
 signal from <who>]`, never typed into one waiting on the user, checked at plan
 time and again before typing). `--from <label>` is for non-members only (a
-member's signal always names its id): control characters, newlines, quotes
-and backticks removed, 64 characters at most, refused when it mimics a fleet
+member's signal always names its id): format characters (Unicode Cf, the
+tag block) dropped, control characters and newlines made spaces, quotes and
+backticks removed, 64 characters at most; refused unless printable ASCII
+with no `[` or `]` (no lookalike slash, bracket or letter), and when it mimics a fleet
 identity (a path with a `/`, a well-formed id, a `[F.SQ]-NAME` form) or
 nimitz or the user (the whole claim); it follows the verified identity as
-`, says it is "<label>"; unverified`. In the text, every `[nimitz` becomes
-`[(quoted) nimitz`, so no sender can forge nimitz's own header.
+`, says it is "<label>"; unverified`. In the text, the claim and every
+session name a header shows, format characters are dropped and every
+`[nimitz` (fullwidth too) becomes `[(quoted) nimitz`, so no sender can forge
+nimitz's own header. A session name is matched as its file has it.
 `signal session:<short-or-name>` reaches any live local Claude Code session:
 its session file's id, a 4+ character prefix of it, or its name exactly
 (daemon processes are no target; more than one live match is refused,
-listing each; an ended one is refused, never woken). The line goes to the
+listing each full session id; an ended one is refused, never woken). The line goes to the
 socket its session file names (`messagingSocketPath`), then the inbox
 candidates above, with the same peer-credential check and `FORMAT_SINCE`
 gate; it is never typed (`--type` refused). Claude Code sends no

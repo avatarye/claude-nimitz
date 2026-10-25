@@ -51,8 +51,14 @@ pub fn session_above_id(env: &Env, vars: &HashMap<String, String>) -> Option<Str
 }
 
 /// The session file of the nearest Claude Code process above this one (one
-/// whose `procStart` names another process is a stale file: skipped).
+/// whose `procStart` names another process is a stale file: skipped). In a
+/// debug build only the given ancestry counts (`NIMITZ_TEST_ANCESTORS`;
+/// none given: no ancestors), so a sandbox never finds the Claude Code
+/// session that runs the tests.
 pub fn session_above_file(env: &Env, vars: &HashMap<String, String>) -> Option<serde_json::Value> {
+    if cfg!(debug_assertions) && !vars.contains_key("NIMITZ_TEST_ANCESTORS") {
+        return None;
+    }
     session_above(env, vars)
 }
 

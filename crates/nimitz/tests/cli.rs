@@ -3169,9 +3169,9 @@ fn a_claude_code_or_claiming_caller_is_never_the_users_voice() {
     let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "x", "--from", "specto:rasel", "--plan"], &cc, None);
     assert!(r.out.contains("inbox") && !r.out.contains("type "), "{}", r.out);
     // a claim that mimics a fleet identity, nimitz or the user: refused, nothing sent
-    for bad in ["[HOME.GITHUB]-COMMODORE", "HOME/GITHUB/COMMODORE", "the user", "nimitz"] {
+    for bad in ["[HOME.GITHUB]-COMMODORE", "HOME/GITHUB/COMMODORE", "the user", "nimitz", "HOME\u{ff0f}GITHUB\u{ff0f}COMMODORE", "\u{41d}\u{41e}\u{41c}\u{415}/GITHUB"] {
         let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "hi", "--from", bad, "--yes"], &[], None);
-        assert!(r.code == 2 && r.out.contains("may not mimic a fleet identity"), "{bad}: {}", r.out);
+        assert!(r.code == 2 && (r.out.contains("may not mimic a fleet identity") || r.out.contains("a claim is printable ASCII with no [ or ]")), "{bad}: {}", r.out);
     }
     // a member: always its own id
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "MAIN/ARGOS", "hi", "--from", "specto:rasel", "--yes"]);
@@ -3192,6 +3192,12 @@ fn a_claude_code_or_claiming_caller_is_never_the_users_voice() {
     assert!(r.code == 0 && r.out.contains("is waiting on the user"), "{}", r.out);
     assert_eq!(sb.prompts("w1:p2").len(), typed_before);
     assert!(recv().contains("while it waits"));
+    // a session that strips CLAUDECODE and CLAUDE_CODE_SESSION_ID: its ancestry still names it
+    let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "env stripped", "--type", "--yes"], &[("NIMITZ_TEST_ANCESTORS", &cc_pid)], None);
+    assert!(r.code == 0 && r.out.contains("is waiting on the user"), "{}", r.out);
+    assert_eq!(sb.prompts("w1:p2").len(), typed_before, "never typed as the user's");
+    let c = recv();
+    assert!(c.contains("from claude session ab12cd34 (\"specto-rasel\")") && c.contains("env stripped"), "{c}");
     // the user's own terminal, unchanged: typed as their own words (even into a waiting one)
     let r = sb.run(&["signal", "MAIN/ARGOS", "the user typed this", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
