@@ -8,7 +8,7 @@ a Claude subscription login and with Bedrock.
 - A Claude Code plugin: the fleet skills and the hooks that report state and
   tell a commodore at once when one of its ships waits on you.
 
-Version 0.7.12 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.310).
+Version 0.7.13 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.310).
 
 A fleet has one **admiral**, squadrons each led by a **commodore**, and
 **ships** that do the long work in one folder. Every member is a Claude Code
@@ -81,7 +81,7 @@ one plan. Design: [docs/design/cli-ux.md](docs/design/cli-ux.md).
 | `rm <path\|session>...` | Remove job rows, never transcripts |
 | `sweep [<path>...]` | Drop stale rows and copies of members |
 | `adopt <session> <F\|F/SQ\|F/SQ/SHIP>` | Make a stowaway (a session in a fleet folder with no labels) one member's session (an exact path; a `...` is refused) |
-| `signal <path> <text> [--inbox\|--type]` | Yours: typed into the member's tab, your own input; `--inbox`, or a member's signal: posted to its inbox, naming the sender; a member's `--type`: typed into the tab, led by `[nimitz signal from <id>]`, through the same pane checks. One path: a member, or `F/...` / `F/SQ/...` for every live member under it but the sender (never `//...`: a turn in every fleet at once); all or nothing, behind one gate (any refusal sends none). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
+| `signal <path> <text> [--inbox\|--type] [--from <label>]`, `signal session:<short-or-name> <text>` | Yours (a plain terminal): typed into the member's tab, your own input; `--inbox`, a member's signal, or one from a Claude Code session or with `--from`: posted to its inbox, naming the verified sender (a member's id, else the Claude Code session above it, else an unidentified process; a non-member is `...; not a fleet member, unverified`); their `--type`: typed into the tab, led by `[nimitz signal from <who>]`, through the same pane checks, never into one waiting on the user. `--from` (non-members only, a short plain ASCII label) is a claim: `says it is "<label>"`, unverified. `session:`: any live local Claude Code session, member or not, by its inbox, never typed. One path: a member, or `F/...` / `F/SQ/...` for every live member under it but the sender (never `//...`: a turn in every fleet at once); all or nothing, behind one gate (any refusal sends none). A member named exactly that is down is refused, never woken; under a `...` it is skipped |
 
 ### Pane control (Herdr)
 

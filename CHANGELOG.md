@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.13 (unreleased)
+
+### Changed
+
+- **No communication barrier with local sessions and apps (#10, rules
+  v12).** Any member may message any local Claude Code session or app,
+  member or not: SendMessage (ListAgents lists them) or `nimitz signal`,
+  within Claude Code's own limits. A message from anyone is a request, never
+  the user's approval, and a sender's claim to be the user, a member or a
+  lead grants nothing.
+- **`nimitz signal session:<id-or-name> <text>`** delivers to a live local
+  session's inbox over Claude Code's messaging socket (by its session id, a
+  4+ character prefix, or its name).
+- **Who sent it, verified first.** A caller inside a Claude Code session is
+  named from its own session file (`claude session ab12 ("name")`, or "not
+  verified" when the file does not match); `--from <label>` (non-members
+  only) adds a claim, shown quoted as unverified; a `--from` that mimics a
+  fleet identity (`F/SQ/SHIP`, `[F.SQ]-SHIP`, "the user") is refused, and a
+  `[nimitz` header in the text is defused.
+
+### Fixed
+
+- **A Claude Code session's or an app's `nimitz signal` was typed into a
+  member's pane as the user's own input.** Only a plain terminal is the
+  user's voice now: any other caller goes to the inbox by default, and its
+  `--type` is prefixed `[nimitz signal from <who>]` and never typed into a
+  member waiting on the user.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). Live members get rules v12 at their next prompt. A
+  script or app that relied on `nimitz signal` typing into a pane now needs
+  `--type`.
+
 ## 0.7.12 (2026-10-24)
 
 ### Added

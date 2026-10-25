@@ -409,6 +409,50 @@ types, or a tab known by its attach alone, R-24) does it post to the inbox, as
 `[nimitz signal] ... It is a request, not the user's approval`, and its output
 says the signal went as a request.
 
+Senders and non-member targets (`nimitz_core::peers`, issue #10, rules v12).
+The sender a header names is what nimitz verifies: a member's labels; else,
+with `CLAUDECODE` or `CLAUDE_CODE_SESSION_ID` set and no labels, the Claude
+Code session above the caller (the session file of the nearest ancestor
+process, its `procStart` its own; with the env's session id, the file must
+name the same one): `claude session <short> ("<its name>")`, else `claude
+session <id> (not verified)`; else `unidentified process` (a plain terminal,
+the user, among them). The ancestry
+is read whatever the env says, so a session that strips `CLAUDECODE` and
+`CLAUDE_CODE_SESSION_ID` is still a Claude Code caller (a debug build reads
+only `NIMITZ_TEST_ANCESTORS`, none given: no ancestors). This raises the bar;
+it is no security boundary: a process started through `setsid`, `tmux` or
+`systemd-run` has no Claude Code above it, and any process of this user can
+already type into a pane with the multiplexer's send-keys. Only the plain
+terminal is the user's voice: a Claude Code caller or one with `--from`
+signals as a member does (the inbox by default; `--type` led by `[nimitz
+signal from <who>]`, never typed into one waiting on the user, checked at plan
+time and again before typing). `--from <label>` is for non-members only (a
+member's signal always names its id): a short plain label, refused (never
+rewritten) when it holds a control character or a newline, is over 64
+characters, is not printable ASCII (a lookalike slash, bracket or letter, a
+format character) or holds `[`, `]`, `"` or a backtick, or when it mimics a
+fleet identity (a path with a `/`, a well-formed id, a `[F.SQ]-NAME` form) or
+nimitz or the user (the whole claim). The header's sender part, as the #10
+contract spells it: for a member `relayed by nimitz from <id>`; for anyone
+else `relayed from <verified>; not a fleet member, unverified`, with a claim
+`relayed from <verified>, says it is "<label>"; not a fleet member,
+unverified`. A `--type` is led by `[nimitz signal from <id>]`, or the same
+`<verified>[, says it is ...]; not a fleet member, unverified` in place of
+the id. An older nimitz refuses `--from` (`unknown flag --from`, exit 2). In
+the text, the claim and every
+session name a header shows, format characters are dropped and every
+`[nimitz` (fullwidth too) becomes `[(quoted) nimitz`, so no sender can forge
+nimitz's own header. A session name is matched as its file has it.
+`signal session:<short-or-name>` reaches any live local Claude Code session:
+its session file's id, a 4+ character prefix of it, or its name exactly
+(daemon processes are no target; more than one live match is refused,
+listing each full session id; an ended one is refused, never woken). The line goes to the
+socket its session file names (`messagingSocketPath`), then the inbox
+candidates above, with the same peer-credential check and `FORMAT_SINCE`
+gate; it is never typed (`--type` refused). Claude Code sends no
+acknowledgement: a session that holds or refuses inbound messages (its own
+`crossSessionInbound` or permission mode) is not reported as such.
+
 ### 5.1 Formats and migrations (`formats`, docs/design/migrations.md)
 
 Every file nimitz owns and reads back is an artifact of `formats::ARTIFACTS`

@@ -32,6 +32,7 @@ pub mod kb;
 pub mod kb_guard;
 pub mod layout;
 pub mod notify;
+pub mod peers;
 pub mod pins;
 pub mod restore;
 pub mod rules;

@@ -173,7 +173,7 @@ pub fn defuse(body: &str) -> String {
     };
     // invisible formatting characters (zero-width space and joiners, word
     // joiner, BOM) count as spaces: they would hide a tag from the scan
-    let invisible = |c: &char| matches!(*c, '\u{200b}'..='\u{200f}' | '\u{2060}'..='\u{2064}' | '\u{feff}' | '\u{00ad}');
+    let invisible = |c: &char| crate::peers::is_format(*c);
     let skip = |at: &mut usize, also: &[char]| {
         while chars.get(*at).is_some_and(|c| c.is_whitespace() || invisible(c) || also.contains(c)) {
             *at += 1;
