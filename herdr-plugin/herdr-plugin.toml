@@ -1,6 +1,6 @@
 id = "admiralty"
 name = "Admiralty"
-version = "0.7.14"
+version = "0.7.15"
 min_herdr_version = "0.9.0"
 description = "Call up the admiralty fleet tree (claude-nimitz) over the current tab; the same key puts it away."
 platforms = ["macos", "linux", "windows"]

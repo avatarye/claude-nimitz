@@ -8,7 +8,7 @@ its own folder.
 Only the `claude` CLI runs underneath, so a subscription login or Bedrock
 both work.
 
-Version 0.7.14 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.312).
+Version 0.7.15 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.312).
 
 ## Install
 
