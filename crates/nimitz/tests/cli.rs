@@ -870,6 +870,30 @@ fn open_attaches_a_ship_and_focuses_a_pane() {
 }
 
 #[test]
+fn open_reports_the_pane_and_its_focus_apart() {
+    // #11: Herdr names a new pane an agent a moment after its attach runs;
+    // `agent focus` is asked again meanwhile
+    let sb = Sb::new(true);
+    sb.herdr_world(|w| w["agent_after"] = serde_json::json!(2));
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("focus.partial") && !r.out.contains("failed"), "{}", r.out);
+    assert_eq!(sb.calls().matches("\"agent\",\"focus\"").count(), 3, "{}", sb.calls());
+    // one it never names: the pane opened and its tab is in front; a warning, the run and the member are fine
+    let sb = Sb::new(true);
+    sb.herdr_world(|w| w["agent_after"] = serde_json::json!(1000));
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("focus.partial") && r.out.contains("focusing it as an agent failed") && r.out.contains("agent_not_found"), "{}", r.out);
+    assert!(!r.out.contains("not up") && !r.out.contains("member(s) failed") && !r.out.contains("mux.failed"), "{}", r.out);
+    // any other focus error is still a failure
+    let sb = Sb::new(true);
+    sb.herdr_world(|w| w["fail"] = serde_json::json!("agent focus"));
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert!(r.code != 0 && r.out.contains("mux.failed") && r.out.contains("injected_failure"), "{}", r.out);
+}
+
+#[test]
 fn open_reuses_the_tab_it_opened_before() {
     let sb = Sb::new(true);
     let tabs = |sb: &Sb| -> usize {

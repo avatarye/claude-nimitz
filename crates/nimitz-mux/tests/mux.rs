@@ -33,6 +33,10 @@ fn main() {
         ("focus: workspace, tab, agent focus in order", focus_order),
         ("focus: partial ref skips missing levels", focus_partial),
         ("focus: unknown pane surfaces herdr's error", focus_unknown),
+        ("focus: a new pane Herdr names an agent a moment later is focused (#11)", focus_waits_for_the_agent),
+        ("focus: a pane never named an agent, its tab in front: Unfocused (#11)", focus_never_an_agent),
+        ("focus: another agent focus error stays Failed, not asked again", focus_other_error),
+        ("attach: a claimed pane not yet an agent is attached all the same (#11)", attach_tolerates_unfocused),
         ("type_text: prompts the pane", type_text_ok),
         ("type_text: spaces as typed, controls gone", type_text_keeps_spaces),
         ("type_text: blocked pane is rejected with herdr's error", type_text_blocked),
@@ -216,6 +220,56 @@ fn focus_unknown() {
     let w = World::new(None);
     let e = w.mux().focus(&pane_ref("w9:p9", "", "")).unwrap_err();
     assert!(e.to_string().contains("agent_not_found"), "{e}");
+}
+
+/// A world whose `pane run` leaves the pane no agent for `n` `agent focus` asks.
+fn lagging_world(n: u64) -> World {
+    let mut world = default_world();
+    world["agent_after"] = json!(n);
+    World::new(Some(world))
+}
+
+fn agent_focus_calls(w: &World) -> usize {
+    w.calls().iter().filter(|c| c.starts_with(&cmdv(&["agent", "focus"]))).count()
+}
+
+fn focus_waits_for_the_agent() {
+    let w = lagging_world(2);
+    let p = w.mux().open(&cmdv(&["claude", "attach", "cca8f78b"]), Path::new("/x"), Place::Tab { workspace: "MAIN".into(), label: "MAIN.GX.BROW".into() }).expect("open");
+    w.mux().focus(&p).expect("focused on the third ask");
+    assert_eq!(agent_focus_calls(&w), 3);
+}
+
+fn focus_never_an_agent() {
+    let w = lagging_world(1000);
+    let p = w.mux().open(&cmdv(&["claude", "attach", "cca8f78b"]), Path::new("/x"), Place::Tab { workspace: "MAIN".into(), label: "MAIN.GX.BROW".into() }).expect("open");
+    let t = std::time::Instant::now();
+    let e = w.mux().focus(&p).unwrap_err();
+    assert!(matches!(&e, MuxError::Unfocused(m) if m.contains("agent_not_found")), "{e:?}");
+    assert_eq!(agent_focus_calls(&w), 1 + nimitz_mux::herdr::FOCUS_RETRY_MS.len());
+    assert!(t.elapsed() >= std::time::Duration::from_millis(nimitz_mux::herdr::FOCUS_RETRY_MS.iter().sum()), "{:?}", t.elapsed());
+    // the workspace and tab were focused first: the pane is in front
+    let c = w.calls();
+    assert!(c.contains(&cmdv(&["tab", "focus", p.tab_id.as_deref().unwrap()])), "{c:?}");
+}
+
+fn focus_other_error() {
+    let mut world = default_world();
+    world["fail"] = json!("agent focus");
+    let w = World::new(Some(world));
+    let e = w.mux().focus(&pane_ref("w1:p1", "w1:t1", "w1")).unwrap_err();
+    assert!(matches!(&e, MuxError::Failed(m) if m.contains("injected_failure")), "{e:?}");
+    assert_eq!(agent_focus_calls(&w), 1, "only agent_not_found is asked again");
+}
+
+fn attach_tolerates_unfocused() {
+    let w = tab_world(None);
+    let mut world = w.world();
+    world["agent_after"] = json!(1000);
+    fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
+    let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
+    let a = nimitz_mux::attach(&w.mux(), &cmdv(&["claude", "attach", "9aacf927"]), Path::new("/dev"), place, None).expect("attached, if not focused");
+    assert_eq!(a, Attached::Claimed(pane_ref("w1:p2", "w1:t2", "w1")));
 }
 
 // ---------- type_text ----------

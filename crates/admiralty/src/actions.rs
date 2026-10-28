@@ -536,12 +536,18 @@ fn refusal_issue(id: &Id, message: String) -> nimitz_core::Issue {
     nimitz_core::Issue { code: "mux.failed".into(), severity: nimitz_core::Severity::Error, message, fix: None, id: Some(id.clone()) }
 }
 
-/// `A` on a tab whose pane is a plain shell: run the attach there and focus it.
-pub fn claim_open(ctx: &Ctx, snap: &Snapshot, target: &Target, pane: &PaneRef) -> Result<(), String> {
+/// `A` on a tab whose pane is a plain shell: run the attach there and focus
+/// it. A pane left in front in its tab but not focused as an agent (Herdr has
+/// not named the new attach one yet) is attached: `Ok(Some(why))`.
+pub fn claim_open(ctx: &Ctx, snap: &Snapshot, target: &Target, pane: &PaneRef) -> Result<Option<String>, String> {
     let p = plan_open(ctx, snap, target)?;
     let (step, _) = p.panes.first().ok_or("nothing to attach")?;
     ctx.mux.run_in(pane, &step.cmd).map_err(|e| e.to_string())?;
-    ctx.mux.focus(pane).map_err(|e| e.to_string())
+    match ctx.mux.focus(pane) {
+        Ok(()) => Ok(None),
+        Err(e @ nimitz_mux::MuxError::Unfocused(_)) => Ok(Some(e.to_string())),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn plan_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<Pending, String> {

@@ -125,6 +125,11 @@ pub struct LayoutPlan {
 pub enum MuxError {
     Unsupported(&'static str),
     Failed(String),
+    /// `focus` put the pane's workspace and tab in front, but focusing the
+    /// pane itself failed (Herdr has not named it an agent yet: a pane that
+    /// has just been opened). The pane is open and shown; not a failure of
+    /// whatever opened it.
+    Unfocused(String),
 }
 
 impl std::fmt::Display for MuxError {
@@ -132,6 +137,7 @@ impl std::fmt::Display for MuxError {
         match self {
             MuxError::Unsupported(what) => write!(f, "no multiplexer: {what} needs one (run inside Herdr)"),
             MuxError::Failed(m) => f.write_str(m),
+            MuxError::Unfocused(m) => write!(f, "its pane is in front in its tab, but focusing it as an agent failed: {m}"),
         }
     }
 }
@@ -368,16 +374,26 @@ impl From<MuxError> for AttachError {
 pub fn attach(mux: &dyn Mux, cmd: &[String], cwd: &Path, place: Place, session_id: Option<&str>) -> Result<Attached, AttachError> {
     match tab_state(mux, cmd, &place, session_id)? {
         TabState::Shown(p) => {
-            mux.focus(&p)?;
+            focus_shown(mux, &p)?;
             Ok(Attached::Focused(p))
         }
         TabState::Shell(p) => {
             mux.run_in(&p, cmd)?;
-            mux.focus(&p)?;
+            focus_shown(mux, &p)?;
             Ok(Attached::Claimed(p))
         }
         TabState::Taken { pane, running } => Err(AttachError::Taken { pane, running }),
         TabState::Missing => Ok(Attached::Opened(mux.open(cmd, cwd, place)?)),
+    }
+}
+
+/// Focus a pane that shows (or has just been given) the attach: a pane left
+/// in front in its tab but not focused as an agent (`MuxError::Unfocused`)
+/// is shown, which is all an attach needs.
+fn focus_shown(mux: &dyn Mux, pane: &PaneRef) -> Result<(), MuxError> {
+    match mux.focus(pane) {
+        Err(MuxError::Unfocused(_)) => Ok(()),
+        r => r,
     }
 }
 

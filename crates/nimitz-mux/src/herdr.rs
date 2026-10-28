@@ -11,6 +11,10 @@ use serde_json::Value;
 
 use crate::{Caps, LayoutPlan, Mux, MuxError, Pane, PaneRef, Place, Shape, ShapePane, ShapeTab, ShapeWorkspace};
 
+/// The waits between `agent focus` attempts on a pane Herdr has not named an
+/// agent yet (`agent_not_found`): about 2.5 s in all.
+pub const FOCUS_RETRY_MS: [u64; 5] = [100, 200, 400, 800, 1000];
+
 pub struct Herdr {
     pub bin: String,
     /// `--session <name>` on every call (`NIMITZ_HERDR_SESSION`), else Herdr's own resolution
@@ -712,14 +716,30 @@ impl Mux for Herdr {
 
     /// Workspace focus, then tab focus, then agent focus — so the pane is
     /// actually in front of the user, not just focused inside a hidden tab.
+    /// `agent focus` finds only a pane Herdr has named an agent, and a pane
+    /// that has just been given its attach is named one a moment later: an
+    /// `agent_not_found` is asked again for about 2.5 s (`FOCUS_RETRY_MS`).
+    /// Still not found after its tab was focused: `MuxError::Unfocused` (the
+    /// pane is in front, in its tab); any other error is `Failed`.
     fn focus(&self, pane: &PaneRef) -> Result<(), MuxError> {
         if let Some(ws) = pane.workspace_id.as_deref().filter(|x| !x.is_empty()) {
             self.run(&["workspace", "focus", ws])?;
         }
-        if let Some(tab) = pane.tab_id.as_deref().filter(|x| !x.is_empty()) {
+        let tab = pane.tab_id.as_deref().filter(|x| !x.is_empty());
+        if let Some(tab) = tab {
             self.run(&["tab", "focus", tab])?;
         }
-        self.run(&["agent", "focus", &pane.pane_id]).map(|_| ())
+        let mut last = None;
+        for wait in std::iter::once(0).chain(FOCUS_RETRY_MS) {
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+            match self.run(&["agent", "focus", &pane.pane_id]) {
+                Ok(_) => return Ok(()),
+                Err(MuxError::Failed(m)) if m.ends_with("(agent_not_found)") => last = Some(m),
+                Err(e) => return Err(e),
+            }
+        }
+        let m = last.unwrap_or_default();
+        Err(if tab.is_some() { MuxError::Unfocused(m) } else { MuxError::Failed(m) })
     }
 
     /// `herdr agent prompt`: herdr itself rejects a blocked pane

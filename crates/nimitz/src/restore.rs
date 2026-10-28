@@ -470,6 +470,16 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleets: &[String]) ->
                             }
                             out.ran.push((d, 0, format!("focused pane {}", p.pane_id)));
                         }
+                        // its pane is open and its tab in front: the focus
+                        // alone fell short, never a member that is not up
+                        Err(nimitz_mux::MuxError::Unfocused(e)) => {
+                            let mut d = display;
+                            if let Some(last) = d.cmd.last_mut() {
+                                *last = p.pane_id.clone();
+                            }
+                            out.ran.push((d, 0, format!("pane {} in front in its tab; not focused as an agent", p.pane_id)));
+                            out.issues.push(Issue { code: "focus.partial".into(), severity: Severity::Warn, message: format!("{id}'s pane {} opened and its tab is in front; focusing it as an agent failed: {e}", p.pane_id), fix: None, id: Some(id.clone()) });
+                        }
                         Err(e) => {
                             out.ran.push((display, 1, format!("focus failed: {e}")));
                             fail(&mut out, &mut failed, &id, refusal("mux.failed", format!("focusing {id}'s pane failed: {e}"), None, Some(id.clone())));
