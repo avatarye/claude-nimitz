@@ -15,22 +15,23 @@ use std::io::IsTerminal;
 
 #[derive(Clone, Copy)]
 pub struct Rgb(u8, u8, u8);
-const FG: Rgb = Rgb(0xe6, 0xe6, 0xdc);
-const STRONG: Rgb = Rgb(0xf8, 0xf8, 0xf2);
+pub(crate) const FG: Rgb = Rgb(0xe6, 0xe6, 0xdc);
+pub(crate) const STRONG: Rgb = Rgb(0xf8, 0xf8, 0xf2);
 const MUTED: Rgb = Rgb(0xaa, 0xa5, 0x8f);
 const FAINT: Rgb = Rgb(0x8a, 0x86, 0x72);
 const NEEDS: Rgb = Rgb(0xff, 0x5c, 0x93);
 const ERROR: Rgb = Rgb(0xfd, 0x97, 0x1f);
-const WARN: Rgb = Rgb(0xd8, 0xc7, 0x66);
-const BUSY: Rgb = Rgb(0xa6, 0xe2, 0x2e);
-const ACCENT: Rgb = Rgb(0x66, 0xd9, 0xef);
+pub(crate) const WARN: Rgb = Rgb(0xd8, 0xc7, 0x66);
+pub(crate) const BUSY: Rgb = Rgb(0xa6, 0xe2, 0x2e);
+pub(crate) const ACCENT: Rgb = Rgb(0x66, 0xd9, 0xef);
 
 /// Colour when the stream the view goes to is a terminal, `NO_COLOR` is
-/// unset or empty and the terminal is not `dumb`; `NIMITZ_COLOR=1` forces it
-/// (a capture), `NO_COLOR` still wins.
-fn colour_on() -> bool {
-    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
-    if std::env::var("NIMITZ_COLOR").is_ok_and(|v| v == "1") {
+/// unset (any value turns it off, an empty one too) and the terminal is not
+/// `dumb`; `NIMITZ_COLOR=1` (or `always`) forces it (a capture), `NO_COLOR`
+/// still wins. The usage (`help`) goes by the same rule.
+pub(crate) fn colour_on() -> bool {
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    if std::env::var("NIMITZ_COLOR").is_ok_and(|v| v == "1" || v == "always") {
         return !no_color;
     }
     let dumb = std::env::var("TERM").is_ok_and(|t| t == "dumb");
@@ -38,9 +39,9 @@ fn colour_on() -> bool {
     tty && !no_color && !dumb
 }
 
-struct Paint(bool);
+pub(crate) struct Paint(pub(crate) bool);
 impl Paint {
-    fn c(&self, s: &str, c: Rgb, bold: bool) -> String {
+    pub(crate) fn c(&self, s: &str, c: Rgb, bold: bool) -> String {
         if !self.0 || s.is_empty() {
             return s.to_string();
         }

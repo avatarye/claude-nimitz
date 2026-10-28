@@ -6,6 +6,7 @@
 mod args;
 mod crud;
 mod harness_cmd;
+mod help;
 mod kb_cmd;
 mod members;
 mod notify;
@@ -59,122 +60,6 @@ impl Ctx {
     }
 }
 
-/// Each command's usage: `nimitz help`, `nimitz help <cmd>` and
-/// `nimitz <cmd> --help` print it (the first is every one, in this order).
-const USAGES: &[(&str, &str)] = &[
-    ("init", "  init [--label L]                 data root, machine label, Claude Code's trust of the data root, doctor"),
-    ("trust", "  trust <folder>                   Claude Code's trust for the folder's git root (or the folder): it lets
-                                   the folder's .claude settings, hooks and MCP servers run"),
-    ("doctor", "  doctor [--fix]                   hooks, the plugin's cached copy, crossSessionInbound, native claude, trust,
-                                   versions, formats, role briefs, the format steps due, the machines of each
-                                   fleet"),
-    ("rules", "  rules [<path>...]                the role rules nimitz hands each member at session start (none: the
-                                   caller's own)"),
-    ("status", "  status [<path>...] [--json]      the fleets, their members and issues (paths: only those members);
-                                   down: taken down while active (a ... start wakes it); parked: retired by
-                                   the daemon or not active (--parked wakes it)"),
-    ("check", "  check [<path>...]                integrity check of the members the paths cover, their parents and
-                                   everything under them (none: everything; //...: every fleet but ADMIRALTY)"),
-    ("fleet", "  fleet new|set|rm <F>             fleet config (new: --machine L; set: --admiral-mode M)"),
-    ("squadron", "  squadron new|set|rm <F/SQ>       --brief T --mode M --effort E (its ships' default; a ship's own wins)"),
-    ("ship", "  ship new|set|rm <F/SQ/SHIP>      --dir PATH|managed --machine L --prompt T|--prompt-file P --mode M --depends A,B
-                                   --effort low|medium|high|xhigh|max ('' clears it; a live ship takes it at its restart)"),
-    ("machine", "  machine add|rm <F> <label>       add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat);
-                                   rm warns about live members when <label> is this machine"),
-    ("settings", "  settings get [<key>]             the fleet's settings.json (a dotted key: kb.remote)
-  settings set <key> <value>       JSON or text, null removes it (--plan|--yes)
-                                   (--fleet F; a member's default is its own fleet)"),
-    ("harness", "  harness list                     the fleet's harness: its rules, agents, skills and settings (a member: its own)
-  harness add rule|agent|skill|settings <file|folder> [--name N] [--for F/SQ|F/SQ/SHIP [--member]]
-                                   into the fleet's harness (--plan|--yes); settings: model, outputStyle,
-                                   effortLevel, permissions, env only
-  harness rm rule|agent|skill <name> | harness rm settings [--for ID [--member]]
-                                   out of it (kept as .archived)
-  harness push                     make this machine's harness plugin again; say what is live and what needs restart"),
-    ("kb", "  kb path|status|head              the fleet's knowledge base on this machine (settings kb.dirs.<this machine>)
-  kb show <path> | kb grep <term> [<prefix>]
-                                   read one commit (HEAD, or --at <sha>); grep is literal, any case
-  kb hash <path>                   sha256 of a file's body after its frontmatter (a note's id)
-  kb commit --title T --paths A,B --pages X,Y --note <sha256> --from \"<kind> <id>\"
-                                   commit exactly those paths, once per note, then sync (--no-sync: not)
-  kb restore --paths A,B           undo a failed ingest (what was there is kept under NIMITZ_STATE/kb-restore)
-  kb sync                          pull --rebase, then push
-  kb clone                         clone kb.remote into this machine's folder (--plan|--yes)"),
-    ("migrate", "  migrate --plan|--yes [--shared]  the format steps due here (docs/design/migrations.md): local ones run by
-                                   themselves with the first command after an update; --shared runs the shared
-                                   ones (fleet.toml), which affect every machine: update each one first
-  migrate fleet-skill <dir...> --into <F>
-                                   import old fleet-skill fleets"),
-    ("start", "  start <path>... [--fresh] [--parked] [--force]
-                                   bring members up, the jobs only (no pane): what is down is woken by its
-                                   exact id, top-down; a member a path names, and a lead under a ..., gets a
-                                   first launch when it never ran; a worker on an older Claude Code is
-                                   relaunched. --fresh: a named member's new conversation; --parked: the
-                                   parked and stopped ships a ... covers too; --force: a cold launch over a
-                                   broken lineage or an untested Claude Code"),
-    ("restart", "  restart <path>... [--parked]     relaunch the live members (same id and history, every flag again; ships
-                                   first; a turn in flight is dropped) and wake the ones that are down; a pane
-                                   whose attach the relaunch ends is reattached"),
-    ("stop", "  stop <path|session>...           stop members (under a ...: the live ones, ships first), or one session by its id"),
-    ("rm", "  rm <path|session>...             remove job rows (never transcripts): a member's stale rows, or one row by its id"),
-    ("sweep", "  sweep [<path>...]                drop stale rows and copies of members (none: a member's own, else every one)"),
-    ("adopt", "  adopt <session> <F|F/SQ|F/SQ/SHIP>
-                                   make a stowaway one member's session (one exact path, never a ...)"),
-    ("signal", "  signal <path> <text> [--inbox|--type] [--from <label>]
-  signal session:<short-or-name> <text> [--from <label>]
-                                   yours (a plain terminal): typed into the member's tab (opened first when it
-                                   has none), your own input; --inbox, a member's signal, or one from a Claude
-                                   Code session or with --from: posted to its inbox as a request that names the
-                                   sender; their --type: typed into the tab, led by [nimitz signal from <who>],
-                                   with the same pane checks, never into one waiting on the user. The sender is
-                                   what nimitz verifies: a member's id, else the Claude Code session above it
-                                   (its own session file), else an unidentified process; a non-member's header
-                                   adds \"; not a fleet member, unverified\". --from <label> (non-members only,
-                                   a short plain ASCII label) is a claim, shown quoted (says it is \"<label>\"),
-                                   refused when it mimics a member, nimitz or the user.
-                                   One path: a member, or F/... or F/SQ/... for every live member under it but
-                                   the sender (never //...), all or nothing, one gate. A member named exactly
-                                   that is down is refused, never woken; under a ... it is skipped.
-                                   session:<short-or-name>: any live local Claude Code session, member or not,
-                                   by its inbox (never typed); Claude Code may hold or refuse it"),
-    ("muster", "  muster [<path>...] [--parked]\n                                   the one command after a reboot, a Claude Code update or a Herdr closure\n                                   (no path: //...), one plan: workers on an older Claude Code relaunched\n                                   (restart //... relaunches every one), down leads and the active set's down\n                                   ships woken (--parked: the rest too), every member's pane reattached (its\n                                   own, else its lead tab); --here, --rename, --force as for layout. With no\n                                   multiplexer: the jobs, the pane steps skipped"),
-    ("open", "  open <path>... [--tab] [--force] a pane for each member, focused (its pane, its tab, a split beside its
-                                   commodore, a new tab); --tab: always its own tab (F.SQ.SHIP, F.ADMIRAL,
-                                   F.SQ.COMMODORE), reused or created; --force: a second tab beside a taken one.
-                                   One that is down is woken first"),
-    ("attach", "  attach <F|F/SQ|F/SQ/SHIP>        attach this terminal (claude attach <its exact job>); one that is down is
-                                   woken first (--plan, --yes); ctrl-z detaches; never from inside a Claude
-                                   Code session; one exact path, never a ..."),
-    ("close", "  close <path>...                  close the panes that show those members (only a pane that runs its
-                                   attach); the jobs run on"),
-    ("layout", "  layout <path>... [--ships] [--here] [--rename] [--force]
-                                   the Herdr tabs only: one attaching each lead the paths cover (--ships: and
-                                   each live ship); --here: in this Herdr session; --rename: give a tab that
-                                   shows a member under another name its full name; --force: a second tab
-                                   beside a taken one"),
-    ("hook", "  hook <Event>                     Claude Code hook (reads stdin, always exits 0)"),
-    ("sandbox", "  sandbox create|tick|env <dir>    a fake world for tests and demos (tick --once: one tick, then exit)"),
-];
-
-const HEAD: &str = "usage: nimitz <command> [args] [--json] [--plan] [--yes] [--force] [-v]
-       nimitz --version
-       nimitz help [<command>]   (or nimitz <command> --help)";
-
-const PATHS: &str = "paths: F (an admiral), F/SQ (a commodore), F/SQ/SHIP (a ship), each one member;
-       F/... and F/SQ/... everything under one, the lead included; //... every fleet
-       (never ADMIRALTY). Several per command; a member matched twice counts once";
-
-const TAIL: &str = "  -v shows a plan's details and commands; colour on a terminal only (NO_COLOR turns it off)";
-
-/// The usage of every command, or of `cmd` alone.
-fn usage(cmd: Option<&str>) -> String {
-    let body: Vec<&str> = USAGES.iter().filter(|(n, _)| cmd.is_none_or(|c| c == *n)).map(|(_, u)| *u).collect();
-    match cmd {
-        None => format!("{HEAD}\n\n{}\n\n{TAIL}\n\n{PATHS}", body.join("\n")),
-        Some(_) => format!("usage:\n{}\n\n{PATHS}", body.join("\n")),
-    }
-}
-
 fn main() {
     let argv: Vec<String> = nimitz_core::os::args();
     // a closed pipe (`nimitz status --json | head`) ends a command quietly, as
@@ -199,8 +84,8 @@ fn dispatch(argv: Vec<String>) -> i32 {
     // (never inside `signal`'s text)
     let flags: Vec<&String> = argv.iter().skip(1).filter(|a| a.starts_with("--")).collect();
     let asks = argv.get(1).is_some_and(|a| a == "--help") || (cmd != "signal" && flags.len() == 1 && flags[0] == "--help");
-    if asks && USAGES.iter().any(|(n, _)| *n == cmd) {
-        println!("{}", usage(Some(&cmd)));
+    if asks && help::known(&cmd) {
+        println!("{}", help::usage(Some(&cmd)));
         return 0;
     }
     // The hook and the fakes come first and stay lean: no parsing, no snapshot.
@@ -226,10 +111,10 @@ fn dispatch(argv: Vec<String>) -> i32 {
         }
         "" | "help" | "--help" | "-h" => {
             let of = argv.get(1).map(String::as_str).filter(|_| cmd == "help");
-            if let Some(c) = of.filter(|c| !USAGES.iter().any(|(n, _)| n == c)) {
+            if let Some(c) = of.filter(|c| !help::known(c)) {
                 return usage_error(&format!("no command {c:?}"));
             }
-            println!("{}", usage(of));
+            println!("{}", help::usage(of));
             return if cmd.is_empty() { 2 } else { 0 };
         }
         _ => {}

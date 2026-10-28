@@ -334,7 +334,7 @@ fn every_command_has_its_own_help() {
     for cmd in listed.out.lines().map(str::trim).filter(|l| !l.is_empty()) {
         for args in [vec![cmd, "--help"], vec!["help", cmd]] {
             let r = sb.run(&args);
-            assert!(r.code == 0 && r.out.contains(&format!("  {cmd} ")) && r.out.contains("paths:"), "{args:?}:\n{}", r.out);
+            assert!(r.code == 0 && r.out.contains(&format!("  {cmd} ")) && r.out.contains("Paths"), "{args:?}:\n{}", r.out);
         }
     }
     let r = sb.run(&["stop", "--help"]);
@@ -344,10 +344,54 @@ fn every_command_has_its_own_help() {
     assert!(sb.run(&["hook", "--help"]).out.contains("  hook <Event>"));
     assert!(sb.run(&["stop", "MAIN/ARGOS/CLEAN", "--help"]).out.contains("  stop "));
     let r = sb.run(&["signal", "MAIN/ARGOS", "see", "--help", "text", "--plan"]);
-    assert!(!r.out.contains("paths:"), "{}", r.out);
+    assert!(!r.out.contains("Paths"), "{}", r.out);
     for gone in ["up", "relaunch", "restore"] {
         let r = sb.run(&[gone, "MAIN", "--plan"]);
         assert!(r.code == 2 && r.out.contains("unknown command"), "{gone}: {}", r.out);
+    }
+}
+
+/// The usage (0.7.15): most used first, then the rest; coloured only on a
+/// terminal (a pipe here) unless `NIMITZ_COLOR=1` (or `always`) forces it,
+/// and never with `NO_COLOR` (any value); every line fits in 80 columns,
+/// coloured or not.
+#[test]
+fn help_is_sectioned_coloured_on_demand_and_fits_80_columns() {
+    let sb = Sb::new(false);
+    let plain = |s: &str| {
+        let mut out = String::new();
+        let mut esc = false;
+        for c in s.chars() {
+            match (esc, c) {
+                (false, '\x1b') => esc = true,
+                (true, 'm') => esc = false,
+                (true, _) => {}
+                (false, c) => out.push(c),
+            }
+        }
+        out
+    };
+    let help = sb.run(&["help"]).out;
+    let (most, less) = (help.find("\nMost used\n").unwrap(), help.find("\nLess used\n").unwrap());
+    assert!(most < help.find("  muster ").unwrap() && help.find("  muster ").unwrap() < less && less < help.find("  sweep ").unwrap(), "{help}");
+    let cmds = sb.run(&["__commands"]).out;
+    let mut runs: Vec<Vec<&str>> = vec![vec!["help"], vec!["--help"]];
+    runs.extend(cmds.lines().map(str::trim).filter(|l| !l.is_empty()).flat_map(|c| [vec!["help", c], vec![c, "--help"]]));
+    for args in &runs {
+        let piped = sb.run(args).out;
+        assert!(!piped.contains('\x1b'), "no colour in a pipe: {args:?}");
+        for v in ["1", ""] {
+            let r = raw(&sb.vars, args, &[("NO_COLOR", v), ("NIMITZ_COLOR", "1")], None);
+            assert!(!r.out.contains('\x1b'), "NO_COLOR={v:?} wins over NIMITZ_COLOR=1: {args:?}");
+        }
+        for force in ["1", "always"] {
+            let coloured = raw(&sb.vars, args, &[("NIMITZ_COLOR", force)], None).out;
+            assert!(coloured.contains("\x1b[") && coloured.contains("\x1b[0m"), "NIMITZ_COLOR={force} colours {args:?}");
+            assert_eq!(plain(&coloured), piped, "colour changes nothing else: {args:?}");
+        }
+        for l in piped.lines() {
+            assert!(l.chars().count() <= 80, "{args:?}: {} columns: {l}", l.chars().count());
+        }
     }
 }
 
