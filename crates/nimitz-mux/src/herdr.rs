@@ -11,6 +11,10 @@ use serde_json::Value;
 
 use crate::{Caps, LayoutPlan, Mux, MuxError, Pane, PaneRef, Place, Shape, ShapePane, ShapeTab, ShapeWorkspace};
 
+/// The waits between `agent focus` attempts on a pane Herdr has not named an
+/// agent yet (`agent_not_found`): about 2.5 s in all.
+pub const FOCUS_RETRY_MS: [u64; 5] = [100, 200, 400, 800, 1000];
+
 pub struct Herdr {
     pub bin: String,
     /// `--session <name>` on every call (`NIMITZ_HERDR_SESSION`), else Herdr's own resolution
@@ -21,6 +25,9 @@ pub struct Herdr {
     /// the Claude home whose job rows and session files back a pane's claim
     /// (the caller's env, as every other read of it)
     pub claude_home: std::path::PathBuf,
+    /// the waits of `focus` (`FOCUS_RETRY_MS`; `NIMITZ_FOCUS_RETRY_MS`, which
+    /// tests shorten)
+    pub focus_retry_ms: Vec<u64>,
 }
 
 /// Loose label matching, the herdr-fleet skill's rules in their order:
@@ -545,6 +552,38 @@ impl Herdr {
     /// into the pane's shell, so the command goes over as one quoted line:
     /// POSIX quoting on Unix; on Windows quoted for the shell the pane runs
     /// (`shell_line`).
+    /// Workspace, tab, then agent focus; `agent_not_found` asked again after
+    /// each of `waits` (ms). Still not found after its tab was focused, and the
+    /// pane is still there (`pane get`): `MuxError::Unfocused` (the pane is in
+    /// front, in its tab). A pane that is gone, no tab, or any other error:
+    /// `Failed`.
+    fn focus_with(&self, pane: &PaneRef, waits: &[u64]) -> Result<(), MuxError> {
+        if let Some(ws) = pane.workspace_id.as_deref().filter(|x| !x.is_empty()) {
+            self.run(&["workspace", "focus", ws])?;
+        }
+        let tab = pane.tab_id.as_deref().filter(|x| !x.is_empty());
+        if let Some(tab) = tab {
+            self.run(&["tab", "focus", tab])?;
+        }
+        let mut last = String::new();
+        for wait in std::iter::once(0).chain(waits.iter().copied()) {
+            std::thread::sleep(std::time::Duration::from_millis(wait));
+            match self.run(&["agent", "focus", &pane.pane_id]) {
+                Ok(_) => return Ok(()),
+                Err(MuxError::Failed(m)) if m.ends_with("(agent_not_found)") => last = m,
+                Err(e) => return Err(e),
+            }
+        }
+        if tab.is_none() {
+            return Err(MuxError::Failed(last));
+        }
+        // a pane closed since it was read is not in front: never "focused"
+        if let Err(e) = self.run(&["pane", "get", &pane.pane_id]) {
+            return Err(MuxError::Failed(format!("its pane {} is gone ({e}); {last}", pane.pane_id)));
+        }
+        Err(MuxError::Unfocused(last))
+    }
+
     fn pane_run(&self, pane_id: &str, cmd: &[String]) -> Result<(), MuxError> {
         #[cfg(windows)]
         let line = {
@@ -712,14 +751,16 @@ impl Mux for Herdr {
 
     /// Workspace focus, then tab focus, then agent focus — so the pane is
     /// actually in front of the user, not just focused inside a hidden tab.
+    /// `agent focus` finds only a pane Herdr has named an agent, and a pane
+    /// that has just been given its attach is named one a moment later: an
+    /// `agent_not_found` is asked again for about 2.5 s (`focus_retry_ms`).
     fn focus(&self, pane: &PaneRef) -> Result<(), MuxError> {
-        if let Some(ws) = pane.workspace_id.as_deref().filter(|x| !x.is_empty()) {
-            self.run(&["workspace", "focus", ws])?;
-        }
-        if let Some(tab) = pane.tab_id.as_deref().filter(|x| !x.is_empty()) {
-            self.run(&["tab", "focus", tab])?;
-        }
-        self.run(&["agent", "focus", &pane.pane_id]).map(|_| ())
+        self.focus_with(pane, &self.focus_retry_ms)
+    }
+
+    /// `focus`, asked once: a pane that shows an agent already.
+    fn focus_now(&self, pane: &PaneRef) -> Result<(), MuxError> {
+        self.focus_with(pane, &[])
     }
 
     /// `herdr agent prompt`: herdr itself rejects a blocked pane

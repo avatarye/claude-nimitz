@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.14 (unreleased)
+
+### Fixed
+
+- **`nimitz open` reported a failure though the pane opened (#11).** Herdr
+  classifies a new pane as an agent a moment after it starts, so focusing it
+  as an agent right away failed with `agent_not_found` and the member was
+  counted not up. nimitz now retries the focus for about 2.5 s; if Herdr
+  still has not classified the pane, its tab is already in front and the run
+  says so in a warning (`focus.partial`) instead of failing. The pane's
+  opening and its focus are reported apart, so a focus-only problem never
+  marks a member down or a run failed (open, muster, restart, Admiralty's
+  jumps).
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). No format or rules change.
+
 ## 0.7.13 (2026-10-25)
 
 ### Changed

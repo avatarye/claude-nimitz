@@ -47,7 +47,9 @@ impl Sb {
         let r = raw(&BTreeMap::new(), &args, &[], None);
         assert_eq!(r.code, 0, "{}", r.out);
         let e = raw(&BTreeMap::new(), &["sandbox", "env", base.to_str().unwrap(), "--json"], &[], None);
-        let vars: BTreeMap<String, String> = serde_json::from_str(e.out.trim()).expect("sandbox env --json");
+        let mut vars: BTreeMap<String, String> = serde_json::from_str(e.out.trim()).expect("sandbox env --json");
+        // `focus` asks as often as with Herdr, without its 2.5 s
+        vars.insert("NIMITZ_FOCUS_RETRY_MS".into(), "1,1,1,1,1".into());
         let base = nimitz_core::os::canonical(&base).unwrap();
         Sb { _td: td, base, vars }
     }
@@ -867,6 +869,30 @@ fn open_attaches_a_ship_and_focuses_a_pane() {
     // never a `...`: open names its members
     let r = sb.run(&["open", "MAIN/ARGOS/...", "--plan"]);
     assert!(r.code != 0 && r.out.contains("name each one"), "{}", r.out);
+}
+
+#[test]
+fn open_reports_the_pane_and_its_focus_apart() {
+    // #11: Herdr names a new pane an agent a moment after its attach runs;
+    // `agent focus` is asked again meanwhile
+    let sb = Sb::new(true);
+    sb.herdr_world(|w| w["agent_after"] = serde_json::json!(2));
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("focus.partial") && !r.out.contains("failed"), "{}", r.out);
+    assert_eq!(sb.calls().matches("\"agent\",\"focus\"").count(), 3, "{}", sb.calls());
+    // one it never names: the pane opened and its tab is in front; a warning, the run and the member are fine
+    let sb = Sb::new(true);
+    sb.herdr_world(|w| w["agent_after"] = serde_json::json!(1000));
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("focus.partial") && r.out.contains("focusing it as an agent failed") && r.out.contains("agent_not_found"), "{}", r.out);
+    assert!(!r.out.contains("not up") && !r.out.contains("member(s) failed") && !r.out.contains("mux.failed"), "{}", r.out);
+    // any other focus error is still a failure
+    let sb = Sb::new(true);
+    sb.herdr_world(|w| w["fail"] = serde_json::json!("agent focus"));
+    let r = sb.run(&["open", "MAIN/ARGOS/CLEAN"]);
+    assert!(r.code != 0 && r.out.contains("mux.failed") && r.out.contains("injected_failure"), "{}", r.out);
 }
 
 #[test]

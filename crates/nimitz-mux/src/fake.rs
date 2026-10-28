@@ -17,9 +17,14 @@
 //!   "next_ws": 2,
 //!   "fail": "workspace create",  // optional: any call starting with this errors
 //!   "exec": true,                // optional: `pane run` really runs the line (sh -c, in the pane's cwd)
-//!   "resume_agents_on_restore": true  // optional: `__restart` runs `claude --resume <sid>` in each agent pane, as Herdr does
+//!   "resume_agents_on_restore": true, // optional: `__restart` runs `claude --resume <sid>` in each agent pane, as Herdr does
+//!   "agent_after": 3             // optional: a pane given a `pane run` is no agent to `agent focus` for its next 3 asks
 //! }
 //! ```
+//! `agent_after` is Herdr's agent detection lag: `pane run` sets the pane's
+//! `agent_in` to it, and each `agent focus` of a pane whose `agent_in` is
+//! above 0 counts it down and fails `agent_not_found` (a large value: a pane
+//! Herdr never names an agent). A world may set `agent_in` on a pane too.
 //! `__restart` (test only) is a server restart from the snapshot: every pane
 //! drops to a plain shell (the pane processes died with the server); with
 //! `resume_agents_on_restore` the fake then runs `<claude> --resume <sid>` in
@@ -307,7 +312,13 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             ok("agent:list", json!({"type": "agent_list", "agents": agents}))
         }
         ["agent", "focus", target] => {
-            if find(&arr(world, "panes"), "pane_id", target).is_none() {
+            let Some(p) = world["panes"].as_array_mut().expect("panes").iter_mut().find(|p| s(p, "pane_id") == *target) else {
+                return err("agent:focus", "agent_not_found", &format!("agent target {target} not found"));
+            };
+            // not detected as an agent yet (`agent_after`)
+            let left = num(p, "agent_in", 0);
+            if left > 0 {
+                p["agent_in"] = json!(left - 1);
                 return err("agent:focus", "agent_not_found", &format!("agent target {target} not found"));
             }
             ok("agent:focus", json!({"type": "pane_focused", "pane_id": target}))
@@ -397,6 +408,13 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             }
             ok("tab:rename", json!({"type": "tab_renamed", "tab_id": target}))
         }
+        ["pane", "get", target] => {
+            let panes = arr(world, "panes");
+            let Some(p) = find(&panes, "pane_id", target) else {
+                return err("pane:get", "pane_not_found", &format!("pane {target} not found"));
+            };
+            ok("pane:get", json!({"type": "pane_info", "pane": p}))
+        }
         ["pane", "list"] => {
             let panes = arr(world, "panes");
             ok("pane:list", json!({"type": "pane_list", "panes": panes}))
@@ -432,9 +450,13 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
         }
         ["pane", "run", target, cmd @ ..] if !cmd.is_empty() => {
             let exec = world.get("exec").and_then(Value::as_bool).unwrap_or(false);
+            let lag = world.get("agent_after").and_then(Value::as_u64);
             let mut hit = None;
             for p in world["panes"].as_array_mut().expect("panes") {
                 if s(p, "pane_id") == *target {
+                    if let Some(n) = lag {
+                        p["agent_in"] = json!(n);
+                    }
                     if !p["ran"].is_array() {
                         p["ran"] = json!([]);
                     }

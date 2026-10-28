@@ -1047,10 +1047,18 @@ impl App {
         if act == Act::Open && self.available(Act::Open).is_ok() {
             match actions::existing_open(&self.ctx, &b.snap, &self.target()) {
                 Ok(nimitz_mux::TabState::Shown(pane)) => {
-                    match self.ctx.mux.focus(&pane) {
+                    match self.ctx.mux.focus_now(&pane) {
                         Ok(()) => {
                             actions::log(&self.ctx.env, "focus", &pane.pane_id);
                             self.notify(format!("Open already: focused pane {}", pane.pane_id), st(mono::BUSY));
+                            if self.ctx.exit_after_jump {
+                                return Some(Effect::Quit);
+                            }
+                        }
+                        // its tab is in front: shown, if not focused as an agent
+                        Err(e @ nimitz_mux::MuxError::Unfocused(_)) => {
+                            actions::log(&self.ctx.env, "focus", &pane.pane_id);
+                            self.notify(format!("Open already: pane {}: {e}", pane.pane_id), st(mono::WARN));
                             if self.ctx.exit_after_jump {
                                 return Some(Effect::Quit);
                             }
@@ -1064,9 +1072,13 @@ impl App {
                 // a stowaway is no member: its tab's shell takes the attach here
                 Ok(nimitz_mux::TabState::Shell(pane)) if !matches!(self.target(), Target::Member(_)) => {
                     match actions::claim_open(&self.ctx, &b.snap, &self.target(), &pane) {
-                        Ok(()) => {
+                        Ok(None) => {
                             actions::log(&self.ctx.env, "attach", &pane.pane_id);
                             self.notify(format!("Attached in its tab's pane {}", pane.pane_id), st(mono::BUSY));
+                        }
+                        Ok(Some(why)) => {
+                            actions::log(&self.ctx.env, "attach", &pane.pane_id);
+                            self.notify(format!("Attached in its tab's pane {}; {why}", pane.pane_id), st(mono::WARN));
                         }
                         Err(e) => self.notify(format!("Could not attach in pane {}: {e}", pane.pane_id), st(mono::ERROR)),
                     }
@@ -1100,13 +1112,21 @@ impl App {
         let b = self.bundle.as_ref()?;
         match actions::jump_target(b.mux_caps, r.node.pane_id.as_deref(), &b.panes) {
             Ok(pane) if !self.ctx.live => self.notify(format!("demo data: would focus pane {}", pane.pane_id), st(mono::WARN)),
-            Ok(pane) => match self.ctx.mux.focus(&pane) {
+            Ok(pane) => match self.ctx.mux.focus_now(&pane) {
                 Ok(()) => {
                     actions::log(&self.ctx.env, "focus", &pane.pane_id);
                     if self.ctx.exit_after_jump {
                         return Some(Effect::Quit);
                     }
                     self.notify(format!("Focused {}", pane.pane_id), st(mono::BUSY));
+                }
+                // its tab is in front: shown, if not focused as an agent
+                Err(e @ nimitz_mux::MuxError::Unfocused(_)) => {
+                    actions::log(&self.ctx.env, "focus", &pane.pane_id);
+                    if self.ctx.exit_after_jump {
+                        return Some(Effect::Quit);
+                    }
+                    self.notify(format!("Pane {}: {e}", pane.pane_id), st(mono::WARN));
                 }
                 Err(e) => self.notify(format!("Could not focus {}: {e}", pane.pane_id), st(mono::ERROR)),
             },
