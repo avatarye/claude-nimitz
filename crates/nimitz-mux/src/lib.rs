@@ -148,6 +148,13 @@ pub trait Mux {
     fn panes(&self) -> Vec<Pane>;
     fn open(&self, cmd: &[String], cwd: &Path, place: Place) -> Result<PaneRef, MuxError>;
     fn focus(&self, pane: &PaneRef) -> Result<(), MuxError>;
+
+    /// `focus` with no waiting for the pane to be an agent: one that shows
+    /// one already (a jump, a pane that shows the session). `focus` waits a
+    /// moment for a pane that has just been given its attach.
+    fn focus_now(&self, pane: &PaneRef) -> Result<(), MuxError> {
+        self.focus(pane)
+    }
     fn type_text(&self, pane: &PaneRef, text: &str) -> Result<(), MuxError>;
     fn layout(&self, plan: &LayoutPlan) -> Result<Vec<PaneRef>, MuxError>;
 
@@ -374,12 +381,12 @@ impl From<MuxError> for AttachError {
 pub fn attach(mux: &dyn Mux, cmd: &[String], cwd: &Path, place: Place, session_id: Option<&str>) -> Result<Attached, AttachError> {
     match tab_state(mux, cmd, &place, session_id)? {
         TabState::Shown(p) => {
-            focus_shown(mux, &p)?;
+            shown(mux.focus_now(&p))?;
             Ok(Attached::Focused(p))
         }
         TabState::Shell(p) => {
             mux.run_in(&p, cmd)?;
-            focus_shown(mux, &p)?;
+            shown(mux.focus(&p))?;
             Ok(Attached::Claimed(p))
         }
         TabState::Taken { pane, running } => Err(AttachError::Taken { pane, running }),
@@ -387,11 +394,11 @@ pub fn attach(mux: &dyn Mux, cmd: &[String], cwd: &Path, place: Place, session_i
     }
 }
 
-/// Focus a pane that shows (or has just been given) the attach: a pane left
-/// in front in its tab but not focused as an agent (`MuxError::Unfocused`)
-/// is shown, which is all an attach needs.
-fn focus_shown(mux: &dyn Mux, pane: &PaneRef) -> Result<(), MuxError> {
-    match mux.focus(pane) {
+/// A focus of a pane that shows (or has just been given) the attach: a pane
+/// left in front in its tab but not focused as an agent
+/// (`MuxError::Unfocused`) is shown, which is all an attach needs.
+fn shown(focused: Result<(), MuxError>) -> Result<(), MuxError> {
+    match focused {
         Err(MuxError::Unfocused(_)) => Ok(()),
         r => r,
     }
@@ -479,6 +486,13 @@ pub fn missing_mux_fix(vars: &std::collections::HashMap<String, String>) -> Stri
     }
 }
 
+/// The waits of `focus` (ms): `NIMITZ_FOCUS_RETRY_MS`, a comma list (empty:
+/// asked once), else `herdr::FOCUS_RETRY_MS`. Tests shorten it.
+fn focus_retry_ms(vars: &std::collections::HashMap<String, String>) -> Vec<u64> {
+    let Some(v) = vars.get("NIMITZ_FOCUS_RETRY_MS") else { return herdr::FOCUS_RETRY_MS.to_vec() };
+    v.split(',').map(str::trim).filter(|x| !x.is_empty()).map(str::parse).collect::<Result<Vec<u64>, _>>().unwrap_or_else(|_| herdr::FOCUS_RETRY_MS.to_vec())
+}
+
 /// `NIMITZ_MUX` override, else Herdr when `HERDR_ENV=1` and a herdr binary
 /// resolves (`NIMITZ_HERDR_BIN`, else PATH), else NoMux. Pure in `vars`. (The
 /// user's own command outside Herdr passes `active::user_mux_vars`, which
@@ -489,7 +503,7 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
         Some("herdr") => {
             // explicit override: take the configured binary even if it does not resolve yet
             let bin = resolve_herdr_bin(vars).unwrap_or_else(|| "herdr".into());
-            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned(), claude_home: nimitz_core::env::Env::from_vars(vars).claude_home });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned(), claude_home: nimitz_core::env::Env::from_vars(vars).claude_home, focus_retry_ms: focus_retry_ms(vars) });
         }
         // `auto` (the default) and unset: detect. An unknown name: safest is no mux
         // (the CLI refuses it first with `valid_mux_setting`).
@@ -498,7 +512,7 @@ pub fn detect(vars: &std::collections::HashMap<String, String>) -> Box<dyn Mux> 
     }
     if vars.get("HERDR_ENV").map(String::as_str) == Some("1") {
         if let Some(bin) = resolve_herdr_bin(vars) {
-            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned(), claude_home: nimitz_core::env::Env::from_vars(vars).claude_home });
+            return Box::new(herdr::Herdr { bin, session: herdr_session(vars), socket: vars.get("NIMITZ_HERDR_SOCKET").filter(|s| !s.is_empty()).cloned(), claude_home: nimitz_core::env::Env::from_vars(vars).claude_home, focus_retry_ms: focus_retry_ms(vars) });
         }
     }
     Box::new(none::NoMux)
@@ -628,8 +642,8 @@ mod tests {
     fn a_named_herdr_session_goes_on_every_call() {
         assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "nimitz-e2e")])), Some("nimitz-e2e".into()));
         assert_eq!(herdr_session(&vars(&[("NIMITZ_HERDR_SESSION", "")])), None);
-        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: Some("nimitz-e2e".into()), socket: None, claude_home: "/x".into() }.argv(&["api", "snapshot"]), ["--session", "nimitz-e2e", "api", "snapshot"]);
-        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: None, socket: None, claude_home: "/x".into() }.argv(&["api", "snapshot"]), ["api", "snapshot"]);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: Some("nimitz-e2e".into()), socket: None, claude_home: "/x".into(), focus_retry_ms: vec![] }.argv(&["api", "snapshot"]), ["--session", "nimitz-e2e", "api", "snapshot"]);
+        assert_eq!(herdr::Herdr { bin: "herdr".into(), session: None, socket: None, claude_home: "/x".into(), focus_retry_ms: vec![] }.argv(&["api", "snapshot"]), ["api", "snapshot"]);
     }
 
     #[test]

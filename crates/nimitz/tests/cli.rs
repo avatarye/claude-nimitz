@@ -47,7 +47,9 @@ impl Sb {
         let r = raw(&BTreeMap::new(), &args, &[], None);
         assert_eq!(r.code, 0, "{}", r.out);
         let e = raw(&BTreeMap::new(), &["sandbox", "env", base.to_str().unwrap(), "--json"], &[], None);
-        let vars: BTreeMap<String, String> = serde_json::from_str(e.out.trim()).expect("sandbox env --json");
+        let mut vars: BTreeMap<String, String> = serde_json::from_str(e.out.trim()).expect("sandbox env --json");
+        // `focus` asks as often as with Herdr, without its 2.5 s
+        vars.insert("NIMITZ_FOCUS_RETRY_MS".into(), "1,1,1,1,1".into());
         let base = nimitz_core::os::canonical(&base).unwrap();
         Sb { _td: td, base, vars }
     }

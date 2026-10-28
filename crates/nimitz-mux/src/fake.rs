@@ -408,6 +408,13 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             }
             ok("tab:rename", json!({"type": "tab_renamed", "tab_id": target}))
         }
+        ["pane", "get", target] => {
+            let panes = arr(world, "panes");
+            let Some(p) = find(&panes, "pane_id", target) else {
+                return err("pane:get", "pane_not_found", &format!("pane {target} not found"));
+            };
+            ok("pane:get", json!({"type": "pane_info", "pane": p}))
+        }
         ["pane", "list"] => {
             let panes = arr(world, "panes");
             ok("pane:list", json!({"type": "pane_list", "panes": panes}))

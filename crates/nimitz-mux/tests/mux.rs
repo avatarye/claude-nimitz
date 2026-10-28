@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nimitz_mux::fake::{calls, default_world, write_world};
-use nimitz_mux::herdr::Herdr;
+use nimitz_mux::herdr::{self, Herdr};
 use nimitz_mux::{AttachError, Attached, LayoutPlan, Mux, MuxError, PaneRef, Place, TabState};
 use serde_json::{json, Value};
 
@@ -35,6 +35,7 @@ fn main() {
         ("focus: unknown pane surfaces herdr's error", focus_unknown),
         ("focus: a new pane Herdr names an agent a moment later is focused (#11)", focus_waits_for_the_agent),
         ("focus: a pane never named an agent, its tab in front: Unfocused (#11)", focus_never_an_agent),
+        ("focus: a pane closed since it was read is Failed, never Unfocused", focus_a_closed_pane_is_failed),
         ("focus: another agent focus error stays Failed, not asked again", focus_other_error),
         ("attach: a claimed pane not yet an agent is attached all the same (#11)", attach_tolerates_unfocused),
         ("type_text: prompts the pane", type_text_ok),
@@ -96,6 +97,9 @@ fn main() {
 
 // ---------- world + wrapper helpers ----------
 
+/// `focus`'s waits in tests: as many asks as `herdr::FOCUS_RETRY_MS`, none of its 2.5 s.
+const QUICK_RETRY: [u64; herdr::FOCUS_RETRY_MS.len()] = [1; herdr::FOCUS_RETRY_MS.len()];
+
 struct World {
     dir: PathBuf,
 }
@@ -118,7 +122,7 @@ impl World {
     }
 
     fn mux(&self) -> Herdr {
-        Herdr { bin: self.dir.join(nimitz_core::os::exe_name("herdr")).to_string_lossy().into_owned(), session: None, socket: None, claude_home: "/nonexistent/nimitz-claude-home".into() }
+        Herdr { bin: self.dir.join(nimitz_core::os::exe_name("herdr")).to_string_lossy().into_owned(), session: None, socket: None, claude_home: "/nonexistent/nimitz-claude-home".into(), focus_retry_ms: QUICK_RETRY.to_vec() }
     }
 
     fn world(&self) -> Value {
@@ -191,7 +195,7 @@ fn panes_parse() {
 }
 
 fn panes_broken_bin() {
-    let m = Herdr { bin: "/nonexistent/nimitz-no-such-herdr".into(), session: None, socket: None, claude_home: "/nonexistent/nimitz-claude-home".into() };
+    let m = Herdr { bin: "/nonexistent/nimitz-no-such-herdr".into(), session: None, socket: None, claude_home: "/nonexistent/nimitz-claude-home".into(), focus_retry_ms: herdr::FOCUS_RETRY_MS.to_vec() };
     assert!(m.panes().is_empty());
 }
 
@@ -243,14 +247,23 @@ fn focus_waits_for_the_agent() {
 fn focus_never_an_agent() {
     let w = lagging_world(1000);
     let p = w.mux().open(&cmdv(&["claude", "attach", "cca8f78b"]), Path::new("/x"), Place::Tab { workspace: "MAIN".into(), label: "MAIN.GX.BROW".into() }).expect("open");
-    let t = std::time::Instant::now();
     let e = w.mux().focus(&p).unwrap_err();
     assert!(matches!(&e, MuxError::Unfocused(m) if m.contains("agent_not_found")), "{e:?}");
-    assert_eq!(agent_focus_calls(&w), 1 + nimitz_mux::herdr::FOCUS_RETRY_MS.len());
-    assert!(t.elapsed() >= std::time::Duration::from_millis(nimitz_mux::herdr::FOCUS_RETRY_MS.iter().sum()), "{:?}", t.elapsed());
+    assert_eq!(agent_focus_calls(&w), 1 + herdr::FOCUS_RETRY_MS.len());
+    // focus_now asks once
+    let e = w.mux().focus_now(&p).unwrap_err();
+    assert!(matches!(&e, MuxError::Unfocused(_)), "{e:?}");
+    assert_eq!(agent_focus_calls(&w), 2 + herdr::FOCUS_RETRY_MS.len());
     // the workspace and tab were focused first: the pane is in front
     let c = w.calls();
     assert!(c.contains(&cmdv(&["tab", "focus", p.tab_id.as_deref().unwrap()])), "{c:?}");
+}
+
+fn focus_a_closed_pane_is_failed() {
+    // a split closed since it was read: its tab is there, the pane is not
+    let w = World::new(None);
+    let e = w.mux().focus_now(&pane_ref("w1:p9", "w1:t1", "w1")).unwrap_err();
+    assert!(matches!(&e, MuxError::Failed(m) if m.contains("is gone") && m.contains("pane_not_found")), "{e:?}");
 }
 
 fn focus_other_error() {
@@ -764,7 +777,7 @@ fn shape_through_the_adapter() {
     assert_eq!(w.mux().shape(false).unwrap().tab("w1:t2").map(|t| t.label.clone()), Some("HOME.GITHUB.S".into()));
     assert!(w.mux().rename_tab("w9:t9", "X").is_err());
     // a named session: `--session <name>` before every call, which the fake logs and strips
-    let named = Herdr { bin: w.dir.join(nimitz_core::os::exe_name("herdr")).to_string_lossy().into_owned(), session: Some("nimitz-e2e".into()), socket: None, claude_home: "/nonexistent/nimitz-claude-home".into() };
+    let named = Herdr { bin: w.dir.join(nimitz_core::os::exe_name("herdr")).to_string_lossy().into_owned(), session: Some("nimitz-e2e".into()), socket: None, claude_home: "/nonexistent/nimitz-claude-home".into(), focus_retry_ms: herdr::FOCUS_RETRY_MS.to_vec() };
     assert_eq!(named.shape(false).unwrap().workspaces.len(), 1);
     assert!(w.calls().last().unwrap().starts_with(&["--session".to_string(), "nimitz-e2e".to_string(), "api".to_string()]), "{:?}", w.calls().last());
     // the exec knob: `pane run` really runs the line in the pane's folder
@@ -922,7 +935,7 @@ fn e2e_body(bin: &str, sock: &Path, tmp: &Path) {
         assert!(std::time::Instant::now() < deadline, "private herdr server did not come up: {text}");
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    let m = Herdr { bin: bin.to_string(), session: None, socket: None, claude_home: "/nonexistent/nimitz-claude-home".into() };
+    let m = Herdr { bin: bin.to_string(), session: None, socket: None, claude_home: "/nonexistent/nimitz-claude-home".into(), focus_retry_ms: herdr::FOCUS_RETRY_MS.to_vec() };
     let dummy = cmdv(&["sh", "-c", "sleep 30"]);
     let api = |args: &[&str]| -> Value {
         let out = Command::new(bin).args(args).output().expect("herdr");

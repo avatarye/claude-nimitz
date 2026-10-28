@@ -538,7 +538,9 @@ fn refusal_issue(id: &Id, message: String) -> nimitz_core::Issue {
 
 /// `A` on a tab whose pane is a plain shell: run the attach there and focus
 /// it. A pane left in front in its tab but not focused as an agent (Herdr has
-/// not named the new attach one yet) is attached: `Ok(Some(why))`.
+/// not named the new attach one yet) is attached: `Ok(Some(why))`. The one
+/// focus that waits for Herdr (up to 2.5 s, once per claimed tab: the next `A`
+/// finds the pane shown and focuses it at once).
 pub fn claim_open(ctx: &Ctx, snap: &Snapshot, target: &Target, pane: &PaneRef) -> Result<Option<String>, String> {
     let p = plan_open(ctx, snap, target)?;
     let (step, _) = p.panes.first().ok_or("nothing to attach")?;

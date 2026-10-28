@@ -462,7 +462,9 @@ fn execute(ctx: &Ctx, mux: &dyn Mux, rp: &rs::RestorePlan, fleets: &[String]) ->
                     .map(|p| PaneRef { pane_id: p.pane_id.clone(), tab_id: Some(p.tab_id.clone()).filter(|x| !x.is_empty()), workspace_id: Some(p.workspace_id.clone()).filter(|x| !x.is_empty()) })
                     .or_else(|| made.get(&id).cloned());
                 match target {
-                    Some(p) => match mux.focus(&p) {
+                    // a pane this run opened or typed the attach into waits a
+                    // moment for Herdr to name it an agent; one shown before, never
+                    Some(p) => match if made.contains_key(&id) { mux.focus(&p) } else { mux.focus_now(&p) } {
                         Ok(()) => {
                             let mut d = display;
                             if let Some(last) = d.cmd.last_mut() {
