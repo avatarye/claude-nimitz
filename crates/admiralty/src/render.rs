@@ -779,7 +779,7 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
     }
     lines.push(Line::raw(""));
     lines.push(keys_line(&[("\u{2191}\u{2193} ctrl-n/p", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "close"), ("ctrl-u", "clear")]));
-    lines.push(toggle_keys(&fd.toggles));
+    lines.push(toggle_keys(&fd.toggles, fd.tab.as_deref().is_some_and(|t| t != crate::view::UNASSIGNED)));
     f.render_widget(Clear, r);
     let title = if fd.toggles.topic { "find: path, name, status, topic" } else { "find: path, name, status" };
     f.render_widget(Paragraph::new(lines).block(modal_block(title.into(), mono::ACCENT)), r);
@@ -788,16 +788,19 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
     }
 }
 
-/// The finder's toggle keys (`ctrl- a pane only · t topic ...`), each lit while on.
-fn toggle_keys(t: &crate::finder::Toggles) -> Line<'static> {
+/// The finder's toggle keys (`ctrl- a pane only · t topic ...`), each lit
+/// while on; `f this fleet` dim when no fleet's tab is shown (`fleet_tab`:
+/// it would filter nothing).
+fn toggle_keys(t: &crate::finder::Toggles, fleet_tab: bool) -> Line<'static> {
     let on = [t.pane_only, t.topic, t.no_stowaways, t.this_fleet, t.ships_only];
     let mut v = vec![Span::styled("ctrl-", bold(mono::ACCENT))];
     for (i, ((k, d), on)) in crate::finder::TOGGLE_KEYS.iter().zip(on).enumerate() {
         if i > 0 {
             v.push(Span::styled(" \u{b7} ", st(mono::COMMENT)));
         }
-        v.push(Span::styled(k.trim_start_matches("ctrl-").to_string(), bold(mono::ACCENT)));
-        v.push(Span::styled(format!(" {d}"), if on { bold(mono::FG) } else { st(mono::SOFT) }));
+        let idle = *k == "ctrl-f" && !fleet_tab;
+        v.push(Span::styled(k.trim_start_matches("ctrl-").to_string(), if idle { st(mono::COMMENT) } else { bold(mono::ACCENT) }));
+        v.push(Span::styled(format!(" {d}"), if idle { st(mono::COMMENT) } else if on { bold(mono::FG) } else { st(mono::SOFT) }));
     }
     Line::from(v)
 }

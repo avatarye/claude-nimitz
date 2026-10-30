@@ -488,3 +488,29 @@ fn this_fleet_needs_a_fleet_tab_and_the_hint_needs_a_hidden_match() {
     let s = screen(&mut t.app, 200, 60);
     assert!(s.contains("nothing matches") && !s.contains("ctrl-a: rows without"), "nothing would match:\n{s}");
 }
+
+/// Re-review of #14: an empty query matches every row, so with every visible
+/// row hidden for having no pane the empty list hints at ctrl-a; `f this
+/// fleet` is dim in the keys line while no fleet's tab is shown.
+#[test]
+fn the_empty_query_hint_and_a_dim_this_fleet_key() {
+    let mut t = fixture_app(fixtures::demo_monitor_only(), false);
+    open_as_is(&mut t.app);
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.contains("nothing matches (ctrl-a: rows without a pane too)"), "no pane anywhere, no query:\n{s}");
+    // the colour of the `f` of `f this fleet`, on a fleet's tab and on none
+    let f_colour = |t: &mut TestApp, tab: Option<&str>| {
+        press(&mut t.app, KeyCode::Esc);
+        t.app.tab = tab.map(String::from);
+        open_as_is(&mut t.app);
+        let buf = draw(&mut t.app, 200, 60);
+        let ls = lines(&buf);
+        let y = ls.iter().position(|l| l.contains("f this fleet")).expect("the keys line");
+        let x = ls[y].find("f this fleet").unwrap();
+        buf[(ls[y][..x].chars().count() as u16, y as u16)].fg
+    };
+    assert_eq!(f_colour(&mut t, Some("MAIN")), admiralty::theme::mono::ACCENT);
+    for tab in [None, Some(admiralty::view::UNASSIGNED)] {
+        assert_eq!(f_colour(&mut t, tab), admiralty::theme::mono::COMMENT, "{tab:?}");
+    }
+}

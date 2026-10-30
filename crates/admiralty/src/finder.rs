@@ -321,6 +321,8 @@ impl Finder {
         'cand: for (i, c) in self.cands.iter().enumerate() {
             // the toggles first, each hidden row counted once
             let fleet = self.fleet_only();
+            // hidden by the pane toggle alone (no other toggle hides it)
+            let mut no_pane = false;
             let count = if fleet.is_some_and(|tab| tab != c.tab) {
                 Some(&mut hidden.other_fleets)
             } else if t.ships_only && !c.ship && !c.stowaway {
@@ -328,15 +330,16 @@ impl Finder {
             } else if t.no_stowaways && c.stowaway {
                 Some(&mut hidden.stowaways)
             } else if t.pane_only && !c.has_pane {
+                no_pane = true;
                 Some(&mut hidden.no_pane)
             } else {
                 None
             };
-            let no_pane = count.is_some() && t.pane_only && !c.has_pane && !(t.ships_only && !c.ship && !c.stowaway) && !(t.no_stowaways && c.stowaway) && fleet.is_none_or(|tab| tab == c.tab);
             if let Some(n) = count {
                 *n += 1;
-                // would the query match it with a pane? (the empty list's hint)
-                if no_pane && !self.query.trim().is_empty() {
+                // would the query match it with a pane? (the empty list's
+                // hint; an empty query matches every row)
+                if no_pane {
                     let text = c.matched(t.topic);
                     if terms.iter().all(|(_, atom)| atom.score(Utf32Str::new(text, &mut buf), &mut self.matcher).is_some()) {
                         hidden.no_pane_matching += 1;
