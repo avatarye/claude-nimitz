@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.17 (unreleased)
+## 0.7.17 (2026-10-30)
 
 ### Changed
 
