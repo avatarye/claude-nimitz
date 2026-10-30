@@ -855,7 +855,7 @@ pub(crate) mod tests {
         let f = crate::config::load_fleet(&env, "MAIN").unwrap();
         let ship_dir = f.dir.join("ships/argos/argos");
         let mut snap = snap_for(&env, ship_dir.to_str());
-        snap.cc_version = Some("2.1.313".into());
+        snap.cc_version = Some("2.1.315".into());
         snap.compat_ok = false;
         snap.stowaways.push(SessionInfo {
             session_id: "deadbeef".into(),
