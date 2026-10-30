@@ -957,8 +957,16 @@ pub(crate) mod tests {
             std::fs::write(d.join(dir).join("admiralty"), "#!/bin/sh\nsleep 30\n").unwrap();
             make_executable(&d.join(dir).join("admiralty")).unwrap();
         }
-        // a script just written may be busy for a moment (another test's fork holds it): ask again
-        let version_at = |p: &Path| (0..5).find_map(|_| version_at(p));
+        // a script just written may be busy for a moment (another test's fork holds it): ask again,
+        // with a pause, for up to about 2 s
+        let version_at = |p: &Path| {
+            (0..40).find_map(|_| {
+                version_at(p).or_else(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    None
+                })
+            })
+        };
         assert_eq!(version_at(&d.join("same").join("nimitz")).as_deref(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(version_at(&d.join("old").join("admiralty")).as_deref(), Some("0.3.1"), "its nimitz answers");
         let installed = d.join("installed").join("nimitz");
