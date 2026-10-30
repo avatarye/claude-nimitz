@@ -30,7 +30,7 @@ its fixture, or when a type's shape moves without a version.
 | `inbox-records` | `S/inbox/*.json` | local | manifest | 1 | 1 |
 | `needs` | `S/needs/*.json` | local | manifest | 1 | 2 (`item`, dead-letter keys) |
 | `own-pins` | `S/pins.json` | local | manifest | 1 | 1 |
-| `admiralty-ui` | `S/admiralty-ui.json` | local | `format` key (absent = 1) | 1 | 1 |
+| `admiralty-ui` | `S/admiralty-ui.json` | local | `format` key (absent = 1) | 1 | 1; 0.7.15: 2 (the finder's optional toggles; the step stamps `format`) |
 | CC-owned | `~/.claude.json` trust, `C/jobs/pins.json`, settings | Claude Code's | pinned formats (doctor) | n/a | n/a |
 
 The **manifest** is `S/formats.json`: `{nimitz: "<version that last ran

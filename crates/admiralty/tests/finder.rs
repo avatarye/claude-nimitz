@@ -5,7 +5,7 @@ mod common;
 
 use admiralty::app::Modal;
 use admiralty::data::Bundle;
-use admiralty::finder::{candidates, Finder};
+use admiralty::finder::{candidates, Finder, Toggles};
 use admiralty::fixtures;
 use common::*;
 use nimitz_core::{Id, Status};
@@ -42,7 +42,15 @@ fn ranked(f: &mut Finder, q: &str) -> Vec<String> {
     f.hits.iter().map(|h| f.cands[h.cand].row_id.clone()).collect()
 }
 
+/// The finder as before #14: every row, the topic matched (the tests below
+/// that are about ranking and landing, not the toggles).
 fn open(app: &mut admiralty::app::App) -> &mut Finder {
+    app.finder = Toggles::all();
+    open_as_is(app)
+}
+
+/// The finder with the app's toggles as they are.
+fn open_as_is(app: &mut admiralty::app::App) -> &mut Finder {
     press(app, KeyCode::Char(' '));
     match app.modal.as_mut() {
         Some(Modal::Finder(f)) => f,
@@ -303,5 +311,206 @@ fn non_ascii_lines_long_queries_and_short_screens() {
     for h in [6u16, 8, 10] {
         let ls = lines(&draw(&mut t.app, 200, h));
         assert!(ls[h as usize - 2].contains("ADMIRALTY") && ls[h as usize - 1].contains("Nimitz"), "{h} rows:\n{}", ls.join("\n"));
+    }
+}
+
+fn hit_ids(f: &Finder) -> Vec<String> {
+    let mut v: Vec<String> = f.hits.iter().map(|h| f.cands[h.cand].row_id.clone()).collect();
+    v.sort();
+    v
+}
+
+/// #14, the defaults: only the rows with a live pane, the header counting
+/// what that hides and saying which toggles are on; the topic not matched
+/// until ctrl-t; ctrl-a shows the rows without a pane again.
+#[test]
+fn by_default_only_rows_with_a_pane_and_the_topic_unmatched() {
+    let mut t = fixture_app(world(), false);
+    let f = open_as_is(&mut t.app);
+    assert_eq!(f.toggles, Toggles::default());
+    let all = f.cands.len();
+    let mut want: Vec<String> = ["M:MAIN", "M:MAIN/ARGOS", "M:MAIN/KITS", "M:FORGE"].map(String::from).to_vec();
+    want.push(f.cands.iter().find(|c| c.row_id.starts_with("SW:ee11ee11")).unwrap().row_id.clone());
+    want.sort();
+    assert_eq!(hit_ids(f), want, "the rows with a pane in the demo world");
+    assert_eq!(f.hidden.no_pane, all - 5);
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.contains(&format!("5 / {all} \u{b7} {} without a pane  [pane] [no topic]", all - 5)), "{s}");
+    assert!(s.contains("a pane only") && s.contains("t topic") && s.contains("s stowaways") && s.contains("f this fleet") && s.contains("l ships only"), "the toggle keys:\n{s}");
+    // BOLT's topic (`Fixing the layout ...`): no match until ctrl-t
+    ctrl(&mut t.app, 'a');
+    keys(&mut t.app, "shadow");
+    let Some(Modal::Finder(f)) = t.app.modal.as_ref() else { panic!("open") };
+    assert!(f.hits.is_empty() && f.hidden.no_pane == 0, "{:?}", hit_ids(f));
+    ctrl(&mut t.app, 't');
+    let Some(Modal::Finder(f)) = t.app.modal.as_ref() else { panic!("open") };
+    assert_eq!(hit_ids(f), ["M:MAIN/ARGOS/BOLT"]);
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.contains("[any pane] [topic]") && s.contains("find: path, name, status, topic"), "{s}");
+    // the status word stays with path and name
+    ctrl(&mut t.app, 't');
+    ctrl(&mut t.app, 'u');
+    keys(&mut t.app, "busy");
+    let Some(Modal::Finder(f)) = t.app.modal.as_ref() else { panic!("open") };
+    assert!(f.hits.iter().any(|h| f.cands[h.cand].row_id == "M:MAIN/ARGOS/BOLT"), "{:?}", hit_ids(f));
+}
+
+/// #14, the other toggles, one key each: ctrl-s hides the stowaways, ctrl-f
+/// keeps the fleet tab shown, ctrl-l the ships; the header counts each and
+/// names it; every one stays off the query.
+#[test]
+fn each_toggle_hides_its_rows_and_says_so() {
+    let mut t = fixture_app(world(), false);
+    tab(&mut t.app, "MAIN");
+    open_as_is(&mut t.app);
+    ctrl(&mut t.app, 'a');
+    let fd = |t: &TestApp| match t.app.modal.as_ref() {
+        Some(Modal::Finder(f)) => (f.hits.iter().map(|h| f.cands[h.cand].clone()).collect::<Vec<_>>(), f.hidden, f.query.clone(), f.cands.len()),
+        _ => panic!("open"),
+    };
+    let (every, _, _, all) = fd(&t);
+    assert_eq!(every.len(), all);
+    let stowaways = every.iter().filter(|c| c.stowaway).count();
+    assert!(stowaways > 0);
+    ctrl(&mut t.app, 's');
+    let (hits, hidden, q, _) = fd(&t);
+    assert!(q.is_empty() && hits.iter().all(|c| !c.stowaway) && hidden.stowaways == stowaways, "{hidden:?}");
+    assert!(screen(&mut t.app, 200, 60).contains(&format!("\u{b7} {stowaways} stowaways  [any pane] [no topic] [no stowaways]")));
+    ctrl(&mut t.app, 's');
+    ctrl(&mut t.app, 'f');
+    let (hits, hidden, _, _) = fd(&t);
+    assert!(!hits.is_empty() && hits.iter().all(|c| c.tab == "MAIN"), "this fleet only");
+    assert_eq!(hidden.other_fleets, every.iter().filter(|c| c.tab != "MAIN").count());
+    assert!(screen(&mut t.app, 200, 60).contains("[MAIN only]"));
+    ctrl(&mut t.app, 'f');
+    ctrl(&mut t.app, 'l');
+    let (hits, hidden, _, _) = fd(&t);
+    assert!(hits.iter().all(|c| c.ship || c.stowaway) && hits.iter().any(|c| c.ship), "ships only");
+    assert_eq!(hidden.leads, every.iter().filter(|c| !c.ship && !c.stowaway).count());
+    assert!(screen(&mut t.app, 200, 60).contains("[ships only]"));
+    // with everything filtered out, the empty list says how to see more
+    ctrl(&mut t.app, 'l');
+    ctrl(&mut t.app, 'a');
+    keys(&mut t.app, "zzzz");
+    assert!(screen(&mut t.app, 200, 60).contains("nothing matches"));
+}
+
+/// #14: the toggles outlive the finder and the run (the sticky state).
+#[test]
+fn the_toggles_are_kept_across_finders_and_runs() {
+    let mut t = fixture_app(world(), false);
+    open_as_is(&mut t.app);
+    for k in ['a', 't', 's', 'l'] {
+        ctrl(&mut t.app, k);
+    }
+    press(&mut t.app, KeyCode::Esc);
+    let want = Toggles { pane_only: false, topic: true, no_stowaways: true, this_fleet: false, ships_only: true };
+    assert_eq!(t.app.finder, want);
+    assert_eq!(open_as_is(&mut t.app).toggles, want, "the next finder");
+    press(&mut t.app, KeyCode::Esc);
+    t.app.persist();
+    let ctx = admiralty::actions::Ctx { env: fixtures::demo_env(), mux: Box::new(TestMux::default()), live: false, exit_after_jump: false };
+    let mut again = admiralty::app::App::new(ctx, Some(t.dir.path().join("ui.json")), true);
+    again.apply(world());
+    assert_eq!(again.finder, want, "the next run");
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(t.dir.path().join("ui.json")).unwrap()).unwrap();
+    assert_eq!(saved["format"], 2);
+    assert_eq!(saved["finder"]["ships_only"], true);
+    // an older state file (format 1, no toggles): the defaults
+    let old = t.dir.path().join("old.json");
+    std::fs::write(&old, r#"{"format": 1, "expanded": {}, "filter": "", "fleet_states": [], "flagged_only": false, "show_stowaways": true}"#).unwrap();
+    let ctx = admiralty::actions::Ctx { env: fixtures::demo_env(), mux: Box::new(TestMux::default()), live: false, exit_after_jump: false };
+    let mut older = admiralty::app::App::new(ctx, Some(old), true);
+    older.apply(world());
+    assert_eq!(older.finder, Toggles::default());
+}
+
+/// #14: on a wide screen the detail sits directly right of the list, one
+/// block from the left edge; under 120 columns the list alone, centred.
+#[test]
+fn the_detail_sits_right_of_the_list() {
+    use admiralty::render::finder_areas;
+    use ratatui::layout::Rect;
+    for (w, list_w, detail_w) in [(120u16, 66u16, 54u16), (200, 110, 90), (300, 110, 90)] {
+        let area = Rect { x: 0, y: 0, width: w, height: 50 };
+        let body = Rect { x: 0, y: 1, width: w, height: 47 };
+        let (list, detail) = finder_areas(area, body, 40);
+        let d = detail.expect("a detail");
+        assert_eq!((list.x, list.width, d.x, d.width), (0, list_w, list_w, detail_w), "{w} columns");
+        assert_eq!((list.y, d.y), (2, 2), "{w}: both from the body's second row");
+        assert!(d.x + d.width <= body.width && list.y + list.height <= body.y + body.height);
+    }
+    let area = Rect { x: 0, y: 0, width: 100, height: 30 };
+    let (list, detail) = finder_areas(area, Rect { x: 0, y: 1, width: 100, height: 27 }, 40);
+    assert!(detail.is_none() && list.x * 2 + list.width == 100, "centred: {list:?}");
+    // drawn: the detail's border right after the list's, on the same row
+    for w in [120u16, 200] {
+        let mut t = fixture_app(world(), false);
+        open(&mut t.app).push("mas");
+        let ls = lines(&draw(&mut t.app, w, 50));
+        let lw = if w == 120 { 66 } else { 110 };
+        // a box-drawing corner at the list's last column and at the detail's first
+        let corner = |c: char| ('\u{2500}'..='\u{257f}').contains(&c);
+        let row: Vec<char> = ls[2].chars().collect();
+        assert!(corner(row[lw - 1]) && corner(row[lw]), "{w}: {}", ls[2]);
+        assert!(ls.iter().any(|l| l.contains("identity    MAIN/ARGOS/SIGNAL")), "{w}:\n{}", ls.join("\n"));
+    }
+}
+
+/// The `?` panel lists the finder's toggle keys.
+#[test]
+fn the_help_lists_the_toggle_keys() {
+    let help = admiralty::app::HELP;
+    assert!(help.iter().any(|(_, d)| ["ctrl-a", "ctrl-t", "ctrl-s", "ctrl-f", "ctrl-l"].iter().all(|k| d.contains(k))), "{help:?}");
+}
+
+/// Review of #14: `this fleet` filters (and says so) only while a fleet's tab
+/// is shown; the empty list hints at ctrl-a only when a row without a pane
+/// would match.
+#[test]
+fn this_fleet_needs_a_fleet_tab_and_the_hint_needs_a_hidden_match() {
+    let b = world();
+    let only = Toggles { this_fleet: true, ..Toggles::all() };
+    for tab in [None, Some(admiralty::view::UNASSIGNED)] {
+        let f = Finder::with(&b.snap, &b.panes, tab, only);
+        assert!(f.fleet_only().is_none() && f.hidden.other_fleets == 0 && f.hits.len() == f.cands.len(), "{tab:?}");
+        assert!(!f.toggles.words(f.fleet_only()).contains("only]"), "{tab:?}: {}", f.toggles.words(f.fleet_only()));
+    }
+    let f = Finder::with(&b.snap, &b.panes, Some("MAIN"), only);
+    assert_eq!(f.toggles.words(f.fleet_only()), "[any pane] [topic] [MAIN only]");
+    let mut t = fixture_app(world(), false);
+    open_as_is(&mut t.app);
+    keys(&mut t.app, "bolt");
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.contains("nothing matches (ctrl-a: rows without a pane too)"), "BOLT has no pane:\n{s}");
+    ctrl(&mut t.app, 'u');
+    keys(&mut t.app, "zzzz");
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.contains("nothing matches") && !s.contains("ctrl-a: rows without"), "nothing would match:\n{s}");
+}
+
+/// Re-review of #14: an empty query matches every row, so with every visible
+/// row hidden for having no pane the empty list hints at ctrl-a; `f this
+/// fleet` is dim in the keys line while no fleet's tab is shown.
+#[test]
+fn the_empty_query_hint_and_a_dim_this_fleet_key() {
+    let mut t = fixture_app(fixtures::demo_monitor_only(), false);
+    open_as_is(&mut t.app);
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.contains("nothing matches (ctrl-a: rows without a pane too)"), "no pane anywhere, no query:\n{s}");
+    // the colour of the `f` of `f this fleet`, on a fleet's tab and on none
+    let f_colour = |t: &mut TestApp, tab: Option<&str>| {
+        press(&mut t.app, KeyCode::Esc);
+        t.app.tab = tab.map(String::from);
+        open_as_is(&mut t.app);
+        let buf = draw(&mut t.app, 200, 60);
+        let ls = lines(&buf);
+        let y = ls.iter().position(|l| l.contains("f this fleet")).expect("the keys line");
+        let x = ls[y].find("f this fleet").unwrap();
+        buf[(ls[y][..x].chars().count() as u16, y as u16)].fg
+    };
+    assert_eq!(f_colour(&mut t, Some("MAIN")), admiralty::theme::mono::ACCENT);
+    for tab in [None, Some(admiralty::view::UNASSIGNED)] {
+        assert_eq!(f_colour(&mut t, tab), admiralty::theme::mono::COMMENT, "{tab:?}");
     }
 }

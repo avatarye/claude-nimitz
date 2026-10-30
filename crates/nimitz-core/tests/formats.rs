@@ -22,6 +22,11 @@ fn parses(artifact: &str, bytes: &[u8]) -> Result<(), String> {
         "rules-delivered" => serde_json::from_str::<std::collections::BTreeMap<String, nimitz_core::rules::Delivery>>(text).map(|_| ()).map_err(|x| e(&x)),
         "restore" => serde_json::from_str::<nimitz_core::restore::Progress>(text).map(|_| ()).map_err(|x| e(&x)),
         "events" => text.lines().try_for_each(|l| serde_json::from_str::<nimitz_core::Event>(l).map(|_| ()).map_err(|x| e(&x))),
+        // Admiralty's `app::Saved` is read in crates/admiralty/tests/formats.rs
+        // (core does not know the type); here: a JSON object stamped current
+        "admiralty-ui" => serde_json::from_str::<serde_json::Value>(text)
+            .map_err(|x| e(&x))
+            .and_then(|v| (v["format"] == formats::current("admiralty-ui")).then_some(()).ok_or_else(|| format!("format {}", v["format"]))),
         other => Err(format!("no reader for artifact {other} in tests/formats.rs `parses`: add one")),
     }
 }

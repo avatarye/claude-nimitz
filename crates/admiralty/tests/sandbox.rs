@@ -468,6 +468,10 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     press(&mut app, KeyCode::Enter);
     assert!(toast(&app).contains("no longer runs `claude attach"), "{}", toast(&app));
     assert!(!prompts(&sb).iter().any(|p| p.contains("second")), "nothing typed into the agent view");
+    // the refusal stays in the action log, as a sent message does (#13)
+    let log = std::fs::read_to_string(app.ctx.env.state.join("admiralty-actions.log")).unwrap_or_default();
+    let entry = |what: &str, text: &str| log.lines().any(|l| l.contains(&format!("\"what\":\"{what}\"")) && l.contains(text));
+    assert!(entry("message", "first") && entry("message refused", "second"), "{log}");
     for name in ["default", "nikitz"] {
         let c = std::fs::read_to_string(sb.join(format!("herdr-{name}/calls.jsonl"))).unwrap_or_default();
         assert!(c.is_empty(), "never a call to the {name} server: {c}");
@@ -682,6 +686,17 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
         old.refusal("pc1", "f8eee8df"),
         "its pane pc1 runs `claude attach f8eee8df` on Claude Code 2.1.288.1000, older than 2.1.293 that nimitz types into safely; reattach it (ctrl-z, then nimitz open <id>)"
     );
+    // an npm install: the version in its package.json (#13)
+    let npm = std::env::temp_dir().join(format!("admiralty-npm-{}", std::process::id()));
+    let root = npm.join("node_modules/@anthropic-ai/claude-code");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    let exe = root.join("bin").join("claude.exe");
+    std::fs::write(&exe, "").unwrap();
+    for (v, want) in [("2.1.312", AttachCheck::Exact), ("2.1.292", AttachCheck::Older("2.1.292".into()))] {
+        std::fs::write(root.join("package.json"), format!(r#"{{"name": "@anthropic-ai/claude-code", "version": "{v}"}}"#)).unwrap();
+        assert_eq!(check(&[exe.to_str().unwrap(), "attach", "f8eee8df"]), want, "{v}");
+    }
+    let _ = std::fs::remove_dir_all(&npm);
     let unknown = check(&["/opt/somewhere/claude", "attach", "f8eee8df"]);
     assert_eq!(unknown, AttachCheck::Unknown);
     assert!(unknown.refusal("pc", "f8eee8df").contains("whose version nimitz cannot read"));
