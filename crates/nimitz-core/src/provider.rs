@@ -319,7 +319,9 @@ fn preflight_timeout() -> std::time::Duration {
 }
 
 /// `claude::run`, but given up (the process killed) after `limit`: `Err`
-/// says so. Its output is small (a JSON line), read once it has exited.
+/// says so. Its output is read while it runs (a thread per pipe, so a large
+/// output never blocks it), and the reads count against the same limit (a
+/// child left holding a pipe never hangs the preflight).
 fn run_bounded(cmd: &[String], cwd: Option<&str>, limit: std::time::Duration) -> Result<(i32, String), String> {
     use std::io::Read;
     let bin = cmd.first().ok_or("no command")?;
@@ -330,6 +332,19 @@ fn run_bounded(cmd: &[String], cwd: Option<&str>, limit: std::time::Duration) ->
         c.current_dir(d);
     }
     let mut child = c.spawn().map_err(|e| format!("{bin}: {e}"))?;
+    let gave_up = || format!("`{bin} auth status --json` gave no answer within {} s (killed)", limit.as_secs_f64());
+    let (tx, rx) = std::sync::mpsc::channel::<(u8, String)>();
+    let drain = |n: u8, pipe: Option<Box<dyn Read + Send>>, tx: std::sync::mpsc::Sender<(u8, String)>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            let _ = tx.send((n, String::from_utf8_lossy(&buf).into_owned()));
+        });
+    };
+    drain(0, child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), tx.clone());
+    drain(1, child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>), tx);
     let deadline = std::time::Instant::now() + limit;
     let status = loop {
         match child.try_wait() {
@@ -337,20 +352,22 @@ fn run_bounded(cmd: &[String], cwd: Option<&str>, limit: std::time::Duration) ->
             Ok(None) if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("`{bin} auth status --json` gave no answer within {} s (killed)", limit.as_secs_f64()));
+                return Err(gave_up());
             }
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
             Err(e) => return Err(format!("{bin}: {e}")),
         }
     };
-    let mut out = String::new();
-    if let Some(mut o) = child.stdout.take() {
-        let _ = o.read_to_string(&mut out);
+    // both pipes, within what is left of the limit
+    let mut parts = [String::new(), String::new()];
+    for _ in 0..2 {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((n, text)) => parts[n as usize] = text,
+            Err(_) => return Err(gave_up()),
+        }
     }
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut out);
-    }
-    Ok((status.code().unwrap_or(-1), out.trim().to_string()))
+    Ok((status.code().unwrap_or(-1), format!("{}{}", parts[0], parts[1]).trim().to_string()))
 }
 
 /// Is a cold launch `cmd` (in `cwd`) allowed on this machine? Its provider
@@ -777,6 +794,26 @@ pub fn session_gate(env: &Env, sid: &str, pid: i64) -> Result<(), Issue> {
     }
 }
 
+/// The gate again just before a delivery goes out (`signal`): to the
+/// `planned` session, which must still be member `id`'s live one (`now`),
+/// on the process `pid` it goes to, shown on record on this machine's
+/// provider. Where nothing is checked: yes.
+pub fn recheck(env: &Env, id: &Id, planned: Option<&SessionInfo>, now: Option<&SessionInfo>, pid: Option<i64>) -> Result<(), Issue> {
+    if !gated(env) {
+        return Ok(());
+    }
+    let refuse = |message: String, fix: Option<String>| Issue { code: "provider.unrecorded".into(), severity: Severity::Error, message, fix, id: Some(id.clone()) };
+    let Some(planned) = planned else { return Err(refuse(format!("{id} had no session at the plan; nothing is delivered"), None)) };
+    if now.map(|s| (s.session_id.as_str(), s.pid)) != Some((planned.session_id.as_str(), planned.pid)) {
+        return Err(refuse(
+            format!("{id}'s session changed since the plan (it was {}); nothing is delivered to a session the plan did not check", planned.session_id),
+            Some(format!("nimitz signal {id} <text>  # again")),
+        ));
+    }
+    let Some(pid) = pid else { return Err(refuse(format!("{id}'s session {} has no process to tie its record to; nothing is delivered", planned.session_id), None)) };
+    session_gate(env, &planned.session_id, pid).map_err(|i| Issue { id: Some(id.clone()), ..i })
+}
+
 /// Drop the records of sessions that no row has any more (`sweep`): the
 /// session ids given are the ones still there, read at `read_at`; a record
 /// written since (a session that started meanwhile) stays. The count dropped.
@@ -1154,5 +1191,46 @@ mod tests {
         // the one label rule: a host name with a dot and odd characters
         assert_eq!(host_label("Box Two.local"), "box-two");
         assert_eq!(host_label("con"), "this-machine");
+    }
+
+    /// 0.7.16 last review: `signal session:` and the re-check before a
+    /// delivery tie a record to the process it goes to (a stale record, a
+    /// start that cannot be read: refused); a changed session is refused;
+    /// a machines file that does not list this machine still needs a
+    /// readable registry.
+    #[test]
+    fn the_session_gate_and_the_recheck_before_posting() {
+        let td = tempfile::tempdir().unwrap();
+        let env = temp_env(td.path());
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("bedrock")));
+        let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
+        let me = std::process::id() as i64;
+        record_session(&env, "s1", &json!({}), &bedrock);
+        // this process started before the record: posted
+        assert!(session_gate(&env, "s1", me).is_ok());
+        // a stale record (from before this process started)
+        let stale = Record { at: 1.0, ..session_record(&env, "s1").unwrap() };
+        crate::config::atomic_write(&session_record_path(&env, "s1"), &record_text(&stale)).unwrap();
+        assert_eq!(session_gate(&env, "s1", me).unwrap_err().code, "provider.unrecorded");
+        // a process whose start cannot be read (gone)
+        record_session(&env, "s1", &json!({}), &bedrock);
+        assert!(session_gate(&env, "s1", 2147483632).unwrap_err().message.contains("no readable start"));
+        // the re-check: the planned session, still the live one, on its process
+        let id = Id::ship("A", "S", "T");
+        let s = |sid: &str| SessionInfo {
+            session_id: sid.into(), short_id: Some("j".into()), pid: Some(me), kind: "background".into(), state: None, status: None, waiting_for: None,
+            started_at: None, status_since: None, name: String::new(), cwd: String::new(), labels: Default::default(), birth_id: None, entrypoint: None, pinned: false, copy: None, terminal: None,
+        };
+        assert!(recheck(&env, &id, Some(&s("s1")), Some(&s("s1")), Some(me)).is_ok());
+        let e = recheck(&env, &id, Some(&s("s1")), Some(&s("s2")), Some(me)).unwrap_err();
+        assert!(e.message.contains("changed since the plan"), "{e:?}");
+        assert!(recheck(&env, &id, Some(&s("s1")), None, Some(me)).is_err(), "gone since the plan");
+        // a machines file that does not list this machine, an unreadable registry: refused
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "other", None, Some("bedrock")));
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.state.join("registry.json"), "not json").unwrap();
+        assert!(expected(&env).is_err());
+        assert_eq!(check_launch(&env, None, &["/nowhere/claude".to_string()], None).unwrap_err().code, "provider.unreadable");
     }
 }

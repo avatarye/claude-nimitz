@@ -1289,6 +1289,11 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
         }
         Some("rm") => {
             let Some(target) = args.get(1) else { return 2 };
+            // test hook: world.json `rm_fails` makes every rm fail
+            if knob(&base, "rm_fails") {
+                eprintln!("[fake claude] rm {target} failed (rm_fails)");
+                return 1;
+            }
             let Some(row) = find(&base, target) else {
                 eprintln!("[fake claude] no job {target}");
                 return 1;

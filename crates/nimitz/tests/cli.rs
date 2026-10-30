@@ -917,6 +917,18 @@ fn wakes_unreadable_settings_doctor_and_labels_under_the_provider_rule() {
     // (a sweep that runs clean: TOP's, nothing to sweep; the records go machine-wide)
     let r = sb.run(&["sweep", "TOP/...", "--yes"]);
     assert!(r.out.contains("provider record(s) of sessions that are gone") && !sessions.join("gone-0000.json").exists(), "{}", r.out);
+    // a whole sweep that ran (--yes) drops them, whatever its steps came to
+    // (a step of it may fail on the sandbox's copy rows; the rows still read)
+    std::fs::write(sessions.join("gone-2222.json"), serde_json::json!({"id": "", "session_id": "gone-2222", "at": 1.0, "provider": "bedrock"}).to_string()).unwrap();
+    let world = sb.base.join("world.json");
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    w["rm_fails"] = Value::from(true);
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    let r = sb.run(&["sweep", "--yes"]);
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    w.as_object_mut().unwrap().remove("rm_fails");
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    assert!(r.code != 0 && !sessions.join("gone-2222.json").exists(), "a step failed, the rows read: pruned:\n{}", r.out);
     // a live stowaway's record stays
     let live: Vec<String> = std::fs::read_dir(&sessions).unwrap().flatten().map(|e| e.file_name().to_string_lossy().trim_end_matches(".json").to_string()).collect();
     assert!(live.iter().any(|sid| stow.contains(sid.as_str())), "{live:?}");

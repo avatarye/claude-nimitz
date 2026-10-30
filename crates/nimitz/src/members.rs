@@ -467,11 +467,15 @@ pub fn sweep(ctx: &Ctx) -> Result<i32, String> {
             Err(i) => return Ok(finish_plan(ctx, &Plan { summary: format!("sweep {}", ctx.args.pos.join(" ")), refusals: vec![i], ..Default::default() })),
         }
     };
-    let rc = run::session_plan(ctx, ses::plan_sweep(&ctx.env, &snap, ids.as_deref(), &ctx.caller));
-    // the provider records of unlabelled sessions no row has any more (#12)
-    // (rows that cannot be read: nothing is dropped; only a sweep that ran,
-    // never a refused one or a --plan; never a record newer than the rows)
-    if !ctx.plan_only() && rc == 0 {
+    let plan = ses::plan_sweep(&ctx.env, &snap, ids.as_deref(), &ctx.caller);
+    let refused = !plan.ok();
+    let rc = run::session_plan(ctx, plan);
+    // the provider records of sessions no row has any more (#12): after a
+    // sweep that ran (not --plan, not refused, not cancelled at the
+    // question), a step of it failing or not; never with rows, sessions/ or
+    // jobs/ unreadable; never a record newer than the read of the rows
+    let ran = !ctx.plan_only() && !refused && (rc == 0 || ctx.yes());
+    if ran {
         let read_at = nimitz_core::evidence::now();
         let readable = ["sessions", "jobs"].iter().all(|d| std::fs::read_dir(ctx.env.claude_home.join(d)).is_ok());
         match nimitz_core::evidence::rows_from_files(&ctx.env, &mut Default::default()).filter(|_| readable).ok_or("not there, or not readable") {
@@ -866,17 +870,28 @@ fn held_back_now(ctx: &Ctx, d: &Delivery, voice: bool) -> Option<i32> {
     })
 }
 
-/// The provider gate on `id`'s session as it is now: `Some(1)` (said) when
-/// nothing may be delivered to it.
-fn gate_now(ctx: &Ctx, id: &Id) -> Option<i32> {
+/// The provider gate, read again just before `d` goes out, on the session
+/// and the process it goes to: the planned session (its inbox's pid, else
+/// its own), which must still be the member's live one. `Some(1)` (said)
+/// when nothing may be delivered. Where nothing is checked: none.
+fn gate_now(ctx: &Ctx, d: &Delivery) -> Option<i32> {
+    if !nimitz_core::provider::gated(&ctx.env) {
+        return None;
+    }
+    let id = &d.via.id;
+    let say = |i: Issue| {
+        out::issue(&i);
+        Some(1)
+    };
+    let pid = match &d.reach {
+        Reach::Inbox(_, pid) => Some(*pid),
+        _ => d.via.session.as_ref().and_then(|s| s.pid),
+    };
     let snap = ctx.snap();
-    let live = member(&snap, id).and_then(|m| m.session.clone());
-    match nimitz_core::provider::delivery_gate(&ctx.env, id, live.as_ref()) {
+    let now = member(&snap, id).and_then(|m| m.session.clone());
+    match nimitz_core::provider::recheck(&ctx.env, id, d.via.session.as_ref(), now.as_ref(), pid) {
         Ok(()) => None,
-        Err(i) => {
-            out::issue(&i);
-            Some(1)
-        }
+        Err(i) => say(i),
     }
 }
 
@@ -885,7 +900,7 @@ fn deliver(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, d: &Delivery, text: &str, voice
     let via = d.via;
     // the provider gate again, read now: its session may have changed since
     // the plan (#12)
-    if let Some(code) = gate_now(ctx, &via.id) {
+    if let Some(code) = gate_now(ctx, d) {
         return code;
     }
     let (pane, recheck) = match &d.reach {
