@@ -79,8 +79,23 @@ pub fn older(v: &str, than: &str) -> bool {
 /// in its path is still the one it runs. An npm install has no version in
 /// its path: it is read from the package's `package.json` (`npm_version`).
 pub fn claude_version_in(path: &str) -> Option<String> {
-    let path = path.strip_suffix(" (deleted)").unwrap_or(path);
-    in_path(path).or_else(|| npm_version(path, &|p| std::fs::read_to_string(p).ok()))
+    match path.strip_suffix(" (deleted)") {
+        // replaced under the running process: what is on disk now (an npm
+        // package.json) is the new version, not the one it runs
+        Some(old) => in_path(old),
+        None => in_path(path).or_else(|| npm_version(path, &|p| std::fs::read_to_string(p).ok())),
+    }
+}
+
+/// An absolute path, Unix (`/...`) or Windows (`C:\...`, `C:/...`, `\\server\...`).
+fn absolute(p: &str) -> bool {
+    let b = p.as_bytes();
+    p.starts_with(['/', '\\']) || (b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\'))
+}
+
+/// A Windows-style path (a drive letter or a UNC path), or any path on Windows.
+fn windows_path(p: &str) -> bool {
+    cfg!(windows) || p.as_bytes().get(1) == Some(&b':') || p.starts_with("\\\\")
 }
 
 fn in_path(path: &str) -> Option<String> {
@@ -104,8 +119,12 @@ const NPM_PACKAGE: &str = "/node_modules/@anthropic-ai/claude-code";
 /// package (`bin/claude(.exe)`, `cli.js`), from where a link points (the
 /// `bin/claude` npm puts on PATH), or beside a shim (`<npm>/claude.cmd`,
 /// `claude.ps1`, the POSIX `claude` script). Only that package's own
-/// `package.json` counts (its `name`).
+/// `package.json` counts (its `name`), and only from an absolute path (a
+/// relative argv0 would resolve against nimitz's own folder).
 fn npm_version(path: &str, read: &dyn Fn(&str) -> Option<String>) -> Option<String> {
+    if !absolute(path) {
+        return None;
+    }
     let unix = path.replace('\\', "/");
     let mut roots: Vec<String> = vec![];
     let mut inside = |p: &str| {
@@ -117,9 +136,12 @@ fn npm_version(path: &str, read: &dyn Fn(&str) -> Option<String>) -> Option<Stri
     if let Ok(real) = std::fs::canonicalize(path) {
         inside(&real.to_string_lossy().replace('\\', "/"));
     }
+    // a shim: `claude.cmd`, `claude.ps1` or the extension-less `claude`
+    // script (never a `claude.exe` that merely sits beside node_modules)
     if let Some((dir, file)) = unix.rsplit_once('/') {
-        let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
-        if stem.eq_ignore_ascii_case("claude") && !dir.is_empty() {
+        let (stem, ext) = file.rsplit_once('.').unwrap_or((file, ""));
+        let shim = ext.is_empty() || ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("ps1");
+        if shim && stem.eq_ignore_ascii_case("claude") && !dir.is_empty() {
             roots.push(format!("{dir}{NPM_PACKAGE}"));
         }
     }
@@ -155,17 +177,21 @@ pub fn process_version_or_machine(argv0: &str, pid: Option<i64>) -> Option<Strin
     })
 }
 
-/// Do `a` and `b` name one executable: the same path once separators,
-/// `.exe`, a Windows path's case and `(deleted)` are set aside, or the same
-/// file once links are followed?
+/// Do `a` and `b` name one executable: the same path once separators and,
+/// for a Windows path, `.exe` and case are set aside, or the same file once
+/// links are followed? Never a binary replaced since it started (`(deleted)`).
 pub fn same_binary(a: &str, b: &str) -> bool {
     let norm = |p: &str| {
-        let p = p.strip_suffix(" (deleted)").unwrap_or(p).replace('\\', "/");
-        let p = p.strip_suffix(".exe").unwrap_or(&p).to_string();
-        let windows = p.as_bytes().get(1) == Some(&b':') || cfg!(windows);
-        if windows { p.to_ascii_lowercase() } else { p }
+        let windows = windows_path(p);
+        let p = p.replace('\\', "/");
+        match windows {
+            true => p.strip_suffix(".exe").unwrap_or(&p).to_ascii_lowercase(),
+            false => p,
+        }
     };
-    if a.is_empty() || b.is_empty() || !(a.contains(['/', '\\']) && b.contains(['/', '\\'])) {
+    // a replaced binary is not the one on disk now, whatever its path
+    let deleted = |p: &str| p.ends_with(" (deleted)");
+    if a.is_empty() || b.is_empty() || deleted(a) || deleted(b) || !(a.contains(['/', '\\']) && b.contains(['/', '\\'])) {
         return false;
     }
     norm(a) == norm(b) || matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
@@ -239,6 +265,11 @@ mod tests {
             assert_eq!(npm_version(&p, &read).as_deref(), Some("2.1.312"), "{p}");
         }
         assert_eq!(npm_version(&format!(r"{win}\other.cmd"), &read), None, "not claude's shim");
+        assert_eq!(npm_version(&format!(r"{win}\claude.exe"), &read), None, "a claude.exe beside node_modules is no shim");
+        assert_eq!(npm_version(&format!(r"{win}\claude.bat"), &read), None, "nor a .bat");
+        let rel = at("npm", pkg("@anthropic-ai/claude-code", "2.1.312"));
+        assert_eq!(npm_version("npm/claude.cmd", &rel), None, "a relative path never reads");
+        assert_eq!(npm_version("./npm/node_modules/@anthropic-ai/claude-code/cli.js", &rel), None);
         let unix = at("/usr/lib", pkg("@anthropic-ai/claude-code", "2.1.300"));
         assert_eq!(npm_version("/usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude", &unix).as_deref(), Some("2.1.300"));
         assert_eq!(npm_version("/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js", &unix).as_deref(), Some("2.1.300"));
@@ -253,6 +284,10 @@ mod tests {
         std::fs::write(root.join("bin/claude.exe"), "").unwrap();
         let exe = root.join("bin/claude.exe");
         assert_eq!(claude_version_in(exe.to_str().unwrap()).as_deref(), Some("2.1.312"));
+        // replaced under a running process: the package.json on disk is the
+        // new version, not the one it runs
+        assert_eq!(claude_version_in(&format!("{} (deleted)", exe.display())), None);
+        assert_eq!(claude_version_in("/home/u/.local/share/claude/versions/2.1.283 (deleted)").as_deref(), Some("2.1.283"), "a version in the path still counts");
         #[cfg(unix)]
         {
             std::fs::create_dir_all(td.path().join("bin")).unwrap();
@@ -267,7 +302,9 @@ mod tests {
     fn the_same_binary_is_told_by_path_or_link() {
         let npm = r"C:\Users\u\AppData\Roaming\npm\node_modules/@anthropic-ai/claude-code/bin\claude.exe";
         assert!(same_binary(npm, "c:/users/u/appdata/roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe"));
-        assert!(same_binary("/opt/c/claude (deleted)", "/opt/c/claude"));
+        assert!(!same_binary("/opt/c/claude (deleted)", "/opt/c/claude"), "a replaced binary is another one");
+        assert!(!same_binary("/opt/c/claude.exe", "/opt/c/claude"), "a Unix path keeps its .exe");
+        assert!(same_binary(r"C:\npm\claude.exe", "c:/npm/claude"));
         assert!(!same_binary("/opt/c/claude", "/opt/C/claude"), "a Unix path keeps its case");
         assert!(!same_binary("/opt/c/claude", "/opt/d/claude"));
         assert!(!same_binary("claude", "claude"), "a bare name is no path");
