@@ -154,6 +154,8 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
             if let Some(sock) = vars.get("CLAUDE_CODE_MESSAGING_SOCKET") {
                 crate::inbox::record(env, &sid, pid, sock.strip_prefix("uds:").unwrap_or(sock));
             }
+            // the worker's own view of its provider: its model and selectors (#12)
+            crate::provider::record(env, &id, &sid, &input, vars);
             rules = Some(crate::rules::VERSION);
             crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
             // (the fleet's harness rules come from their own entry, `harness_rules`)

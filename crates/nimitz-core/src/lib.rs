@@ -34,6 +34,7 @@ pub mod layout;
 pub mod notify;
 pub mod peers;
 pub mod pins;
+pub mod provider;
 pub mod restore;
 pub mod rules;
 pub mod sandbox;

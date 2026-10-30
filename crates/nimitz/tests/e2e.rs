@@ -2443,3 +2443,62 @@ fn e2e_101_the_kb_agents_come_with_their_skills_after_a_reload() {
     }
     w.finish();
 }
+
+/// 102. #12, the preflight against the real resolver: a machine that expects
+/// `anthropic`, and a ship whose folder's `.claude/settings.local.json` env
+/// selects Bedrock (no AWS credentials anywhere, `AWS_PROFILE` naming no
+/// profile). Nothing is forced for anthropic, so Claude Code's own `auth
+/// status` says bedrock and nothing is launched: no job row, no session, no
+/// transcript; the refusal is `provider.mismatch`. Nothing reaches Bedrock
+/// or AWS (`auth status` calls no model). The leads (subscription, launched
+/// by hand) are recorded on `firstParty` by their SessionStart hooks.
+#[test]
+fn e2e_102_a_bedrock_local_settings_ship_is_refused_before_its_launch() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(102);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let label = nimitz_core::provider::this_machine(&w.env);
+    w.ok(&["machine", "set", &label, "--provider", "anthropic", "--yes"]);
+    let lead = nimitz_core::provider::record_of(&w.env, &nimitz_core::Id(w.fleet.clone())).expect("the admiral's SessionStart record");
+    assert_eq!(lead.provider, "firstParty", "{lead:?}");
+    write(
+        &w.ship_dir().join(".claude").join("settings.local.json"),
+        r#"{"env": {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_PROFILE": "nimitz-e2e-no-such-profile", "AWS_REGION": "us-east-1", "AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": "", "AWS_SESSION_TOKEN": ""}}"#,
+    );
+    let (code, out) = w.nz(&["start", &w.ship(), "--yes"]);
+    assert!(code != 0 && out.contains("provider.mismatch") && out.contains("expects anthropic"), "{out}");
+    let m = w.member(&w.ship()).expect("the ship");
+    assert!(m["session"].is_null(), "no job: {m}");
+    let dir = w.ship_dir().to_string_lossy().into_owned();
+    assert!(w.agents().iter().all(|r| r.cwd != dir), "no row and no session in the ship's folder");
+    let proj = home().join(".claude/projects").join(nimitz_core::evidence::project_dir_name(&dir));
+    assert!(std::fs::read_dir(&proj).map(|d| d.count() == 0).unwrap_or(true), "no transcript: {}", proj.display());
+    w.finish();
+}
+
+/// 103. #12, the expected provider passes: a machine that expects
+/// `anthropic` (subscription), the preflight says firstParty, the ship
+/// launches with its role prompt, which is delivered (its turn is in the
+/// transcript), and its SessionStart record agrees.
+#[test]
+fn e2e_103_an_anthropic_machine_launches_with_the_role_prompt() {
+    if !gated() {
+        return;
+    }
+    let w = E2e::new(103);
+    w.fleet_with_ship(OK_PROMPT, "default");
+    let label = nimitz_core::provider::this_machine(&w.env);
+    w.ok(&["machine", "set", &label, "--provider", "anthropic", "--yes"]);
+    let m = w.start_ship_idle();
+    let sid = m["session"]["session_id"].as_str().unwrap().to_string();
+    let rec = nimitz_core::provider::record_of(&w.env, &nimitz_core::Id(w.ship())).expect("the ship's SessionStart record");
+    assert_eq!((rec.provider.as_str(), rec.session_id.as_str()), ("firstParty", sid.as_str()), "{rec:?}");
+    assert!(rec.model_agrees(), "{rec:?}");
+    let t = w.wait(30, || w.transcript(&w.ship_dir(), &sid)).expect("transcript");
+    let prompt = w.wait(30, || std::fs::read_to_string(&t).ok().filter(|text| text.contains(OK_PROMPT)));
+    assert!(prompt.is_some(), "the role prompt is not in the transcript {}", t.display());
+    assert!(!w.issue_codes().iter().any(|(c, _)| c.starts_with("provider.")), "issues: {:?}", w.issue_codes());
+    w.finish();
+}

@@ -740,6 +740,77 @@ fn a_fleet_start_gives_its_never_started_leads_their_first_launch() {
     assert!(sb.run(&["start", "TOP/SQ/S1", "--plan"]).out.contains("first launch"));
 }
 
+/// #12: a cold launch runs only on the provider the machine expects, by
+/// Claude Code's own resolver (`auth status` through the launch's binary and
+/// `--settings`), checked before anything starts; a machine that runs
+/// Bedrock must name its provider; an unreadable answer launches nothing.
+/// The worker's SessionStart then records its own view.
+#[test]
+fn a_cold_launch_runs_only_on_the_machines_provider() {
+    let sb = Sb::new(false);
+    make_top(&sb);
+    let machines = std::path::Path::new(&sb.vars["NIMITZ_HOME"]).join("machines.toml");
+    let m: toml::Table = toml::from_str(&std::fs::read_to_string(&machines).unwrap()).unwrap();
+    let label = m["machines"].as_table().unwrap().keys().next().unwrap().clone();
+    assert_eq!(m["machines"][&label]["provider"].as_str(), Some("bedrock"), "the sandbox's wrapper is Bedrock");
+    let not_started = |sb: &Sb| sb.member("TOP")["session"].is_null();
+    // expected anthropic: the wrapper's Bedrock is refused before a launch
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "anthropic", "--yes"]).code, 0);
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("expects anthropic"), "{}", r.out);
+    assert!(not_started(&sb), "nothing launched");
+    // none named, on Bedrock: the machine must name it
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "", "--yes"]).code, 0);
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.unset") && r.out.contains(&format!("nimitz machine set {label} --provider bedrock")), "{}", r.out);
+    assert!(not_started(&sb));
+    // named, but Claude Code's answer cannot be read: nothing launched
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "bedrock", "--yes"]).code, 0);
+    let world = sb.base.join("world.json");
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    w["auth_status"] = Value::from("fail");
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.unconfirmed"), "{}", r.out);
+    assert!(not_started(&sb));
+    w.as_object_mut().unwrap().remove("auth_status");
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    // the right one: launched, and the worker's own view recorded
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let rec: Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider/TOP.json")).unwrap()).unwrap();
+    assert_eq!((rec["provider"].as_str(), rec["env"]["CLAUDE_CODE_USE_BEDROCK"].as_str()), (Some("bedrock"), Some("1")), "{rec}");
+    assert!(rec["model"].as_str().unwrap().starts_with("us.anthropic."), "{rec}");
+    assert!(sb.run(&["doctor"]).out.contains(&format!("provider: machine {label} expects bedrock")));
+    // the expected provider is forced into the member's --settings env, and
+    // the job's respawnFlags keep it for every wake
+    let job = sb.member("TOP")["session"]["short_id"].as_str().unwrap().to_string();
+    let state: Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join(&job).join("state.json")).unwrap()).unwrap();
+    let flags: Vec<String> = state["respawnFlags"].as_array().unwrap().iter().filter_map(|f| f.as_str().map(String::from)).collect();
+    let own = flags.iter().rev().skip_while(|f| !f.contains("NIMITZ_ID")).next().cloned().unwrap_or_default();
+    let set: Value = serde_json::from_str(&own).unwrap_or(Value::Null);
+    assert_eq!(set["env"]["CLAUDE_CODE_USE_BEDROCK"], "1", "{flags:?}");
+    // after the launch, the worker's own record disagrees (as managed
+    // settings would make it): stopped, removed, refused
+    w["model"] = Value::from("claude-opus-5-5");
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    let r = sb.run(&["start", "TOP/SQ", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("first prompt may already have been sent"), "{}", r.out);
+    assert!(sb.member("TOP/SQ")["session"].is_null(), "its job is gone: {}", sb.member("TOP/SQ"));
+    w.as_object_mut().unwrap().remove("model");
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    // vertex: its selector is forced, and the wrapper's Bedrock (read first)
+    // makes the preflight refuse it
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "vertex", "--yes"]).code, 0);
+    let plan = sb.run(&["start", "TOP/SQ", "--plan", "--json"]).out;
+    assert!(plan.contains("CLAUDE_CODE_USE_VERTEX"), "{plan}");
+    let r = sb.run(&["start", "TOP/SQ", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("expects vertex"), "{}", r.out);
+    // a provider nimitz does not know, a relative claude
+    assert_ne!(sb.run(&["machine", "set", &label, "--provider", "openai", "--yes"]).code, 0);
+    assert_ne!(sb.run(&["machine", "set", &label, "--claude-bin", "claude", "--yes"]).code, 0);
+}
+
 /// A parent that several members' chains bring up is launched once: two
 /// squadrons under a never-started admiral, two ships under a never-started
 /// commodore.
@@ -1474,6 +1545,9 @@ fn init_and_doctor_in_an_empty_world() {
     assert_eq!(reg["machine"], "box");
     assert_eq!(reg["version"], nimitz_core::REGISTRY_VERSION, "init writes the format this nimitz writes, not a v1 file");
     assert_eq!(raw(&vars, &["init", "--label", "other", "--yes"], &[], None).code, 1, "a label is not changed silently");
+    // the fake's wrapper launches on Bedrock: the machine names it (#12)
+    assert!(raw(&vars, &["doctor"], &[], None).out.contains("fix: nimitz machine set box --provider bedrock"));
+    assert_eq!(raw(&vars, &["machine", "set", "box", "--provider", "bedrock", "--yes"], &[], None).code, 0);
 
     // trust it, enable the plugin; doctor still wants crossSessionInbound, and --fix sets it
     std::fs::create_dir_all(b.join("claude_home")).unwrap();

@@ -412,6 +412,37 @@ fn kept_registries(env: &nimitz_core::env::Env, r: &mut Report) {
     });
 }
 
+/// The provider (#12): what this machine expects, what Claude Code's own
+/// resolver gives for a launch here (no member's settings), what its members
+/// were recorded on, and the `claude` binaries a `--claude-bin` could name
+/// (listed, never written).
+fn provider_lines(ctx: &Ctx, r: &mut Report) {
+    use nimitz_core::provider;
+    let env = &ctx.env;
+    let label = provider::this_machine(env);
+    let expected = provider::expected(env);
+    let here = provider::preflight(&[env.claude_bin.clone()], Some(&env.home.to_string_lossy()));
+    let recorded: std::collections::BTreeMap<String, usize> = provider::records(env).iter().fold(Default::default(), |mut m, rec| {
+        *m.entry(provider::name_of(&rec.provider)).or_default() += 1;
+        m
+    });
+    let members = if recorded.is_empty() { "no member recorded yet".to_string() } else { recorded.iter().map(|(p, n)| format!("{n} on {p}")).collect::<Vec<_>>().join(", ") };
+    let set = format!("nimitz machine set {label} --provider anthropic|bedrock|vertex");
+    match (&expected, &here) {
+        (Some(want), Ok(got)) if provider::api_of(want) == Some(got.as_str()) => r.ok(&format!("provider: machine {label} expects {want}; a launch here gives {want}; members: {members}")),
+        (Some(want), Ok(got)) => r.err(&format!("provider: machine {label} expects {want}, but a launch here gives {} (cold launches are refused)", provider::name_of(got)), Some("fix the settings that select the provider, or nimitz machine set")),
+        (None, Ok(got)) if got == "bedrock" || provider::recorded_on(env, "bedrock") => {
+            r.err(&format!("provider: machine {label} names none, and it runs Bedrock (a launch here gives {}; members: {members}): cold launches are refused", provider::name_of(got)), Some(&format!("nimitz machine set {label} --provider bedrock")))
+        }
+        (None, Ok(got)) => r.info(&format!("provider: machine {label} names none (optional here); a launch here gives {}; members: {members}", provider::name_of(got)), Some(&set)),
+        (_, Err(e)) => r.warn(&format!("provider: machine {label} expects {}; Claude Code's own answer could not be read: {e}", expected.as_deref().unwrap_or("none")), Some("check `claude auth status --json`")),
+    }
+    let cands = provider::claude_bin_candidates(env);
+    if !cands.is_empty() {
+        r.info(&format!("claude binaries here (for --claude-bin; nothing is written): {}", cands.join(", ")), Some(&format!("nimitz machine set {label} --claude-bin <one of them>")));
+    }
+}
+
 fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     let mut r = Report { errors: 0, fixes: Plan { summary: "doctor fixes".into(), ..Default::default() } };
     let env = &ctx.env;
@@ -470,7 +501,11 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| nimitz_core::compat::parse_version(&String::from_utf8_lossy(&o.stdout)));
-    let from = if ctx.vars.contains_key("NIMITZ_CLAUDE_BIN") { "NIMITZ_CLAUDE_BIN" } else { "first `claude` on PATH" };
+    let from = match nimitz_core::provider::claude_bin_source(env, &ctx.vars) {
+        "NIMITZ_CLAUDE_BIN" => "NIMITZ_CLAUDE_BIN",
+        "machines.toml" => "this machine's claude_bin",
+        _ => "first `claude` on PATH",
+    };
     match &launch_v {
         None => r.err(&format!("launch claude {launch} ({from}) does not answer --version"), Some("set NIMITZ_CLAUDE_BIN")),
         Some(v) => {
@@ -485,6 +520,8 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             }
         }
     }
+
+    provider_lines(ctx, &mut r);
 
     // Herdr's agent resume on restart (finding 10): with it on, a restart
     // runs `claude --resume` in every agent pane, which holds a stopped or

@@ -107,6 +107,30 @@ hands the outcome to the member's next session start.
   (`settings`), and `start -f`, `-p`, `--tab`, `--only`, `--all`,
   `--jobs-only`.
 
+## The provider a machine runs on
+
+`nimitz machine set <label> --provider anthropic|bedrock|vertex` names the API
+provider every member on that machine must run on, and `--claude-bin PATH` the
+claude a cold launch runs (`NIMITZ_CLAUDE_BIN` still wins; `''` clears either;
+the settings live in the shared `machines.toml`).
+
+- For bedrock or vertex, a member's `--settings` env gets the selector
+  (`CLAUDE_CODE_USE_BEDROCK=1`, `CLAUDE_CODE_USE_VERTEX=1`): it beats the
+  shell's env and the folder's local settings, and the job keeps it for every
+  wake. For anthropic nothing is added.
+- Before a cold launch (and a relaunch), nimitz asks Claude Code itself which
+  provider that exact launch would use (`claude --settings <the launch's>
+  auth status --json`, in the member's folder) and refuses a mismatch before
+  anything starts (`provider.mismatch`); an answer it cannot read refuses too
+  (`provider.unconfirmed`). A machine with no provider named may run Bedrock
+  members only once it names one (`provider.unset`).
+- After the launch, the member's SessionStart record (what its worker really
+  runs on) is checked again: a mismatch, which only managed settings can
+  cause, stops and removes the job; its first prompt may have gone out.
+- `status` and `check` warn about a live member whose record differs (the
+  fix, `stop` then `start --fresh`, drops its conversation: ask first).
+  `doctor` shows the provider and lists the claude binaries it finds.
+
 ## Colour
 
 Plans and the usage are coloured on a terminal only. `NO_COLOR` (any value)

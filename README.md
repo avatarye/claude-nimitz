@@ -70,7 +70,7 @@ A path is `F` (an admiral), `F/SQ` (a commodore) or `F/SQ/SHIP` (a ship);
 | Command | What it does |
 | --- | --- |
 | `fleet new\|set\|rm` | A fleet: `nimitz fleet new WORK --yes` |
-| `machine add\|rm` | Run a fleet on another machine too |
+| `machine add\|rm\|set` | Run a fleet on another machine too; `machine set laptop --provider anthropic`: the claude and API provider a machine's members must run on |
 | `settings get\|set` | The fleet's `settings.json`: `nimitz settings get kb.remote` |
 | `harness list\|add\|rm\|push` | Rules, agents, skills and settings every member of a fleet gets |
 | `kb ...` | The fleet's knowledge base, a git repo every machine clones |

@@ -1989,6 +1989,16 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             Kind::Stop { short } => find_row(env, short).and_then(|r| r.pid),
             _ => None,
         };
+        // a cold launch (a launch, or a relaunch with every flag) runs on the
+        // provider Claude Code's own resolver gives for exactly this launch,
+        // checked against the machine's before anything is spawned (#12)
+        if matches!(kind, Kind::Launch | Kind::Relaunch) {
+            if let Err(i) = crate::provider::check_launch(env, step.id.as_ref(), &step.cmd, step.cwd.as_deref()) {
+                out.ran.push((step.clone(), -1, format!("not run: {}", i.code)));
+                out.issues.push(i);
+                return out;
+            }
+        }
         let since = crate::evidence::now() - 0.001;
         let (mut rc, mut text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
         let mut copy_removed: Option<bool> = None;
@@ -2120,6 +2130,31 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     Ok(sid) => {
                         clear_pending(env, id);
                         let job = find_row_by_session(env, &sid).and_then(|r| r.short_id);
+                        // defence in depth (#12): the worker's own SessionStart
+                        // record against the machine's provider. The preflight
+                        // already agreed, so only managed settings get here;
+                        // the launch's prompt went with it.
+                        // (A true no-prompt gate needs the role prompt typed in
+                        // as the user's first turn after this check: the inbox
+                        // makes it a peer message, so that is an attach client
+                        // in a pty nimitz owns, option A of #12, for 0.7.16.)
+                        if matches!(kind, Kind::Launch | Kind::Relaunch) {
+                            match crate::provider::check_started(env, id, &sid) {
+                                Ok(None) => {}
+                                Ok(Some(warn)) => out.issues.push(warn),
+                                Err(refusal) => {
+                                    if let Some(job) = &job {
+                                        for cmd in [crate::claude::stop(env, job), crate::claude::rm(env, job)] {
+                                            let (rc2, t) = crate::claude::run(&cmd, None);
+                                            out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("{id} runs on the wrong provider: stop and remove its job") }, rc2, t));
+                                        }
+                                        row_gone_within(env, job, 3.0);
+                                    }
+                                    out.issues.push(refusal);
+                                    return out;
+                                }
+                            }
+                        }
                         let want = want_job.clone().or(said);
                         if let (Some(job), Some(want)) = (job.as_deref(), want.as_deref()) {
                             if job != want {
