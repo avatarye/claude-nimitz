@@ -358,7 +358,7 @@ pub fn check_started(env: &Env, id: &Id, sid: &str, since: f64, wake: bool) -> R
     };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(if wake { 10 } else { 3 });
     let rec = loop {
-        match record_of(env, id).filter(|r| r.session_id == sid && r.at >= since) {
+        match session_record(env, sid).filter(|r| r.at >= since) {
             Some(r) => break Some(r),
             None if std::time::Instant::now() >= deadline => break None,
             None => std::thread::sleep(std::time::Duration::from_millis(100)),
@@ -437,6 +437,15 @@ pub fn wake_as_saved(env: &Env, job: &str) -> bool {
     let Ok(Some(want)) = expected(env) else { return true };
     let Some(d) = std::fs::read(env.claude_home.join("jobs").join(job).join("state.json")).ok().and_then(|b| crate::evidence::first_json(&b)) else { return false };
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
+    // the launcher's provider env, saved with the job (a wake uses it), under
+    // every --settings env
+    if let Some(pe) = d.get("providerEnv").and_then(Value::as_object) {
+        for (k, v) in pe {
+            if let Some(v) = v.as_str() {
+                merged.insert(k.clone(), v.to_string());
+            }
+        }
+    }
     let mut settings: Vec<String> = vec![];
     if let Some(x) = d.get("savedSettings").and_then(Value::as_str) {
         settings.push(x.to_string());
@@ -492,18 +501,18 @@ fn records_dir(env: &Env) -> PathBuf {
     env.state.join("provider")
 }
 
-fn record_path(env: &Env, id: &Id) -> PathBuf {
-    records_dir(env).join(format!("{}.json", id.0.replace('/', ".")))
-}
-
 fn session_record_path(env: &Env, sid: &str) -> PathBuf {
     let safe: String = sid.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
     records_dir(env).join("sessions").join(format!("{safe}.json"))
 }
 
+/// A record from a SessionStart: the provider the selectors give, the model
+/// and the selectors; a member's (`id` not empty) keeps the `RECORDED` env
+/// too (region, profile, base URL), a session that is no member's not.
 fn record_from(id: &str, sid: &str, input: &Value, vars: &HashMap<String, String>) -> Record {
     let mut kept = BTreeMap::new();
-    for k in SELECTORS.iter().map(|(k, _)| *k).chain(RECORDED) {
+    let extra: &[&str] = if id.is_empty() { &[] } else { &RECORDED };
+    for k in SELECTORS.iter().map(|(k, _)| *k).chain(extra.iter().copied()) {
         if let Some(v) = vars.get(k).filter(|v| !v.is_empty()) {
             kept.insert(k.to_string(), v.clone());
         }
@@ -518,10 +527,14 @@ fn record_from(id: &str, sid: &str, input: &Value, vars: &HashMap<String, String
     }
 }
 
-/// The SessionStart hook's record of member `id` (session `sid`): its model
-/// and provider env, the provider they select. Never fails the hook.
+/// The SessionStart hook's record of session `sid`, member `id`'s: its model
+/// and provider env, the provider they select. Every record is per session
+/// (a copy row of the member, a /fork, writes its own: none clobbers the
+/// member's live one). Never fails the hook.
 pub fn record(env: &Env, id: &Id, sid: &str, input: &Value, vars: &HashMap<String, String>) {
-    let _ = crate::config::atomic_write(&record_path(env, id), &record_text(&record_from(&id.0, sid, input, vars)));
+    if !sid.is_empty() {
+        let _ = crate::config::atomic_write(&session_record_path(env, sid), &record_text(&record_from(&id.0, sid, input, vars)));
+    }
 }
 
 /// The same for a session that is no member's (a stowaway `adopt` may bind).
@@ -531,25 +544,50 @@ pub fn record_session(env: &Env, sid: &str, input: &Value, vars: &HashMap<String
     }
 }
 
-/// Member `id`'s latest record.
-pub fn record_of(env: &Env, id: &Id) -> Option<Record> {
-    serde_json::from_slice(&std::fs::read(record_path(env, id)).ok()?).ok()
-}
-
-/// An unlabelled session's record.
+/// Session `sid`'s record (a member's or not).
 pub fn session_record(env: &Env, sid: &str) -> Option<Record> {
     serde_json::from_slice(&std::fs::read(session_record_path(env, sid)).ok()?).ok()
 }
 
-/// Every member's record on this machine.
+/// Member `id`'s newest record, of any of its sessions.
+pub fn record_of(env: &Env, id: &Id) -> Option<Record> {
+    records(env).into_iter().filter(|r| r.id == id.0).max_by(|a, b| a.at.total_cmp(&b.at))
+}
+
+/// Every record on this machine.
 pub fn records(env: &Env) -> Vec<Record> {
-    let Ok(rd) = std::fs::read_dir(records_dir(env)) else { return vec![] };
+    let Ok(rd) = std::fs::read_dir(records_dir(env).join("sessions")) else { return vec![] };
     rd.flatten().filter(|e| e.path().is_file()).filter_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok()).collect()
 }
 
 /// Has a member on this machine been recorded on `api`?
 pub fn recorded_on(env: &Env, api: &str) -> bool {
-    records(env).iter().any(|r| r.provider == api)
+    records(env).iter().any(|r| !r.id.is_empty() && r.provider == api)
+}
+
+/// When the process of live session `s` started: its session file's
+/// `startedAt` (`claude_home/sessions/<pid>.json`), else the process's own
+/// start. A bg job's `started_at` is its job's creation, which a wake keeps,
+/// so it says nothing about this process. None when neither can be read.
+pub fn live_started(env: &Env, s: &SessionInfo) -> Option<f64> {
+    process_started(env, &s.session_id, s.pid?)
+}
+
+/// `live_started` by session id and pid.
+pub fn process_started(env: &Env, session_id: &str, pid: i64) -> Option<f64> {
+    let from_file = std::fs::read(env.claude_home.join("sessions").join(format!("{pid}.json")))
+        .ok()
+        .and_then(|b| crate::evidence::first_json(&b))
+        .filter(|v| v.get("sessionId").and_then(Value::as_str).is_none_or(|x| x == session_id))
+        .and_then(|v| v.get("startedAt").and_then(Value::as_f64))
+        .map(|ms| ms / 1000.0);
+    from_file.or_else(|| crate::os::process_birth_ms(pid).map(|ms| ms as f64 / 1000.0))
+}
+
+/// Does this machine gate starts and deliveries by provider? Where it names
+/// one, or its settings cannot be read (then everything refuses).
+pub fn gated(env: &Env) -> bool {
+    !matches!(expected(env), Ok(None))
 }
 
 /// May stowaway session `sid` be adopted on this machine? Where a provider is
@@ -604,10 +642,19 @@ pub fn delivery_gate(env: &Env, id: &Id, live: Option<&SessionInfo>) -> Result<(
         Err(e) => return Err(unreadable(Some(id), &e)),
     };
     let Some(s) = live else { return Ok(()) };
+    // since THIS process started (a wake keeps the session id, and the job's
+    // creation time): unknown, nothing is delivered
+    let Some(started) = live_started(env, s) else {
+        return Err(Issue {
+            code: "provider.unrecorded".into(),
+            severity: Severity::Error,
+            message: format!("{id}'s session {} has no readable start (no session file, no process start), so its provider record cannot be tied to it: nothing is delivered to it", s.session_id),
+            fix: Some(format!("nimitz status {id}; then nimitz restart {id}")),
+            id: Some(id.clone()),
+        });
+    };
     // (a session file's start is in ms precision; the hook's record later)
-    let since = s.started_at.unwrap_or(0.0) - 1.0;
-    // (a member's session that runs unlabelled, adopted say: its session's record)
-    let rec = record_of(env, id).filter(|r| r.session_id == s.session_id && r.at >= since).or_else(|| session_record(env, &s.session_id).filter(|r| r.at >= since));
+    let rec = session_record(env, &s.session_id).filter(|r| r.at >= started - 1.0);
     match rec {
         Some(r) if api_of(&want) == Some(r.provider.as_str()) => Ok(()),
         Some(r) => Err(Issue {
@@ -648,7 +695,7 @@ pub fn prune_sessions(env: &Env, still: &std::collections::HashSet<String>) -> u
 /// the machine expects (or, with none set, from the one most of its members
 /// run on), or whose model disagrees with it.
 pub fn issues(env: &Env, live: &[(Id, String)]) -> Vec<Issue> {
-    let recs: Vec<Record> = live.iter().filter_map(|(id, sid)| record_of(env, id).filter(|r| r.session_id == *sid)).collect();
+    let recs: Vec<Record> = live.iter().filter_map(|(id, sid)| session_record(env, sid).map(|r| Record { id: id.0.clone(), ..r })).collect();
     let expected = match expected(env) {
         Ok(e) => e.and_then(|e| api_of(&e)).map(str::to_string),
         // nothing is compared against settings that cannot be read; every
@@ -804,6 +851,13 @@ mod tests {
         assert!(plan_machine_set(&env, &me, None, Some("anthropic")).steps.is_empty(), "nothing changes");
         apply(&plan_machine_set(&env, &me, None, Some("")));
         assert!(!load_machines(&env.home).unwrap().machines.contains_key(&me), "an empty entry goes");
+        // format 1 needs no min_nimitz (older nimitz ignore the file); one a
+        // newer nimitz may set is kept on every rewrite
+        assert!(load_machines(&env.home).unwrap().min_nimitz.is_none());
+        let text = std::fs::read_to_string(machines_path(&env.home)).unwrap();
+        std::fs::write(machines_path(&env.home), format!("min_nimitz = \"0.7.15\"\n{text}")).unwrap();
+        apply(&plan_machine_set(&env, &me, None, Some("vertex")));
+        assert_eq!(load_machines(&env.home).unwrap().min_nimitz.as_deref(), Some("0.7.15"));
     }
 
     #[test]
@@ -816,9 +870,11 @@ mod tests {
             .collect();
         let env = Env::from_vars(&vars);
         let ids = [Id::admiral("A"), Id::commodore("A", "S"), Id::ship("A", "S", "T")];
+        // each member's session is its own (`sid-<n>`)
+        let sid = |id: &Id| format!("sid-{}", ids.iter().position(|x| x == id).unwrap());
         let rec = |id: &Id, bedrock: bool, model: &str| {
             let v: HashMap<String, String> = if bedrock { [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into() } else { HashMap::new() };
-            record(&env, id, "sid", &json!({"model": model}), &v);
+            record(&env, id, &sid(id), &json!({"model": model}), &v);
         };
         rec(&ids[0], true, "us.anthropic.claude-opus-5-5");
         rec(&ids[1], true, "us.anthropic.claude-opus-5-5");
@@ -826,7 +882,7 @@ mod tests {
         assert_eq!(record_of(&env, &ids[2]).unwrap().provider, "firstParty");
         assert!(recorded_on(&env, "bedrock"));
         // no expected provider: the majority (Bedrock) flags the odd one
-        let live: Vec<(Id, String)> = ids.iter().map(|i| (i.clone(), "sid".to_string())).collect();
+        let live: Vec<(Id, String)> = ids.iter().map(|i| (i.clone(), sid(i))).collect();
         let i = issues(&env, &live);
         assert_eq!(i.len(), 1, "{i:?}");
         assert!(i[0].code == "provider.mismatch" && i[0].id.as_ref() == Some(&ids[2]) && i[0].fix.as_deref().unwrap().contains("--fresh"), "{i:?}");
@@ -920,10 +976,48 @@ mod tests {
         assert_eq!(check_adopt(&env, &id, "stow").unwrap_err().code, "provider.mismatch");
         record_session(&env, "stow", &json!({}), &bedrock);
         assert!(check_adopt(&env, &id, "stow").unwrap().is_none());
-        assert!(records(&env).iter().all(|r| !r.id.is_empty()), "a session's record is no member's");
+        // a session that is no member's: no member on record on it, no env kept but the selectors
+        let stow = session_record(&env, "stow").unwrap();
+        assert!(stow.id.is_empty() && stow.env.keys().all(|k| k.starts_with("CLAUDE_CODE_USE_")), "{stow:?}");
         // optional machine: a missing record only warns
         crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("")));
         assert_eq!(check_adopt(&env, &id, "other").unwrap().unwrap().severity, Severity::Warn);
         assert!(wake_as_saved(&env, "nojob"));
+        // providerEnv (the launcher's, saved with the job) counts for a wake, under --settings
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("bedrock")));
+        let d = env.claude_home.join("jobs").join("j2");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("state.json"), json!({"providerEnv": {"CLAUDE_CODE_USE_BEDROCK": "1"}, "respawnFlags": ["--settings", r#"{"env":{"NIMITZ_ID":"A/S/T"}}"#]}).to_string()).unwrap();
+        assert!(wake_as_saved(&env, "j2"));
+    }
+
+    /// Review BB: the delivery gate ties a record to THIS process of the
+    /// session (its session file's startedAt): a wake keeps the session id and
+    /// the job's creation time, so the previous start's record does not count;
+    /// no start at all refuses.
+    #[test]
+    fn the_delivery_gate_takes_the_records_of_this_process_only() {
+        let td = tempfile::tempdir().unwrap();
+        let env = temp_env(td.path());
+        let id = Id::ship("A", "S", "T");
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("bedrock")));
+        let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
+        record(&env, &id, "sid", &json!({}), &bedrock);
+        let at = session_record(&env, "sid").unwrap().at;
+        let s = |pid: Option<i64>| SessionInfo {
+            session_id: "sid".into(), short_id: Some("j".into()), pid, kind: "background".into(), state: None, status: None, waiting_for: None,
+            // the job's creation (a wake keeps it): long before
+            started_at: Some(at - 3600.0), status_since: None, name: String::new(), cwd: String::new(), labels: Default::default(), birth_id: None, entrypoint: None, pinned: false, copy: None, terminal: None,
+        };
+        let sessions = env.claude_home.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        // this process started before the record: delivered
+        std::fs::write(sessions.join("777001.json"), json!({"sessionId": "sid", "startedAt": (at - 10.0) * 1000.0}).to_string()).unwrap();
+        assert!(delivery_gate(&env, &id, Some(&s(Some(777001)))).is_ok());
+        // woken since: the record is the previous start's
+        std::fs::write(sessions.join("777001.json"), json!({"sessionId": "sid", "startedAt": (at + 10.0) * 1000.0}).to_string()).unwrap();
+        assert_eq!(delivery_gate(&env, &id, Some(&s(Some(777001)))).unwrap_err().code, "provider.unrecorded");
+        // no pid, so no start: refused, never "since 1970"
+        assert_eq!(delivery_gate(&env, &id, Some(&s(None))).unwrap_err().code, "provider.unrecorded");
     }
 }

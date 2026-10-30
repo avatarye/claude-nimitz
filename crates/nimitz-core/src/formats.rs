@@ -155,7 +155,7 @@ pub static ARTIFACTS: &[Artifact] = &[
     Artifact { name: "own-pins", path: "S/pins.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: pins_file, wanted: None, lift: None },
     Artifact { name: "admiralty-ui", path: "S/admiralty-ui.json", scope: Scope::Local, current: 2, oldest: 1, kept: Kept::Json("format"), steps: ADMIRALTY_UI_STEPS, find: admiralty_ui, wanted: None, lift: None },
     Artifact { name: "machines", path: "H/machines.toml", scope: Scope::Shared, current: 1, oldest: 1, kept: Kept::Toml("format"), steps: &[], find: machines_file, wanted: None, lift: None },
-    Artifact { name: "provider-records", path: "S/provider/*.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: provider_dir, wanted: None, lift: None },
+    Artifact { name: "provider-records", path: "S/provider/sessions/*.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: provider_dir, wanted: None, lift: None },
 ];
 
 /// The artifact called `name`.
@@ -747,7 +747,7 @@ fn machines_file(env: &Env) -> Vec<PathBuf> {
 }
 
 fn provider_dir(env: &Env) -> Vec<PathBuf> {
-    nonempty(env.state.join("provider"))
+    nonempty(env.state.join("provider").join("sessions"))
 }
 
 // ------------------------------------------------------------------ the manifest

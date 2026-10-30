@@ -1896,6 +1896,20 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             out.ran.push((step.clone(), 0, format!("skipped: {what}")));
         }
     }
+    // a job the daemon restarted itself woke on its saved flags, unchecked:
+    // where the machine checks providers, its record of that start (#12)
+    if crate::provider::gated(env) {
+        for (id, sid, short) in waking.iter().filter(|(i, _, _)| restarted.contains(i)) {
+            let row = short.as_deref().and_then(|j| find_row(env, j)).or_else(|| find_row_by_session(env, sid)).filter(|r| r.live());
+            let Some(row) = row else { continue };
+            let since = row.pid.and_then(|p| crate::provider::process_started(env, &row.session_id, p)).map(|t| t - 1.0).unwrap_or(f64::INFINITY);
+            if let Err(i) = crate::provider::check_started(env, id, &row.session_id, since, true) {
+                stop_woken(env, &mut out, id, row.short_id.as_deref().or(Some(row.session_id.as_str())), "restarted by the daemon, not confirmed on this machine's provider");
+                out.issues.push(i);
+                return out;
+            }
+        }
+    }
     // A job the daemon did not restart in the window: its transcript must be
     // there now (`wake_steps` lets a crashed job through without one), else the
     // resume would run with no history: `history.lost` with the `--fresh` fix
@@ -2137,8 +2151,14 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     _ => None,
                 };
                 let said = crate::claude::job_started(&text);
+                // a wake that started and then failed a check: stopped on the
+                // way out where the machine checks providers (#12)
+                let wake = matches!(kind, Kind::Resume { .. });
                 if let (Some(said), Some(want)) = (said.as_deref(), want_job.as_deref()) {
                     if said != want {
+                        if wake {
+                            stop_woken(env, &mut out, id, Some(said), "the wake answered with another job");
+                        }
                         out.issues.push(issue("lineage.broken", Severity::Error, format!("{id}'s resume answered with job {said}, not its job {want}"), Some(format!("nimitz status  # then nimitz sweep {id}")), Some(id.clone())));
                         return out;
                     }
@@ -2172,29 +2192,36 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         // is the gate (its saved flags were checked when the
                         // wake was planned, `provider::wake_as_saved`); a
                         // mismatch or no record stops it and keeps its row.
-                        let wake = matches!(kind, Kind::Resume { .. });
                         match crate::provider::check_started(env, id, &sid, since, wake) {
                             Ok(None) => {}
                             Ok(Some(warn)) => out.issues.push(warn),
+                            // a wake: stopped (by its job, else by its session), its row kept
+                            Err(refusal) if wake => {
+                                stop_woken(env, &mut out, id, job.as_deref().or(Some(sid.as_str())), "not confirmed on this machine's provider");
+                                out.issues.push(refusal);
+                                return out;
+                            }
                             Err(refusal) => {
-                                if let Some(job) = &job {
-                                    let cmds = if wake { vec![crate::claude::stop(env, job)] } else { vec![crate::claude::stop(env, job), crate::claude::rm(env, job)] };
-                                    let why = if wake { format!("{id} is not confirmed on this machine's provider: stop it (its row stays)") } else { format!("{id} runs on the wrong provider: stop and remove its job") };
-                                    for cmd in cmds {
-                                        let (rc2, t) = crate::claude::run(&cmd, None);
-                                        out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: why.clone() }, rc2, t));
-                                    }
-                                    if !wake {
+                                match &job {
+                                    Some(job) => {
+                                        for cmd in [crate::claude::stop(env, job), crate::claude::rm(env, job)] {
+                                            let (rc2, t) = crate::claude::run(&cmd, None);
+                                            out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("{id} runs on the wrong provider: stop and remove its job") }, rc2, t));
+                                        }
                                         row_gone_within(env, job, 3.0);
                                     }
+                                    None => stop_woken(env, &mut out, id, Some(sid.as_str()), "runs on the wrong provider"),
                                 }
                                 out.issues.push(refusal);
                                 return out;
                             }
                         }
-                        let want = want_job.clone().or(said);
+                        let want = want_job.clone().or(said.clone());
                         if let (Some(job), Some(want)) = (job.as_deref(), want.as_deref()) {
                             if job != want {
+                                if wake {
+                                    stop_woken(env, &mut out, id, Some(job), "it bound another job than its own");
+                                }
                                 out.issues.push(issue("lineage.broken", Severity::Error, format!("{id} bound {sid} in job {job}, not the expected {want}"), Some(format!("nimitz status  # then nimitz sweep {id}")), Some(id.clone())));
                                 return out;
                             }
@@ -2213,6 +2240,11 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         started.push((id.clone(), sid, step.cwd.clone()))
                     }
                     Err(mut issues) => {
+                        // a wake that may have started: stopped, unchecked as it is
+                        if wake && crate::provider::gated(env) {
+                            let target = want_job.clone().or(said.clone()).or_else(|| find_row_by_session(env, &now_of).filter(|r| r.live()).and_then(|r| r.short_id));
+                            stop_woken(env, &mut out, id, target.as_deref(), "its start was not bound, so its provider is unconfirmed");
+                        }
                         // real Claude Code may print "Workspace not trusted ..." and
                         // exit 0; then only the missing SessionStart shows it
                         if let Some(f) = failure_fix(step, &text, after_rm) {
@@ -2251,6 +2283,28 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     }
     out.verified = out.issues.iter().all(|i| i.severity != Severity::Error) && out.ran.len() - extra_ran == plan.steps.len();
     out
+}
+
+/// Stop a woken job (by its job id, else its session id) that failed a
+/// check after it started; its row stays. With nothing to stop by, said so.
+fn stop_woken(env: &Env, out: &mut Outcome, id: &Id, target: Option<&str>, why: &str) {
+    match target {
+        Some(t) => {
+            let cmd = crate::claude::stop(env, t);
+            let (rc, text) = crate::claude::run(&cmd, None);
+            out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("{id}: {why}: stop it (its row stays)") }, rc, text.clone()));
+            if rc != 0 {
+                out.issues.push(issue("provider.unstopped", Severity::Error, format!("{id} woke and {why}, and stopping {t} failed: {text}; it may be running unchecked"), Some(format!("nimitz stop {id}")), Some(id.clone())));
+            }
+        }
+        None => out.issues.push(issue(
+            "provider.unstopped",
+            Severity::Error,
+            format!("{id} woke and {why}, but nimitz has neither its job nor its session to stop it by; it may be running unchecked"),
+            Some(format!("nimitz status {id}; nimitz stop {id}")),
+            Some(id.clone()),
+        )),
+    }
 }
 
 /// How long `apply` waits for the daemon to settle a stopped job before a

@@ -115,50 +115,56 @@ claude a cold launch runs (`NIMITZ_CLAUDE_BIN` still wins; `''` clears either).
 The settings live in the shared `machines.toml`; a nimitz older than 0.7.15
 ignores that file, so update every machine before relying on it. A label
 nimitz does not know is set with a warning (a machine set up ahead of time).
+A machine with no provider named is optional: none of the checks below apply
+there, except that it must name one before it runs Bedrock members
+(`provider.unset`), and an unreadable answer before a launch only warns.
 
-The gate is two things, both before anything starts:
+What is checked, on a machine that names a provider:
 
-- the forced selector: for bedrock or vertex a member's `--settings` env gets
-  `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1`, which beats the
-  shell's env and the folder's local settings; the job keeps it for every
-  wake. For anthropic nothing is added;
-- the preflight: before every cold launch and relaunch of a plan (all of
-  them, before its first step), nimitz asks Claude Code itself which provider
-  that exact launch would use (`claude --settings <the launch's> auth status
-  --json`, in the member's folder) and refuses a mismatch (`provider.mismatch`).
-  An answer it cannot read refuses too (`provider.unconfirmed`) where a
-  provider is named or a member runs on Bedrock; on an optional machine it is
-  a warning. A machine with no provider named may run Bedrock members only
-  once it names one (`provider.unset`). Settings or a registry nimitz cannot
-  read (or a newer nimitz wrote) refuse every launch and wake
-  (`provider.unreadable`).
-
-What nimitz cannot see: managed settings (`/etc/claude-code`, MDM, remote
-policy) and the daemon's own env. So, as a backstop:
-
-- after a cold launch, the member's SessionStart record (what its worker
-  really runs on) is checked: a provider its selectors give that differs
-  stops and removes the job, but its first prompt has already gone out; a
-  model that disagrees (a custom `ANTHROPIC_MODEL`, an alias) only warns
-  (`provider.model`);
-- a wake sends no prompt, so there the record of that start is a real gate:
-  a job whose saved flags do not select the machine's provider (from before
-  0.7.15, or before `machine set`) is relaunched instead, and a woken job with
-  no record or the wrong one is stopped (its row and conversation stay);
-- nimitz's own deliveries (needs-you notices, `signal`, to the inbox or
-  typed) reach a member only once its current session is on record on the
+- **Cold launches and relaunches, before they start.** The selector is forced
+  into the member's `--settings` env (`CLAUDE_CODE_USE_BEDROCK=1` /
+  `CLAUDE_CODE_USE_VERTEX=1`; nothing for anthropic), and nimitz asks Claude
+  Code which provider exactly that launch would use (`claude --settings <the
+  launch's> auth status --json`, in the member's folder) for every launch of
+  a plan before its first step. A different answer (`provider.mismatch`) or
+  none (`provider.unconfirmed`) starts nothing. The launch carries the
+  member's first prompt, so this answer is all that is checked before it.
+- **After a cold launch** (a backstop: the first prompt is already sent): the
+  worker's own SessionStart record of that start; a provider its selectors
+  give that differs stops and removes the job. A model that disagrees (a
+  custom `ANTHROPIC_MODEL`, an alias) only warns (`provider.model`).
+- **Wakes.** A job whose saved flags do not select the provider (from before
+  0.7.15, or before `machine set`) is relaunched instead, through the checks
+  above. Any other wake (`start`, `restart`, `muster`, `open`, a restore, a
+  job the daemon restarted) is checked against the record of that start
+  within 10 s; none, or the wrong one, stops the job (its row and
+  conversation stay). An attach never wakes a job here: `open`, Admiralty's
+  `A` and `muster` wake it through `start` first; `layout` leaves a down lead
+  for `nimitz start`.
+- **nimitz's own deliveries** (needs-you notices, `signal`, Admiralty's `m`)
+  reach a member only once the record of its current process shows the
   provider: a notice keeps retrying, a signal is refused
-  (`provider.unrecorded`, `provider.mismatch`). Open gap: another Claude Code
-  session's own messages to a woken job, and anything Claude Code holds for
-  it, are not nimitz's to stop; the post-wake gate stops such a job within
-  seconds;
-- `adopt` refuses a stowaway whose own record shows another provider; one
-  with no record is bound with a warning: unverified, and nimitz delivers
-  nothing to it until its next restart, which is checked (`sweep` drops the
-  records of sessions that are gone);
+  (`provider.unrecorded`, `provider.mismatch`). `signal session:` refuses a
+  member's session and points to `nimitz signal <id>`.
+- **adopt** refuses a stowaway whose record shows another provider; one with
+  no record is bound with a warning: unverified until its next restart, and
+  nothing is delivered to it until then.
+- **Settings or a registry nimitz cannot read** (or a newer nimitz wrote)
+  refuse every launch and wake (`provider.unreadable`).
 - `status` and `check` warn about a live member whose record differs (the
-  fix, `stop` then `start --fresh`, drops its conversation: ask first), and
-  `doctor` shows the provider and lists the claude binaries it finds.
+  fix, `stop` then `start --fresh`, drops its conversation: ask first);
+  `doctor` shows the provider and lists the claude binaries it finds; `sweep`
+  drops the records of sessions that are gone.
+
+What is not checked (the gaps):
+
+- managed settings (`/etc/claude-code`, MDM, remote policy) and the daemon's
+  own env, which can change the provider after the preflight: only the
+  records after the start see them;
+- messages from other Claude Code sessions to a member, and anything Claude
+  Code holds for a job, which nimitz cannot stop;
+- a turn in flight when a job was stopped, which may resume on the wake
+  before the 10 s check (not verified on Claude Code).
 
 ## Colour
 

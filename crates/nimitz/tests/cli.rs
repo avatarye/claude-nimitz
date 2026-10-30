@@ -787,7 +787,8 @@ fn a_cold_launch_runs_only_on_the_machines_provider() {
     // the right one: launched, and the worker's own view recorded
     let r = sb.run(&["start", "TOP", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
-    let rec: Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider/TOP.json")).unwrap()).unwrap();
+    let top_sid = sb.member("TOP")["session"]["session_id"].as_str().unwrap().to_string();
+    let rec: Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join(format!("provider/sessions/{top_sid}.json"))).unwrap()).unwrap();
     assert_eq!((rec["provider"].as_str(), rec["env"]["CLAUDE_CODE_USE_BEDROCK"].as_str()), (Some("bedrock"), Some("1")), "{rec}");
     assert!(rec["model"].as_str().unwrap().starts_with("us.anthropic."), "{rec}");
     assert!(sb.run(&["doctor"]).out.contains(&format!("provider: machine {label} expects bedrock")));
@@ -887,7 +888,8 @@ fn wakes_unreadable_settings_doctor_and_labels_under_the_provider_rule() {
     // (the sandbox's Claude Code predates the inbox: the gate itself passes)
     let r = sb.run(&["signal", "TOP", "hi", "--inbox", "--plan"]);
     assert!(!r.out.contains("provider."), "{}", r.out);
-    let rec = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider/TOP.json");
+    let top_sid = sb.member("TOP")["session"]["session_id"].as_str().unwrap().to_string();
+    let rec = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join(format!("provider/sessions/{top_sid}.json"));
     let good = std::fs::read_to_string(&rec).unwrap();
     let mut other: Value = serde_json::from_str(&good).unwrap();
     other["provider"] = Value::from("firstParty");
@@ -901,6 +903,16 @@ fn wakes_unreadable_settings_doctor_and_labels_under_the_provider_rule() {
     // sweep drops the records of unlabelled sessions that are gone
     let sessions = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider/sessions");
     std::fs::write(sessions.join("gone-0000.json"), serde_json::json!({"id": "", "session_id": "gone-0000", "at": 1.0, "provider": "bedrock"}).to_string()).unwrap();
+    // the session rows cannot be read: nothing is dropped
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let rows = std::path::Path::new(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions");
+        std::fs::set_permissions(&rows, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let r = sb.run(&["sweep", "--yes"]);
+        std::fs::set_permissions(&rows, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(sessions.join("gone-0000.json").exists(), "kept while the rows cannot be read: {}", r.out);
+    }
     let stow = sb.run(&["status", "--json"]).out;
     let r = sb.run(&["sweep", "--yes"]);
     assert!(r.out.contains("provider record(s) of sessions that are gone") && !sessions.join("gone-0000.json").exists(), "{}", r.out);
@@ -2873,6 +2885,32 @@ fn an_attach_pane_on_an_npm_claude_code_is_typed_into() {
     let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "unknown", "--yes"], &[("NIMITZ_SIGNAL_WAIT", "0")], None);
     assert!(r.code != 0 && r.out.contains("(tab.unverified)"), "another binary stays unknown: {}", r.out);
     assert!(!sb.prompts("w1:p2").iter().any(|p| p.contains("unknown")), "{}", r.out);
+}
+
+/// #12 round 2: on a machine that names a provider, nimitz's own deliveries
+/// wait for a confirmed record: a needs-you notice to a commodore whose
+/// session has none is not delivered (its delivery says why); `signal
+/// session:` to a member's session points to the member's path.
+#[test]
+fn deliveries_to_an_unconfirmed_member_are_held_and_member_sessions_go_by_path() {
+    let sb = Sb::new(false);
+    let sid = sb.member("MAIN/ARGOS")["session"]["session_id"].as_str().unwrap().to_string();
+    let rec = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join(format!("provider/sessions/{sid}.json"));
+    std::fs::remove_file(&rec).unwrap();
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "failed", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("no provider record"), "the gate held it: {n}");
+    // a member's session by `session:` (a live process with its session id):
+    // refused, the member's path named
+    #[cfg(unix)]
+    {
+        let me = std::process::id() as i64;
+        let f = sb.base.join("claude_home").join("sessions").join("peer-m.json");
+        std::fs::write(&f, serde_json::json!({"pid": me, "sessionId": sid, "name": "member-peer", "version": "2.1.300", "kind": "bg"}).to_string()).unwrap();
+        let r = sb.run(&["signal", "session:member-peer", "hi", "--plan"]);
+        assert!(r.code != 0 && r.out.contains("signal.member") && r.out.contains("nimitz signal MAIN/ARGOS"), "{}", r.out);
+    }
 }
 
 /// A Unix socket that stands for a session's inbox: every line it gets.

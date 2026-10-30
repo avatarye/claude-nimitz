@@ -274,6 +274,22 @@ impl Sb {
 }
 
 /// The leads in their tabs, as a first restore leaves them, seen by Herdr.
+/// The machine names no provider and runs no Bedrock member (#12): an
+/// attach may wake a parked job there. (The sandbox's machine names Bedrock,
+/// where a wake goes through `start`: here its fake answers and records
+/// firstParty instead, and its Bedrock records go.)
+fn optional(sb: &Sb) {
+    let label = std::fs::read_to_string(std::path::Path::new(&sb.vars["NIMITZ_HOME"]).join("machines.toml")).unwrap();
+    let label = label.lines().find_map(|l| l.strip_prefix("[machines.").and_then(|x| x.strip_suffix(']'))).unwrap().trim_matches('"').to_string();
+    sb.ok(&["machine", "set", &label, "--provider", "", "--yes"]);
+    let _ = std::fs::remove_dir_all(std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider"));
+    let world = sb.base.join("world.json");
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    w["auth_status"] = Value::from("firstParty");
+    w["hook_env"] = serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"});
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+}
+
 fn lay(sb: &Sb) {
     sb.ok(&["muster", "MAIN/...", "--yes"]);
     sb.attach_all();
@@ -330,6 +346,7 @@ impl OutExt for String {
 #[test]
 fn r02_r23_lead_detached_then_retired_wakes_by_attach_and_is_repinned() {
     let sb = Sb::new(true);
+    optional(&sb);
     lay(&sb);
     let pane = sb.pane_attaching("MAIN/ARGOS");
     let job = sb.short("MAIN/ARGOS");
@@ -349,6 +366,24 @@ fn r02_r23_lead_detached_then_retired_wakes_by_attach_and_is_repinned() {
     assert!(sb.pins().contains(&job), "re-pinned: {:?}", sb.pins());
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1, "no second tab");
     assert_eq!(sb.runs().iter().filter(|(p, _)| p == &pane).count(), 2, "the attach typed once more into that pane");
+}
+
+/// #12: where the machine names a provider, the same parked lead with a
+/// shell tab is woken by `start`'s gated wake (its record checked), then
+/// attached; the attach itself never wakes it.
+#[test]
+fn r02_gated_a_parked_lead_wakes_through_start_then_attaches() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    sb.shell(&pane);
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    let r = sb.run(&["muster", "MAIN/...", "--plan"]);
+    assert!(r.code == 0 && r.out.contains("--bg --resume") && !r.out.contains("the attach wakes the parked job"), "a gated wake, then the attach:\n{}", r.out);
+    let r = sb.ok(&["muster", "MAIN/...", "--yes"]);
+    assert!(sb.live("MAIN/ARGOS") && sb.short("MAIN/ARGOS") == job, "woken, the same job:\n{r}");
+    assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1, "its tab, attached again");
 }
 
 #[test]
@@ -641,6 +676,7 @@ fn r08_with_resume_agents_on_restore_herdr_holds_every_lead_and_nothing_is_woken
     // runs `claude --resume <sid>` in each lead's pane; a stopped or parked
     // job's conversation then runs interactively, with no job (finding 10)
     let sb = Sb::new(true);
+    optional(&sb);
     lay(&sb);
     stop_mislabel(&sb);
     let sids: Vec<(String, String)> = ["MAIN", "MAIN/ARGOS", "MAIN/BOREAL"].iter().map(|id| (id.to_string(), sb.sid(id))).collect();
@@ -1289,6 +1325,7 @@ fn r21_config_changed_on_another_machine_no_cold_launch_and_conflicts_reported()
 #[test]
 fn r22_the_daemon_died_leads_wake_by_attach_and_active_ships_resume() {
     let sb = Sb::new(true);
+    optional(&sb);
     lay(&sb);
     stop_mislabel(&sb);
     sb.ok(&["status"]);
@@ -1545,6 +1582,7 @@ fn r32_a_session_id_moved_under_the_job_still_matches_the_tab() {
 #[test]
 fn r_layout_is_the_shape_only_alias() {
     let sb = Sb::new(true);
+    optional(&sb);
     let r = sb.ok(&["layout", "MAIN/...", "--yes"]);
     assert!(r.contains("layout MAIN/..."), "{r}");
     assert_eq!(sb.tabs("MAIN.ADMIRAL").len(), 1);

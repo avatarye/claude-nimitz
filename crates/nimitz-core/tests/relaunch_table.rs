@@ -2228,7 +2228,14 @@ fn an_attach_never_wakes_a_job_the_start_would_relabel() {
     assert_eq!(e.fix.as_deref(), Some(format!("nimitz start {id}  # relabels it, then nimitz open {id}").as_str()));
     let bare = w.member(&w.snap(), &w.ship("BARE"));
     assert_eq!(nimitz_core::layout::attach_tab(&w.env, &bare).unwrap_err().code, "labels.missing");
+    // this world's machine names its provider (#12): an attach never wakes
+    // there; `nimitz start` (the wake gate) first
     let parked = w.member(&w.snap(), &w.ship("STOPPED"));
+    let e = nimitz_core::layout::attach_tab(&w.env, &parked).unwrap_err();
+    assert!(e.code == "provider.wake" && e.fix.as_deref().unwrap().contains(&format!("nimitz start {}", w.ship("STOPPED"))), "{e:?}");
+    // an optional machine: a clean stopped job attaches (and wakes)
+    let label = nimitz_core::provider::this_machine(&w.env).unwrap();
+    nimitz_core::config::apply_config_plan(&w.env, &nimitz_core::provider::plan_machine_set(&w.env, &label, None, Some("")));
     let t = nimitz_core::layout::attach_tab(&w.env, &parked).expect("a clean stopped job attaches");
     assert!(t.wakes);
 }
@@ -2256,3 +2263,63 @@ fn the_wake_pollers_return_at_once_when_there_is_nothing_to_wait_for() {
     assert!(t.elapsed().as_secs_f64() >= 0.5, "a running job is waited for, up to the limit");
 }
 
+
+impl World {
+    /// A knob of the fake's world.json (read afresh): set, or removed with None.
+    fn knob(&self, k: &str, v: Option<serde_json::Value>) {
+        let p = self.base.join("world.json");
+        let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        match v {
+            Some(v) => w[k] = v,
+            None => {
+                w.as_object_mut().unwrap().remove(k);
+            }
+        }
+        std::fs::write(&p, serde_json::to_vec(&w).unwrap()).unwrap();
+    }
+}
+
+/// #12 round 2: on a machine that names a provider (this world: Bedrock), a
+/// job the daemon restarts inside the crash window woke unchecked: its record
+/// of that start is checked, and on a mismatch it is stopped (its row kept).
+#[test]
+fn a_daemon_restarted_job_on_the_wrong_provider_is_stopped() {
+    let w = world();
+    let id = w.ship("CLEAN");
+    let short = w.member(&w.snap(), &id).session.unwrap().short_id.unwrap();
+    assert_eq!(w.fake(&["__crash", &short]).0, 0);
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    // the worker the daemon brings back runs with Bedrock off (managed settings, say)
+    w.knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    let env = Env { crash_window_s: 2.0, ..w.env.clone() };
+    let bin = w.env.native_claude_bin.clone();
+    let s2 = short.clone();
+    let daemon = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        claude::run(&[bin, "respawn".into(), s2], None)
+    });
+    let out = sessions::apply(&env, &plan);
+    daemon.join().unwrap();
+    assert!(out.issues.iter().any(|i| i.code == "provider.mismatch" && i.message.contains("row and conversation are kept")), "{:?}", out.issues);
+    let after = w.member(&w.snap(), &id);
+    assert!(after.session.as_ref().is_some_and(|s| s.pid.is_none() && s.short_id.as_deref() == Some(short.as_str())), "stopped, its row kept: {:?}", after.session);
+}
+
+/// #12 round 2: a wake that started but did not bind (its SessionStart came
+/// unlabelled) is stopped on the way out where the machine checks providers.
+#[test]
+fn a_wake_that_does_not_bind_is_stopped() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok() && plan.steps.iter().any(|s| s.cmd.contains(&"--resume".to_string())), "{plan:?}");
+    w.knob("hook_env", Some(serde_json::json!({"NIMITZ_ID": ""})));
+    let out = sessions::apply(&w.env, &plan);
+    w.knob("hook_env", None);
+    assert!(!out.verified, "{:?}", out.issues);
+    assert!(out.ran.iter().any(|(s, _, _)| s.cmd.iter().any(|a| a == "stop") && s.why.contains("unconfirmed")), "{:?}", out.ran);
+    let after = w.member(&w.snap(), &id);
+    assert!(after.session.as_ref().is_some_and(|s| s.pid.is_none()), "not left running: {:?}", after.session);
+}

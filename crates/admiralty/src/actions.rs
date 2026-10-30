@@ -527,7 +527,13 @@ fn run_restore(env: &Env, command: &str) -> Outcome {
 pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<TabState, nimitz_core::Issue> {
     if let Target::Member(id) = target {
         let m = find_member(snap, id).ok_or_else(|| refusal_issue(id, "not in the snapshot".into()))?;
-        nimitz_core::layout::attach_tab(&ctx.env, m)?;
+        match nimitz_core::layout::attach_tab(&ctx.env, m) {
+            // a down member on a machine that checks providers: `nimitz open`
+            // wakes it through the gated start first (#12)
+            Err(i) if i.code == "provider.wake" => return Ok(TabState::Missing),
+            Err(i) => return Err(i),
+            Ok(_) => {}
+        }
     }
     let Ok(p) = plan_open(ctx, snap, target) else { return Ok(TabState::Missing) };
     let Some((step, place)) = p.panes.first() else { return Ok(TabState::Missing) };

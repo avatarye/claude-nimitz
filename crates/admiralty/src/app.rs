@@ -1619,6 +1619,14 @@ impl App {
         // what was sent, refused or failed stays in the action log (#13),
         // after the notification line has moved on
         let sent = format!("{} via {}: {}", plan.to, plan.via, nimitz_mux::sanitize_text(text));
+        // where the machine checks providers: only to a member whose current
+        // session is on record on it (#12)
+        let live = self.bundle.as_ref().and_then(|b| actions::find_member(&b.snap, &plan.id)).and_then(|m| m.session.clone());
+        if let Err(i) = nimitz_core::provider::delivery_gate(&self.ctx.env, &plan.id, live.as_ref()) {
+            actions::log(&self.ctx.env, "message refused", &format!("{sent} ({}: {})", i.code, i.message));
+            self.notify(format!("Not sent to {}: {} ({}); nothing was typed", plan.via, i.message, i.code), st(mono::ERROR));
+            return;
+        }
         if let Some(job) = &plan.attach_job {
             let check = nimitz_mux::attach_check(self.ctx.mux.as_ref(), &plan.pane, job);
             if check != nimitz_mux::AttachCheck::Exact {

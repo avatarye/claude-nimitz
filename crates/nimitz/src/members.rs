@@ -469,12 +469,18 @@ pub fn sweep(ctx: &Ctx) -> Result<i32, String> {
     };
     let rc = run::session_plan(ctx, ses::plan_sweep(&ctx.env, &snap, ids.as_deref(), &ctx.caller));
     // the provider records of unlabelled sessions no row has any more (#12)
+    // (rows that cannot be read: nothing is dropped)
     if !ctx.plan_only() {
-        let rows = nimitz_core::evidence::rows_from_files(&ctx.env, &mut Default::default()).unwrap_or_default();
-        let still: std::collections::HashSet<String> = rows.iter().flat_map(|r| r.session_ids().map(str::to_string).collect::<Vec<_>>()).collect();
-        let n = nimitz_core::provider::prune_sessions(&ctx.env, &still);
-        if n > 0 {
-            out::line(&format!("[OK] dropped {n} provider record(s) of sessions that are gone"));
+        let readable = ["sessions", "jobs"].iter().all(|d| std::fs::read_dir(ctx.env.claude_home.join(d)).is_ok());
+        match nimitz_core::evidence::rows_from_files(&ctx.env, &mut Default::default()).filter(|_| readable).ok_or("not there, or not readable") {
+            Ok(rows) => {
+                let still: std::collections::HashSet<String> = rows.iter().flat_map(|r| r.session_ids().map(str::to_string).collect::<Vec<_>>()).collect();
+                let n = nimitz_core::provider::prune_sessions(&ctx.env, &still);
+                if n > 0 {
+                    out::line(&format!("[OK] dropped {n} provider record(s) of sessions that are gone"));
+                }
+            }
+            Err(e) => out::warn(&format!("provider records kept: the session rows cannot be read ({e})")),
         }
     }
     Ok(rc)
@@ -662,6 +668,24 @@ fn signal_session(ctx: &Ctx, q: &str, sender: &Sender) -> Result<i32, String> {
         }
     };
     let label = peer.label();
+    // a member's session goes the member's way (its checks: the provider's
+    // delivery gate, #12), never around it
+    let snap = ctx.snap();
+    // (its row, a copy row of it, or the registry's lineage of the member)
+    let reg = nimitz_core::registry::load(&ctx.env);
+    let owner = snap
+        .fleets
+        .iter()
+        .flat_map(|f| f.members())
+        .find(|m| {
+            m.session.iter().chain(m.extra_rows.iter()).any(|r| r.session_id == peer.session_id)
+                || reg.identities.get(&m.id.0).is_some_and(|r| r.session.as_deref() == Some(peer.session_id.as_str()) || r.lineage.iter().any(|l| l.session_id == peer.session_id))
+        })
+        .map(|m| m.id.clone());
+    if let Some(id) = owner {
+        plan.refusals.push(refusal("signal.member", format!("session:{q} ({label}) is {id}'s session; a member is signalled by its path"), Some(format!("nimitz signal {id} <text>")), Some(id)));
+        return Ok(finish_plan(ctx, &plan));
+    }
     if nimitz_core::peers::cc_caller(&ctx.env, &ctx.vars).is_some_and(|c| c.verified && c.session_id == peer.session_id) {
         plan.refusals.push(refusal("signal.self", format!("session:{q} is this session ({label}): a signal to yourself starts no one's turn"), None, None));
         return Ok(finish_plan(ctx, &plan));

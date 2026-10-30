@@ -1071,7 +1071,9 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 // (an attach wakes natively, on the row's conversation: after a
                 // /branch or /resume the registry's later conversation needs the
                 // wake-with-every-flag first, finding 11)
-                TabMatch::Shell { pane, rename, .. } if wants_tab && !needs_relabel && !crate::sessions::wake_target(env, id, s).relabel => match crate::layout::attach_tab(env, m) {
+                // (where the machine checks providers, an attach never wakes:
+                // the wake below goes through the gated start, then the tab)
+                TabMatch::Shell { pane, rename, .. } if wants_tab && !needs_relabel && !crate::sessions::wake_target(env, id, s).relabel && !crate::provider::gated(env) => match crate::layout::attach_tab(env, m) {
                     Ok(tab) => {
                         count(rep, lead);
                         found(rp, id, format!("{down}; its tab is a shell"), format!("wake: attach in pane {} (the attach resumes it by its id)", pane.pane_id));
