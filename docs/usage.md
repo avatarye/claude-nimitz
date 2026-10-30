@@ -112,7 +112,7 @@ hands the outcome to the member's next session start.
 `nimitz machine set <label> --provider anthropic|bedrock|vertex` names the API
 provider every member on that machine must run on, and `--claude-bin PATH` the
 claude a cold launch runs (`NIMITZ_CLAUDE_BIN` still wins; `''` clears either).
-The settings live in the shared `machines.toml`; a nimitz older than 0.7.15
+The settings live in the shared `machines.toml`; a nimitz older than 0.7.16
 ignores that file, so update every machine before relying on it. A label
 nimitz does not know is set with a warning (a machine set up ahead of time).
 A machine with no provider named is optional: none of the checks below apply
@@ -134,7 +134,7 @@ What is checked, on a machine that names a provider:
   give that differs stops and removes the job. A model that disagrees (a
   custom `ANTHROPIC_MODEL`, an alias) only warns (`provider.model`).
 - **Wakes.** A job whose saved flags do not select the provider (from before
-  0.7.15, or before `machine set`) is relaunched instead, through the checks
+  0.7.16, or before `machine set`) is relaunched instead, through the checks
   above. Any other wake (`start`, `restart`, `muster`, `open`, a restore, a
   job the daemon restarted) is checked against the record of that start
   within 10 s; none, or the wrong one, stops the job (its row and

@@ -31,8 +31,8 @@ its fixture, or when a type's shape moves without a version.
 | `needs` | `S/needs/*.json` | local | manifest | 1 | 2 (`item`, dead-letter keys) |
 | `own-pins` | `S/pins.json` | local | manifest | 1 | 1 |
 | `admiralty-ui` | `S/admiralty-ui.json` | local | `format` key (absent = 1) | 1 | 1; 0.7.15: 2 (the finder's optional toggles; the step stamps `format`) |
-| `machines` | `H/machines.toml` | shared | `format` key (absent = 1) | (none) | (0.7.15: born at 1; each machine's `claude_bin` and `provider`, #12) |
-| `provider-records` | `S/provider/sessions/*.json` | local | manifest | (none) | (0.7.15: born at 1; each session's provider view at SessionStart, a member's or not, #12) |
+| `machines` | `H/machines.toml` | shared | `format` key (absent = 1) | (none) | (0.7.16: born at 1; each machine's `claude_bin` and `provider`, #12) |
+| `provider-records` | `S/provider/sessions/*.json` | local | manifest | (none) | (0.7.16: born at 1; each session's provider view at SessionStart, a member's or not, #12) |
 | CC-owned | `~/.claude.json` trust, `C/jobs/pins.json`, settings | Claude Code's | pinned formats (doctor) | n/a | n/a |
 
 The **manifest** is `S/formats.json`: `{nimitz: "<version that last ran

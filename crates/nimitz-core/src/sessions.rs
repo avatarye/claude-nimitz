@@ -759,7 +759,7 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
     // folder (row 4). A resume restores the saved name too, so a drifted name
     // goes the relaunch way instead (row 5).
     // a job whose saved flags do not select the machine's provider (from
-    // before 0.7.15, or before `machine set`) is relaunched with every flag
+    // before 0.7.16, or before `machine set`) is relaunched with every flag
     // instead: through the preflight, with the selector forced (#12)
     let saved_ok = p.short_id.as_deref().is_none_or(|j| crate::provider::wake_as_saved(env, j));
     if !saved_ok {

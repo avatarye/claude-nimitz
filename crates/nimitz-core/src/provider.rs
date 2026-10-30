@@ -89,7 +89,7 @@ pub struct MachineSettings {
 
 /// `H/machines.toml`: each machine's own settings, by label (shared: a lead
 /// may set another machine's; only that machine uses them). A nimitz older
-/// than 0.7.15 does not read it.
+/// than 0.7.16 does not read it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Machines {
@@ -430,7 +430,7 @@ fn forced_for(provider: &str) -> Option<(&'static str, &'static str)> {
 /// May a stopped job be woken as it is (its saved flags), on this machine?
 /// Where a provider is named, the provider its saved `--settings` env
 /// selects (every `--settings` merged in order, the later winning) must be
-/// that one; else (a job from before 0.7.15, or from before `machine set`)
+/// that one; else (a job from before 0.7.16, or from before `machine set`)
 /// it is relaunched instead, through the preflight and with the selector
 /// forced. Optional machines: yes.
 pub fn wake_as_saved(env: &Env, job: &str) -> bool {
@@ -615,7 +615,7 @@ pub fn check_adopt(env: &Env, id: &Id, sid: &str) -> Result<Option<Issue>, Issue
         (Some(w), None) => Ok(Some(Issue {
             code: "provider.unrecorded".into(),
             severity: Severity::Warn,
-            message: format!("session {sid} has no provider record (its SessionStart ran before nimitz 0.7.15, or without nimitz's hooks), so it is not shown to run on {w}: {id} is unverified until its next restart, and nimitz delivers nothing to it until then"),
+            message: format!("session {sid} has no provider record (its SessionStart ran before nimitz 0.7.16, or without nimitz's hooks), so it is not shown to run on {w}: {id} is unverified until its next restart, and nimitz delivers nothing to it until then"),
             fix: Some(format!("nimitz restart {id}  # when it suits: relaunched with every flag, checked first, same conversation")),
             id: Some(id.clone()),
         })),
@@ -963,7 +963,7 @@ mod tests {
             std::fs::write(d.join("state.json"), json!({"respawnFlags": flags}).to_string()).unwrap();
         };
         job(json!(["--settings", r#"{"env":{"NIMITZ_ID":"A/S/T"}}"#]));
-        assert!(!wake_as_saved(&env, "j1"), "a pre-0.7.15 job: relaunched instead");
+        assert!(!wake_as_saved(&env, "j1"), "a pre-0.7.16 job: relaunched instead");
         job(json!(["--settings", r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#, "--settings", r#"{"env":{"NIMITZ_ID":"A/S/T","CLAUDE_CODE_USE_BEDROCK":"1"}}"#]));
         assert!(wake_as_saved(&env, "j1"));
         job(json!(["--settings", r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#, "--settings", r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"0"}}"#]));
