@@ -463,3 +463,28 @@ fn the_help_lists_the_toggle_keys() {
     let help = admiralty::app::HELP;
     assert!(help.iter().any(|(_, d)| ["ctrl-a", "ctrl-t", "ctrl-s", "ctrl-f", "ctrl-l"].iter().all(|k| d.contains(k))), "{help:?}");
 }
+
+/// Review of #14: `this fleet` filters (and says so) only while a fleet's tab
+/// is shown; the empty list hints at ctrl-a only when a row without a pane
+/// would match.
+#[test]
+fn this_fleet_needs_a_fleet_tab_and_the_hint_needs_a_hidden_match() {
+    let b = world();
+    let only = Toggles { this_fleet: true, ..Toggles::all() };
+    for tab in [None, Some(admiralty::view::UNASSIGNED)] {
+        let f = Finder::with(&b.snap, &b.panes, tab, only);
+        assert!(f.fleet_only().is_none() && f.hidden.other_fleets == 0 && f.hits.len() == f.cands.len(), "{tab:?}");
+        assert!(!f.toggles.words(f.fleet_only()).contains("only]"), "{tab:?}: {}", f.toggles.words(f.fleet_only()));
+    }
+    let f = Finder::with(&b.snap, &b.panes, Some("MAIN"), only);
+    assert_eq!(f.toggles.words(f.fleet_only()), "[any pane] [topic] [MAIN only]");
+    let mut t = fixture_app(world(), false);
+    open_as_is(&mut t.app);
+    keys(&mut t.app, "bolt");
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.contains("nothing matches (ctrl-a: rows without a pane too)"), "BOLT has no pane:\n{s}");
+    ctrl(&mut t.app, 'u');
+    keys(&mut t.app, "zzzz");
+    let s = screen(&mut t.app, 200, 60);
+    assert!(s.contains("nothing matches") && !s.contains("ctrl-a: rows without"), "nothing would match:\n{s}");
+}

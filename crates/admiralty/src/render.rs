@@ -744,7 +744,7 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
         // what the toggles hide is never silent, nor what they are
         Line::from(vec![
             Span::styled(format!("{} / {}{}", fd.hits.len(), fd.cands.len(), fd.hidden.text()), st(mono::COMMENT)),
-            Span::styled(format!("  {}", fd.toggles.words(fd.tab.as_deref())), st(mono::SOFT)),
+            Span::styled(format!("  {}", fd.toggles.words(fd.fleet_only())), st(mono::SOFT)),
         ]),
     ];
     let room = (r.height as usize).saturating_sub(2 + lines.len() + 2);
@@ -769,7 +769,8 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
         lines.push(selectable(Line::from(crate::frames::truncate_spans(spans, inner_w)), i == fd.sel));
     }
     if fd.hits.is_empty() {
-        let why = if fd.hidden.no_pane > 0 { "  nothing matches (ctrl-a: rows without a pane too)" } else { "  nothing matches" };
+        // the hint only when a row without a pane would match
+        let why = if fd.hidden.no_pane_matching > 0 { "  nothing matches (ctrl-a: rows without a pane too)" } else { "  nothing matches" };
         lines.push(Line::styled(why, st(mono::SOFT)));
     }
     // the keys lines at the bottom (inside the border: two lines fewer)

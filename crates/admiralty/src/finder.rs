@@ -86,14 +86,15 @@ impl Toggles {
         true
     }
 
-    /// The header's state words: `[pane] [no topic]`, and each other toggle that is on.
+    /// The header's state words: `[pane] [no topic]`, and each other toggle
+    /// that is on (`[MAIN only]` while it keeps a fleet's tab: `tab`).
     pub fn words(&self, tab: Option<&str>) -> String {
         let mut w = vec![if self.pane_only { "[pane]" } else { "[any pane]" }.to_string(), if self.topic { "[topic]" } else { "[no topic]" }.to_string()];
         if self.no_stowaways {
             w.push("[no stowaways]".into());
         }
-        if self.this_fleet {
-            w.push(format!("[{} only]", tab.unwrap_or("this fleet")));
+        if let Some(tab) = tab.filter(|_| self.this_fleet) {
+            w.push(format!("[{tab} only]"));
         }
         if self.ships_only {
             w.push("[ships only]".into());
@@ -245,6 +246,8 @@ pub struct Hidden {
     pub leads: usize,
     pub stowaways: usize,
     pub no_pane: usize,
+    /// of `no_pane`, those the query matches (ctrl-a would show them)
+    pub no_pane_matching: usize,
 }
 
 impl Hidden {
@@ -317,7 +320,8 @@ impl Finder {
         let (t, mut hidden) = (self.toggles, Hidden::default());
         'cand: for (i, c) in self.cands.iter().enumerate() {
             // the toggles first, each hidden row counted once
-            let count = if t.this_fleet && self.tab.as_deref().is_some_and(|tab| tab != c.tab) {
+            let fleet = self.fleet_only();
+            let count = if fleet.is_some_and(|tab| tab != c.tab) {
                 Some(&mut hidden.other_fleets)
             } else if t.ships_only && !c.ship && !c.stowaway {
                 Some(&mut hidden.leads)
@@ -328,8 +332,16 @@ impl Finder {
             } else {
                 None
             };
+            let no_pane = count.is_some() && t.pane_only && !c.has_pane && !(t.ships_only && !c.ship && !c.stowaway) && !(t.no_stowaways && c.stowaway) && fleet.is_none_or(|tab| tab == c.tab);
             if let Some(n) = count {
                 *n += 1;
+                // would the query match it with a pane? (the empty list's hint)
+                if no_pane && !self.query.trim().is_empty() {
+                    let text = c.matched(t.topic);
+                    if terms.iter().all(|(_, atom)| atom.score(Utf32Str::new(text, &mut buf), &mut self.matcher).is_some()) {
+                        hidden.no_pane_matching += 1;
+                    }
+                }
                 continue;
             }
             let (mut score, mut idx) = (0u32, vec![]);
@@ -361,6 +373,12 @@ impl Finder {
         self.hits = hits;
         self.hidden = hidden;
         self.sel = 0;
+    }
+
+    /// The fleet tab `this_fleet` keeps: only when a fleet's tab is shown
+    /// (not every fleet, not the unassigned stowaways).
+    pub fn fleet_only(&self) -> Option<&str> {
+        self.tab.as_deref().filter(|t| self.toggles.this_fleet && *t != crate::view::UNASSIGNED)
     }
 
     pub fn selected(&self) -> Option<&Cand> {
