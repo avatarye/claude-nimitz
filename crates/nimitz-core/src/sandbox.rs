@@ -339,11 +339,15 @@ impl World {
             let job = (kind == "background").then(|| short.as_str());
             self.event("SessionStart", &sid, Some("startup"), &l, started, fake_pid(&short), job, kind);
         }
-        // an unlabelled session ran nimitz's hook too (the plugin's): its
-        // provider record, Bedrock as everything in this world (#12)
-        if o.labels.is_none() && o.labels_of.is_none() && o.labels_raw.is_none() {
-            let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
-            crate::provider::record_session(&env(&self.base), &sid, &json!({"model": "us.anthropic.claude-opus-5-5"}), &bedrock);
+        // its SessionStart ran nimitz's hook (the plugin's): the provider
+        // record, Bedrock as everything in this world (#12); a member's under
+        // its id, an unlabelled session's under its session id
+        let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
+        let model = json!({"model": "us.anthropic.claude-opus-5-5"});
+        match o.labels {
+            Some(id) => crate::provider::record(&env(&self.base), id, &sid, &model, &bedrock),
+            None if o.labels_of.is_none() && o.labels_raw.is_none() => crate::provider::record_session(&env(&self.base), &sid, &model, &bedrock),
+            None => {}
         }
         // every session that ran has a transcript in its folder's project dir
         let proj = claude_home(&self.base).join("projects").join(crate::evidence::project_dir_name(cwd));

@@ -589,6 +589,55 @@ pub fn check_adopt(env: &Env, id: &Id, sid: &str) -> Result<Option<Issue>, Issue
     }
 }
 
+/// May nimitz deliver to member `id` (a notice, a signal: its inbox or its
+/// pane) while it runs `live`? Where a provider is named, only once the
+/// SessionStart record of that session (since its process started) shows
+/// that provider: a woken job is not reached before its gate has passed
+/// (#12). Optional machines: yes.
+pub fn delivery_gate(env: &Env, id: &Id, live: Option<&SessionInfo>) -> Result<(), Issue> {
+    let want = match expected(env) {
+        Ok(Some(w)) => w,
+        Ok(None) => return Ok(()),
+        Err(e) => return Err(unreadable(Some(id), &e)),
+    };
+    let Some(s) = live else { return Ok(()) };
+    // (a session file's start is in ms precision; the hook's record later)
+    let since = s.started_at.unwrap_or(0.0) - 1.0;
+    // (a member's session that runs unlabelled, adopted say: its session's record)
+    let rec = record_of(env, id).filter(|r| r.session_id == s.session_id && r.at >= since).or_else(|| session_record(env, &s.session_id).filter(|r| r.at >= since));
+    match rec {
+        Some(r) if api_of(&want) == Some(r.provider.as_str()) => Ok(()),
+        Some(r) => Err(Issue {
+            code: "provider.mismatch".into(),
+            severity: Severity::Error,
+            message: format!("{id} runs on {} but this machine expects {want}: nothing is delivered to it", name_of(&r.provider)),
+            fix: Some(format!("nimitz stop {id}; then nimitz start {id}  # checked first")),
+            id: Some(id.clone()),
+        }),
+        None => Err(Issue {
+            code: "provider.unrecorded".into(),
+            severity: Severity::Error,
+            message: format!("{id}'s session {} has no provider record since it started, so it is not shown to run on {want}: nothing is delivered to it yet", s.session_id),
+            fix: Some(format!("in a moment (its SessionStart may still run); else nimitz doctor, then nimitz restart {id}")),
+            id: Some(id.clone()),
+        }),
+    }
+}
+
+/// Drop the records of unlabelled sessions that no row has any more (`sweep`):
+/// the session ids given are the ones still there. The count dropped.
+pub fn prune_sessions(env: &Env, still: &std::collections::HashSet<String>) -> usize {
+    let Ok(rd) = std::fs::read_dir(records_dir(env).join("sessions")) else { return 0 };
+    let mut n = 0;
+    for e in rd.flatten() {
+        let Some(r) = serde_json::from_slice::<Record>(&std::fs::read(e.path()).unwrap_or_default()).ok() else { continue };
+        if !still.contains(&r.session_id) && std::fs::remove_file(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 // ------------------------------------------------------------------ check
 
 /// `check`/`status`: each live member of this machine (its id, the session

@@ -467,7 +467,17 @@ pub fn sweep(ctx: &Ctx) -> Result<i32, String> {
             Err(i) => return Ok(finish_plan(ctx, &Plan { summary: format!("sweep {}", ctx.args.pos.join(" ")), refusals: vec![i], ..Default::default() })),
         }
     };
-    Ok(run::session_plan(ctx, ses::plan_sweep(&ctx.env, &snap, ids.as_deref(), &ctx.caller)))
+    let rc = run::session_plan(ctx, ses::plan_sweep(&ctx.env, &snap, ids.as_deref(), &ctx.caller));
+    // the provider records of unlabelled sessions no row has any more (#12)
+    if !ctx.plan_only() {
+        let rows = nimitz_core::evidence::rows_from_files(&ctx.env, &mut Default::default()).unwrap_or_default();
+        let still: std::collections::HashSet<String> = rows.iter().flat_map(|r| r.session_ids().map(str::to_string).collect::<Vec<_>>()).collect();
+        let n = nimitz_core::provider::prune_sessions(&ctx.env, &still);
+        if n > 0 {
+            out::line(&format!("[OK] dropped {n} provider record(s) of sessions that are gone"));
+        }
+    }
+    Ok(rc)
 }
 
 /// `nimitz adopt <session> <path>`: make a stowaway a member's session.
@@ -705,6 +715,12 @@ struct Delivery<'a> {
 
 /// One member's delivery and its steps in `plan`, or its refusal there.
 fn prepare<'a>(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, via: &'a Member, body: String, text: &str, voice: bool, plan: &mut Plan) -> Option<Delivery<'a>> {
+    // where the machine names a provider: only to a member whose current
+    // session is on record on it (a woken job is not reached before its gate, #12)
+    if let Err(i) = nimitz_core::provider::delivery_gate(&ctx.env, &via.id, via.session.as_ref()) {
+        plan.refusals.push(i);
+        return None;
+    }
     let why = "type into its attached tab".to_string();
     // a signal not in the user's voice (a member's, a Claude Code session's,
     // a `--from`) goes to the inbox unless it asks to type (`--type`);

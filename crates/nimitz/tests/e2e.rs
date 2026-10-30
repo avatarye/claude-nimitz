@@ -2461,7 +2461,9 @@ fn e2e_102_a_bedrock_local_settings_ship_is_refused_before_its_launch() {
     w.fleet_with_ship(OK_PROMPT, "default");
     let label = nimitz_core::provider::this_machine(&w.env).unwrap();
     w.ok(&["machine", "set", &label, "--provider", "anthropic", "--yes"]);
-    let lead = nimitz_core::provider::record_of(&w.env, &nimitz_core::Id(w.fleet.clone())).expect("the admiral's SessionStart record");
+    // the hand-launched admiral is live (its session file) a moment before its
+    // SessionStart hook has run and written the record: wait for it
+    let lead = w.wait(30, || nimitz_core::provider::record_of(&w.env, &nimitz_core::Id(w.fleet.clone()))).expect("the admiral's SessionStart record");
     assert_eq!(lead.provider, "firstParty", "{lead:?}");
     write(
         &w.ship_dir().join(".claude").join("settings.local.json"),

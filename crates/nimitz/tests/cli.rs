@@ -882,6 +882,31 @@ fn wakes_unreadable_settings_doctor_and_labels_under_the_provider_rule() {
     assert!(top["session"]["pid"].is_null() && top["session"]["short_id"].as_str() == Some(job.as_str()), "stopped, row kept: {top}");
     knob("hook_env", None);
     assert_eq!(sb.run(&["start", "TOP", "--yes"]).code, 0, "a matching wake");
+    // nimitz's own delivery (a signal, a notice) reaches a member only once
+    // its current session is on record on the machine's provider
+    // (the sandbox's Claude Code predates the inbox: the gate itself passes)
+    let r = sb.run(&["signal", "TOP", "hi", "--inbox", "--plan"]);
+    assert!(!r.out.contains("provider."), "{}", r.out);
+    let rec = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider/TOP.json");
+    let good = std::fs::read_to_string(&rec).unwrap();
+    let mut other: Value = serde_json::from_str(&good).unwrap();
+    other["provider"] = Value::from("firstParty");
+    std::fs::write(&rec, other.to_string()).unwrap();
+    let r = sb.run(&["signal", "TOP", "hi", "--inbox", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("nothing is delivered"), "{}", r.out);
+    std::fs::remove_file(&rec).unwrap();
+    let r = sb.run(&["signal", "TOP", "hi", "--inbox", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("provider.unrecorded"), "{}", r.out);
+    std::fs::write(&rec, &good).unwrap();
+    // sweep drops the records of unlabelled sessions that are gone
+    let sessions = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider/sessions");
+    std::fs::write(sessions.join("gone-0000.json"), serde_json::json!({"id": "", "session_id": "gone-0000", "at": 1.0, "provider": "bedrock"}).to_string()).unwrap();
+    let stow = sb.run(&["status", "--json"]).out;
+    let r = sb.run(&["sweep", "--yes"]);
+    assert!(r.out.contains("provider record(s) of sessions that are gone") && !sessions.join("gone-0000.json").exists(), "{}", r.out);
+    // a live stowaway's record stays
+    let live: Vec<String> = std::fs::read_dir(&sessions).unwrap().flatten().map(|e| e.file_name().to_string_lossy().trim_end_matches(".json").to_string()).collect();
+    assert!(live.iter().any(|sid| stow.contains(sid.as_str())), "{live:?}");
     // doctor through a claude with no Bedrock of its own: the forced selector does it
     let native = sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"].clone();
     let d = raw(&sb.vars, &["doctor"], &[("NIMITZ_CLAUDE_BIN", native.as_str())], None).out;
