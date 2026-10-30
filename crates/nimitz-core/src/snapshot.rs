@@ -625,6 +625,18 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         };
         f.members_mut().for_each(&mut fix);
     }
+    // provider.*: a live member whose worker runs on another provider than
+    // this machine's (or most of its members') (#12)
+    let live: Vec<(Id, String)> =
+        snap.fleets.iter().flat_map(|f| f.members()).filter_map(|m| m.session.as_ref().filter(|s| s.pid.is_some()).map(|s| (m.id.clone(), s.session_id.clone()))).collect();
+    let provider = crate::provider::issues(env, &live);
+    if !provider.is_empty() {
+        for f in &mut snap.fleets {
+            f.members_mut().for_each(|m| m.issues.extend(provider.iter().filter(|i| i.id.as_ref() == Some(&m.id)).cloned()));
+        }
+        // (settings that cannot be read: about the machine, no member)
+        snap.issues.extend(provider.into_iter().filter(|i| i.id.is_none()));
+    }
     snap
 }
 

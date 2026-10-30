@@ -187,7 +187,8 @@ fn drop_other_homes(env: &Env, r: &mut Registry) {
 }
 
 fn fresh(env: &Env) -> Registry {
-    Registry { version: REGISTRY_VERSION, min_nimitz: Some(REGISTRY_MIN_NIMITZ.into()), machine: env.hostname.clone(), ..Default::default() }
+    // the machine label's one rule (`provider::host_label`)
+    Registry { version: REGISTRY_VERSION, min_nimitz: Some(REGISTRY_MIN_NIMITZ.into()), machine: crate::provider::host_label(&env.hostname), ..Default::default() }
 }
 
 /// The registry text is too new for this nimitz (`formats::guard`: a

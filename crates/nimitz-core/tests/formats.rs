@@ -234,6 +234,12 @@ work = "plan"
         ("rules-delivered", "json", "rules::Delivery", json::<std::collections::BTreeMap<String, nimitz_core::rules::Delivery>>(delivered)),
         ("restore", "json", "restore::Progress", json::<nimitz_core::restore::Progress>(progress)),
         ("events", "json", "Event", json::<nimitz_core::Event>(event)),
+        ("machines", "toml", "provider::Machines", toml_of::<nimitz_core::provider::Machines>("min_nimitz = \"0.7.15\"\n[machines.work]\nclaude_bin = \"/opt/claude\"\nprovider = \"bedrock\"\n")),
+        ("provider-records", "json", "provider::Record", {
+            let r: nimitz_core::provider::Record = serde_json::from_value(json!({"id": "MAIN", "session_id": "s1", "at": 1.5, "model": "us.anthropic.claude-opus-5-5",
+                "env": {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_REGION": "us-east-1"}, "provider": "bedrock"})).unwrap();
+            nimitz_core::provider::record_text(&r) + "\n"
+        }),
     ];
     let failures: Vec<String> = shown.iter().filter_map(|(a, ext, ty, text)| pin(&shapes, a, ext, ty, text)).collect();
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));

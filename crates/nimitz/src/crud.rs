@@ -29,14 +29,9 @@ fn split<'a>(id: &'a Id, role: Role, what: &str) -> Result<Vec<&'a str>, String>
 }
 
 /// This machine's label: the registry's, else one made from the hostname.
-pub fn machine_label(ctx: &Ctx) -> String {
-    let r = nimitz_core::registry::load(&ctx.env);
-    if !r.machine.is_empty() {
-        return r.machine;
-    }
-    let l: String =
-        ctx.env.hostname.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect();
-    l.split('.').next().unwrap_or("this-machine").to_string()
+pub fn machine_label(ctx: &Ctx) -> Result<String, String> {
+    // one rule for every reader (`provider::machine_label_at`)
+    nimitz_core::provider::this_machine(&ctx.env)
 }
 
 // ------------------------------------------------------------------ fleet
@@ -50,7 +45,10 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
     let plan = match verb {
         "new" => {
             ctx.args.allow(&["--machine"])?;
-            let label = ctx.args.value("--machine").map(str::to_string).unwrap_or_else(|| machine_label(ctx));
+            let label = match ctx.args.value("--machine") {
+                Some(l) => l.to_string(),
+                None => machine_label(ctx)?,
+            };
             return Ok(config_plan(ctx, config::plan_fleet_new(&ctx.env, fleet, &label)));
         }
         "set" => {
@@ -375,7 +373,14 @@ fn retire(ctx: &Ctx, id: &Id) -> i32 {
 // ------------------------------------------------------------------ machine
 
 pub fn machine(ctx: &Ctx) -> Result<i32, String> {
-    let verb = ctx.args.need(0, "add|rm")?;
+    let verb = ctx.args.need(0, "add|rm|set")?;
+    // `machine set <label>`: one machine's own settings, every fleet's (#12)
+    if verb == "set" {
+        let label = ctx.args.need(1, "machine label")?;
+        ctx.args.at_most(2)?;
+        ctx.args.allow(&["--claude-bin", "--provider"])?;
+        return Ok(config_plan(ctx, nimitz_core::provider::plan_machine_set(&ctx.env, label, ctx.args.value("--claude-bin"), ctx.args.value("--provider"))));
+    }
     let fleet = &crate::members::fleet_name(ctx.args.need(1, "fleet")?, "a machine is one fleet's")?;
     let label = ctx.args.need(2, "machine label")?;
     ctx.args.at_most(3)?;
@@ -393,7 +398,7 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
             ctx.args.allow(&[])?;
             config::plan_machine_rm_live(&ctx.env, &ctx.snap(), fleet, label)
         }
-        v => return Err(format!("machine {v}: use add or rm")),
+        v => return Err(format!("machine {v}: use add, rm or set")),
     };
     Ok(config_plan(ctx, plan))
 }

@@ -189,6 +189,11 @@ pub fn settings_json(env: &Env, id: &Id, background: bool) -> String {
     for k in HERDR_PANE_VARS {
         vars.insert(k.to_string(), String::new());
     }
+    // the machine's provider, forced (#12): over the shell's env and the
+    // folder's settings; the preflight then checks the whole of it
+    if let Some((k, v)) = crate::provider::forced_selector(env) {
+        vars.insert(k.to_string(), v.to_string());
+    }
     let mut own = serde_json::json!({ "env": vars, "permissions": { "allow": [NIMITZ_ALLOW] } });
     if background {
         own["worktree"] = serde_json::json!({ "bgIsolation": "none" });

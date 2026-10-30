@@ -84,6 +84,10 @@ fn deliver(env: &Env, vars: &HashMap<String, String>, n: &Notice, retry: Duratio
     loop {
         let why = match commodore_session(env, &cid) {
             None => format!("{cid} is not running"),
+            // not before its provider is on record (#12): polled again
+            Some(c) if nimitz_core::provider::delivery_gate(env, &cid, Some(&c)).is_err() => {
+                nimitz_core::provider::delivery_gate(env, &cid, Some(&c)).err().map(|i| i.message).unwrap_or_default()
+            }
             Some(c) => match inbox_send(env, &cid, &c, &text) {
                 // its inbox: no pane, no typing
                 Ok(note) => return ("delivered", note),

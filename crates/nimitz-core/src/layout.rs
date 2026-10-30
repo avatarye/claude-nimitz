@@ -107,6 +107,18 @@ pub fn attach_tab(env: &Env, m: &Member) -> Result<TabSpec, Issue> {
             });
         }
     }
+    // an attach wakes the job on its saved flags with no check of its own:
+    // where the machine names a provider (or its settings cannot be read),
+    // a wake goes through `nimitz start` (the wake gate, #12), then the attach
+    if wakes && crate::provider::gated(env) {
+        return Err(Issue {
+            code: "provider.wake".into(),
+            severity: Severity::Warn,
+            message: format!("{id} is down, and this machine checks a member's provider when it wakes: an attach would wake it unchecked"),
+            fix: Some(format!("nimitz start {id}  # wakes it through the checks; then nimitz open {id} (or nimitz open {id}: both)")),
+            id: Some(id.clone()),
+        });
+    }
     Ok(TabSpec {
         label: tab_of(id),
         id: id.clone(),

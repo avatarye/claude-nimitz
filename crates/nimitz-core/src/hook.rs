@@ -148,12 +148,18 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
         if crate::registry::other_home(env, &labels) {
             return (out, notice);
         }
+        // a session that is no member's: its provider view too, for `adopt` (#12)
+        if crate::registry::identity_of(env, &labels).is_none() {
+            crate::provider::record_session(env, &str_at(&input, "session_id").unwrap_or_default(), &input, vars);
+        }
         if let Some(id) = crate::registry::identity_of(env, &labels) {
             let sid = str_at(&input, "session_id").unwrap_or_default();
             // where the member listens: nimitz posts notices and signals there
             if let Some(sock) = vars.get("CLAUDE_CODE_MESSAGING_SOCKET") {
                 crate::inbox::record(env, &sid, pid, sock.strip_prefix("uds:").unwrap_or(sock));
             }
+            // the worker's own view of its provider: its model and selectors (#12)
+            crate::provider::record(env, &id, &sid, &input, vars);
             rules = Some(crate::rules::VERSION);
             crate::rules::record_delivery(env, &crate::rules::delivery_key(env, pid, &sid), &sid, event);
             // (the fleet's harness rules come from their own entry, `harness_rules`)

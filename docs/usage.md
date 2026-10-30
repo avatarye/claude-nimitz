@@ -107,6 +107,71 @@ hands the outcome to the member's next session start.
   (`settings`), and `start -f`, `-p`, `--tab`, `--only`, `--all`,
   `--jobs-only`.
 
+## The provider a machine runs on
+
+`nimitz machine set <label> --provider anthropic|bedrock|vertex` names the API
+provider every member on that machine must run on, and `--claude-bin PATH` the
+claude a cold launch runs (`NIMITZ_CLAUDE_BIN` still wins; `''` clears either).
+The settings live in the shared `machines.toml`; a nimitz older than 0.7.16
+ignores that file, so update every machine before relying on it. A label
+nimitz does not know is set with a warning (a machine set up ahead of time).
+A machine with no provider named is optional: none of the checks below apply
+there, except that it must name one before it runs Bedrock members
+(`provider.unset`), and an unreadable answer before a launch only warns.
+
+What is checked, on a machine that names a provider:
+
+- **Cold launches and relaunches, before they start.** The selector is forced
+  into the member's `--settings` env (`CLAUDE_CODE_USE_BEDROCK=1` /
+  `CLAUDE_CODE_USE_VERTEX=1`; nothing for anthropic), and nimitz asks Claude
+  Code which provider exactly that launch would use (`claude --settings <the
+  launch's> auth status --json`, in the member's folder) for every launch of
+  a plan before its first step. A different answer (`provider.mismatch`) or
+  none (`provider.unconfirmed`) starts nothing. The launch carries the
+  member's first prompt, so this answer is all that is checked before it.
+- **After a cold launch** (a backstop: the first prompt is already sent): the
+  worker's own SessionStart record of that start; a provider its selectors
+  give that differs stops and removes the job. A model that disagrees (a
+  custom `ANTHROPIC_MODEL`, an alias) only warns (`provider.model`).
+- **Wakes.** A job whose saved flags do not select the provider (from before
+  0.7.16, or before `machine set`) is relaunched instead, through the checks
+  above. Any other wake (`start`, `restart`, `muster`, `open`, a restore, a
+  job the daemon restarted) is checked against the record of that start
+  within 10 s; none, or the wrong one, stops the job (its row and
+  conversation stay). An attach never wakes a job here: `open`, Admiralty's
+  `A` and `muster` wake it through `start` first; `layout` leaves a down lead
+  for `nimitz start`.
+- **nimitz's own deliveries** (needs-you notices, `signal`, Admiralty's `m`)
+  reach a member only once the record of its current process shows the
+  provider: a notice keeps retrying, a signal is refused
+  (`provider.unrecorded`, `provider.mismatch`). `signal session:` refuses a
+  member's session and points to `nimitz signal <id>`.
+- **adopt** refuses a stowaway whose record shows another provider; one with
+  no record is bound with a warning: unverified until its next restart, and
+  nothing is delivered to it until then.
+- **Settings or a registry nimitz cannot read** (or a newer nimitz wrote)
+  refuse every launch and wake (`provider.unreadable`).
+- `status` and `check` warn about a live member whose record differs (the
+  fix, `stop` then `start --fresh`, drops its conversation: ask first);
+  `doctor` shows the provider and lists the claude binaries it finds; `sweep`
+  drops the records of sessions that are gone.
+
+What is not checked (the gaps):
+
+- managed settings (`/etc/claude-code`, MDM, remote policy) and the daemon's
+  own env, which can change the provider after the preflight: only the
+  records after the start see them;
+- messages from other Claude Code sessions to a member, and anything Claude
+  Code holds for a job, which nimitz cannot stop;
+- a turn in flight when a job was stopped, which may resume on the wake
+  before the 10 s check (not verified on Claude Code).
+- Herdr's own `resume_agents_on_restore` (on by default): after a Herdr
+  restart it runs `claude --resume` in every agent pane with PATH's claude,
+  none of the member's saved flags and no forced selector. nimitz never edits
+  Herdr's config; on a machine that names a provider `doctor` reports it as
+  an error until you set `resume_agents_on_restore = false` under
+  `[session]` in `~/.config/herdr/config.toml`.
+
 ## Colour
 
 Plans and the usage are coloured on a terminal only. `NO_COLOR` (any value)

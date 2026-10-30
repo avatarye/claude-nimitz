@@ -154,9 +154,16 @@ pub fn cli_command(env: &Env, bin: &str) -> std::process::Command {
     c.env("NIMITZ_HOME", p(&env.home))
         .env("NIMITZ_STATE", p(&env.state))
         .env("NIMITZ_CLAUDE_HOME", p(&env.claude_home))
-        .env("NIMITZ_CLAUDE_BIN", &env.claude_bin)
         .env("NIMITZ_NATIVE_CLAUDE_BIN", &env.native_claude_bin)
         .env("NIMITZ_HOSTNAME", &env.hostname);
+    // the cold-launch claude: an explicit one as given; else the command
+    // reads this machine's `claude_bin` (machines.toml) or PATH itself, now,
+    // not as it was when Admiralty started
+    if env.claude_bin_set {
+        c.env("NIMITZ_CLAUDE_BIN", &env.claude_bin);
+    } else {
+        c.env_remove("NIMITZ_CLAUDE_BIN");
+    }
     match &env.mux {
         Some(m) => c.env("NIMITZ_MUX", m),
         None => c.env_remove("NIMITZ_MUX"),
@@ -255,7 +262,9 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
         (Act::Open, Target::Stowaway(sid)) => match snap.stowaways.iter().find(|s| &s.session_id == sid) {
             Some(s) if s.pid.is_some() && s.short_id.is_some() => Ok(()),
             Some(s) if s.pid.is_some() => Err("a process with no job (interactive or SDK): it lives in the terminal that started it".into()),
-            _ => Err("not running".into()),
+            // never woken by an attach (unchecked, #12): through a member's start
+            Some(s) => Err(format!("not running; a stowaway is not woken here. Fix: adopt it (nimitz adopt {} <id>), then nimitz start <id>", s.short_id.as_deref().unwrap_or(&s.session_id))),
+            None => Err("not running".into()),
         },
         (Act::Open, _) => Err("open names a running session".into()),
         (Act::Stop, Target::Member(id)) => {
@@ -520,7 +529,13 @@ fn run_restore(env: &Env, command: &str) -> Outcome {
 pub fn existing_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<TabState, nimitz_core::Issue> {
     if let Target::Member(id) = target {
         let m = find_member(snap, id).ok_or_else(|| refusal_issue(id, "not in the snapshot".into()))?;
-        nimitz_core::layout::attach_tab(&ctx.env, m)?;
+        match nimitz_core::layout::attach_tab(&ctx.env, m) {
+            // a down member on a machine that checks providers: `nimitz open`
+            // wakes it through the gated start first (#12)
+            Err(i) if i.code == "provider.wake" => return Ok(TabState::Missing),
+            Err(i) => return Err(i),
+            Ok(_) => {}
+        }
     }
     let Ok(p) = plan_open(ctx, snap, target) else { return Ok(TabState::Missing) };
     let Some((step, place)) = p.panes.first() else { return Ok(TabState::Missing) };
@@ -742,4 +757,27 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    /// #12 review: the claude a command launches is read by that command
+    /// (machines.toml can change while Admiralty runs); an explicit
+    /// NIMITZ_CLAUDE_BIN still goes as given.
+    #[test]
+    fn the_launch_claude_is_passed_only_when_it_was_given() {
+        let vars = |bin: Option<&str>| {
+            let mut v: std::collections::HashMap<String, String> =
+                [("HOME", "/h"), ("NIMITZ_HOME", "/n"), ("NIMITZ_STATE", "/s"), ("NIMITZ_NATIVE_CLAUDE_BIN", "/x/claude")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            if let Some(b) = bin {
+                v.insert("NIMITZ_CLAUDE_BIN".into(), b.into());
+            }
+            nimitz_core::env::Env::from_vars(&v)
+        };
+        let passed = |env: &nimitz_core::env::Env| {
+            super::cli_command(env, "nimitz").get_envs().find(|(k, _)| *k == "NIMITZ_CLAUDE_BIN").map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(passed(&vars(Some("/w/claude"))), Some(Some("/w/claude".into())));
+        assert_eq!(passed(&vars(None)), Some(None), "removed: the command reads it itself");
+    }
 }

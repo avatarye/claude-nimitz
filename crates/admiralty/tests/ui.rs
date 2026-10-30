@@ -2303,3 +2303,17 @@ fn ctrl_o_in_each_picker_does_what_enter_on_the_row_does() {
         assert!(admiralty::app::HELP.iter().any(|(h, d)| *h == k && d.contains("ctrl-o")), "help: {k}");
     }
 }
+
+/// #12: `A` never wakes a STOPPED stowaway by its attach (it would run
+/// unchecked): refused, with the way through (adopt, then start); a LIVE
+/// stowaway is only attached, as before.
+#[test]
+fn a_stopped_stowaway_is_not_woken_by_attach() {
+    let t = demo();
+    let b = fixtures::demo();
+    let open = |sid: &str| admiralty::actions::prepare(&t.app.ctx, b.mux_caps, &b.snap, &admiralty::actions::Target::Stowaway(sid.into()), admiralty::actions::Act::Open, None);
+    let sid_of = |short: &str| b.snap.stowaways.iter().find(|s| s.short_id.as_deref() == Some(short)).unwrap().session_id.clone();
+    let e = open(&sid_of("ef22ef22")).unwrap_err();
+    assert!(e.contains("not running") && e.contains("nimitz adopt ef22ef22 <id>") && e.contains("nimitz start <id>"), "{e}");
+    assert!(open(&sid_of("ee11ee11")).is_ok(), "a live stowaway is only attached");
+}

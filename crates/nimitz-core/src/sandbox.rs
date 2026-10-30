@@ -300,7 +300,12 @@ impl World {
         let started = self.now - if o.started_ago == 0.0 { 3600.0 } else { o.started_ago };
         let name = o.name_override.clone().unwrap_or_else(|| name.to_string());
         let labels = o.labels_raw.clone().or_else(|| o.labels_of.or(o.labels).map(|id| crate::claude::labels_for(&env(&self.base), id)));
-        let settings = labels.as_ref().map(|l| json!({"env": l, "worktree": {"bgIsolation": "none"}}).to_string());
+        // launched through the wrapper: its Bedrock env merged in (#12)
+        let settings = labels.as_ref().map(|l| {
+            let mut env = l.clone();
+            env.insert("CLAUDE_CODE_USE_BEDROCK".into(), "1".into());
+            json!({"env": env, "worktree": {"bgIsolation": "none"}}).to_string()
+        });
         if kind == "background" {
             let mut row = json!({
                 "sessionId": sid, "resumeSessionId": sid, "daemonShort": short, "name": name, "nameSource": "user", "cwd": cwd,
@@ -333,6 +338,16 @@ impl World {
         if let Some(l) = labels {
             let job = (kind == "background").then(|| short.as_str());
             self.event("SessionStart", &sid, Some("startup"), &l, started, fake_pid(&short), job, kind);
+        }
+        // its SessionStart ran nimitz's hook (the plugin's): the provider
+        // record, Bedrock as everything in this world (#12); a member's under
+        // its id, an unlabelled session's under its session id
+        let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
+        let model = json!({"model": "us.anthropic.claude-opus-5-5"});
+        match o.labels {
+            Some(id) => crate::provider::record(&env(&self.base), id, &sid, &model, &bedrock),
+            None if o.labels_of.is_none() && o.labels_raw.is_none() => crate::provider::record_session(&env(&self.base), &sid, &model, &bedrock),
+            None => {}
         }
         // every session that ran has a transcript in its folder's project dir
         let proj = claude_home(&self.base).join("projects").join(crate::evidence::project_dir_name(cwd));
@@ -695,6 +710,9 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
         return Err(format!("sandbox formats: {:?}", ran.failed));
     }
     crate::formats::record_machine(&env(&base));
+    // the wrapper launches on Bedrock (like ACME): the machine says so (#12)
+    let e = env(&base);
+    apply_cfg(&e, &crate::provider::plan_machine_set(&e, &crate::provider::this_machine(&e)?, None, Some("bedrock")))?;
     Ok(())
 }
 
@@ -835,6 +853,23 @@ fn fire(base: &Path, h: Hook, labels: &std::collections::BTreeMap<String, String
     }
     if h.event == "SessionEnd" {
         input["reason"] = json!(h.reason.unwrap_or("other")); // what a `claude stop` gave in probe 3
+    }
+    // a SessionStart names the model, as the real one does (2.1.312): its
+    // provider's form (world.json `model` overrides)
+    // world.json `hook_env`: env the worker has beyond its settings (as
+    // managed settings would give it); it wins over them
+    let hook_env: std::collections::BTreeMap<String, String> = read_json(&base.join("world.json"))
+        .and_then(|w| w.get("hook_env").and_then(|v| v.as_object()).map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()))
+        .unwrap_or_default();
+    let labels = &labels.iter().chain(hook_env.iter()).map(|(k, v)| (k.clone(), v.clone())).collect::<std::collections::BTreeMap<_, _>>();
+    if h.event == "SessionStart" {
+        let model = read_json(&base.join("world.json")).and_then(|w| w.get("model").and_then(|v| v.as_str().map(str::to_string))).unwrap_or_else(|| {
+            match crate::provider::from_selectors(|k| labels.get(k).cloned()) {
+                "bedrock" => "us.anthropic.claude-opus-5-5".into(),
+                _ => "claude-opus-5-5".into(),
+            }
+        });
+        input["model"] = json!(model);
     }
     let mut vars: HashMap<String, String> = env_for(base).into_iter().chain(labels.iter().map(|(k, v)| (k.clone(), v.clone()))).collect();
     vars.insert("NIMITZ_HOOK_PID".into(), h.pid.to_string());
@@ -1180,6 +1215,24 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
         println!("{v} (Claude Code)");
         return 0;
     }
+    // `[--settings S]... auth status --json` (2.1.312): the provider the env
+    // selects once the settings' env is merged over the process's (#12);
+    // world.json `auth_status`: "fail" fails it, a provider name answers that
+    if let Some(at) = args.iter().position(|x| x == "auth").filter(|at| args.get(at + 1).map(String::as_str) == Some("status")) {
+        let a = parse(&args[..at]);
+        let knob = read_json(&base.join("world.json")).and_then(|w| w.get("auth_status").and_then(|v| v.as_str().map(str::to_string)));
+        if knob.as_deref() == Some("hang") {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
+        if knob.as_deref() == Some("fail") {
+            eprintln!("[fake claude] auth status failed");
+            return 1;
+        }
+        let set = labels_from_settings(a.settings.as_ref());
+        let api = knob.unwrap_or_else(|| crate::provider::from_selectors(|k| set.get(k).cloned().or_else(|| std::env::var(k).ok())).to_string());
+        println!("{}", json!({"loggedIn": true, "authMethod": "none", "apiProvider": api}));
+        return 0;
+    }
     match args.first().map(String::as_str) {
         Some("agents") => {
             let out: Vec<Value> = rows(&base)
@@ -1236,6 +1289,11 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
         }
         Some("rm") => {
             let Some(target) = args.get(1) else { return 2 };
+            // test hook: world.json `rm_fails` makes every rm fail
+            if knob(&base, "rm_fails") {
+                eprintln!("[fake claude] rm {target} failed (rm_fails)");
+                return 1;
+            }
             let Some(row) = find(&base, target) else {
                 eprintln!("[fake claude] no job {target}");
                 return 1;

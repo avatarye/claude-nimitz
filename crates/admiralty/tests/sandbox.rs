@@ -460,6 +460,18 @@ fn with_several_herdr_servers_enter_and_j_k_jump_to_the_attach_pane() {
     press(&mut app, KeyCode::Enter);
     assert!(toast(&app).starts_with("Sent to"), "{}", toast(&app));
     assert!(prompts(&sb).iter().any(|p| p.contains("first")), "{:?}", prompts(&sb));
+    // #12: this machine names a provider: no record of the member's current
+    // session, nothing typed
+    let sid = app.current().unwrap().node.session_id.clone().unwrap();
+    let rec = app.ctx.env.state.join("provider").join("sessions").join(format!("{sid}.json"));
+    let kept = std::fs::read(&rec).unwrap();
+    std::fs::remove_file(&rec).unwrap();
+    press(&mut app, KeyCode::Char('m'));
+    keys(&mut app, "unconfirmed");
+    press(&mut app, KeyCode::Enter);
+    assert!(toast(&app).contains("provider.unrecorded"), "{}", toast(&app));
+    assert!(!prompts(&sb).iter().any(|p| p.contains("unconfirmed")), "nothing typed");
+    std::fs::write(&rec, kept).unwrap();
     press(&mut app, KeyCode::Char('m'));
     keys(&mut app, "second");
     let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();

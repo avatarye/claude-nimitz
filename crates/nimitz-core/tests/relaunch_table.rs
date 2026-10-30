@@ -1059,7 +1059,8 @@ fn legacy_old_fleet_session_refuses_then_adopt_stop_start_relaunches_with_labels
     // the migration's map, and the old fleet's [ARGOS]-FRESH running in the folder
     let fleet_dir = w.env.fleet_dir("MAIN");
     std::fs::write(fleet_dir.join("legacy.toml"), "[names]\n\"[ARGOS]-FRESH\" = \"MAIN/ARGOS/FRESH\"\n").unwrap();
-    let old = vec![w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
+    // (through the launch binary: on this Bedrock machine its hook records it on Bedrock)
+    let old = vec![w.env.claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
     let (rc, out) = claude::run(&old, Some(&cwd));
     assert_eq!(rc, 0, "{out}");
     let snap = w.snap();
@@ -1137,7 +1138,8 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
     // three stopped sessions of the old [ARGOS]-FRESH in its folder
     let mut olds = vec![];
     for _ in 0..3 {
-        let old = vec![w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
+        // (through the launch binary: on this Bedrock machine its hook records it on Bedrock)
+    let old = vec![w.env.claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
         let (rc, out) = claude::run(&old, Some(&cwd));
         assert_eq!(rc, 0, "{out}");
         let short = out.trim().to_string();
@@ -2226,7 +2228,14 @@ fn an_attach_never_wakes_a_job_the_start_would_relabel() {
     assert_eq!(e.fix.as_deref(), Some(format!("nimitz start {id}  # relabels it, then nimitz open {id}").as_str()));
     let bare = w.member(&w.snap(), &w.ship("BARE"));
     assert_eq!(nimitz_core::layout::attach_tab(&w.env, &bare).unwrap_err().code, "labels.missing");
+    // this world's machine names its provider (#12): an attach never wakes
+    // there; `nimitz start` (the wake gate) first
     let parked = w.member(&w.snap(), &w.ship("STOPPED"));
+    let e = nimitz_core::layout::attach_tab(&w.env, &parked).unwrap_err();
+    assert!(e.code == "provider.wake" && e.fix.as_deref().unwrap().contains(&format!("nimitz start {}", w.ship("STOPPED"))), "{e:?}");
+    // an optional machine: a clean stopped job attaches (and wakes)
+    let label = nimitz_core::provider::this_machine(&w.env).unwrap();
+    nimitz_core::config::apply_config_plan(&w.env, &nimitz_core::provider::plan_machine_set(&w.env, &label, None, Some("")));
     let t = nimitz_core::layout::attach_tab(&w.env, &parked).expect("a clean stopped job attaches");
     assert!(t.wakes);
 }
@@ -2254,3 +2263,97 @@ fn the_wake_pollers_return_at_once_when_there_is_nothing_to_wait_for() {
     assert!(t.elapsed().as_secs_f64() >= 0.5, "a running job is waited for, up to the limit");
 }
 
+
+impl World {
+    /// A knob of the fake's world.json (read afresh): set, or removed with None.
+    fn knob(&self, k: &str, v: Option<serde_json::Value>) {
+        let p = self.base.join("world.json");
+        let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+        match v {
+            Some(v) => w[k] = v,
+            None => {
+                w.as_object_mut().unwrap().remove(k);
+            }
+        }
+        std::fs::write(&p, serde_json::to_vec(&w).unwrap()).unwrap();
+    }
+}
+
+/// #12 round 2: on a machine that names a provider (this world: Bedrock), a
+/// job the daemon restarts inside the crash window woke unchecked: its record
+/// of that start is checked, and on a mismatch it is stopped (its row kept).
+#[test]
+fn a_daemon_restarted_job_on_the_wrong_provider_is_stopped() {
+    let w = world();
+    let id = w.ship("CLEAN");
+    let short = w.member(&w.snap(), &id).session.unwrap().short_id.unwrap();
+    assert_eq!(w.fake(&["__crash", &short]).0, 0);
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    // the worker the daemon brings back runs with Bedrock off (managed settings, say)
+    w.knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    let env = Env { crash_window_s: 2.0, ..w.env.clone() };
+    let bin = w.env.native_claude_bin.clone();
+    let s2 = short.clone();
+    let daemon = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        claude::run(&[bin, "respawn".into(), s2], None)
+    });
+    let out = sessions::apply(&env, &plan);
+    daemon.join().unwrap();
+    assert!(out.issues.iter().any(|i| i.code == "provider.mismatch" && i.message.contains("row and conversation are kept")), "{:?}", out.issues);
+    let after = w.member(&w.snap(), &id);
+    assert!(after.session.as_ref().is_some_and(|s| s.pid.is_none() && s.short_id.as_deref() == Some(short.as_str())), "stopped, its row kept: {:?}", after.session);
+}
+
+/// #12 round 2: a wake that started but did not bind (its SessionStart came
+/// unlabelled) is stopped on the way out where the machine checks providers.
+#[test]
+fn a_wake_that_does_not_bind_is_stopped() {
+    let w = world();
+    let id = w.ship("STOPPED");
+    let snap = w.snap();
+    let plan = w.start(&snap, &id, false);
+    assert!(plan.ok() && plan.steps.iter().any(|s| s.cmd.contains(&"--resume".to_string())), "{plan:?}");
+    w.knob("hook_env", Some(serde_json::json!({"NIMITZ_ID": ""})));
+    let out = sessions::apply(&w.env, &plan);
+    w.knob("hook_env", None);
+    assert!(!out.verified, "{:?}", out.issues);
+    assert!(out.ran.iter().any(|(s, _, _)| s.cmd.iter().any(|a| a == "stop") && s.why.contains("unconfirmed")), "{:?}", out.ran);
+    let after = w.member(&w.snap(), &id);
+    assert!(after.session.as_ref().is_some_and(|s| s.pid.is_none()), "not left running: {:?}", after.session);
+}
+
+/// 0.7.16 review: every job the daemon restarted is checked, and every one on
+/// the wrong provider stopped, before the one refusal that names them all.
+#[test]
+fn every_daemon_restarted_job_is_checked_and_stopped() {
+    let w = world();
+    let ids = [w.ship("CLEAN"), w.ship("DRIFT")];
+    let shorts: Vec<String> = ids.iter().map(|id| w.member(&w.snap(), id).session.unwrap().short_id.unwrap()).collect();
+    for s in &shorts {
+        assert_eq!(w.fake(&["__crash", s]).0, 0);
+    }
+    let snap = w.snap();
+    let mut plan = w.start(&snap, &ids[0], false);
+    plan.steps.extend(w.start(&snap, &ids[1], false).steps);
+    w.knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    let env = Env { crash_window_s: 3.0, ..w.env.clone() };
+    let bin = w.env.native_claude_bin.clone();
+    let todo = shorts.clone();
+    let daemon = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        for s in todo {
+            claude::run(&[bin.clone(), "respawn".into(), s], None);
+        }
+    });
+    let out = sessions::apply(&env, &plan);
+    daemon.join().unwrap();
+    w.knob("hook_env", None);
+    let all = out.issues.iter().find(|i| i.id.is_none() && i.code == "provider.mismatch").unwrap_or_else(|| panic!("{:?}", out.issues));
+    assert!(ids.iter().all(|id| all.message.contains(&id.0)), "{}", all.message);
+    for (id, s) in ids.iter().zip(&shorts) {
+        let m = w.member(&w.snap(), id);
+        assert!(m.session.as_ref().is_some_and(|x| x.pid.is_none() && x.short_id.as_deref() == Some(s.as_str())), "{id} stopped, row kept: {:?}", m.session);
+    }
+}

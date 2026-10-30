@@ -149,7 +149,10 @@ fn trusted(ctx: &Ctx, dir: &Path) -> bool {
 pub fn init(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--label"])?;
     ctx.args.at_most(0)?;
-    let label = ctx.args.value("--label").map(str::to_string).unwrap_or_else(|| crate::crud::machine_label(ctx));
+    let label = match ctx.args.value("--label") {
+        Some(l) => l.to_string(),
+        None => crate::crud::machine_label(ctx)?,
+    };
     let mut plan = Plan { summary: format!("init nimitz on this machine as {label}"), ..Default::default() };
     if !nimitz_core::config::valid_label(&label) {
         plan.refusals.push(refusal("config.invalid", format!("machine label {label:?} is not {}", nimitz_core::config::LABEL_RULE), Some("nimitz init --label <label>".into()), None));
@@ -334,12 +337,21 @@ fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
         return;
     }
     let fix = format!("set resume_agents_on_restore = false under [session] in {}  # nimitz never edits it", path.display());
-    let effect = "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz start` then cannot wake it until you /exit there (tab.resumed)";
+    // where the machine checks providers (#12) Herdr's own `claude --resume`
+    // runs with PATH's claude, none of the saved flags and no forced
+    // selector: a member on any provider, unchecked. An error there.
+    let gated = nimitz_core::provider::gated(&ctx.env);
+    let effect = if gated {
+        "after a Herdr restart Herdr runs `claude --resume` in every agent pane, with PATH's claude and none of the member's saved flags: it runs the conversation on whatever provider that shell selects, which nimitz never checks (this machine checks providers); it also holds the conversation interactively, so `nimitz start` cannot wake it (tab.resumed)"
+    } else {
+        "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz start` then cannot wake it until you /exit there (tab.resumed)"
+    };
+    let on = |r: &mut Report, what: String| if gated { r.err(&what, Some(&fix)) } else { r.warn(&what, Some(&fix)) };
     match std::fs::read_to_string(&path).ok().map(|t| herdr_resume_off(&t)) {
         Some(Some(true)) => r.ok(&format!("Herdr {}: resume_agents_on_restore is off", path.display())),
-        Some(Some(false)) => r.warn(&format!("Herdr {}: resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
-        Some(None) => r.warn(&format!("Herdr {} does not parse; resume_agents_on_restore may be on: {effect}", path.display()), Some(&fix)),
-        None => r.warn(&format!("no Herdr config at {}, so resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
+        Some(Some(false)) => on(r, format!("Herdr {}: resume_agents_on_restore is on (the default): {effect}", path.display())),
+        Some(None) => on(r, format!("Herdr {} does not parse; resume_agents_on_restore may be on: {effect}", path.display())),
+        None => on(r, format!("no Herdr config at {}, so resume_agents_on_restore is on (the default): {effect}", path.display())),
     }
 }
 
@@ -412,6 +424,53 @@ fn kept_registries(env: &nimitz_core::env::Env, r: &mut Report) {
     });
 }
 
+/// The provider (#12): what this machine expects, what Claude Code's own
+/// resolver gives for a launch here (no member's settings), what its members
+/// were recorded on, and the `claude` binaries a `--claude-bin` could name
+/// (listed, never written).
+fn provider_lines(ctx: &Ctx, r: &mut Report) {
+    use nimitz_core::provider;
+    let env = &ctx.env;
+    let (label, expected) = match provider::this_machine(env).and_then(|l| provider::expected(env).map(|e| (l, e))) {
+        Ok(x) => x,
+        Err(e) => {
+            let i = provider::unreadable(None, &e);
+            r.err(&format!("provider: {} ({})", i.message, i.code), i.fix.as_deref());
+            return;
+        }
+    };
+    // the launch's own --settings for the provider: the forced selector, as
+    // a launch passes it
+    let mut argv = vec![env.claude_bin.clone()];
+    if let Some((k, v)) = provider::forced_selector(env) {
+        argv.extend(["--settings".to_string(), serde_json::json!({"env": {k: v}}).to_string()]);
+    }
+    let here = provider::preflight(&argv, Some(&env.home.to_string_lossy()));
+    let recorded: std::collections::BTreeMap<String, usize> = provider::records(env).iter().fold(Default::default(), |mut m, rec| {
+        *m.entry(provider::name_of(&rec.provider)).or_default() += 1;
+        m
+    });
+    let members = if recorded.is_empty() { "no member recorded yet".to_string() } else { recorded.iter().map(|(p, n)| format!("{n} on {p}")).collect::<Vec<_>>().join(", ") };
+    let set = format!("nimitz machine set {label} --provider anthropic|bedrock|vertex");
+    match (&expected, &here) {
+        (Some(want), Ok(got)) if provider::api_of(want) == Some(got.as_str()) => r.ok(&format!("provider: machine {label} expects {want}; a launch here gives {want}; members: {members}")),
+        (Some(want), Ok(got)) => r.err(&format!("provider: machine {label} expects {want}, but a launch here gives {} (cold launches are refused)", provider::name_of(got)), Some("fix the settings that select the provider, or nimitz machine set")),
+        (None, Ok(got)) if got == "bedrock" || provider::recorded_on(env, "bedrock") => {
+            r.err(&format!("provider: machine {label} names none, and it runs Bedrock (a launch here gives {}; members: {members}): cold launches are refused", provider::name_of(got)), Some(&format!("nimitz machine set {label} --provider bedrock")))
+        }
+        (None, Ok(got)) => r.info(&format!("provider: machine {label} names none (optional here); a launch here gives {}; members: {members}", provider::name_of(got)), Some(&set)),
+        // as a launch would take it: refused where it is strict, else a warning
+        (_, Err(e)) if provider::strict(env, expected.as_deref()) => {
+            r.err(&format!("provider: machine {label} expects {}; Claude Code's own answer could not be read, so cold launches are refused: {e}", expected.as_deref().unwrap_or("none (it runs Bedrock members)")), Some("check `claude auth status --json`"))
+        }
+        (_, Err(e)) => r.warn(&format!("provider: machine {label} names none; Claude Code's own answer could not be read (launches go ahead, unchecked): {e}"), Some("check `claude auth status --json`")),
+    }
+    let cands = provider::claude_bin_candidates(env);
+    if !cands.is_empty() {
+        r.info(&format!("claude binaries here (for --claude-bin; nothing is written): {}", cands.join(", ")), Some(&format!("nimitz machine set {label} --claude-bin <one of them>")));
+    }
+}
+
 fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     let mut r = Report { errors: 0, fixes: Plan { summary: "doctor fixes".into(), ..Default::default() } };
     let env = &ctx.env;
@@ -470,7 +529,11 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| nimitz_core::compat::parse_version(&String::from_utf8_lossy(&o.stdout)));
-    let from = if ctx.vars.contains_key("NIMITZ_CLAUDE_BIN") { "NIMITZ_CLAUDE_BIN" } else { "first `claude` on PATH" };
+    let from = match nimitz_core::provider::claude_bin_source(env, &ctx.vars) {
+        "NIMITZ_CLAUDE_BIN" => "NIMITZ_CLAUDE_BIN",
+        "machines.toml" => "this machine's claude_bin",
+        _ => "first `claude` on PATH",
+    };
     match &launch_v {
         None => r.err(&format!("launch claude {launch} ({from}) does not answer --version"), Some("set NIMITZ_CLAUDE_BIN")),
         Some(v) => {
@@ -485,6 +548,8 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             }
         }
     }
+
+    provider_lines(ctx, &mut r);
 
     // Herdr's agent resume on restart (finding 10): with it on, a restart
     // runs `claude --resume` in every agent pane, which holds a stopped or

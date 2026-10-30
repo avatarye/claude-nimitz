@@ -91,13 +91,11 @@ fn set_mode(v: &str) -> Option<&str> {
     }
 }
 
-fn machine_label_default(env: &Env) -> String {
-    let h: String = env.hostname.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' }).collect();
-    if h.is_empty() {
-        "this-machine".into()
-    } else {
-        h
-    }
+/// The label `nimitz fleet new` would use: the one rule (#12,
+/// `provider::this_machine`: the registry's, else `host_label`); with a
+/// registry that cannot be read, `host_label` (a suggestion only).
+pub fn machine_label_default(env: &Env) -> String {
+    nimitz_core::provider::this_machine(env).unwrap_or_else(|_| nimitz_core::provider::host_label(&env.hostname))
 }
 
 impl Form {
@@ -506,5 +504,22 @@ fn fix_text(msg: &str, fix: Option<&str>) -> String {
     match fix {
         Some(f) => format!("{msg}  (fix: {f})"),
         None => msg.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// #12: the New fleet form suggests the label `nimitz fleet new` would
+    /// use: the one rule (`provider::host_label`, with no registry yet).
+    #[test]
+    fn the_machine_default_is_the_one_label_rule() {
+        let td = tempfile::tempdir().unwrap();
+        let p = |x: &str| td.path().join(x).to_string_lossy().into_owned();
+        for host in ["Box Two.local", "west-mac", "con"] {
+            let vars: std::collections::HashMap<String, String> =
+                [("HOME", p("h")), ("NIMITZ_HOME", p("n")), ("NIMITZ_STATE", p("s")), ("NIMITZ_HOSTNAME", host.to_string()), ("NIMITZ_NATIVE_CLAUDE_BIN", "/x".into())].into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+            let env = nimitz_core::env::Env::from_vars(&vars);
+            assert_eq!(super::machine_label_default(&env), nimitz_core::provider::host_label(host), "{host}");
+        }
     }
 }

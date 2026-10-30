@@ -8,6 +8,9 @@ pub struct Env {
     pub state: PathBuf,
     pub claude_home: PathBuf,
     pub claude_bin: String,
+    /// `claude_bin` came from `NIMITZ_CLAUDE_BIN` (else this machine's
+    /// `claude_bin` or PATH: a long-lived process reads it again per action)
+    pub claude_bin_set: bool,
     pub native_claude_bin: String,
     pub herdr_bin: Option<String>,
     pub hostname: String,
@@ -153,7 +156,7 @@ fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
 }
 
 /// The `claude.exe` an npm `claude.cmd` shim starts, when it is there.
-fn npm_target(found: &Path) -> Option<PathBuf> {
+pub(crate) fn npm_target(found: &Path) -> Option<PathBuf> {
     let ext = found.extension()?.to_string_lossy().to_lowercase();
     if ext != "cmd" && ext != "bat" {
         return None;
@@ -198,17 +201,26 @@ impl Env {
         } else {
             None
         };
+        let nimitz_home = expand(&get("NIMITZ_HOME").unwrap_or("~/.claude-nimitz".into()), &home);
+        let state = expand(&get("NIMITZ_STATE").unwrap_or("~/.local/state/nimitz".into()), &home);
+        let hostname = get("NIMITZ_HOSTNAME").map(|h| h.to_lowercase()).unwrap_or_else(local_hostname);
         Env {
-            home: expand(&get("NIMITZ_HOME").unwrap_or("~/.claude-nimitz".into()), &home),
-            state: expand(&get("NIMITZ_STATE").unwrap_or("~/.local/state/nimitz".into()), &home),
+            claude_bin_set: get("NIMITZ_CLAUDE_BIN").is_some(),
             claude_home: expand(&get("NIMITZ_CLAUDE_HOME").unwrap_or("~/.claude".into()), &home),
-            claude_bin: get("NIMITZ_CLAUDE_BIN").or_else(|| which("claude")).unwrap_or("claude".into()),
+            // the cold-launch binary: NIMITZ_CLAUDE_BIN, else this machine's
+            // `claude_bin` (machines.toml, #12), else PATH's
+            claude_bin: get("NIMITZ_CLAUDE_BIN")
+                .or_else(|| crate::provider::claude_bin_for(&nimitz_home, &state, &hostname))
+                .or_else(|| which("claude"))
+                .unwrap_or("claude".into()),
+            home: nimitz_home,
+            state,
             native_claude_bin: get("NIMITZ_NATIVE_CLAUDE_BIN")
                 .or_else(|| localtools_claude(&home))
                 .or_else(|| which("claude"))
                 .unwrap_or("claude".into()),
             herdr_bin,
-            hostname: get("NIMITZ_HOSTNAME").map(|h| h.to_lowercase()).unwrap_or_else(local_hostname),
+            hostname,
             mux: get("NIMITZ_MUX"),
             crash_window_s: get("NIMITZ_CRASH_WINDOW").and_then(|v| v.parse().ok()).unwrap_or(20.0),
         }

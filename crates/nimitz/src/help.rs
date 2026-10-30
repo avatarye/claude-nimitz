@@ -76,10 +76,16 @@ pub const USAGES: &[Usage] = &[
     )]),
     // ---------------------------------------------------------------- less used
     u("fleet", false, "fleet new|set|rm <F>", "a fleet's config", &[("fleet new|set|rm <F> [--machine L] [--admiral-mode M]", "new: --machine L; set: --admiral-mode M.")]),
-    u("machine", false, "machine add|rm <F> <label>", "run a fleet on another machine too, or stop doing so", &[(
-        "machine add|rm <F> <label> [--hostname H] [--dir F/SQ/SHIP=PATH]",
-        "add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat); rm warns about live members when <label> is this machine.",
-    )]),
+    u("machine", false, "machine add|rm|set ...", "a fleet's machines; a machine's own claude and provider", &[
+        (
+            "machine add|rm <F> <label> [--hostname H] [--dir F/SQ/SHIP=PATH]",
+            "Run a fleet on another machine too, or stop doing so. add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat); rm warns about live members when <label> is this machine.",
+        ),
+        (
+            "machine set <label> [--claude-bin PATH] [--provider anthropic|bedrock|vertex]",
+            "That machine's settings, for every fleet (machines.toml; '' clears one): the claude a cold launch runs (NIMITZ_CLAUDE_BIN still wins) and the API provider its members must run on. bedrock and vertex are forced into each member's --settings env. A cold launch whose provider (claude auth status) differs is refused before anything starts; a machine that runs Bedrock members must name one.",
+        ),
+    ]),
     u("settings", false, "settings get|set [<key>] [<value>]", "the fleet's settings.json", &[
         ("settings get [<key>]", "A dotted key: kb.remote."),
         ("settings set <key> <value>", "JSON or text; null removes it (--plan|--yes)."),

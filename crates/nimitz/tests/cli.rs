@@ -740,6 +740,281 @@ fn a_fleet_start_gives_its_never_started_leads_their_first_launch() {
     assert!(sb.run(&["start", "TOP/SQ/S1", "--plan"]).out.contains("first launch"));
 }
 
+/// #12: a cold launch runs only on the provider the machine expects, by
+/// Claude Code's own resolver (`auth status` through the launch's binary and
+/// `--settings`), checked before anything starts; a machine that runs
+/// Bedrock must name its provider; an unreadable answer launches nothing.
+/// The worker's SessionStart then records its own view.
+#[test]
+fn a_cold_launch_runs_only_on_the_machines_provider() {
+    let sb = Sb::new(false);
+    make_top(&sb);
+    let machines = std::path::Path::new(&sb.vars["NIMITZ_HOME"]).join("machines.toml");
+    let m: toml::Table = toml::from_str(&std::fs::read_to_string(&machines).unwrap()).unwrap();
+    let label = m["machines"].as_table().unwrap().keys().next().unwrap().clone();
+    assert_eq!(m["machines"][&label]["provider"].as_str(), Some("bedrock"), "the sandbox's wrapper is Bedrock");
+    let not_started = |sb: &Sb| sb.member("TOP")["session"].is_null();
+    // expected anthropic: the wrapper's Bedrock is refused before a launch
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "anthropic", "--yes"]).code, 0);
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("expects anthropic"), "{}", r.out);
+    assert!(not_started(&sb), "nothing launched");
+    // none named, on Bedrock: the machine must name it
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "", "--yes"]).code, 0);
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.unset") && r.out.contains(&format!("nimitz machine set {label} --provider bedrock")), "{}", r.out);
+    assert!(not_started(&sb));
+    // named, but Claude Code's answer cannot be read: nothing launched
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "bedrock", "--yes"]).code, 0);
+    // a knob of the fake's world.json, read afresh each time (the fake keeps
+    // its own state there): set, or removed with None
+    let knob = |k: &str, v: Option<Value>| {
+        let world = sb.base.join("world.json");
+        let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+        match v {
+            Some(v) => w[k] = v,
+            None => {
+                w.as_object_mut().unwrap().remove(k);
+            }
+        }
+        std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    };
+    knob("auth_status", Some(Value::from("fail")));
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.unconfirmed"), "{}", r.out);
+    assert!(not_started(&sb));
+    knob("auth_status", None);
+    // the right one: launched, and the worker's own view recorded
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let top_sid = sb.member("TOP")["session"]["session_id"].as_str().unwrap().to_string();
+    let rec: Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join(format!("provider/sessions/{top_sid}.json"))).unwrap()).unwrap();
+    assert_eq!((rec["provider"].as_str(), rec["env"]["CLAUDE_CODE_USE_BEDROCK"].as_str()), (Some("bedrock"), Some("1")), "{rec}");
+    assert!(rec["model"].as_str().unwrap().starts_with("us.anthropic."), "{rec}");
+    assert!(sb.run(&["doctor"]).out.contains(&format!("provider: machine {label} expects bedrock")));
+    // the expected provider is forced into the member's --settings env, and
+    // the job's respawnFlags keep it for every wake
+    let job = sb.member("TOP")["session"]["short_id"].as_str().unwrap().to_string();
+    let state: Value = serde_json::from_slice(&std::fs::read(std::path::Path::new(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("jobs").join(&job).join("state.json")).unwrap()).unwrap();
+    let flags: Vec<String> = state["respawnFlags"].as_array().unwrap().iter().filter_map(|f| f.as_str().map(String::from)).collect();
+    let own = flags.iter().rev().skip_while(|f| !f.contains("NIMITZ_ID")).next().cloned().unwrap_or_default();
+    let set: Value = serde_json::from_str(&own).unwrap_or(Value::Null);
+    assert_eq!(set["env"]["CLAUDE_CODE_USE_BEDROCK"], "1", "{flags:?}");
+    // a model that disagrees with the selectors (a custom ANTHROPIC_MODEL, an
+    // alias): a warning, and the member runs
+    knob("model", Some(Value::from("claude-opus-5-5")));
+    let r = sb.run(&["start", "TOP/SQ", "--yes"]);
+    assert!(r.code == 0 && r.out.contains("provider.model"), "{}", r.out);
+    assert!(!sb.member("TOP/SQ")["session"]["pid"].is_null(), "it runs: {}", sb.member("TOP/SQ"));
+    knob("model", None);
+    // vertex: its selector is forced, and the wrapper's Bedrock (read first)
+    // makes the preflight refuse it
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "vertex", "--yes"]).code, 0);
+    let plan = sb.run(&["start", "TOP/SQ/S1", "--plan", "--json"]).out;
+    assert!(plan.contains("CLAUDE_CODE_USE_VERTEX"), "{plan}");
+    let r = sb.run(&["start", "TOP/SQ/S1", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("expects vertex"), "{}", r.out);
+    // an optional machine (no provider, no member recorded on Bedrock): an
+    // unreadable answer is a warning and the launch goes ahead
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "", "--yes"]).code, 0);
+    std::fs::remove_dir_all(std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider")).unwrap();
+    knob("auth_status", Some(Value::from("fail")));
+    let r = sb.run(&["start", "TOP/SQ/S1", "--yes"]);
+    assert!(r.code == 0 && r.out.contains("provider.unconfirmed"), "{}", r.out);
+    // its worker is on record on Bedrock now: the next one fails closed
+    assert_eq!(sb.run(&["ship", "new", "TOP/SQ/S2", "--dir", "managed", "--prompt", "You are S2.", "--yes"]).code, 0);
+    let r = sb.run(&["start", "TOP/SQ/S2", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.unconfirmed"), "{}", r.out);
+    assert!(sb.member("TOP/SQ/S2")["session"].is_null());
+    // after the launch, the worker's own selectors give another provider
+    // (as managed settings would): stopped, removed, refused
+    knob("auth_status", None);
+    knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "bedrock", "--yes"]).code, 0);
+    let r = sb.run(&["start", "TOP/SQ/S2", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("first prompt may already have been sent"), "{}", r.out);
+    assert!(sb.member("TOP/SQ/S2")["session"].is_null(), "its job is gone: {}", sb.member("TOP/SQ/S2"));
+    // a provider nimitz does not know, a relative claude
+    assert_ne!(sb.run(&["machine", "set", &label, "--provider", "openai", "--yes"]).code, 0);
+    assert_ne!(sb.run(&["machine", "set", &label, "--claude-bin", "claude", "--yes"]).code, 0);
+}
+
+/// #12 review: a wake on another provider than its saved flags is a
+/// relaunch, checked before anything is stopped or removed; a woken worker
+/// the record shows on another provider is stopped, its row kept; settings
+/// that cannot be read refuse everything; doctor passes the forced selector;
+/// an unknown label is a warning.
+#[test]
+fn wakes_unreadable_settings_doctor_and_labels_under_the_provider_rule() {
+    let sb = Sb::new(false);
+    make_top(&sb);
+    let machines = std::path::Path::new(&sb.vars["NIMITZ_HOME"]).join("machines.toml");
+    let m: toml::Table = toml::from_str(&std::fs::read_to_string(&machines).unwrap()).unwrap();
+    let label = m["machines"].as_table().unwrap().keys().next().unwrap().clone();
+    let knob = |k: &str, v: Option<Value>| {
+        let world = sb.base.join("world.json");
+        let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+        match v {
+            Some(v) => w[k] = v,
+            None => {
+                w.as_object_mut().unwrap().remove(k);
+            }
+        }
+        std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    };
+    assert_eq!(sb.run(&["start", "TOP", "--yes"]).code, 0);
+    let job = sb.member("TOP")["session"]["short_id"].as_str().unwrap().to_string();
+    assert_eq!(sb.run(&["stop", "TOP", "--yes"]).code, 0);
+    // the machine moves to vertex: TOP's saved flags select Bedrock, so its
+    // wake is a relaunch with every flag; the wrapper's Bedrock fails its
+    // preflight, and nothing ran: its row is still there
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "vertex", "--yes"]).code, 0);
+    let plan = sb.run(&["start", "TOP", "--plan"]).out;
+    assert!(plan.contains("do not select this machine's provider"), "{plan}");
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("expects vertex"), "{}", r.out);
+    assert_eq!(sb.member("TOP")["session"]["short_id"].as_str(), Some(job.as_str()), "the row stays: nothing ran before the preflight");
+    // back on bedrock: a plain wake, and the worker's record is the gate
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "bedrock", "--yes"]).code, 0);
+    knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("row and conversation are kept"), "{}", r.out);
+    let top = sb.member("TOP");
+    assert!(top["session"]["pid"].is_null() && top["session"]["short_id"].as_str() == Some(job.as_str()), "stopped, row kept: {top}");
+    knob("hook_env", None);
+    assert_eq!(sb.run(&["start", "TOP", "--yes"]).code, 0, "a matching wake");
+    // nimitz's own delivery (a signal, a notice) reaches a member only once
+    // its current session is on record on the machine's provider
+    // (the sandbox's Claude Code predates the inbox: the gate itself passes)
+    let r = sb.run(&["signal", "TOP", "hi", "--inbox", "--plan"]);
+    assert!(!r.out.contains("provider."), "{}", r.out);
+    let top_sid = sb.member("TOP")["session"]["session_id"].as_str().unwrap().to_string();
+    let rec = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join(format!("provider/sessions/{top_sid}.json"));
+    let good = std::fs::read_to_string(&rec).unwrap();
+    let mut other: Value = serde_json::from_str(&good).unwrap();
+    other["provider"] = Value::from("firstParty");
+    std::fs::write(&rec, other.to_string()).unwrap();
+    let r = sb.run(&["signal", "TOP", "hi", "--inbox", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("nothing is delivered"), "{}", r.out);
+    std::fs::remove_file(&rec).unwrap();
+    let r = sb.run(&["signal", "TOP", "hi", "--inbox", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("provider.unrecorded"), "{}", r.out);
+    std::fs::write(&rec, &good).unwrap();
+    // sweep drops the records of unlabelled sessions that are gone
+    let sessions = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider/sessions");
+    std::fs::write(sessions.join("gone-0000.json"), serde_json::json!({"id": "", "session_id": "gone-0000", "at": 1.0, "provider": "bedrock"}).to_string()).unwrap();
+    // the session rows cannot be read: nothing is dropped
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let rows = std::path::Path::new(&sb.vars["NIMITZ_CLAUDE_HOME"]).join("sessions");
+        std::fs::set_permissions(&rows, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let r = sb.run(&["sweep", "TOP/...", "--yes"]);
+        std::fs::set_permissions(&rows, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(sessions.join("gone-0000.json").exists(), "kept while the rows cannot be read: {}", r.out);
+    }
+    let stow = sb.run(&["status", "--json"]).out;
+    // (a sweep that runs clean: TOP's, nothing to sweep; the records go machine-wide)
+    let r = sb.run(&["sweep", "TOP/...", "--yes"]);
+    assert!(r.out.contains("provider record(s) of sessions that are gone") && !sessions.join("gone-0000.json").exists(), "{}", r.out);
+    // a whole sweep that ran (--yes) drops them, whatever its steps came to
+    // (a step of it may fail on the sandbox's copy rows; the rows still read)
+    std::fs::write(sessions.join("gone-2222.json"), serde_json::json!({"id": "", "session_id": "gone-2222", "at": 1.0, "provider": "bedrock"}).to_string()).unwrap();
+    let world = sb.base.join("world.json");
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    w["rm_fails"] = Value::from(true);
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    let r = sb.run(&["sweep", "--yes"]);
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    w.as_object_mut().unwrap().remove("rm_fails");
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    assert!(r.code != 0 && !sessions.join("gone-2222.json").exists(), "a step failed, the rows read: pruned:\n{}", r.out);
+    // a live stowaway's record stays
+    let live: Vec<String> = std::fs::read_dir(&sessions).unwrap().flatten().map(|e| e.file_name().to_string_lossy().trim_end_matches(".json").to_string()).collect();
+    assert!(live.iter().any(|sid| stow.contains(sid.as_str())), "{live:?}");
+    // doctor through a claude with no Bedrock of its own: the forced selector does it
+    let native = sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"].clone();
+    let d = raw(&sb.vars, &["doctor"], &[("NIMITZ_CLAUDE_BIN", native.as_str())], None).out;
+    assert!(d.contains(&format!("provider: machine {label} expects bedrock; a launch here gives bedrock")), "{d}");
+    // an unknown label: set, with a warning naming the known ones
+    let r = sb.run(&["machine", "set", "far-box", "--provider", "anthropic", "--yes"]);
+    assert!(r.code == 0 && r.out.contains("machine.unknown") && r.out.contains(&label), "{}", r.out);
+    // settings nimitz cannot read (here: a newer nimitz's): nothing launches or wakes
+    std::fs::write(&machines, "format = 9\n[machines.x]\n").unwrap();
+    let r = sb.run(&["start", "TOP/SQ", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.unreadable"), "{}", r.out);
+    assert!(sb.member("TOP/SQ")["session"].is_null());
+    assert!(sb.run(&["doctor"]).out.contains("provider.unreadable"));
+    assert!(sb.run(&["check"]).out.contains("provider.unreadable"));
+}
+
+/// 0.7.16 review: an `auth status` that hangs is given up after its timeout
+/// (unconfirmed: refused where checked); a relaunch on the wrong provider is
+/// stopped with its row kept (no prompt went with it); a refused or --plan
+/// sweep drops no record.
+#[test]
+fn a_hanging_preflight_a_relaunch_mismatch_and_a_sweep_that_did_not_run() {
+    let sb = Sb::new(false);
+    make_top(&sb);
+    let knob = |k: &str, v: Option<Value>| {
+        let world = sb.base.join("world.json");
+        let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+        match v {
+            Some(v) => w[k] = v,
+            None => {
+                w.as_object_mut().unwrap().remove(k);
+            }
+        }
+        std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    };
+    knob("auth_status", Some(Value::from("hang")));
+    let t = std::time::Instant::now();
+    let r = raw(&sb.vars, &["start", "TOP", "--yes"], &[("NIMITZ_PREFLIGHT_TIMEOUT", "1")], None);
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "given up, not waited out");
+    assert!(r.code != 0 && r.out.contains("provider.unconfirmed") && r.out.contains("no answer within"), "{}", r.out);
+    assert!(sb.member("TOP")["session"].is_null());
+    knob("auth_status", None);
+    assert_eq!(sb.run(&["start", "TOP", "--yes"]).code, 0);
+    let job = sb.member("TOP")["session"]["short_id"].as_str().unwrap().to_string();
+    // a relaunch (restart: every flag again) whose worker comes back on another provider
+    knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    let r = sb.run(&["restart", "TOP", "--yes"]);
+    knob("hook_env", None);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("nothing was sent") && !r.out.contains("first prompt"), "{}", r.out);
+    let top = sb.member("TOP");
+    assert!(top["session"]["pid"].is_null() && !top["session"].is_null(), "stopped, its row kept: {top}");
+    let _ = job;
+    // sweep: --plan, and a refused one, drop nothing
+    let sessions = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider/sessions");
+    std::fs::write(sessions.join("gone-1111.json"), serde_json::json!({"id": "", "session_id": "gone-1111", "at": 1.0, "provider": "bedrock"}).to_string()).unwrap();
+    sb.run(&["sweep", "--plan"]);
+    assert!(sessions.join("gone-1111.json").exists(), "--plan drops nothing");
+    let r = sb.run(&["sweep", "NOSUCH/..."]);
+    assert!(r.code != 0 && sessions.join("gone-1111.json").exists(), "a refused sweep drops nothing: {}", r.out);
+}
+
+/// #12: Herdr's `resume_agents_on_restore` runs `claude --resume` outside
+/// the saved flags and the forced selector: an ERROR in doctor where the
+/// machine names a provider, a warning elsewhere; nimitz never edits the file.
+#[test]
+fn doctor_flags_herdr_resume_on_a_provider_machine() {
+    let sb = Sb::new(false);
+    let cfg = sb.base.join("herdr-config.toml");
+    std::fs::write(&cfg, "[session]\nresume_agents_on_restore = true\n").unwrap();
+    let path = cfg.to_string_lossy().into_owned();
+    let d = raw(&sb.vars, &["doctor"], &[("HERDR_CONFIG_PATH", path.as_str())], None).out;
+    assert!(d.lines().any(|l| l.starts_with("[ERROR] Herdr") && l.contains("resume_agents_on_restore is on") && l.contains("never checks")), "{d}");
+    assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "[session]\nresume_agents_on_restore = true\n", "never edited");
+    std::fs::write(&cfg, "[session]\nresume_agents_on_restore = false\n").unwrap();
+    assert!(raw(&sb.vars, &["doctor"], &[("HERDR_CONFIG_PATH", path.as_str())], None).out.contains("resume_agents_on_restore is off"));
+    // an optional machine: a warning, as before
+    std::fs::write(&cfg, "[session]\nresume_agents_on_restore = true\n").unwrap();
+    let label = nimitz_core::provider::this_machine(&nimitz_core::env::Env::from_vars(&sb.vars.clone().into_iter().collect())).unwrap();
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "", "--yes"]).code, 0);
+    let d = raw(&sb.vars, &["doctor"], &[("HERDR_CONFIG_PATH", path.as_str())], None).out;
+    assert!(d.lines().any(|l| l.starts_with("[WARN] Herdr") && l.contains("resume_agents_on_restore is on")), "{d}");
+}
+
 /// A parent that several members' chains bring up is launched once: two
 /// squadrons under a never-started admiral, two ships under a never-started
 /// commodore.
@@ -1474,6 +1749,9 @@ fn init_and_doctor_in_an_empty_world() {
     assert_eq!(reg["machine"], "box");
     assert_eq!(reg["version"], nimitz_core::REGISTRY_VERSION, "init writes the format this nimitz writes, not a v1 file");
     assert_eq!(raw(&vars, &["init", "--label", "other", "--yes"], &[], None).code, 1, "a label is not changed silently");
+    // the fake's wrapper launches on Bedrock: the machine names it (#12)
+    assert!(raw(&vars, &["doctor"], &[], None).out.contains("fix: nimitz machine set box --provider bedrock"));
+    assert_eq!(raw(&vars, &["machine", "set", "box", "--provider", "bedrock", "--yes"], &[], None).code, 0);
 
     // trust it, enable the plugin; doctor still wants crossSessionInbound, and --fix sets it
     std::fs::create_dir_all(b.join("claude_home")).unwrap();
@@ -2689,6 +2967,32 @@ fn an_attach_pane_on_an_npm_claude_code_is_typed_into() {
     assert!(!sb.prompts("w1:p2").iter().any(|p| p.contains("unknown")), "{}", r.out);
 }
 
+/// #12 round 2: on a machine that names a provider, nimitz's own deliveries
+/// wait for a confirmed record: a needs-you notice to a commodore whose
+/// session has none is not delivered (its delivery says why); `signal
+/// session:` to a member's session points to the member's path.
+#[test]
+fn deliveries_to_an_unconfirmed_member_are_held_and_member_sessions_go_by_path() {
+    let sb = Sb::new(false);
+    let sid = sb.member("MAIN/ARGOS")["session"]["session_id"].as_str().unwrap().to_string();
+    let rec = std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join(format!("provider/sessions/{sid}.json"));
+    std::fs::remove_file(&rec).unwrap();
+    raw(&sb.vars, &["hook", "PreToolUse"], &CLEAN, Some(ASK));
+    let n = sb.notice("MAIN/ARGOS/CLEAN").unwrap();
+    assert_eq!(n["delivery"], "failed", "{n}");
+    assert!(n["delivery_note"].as_str().unwrap().contains("no provider record"), "the gate held it: {n}");
+    // a member's session by `session:` (a live process with its session id):
+    // refused, the member's path named
+    #[cfg(unix)]
+    {
+        let me = std::process::id() as i64;
+        let f = sb.base.join("claude_home").join("sessions").join("peer-m.json");
+        std::fs::write(&f, serde_json::json!({"pid": me, "sessionId": sid, "name": "member-peer", "version": "2.1.300", "kind": "bg"}).to_string()).unwrap();
+        let r = sb.run(&["signal", "session:member-peer", "hi", "--plan"]);
+        assert!(r.code != 0 && r.out.contains("signal.member") && r.out.contains("nimitz signal MAIN/ARGOS"), "{}", r.out);
+    }
+}
+
 /// A Unix socket that stands for a session's inbox: every line it gets.
 #[cfg(unix)]
 fn inbox_listener(path: &Path) -> std::sync::mpsc::Receiver<String> {
@@ -3365,6 +3669,21 @@ fn a_signal_reaches_a_non_member_session_by_its_inbox() {
     peer("peer-b.json", "5e55b000-0000-4000-8000-00000000000b", "twin", me);
     peer("peer-c.json", "5e55c000-0000-4000-8000-00000000000c", "twin", me);
     peer("peer-d.json", "5e55d000-0000-4000-8000-00000000000d", "ended", 2147483632);
+    // this machine names Bedrock (#12): a session is posted to only when its
+    // own record since its process started shows it
+    let records = sb.base.join("state").join("provider").join("sessions");
+    std::fs::create_dir_all(&records).unwrap();
+    let rec = |sid: &str, provider: &str| {
+        std::fs::write(records.join(format!("{sid}.json")), serde_json::json!({"id": "", "session_id": sid, "at": nimitz_core::evidence::now(), "provider": provider}).to_string()).unwrap()
+    };
+    let r = sb.run(&["signal", "session:specto-rasel", "hello", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("provider.unrecorded"), "no record: refused:\n{}", r.out);
+    rec("5e55a000-0000-4000-8000-00000000000a", "firstParty");
+    let r = sb.run(&["signal", "session:specto-rasel", "hello", "--plan"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch"), "{}", r.out);
+    for sid in ["5e55a000-0000-4000-8000-00000000000a", "5e55b000-0000-4000-8000-00000000000b", "5e55c000-0000-4000-8000-00000000000c"] {
+        rec(sid, "bedrock");
+    }
     let r = sb.run(&["signal", "session:specto-rasel", "hello", "there", "--plan"]);
     assert!(r.code == 0 && r.out.contains("claude session 5e55a000 (\"specto-rasel\")") && r.out.contains("nothing is typed"), "{}", r.out);
     let r = sb.run_as("MAIN/ARGOS/CLEAN", &["signal", "session:5e55a000", "[nimitz needs-you] hello", "--yes"]);

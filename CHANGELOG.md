@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.7.16 (unreleased)
+
+### Added
+
+- **A member runs only on its machine's model provider (#12).** `nimitz
+  machine set <label> --provider anthropic|bedrock|vertex` names the
+  provider a machine's members must use, and `--claude-bin <path>` the
+  Claude Code binary it launches (kept in the shared `machines.toml`;
+  `NIMITZ_CLAUDE_BIN` still overrides). On a machine that names a provider:
+  - For bedrock or vertex the provider is forced in each member's own
+    `--settings`, which every wake keeps.
+  - Before any step of a start runs, Claude Code's own `auth status` must
+    report that provider for each launch and relaunch in it, or nothing
+    starts (`provider.mismatch`, or `provider.unconfirmed` when it cannot
+    answer). A stopped member whose saved launch lacks the provider is
+    relaunched rather than woken.
+  - After a wake, the member's SessionStart record of that start must show
+    the provider within 10 s, or it is stopped with its conversation kept.
+    An attach never wakes a member (`nimitz start` does); `nimitz layout`
+    names the fix instead.
+  - nimitz's own deliveries (needs-you notices, `signal`, Admiralty `m`)
+    reach a member only once its live process is recorded on that provider;
+    `signal session:` refuses a member's session.
+  - Adopting a stowaway with no record is a warning, and nimitz delivers
+    nothing to it until its next restart.
+  - An unreadable or newer `machines.toml` refuses every launch
+    (`provider.unreadable`).
+  A machine with a Bedrock member must name its provider (`provider.unset`,
+  fix `nimitz machine set <label> --provider bedrock`). On a machine that
+  names none and has no Bedrock member, a check that cannot run is a warning
+  only. `check` and `status` warn on a live member on the wrong provider
+  (fix: stop, then `start --fresh`, which drops its conversation); `doctor`
+  shows the provider and the Claude Code binaries it finds; `sweep` prunes
+  the records of sessions that are gone.
+  The `auth status` check gives up after 20 s (unconfirmed). On a machine
+  that names a provider, `nimitz doctor` reports Herdr's
+  `resume_agents_on_restore` (on by default) as an error: after a Herdr
+  restart Herdr runs `claude --resume` in every agent pane with PATH's
+  claude, none of the member's saved flags and no forced selector, so the
+  member runs on whatever provider that shell selects, unchecked. Set
+  `resume_agents_on_restore = false` under `[session]` in
+  `~/.config/herdr/config.toml`; nimitz never edits that file.
+  What nimitz cannot see: managed settings, the env of Claude Code's
+  background service, messages other sessions send to a member, and a turn
+  in flight that resumes on a wake before the check (see docs/usage.md). A
+  managed `allowedProviders` setting is the strongest guard.
+- **A new machine's default label** is its host name, lowercased, cut at the
+  first dot, other characters as `-`; an existing machine keeps its label.
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`).
+- On a machine whose members use Bedrock, run `nimitz machine set <label>
+  --provider bedrock`; `nimitz doctor` names the label. Members launched
+  before that are relaunched at their next start. nimitz before 0.7.16
+  ignores `machines.toml`. New state: `machines.toml` (shared) and
+  `provider/sessions/` records.
+
 ## 0.7.15 (2026-10-30)
 
 ### Changed

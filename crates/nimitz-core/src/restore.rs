@@ -1063,6 +1063,23 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
             rp.plan.warnings.extend(extra);
             let needs_relabel = crate::sessions::session_issues(env, m).iter().any(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing"));
             match found_tab {
+                // a pane runs its attach already, so Claude Code wakes it there,
+                // unchecked: where the machine checks providers, that is no
+                // wake nimitz counts on (#12)
+                TabMatch::Shown { pane, .. } if crate::provider::gated(env) => {
+                    found(rp, id, format!("{down}; pane {} runs its attach", pane.pane_id), "nothing; see the fix");
+                    fail(
+                        rp,
+                        rep,
+                        issue(
+                            "provider.wake",
+                            Severity::Error,
+                            format!("{id}'s pane {} runs its attach, which wakes the job on its saved flags with no check; this machine checks a member's provider when it wakes", pane.pane_id),
+                            Some(format!("in pane {}: ctrl-z (detach), then nimitz start {id}  # the checked wake; then nimitz open {id}", pane.pane_id)),
+                            Some(id.clone()),
+                        ),
+                    );
+                }
                 TabMatch::Shown { pane, .. } => {
                     // a pane runs its attach already: Claude Code is waking it
                     found(rp, id, format!("{down}; pane {} runs its attach", pane.pane_id), "nothing (the attach wakes it)");
@@ -1071,7 +1088,9 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 // (an attach wakes natively, on the row's conversation: after a
                 // /branch or /resume the registry's later conversation needs the
                 // wake-with-every-flag first, finding 11)
-                TabMatch::Shell { pane, rename, .. } if wants_tab && !needs_relabel && !crate::sessions::wake_target(env, id, s).relabel => match crate::layout::attach_tab(env, m) {
+                // (where the machine checks providers, an attach never wakes:
+                // the wake below goes through the gated start, then the tab)
+                TabMatch::Shell { pane, rename, .. } if wants_tab && !needs_relabel && !crate::sessions::wake_target(env, id, s).relabel && !crate::provider::gated(env) => match crate::layout::attach_tab(env, m) {
                     Ok(tab) => {
                         count(rep, lead);
                         found(rp, id, format!("{down}; its tab is a shell"), format!("wake: attach in pane {} (the attach resumes it by its id)", pane.pane_id));
