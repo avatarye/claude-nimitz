@@ -2640,19 +2640,35 @@ fn an_attach_pane_on_an_npm_claude_code_is_typed_into() {
             p["agent"] = Value::from("claude");
             p["agent_status"] = Value::from("idle");
             p["foreground"] = serde_json::json!([bin, "attach", job]);
+            // a live process (this test's), started before the install below
+            p["pid"] = Value::from(std::process::id());
         })
     };
     let root = sb.base.join("npm/node_modules/@anthropic-ai/claude-code");
     std::fs::create_dir_all(root.join("bin")).unwrap();
-    std::fs::write(root.join("package.json"), r#"{"name": "@anthropic-ai/claude-code", "version": "2.1.312"}"#).unwrap();
+    // package.json as npm left it at install: older than the process
+    let put = |version: &str, old: bool| {
+        let p = root.join("package.json");
+        std::fs::write(&p, format!(r#"{{"name": "@anthropic-ai/claude-code", "version": "{version}"}}"#)).unwrap();
+        if old {
+            let f = std::fs::File::options().write(true).open(&p).unwrap();
+            f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000)).unwrap();
+        }
+    };
+    put("2.1.312", true);
     let exe = root.join("bin/claude.exe");
     std::fs::write(&exe, "").unwrap();
     attach(exe.to_str().unwrap());
     let r = sb.run(&["signal", "MAIN/ARGOS", "from-npm", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("from-npm")), "{}", r.out);
+    // one npm wrote after the process started is an update's: not its version
+    put("2.1.312", false);
+    let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "updated-npm", "--yes"], &[("NIMITZ_SIGNAL_WAIT", "0")], None);
+    assert!(r.code != 0 && r.out.contains("(tab.unverified)"), "{}", r.out);
+    assert!(!sb.prompts("w1:p2").iter().any(|p| p.contains("updated-npm")), "{}", r.out);
     // an older one in package.json is refused as older, never typed into
-    std::fs::write(root.join("package.json"), r#"{"name": "@anthropic-ai/claude-code", "version": "2.1.292"}"#).unwrap();
+    put("2.1.292", true);
     let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "old-npm", "--yes"], &[("NIMITZ_SIGNAL_WAIT", "0")], None);
     assert!(r.code != 0 && r.out.contains("(tab.unverified)"), "{}", r.out);
     assert!(!sb.prompts("w1:p2").iter().any(|p| p.contains("old-npm")), "{}", r.out);
