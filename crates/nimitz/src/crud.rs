@@ -29,14 +29,9 @@ fn split<'a>(id: &'a Id, role: Role, what: &str) -> Result<Vec<&'a str>, String>
 }
 
 /// This machine's label: the registry's, else one made from the hostname.
-pub fn machine_label(ctx: &Ctx) -> String {
-    let r = nimitz_core::registry::load(&ctx.env);
-    if !r.machine.is_empty() {
-        return r.machine;
-    }
-    let l: String =
-        ctx.env.hostname.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect();
-    l.split('.').next().unwrap_or("this-machine").to_string()
+pub fn machine_label(ctx: &Ctx) -> Result<String, String> {
+    // one rule for every reader (`provider::machine_label_at`)
+    nimitz_core::provider::this_machine(&ctx.env)
 }
 
 // ------------------------------------------------------------------ fleet
@@ -50,7 +45,10 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
     let plan = match verb {
         "new" => {
             ctx.args.allow(&["--machine"])?;
-            let label = ctx.args.value("--machine").map(str::to_string).unwrap_or_else(|| machine_label(ctx));
+            let label = match ctx.args.value("--machine") {
+                Some(l) => l.to_string(),
+                None => machine_label(ctx)?,
+            };
             return Ok(config_plan(ctx, config::plan_fleet_new(&ctx.env, fleet, &label)));
         }
         "set" => {

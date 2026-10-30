@@ -1059,7 +1059,8 @@ fn legacy_old_fleet_session_refuses_then_adopt_stop_start_relaunches_with_labels
     // the migration's map, and the old fleet's [ARGOS]-FRESH running in the folder
     let fleet_dir = w.env.fleet_dir("MAIN");
     std::fs::write(fleet_dir.join("legacy.toml"), "[names]\n\"[ARGOS]-FRESH\" = \"MAIN/ARGOS/FRESH\"\n").unwrap();
-    let old = vec![w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
+    // (through the launch binary: on this Bedrock machine its hook records it on Bedrock)
+    let old = vec![w.env.claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
     let (rc, out) = claude::run(&old, Some(&cwd));
     assert_eq!(rc, 0, "{out}");
     let snap = w.snap();
@@ -1137,7 +1138,8 @@ fn a_migrated_ship_continues_its_newest_old_session_and_keeps_the_rest() {
     // three stopped sessions of the old [ARGOS]-FRESH in its folder
     let mut olds = vec![];
     for _ in 0..3 {
-        let old = vec![w.env.native_claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
+        // (through the launch binary: on this Bedrock machine its hook records it on Bedrock)
+    let old = vec![w.env.claude_bin.clone(), "--bg".into(), "--name".into(), "[ARGOS]-FRESH".into(), "old prompt".into()];
         let (rc, out) = claude::run(&old, Some(&cwd));
         assert_eq!(rc, 0, "{out}");
         let short = out.trim().to_string();

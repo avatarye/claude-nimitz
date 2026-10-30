@@ -111,28 +111,43 @@ hands the outcome to the member's next session start.
 
 `nimitz machine set <label> --provider anthropic|bedrock|vertex` names the API
 provider every member on that machine must run on, and `--claude-bin PATH` the
-claude a cold launch runs (`NIMITZ_CLAUDE_BIN` still wins; `''` clears either;
-the settings live in the shared `machines.toml`).
+claude a cold launch runs (`NIMITZ_CLAUDE_BIN` still wins; `''` clears either).
+The settings live in the shared `machines.toml`; a nimitz older than 0.7.15
+ignores that file, so update every machine before relying on it. A label
+nimitz does not know is set with a warning (a machine set up ahead of time).
 
-- For bedrock or vertex, a member's `--settings` env gets the selector
-  (`CLAUDE_CODE_USE_BEDROCK=1`, `CLAUDE_CODE_USE_VERTEX=1`): it beats the
-  shell's env and the folder's local settings, and the job keeps it for every
-  wake. For anthropic nothing is added.
-- Before a cold launch (and a relaunch), nimitz asks Claude Code itself which
-  provider that exact launch would use (`claude --settings <the launch's>
-  auth status --json`, in the member's folder) and refuses a mismatch before
-  anything starts (`provider.mismatch`). An answer it cannot read refuses too
-  (`provider.unconfirmed`) where a provider is named or a member runs on
-  Bedrock; on an optional machine it is a warning and the launch goes ahead.
-  A machine with no provider named may run Bedrock members only once it names
-  one (`provider.unset`).
-- After the launch, the member's SessionStart record (what its worker really
-  runs on) is checked again: a provider its selectors give that differs,
-  which only managed settings can cause, stops and removes the job (its first
-  prompt may have gone out); a model that disagrees (a custom
-  `ANTHROPIC_MODEL`, an alias) is a warning (`provider.model`).
+The gate is two things, both before anything starts:
+
+- the forced selector: for bedrock or vertex a member's `--settings` env gets
+  `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1`, which beats the
+  shell's env and the folder's local settings; the job keeps it for every
+  wake. For anthropic nothing is added;
+- the preflight: before every cold launch and relaunch of a plan (all of
+  them, before its first step), nimitz asks Claude Code itself which provider
+  that exact launch would use (`claude --settings <the launch's> auth status
+  --json`, in the member's folder) and refuses a mismatch (`provider.mismatch`).
+  An answer it cannot read refuses too (`provider.unconfirmed`) where a
+  provider is named or a member runs on Bedrock; on an optional machine it is
+  a warning. A machine with no provider named may run Bedrock members only
+  once it names one (`provider.unset`). Settings or a registry nimitz cannot
+  read (or a newer nimitz wrote) refuse every launch and wake
+  (`provider.unreadable`).
+
+What nimitz cannot see: managed settings (`/etc/claude-code`, MDM, remote
+policy) and the daemon's own env. So, as a backstop:
+
+- after a cold launch, the member's SessionStart record (what its worker
+  really runs on) is checked: a provider its selectors give that differs
+  stops and removes the job, but its first prompt has already gone out; a
+  model that disagrees (a custom `ANTHROPIC_MODEL`, an alias) only warns
+  (`provider.model`);
+- a wake sends no prompt, so there the record of that start is a real gate:
+  a job whose saved flags do not select the machine's provider (from before
+  0.7.15, or before `machine set`) is relaunched instead, and a woken job with
+  no record or the wrong one is stopped (its row and conversation stay);
+- `adopt` takes a stowaway only when its own record shows the provider;
 - `status` and `check` warn about a live member whose record differs (the
-  fix, `stop` then `start --fresh`, drops its conversation: ask first).
+  fix, `stop` then `start --fresh`, drops its conversation: ask first), and
   `doctor` shows the provider and lists the claude binaries it finds.
 
 ## Colour

@@ -2459,7 +2459,7 @@ fn e2e_102_a_bedrock_local_settings_ship_is_refused_before_its_launch() {
     }
     let w = E2e::new(102);
     w.fleet_with_ship(OK_PROMPT, "default");
-    let label = nimitz_core::provider::this_machine(&w.env);
+    let label = nimitz_core::provider::this_machine(&w.env).unwrap();
     w.ok(&["machine", "set", &label, "--provider", "anthropic", "--yes"]);
     let lead = nimitz_core::provider::record_of(&w.env, &nimitz_core::Id(w.fleet.clone())).expect("the admiral's SessionStart record");
     assert_eq!(lead.provider, "firstParty", "{lead:?}");
@@ -2489,7 +2489,7 @@ fn e2e_103_an_anthropic_machine_launches_with_the_role_prompt() {
     }
     let w = E2e::new(103);
     w.fleet_with_ship(OK_PROMPT, "default");
-    let label = nimitz_core::provider::this_machine(&w.env);
+    let label = nimitz_core::provider::this_machine(&w.env).unwrap();
     w.ok(&["machine", "set", &label, "--provider", "anthropic", "--yes"]);
     let m = w.start_ship_idle();
     let sid = m["session"]["session_id"].as_str().unwrap().to_string();

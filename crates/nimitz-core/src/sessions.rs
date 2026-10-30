@@ -758,6 +758,17 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
     // with its labels and its name: resume = native binary, NO flags, from its
     // folder (row 4). A resume restores the saved name too, so a drifted name
     // goes the relaunch way instead (row 5).
+    // a job whose saved flags do not select the machine's provider (from
+    // before 0.7.15, or before `machine set`) is relaunched with every flag
+    // instead: through the preflight, with the selector forced (#12)
+    let saved_ok = p.short_id.as_deref().is_none_or(|j| crate::provider::wake_as_saved(env, j));
+    if !saved_ok {
+        let mut v = relabel_steps(env, id, mode, p, cwd);
+        if let Some(s) = v.last_mut() {
+            s.why = "its saved launch flags do not select this machine's provider: resume it with every flag (the selector forced, the launch checked first), same history, new row".into();
+        }
+        return Ok(v);
+    }
     if p.labels.get("NIMITZ_ID") == Some(&id.0) && !needs_relabel {
         // by the job's BIRTH id (`state.json` `sessionId`): Claude Code 2.1.292
         // wakes a stopped job only by that id, and it comes back on the
@@ -1475,7 +1486,6 @@ pub fn plan_sweep(env: &Env, snap: &Snapshot, ids: Option<&[Id]>, caller: &Calle
 /// start, so the adoption binds the registry now and warns that the labels
 /// arrive at the next relaunch.
 pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller: &Caller) -> Plan {
-    let _ = env;
     let mut plan = Plan { summary: format!("adopt {session_id} as {id}"), ..Default::default() };
     let _ = caller;
     let Some(row) = snap.stowaways.iter().find(|r| r.session_id == session_id || r.short_id.as_deref() == Some(session_id)) else {
@@ -1496,6 +1506,14 @@ pub fn plan_adopt(env: &Env, snap: &Snapshot, session_id: &str, id: &Id, caller:
     if found.map(|(_, m)| m.session.as_ref().map(|p| p.pid.is_some()).unwrap_or(false)).unwrap_or(false) {
         refuse(&mut plan, "dup.live", format!("{id} already has a live session"), None, Some(id.clone()));
         return plan;
+    }
+    // where a provider is named, only a session shown to run on it (#12)
+    match crate::provider::check_adopt(env, id, &row.session_id) {
+        Ok(warn) => plan.warnings.extend(warn),
+        Err(i) => {
+            plan.refusals.push(i);
+            return plan;
+        }
     }
     plan.warnings.push(issue(
         "labels.missing",
@@ -1904,6 +1922,28 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         ));
         return out;
     }
+    // Every cold launch (a launch, or a relaunch with every flag) of the plan
+    // runs on the provider Claude Code's own resolver gives for exactly that
+    // launch, checked against the machine's, all of them BEFORE any step
+    // runs: a refusal never leaves a member stopped with no row. A wake needs
+    // the machine's settings readable too (#12)
+    for step in plan.steps.iter().filter(|s| !s.id.as_ref().is_some_and(|i| restarted.contains(i) || skipped.contains(i))) {
+        let check = match classify(step) {
+            Kind::Launch | Kind::Relaunch => crate::provider::check_launch(env, step.id.as_ref(), &step.cmd, step.cwd.as_deref()),
+            Kind::Resume { .. } => crate::provider::expected(env).map(|_| None).map_err(|e| crate::provider::unreadable(step.id.as_ref(), &e)),
+            _ => Ok(None),
+        };
+        match check {
+            Ok(warn) => out.issues.extend(warn),
+            Err(i) => {
+                for s in &plan.steps {
+                    out.ran.push((s.clone(), -1, format!("not run: {}", i.code)));
+                }
+                out.issues.push(i);
+                return out;
+            }
+        }
+    }
     let mut started: Vec<(Id, String, Option<String>)> = vec![]; // (identity, session id, folder) to verify again
     for (at, step) in plan.steps.iter().enumerate() {
         let kind = classify(step);
@@ -1989,19 +2029,6 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             Kind::Stop { short } => find_row(env, short).and_then(|r| r.pid),
             _ => None,
         };
-        // a cold launch (a launch, or a relaunch with every flag) runs on the
-        // provider Claude Code's own resolver gives for exactly this launch,
-        // checked against the machine's before anything is spawned (#12)
-        if matches!(kind, Kind::Launch | Kind::Relaunch) {
-            match crate::provider::check_launch(env, step.id.as_ref(), &step.cmd, step.cwd.as_deref()) {
-                Ok(warn) => out.issues.extend(warn),
-                Err(i) => {
-                    out.ran.push((step.clone(), -1, format!("not run: {}", i.code)));
-                    out.issues.push(i);
-                    return out;
-                }
-            }
-        }
         let since = crate::evidence::now() - 0.001;
         let (mut rc, mut text) = crate::claude::run(&step.cmd, step.cwd.as_deref());
         let mut copy_removed: Option<bool> = None;
@@ -2141,21 +2168,28 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                         // as the user's first turn after this check: the inbox
                         // makes it a peer message, so that is an attach client
                         // in a pty nimitz owns, option A of #12, for 0.7.16.)
-                        if matches!(kind, Kind::Launch | Kind::Relaunch) {
-                            match crate::provider::check_started(env, id, &sid) {
-                                Ok(None) => {}
-                                Ok(Some(warn)) => out.issues.push(warn),
-                                Err(refusal) => {
-                                    if let Some(job) = &job {
-                                        for cmd in [crate::claude::stop(env, job), crate::claude::rm(env, job)] {
-                                            let (rc2, t) = crate::claude::run(&cmd, None);
-                                            out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: format!("{id} runs on the wrong provider: stop and remove its job") }, rc2, t));
-                                        }
+                        // A wake sends no prompt: there the record of THIS start
+                        // is the gate (its saved flags were checked when the
+                        // wake was planned, `provider::wake_as_saved`); a
+                        // mismatch or no record stops it and keeps its row.
+                        let wake = matches!(kind, Kind::Resume { .. });
+                        match crate::provider::check_started(env, id, &sid, since, wake) {
+                            Ok(None) => {}
+                            Ok(Some(warn)) => out.issues.push(warn),
+                            Err(refusal) => {
+                                if let Some(job) = &job {
+                                    let cmds = if wake { vec![crate::claude::stop(env, job)] } else { vec![crate::claude::stop(env, job), crate::claude::rm(env, job)] };
+                                    let why = if wake { format!("{id} is not confirmed on this machine's provider: stop it (its row stays)") } else { format!("{id} runs on the wrong provider: stop and remove its job") };
+                                    for cmd in cmds {
+                                        let (rc2, t) = crate::claude::run(&cmd, None);
+                                        out.ran.push((Step { id: Some(id.clone()), cmd, cwd: None, why: why.clone() }, rc2, t));
+                                    }
+                                    if !wake {
                                         row_gone_within(env, job, 3.0);
                                     }
-                                    out.issues.push(refusal);
-                                    return out;
                                 }
+                                out.issues.push(refusal);
+                                return out;
                             }
                         }
                         let want = want_job.clone().or(said);

@@ -339,6 +339,12 @@ impl World {
             let job = (kind == "background").then(|| short.as_str());
             self.event("SessionStart", &sid, Some("startup"), &l, started, fake_pid(&short), job, kind);
         }
+        // an unlabelled session ran nimitz's hook too (the plugin's): its
+        // provider record, Bedrock as everything in this world (#12)
+        if o.labels.is_none() && o.labels_of.is_none() && o.labels_raw.is_none() {
+            let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
+            crate::provider::record_session(&env(&self.base), &sid, &json!({"model": "us.anthropic.claude-opus-5-5"}), &bedrock);
+        }
         // every session that ran has a transcript in its folder's project dir
         let proj = claude_home(&self.base).join("projects").join(crate::evidence::project_dir_name(cwd));
         let _ = fs::create_dir_all(&proj);
@@ -702,7 +708,7 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     crate::formats::record_machine(&env(&base));
     // the wrapper launches on Bedrock (like ACME): the machine says so (#12)
     let e = env(&base);
-    apply_cfg(&e, &crate::provider::plan_machine_set(&e, &crate::provider::this_machine(&e), None, Some("bedrock")))?;
+    apply_cfg(&e, &crate::provider::plan_machine_set(&e, &crate::provider::this_machine(&e)?, None, Some("bedrock")))?;
     Ok(())
 }
 

@@ -8,6 +8,9 @@ pub struct Env {
     pub state: PathBuf,
     pub claude_home: PathBuf,
     pub claude_bin: String,
+    /// `claude_bin` came from `NIMITZ_CLAUDE_BIN` (else this machine's
+    /// `claude_bin` or PATH: a long-lived process reads it again per action)
+    pub claude_bin_set: bool,
     pub native_claude_bin: String,
     pub herdr_bin: Option<String>,
     pub hostname: String,
@@ -153,7 +156,7 @@ fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
 }
 
 /// The `claude.exe` an npm `claude.cmd` shim starts, when it is there.
-fn npm_target(found: &Path) -> Option<PathBuf> {
+pub(crate) fn npm_target(found: &Path) -> Option<PathBuf> {
     let ext = found.extension()?.to_string_lossy().to_lowercase();
     if ext != "cmd" && ext != "bat" {
         return None;
@@ -202,6 +205,7 @@ impl Env {
         let state = expand(&get("NIMITZ_STATE").unwrap_or("~/.local/state/nimitz".into()), &home);
         let hostname = get("NIMITZ_HOSTNAME").map(|h| h.to_lowercase()).unwrap_or_else(local_hostname);
         Env {
+            claude_bin_set: get("NIMITZ_CLAUDE_BIN").is_some(),
             claude_home: expand(&get("NIMITZ_CLAUDE_HOME").unwrap_or("~/.claude".into()), &home),
             // the cold-launch binary: NIMITZ_CLAUDE_BIN, else this machine's
             // `claude_bin` (machines.toml, #12), else PATH's

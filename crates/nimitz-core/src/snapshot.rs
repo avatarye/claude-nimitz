@@ -634,6 +634,8 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
         for f in &mut snap.fleets {
             f.members_mut().for_each(|m| m.issues.extend(provider.iter().filter(|i| i.id.as_ref() == Some(&m.id)).cloned()));
         }
+        // (settings that cannot be read: about the machine, no member)
+        snap.issues.extend(provider.into_iter().filter(|i| i.id.is_none()));
     }
     snap
 }

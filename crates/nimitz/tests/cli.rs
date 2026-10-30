@@ -838,6 +838,66 @@ fn a_cold_launch_runs_only_on_the_machines_provider() {
     assert_ne!(sb.run(&["machine", "set", &label, "--claude-bin", "claude", "--yes"]).code, 0);
 }
 
+/// #12 review: a wake on another provider than its saved flags is a
+/// relaunch, checked before anything is stopped or removed; a woken worker
+/// the record shows on another provider is stopped, its row kept; settings
+/// that cannot be read refuse everything; doctor passes the forced selector;
+/// an unknown label is a warning.
+#[test]
+fn wakes_unreadable_settings_doctor_and_labels_under_the_provider_rule() {
+    let sb = Sb::new(false);
+    make_top(&sb);
+    let machines = std::path::Path::new(&sb.vars["NIMITZ_HOME"]).join("machines.toml");
+    let m: toml::Table = toml::from_str(&std::fs::read_to_string(&machines).unwrap()).unwrap();
+    let label = m["machines"].as_table().unwrap().keys().next().unwrap().clone();
+    let knob = |k: &str, v: Option<Value>| {
+        let world = sb.base.join("world.json");
+        let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+        match v {
+            Some(v) => w[k] = v,
+            None => {
+                w.as_object_mut().unwrap().remove(k);
+            }
+        }
+        std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    };
+    assert_eq!(sb.run(&["start", "TOP", "--yes"]).code, 0);
+    let job = sb.member("TOP")["session"]["short_id"].as_str().unwrap().to_string();
+    assert_eq!(sb.run(&["stop", "TOP", "--yes"]).code, 0);
+    // the machine moves to vertex: TOP's saved flags select Bedrock, so its
+    // wake is a relaunch with every flag; the wrapper's Bedrock fails its
+    // preflight, and nothing ran: its row is still there
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "vertex", "--yes"]).code, 0);
+    let plan = sb.run(&["start", "TOP", "--plan"]).out;
+    assert!(plan.contains("do not select this machine's provider"), "{plan}");
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("expects vertex"), "{}", r.out);
+    assert_eq!(sb.member("TOP")["session"]["short_id"].as_str(), Some(job.as_str()), "the row stays: nothing ran before the preflight");
+    // back on bedrock: a plain wake, and the worker's record is the gate
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "bedrock", "--yes"]).code, 0);
+    knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    let r = sb.run(&["start", "TOP", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("row and conversation are kept"), "{}", r.out);
+    let top = sb.member("TOP");
+    assert!(top["session"]["pid"].is_null() && top["session"]["short_id"].as_str() == Some(job.as_str()), "stopped, row kept: {top}");
+    knob("hook_env", None);
+    assert_eq!(sb.run(&["start", "TOP", "--yes"]).code, 0, "a matching wake");
+    // doctor through a claude with no Bedrock of its own: the forced selector does it
+    let native = sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"].clone();
+    let d = raw(&sb.vars, &["doctor"], &[("NIMITZ_CLAUDE_BIN", native.as_str())], None).out;
+    assert!(d.contains(&format!("provider: machine {label} expects bedrock; a launch here gives bedrock")), "{d}");
+    // an unknown label: set, with a warning naming the known ones
+    let r = sb.run(&["machine", "set", "far-box", "--provider", "anthropic", "--yes"]);
+    assert!(r.code == 0 && r.out.contains("machine.unknown") && r.out.contains(&label), "{}", r.out);
+    // settings nimitz cannot read (here: a newer nimitz's): nothing launches or wakes
+    std::fs::write(&machines, "format = 9\n[machines.x]\n").unwrap();
+    let r = sb.run(&["start", "TOP/SQ", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.unreadable"), "{}", r.out);
+    assert!(sb.member("TOP/SQ")["session"].is_null());
+    assert!(sb.run(&["doctor"]).out.contains("provider.unreadable"));
+    assert!(sb.run(&["check"]).out.contains("provider.unreadable"));
+}
+
 /// A parent that several members' chains bring up is launched once: two
 /// squadrons under a never-started admiral, two ships under a never-started
 /// commodore.

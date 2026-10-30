@@ -149,7 +149,10 @@ fn trusted(ctx: &Ctx, dir: &Path) -> bool {
 pub fn init(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&["--label"])?;
     ctx.args.at_most(0)?;
-    let label = ctx.args.value("--label").map(str::to_string).unwrap_or_else(|| crate::crud::machine_label(ctx));
+    let label = match ctx.args.value("--label") {
+        Some(l) => l.to_string(),
+        None => crate::crud::machine_label(ctx)?,
+    };
     let mut plan = Plan { summary: format!("init nimitz on this machine as {label}"), ..Default::default() };
     if !nimitz_core::config::valid_label(&label) {
         plan.refusals.push(refusal("config.invalid", format!("machine label {label:?} is not {}", nimitz_core::config::LABEL_RULE), Some("nimitz init --label <label>".into()), None));
@@ -419,9 +422,21 @@ fn kept_registries(env: &nimitz_core::env::Env, r: &mut Report) {
 fn provider_lines(ctx: &Ctx, r: &mut Report) {
     use nimitz_core::provider;
     let env = &ctx.env;
-    let label = provider::this_machine(env);
-    let expected = provider::expected(env);
-    let here = provider::preflight(&[env.claude_bin.clone()], Some(&env.home.to_string_lossy()));
+    let (label, expected) = match provider::this_machine(env).and_then(|l| provider::expected(env).map(|e| (l, e))) {
+        Ok(x) => x,
+        Err(e) => {
+            let i = provider::unreadable(None, &e);
+            r.err(&format!("provider: {} ({})", i.message, i.code), i.fix.as_deref());
+            return;
+        }
+    };
+    // the launch's own --settings for the provider: the forced selector, as
+    // a launch passes it
+    let mut argv = vec![env.claude_bin.clone()];
+    if let Some((k, v)) = provider::forced_selector(env) {
+        argv.extend(["--settings".to_string(), serde_json::json!({"env": {k: v}}).to_string()]);
+    }
+    let here = provider::preflight(&argv, Some(&env.home.to_string_lossy()));
     let recorded: std::collections::BTreeMap<String, usize> = provider::records(env).iter().fold(Default::default(), |mut m, rec| {
         *m.entry(provider::name_of(&rec.provider)).or_default() += 1;
         m
@@ -435,7 +450,11 @@ fn provider_lines(ctx: &Ctx, r: &mut Report) {
             r.err(&format!("provider: machine {label} names none, and it runs Bedrock (a launch here gives {}; members: {members}): cold launches are refused", provider::name_of(got)), Some(&format!("nimitz machine set {label} --provider bedrock")))
         }
         (None, Ok(got)) => r.info(&format!("provider: machine {label} names none (optional here); a launch here gives {}; members: {members}", provider::name_of(got)), Some(&set)),
-        (_, Err(e)) => r.warn(&format!("provider: machine {label} expects {}; Claude Code's own answer could not be read: {e}", expected.as_deref().unwrap_or("none")), Some("check `claude auth status --json`")),
+        // as a launch would take it: refused where it is strict, else a warning
+        (_, Err(e)) if provider::strict(env, expected.as_deref()) => {
+            r.err(&format!("provider: machine {label} expects {}; Claude Code's own answer could not be read, so cold launches are refused: {e}", expected.as_deref().unwrap_or("none (it runs Bedrock members)")), Some("check `claude auth status --json`"))
+        }
+        (_, Err(e)) => r.warn(&format!("provider: machine {label} names none; Claude Code's own answer could not be read (launches go ahead, unchecked): {e}"), Some("check `claude auth status --json`")),
     }
     let cands = provider::claude_bin_candidates(env);
     if !cands.is_empty() {
