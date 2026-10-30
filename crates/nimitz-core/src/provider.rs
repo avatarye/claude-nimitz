@@ -553,8 +553,9 @@ pub fn recorded_on(env: &Env, api: &str) -> bool {
 }
 
 /// May stowaway session `sid` be adopted on this machine? Where a provider is
-/// named, its own SessionStart record must show that provider (refused
-/// otherwise); on an optional machine a missing record is a warning.
+/// named, a record that shows another provider refuses; no record is a
+/// warning (bound, unverified until its next restart: no delivery reaches it
+/// meanwhile); on an optional machine a missing record is a warning too.
 pub fn check_adopt(env: &Env, id: &Id, sid: &str) -> Result<Option<Issue>, Issue> {
     let want = match expected(env) {
         Ok(w) => w,
@@ -571,13 +572,15 @@ pub fn check_adopt(env: &Env, id: &Id, sid: &str) -> Result<Option<Issue>, Issue
             fix: Some(fresh),
             id: Some(id.clone()),
         }),
-        (Some(w), None) => Err(Issue {
+        // bound, unverified: no delivery reaches it (`delivery_gate`), and its
+        // next restart goes through the preflight or the wake gate
+        (Some(w), None) => Ok(Some(Issue {
             code: "provider.unrecorded".into(),
-            severity: Severity::Error,
-            message: format!("session {sid} has no provider record (its SessionStart ran before nimitz 0.7.15, or without nimitz's hooks), so it cannot be shown to run on {w}; it is not adopted"),
-            fix: Some(fresh),
+            severity: Severity::Warn,
+            message: format!("session {sid} has no provider record (its SessionStart ran before nimitz 0.7.15, or without nimitz's hooks), so it is not shown to run on {w}: {id} is unverified until its next restart, and nimitz delivers nothing to it until then"),
+            fix: Some(format!("nimitz restart {id}  # when it suits: relaunched with every flag, checked first, same conversation")),
             id: Some(id.clone()),
-        }),
+        })),
         (None, None) => Ok(Some(Issue {
             code: "provider.unrecorded".into(),
             severity: Severity::Warn,
@@ -911,7 +914,8 @@ mod tests {
         assert!(!wake_as_saved(&env, "j1"), "the later --settings wins");
         assert!(!wake_as_saved(&env, "nojob"));
         // adopt: the stowaway's own record
-        assert_eq!(check_adopt(&env, &id, "stow").unwrap_err().code, "provider.unrecorded");
+        let w = check_adopt(&env, &id, "stow").unwrap().unwrap();
+        assert!(w.code == "provider.unrecorded" && w.severity == Severity::Warn && w.message.contains("unverified until its next restart"), "{w:?}");
         record_session(&env, "stow", &json!({}), &HashMap::new());
         assert_eq!(check_adopt(&env, &id, "stow").unwrap_err().code, "provider.mismatch");
         record_session(&env, "stow", &json!({}), &bedrock);

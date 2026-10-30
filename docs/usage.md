@@ -152,8 +152,10 @@ policy) and the daemon's own env. So, as a backstop:
   session's own messages to a woken job, and anything Claude Code holds for
   it, are not nimitz's to stop; the post-wake gate stops such a job within
   seconds;
-- `adopt` takes a stowaway only when its own record shows the provider
-  (`sweep` drops the records of sessions that are gone);
+- `adopt` refuses a stowaway whose own record shows another provider; one
+  with no record is bound with a warning: unverified, and nimitz delivers
+  nothing to it until its next restart, which is checked (`sweep` drops the
+  records of sessions that are gone);
 - `status` and `check` warn about a live member whose record differs (the
   fix, `stop` then `start --fresh`, drops its conversation: ask first), and
   `doctor` shows the provider and lists the claude binaries it finds.
