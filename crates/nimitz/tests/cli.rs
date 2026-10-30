@@ -2626,6 +2626,53 @@ fn attach_pane_typing(claimed: Option<&str>) {
     assert_eq!(sb.prompts("w1:p2").len(), before, "nothing typed into the agent view: {}", r.out);
 }
 
+/// An npm Claude Code (#13): no version in its path, so it is read from the
+/// package's package.json; with none there, the machine's own version counts
+/// only for the very binary nimitz resolved (`NIMITZ_NATIVE_CLAUDE_BIN`).
+#[test]
+fn an_attach_pane_on_an_npm_claude_code_is_typed_into() {
+    let sb = Sb::new(true);
+    let job = sb.member("MAIN/ARGOS")["session"]["short_id"].as_str().unwrap().to_string();
+    let attach = |bin: &str| {
+        sb.herdr_world(|w| {
+            let p = &mut w["panes"][1];
+            p.as_object_mut().unwrap().remove("agent_session");
+            p["agent"] = Value::from("claude");
+            p["agent_status"] = Value::from("idle");
+            p["foreground"] = serde_json::json!([bin, "attach", job]);
+        })
+    };
+    let root = sb.base.join("npm/node_modules/@anthropic-ai/claude-code");
+    std::fs::create_dir_all(root.join("bin")).unwrap();
+    std::fs::write(root.join("package.json"), r#"{"name": "@anthropic-ai/claude-code", "version": "2.1.312"}"#).unwrap();
+    let exe = root.join("bin/claude.exe");
+    std::fs::write(&exe, "").unwrap();
+    attach(exe.to_str().unwrap());
+    let r = sb.run(&["signal", "MAIN/ARGOS", "from-npm", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("from-npm")), "{}", r.out);
+    // an older one in package.json is refused as older, never typed into
+    std::fs::write(root.join("package.json"), r#"{"name": "@anthropic-ai/claude-code", "version": "2.1.292"}"#).unwrap();
+    let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "old-npm", "--yes"], &[("NIMITZ_SIGNAL_WAIT", "0")], None);
+    assert!(r.code != 0 && r.out.contains("(tab.unverified)"), "{}", r.out);
+    assert!(!sb.prompts("w1:p2").iter().any(|p| p.contains("old-npm")), "{}", r.out);
+    // no package.json: the machine's version, for nimitz's own binary only
+    std::fs::remove_file(root.join("package.json")).unwrap();
+    let native = sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"].clone();
+    let world = sb.base.join("world.json");
+    let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+    w["cc_version"] = Value::from("2.1.300");
+    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    attach(&native);
+    let r = sb.run(&["signal", "MAIN/ARGOS", "from-native", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.prompts("w1:p2").iter().any(|p| p.contains("from-native")), "{}", r.out);
+    attach(exe.to_str().unwrap());
+    let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "unknown", "--yes"], &[("NIMITZ_SIGNAL_WAIT", "0")], None);
+    assert!(r.code != 0 && r.out.contains("(tab.unverified)"), "another binary stays unknown: {}", r.out);
+    assert!(!sb.prompts("w1:p2").iter().any(|p| p.contains("unknown")), "{}", r.out);
+}
+
 /// A Unix socket that stands for a session's inbox: every line it gets.
 #[cfg(unix)]
 fn inbox_listener(path: &Path) -> std::sync::mpsc::Receiver<String> {

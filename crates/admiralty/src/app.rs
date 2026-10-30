@@ -1602,22 +1602,31 @@ impl App {
             return;
         }
         let body = actions::message_text(text);
+        // what was sent, refused or failed stays in the action log (#13),
+        // after the notification line has moved on
+        let sent = format!("{} via {}: {}", plan.to, plan.via, nimitz_mux::sanitize_text(text));
         if let Some(job) = &plan.attach_job {
             let check = nimitz_mux::attach_check(self.ctx.mux.as_ref(), &plan.pane, job);
             if check != nimitz_mux::AttachCheck::Exact {
-                self.notify(format!("Not sent to {}: {}; nothing was typed", plan.via, check.refusal(&plan.pane.pane_id, job)), st(mono::ERROR));
+                let why = check.refusal(&plan.pane.pane_id, job);
+                actions::log(&self.ctx.env, "message refused", &format!("{sent} ({why})"));
+                self.notify(format!("Not sent to {}: {why}; nothing was typed", plan.via), st(mono::ERROR));
                 return;
             }
         }
         match self.ctx.mux.type_text(&plan.pane, &body) {
             Ok(()) if plan.attach_job.is_some() && nimitz_mux::typed_into_view(self.ctx.mux.as_ref(), &plan.pane) => {
+                actions::log(&self.ctx.env, "message failed", &format!("{sent} (typed into the agent view: an /exit raced the typing)"));
                 self.notify(format!("Typed into {}'s pane {}, but it runs the agent view now (an /exit raced the typing): check it for a dispatched session", plan.via, plan.pane.pane_id), st(mono::ERROR));
             }
             Ok(()) => {
-                actions::log(&self.ctx.env, "message", &format!("{} via {}: {}", plan.to, plan.via, nimitz_mux::sanitize_text(text)));
+                actions::log(&self.ctx.env, "message", &sent);
                 self.notify(format!("Sent to {}", plan.to), st(mono::BUSY));
             }
-            Err(e) => self.notify(format!("Not sent to {}: {e}", plan.via), st(mono::ERROR)),
+            Err(e) => {
+                actions::log(&self.ctx.env, "message failed", &format!("{sent} ({e})"));
+                self.notify(format!("Not sent to {}: {e}", plan.via), st(mono::ERROR));
+            }
         }
     }
 
