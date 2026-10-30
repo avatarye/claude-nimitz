@@ -262,7 +262,9 @@ pub fn available(caps: Caps, snap: &Snapshot, target: &Target, act: Act) -> Resu
         (Act::Open, Target::Stowaway(sid)) => match snap.stowaways.iter().find(|s| &s.session_id == sid) {
             Some(s) if s.pid.is_some() && s.short_id.is_some() => Ok(()),
             Some(s) if s.pid.is_some() => Err("a process with no job (interactive or SDK): it lives in the terminal that started it".into()),
-            _ => Err("not running".into()),
+            // never woken by an attach (unchecked, #12): through a member's start
+            Some(s) => Err(format!("not running; a stowaway is not woken here. Fix: adopt it (nimitz adopt {} <id>), then nimitz start <id>", s.short_id.as_deref().unwrap_or(&s.session_id))),
+            None => Err("not running".into()),
         },
         (Act::Open, _) => Err("open names a running session".into()),
         (Act::Stop, Target::Member(id)) => {
