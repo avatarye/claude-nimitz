@@ -1518,7 +1518,7 @@ fn an_open_crew_fold_is_saved_and_loads_again() {
 #[test]
 fn a_newer_or_unreadable_ui_state_is_never_written_over() {
     let (b, id) = crew_world();
-    let newer = r#"{"format": 2, "expanded": {}, "filter": "x", "fleet_states": [], "flagged_only": false, "show_stowaways": true, "future": 1}"#;
+    let newer = r#"{"format": 3, "expanded": {}, "filter": "x", "fleet_states": [], "flagged_only": false, "show_stowaways": true, "future": 1}"#;
     for raw in [newer, "{not json"] {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("ui.json");
@@ -2239,6 +2239,8 @@ fn ctrl_o_in_each_picker_does_what_enter_on_the_row_does() {
     // open a picker, select the entry for `row`, press `key`
     let pick = |picker: &str, row: &str, live: bool, key: Option<char>| {
         let mut t = fixture_app(fixtures::demo(), live);
+        // every row, panes or not (the finder's toggles off)
+        t.app.finder = admiralty::finder::Toggles::all();
         match picker {
             "space" => {
                 press(&mut t.app, KeyCode::Char(' '));

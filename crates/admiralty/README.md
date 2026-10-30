@@ -140,7 +140,13 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 `space` opens the finder: every member of every fleet, one line each in tree
 order (its path `MAIN/ARGOS/SIGNAL`, its expected name `[MAIN.ARGOS]-SIGNAL`,
-its status word and its topic), then the stowaways by short id and name.
+its status word and its topic), then the stowaways by short id and name. By
+default it lists only the rows with a live pane and matches path, name and
+status word, not the topic; the header says what is hidden and which toggles
+are on (`5 / 40 · 35 without a pane  [pane] [no topic]`). One key each, kept
+with the other sticky state: `ctrl-a` rows with a pane only, `ctrl-t` match
+the topic too, `ctrl-s` hide stowaways, `ctrl-f` this fleet's tab only,
+`ctrl-l` ships only (no leads).
 Matching is fzf's (the `nucleo-matcher` crate, built in): space-separated terms
 must all match (`argos busy`), a letter at a word start scores higher, and a
 term that spells the path's word initials in order ranks first (`mas`:

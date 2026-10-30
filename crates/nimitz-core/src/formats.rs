@@ -153,7 +153,7 @@ pub static ARTIFACTS: &[Artifact] = &[
     Artifact { name: "inbox-records", path: "S/inbox/*.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: inbox_dir, wanted: None, lift: None },
     Artifact { name: "needs", path: "S/needs/*.json", scope: Scope::Local, current: 2, oldest: 1, kept: Kept::Manifest, steps: NEEDS_STEPS, find: needs_dir, wanted: None, lift: None },
     Artifact { name: "own-pins", path: "S/pins.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Manifest, steps: &[], find: pins_file, wanted: None, lift: None },
-    Artifact { name: "admiralty-ui", path: "S/admiralty-ui.json", scope: Scope::Local, current: 1, oldest: 1, kept: Kept::Json("format"), steps: &[], find: admiralty_ui, wanted: None, lift: None },
+    Artifact { name: "admiralty-ui", path: "S/admiralty-ui.json", scope: Scope::Local, current: 2, oldest: 1, kept: Kept::Json("format"), steps: ADMIRALTY_UI_STEPS, find: admiralty_ui, wanted: None, lift: None },
 ];
 
 /// The artifact called `name`.
@@ -217,6 +217,25 @@ static NEEDS_STEPS: &[Step] = &[Step {
     min_nimitz: None,
     apply: Apply::Nothing,
 }];
+
+static ADMIRALTY_UI_STEPS: &[Step] = &[Step {
+    artifact: "admiralty-ui",
+    from: 1,
+    to: 2,
+    scope: Scope::Local,
+    summary: "format 2 (the finder's toggles, optional: absent, the defaults); every other key as it was",
+    min_nimitz: None,
+    apply: Apply::Bytes(admiralty_ui_1_2),
+}];
+
+/// `admiralty-ui` 1 -> 2: `"format": 2` (the finder's toggles are optional);
+/// every other key as it was.
+pub fn admiralty_ui_1_2(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let v: Value = serde_json::from_slice(bytes).map_err(|e| format!("does not parse: {e}"))?;
+    let Value::Object(mut m) = v else { return Err("not a JSON object".into()) };
+    m.insert("format".into(), Value::from(2));
+    serde_json::to_vec_pretty(&Value::Object(m)).map_err(|e| e.to_string())
+}
 
 /// `fleet` 1 -> 2: `format = 2` and `min_nimitz = "0.5.0"` above the first
 /// table; the rest of the file, comments included, as it was.
@@ -1596,6 +1615,19 @@ mod tests {
     }
 
     // ---------------------------------------------------------------- the steps
+
+    #[test]
+    fn admiralty_ui_1_2_stamps_format_2_and_keeps_every_key() {
+        let v1 = fixture("admiralty-ui/v1.json");
+        let a = artifact("admiralty-ui").unwrap();
+        assert_eq!(a.version_of(&v1), Some(1));
+        let v2 = admiralty_ui_1_2(&v1).unwrap();
+        assert_eq!(a.version_of(&v2), Some(2));
+        let (mut old, new): (Value, Value) = (serde_json::from_slice(&v1).unwrap(), serde_json::from_slice(&v2).unwrap());
+        old["format"] = Value::from(2);
+        assert_eq!(old, new);
+        assert_eq!(admiralty_ui_1_2(&v2).unwrap(), v2, "idempotent");
+    }
 
     #[test]
     fn registry_2_3_stamps_the_0_4_0_file_and_keeps_every_record() {

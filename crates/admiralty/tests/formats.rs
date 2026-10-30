@@ -9,7 +9,8 @@ use std::path::Path;
 #[test]
 fn formats_shapes_are_pinned() {
     let example = serde_json::json!({"format": 1, "expanded": {"MAIN": true}, "filter": "argos", "fleet_states": [true, false],
-        "flagged_only": true, "show_stowaways": true, "tab": "MAIN", "anim": false});
+        "flagged_only": true, "show_stowaways": true, "tab": "MAIN", "anim": false,
+        "finder": {"pane_only": false, "topic": true, "no_stowaways": true, "this_fleet": true, "ships_only": true}});
     let saved: admiralty::app::Saved = serde_json::from_value(example).unwrap();
     let text = serde_json::to_string_pretty(&saved).unwrap() + "\n";
     let v = nimitz_core::formats::current("admiralty-ui");
@@ -30,4 +31,14 @@ fn formats_shapes_are_pinned() {
         "the shape of app::Saved changed (artifact admiralty-ui, version {v}): bump admiralty-ui's version in nimitz_core::formats::ARTIFACTS, add the step {v} -> {}, add the fixture nimitz-core/tests/fixtures/formats/admiralty-ui/v{v}.json, then run NIMITZ_BLESS=1 cargo test -p admiralty --test formats\n--- golden\n{golden}\n--- now\n{text}",
         v + 1
     );
+}
+
+/// The format-1 fixture through its step reads as `Saved`, the finder's
+/// toggles at their defaults (#14).
+#[test]
+fn the_v1_state_reads_after_its_step() {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nimitz-core/tests/fixtures/formats/admiralty-ui/v1.json");
+    let v2 = nimitz_core::formats::admiralty_ui_1_2(&std::fs::read(p).unwrap()).unwrap();
+    let saved: admiralty::app::Saved = serde_json::from_slice(&v2).unwrap();
+    assert_eq!((saved.format, saved.filter.as_str(), saved.finder), (2, "argos", admiralty::finder::Toggles::default()));
 }

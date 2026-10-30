@@ -110,6 +110,9 @@ pub struct Saved {
     /// status motion on (`v` turns it off; `NIMITZ_NO_ANIM=1` or `NO_COLOR` keep it off)
     #[serde(default = "on")]
     pub anim: bool,
+    /// the finder's toggles (format 2, #14)
+    #[serde(default)]
+    pub finder: crate::finder::Toggles,
 }
 
 fn on() -> bool {
@@ -209,6 +212,8 @@ pub struct App {
     pub show_stowaways: bool,
     pub flagged_only: bool,
     pub fleet_states: [bool; 7],
+    /// the finder's toggles, as the user left them (kept)
+    pub finder: crate::finder::Toggles,
     /// the fleet tab shown (a fleet id, or view::UNASSIGNED); fixed up on each rebuild
     pub tab: Option<String>,
     pub modal: Option<Modal>,
@@ -259,7 +264,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("h / l", "fold or go to parent / unfold or go to first child"),
     ("gg / G", "top / bottom"),
     ("ctrl-d / ctrl-u", "half page down / up"),
-    ("space", "find a member or stowaway in every fleet by its path, name, status or topic (fuzzy, as fzf; all terms must match); enter puts the cursor on it, ctrl-o jumps to its pane"),
+    ("space", "find a member or stowaway in every fleet by its path, name or status (fuzzy, as fzf; all terms must match); enter puts the cursor on it, ctrl-o jumps to its pane"),
+    ("  in the finder", "ctrl-a only rows with a pane (on at first) / ctrl-t match the topic too / ctrl-s hide stowaways / ctrl-f this fleet only / ctrl-l ships only; the header shows each and what it hides; kept"),
     ("z", "fold / unfold; on a member with crew done over 30 min ago: show / hide them (+N done)"),
     ("v", "status motion on / off (spinners for busy, a pulse for needs you; saved; NIMITZ_NO_ANIM=1 or NO_COLOR keep it off)"),
     ("/  n / N", "filter by name, in every fleet; next / previous match"),
@@ -327,6 +333,7 @@ impl App {
             show_stowaways: true,
             flagged_only: false,
             fleet_states: [true; 7],
+            finder: crate::finder::Toggles::default(),
             tab: None,
             modal: None,
             toast: None,
@@ -373,6 +380,7 @@ impl App {
             show_stowaways: self.show_stowaways,
             tab: self.tab.clone(),
             anim: self.anim,
+            finder: self.finder,
         }
     }
 
@@ -431,6 +439,7 @@ impl App {
         self.show_stowaways = s.show_stowaways;
         self.tab = s.tab.clone();
         self.anim = s.anim;
+        self.finder = s.finder;
         self.last_saved = Some(s);
     }
 
@@ -486,7 +495,7 @@ impl App {
             self.sq_rank = now;
         }
         if let Some(Modal::Finder(fd)) = self.modal.as_mut() {
-            fd.set_snapshot(&b.snap);
+            fd.set_snapshot(&b.snap, &b.panes);
         }
         self.bundle = Some(b);
         self.rebuild();
@@ -1250,7 +1259,7 @@ impl App {
             (KeyCode::Char('d'), true) | (KeyCode::PageDown, _) => self.cursor = (self.cursor + self.page / 2).min(last),
             (KeyCode::Char('u'), true) | (KeyCode::PageUp, _) => self.cursor = self.cursor.saturating_sub(self.page / 2),
             (KeyCode::Char(' '), _) => match &self.bundle {
-                Some(b) => self.modal = Some(Modal::Finder(Box::new(crate::finder::Finder::new(&b.snap)))),
+                Some(b) => self.modal = Some(Modal::Finder(Box::new(crate::finder::Finder::with(&b.snap, &b.panes, self.tab.as_deref(), self.finder)))),
                 None => self.notify("loading ...", st(mono::COMMENT)),
             },
             (KeyCode::Enter, _) => {
@@ -1381,6 +1390,11 @@ impl App {
                 }
                 KeyCode::Char('u') if ctrl => {
                     fd.clear();
+                    self.modal = Some(Modal::Finder(fd));
+                }
+                // the noise toggles (#14): kept for the next finder and the next run
+                KeyCode::Char(c) if ctrl && fd.flip(c) => {
+                    self.finder = fd.toggles;
                     self.modal = Some(Modal::Finder(fd));
                 }
                 KeyCode::Backspace => {

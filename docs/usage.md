@@ -118,7 +118,9 @@ pipe or a capture, and `NO_COLOR` still wins.
 Keys: `j`/`k` move, `tab` next fleet, `space` find a member in every fleet
 (fuzzy, as fzf: `wwa` finds `WORK/WEB/API`, `web busy` the busy ones of WEB;
 `enter` puts the cursor on it, `ctrl-o` jumps to its pane; `!` and `i` the
-same), `z` fold / unfold, `enter` jump to a pane, `a` start, `A` a pane for
+same; it lists only rows with a pane and leaves the topic out until `ctrl-a`
+and `ctrl-t`; `ctrl-s` hides stowaways, `ctrl-f` keeps this fleet, `ctrl-l`
+the ships), `z` fold / unfold, `enter` jump to a pane, `a` start, `A` a pane for
 it, `x` more actions with the row's detail below them (stop, restart, sweep,
 rm, adopt; on a fleet: `R` muster), `u` up a fleet with its parked ships, `m`
 message, `!` what waits on you, `i` every issue with its fix, `c`/`e`/`D`

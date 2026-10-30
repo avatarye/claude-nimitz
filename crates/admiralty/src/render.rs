@@ -21,11 +21,22 @@ use crate::frames::{layout, pad, selectable, wrap};
 use crate::theme::{bold, mono, severity_color, severity_word, st};
 use crate::view::FleetState;
 
-/// Where the finder's detail panel sits beside its list: the right part of
-/// the body, full height, 45% of the width (48 to 90 columns, never the whole list).
-pub fn detail_area(body: Rect) -> Rect {
-    let w = (body.width * 45 / 100).clamp(48, 90).min(body.width.saturating_sub(4)).max(body.width.min(20));
-    Rect { x: body.x + body.width - w, y: body.y, width: w, height: body.height }
+/// Where the finder's list and its detail panel sit, for `rows` candidates.
+/// On a body 120 columns wide or more, one block from the body's left edge:
+/// the list (up to 110 columns), then the detail directly right of it (45%
+/// of the body, 48 to 90 columns), both from the second row down (#14).
+/// Narrower: the list centred in `area`, no detail.
+pub fn finder_areas(area: Rect, body: Rect, rows: usize) -> (Rect, Option<Rect>) {
+    let want_h = rows as u16 + 7;
+    if body.width < 120 {
+        return (centered(area, 110, want_h), None);
+    }
+    let dw = (body.width * 45 / 100).clamp(48, 90);
+    let lw = body.width.saturating_sub(dw).min(110);
+    // never past the body (a short screen: the status rows stay clear)
+    let h = body.height.saturating_sub(1);
+    let list = Rect { x: body.x, y: body.y + 1, width: lw, height: h.min(want_h) };
+    (list, Some(Rect { x: list.x + lw, y: list.y, width: dw, height: h }))
 }
 
 pub fn draw(app: &mut App, f: &mut Frame) {
@@ -721,16 +732,8 @@ fn detail_box(f: &mut Frame, r: Rect, text: Vec<Line<'static>>, scroll: Option<u
 /// The finder: the query, the ranked list with the matched letters lit, and
 /// beside it (when the screen is wide enough) the selected one's detail.
 fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
-    let preview = body.width >= 120;
-    let right = detail_area(body);
-    let r = if preview {
-        let w = right.x.saturating_sub(body.x + 1).min(110);
-        // never past the body (a short screen: the status rows stay clear)
-        let h = body.height.saturating_sub(1).min(fd.cands.len() as u16 + 7);
-        Rect { x: body.x, y: body.y + 1, width: w, height: h }
-    } else {
-        centered(area, 110, fd.cands.len() as u16 + 7)
-    };
+    // one more row for the toggle keys
+    let (r, right) = finder_areas(area, body, fd.cands.len() + 1);
     let inner_w = r.width.saturating_sub(2) as usize;
     // a query wider than the line shows its end, where the cursor is
     let room_q = inner_w.saturating_sub(4);
@@ -738,7 +741,11 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
     let shown_q = if q.len() > room_q { format!("\u{2026}{}", q[q.len() + 1 - room_q.max(1)..].iter().collect::<String>()) } else { fd.query.clone() };
     let mut lines = vec![
         Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(shown_q, st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
-        Line::styled(format!("{} / {}", fd.hits.len(), fd.cands.len()), st(mono::COMMENT)),
+        // what the toggles hide is never silent, nor what they are
+        Line::from(vec![
+            Span::styled(format!("{} / {}{}", fd.hits.len(), fd.cands.len(), fd.hidden.text()), st(mono::COMMENT)),
+            Span::styled(format!("  {}", fd.toggles.words(fd.tab.as_deref())), st(mono::SOFT)),
+        ]),
     ];
     let room = (r.height as usize).saturating_sub(2 + lines.len() + 2);
     let start = (fd.sel + 1).saturating_sub(room);
@@ -762,19 +769,36 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
         lines.push(selectable(Line::from(crate::frames::truncate_spans(spans, inner_w)), i == fd.sel));
     }
     if fd.hits.is_empty() {
-        lines.push(Line::styled("  nothing matches", st(mono::SOFT)));
+        let why = if fd.hidden.no_pane > 0 { "  nothing matches (ctrl-a: rows without a pane too)" } else { "  nothing matches" };
+        lines.push(Line::styled(why, st(mono::SOFT)));
     }
-    // the keys line at the bottom (inside the border: two lines fewer)
-    while lines.len() < (r.height as usize).saturating_sub(4) {
+    // the keys lines at the bottom (inside the border: two lines fewer)
+    while lines.len() < (r.height as usize).saturating_sub(5) {
         lines.push(Line::raw(""));
     }
     lines.push(Line::raw(""));
     lines.push(keys_line(&[("\u{2191}\u{2193} ctrl-n/p", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "close"), ("ctrl-u", "clear")]));
+    lines.push(toggle_keys(&fd.toggles));
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).block(modal_block("find: path, name, status, topic".into(), mono::ACCENT)), r);
-    if let Some(c) = fd.selected().filter(|_| preview) {
+    let title = if fd.toggles.topic { "find: path, name, status, topic" } else { "find: path, name, status" };
+    f.render_widget(Paragraph::new(lines).block(modal_block(title.into(), mono::ACCENT)), r);
+    if let (Some(c), Some(right)) = (fd.selected(), right) {
         detail_box(f, right, preview_lines(app, &c.row_id, right.width.saturating_sub(2) as usize), None);
     }
+}
+
+/// The finder's toggle keys (`ctrl- a pane only · t topic ...`), each lit while on.
+fn toggle_keys(t: &crate::finder::Toggles) -> Line<'static> {
+    let on = [t.pane_only, t.topic, t.no_stowaways, t.this_fleet, t.ships_only];
+    let mut v = vec![Span::styled("ctrl-", bold(mono::ACCENT))];
+    for (i, ((k, d), on)) in crate::finder::TOGGLE_KEYS.iter().zip(on).enumerate() {
+        if i > 0 {
+            v.push(Span::styled(" \u{b7} ", st(mono::COMMENT)));
+        }
+        v.push(Span::styled(k.trim_start_matches("ctrl-").to_string(), bold(mono::ACCENT)));
+        v.push(Span::styled(format!(" {d}"), if on { bold(mono::FG) } else { st(mono::SOFT) }));
+    }
+    Line::from(v)
 }
 
 fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {
