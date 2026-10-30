@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.7.15 (unreleased)
+
+### Changed
+
+- **README for a new user:** what nimitz is, install, a first fleet, then
+  "Most used" and "Less used" commands, one line each; the detail moved to
+  docs/usage.md.
+- **`nimitz --help`** in the same two sections, coloured on a terminal
+  (headers, commands, arguments and flags apart), plain when piped or with
+  `NO_COLOR` set, and within 80 columns; `nimitz help <cmd>` and `<cmd>
+  --help` likewise.
+- **Admiralty's finder (#14)** shows only members with an open pane by
+  default (the header counts what it hides), matches path, name and status
+  but not the topic by default, and has toggles: ctrl-a pane only, ctrl-t
+  topic, ctrl-s hide stowaways, ctrl-f this fleet only, ctrl-l ships only,
+  shown in the header and footer and remembered across runs. The detail sits
+  directly beside the list.
+
+### Fixed
+
+- **Admiralty `m` and `signal --type` never typed into a pane on an npm
+  Claude Code (#13):** the version of an npm install
+  (`node_modules/@anthropic-ai/claude-code`) is now read from its
+  `package.json`, so the check that a pane runs this session's attach can
+  pass; a binary whose version still cannot be read is not typed into. A
+  refused or failed Admiralty message is logged to `admiralty-actions.log`.
+  A process whose binary was replaced while it ran, or whose npm
+  `package.json` is newer than the process, gets no version (macOS cannot
+  read a process's start time, so an npm Claude Code there stays untyped).
+
+### Upgrading
+
+- Install both crates and update the plugin (`claude plugin marketplace
+  update claude-nimitz && claude plugin update nimitz@claude-nimitz`, then
+  `/reload-plugins`). Admiralty's saved UI state moves to format 2 (the
+  finder's toggles); an older Admiralty starts from its defaults.
+
 ## 0.7.14 (2026-10-28)
 
 ### Fixed
