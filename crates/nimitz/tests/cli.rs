@@ -766,15 +766,24 @@ fn a_cold_launch_runs_only_on_the_machines_provider() {
     assert!(not_started(&sb));
     // named, but Claude Code's answer cannot be read: nothing launched
     assert_eq!(sb.run(&["machine", "set", &label, "--provider", "bedrock", "--yes"]).code, 0);
-    let world = sb.base.join("world.json");
-    let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
-    w["auth_status"] = Value::from("fail");
-    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    // a knob of the fake's world.json, read afresh each time (the fake keeps
+    // its own state there): set, or removed with None
+    let knob = |k: &str, v: Option<Value>| {
+        let world = sb.base.join("world.json");
+        let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+        match v {
+            Some(v) => w[k] = v,
+            None => {
+                w.as_object_mut().unwrap().remove(k);
+            }
+        }
+        std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    };
+    knob("auth_status", Some(Value::from("fail")));
     let r = sb.run(&["start", "TOP", "--yes"]);
     assert!(r.code != 0 && r.out.contains("provider.unconfirmed"), "{}", r.out);
     assert!(not_started(&sb));
-    w.as_object_mut().unwrap().remove("auth_status");
-    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    knob("auth_status", None);
     // the right one: launched, and the worker's own view recorded
     let r = sb.run(&["start", "TOP", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.out);
@@ -790,22 +799,40 @@ fn a_cold_launch_runs_only_on_the_machines_provider() {
     let own = flags.iter().rev().skip_while(|f| !f.contains("NIMITZ_ID")).next().cloned().unwrap_or_default();
     let set: Value = serde_json::from_str(&own).unwrap_or(Value::Null);
     assert_eq!(set["env"]["CLAUDE_CODE_USE_BEDROCK"], "1", "{flags:?}");
-    // after the launch, the worker's own record disagrees (as managed
-    // settings would make it): stopped, removed, refused
-    w["model"] = Value::from("claude-opus-5-5");
-    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    // a model that disagrees with the selectors (a custom ANTHROPIC_MODEL, an
+    // alias): a warning, and the member runs
+    knob("model", Some(Value::from("claude-opus-5-5")));
     let r = sb.run(&["start", "TOP/SQ", "--yes"]);
-    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("first prompt may already have been sent"), "{}", r.out);
-    assert!(sb.member("TOP/SQ")["session"].is_null(), "its job is gone: {}", sb.member("TOP/SQ"));
-    w.as_object_mut().unwrap().remove("model");
-    std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    assert!(r.code == 0 && r.out.contains("provider.model"), "{}", r.out);
+    assert!(!sb.member("TOP/SQ")["session"]["pid"].is_null(), "it runs: {}", sb.member("TOP/SQ"));
+    knob("model", None);
     // vertex: its selector is forced, and the wrapper's Bedrock (read first)
     // makes the preflight refuse it
     assert_eq!(sb.run(&["machine", "set", &label, "--provider", "vertex", "--yes"]).code, 0);
-    let plan = sb.run(&["start", "TOP/SQ", "--plan", "--json"]).out;
+    let plan = sb.run(&["start", "TOP/SQ/S1", "--plan", "--json"]).out;
     assert!(plan.contains("CLAUDE_CODE_USE_VERTEX"), "{plan}");
-    let r = sb.run(&["start", "TOP/SQ", "--yes"]);
+    let r = sb.run(&["start", "TOP/SQ/S1", "--yes"]);
     assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("expects vertex"), "{}", r.out);
+    // an optional machine (no provider, no member recorded on Bedrock): an
+    // unreadable answer is a warning and the launch goes ahead
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "", "--yes"]).code, 0);
+    std::fs::remove_dir_all(std::path::Path::new(&sb.vars["NIMITZ_STATE"]).join("provider")).unwrap();
+    knob("auth_status", Some(Value::from("fail")));
+    let r = sb.run(&["start", "TOP/SQ/S1", "--yes"]);
+    assert!(r.code == 0 && r.out.contains("provider.unconfirmed"), "{}", r.out);
+    // its worker is on record on Bedrock now: the next one fails closed
+    assert_eq!(sb.run(&["ship", "new", "TOP/SQ/S2", "--dir", "managed", "--prompt", "You are S2.", "--yes"]).code, 0);
+    let r = sb.run(&["start", "TOP/SQ/S2", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.unconfirmed"), "{}", r.out);
+    assert!(sb.member("TOP/SQ/S2")["session"].is_null());
+    // after the launch, the worker's own selectors give another provider
+    // (as managed settings would): stopped, removed, refused
+    knob("auth_status", None);
+    knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    assert_eq!(sb.run(&["machine", "set", &label, "--provider", "bedrock", "--yes"]).code, 0);
+    let r = sb.run(&["start", "TOP/SQ/S2", "--yes"]);
+    assert!(r.code != 0 && r.out.contains("provider.mismatch") && r.out.contains("first prompt may already have been sent"), "{}", r.out);
+    assert!(sb.member("TOP/SQ/S2")["session"].is_null(), "its job is gone: {}", sb.member("TOP/SQ/S2"));
     // a provider nimitz does not know, a relative claude
     assert_ne!(sb.run(&["machine", "set", &label, "--provider", "openai", "--yes"]).code, 0);
     assert_ne!(sb.run(&["machine", "set", &label, "--claude-bin", "claude", "--yes"]).code, 0);

@@ -242,8 +242,12 @@ pub fn preflight(cmd: &[String], cwd: Option<&str>) -> Result<String, String> {
 /// Is a cold launch `cmd` (in `cwd`) allowed on this machine? Its provider
 /// by Claude Code's own resolver against the machine's expected one; with
 /// none set, a Bedrock launch (or a machine with a member recorded on
-/// Bedrock) needs one first. `Err` is the refusal; `Ok` the provider.
-pub fn check_launch(env: &Env, id: Option<&Id>, cmd: &[String], cwd: Option<&str>) -> Result<String, Issue> {
+/// Bedrock) needs one first. `Err` is the refusal; `Ok` may carry a warning.
+/// An answer that cannot be read refuses (fail-closed) where a provider is
+/// named or a member runs Bedrock; on an optional machine (neither) it is a
+/// warning and the launch goes ahead (an older Claude Code may have no
+/// `auth status --json`).
+pub fn check_launch(env: &Env, id: Option<&Id>, cmd: &[String], cwd: Option<&str>) -> Result<Option<Issue>, Issue> {
     let label = this_machine(env);
     let set = format!("nimitz machine set {label} --provider bedrock|anthropic|vertex");
     let issue = |code: &str, message: String, fix: String| Issue { code: code.into(), severity: Severity::Error, message, fix: Some(fix), id: id.cloned() };
@@ -251,6 +255,15 @@ pub fn check_launch(env: &Env, id: Option<&Id>, cmd: &[String], cwd: Option<&str
     let expected = expected(env);
     let got = match preflight(cmd, cwd) {
         Ok(p) => p,
+        Err(e) if expected.is_none() && !recorded_on(env, "bedrock") => {
+            return Ok(Some(Issue {
+                code: "provider.unconfirmed".into(),
+                severity: Severity::Warn,
+                message: format!("{who}'s provider could not be confirmed before its launch ({e}); machine {label} names none, so it launches"),
+                fix: Some(format!("nimitz doctor; {set}  # then every launch here is checked")),
+                id: id.cloned(),
+            }))
+        }
         Err(e) => {
             return Err(issue(
                 "provider.unconfirmed",
@@ -263,7 +276,7 @@ pub fn check_launch(env: &Env, id: Option<&Id>, cmd: &[String], cwd: Option<&str
         }
     };
     match expected.as_deref() {
-        Some(want) if api_of(want) == Some(got.as_str()) => Ok(got),
+        Some(want) if api_of(want) == Some(got.as_str()) => Ok(None),
         Some(want) => Err(issue(
             "provider.mismatch",
             format!("{who} would launch on {} but machine {label} expects {want}; nothing was launched", name_of(&got)),
@@ -274,14 +287,16 @@ pub fn check_launch(env: &Env, id: Option<&Id>, cmd: &[String], cwd: Option<&str
             format!("{who} would launch on {} and machine {label} has no expected provider; a machine that runs Bedrock members must name its provider first", name_of(&got)),
             format!("nimitz machine set {label} --provider bedrock"),
         )),
-        None => Ok(got),
+        None => Ok(None),
     }
 }
 
 /// After a cold launch bound session `sid` of `id`: its SessionStart record
 /// against the machine's expected provider (waited for a moment). A
-/// mismatch is the refusal (the caller stops and removes the job); no
-/// record is a warning; no expected provider, nothing to compare.
+/// provider its selectors give that differs is the refusal (the caller stops
+/// and removes the job); a model that disagrees with them (a custom
+/// `ANTHROPIC_MODEL`, an alias) and no record are warnings; no expected
+/// provider, nothing to compare.
 pub fn check_started(env: &Env, id: &Id, sid: &str) -> Result<Option<Issue>, Issue> {
     let Some(want) = expected(env) else { return Ok(None) };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -302,8 +317,14 @@ pub fn check_started(env: &Env, id: &Id, sid: &str) -> Result<Option<Issue>, Iss
             id: Some(id.clone()),
         }));
     };
-    if api_of(&want) == Some(r.provider.as_str()) && r.model_agrees() {
-        return Ok(None);
+    if api_of(&want) == Some(r.provider.as_str()) {
+        return Ok((!r.model_agrees()).then(|| Issue {
+            code: "provider.model".into(),
+            severity: Severity::Warn,
+            message: format!("{id} runs on {want}, but its model {} is not a {want} model", r.model.as_deref().unwrap_or_default()),
+            fix: Some(format!("nimitz check {id}  # a custom ANTHROPIC_MODEL or alias is fine; anything else: the folder's and managed settings")),
+            id: Some(id.clone()),
+        }));
     }
     Err(Issue {
         code: "provider.mismatch".into(),
@@ -442,7 +463,7 @@ pub fn issues(env: &Env, live: &[(Id, String)]) -> Vec<Issue> {
                 code: "provider.model".into(),
                 severity: Severity::Warn,
                 message: format!("{id}'s model {} is not a {} model", r.model.as_deref().unwrap_or_default(), name_of(&r.provider)),
-                fix: Some(fresh),
+                fix: Some(format!("nimitz check {id}  # a custom ANTHROPIC_MODEL or alias is fine; anything else: the folder's and managed settings")),
                 id: Some(id),
             });
         }

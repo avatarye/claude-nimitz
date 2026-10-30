@@ -121,12 +121,16 @@ the settings live in the shared `machines.toml`).
 - Before a cold launch (and a relaunch), nimitz asks Claude Code itself which
   provider that exact launch would use (`claude --settings <the launch's>
   auth status --json`, in the member's folder) and refuses a mismatch before
-  anything starts (`provider.mismatch`); an answer it cannot read refuses too
-  (`provider.unconfirmed`). A machine with no provider named may run Bedrock
-  members only once it names one (`provider.unset`).
+  anything starts (`provider.mismatch`). An answer it cannot read refuses too
+  (`provider.unconfirmed`) where a provider is named or a member runs on
+  Bedrock; on an optional machine it is a warning and the launch goes ahead.
+  A machine with no provider named may run Bedrock members only once it names
+  one (`provider.unset`).
 - After the launch, the member's SessionStart record (what its worker really
-  runs on) is checked again: a mismatch, which only managed settings can
-  cause, stops and removes the job; its first prompt may have gone out.
+  runs on) is checked again: a provider its selectors give that differs,
+  which only managed settings can cause, stops and removes the job (its first
+  prompt may have gone out); a model that disagrees (a custom
+  `ANTHROPIC_MODEL`, an alias) is a warning (`provider.model`).
 - `status` and `check` warn about a live member whose record differs (the
   fix, `stop` then `start --fresh`, drops its conversation: ask first).
   `doctor` shows the provider and lists the claude binaries it finds.

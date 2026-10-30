@@ -1993,10 +1993,13 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
         // provider Claude Code's own resolver gives for exactly this launch,
         // checked against the machine's before anything is spawned (#12)
         if matches!(kind, Kind::Launch | Kind::Relaunch) {
-            if let Err(i) = crate::provider::check_launch(env, step.id.as_ref(), &step.cmd, step.cwd.as_deref()) {
-                out.ran.push((step.clone(), -1, format!("not run: {}", i.code)));
-                out.issues.push(i);
-                return out;
+            match crate::provider::check_launch(env, step.id.as_ref(), &step.cmd, step.cwd.as_deref()) {
+                Ok(warn) => out.issues.extend(warn),
+                Err(i) => {
+                    out.ran.push((step.clone(), -1, format!("not run: {}", i.code)));
+                    out.issues.push(i);
+                    return out;
+                }
             }
         }
         let since = crate::evidence::now() - 0.001;

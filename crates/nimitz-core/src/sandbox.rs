@@ -846,6 +846,12 @@ fn fire(base: &Path, h: Hook, labels: &std::collections::BTreeMap<String, String
     }
     // a SessionStart names the model, as the real one does (2.1.312): its
     // provider's form (world.json `model` overrides)
+    // world.json `hook_env`: env the worker has beyond its settings (as
+    // managed settings would give it); it wins over them
+    let hook_env: std::collections::BTreeMap<String, String> = read_json(&base.join("world.json"))
+        .and_then(|w| w.get("hook_env").and_then(|v| v.as_object()).map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()))
+        .unwrap_or_default();
+    let labels = &labels.iter().chain(hook_env.iter()).map(|(k, v)| (k.clone(), v.clone())).collect::<std::collections::BTreeMap<_, _>>();
     if h.event == "SessionStart" {
         let model = read_json(&base.join("world.json")).and_then(|w| w.get("model").and_then(|v| v.as_str().map(str::to_string))).unwrap_or_else(|| {
             match crate::provider::from_selectors(|k| labels.get(k).cloned()) {
