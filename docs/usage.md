@@ -165,6 +165,12 @@ What is not checked (the gaps):
   Code holds for a job, which nimitz cannot stop;
 - a turn in flight when a job was stopped, which may resume on the wake
   before the 10 s check (not verified on Claude Code).
+- Herdr's own `resume_agents_on_restore` (on by default): after a Herdr
+  restart it runs `claude --resume` in every agent pane with PATH's claude,
+  none of the member's saved flags and no forced selector. nimitz never edits
+  Herdr's config; on a machine that names a provider `doctor` reports it as
+  an error until you set `resume_agents_on_restore = false` under
+  `[session]` in `~/.config/herdr/config.toml`.
 
 ## Colour
 

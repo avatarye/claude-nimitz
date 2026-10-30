@@ -1063,6 +1063,23 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
             rp.plan.warnings.extend(extra);
             let needs_relabel = crate::sessions::session_issues(env, m).iter().any(|i| matches!(i.code.as_str(), "name.drift" | "labels.missing"));
             match found_tab {
+                // a pane runs its attach already, so Claude Code wakes it there,
+                // unchecked: where the machine checks providers, that is no
+                // wake nimitz counts on (#12)
+                TabMatch::Shown { pane, .. } if crate::provider::gated(env) => {
+                    found(rp, id, format!("{down}; pane {} runs its attach", pane.pane_id), "nothing; see the fix");
+                    fail(
+                        rp,
+                        rep,
+                        issue(
+                            "provider.wake",
+                            Severity::Error,
+                            format!("{id}'s pane {} runs its attach, which wakes the job on its saved flags with no check; this machine checks a member's provider when it wakes", pane.pane_id),
+                            Some(format!("in pane {}: ctrl-z (detach), then nimitz start {id}  # the checked wake; then nimitz open {id}", pane.pane_id)),
+                            Some(id.clone()),
+                        ),
+                    );
+                }
                 TabMatch::Shown { pane, .. } => {
                     // a pane runs its attach already: Claude Code is waking it
                     found(rp, id, format!("{down}; pane {} runs its attach", pane.pane_id), "nothing (the attach wakes it)");

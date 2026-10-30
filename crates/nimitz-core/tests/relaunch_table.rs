@@ -2323,3 +2323,37 @@ fn a_wake_that_does_not_bind_is_stopped() {
     let after = w.member(&w.snap(), &id);
     assert!(after.session.as_ref().is_some_and(|s| s.pid.is_none()), "not left running: {:?}", after.session);
 }
+
+/// 0.7.16 review: every job the daemon restarted is checked, and every one on
+/// the wrong provider stopped, before the one refusal that names them all.
+#[test]
+fn every_daemon_restarted_job_is_checked_and_stopped() {
+    let w = world();
+    let ids = [w.ship("CLEAN"), w.ship("DRIFT")];
+    let shorts: Vec<String> = ids.iter().map(|id| w.member(&w.snap(), id).session.unwrap().short_id.unwrap()).collect();
+    for s in &shorts {
+        assert_eq!(w.fake(&["__crash", s]).0, 0);
+    }
+    let snap = w.snap();
+    let mut plan = w.start(&snap, &ids[0], false);
+    plan.steps.extend(w.start(&snap, &ids[1], false).steps);
+    w.knob("hook_env", Some(serde_json::json!({"CLAUDE_CODE_USE_BEDROCK": "0"})));
+    let env = Env { crash_window_s: 3.0, ..w.env.clone() };
+    let bin = w.env.native_claude_bin.clone();
+    let todo = shorts.clone();
+    let daemon = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        for s in todo {
+            claude::run(&[bin.clone(), "respawn".into(), s], None);
+        }
+    });
+    let out = sessions::apply(&env, &plan);
+    daemon.join().unwrap();
+    w.knob("hook_env", None);
+    let all = out.issues.iter().find(|i| i.id.is_none() && i.code == "provider.mismatch").unwrap_or_else(|| panic!("{:?}", out.issues));
+    assert!(ids.iter().all(|id| all.message.contains(&id.0)), "{}", all.message);
+    for (id, s) in ids.iter().zip(&shorts) {
+        let m = w.member(&w.snap(), id);
+        assert!(m.session.as_ref().is_some_and(|x| x.pid.is_none() && x.short_id.as_deref() == Some(s.as_str())), "{id} stopped, row kept: {:?}", m.session);
+    }
+}

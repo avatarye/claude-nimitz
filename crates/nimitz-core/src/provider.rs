@@ -124,20 +124,30 @@ pub fn load_machines(home: &std::path::Path) -> Result<Machines, String> {
 }
 
 /// THE machine label (every reader: `crud::machine_label`, `this_machine`,
-/// `claude_bin_for`): the registry's `machine` under `state`, else, with no
-/// registry yet, the host name (what a fresh registry records). A registry
-/// a newer nimitz wrote, or one that does not read, is an error: never a
-/// fall back to another label.
+/// `claude_bin_for`): the registry's `machine` under `state` (as it is:
+/// never changed here), else, with no registry yet, `host_label` (what a
+/// fresh registry records). A registry a newer nimitz wrote, or one that
+/// does not read, is an error: never a fall back to another label.
 pub fn machine_label_at(state: &std::path::Path, hostname: &str) -> Result<String, String> {
     let p = state.join("registry.json");
     let bytes = match std::fs::read(&p) {
         Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(hostname.to_lowercase()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(host_label(hostname)),
         Err(e) => return Err(format!("{}: {e}", p.display())),
     };
     crate::formats::guard_json_bytes("registry", &p, &bytes, "version").map_err(|e| e.to_string())?;
     let v = crate::evidence::first_json(&bytes).ok_or_else(|| format!("{}: does not parse", p.display()))?;
-    Ok(v.get("machine").and_then(Value::as_str).filter(|m| !m.is_empty()).map(str::to_string).unwrap_or_else(|| hostname.to_lowercase()))
+    Ok(v.get("machine").and_then(Value::as_str).filter(|m| !m.is_empty()).map(str::to_string).unwrap_or_else(|| host_label(hostname)))
+}
+
+/// The label a host name gives, the one rule (`machine_label_at`, a fresh
+/// registry): lowercase, anything but `[a-z0-9_-]` a `-`, up to its first
+/// dot; one that is no valid label (a Windows device name, nothing left) is
+/// `this-machine`.
+pub fn host_label(hostname: &str) -> String {
+    let l: String = hostname.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' }).collect();
+    let l = l.split('.').next().unwrap_or("").to_string();
+    if crate::config::valid_label(&l) { l } else { "this-machine".into() }
 }
 
 /// This machine's label (`machine_label_at`).
@@ -148,8 +158,14 @@ pub fn this_machine(env: &Env) -> Result<String, String> {
 /// This machine's settings: none set is the default; a machines file or a
 /// registry that cannot be read is an error (`provider.unreadable`).
 pub fn settings(env: &Env) -> Result<MachineSettings, String> {
+    // the file first: with none (or no machine in it) nothing is set, and no
+    // label is needed (an optional machine never reads the registry here)
+    let m = load_machines(&env.home)?;
+    if m.machines.is_empty() {
+        return Ok(MachineSettings::default());
+    }
     let label = this_machine(env)?;
-    Ok(load_machines(&env.home)?.machines.get(&label).cloned().unwrap_or_default())
+    Ok(m.machines.get(&label).cloned().unwrap_or_default())
 }
 
 /// The provider this machine expects (a name: `bedrock`), if set.
@@ -164,7 +180,7 @@ pub fn unreadable(id: Option<&Id>, e: &str) -> Issue {
         code: "provider.unreadable".into(),
         severity: Severity::Error,
         message: format!("this machine's provider settings cannot be read ({e}); nothing is launched or woken while they cannot"),
-        fix: Some("fix or remove the file it names (machines.toml: `nimitz machine set` rewrites it; a newer nimitz's: update this one)".into()),
+        fix: Some("fix the file it names: machines.toml (`nimitz machine set` rewrites it) or the registry (`nimitz doctor`); one a newer nimitz wrote: update this nimitz".into()),
         id: id.cloned(),
     }
 }
@@ -174,8 +190,16 @@ pub fn unreadable(id: Option<&Id>, e: &str) -> Issue {
 /// None when unset or unreadable (the launch's checks then refuse). On
 /// Windows an npm `claude.cmd` is followed to its `claude.exe`, as on PATH.
 pub fn claude_bin_for(home: &std::path::Path, state: &std::path::Path, hostname: &str) -> Option<String> {
+    // (every nimitz process builds an Env, every hook too: no file, no parse)
+    if !machines_path(home).exists() {
+        return None;
+    }
+    let m = load_machines(home).ok()?;
+    if !m.machines.values().any(|s| s.claude_bin.as_deref().is_some_and(|b| !b.is_empty())) {
+        return None;
+    }
     let label = machine_label_at(state, hostname).ok()?;
-    let bin = load_machines(home).ok()?.machines.get(&label)?.claude_bin.clone().filter(|b| !b.is_empty())?;
+    let bin = m.machines.get(&label)?.claude_bin.clone().filter(|b| !b.is_empty())?;
     Some(crate::env::npm_target(std::path::Path::new(&bin)).map(|p| p.to_string_lossy().into_owned()).unwrap_or(bin))
 }
 
@@ -247,7 +271,13 @@ pub fn plan_machine_set(env: &Env, label: &str, claude_bin: Option<&str>, provid
         m.machines.remove(label);
     }
     if m != before {
-        let text = toml::to_string_pretty(&m).unwrap_or_default();
+        let text = match toml::to_string_pretty(&m) {
+            Ok(t) => t,
+            Err(e) => {
+                refuse(&mut plan, format!("the machines file cannot be written ({e})"), None);
+                return plan;
+            }
+        };
         plan.steps.push(Step { id: None, cmd: vec!["write".into(), machines_path(&env.home).to_string_lossy().into_owned(), text], cwd: None, why: format!("machine {label}'s settings") });
     }
     plan
@@ -273,12 +303,54 @@ pub fn preflight(cmd: &[String], cwd: Option<&str>) -> Result<String, String> {
         i += 1;
     }
     argv.extend(["auth".to_string(), "status".into(), "--json".into()]);
-    let (rc, text) = crate::claude::run(&argv, cwd);
+    let (rc, text) = run_bounded(&argv, cwd, preflight_timeout())?;
     let v = text.find('{').and_then(|at| crate::evidence::first_json(text[at..].as_bytes()));
     match v.as_ref().and_then(|v| v.get("apiProvider")).and_then(Value::as_str) {
         Some(p) => Ok(p.to_string()),
         None => Err(format!("`{} auth status --json` gave no apiProvider (exit {rc}): {}", bin, text.chars().take(200).collect::<String>())),
     }
+}
+
+/// How long the preflight waits for `auth status` (20 s; `NIMITZ_PREFLIGHT_TIMEOUT`
+/// in seconds, for tests): past it, the answer is unconfirmed.
+fn preflight_timeout() -> std::time::Duration {
+    let s = std::env::var("NIMITZ_PREFLIGHT_TIMEOUT").ok().and_then(|v| v.parse::<f64>().ok()).filter(|s| *s > 0.0).unwrap_or(20.0);
+    std::time::Duration::from_secs_f64(s)
+}
+
+/// `claude::run`, but given up (the process killed) after `limit`: `Err`
+/// says so. Its output is small (a JSON line), read once it has exited.
+fn run_bounded(cmd: &[String], cwd: Option<&str>, limit: std::time::Duration) -> Result<(i32, String), String> {
+    use std::io::Read;
+    let bin = cmd.first().ok_or("no command")?;
+    let mut c = std::process::Command::new(bin);
+    c.args(&cmd[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    crate::claude::scrub_child_env(&mut c);
+    if let Some(d) = cwd {
+        c.current_dir(d);
+    }
+    let mut child = c.spawn().map_err(|e| format!("{bin}: {e}"))?;
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("`{bin} auth status --json` gave no answer within {} s (killed)", limit.as_secs_f64()));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(e) => return Err(format!("{bin}: {e}")),
+        }
+    };
+    let mut out = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut out);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut out);
+    }
+    Ok((status.code().unwrap_or(-1), out.trim().to_string()))
 }
 
 /// Is a cold launch `cmd` (in `cwd`) allowed on this machine? Its provider
@@ -290,10 +362,12 @@ pub fn preflight(cmd: &[String], cwd: Option<&str>) -> Result<String, String> {
 /// warning and the launch goes ahead (an older Claude Code may have no
 /// `auth status --json`). Settings that cannot be read refuse.
 pub fn check_launch(env: &Env, id: Option<&Id>, cmd: &[String], cwd: Option<&str>) -> Result<Option<Issue>, Issue> {
-    let (label, expected) = match this_machine(env).and_then(|l| expected(env).map(|e| (l, e))) {
+    // (an optional machine needs no label: only for the messages)
+    let expected = match expected(env) {
         Ok(x) => x,
         Err(e) => return Err(unreadable(id, &e)),
     };
+    let label = this_machine(env).unwrap_or_else(|_| "<this machine>".into());
     let set = format!("nimitz machine set {label} --provider bedrock|anthropic|vertex");
     let issue = |code: &str, message: String, fix: String| Issue { code: code.into(), severity: Severity::Error, message, fix: Some(fix), id: id.cloned() };
     let who = id.map(|i| i.to_string()).unwrap_or_else(|| "the member".into());
@@ -347,9 +421,9 @@ pub fn strict(env: &Env, expected: Option<&str>) -> bool {
 /// expected provider, waited for a moment. A provider its selectors give
 /// that differs is the refusal; a model that disagrees with them (a custom
 /// `ANTHROPIC_MODEL`, an alias) is a warning. No record is a warning after
-/// a cold launch (its prompt is out; the preflight checked it) and the
-/// refusal after a wake (`wake`: no prompt goes with it, so this is the
-/// gate). No expected provider, nothing to compare.
+/// a cold launch with its prompt (the preflight checked it) and the refusal
+/// after a start that sends none (`wake`: a wake or a relaunch, so this is
+/// the gate there). No expected provider, nothing to compare.
 pub fn check_started(env: &Env, id: &Id, sid: &str, since: f64, wake: bool) -> Result<Option<Issue>, Issue> {
     let (label, want) = match this_machine(env).and_then(|l| expected(env).map(|e| (l, e))) {
         Ok((l, Some(w))) => (l, w),
@@ -393,12 +467,11 @@ pub fn check_started(env: &Env, id: &Id, sid: &str, since: f64, wake: bool) -> R
             id: Some(id.clone()),
         }));
     }
-    let checked = if wake { "its saved launch flags say otherwise" } else { "Claude Code's own check before the launch agreed" };
     Err(Issue {
         code: "provider.mismatch".into(),
         severity: Severity::Error,
         message: format!(
-            "{id} started on {} (model {}) although machine {label} expects {want} and {checked} (managed settings?); {what}",
+            "{id} started on {} (model {}) although machine {label} expects {want} and its launch was checked (managed settings?); {what}",
             name_of(&r.provider),
             r.model.as_deref().unwrap_or("unknown")
         ),
@@ -424,6 +497,15 @@ fn forced_for(provider: &str) -> Option<(&'static str, &'static str)> {
         "bedrock" => Some(("CLAUDE_CODE_USE_BEDROCK", "1")),
         "vertex" => Some(("CLAUDE_CODE_USE_VERTEX", "1")),
         _ => None,
+    }
+}
+
+/// `wake_as_saved` for a row that may have no job (no saved flags to read):
+/// as saved only where nothing is checked.
+pub fn wakes_as_saved(env: &Env, job: Option<&str>) -> bool {
+    match job {
+        Some(j) => wake_as_saved(env, j),
+        None => !gated(env),
     }
 }
 
@@ -674,14 +756,36 @@ pub fn delivery_gate(env: &Env, id: &Id, live: Option<&SessionInfo>) -> Result<(
     }
 }
 
-/// Drop the records of unlabelled sessions that no row has any more (`sweep`):
-/// the session ids given are the ones still there. The count dropped.
-pub fn prune_sessions(env: &Env, still: &std::collections::HashSet<String>) -> usize {
+/// May nimitz post into session `sid` (process `pid`, no member's: `signal
+/// session:`)? Where a provider is named, only once that session's record
+/// since its process started shows that provider, as `delivery_gate` for a
+/// member. Optional machines: yes.
+pub fn session_gate(env: &Env, sid: &str, pid: i64) -> Result<(), Issue> {
+    let want = match expected(env) {
+        Ok(Some(w)) => w,
+        Ok(None) => return Ok(()),
+        Err(e) => return Err(unreadable(None, &e)),
+    };
+    let refuse = |code: &str, message: String| Issue { code: code.into(), severity: Severity::Error, message, fix: Some(format!("nimitz doctor; the session's own `claude auth status` (this machine expects {want})")), id: None };
+    let Some(started) = process_started(env, sid, pid) else {
+        return Err(refuse("provider.unrecorded", format!("session {sid} has no readable start, so its provider record cannot be tied to it: nothing is posted")));
+    };
+    match session_record(env, sid).filter(|r| r.at >= started - 1.0) {
+        Some(r) if api_of(&want) == Some(r.provider.as_str()) => Ok(()),
+        Some(r) => Err(refuse("provider.mismatch", format!("session {sid} runs on {} but this machine expects {want}: nothing is posted", name_of(&r.provider)))),
+        None => Err(refuse("provider.unrecorded", format!("session {sid} has no provider record since it started (no nimitz hook ran there), so it is not shown to run on {want}: nothing is posted"))),
+    }
+}
+
+/// Drop the records of sessions that no row has any more (`sweep`): the
+/// session ids given are the ones still there, read at `read_at`; a record
+/// written since (a session that started meanwhile) stays. The count dropped.
+pub fn prune_sessions(env: &Env, still: &std::collections::HashSet<String>, read_at: f64) -> usize {
     let Ok(rd) = std::fs::read_dir(records_dir(env).join("sessions")) else { return 0 };
     let mut n = 0;
     for e in rd.flatten() {
         let Some(r) = serde_json::from_slice::<Record>(&std::fs::read(e.path()).unwrap_or_default()).ok() else { continue };
-        if !still.contains(&r.session_id) && std::fs::remove_file(e.path()).is_ok() {
+        if !still.contains(&r.session_id) && r.at < read_at && std::fs::remove_file(e.path()).is_ok() {
             n += 1;
         }
     }
@@ -827,7 +931,7 @@ mod tests {
         let env = Env::from_vars(&vars);
         // with no registry yet: the host name, as a fresh registry records it
         let me = this_machine(&env).unwrap();
-        assert_eq!(me, "box.local");
+        assert_eq!(me, "box", "the host name's label: up to its first dot");
         let apply = |p: &Plan| assert!(crate::config::apply_config_plan(&env, p).verified, "{p:?}");
         assert!(!plan_machine_set(&env, &me, None, Some("openai")).ok());
         assert!(!plan_machine_set(&env, &me, None, None).ok());
@@ -847,7 +951,7 @@ mod tests {
         std::fs::remove_file(env.state.join("registry.json")).unwrap();
         // a label nobody knows: a warning, not a refusal
         let p = plan_machine_set(&env, "elsewhere", None, Some("vertex"));
-        assert!(p.ok() && p.warnings.iter().any(|w| w.code == "machine.unknown" && w.message.contains("box.local")), "{p:?}");
+        assert!(p.ok() && p.warnings.iter().any(|w| w.code == "machine.unknown" && w.message.contains("known: box")), "{p:?}");
         assert!(plan_machine_set(&env, &me, None, Some("anthropic")).steps.is_empty(), "nothing changes");
         apply(&plan_machine_set(&env, &me, None, Some("")));
         assert!(!load_machines(&env.home).unwrap().machines.contains_key(&me), "an empty entry goes");
@@ -1019,5 +1123,36 @@ mod tests {
         assert_eq!(delivery_gate(&env, &id, Some(&s(Some(777001)))).unwrap_err().code, "provider.unrecorded");
         // no pid, so no start: refused, never "since 1970"
         assert_eq!(delivery_gate(&env, &id, Some(&s(None))).unwrap_err().code, "provider.unrecorded");
+    }
+
+    /// Review 0.7.16: an optional machine never needs the registry (a bad one
+    /// refuses nothing there), and the launch claude is not looked up with no
+    /// machines file; a row with no job wakes as saved only where nothing is
+    /// checked; sweep keeps records newer than its read of the rows.
+    #[test]
+    fn optional_machines_skip_the_registry_and_sweep_keeps_new_records() {
+        let td = tempfile::tempdir().unwrap();
+        let env = temp_env(td.path());
+        std::fs::create_dir_all(&env.state).unwrap();
+        std::fs::write(env.state.join("registry.json"), json!({"version": 99}).to_string()).unwrap();
+        assert_eq!(expected(&env), Ok(None), "no machines file: no provider, no label needed");
+        assert!(check_launch(&env, None, &["/nowhere/claude".to_string()], None).is_ok(), "an optional machine: a warning at most");
+        assert_eq!(claude_bin_for(&env.home, &env.state, "box"), None);
+        assert!(wakes_as_saved(&env, None));
+        std::fs::remove_file(env.state.join("registry.json")).unwrap();
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, &this_machine(&env).unwrap(), None, Some("bedrock")));
+        assert!(!wakes_as_saved(&env, None), "no job, no saved flags: relaunched where it is checked");
+        // prune: gone sessions only, and only records older than the read
+        record_session(&env, "old", &json!({}), &HashMap::new());
+        let read_at = crate::evidence::now();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        record_session(&env, "new", &json!({}), &HashMap::new());
+        record_session(&env, "kept", &json!({}), &HashMap::new());
+        let still: std::collections::HashSet<String> = ["kept".to_string()].into();
+        assert_eq!(prune_sessions(&env, &still, read_at), 1);
+        assert!(session_record(&env, "old").is_none() && session_record(&env, "new").is_some() && session_record(&env, "kept").is_some());
+        // the one label rule: a host name with a dot and odd characters
+        assert_eq!(host_label("Box Two.local"), "box-two");
+        assert_eq!(host_label("con"), "this-machine");
     }
 }

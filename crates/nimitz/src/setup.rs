@@ -337,12 +337,21 @@ fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
         return;
     }
     let fix = format!("set resume_agents_on_restore = false under [session] in {}  # nimitz never edits it", path.display());
-    let effect = "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz start` then cannot wake it until you /exit there (tab.resumed)";
+    // where the machine checks providers (#12) Herdr's own `claude --resume`
+    // runs with PATH's claude, none of the saved flags and no forced
+    // selector: a member on any provider, unchecked. An error there.
+    let gated = nimitz_core::provider::gated(&ctx.env);
+    let effect = if gated {
+        "after a Herdr restart Herdr runs `claude --resume` in every agent pane, with PATH's claude and none of the member's saved flags: it runs the conversation on whatever provider that shell selects, which nimitz never checks (this machine checks providers); it also holds the conversation interactively, so `nimitz start` cannot wake it (tab.resumed)"
+    } else {
+        "after a Herdr restart Herdr runs `claude --resume` in every agent pane, which holds a stopped or parked member's conversation interactively; `nimitz start` then cannot wake it until you /exit there (tab.resumed)"
+    };
+    let on = |r: &mut Report, what: String| if gated { r.err(&what, Some(&fix)) } else { r.warn(&what, Some(&fix)) };
     match std::fs::read_to_string(&path).ok().map(|t| herdr_resume_off(&t)) {
         Some(Some(true)) => r.ok(&format!("Herdr {}: resume_agents_on_restore is off", path.display())),
-        Some(Some(false)) => r.warn(&format!("Herdr {}: resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
-        Some(None) => r.warn(&format!("Herdr {} does not parse; resume_agents_on_restore may be on: {effect}", path.display()), Some(&fix)),
-        None => r.warn(&format!("no Herdr config at {}, so resume_agents_on_restore is on (the default): {effect}", path.display()), Some(&fix)),
+        Some(Some(false)) => on(r, format!("Herdr {}: resume_agents_on_restore is on (the default): {effect}", path.display())),
+        Some(None) => on(r, format!("Herdr {} does not parse; resume_agents_on_restore may be on: {effect}", path.display())),
+        None => on(r, format!("no Herdr config at {}, so resume_agents_on_restore is on (the default): {effect}", path.display())),
     }
 }
 

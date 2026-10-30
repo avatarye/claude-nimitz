@@ -761,7 +761,7 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
     // a job whose saved flags do not select the machine's provider (from
     // before 0.7.16, or before `machine set`) is relaunched with every flag
     // instead: through the preflight, with the selector forced (#12)
-    let saved_ok = p.short_id.as_deref().is_none_or(|j| crate::provider::wake_as_saved(env, j));
+    let saved_ok = crate::provider::wakes_as_saved(env, p.short_id.as_deref());
     if !saved_ok {
         let mut v = relabel_steps(env, id, mode, p, cwd);
         if let Some(s) = v.last_mut() {
@@ -1898,7 +1898,9 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
     }
     // a job the daemon restarted itself woke on its saved flags, unchecked:
     // where the machine checks providers, its record of that start (#12)
+    // (every one checked, every failing one stopped, then one refusal for all)
     if crate::provider::gated(env) {
+        let mut failed = vec![];
         for (id, sid, short) in waking.iter().filter(|(i, _, _)| restarted.contains(i)) {
             let row = short.as_deref().and_then(|j| find_row(env, j)).or_else(|| find_row_by_session(env, sid)).filter(|r| r.live());
             let Some(row) = row else { continue };
@@ -1906,8 +1908,18 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             if let Err(i) = crate::provider::check_started(env, id, &row.session_id, since, true) {
                 stop_woken(env, &mut out, id, row.short_id.as_deref().or(Some(row.session_id.as_str())), "restarted by the daemon, not confirmed on this machine's provider");
                 out.issues.push(i);
-                return out;
+                failed.push(id.to_string());
             }
+        }
+        if !failed.is_empty() {
+            out.issues.push(issue(
+                "provider.mismatch",
+                Severity::Error,
+                format!("{} restarted by the daemon and not confirmed on this machine's provider: {} (each stopped, its row kept); nothing else in this plan ran", failed.len(), failed.join(", ")),
+                Some("see each member's line above; then nimitz restart <id>".into()),
+                None,
+            ));
+            return out;
         }
     }
     // A job the daemon did not restart in the window: its transcript must be
@@ -2153,7 +2165,10 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                 let said = crate::claude::job_started(&text);
                 // a wake that started and then failed a check: stopped on the
                 // way out where the machine checks providers (#12)
-                let wake = matches!(kind, Kind::Resume { .. });
+                // no prompt goes with a wake or a relaunch (`resume_bg`,
+                // `relaunch_bg`): the record of the start is the gate there,
+                // and a failing one is stopped with its row kept
+                let wake = matches!(kind, Kind::Resume { .. } | Kind::Relaunch);
                 if let (Some(said), Some(want)) = (said.as_deref(), want_job.as_deref()) {
                     if said != want {
                         if wake {

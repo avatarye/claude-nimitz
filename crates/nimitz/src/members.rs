@@ -469,13 +469,15 @@ pub fn sweep(ctx: &Ctx) -> Result<i32, String> {
     };
     let rc = run::session_plan(ctx, ses::plan_sweep(&ctx.env, &snap, ids.as_deref(), &ctx.caller));
     // the provider records of unlabelled sessions no row has any more (#12)
-    // (rows that cannot be read: nothing is dropped)
-    if !ctx.plan_only() {
+    // (rows that cannot be read: nothing is dropped; only a sweep that ran,
+    // never a refused one or a --plan; never a record newer than the rows)
+    if !ctx.plan_only() && rc == 0 {
+        let read_at = nimitz_core::evidence::now();
         let readable = ["sessions", "jobs"].iter().all(|d| std::fs::read_dir(ctx.env.claude_home.join(d)).is_ok());
         match nimitz_core::evidence::rows_from_files(&ctx.env, &mut Default::default()).filter(|_| readable).ok_or("not there, or not readable") {
             Ok(rows) => {
                 let still: std::collections::HashSet<String> = rows.iter().flat_map(|r| r.session_ids().map(str::to_string).collect::<Vec<_>>()).collect();
-                let n = nimitz_core::provider::prune_sessions(&ctx.env, &still);
+                let n = nimitz_core::provider::prune_sessions(&ctx.env, &still, read_at);
                 if n > 0 {
                     out::line(&format!("[OK] dropped {n} provider record(s) of sessions that are gone"));
                 }
@@ -686,6 +688,11 @@ fn signal_session(ctx: &Ctx, q: &str, sender: &Sender) -> Result<i32, String> {
         plan.refusals.push(refusal("signal.member", format!("session:{q} ({label}) is {id}'s session; a member is signalled by its path"), Some(format!("nimitz signal {id} <text>")), Some(id)));
         return Ok(finish_plan(ctx, &plan));
     }
+    // where the machine checks providers: only a session on record on it (#12)
+    if let Err(i) = nimitz_core::provider::session_gate(&ctx.env, &peer.session_id, peer.pid) {
+        plan.refusals.push(i);
+        return Ok(finish_plan(ctx, &plan));
+    }
     if nimitz_core::peers::cc_caller(&ctx.env, &ctx.vars).is_some_and(|c| c.verified && c.session_id == peer.session_id) {
         plan.refusals.push(refusal("signal.self", format!("session:{q} is this session ({label}): a signal to yourself starts no one's turn"), None, None));
         return Ok(finish_plan(ctx, &plan));
@@ -841,6 +848,11 @@ fn held_back_now(ctx: &Ctx, d: &Delivery, voice: bool) -> Option<i32> {
     let snap = ctx.snap();
     let now = member(&snap, &d.via.id).filter(|m| waiting_on_user(m))?;
     let id = &d.via.id;
+    // (the provider gate, on the session it runs now)
+    if let Err(i) = nimitz_core::provider::delivery_gate(&ctx.env, id, now.session.as_ref()) {
+        out::issue(&i);
+        return Some(1);
+    }
     let posted = now.session.as_ref().ok_or_else(|| "no session".to_string()).and_then(|s| crate::notify::inbox_target(&ctx.env, id, s)).and_then(|(socks, pid)| nimitz_core::inbox::send(&ctx.env, &socks, pid, &d.body));
     Some(match posted {
         Ok(sock) => {
@@ -854,9 +866,28 @@ fn held_back_now(ctx: &Ctx, d: &Delivery, voice: bool) -> Option<i32> {
     })
 }
 
+/// The provider gate on `id`'s session as it is now: `Some(1)` (said) when
+/// nothing may be delivered to it.
+fn gate_now(ctx: &Ctx, id: &Id) -> Option<i32> {
+    let snap = ctx.snap();
+    let live = member(&snap, id).and_then(|m| m.session.clone());
+    match nimitz_core::provider::delivery_gate(&ctx.env, id, live.as_ref()) {
+        Ok(()) => None,
+        Err(i) => {
+            out::issue(&i);
+            Some(1)
+        }
+    }
+}
+
 /// Deliver one member's signal (the plan ran); its exit code.
 fn deliver(ctx: &Ctx, mux: &dyn nimitz_mux::Mux, d: &Delivery, text: &str, voice: bool) -> i32 {
     let via = d.via;
+    // the provider gate again, read now: its session may have changed since
+    // the plan (#12)
+    if let Some(code) = gate_now(ctx, &via.id) {
+        return code;
+    }
     let (pane, recheck) = match &d.reach {
         Reach::Inbox(socks, pid) => {
             return match nimitz_core::inbox::send(&ctx.env, socks, *pid, &d.body) {

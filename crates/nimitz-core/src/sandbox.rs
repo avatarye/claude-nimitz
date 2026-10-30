@@ -1221,6 +1221,9 @@ pub fn fake_claude(base: &Path, args: &[String]) -> i32 {
     if let Some(at) = args.iter().position(|x| x == "auth").filter(|at| args.get(at + 1).map(String::as_str) == Some("status")) {
         let a = parse(&args[..at]);
         let knob = read_json(&base.join("world.json")).and_then(|w| w.get("auth_status").and_then(|v| v.as_str().map(str::to_string)));
+        if knob.as_deref() == Some("hang") {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        }
         if knob.as_deref() == Some("fail") {
             eprintln!("[fake claude] auth status failed");
             return 1;

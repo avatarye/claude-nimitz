@@ -386,6 +386,21 @@ fn r02_gated_a_parked_lead_wakes_through_start_then_attaches() {
     assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1, "its tab, attached again");
 }
 
+/// #12: a down lead whose pane still runs its attach is woken by that
+/// attach, unchecked: where the machine names a provider, muster reports it
+/// (`provider.wake`, detach then start) instead of counting on it.
+#[test]
+fn r02_gated_an_attach_already_waking_a_lead_is_reported() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    let r = sb.run(&["muster", "MAIN/...", "--plan"]);
+    assert!(r.out.contains("provider.wake") && r.out.contains(&format!("in pane {pane}: ctrl-z (detach), then nimitz start MAIN/ARGOS")), "{}", r.out);
+    assert!(!r.out.contains("nothing (the attach wakes it)"), "{}", r.out);
+}
+
 #[test]
 fn r03_herdr_crashed_sessions_alive_tabs_back_as_shells() {
     let sb = Sb::new(true);
@@ -783,6 +798,8 @@ fn a_held_process_is_matched_to_its_pane_by_pid_when_nothing_names_the_session()
 #[test]
 fn r_doctor_warns_when_herdr_resumes_agents_on_restore() {
     let sb = Sb::new(true);
+    // an optional machine: a warning (where a provider is named: an error, #12)
+    optional(&sb);
     let cfg = sb.base.join("herdr-config.toml");
     let path = cfg.to_string_lossy().into_owned();
     let doctor = |sb: &Sb| raw(&sb.vars, &["doctor"], &[("HERDR_CONFIG_PATH", path.as_str())]).out;
