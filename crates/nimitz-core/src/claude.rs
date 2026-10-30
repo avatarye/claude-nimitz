@@ -1,10 +1,13 @@
 //! Running the `claude` CLI: launch, resume, stop, rm, agents (contracts.md sections 2, 8). Owner: core-sessions.
 //!
 //! Two binaries (contracts.md section 2):
-//! - `env.claude_bin` (PATH `claude`; on ACME a wrapper that adds Bedrock
+//! - `env.claude_bin` (`NIMITZ_CLAUDE_BIN`, this machine's `claude_bin`, else
+//!   PATH's; on a corporate machine maybe a wrapper that adds Bedrock
 //!   `--settings`) for cold launches, so the saved options carry the provider;
-//! - `env.native_claude_bin` for resume, stop, rm, agents and `--version`. A
-//!   resume through the wrapper always makes a copy (the wrapper adds flags).
+//! - `env.native_claude_bin` (`NIMITZ_NATIVE_CLAUDE_BIN`, this machine's
+//!   `native_claude_bin`, then its `claude_bin`, else PATH's) for resume, stop,
+//!   rm, agents and `--version`. A resume through a wrapper always makes a
+//!   copy (the wrapper adds flags).
 //!
 //! The argv builders here are the only place that knows the exact flags.
 use crate::env::Env;
@@ -302,7 +305,7 @@ pub fn launch_bg(env: &Env, id: &Id, mode: &str, prompt: Option<&str>) -> Vec<St
 }
 
 /// Relaunch from an old session with every flag: a copy with a new id
-/// (`source: fork`) that carries the labels. Through the PATH binary, as a cold launch.
+/// (`source: fork`) that carries the labels. Through `env.claude_bin`, as a cold launch.
 pub fn relaunch_bg(env: &Env, id: &Id, mode: &str, from_session: &str) -> Vec<String> {
     let mut c = vec![env.claude_bin.clone(), "--bg".into(), "--resume".into(), from_session.into(), "--name".into(), id.name()];
     c.extend(mode_args(mode));

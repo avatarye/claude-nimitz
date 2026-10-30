@@ -1,8 +1,7 @@
 # Handoff: the `windows-port` branch
 
 For the agent that reviews and merges this branch on Ubuntu. Written
-2026-10-10 on the Windows machine `home-windows` (hostname `home-desktop`,
-Windows 11, Claude Code 2.1.296, Herdr 0.9.3, rustc 1.99).
+2026-10-10 on the Windows machine `home-windows` (Windows 11, Claude Code 2.1.296, Herdr 0.9.3, rustc 1.99).
 
 ## TLDR
 

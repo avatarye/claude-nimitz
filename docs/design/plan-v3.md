@@ -9,7 +9,7 @@ Related: `cc-control-model.md` (how `nimitz` controls Claude Code sessions),
 
 claude-nimitz is one product that builds and runs fleets of Claude Code agents.
 It drives only the `claude` command, so it works with a Claude subscription and
-with Bedrock. Phase P0 is done: probes on the ACME build (2.1.288, Bedrock) and
+with Bedrock. Phase P0 is done: probes on a wrapper build (2.1.288, Bedrock) and
 on the public build (2.1.288/2.1.289, subscription) confirmed every fact the
 design needs. This plan adds what v2 did not have: setup and CRUD, optional
 multiplexers, and compatibility with Claude Code versions.
@@ -53,7 +53,7 @@ multiplexers, and compatibility with Claude Code versions.
 | `--bg` ignores `--session-id`; `--resume <unknown id>` never runs. | `nimitz` cannot choose ids. The SessionStart hook binds identity to the session id through the labels. |
 | Labels in `--settings` env reach every hook and the Bash tool's processes. | Binding works; `nimitz` can see which role calls it. |
 | `--bg --resume <id>` with **no flags**, after a stop, keeps the id, name, mode and labels. Any flag makes a copy **while its job row exists**, and the copy has **no history**; with the row removed (`claude rm`), `--resume <id>` with flags keeps the id and the history and takes the new flags (adversarial tester, 2026-10-04). | Resume = native binary, no flags, from the ship's folder. A ship keeps one id for life. New labels or name: stop, `rm` the row, then resume with every flag (same id). |
-| On ACME, `claude` on PATH is a wrapper that adds `--settings`. | Resume, `stop` and `rm` use the native binary. Cold launches use the PATH `claude` (it carries Bedrock settings). |
+| On a corporate machine, `claude` on PATH can be a wrapper that adds `--settings`. | Resume, `stop` and `rm` use the native binary. Cold launches use the PATH `claude` (it carries Bedrock settings). |
 | Resume of a live session makes a copy. | Never resume a live ship. |
 | Two live `--bg` sessions can have one name. | `nimitz` checks names itself. |
 | A hook's `sessionTitle` does not change the name. | A drifted name needs a relaunch. |
@@ -215,7 +215,7 @@ not fail it.
 | --- | --- | --- | --- | --- |
 | 1. offline | every push | GitHub runner | none | unit and sandbox tests (fake `claude`, fake `herdr`); stored file formats per version |
 | 2. live, public build | nightly and on each new Claude Code release | GitHub runner, or a self-hosted runner at home | `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (one year; documented for CI) | P0 probes and a smoke test on a matrix of versions, cheapest model, `CLAUDE_CONFIG_DIR` set to a new temp folder |
-| 3. ACME | each new ACME version | other machine, by hand | Bedrock | the same probes; findings committed |
+| 3. wrapper build | each new wrapper version | a machine with the wrapper, by hand | Bedrock | the same probes; findings committed |
 
 A scheduled job finds each new Claude Code release. Pass: a pull request widens
 the range. Fail: an issue with the difference; the range stays until a patch.
@@ -255,7 +255,7 @@ claude-nimitz/
 
 1. Claude Code changes every day or two (2.1.288 to 2.1.289 during P0). The
    range, `pinned-formats.md`, `doctor` and tier-2 CI make each change visible.
-2. The ACME wrapper can change what it adds. Tier 3 checks each ACME version.
+2. A wrapper can change what it adds. Tier 3 checks each wrapper version.
 3. Hooks can lose events in background sessions. State does not depend on them.
 4. `--bg` on GitHub-hosted runners is unknown. Fallback: self-hosted runner.
 

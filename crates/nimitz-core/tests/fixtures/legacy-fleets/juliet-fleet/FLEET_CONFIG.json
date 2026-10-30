@@ -1,0 +1,37 @@
+{
+  "fleet": "JULIET",
+  "instructions": "FLEET.md",
+  "machines": {
+    "home-server": {
+      "hostname": "home-server",
+      "os": "linux"
+    },
+    "home-windows": {
+      "hostname": "Home-Desktop",
+      "os": "win32"
+    }
+  },
+  "agents": [
+    {
+      "name": "VIEWER",
+      "prompt": "You are VIEWER. You own one repository and nothing else.",
+      "dirs": {
+        "home-server": "/home/user/Github/free-viewer"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "LAB",
+      "prompt": "You are LAB. You own one repository and nothing else.",
+      "dirs": {
+        "home-server": "/home/user/Github/lab",
+        "home-windows": "C:\\Projects\\Github\\lab"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    }
+  ]
+}

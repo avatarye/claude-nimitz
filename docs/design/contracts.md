@@ -25,8 +25,8 @@ and jump), never to starting.
 | `NIMITZ_HOME` | `~/.claude-nimitz` | data root (fleets); may be a symlink (e.g. to `~/Dropbox/claude-nimitz`). Paths are shown as written; every comparison with a session's cwd, every trust check and the stowaway scope use real paths (Claude Code records real paths) |
 | `NIMITZ_STATE` | `~/.local/state/nimitz` | per-machine registry and events; never synced |
 | `NIMITZ_CLAUDE_HOME` | `~/.claude` | Claude Code's home (sessions/, jobs/, projects/) |
-| `NIMITZ_CLAUDE_BIN` | `claude` on PATH | cold launches (on ACME the wrapper, which adds Bedrock settings) |
-| `NIMITZ_NATIVE_CLAUDE_BIN` | newest `~/.localtools/tools/claude-code/*/claude`, else `claude` on PATH | resume, stop, rm, agents |
+| `NIMITZ_CLAUDE_BIN` | this machine's `claude_bin` (`nimitz machine set`), else `claude` on PATH | cold launches |
+| `NIMITZ_NATIVE_CLAUDE_BIN` | this machine's `native_claude_bin` (`nimitz machine set --native-bin`), then its `claude_bin`, else `claude` on PATH | resume, stop, rm, agents |
 | `NIMITZ_HERDR_BIN` | `herdr` on PATH (when `HERDR_ENV=1`, or `NIMITZ_MUX=herdr`, which outside Herdr the recorded server sets) | Herdr adapter |
 | `NIMITZ_HERDR_SESSION` | unset (Herdr's own resolution: `HERDR_SESSION`, else the pane's socket) | the named Herdr session every herdr call gets as `--session`; with `NIMITZ_MUX=herdr` it drives a test server from a plain terminal (the checklist), and it is the Herdr identity `active.json` records |
 | `NIMITZ_HERDR_SOCKET` | unset | set by nimitz only (`active::member_mux_vars`): the recorded default Herdr server's socket, passed as `HERDR_SOCKET_PATH` to every herdr call of a member's command; the inherited `HERDR_SOCKET_PATH` never counts there |
@@ -65,7 +65,7 @@ prompt = "You are ..."              # or prompt_file = "prompts/ARGOS.md"
 depends_on = []
 effort = "xhigh"                    # optional: low|medium|high|xhigh|max (0.7.12)
 [ships.dirs]                        # machine label -> folder; "managed" = NIMITZ_HOME/<fleet>/ships/<SQ>/<SHIP>
-west-mac = "/Users/.../AcmeAssetGen"
+west-mac = "/Users/.../Project"
 home-server = "managed"
 [ships.permission_mode]             # optional per machine
 ```

@@ -531,7 +531,7 @@ mod tests {
         {"name": "BOLT", "prompt": "You are BOLT.", "dirs": {"west-mac": "/ws/Acme"},
          "permission_mode": {}, "bg_isolation": {}, "depends_on": []},
         {"name": "BOOM", "prompt": "You are BOOM.",
-         "dirs": {"west-mac": "/ws/AcmeOrchestrator", "ubuntu-box": "/home/x/AcmeOrchestrator"},
+         "dirs": {"west-mac": "/ws/AcmeApp", "ubuntu-box": "/home/x/AcmeApp"},
          "permission_mode": {"west-mac": "acceptEdits"}, "bg_isolation": {}, "depends_on": ["bolt"]}
       ]
     }"#;
@@ -678,7 +678,7 @@ mod tests {
         assert!(!plan.ok());
     }
 
-    // The real old fleets are exercised from fixture copies in
+    // The legacy fleets are exercised from fixtures in
     // tests/migrate_old_fleets.rs (load_all + check + idempotence).
 
     #[test]

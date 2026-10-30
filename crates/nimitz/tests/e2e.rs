@@ -83,19 +83,11 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").expect("HOME"))
 }
 
-/// The native `claude`: newest `~/.localtools/tools/claude-code/*/claude`, else
-/// the first on PATH, resolved (a wrapper script on PATH would add flags).
+/// The native `claude`: `NIMITZ_NATIVE_CLAUDE_BIN`, else the first on PATH,
+/// resolved (a wrapper script on PATH would add flags).
 fn native() -> String {
-    let mut vs: Vec<PathBuf> = std::fs::read_dir(home().join(".localtools").join("tools").join("claude-code"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path().join("claude"))
-        .filter(|p| p.is_file())
-        .collect();
-    vs.sort();
-    if let Some(p) = vs.pop() {
-        return p.to_string_lossy().into_owned();
+    if let Some(p) = std::env::var("NIMITZ_NATIVE_CLAUDE_BIN").ok().filter(|p| !p.is_empty()) {
+        return p;
     }
     let on_path = nimitz_core::env::which("claude").expect("claude on PATH");
     std::fs::canonicalize(&on_path).map(|p| p.to_string_lossy().into_owned()).unwrap_or(on_path)

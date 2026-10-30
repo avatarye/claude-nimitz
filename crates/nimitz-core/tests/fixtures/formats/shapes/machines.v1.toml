@@ -1,5 +1,6 @@
-min_nimitz = "0.7.15"
+min_nimitz = "0.7.17"
 
 [machines.work]
 claude_bin = "/opt/claude"
+native_claude_bin = "/opt/claude-real"
 provider = "bedrock"

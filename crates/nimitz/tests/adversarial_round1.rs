@@ -441,15 +441,15 @@ fn bug31_a_row_in_another_folder_than_the_config_is_reported() {
 fn bug25_migration_reports_a_ship_rooted_at_the_home_folder() {
     // general-fleet's HOME agent lives in the home folder: every other ship nests in it.
     let sb = Sb::new(false);
-    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("nimitz-core").join("tests").join("fixtures").join("old-fleets");
-    let dirs: Vec<String> = ["general-fleet", "argos-fleet"].iter().map(|d| fx.join(d).to_string_lossy().into_owned()).collect();
+    let fx = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("nimitz-core").join("tests").join("fixtures").join("legacy-fleets");
+    let dirs: Vec<String> = ["general-fleet", "alpha-fleet"].iter().map(|d| fx.join(d).to_string_lossy().into_owned()).collect();
     let mut args = vec!["migrate", "fleet-skill"];
     args.extend(dirs.iter().map(String::as_str));
     args.extend(["--into", "OLD", "--yes"]);
     let host = [("NIMITZ_HOSTNAME", "3f2c1d0e9b7a")];
     let m = sb.run_env(&args, &host);
     assert_eq!(m.code, 0, "{}", m.out);
-    let c = sb.run_env(&["check", "OLD/ARGOS/ARGOS"], &host);
+    let c = sb.run_env(&["check", "OLD/ALPHA/ALPHA"], &host);
     if c.out.contains("config.layout") {
         assert!(m.out.contains("config.layout") || m.out.to_lowercase().contains("nest"), "the import made layout errors and said nothing:\n{}", m.out);
     }
@@ -648,9 +648,9 @@ fn bug50_an_ordinary_repo_under_a_trusted_home_warns_like_a_worktree() {
 
 #[test]
 fn bug50_the_real_shape_a_repo_with_an_entry_false_and_a_transcript_is_trusted() {
-    // A Monorepo package: its own git repo, `hasTrustDialogAccepted: false`, sessions ran there.
+    // A monorepo package: its own git repo, `hasTrustDialogAccepted: false`, sessions ran there.
     let sb = Sb::new(false);
-    let repo = sb.dir("home/ws/Monorepo/src/Pkg");
+    let repo = sb.dir("home/ws/monorepo/src/Pkg");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     trust_entry(&sb, &repo, false);
     let proj: String = repo.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();

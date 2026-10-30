@@ -378,8 +378,8 @@ pub fn machine(ctx: &Ctx) -> Result<i32, String> {
     if verb == "set" {
         let label = ctx.args.need(1, "machine label")?;
         ctx.args.at_most(2)?;
-        ctx.args.allow(&["--claude-bin", "--provider"])?;
-        return Ok(config_plan(ctx, nimitz_core::provider::plan_machine_set(&ctx.env, label, ctx.args.value("--claude-bin"), ctx.args.value("--provider"))));
+        ctx.args.allow(&["--claude-bin", "--native-bin", "--provider"])?;
+        return Ok(config_plan(ctx, nimitz_core::provider::plan_machine_set(&ctx.env, label, ctx.args.value("--claude-bin"), ctx.args.value("--native-bin"), ctx.args.value("--provider"))));
     }
     let fleet = &crate::members::fleet_name(ctx.args.need(1, "fleet")?, "a machine is one fleet's")?;
     let label = ctx.args.need(2, "machine label")?;

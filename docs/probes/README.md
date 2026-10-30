@@ -5,10 +5,11 @@ Requirements and how to run: `P0-requirements.md`. Script: `../../probes/p0_prob
 ## Comparison across builds
 
 Both columns use the revised script. Bold marks a result that differs between the
-builds. On ACME, `claude` on PATH is a wrapper that adds its own `--settings` to
-every call; that is the only difference found (`findings-acme-2.1.288.md`).
+builds. On a wrapper build (a corporate machine whose `claude` on PATH is a wrapper
+that adds its own `--settings` to every call), that wrapper is the only difference
+found. The public results: `findings-public-2.1.288.md`.
 
-| Probe | ACME 2.1.288, Bedrock (other Mac) | Public 2.1.288, subscription (home) |
+| Probe | Wrapper build 2.1.288, Bedrock | Public 2.1.288, subscription |
 | --- | --- | --- |
 | 0. `--bg` in untrusted folder | refused; **home folder trusted as parent** | refused; **home-folder trust not saved, probe folder trusted on its own** |
 | 1. `--bg --session-id` | ignored, warning | ignored, warning |
@@ -32,7 +33,7 @@ folder: `<native claude> --bg --resume <session id> [prompt]`. Both builds then 
 the same session id and its saved name, permission mode and labels. Never resume
 a live ship.
 
-## Found by the adversarial tester, 2026-10-04 (real ACME 2.1.288)
+## Found by the adversarial tester, 2026-10-04 (real wrapper build 2.1.288)
 
 `--bg --resume <id>` with flags (`--name`, `--settings`, ...) while the session's
 job row still exists starts a **copy with a new id and no conversation history**
@@ -43,10 +44,10 @@ flag.
 
 ## P0.9: resume with flags (found by the adversarial tester, 2026-10-04)
 
-| Case | ACME 2.1.288.1000 |
+| Case | Wrapper build 2.1.288.1000 |
 | --- | --- |
 | `--bg --resume <id>` with flags while the job row exists, with a prompt | new id; history kept (the first turn writes the fork's transcript) |
 | the same with no prompt, stopped before its first turn | new id; history LOST (no transcript was written) |
 | `claude rm <row>` first, then `--bg --resume <id>` with flags | same id; new name and labels; history kept |
 
-nimitz uses the last row for every relabel (`probes/p0_relabel.py`, `results-p9-*.json`).
+nimitz uses the last row for every relabel (`probes/p0_relabel.py`).

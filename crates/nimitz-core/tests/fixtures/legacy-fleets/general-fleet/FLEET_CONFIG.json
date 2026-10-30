@@ -1,0 +1,57 @@
+{
+  "fleet": "GENERAL",
+  "instructions": "FLEET.md",
+  "machines": {
+    "other-ubuntu": {
+      "hostname": "box01.corp.example.com",
+      "os": "linux"
+    },
+    "west-mac": {
+      "hostname": "3f2c1d0e9b7a",
+      "os": "darwin",
+      "model": "Mac15,6"
+    },
+    "home-ubuntu": {
+      "hostname": "HOME-UBUNTU",
+      "os": "linux"
+    },
+    "home-windows": {
+      "hostname": "Home-Desktop",
+      "os": "win32"
+    },
+    "home-server": {
+      "hostname": "home-server",
+      "os": "linux"
+    }
+  },
+  "agents": [
+    {
+      "name": "HOME",
+      "prompt": "You are HOME. You own one repository and nothing else.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user",
+        "west-mac": "/Users/user",
+        "home-ubuntu": "/home/user",
+        "home-windows": "C:\\Users\\user-",
+        "home-server": "/home/user"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "CONFIGS",
+      "prompt": "You are CONFIGS. You own one repository and nothing else.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/Dropbox/SharedTools/Configs",
+        "west-mac": "/Users/user/Dropbox/SharedTools/Configs",
+        "home-ubuntu": "/home/user/Dropbox/SharedTools/Configs",
+        "home-windows": "C:\\Dropbox\\SharedTools\\Configs",
+        "home-server": "/mnt/data/shared/SharedTools/Configs"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    }
+  ]
+}

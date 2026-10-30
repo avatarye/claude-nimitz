@@ -3,8 +3,8 @@
 Date: 2026-10-03. Status: superseded by `plan-v4.md` (0.4.0 has no tender
 role, and every member is a background job); kept as the record it was.
 Sources: the Claude Code docs
-(code.claude.com, read 2026-10-02) and the P0 probes on the ACME build 2.1.288
-(`docs/probes/findings-acme-2.1.288.md`). A fact marked **(unverified)** needs a
+(code.claude.com, read 2026-10-02) and the P0 probes on a wrapper build 2.1.288
+(`docs/probes/README.md`). A fact marked **(unverified)** needs a
 probe before we build on it.
 
 ## 0. Context
@@ -183,19 +183,19 @@ You are above the chain. From Admiralty you can:
 
 | Event | What `nimitz` does |
 | --- | --- |
-| A ship stopped and is needed | Resume it with the **native** binary and **no flags**, from its folder: `<native claude> --bg --resume <id>`. Claude Code continues the same session id with its saved name, permission mode and labels (probe 2c1, both builds; SessionStart `source: resume`). Any flag, or the ACME wrapper on PATH, makes a copy instead **while the job row exists**, and that copy has no conversation history. A deliberate relaunch (new labels, name or settings) therefore stops the session, removes its job row with the native `claude rm`, and then runs `--bg --resume <id>` with every flag: Claude Code keeps the same id and its history and takes the new labels and name (found by the adversarial tester on real Claude Code, 2026-10-04). If the `rm` fails, nothing is resumed. |
+| A ship stopped and is needed | Resume it with the **native** binary and **no flags**, from its folder: `<native claude> --bg --resume <id>`. Claude Code continues the same session id with its saved name, permission mode and labels (probe 2c1, both builds; SessionStart `source: resume`). Any flag, or a wrapper on PATH, makes a copy instead **while the job row exists**, and that copy has no conversation history. A deliberate relaunch (new labels, name or settings) therefore stops the session, removes its job row with the native `claude rm`, and then runs `--bg --resume <id>` with every flag: Claude Code keeps the same id and its history and takes the new labels and name (found by the adversarial tester on real Claude Code, 2026-10-04). If the `rm` fails, nothing is resumed. |
 | A name differs from the identity | Mark it. A hook title does not change the name (probe 4). The fix is a relaunch with `--name`. |
 | Two live sessions have one identity | Mark it red. Do not stop either one without you. |
 | An admiral or commodore is now a background session | Mark it. You attach to it and keep it in a terminal. |
 | A stowaway | List it. You adopt it (add labels at its next start) or delete it. |
-| A session file has extra bytes | Read the first JSON value only (seen on ACME 2.1.286+). |
+| A session file has extra bytes | Read the first JSON value only (seen on a wrapper build, 2.1.286+). |
 | Claude Code changes a format | `nimitz doctor` compares with `docs/pinned-formats.md` and fails loudly. |
 
 ## 7. What is still open
 
-1. **Done: the public build.** Both builds agree once the ACME wrapper's added flags are
+1. **Done: the public build.** Both builds agree once a wrapper's added flags are
    taken into account (`docs/probes/README.md`).
-2. **Done on ACME, to run on the public build:** P0.6 (labels reach Bash), P0.7
+2. **Done on the wrapper build, to run on the public build:** P0.6 (labels reach Bash), P0.7
    (`SendMessage` in PreToolUse; deny blocks), P0.8 (`claude -c` keeps the id).
 
 ## 8. Questions

@@ -839,6 +839,28 @@ fn a_cold_launch_runs_only_on_the_machines_provider() {
     assert_ne!(sb.run(&["machine", "set", &label, "--claude-bin", "claude", "--yes"]).code, 0);
 }
 
+/// `machine set --native-bin` from the command line, and doctor naming it
+/// when the native binary is a script (the sandbox's fake claude is one).
+#[test]
+fn native_bin_is_set_from_the_cli_and_doctor_asks_for_it() {
+    let sb = Sb::new(false);
+    let reg: Value = serde_json::from_str(&std::fs::read_to_string(sb.base.join("state").join("registry.json")).unwrap()).unwrap();
+    let label = reg["machine"].as_str().unwrap().to_string();
+    assert_ne!(sb.run(&["machine", "set", &label, "--native-bin", "claude", "--yes"]).code, 0, "relative");
+    let real = sb.vars["NIMITZ_NATIVE_CLAUDE_BIN"].clone();
+    assert_eq!(sb.run(&["machine", "set", &label, "--native-bin", &real, "--yes"]).code, 0);
+    let t = std::fs::read_to_string(sb.base.join("nimitz").join("machines.toml")).unwrap();
+    assert!(t.contains("min_nimitz = \"0.7.17\"") && t.contains("native_claude_bin"), "{t}");
+    if cfg!(unix) {
+        let d = sb.run(&["doctor"]).out;
+        assert!(d.contains("may make a copy") && d.contains("fix: set NIMITZ_NATIVE_CLAUDE_BIN to the real binary"), "the variable wins, so it is the one to change:\n{d}");
+        let mut vars = sb.vars.clone();
+        vars.remove("NIMITZ_NATIVE_CLAUDE_BIN");
+        let d = raw(&vars, &["doctor"], &[], None).out;
+        assert!(d.contains(&format!("fix: nimitz machine set {label} --native-bin <real binary>")), "{d}");
+    }
+}
+
 /// #12 review: a wake on another provider than its saved flags is a
 /// relaunch, checked before anything is stopped or removed; a woken worker
 /// the record shows on another provider is stopped, its row kept; settings
@@ -1695,7 +1717,7 @@ fn hook_is_fast() {
 #[test]
 fn migrate_plans_applies_and_is_idempotent() {
     let sb = Sb::new(false);
-    let fx = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("nimitz-core").join("tests").join("fixtures").join("old-fleets");
+    let fx = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("nimitz-core").join("tests").join("fixtures").join("legacy-fleets");
     let mut dirs: Vec<String> = std::fs::read_dir(&fx).unwrap().flatten().map(|e| e.path().to_string_lossy().into_owned()).collect();
     dirs.sort();
     let mut args = vec!["migrate", "fleet-skill"];

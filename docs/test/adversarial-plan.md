@@ -12,7 +12,7 @@ smallest steps to reproduce.
 | Layer | How |
 | --- | --- |
 | Sandbox | `nimitz sandbox create /tmp/nz-sb`; all commands with the env from `nimitz sandbox env`. Fake `claude` and fake `herdr`. Every scenario first runs here. |
-| Real Claude Code | `NIMITZ_HOME`, `NIMITZ_STATE` under `~/.cache/nimitz-e2e/<run>/`; a test fleet `E2E`; sessions named `[E2E.*]-*`; real `claude` (on this machine the ACME wrapper and the native binary). Stop and remove every session you started; check that none is left. Never touch another session. |
+| Real Claude Code | `NIMITZ_HOME`, `NIMITZ_STATE` under `~/.cache/nimitz-e2e/<run>/`; a test fleet `E2E`; sessions named `[E2E.*]-*`; real `claude` (on a machine with a wrapper, the wrapper and the native binary). Stop and remove every session you started; check that none is left. Never touch another session. |
 | Real Herdr | A private Herdr server only (temp `XDG_CONFIG_HOME`/`XDG_STATE_HOME`, every `HERDR_*` unset), never the user's. |
 
 ## Scenarios
@@ -31,7 +31,7 @@ smallest steps to reproduce.
 2. Start a second session with the same name by hand: `claude --bg --name "[E2E.SQ]-SHIP"` → `dup.live` or `name.taken`.
 3. Resume a live ship by hand with `claude --bg --resume <id>` (copy) → `copy.rows`, labels missing on the copy.
 4. Resume a stopped ship by hand **with** flags (`--name` only) → copy without labels → `labels.missing` / stowaway; relaunch repairs it.
-5. Resume through the ACME wrapper with no flags (makes a copy) → detected.
+5. Resume through a wrapper with no flags (makes a copy) → detected.
 6. `claude stop` a ship by hand, then `nimitz start` it → same session id kept.
 7. `claude rm` a ship's current row by hand → `lineage.broken`; start offers a cold launch only with `--force`.
 8. Background a commodore (`←` on an empty prompt; fake: kind `background`) → `role.background`.

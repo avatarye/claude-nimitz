@@ -1,7 +1,9 @@
 //! Which API provider a member's Claude Code talks to (issue #12), and the
 //! per-machine settings that pin it: `H/machines.toml`, `[machines.<label>]`
-//! with `claude_bin` (the cold-launch binary; `NIMITZ_CLAUDE_BIN` still wins)
-//! and `provider` (`anthropic`, `bedrock` or `vertex`).
+//! with `claude_bin` (the cold-launch binary, and the native one unless
+//! `native_claude_bin` names it; `NIMITZ_CLAUDE_BIN` and
+//! `NIMITZ_NATIVE_CLAUDE_BIN` still win) and `provider` (`anthropic`, `bedrock`
+//! or `vertex`).
 //!
 //! Claude Code picks its provider from its env once every settings `env`
 //! block is merged (probe-12, 2.1.312): a `CLAUDE_CODE_USE_*` selector, none
@@ -83,9 +85,16 @@ pub fn model_family(model: &str) -> Option<&'static str> {
 pub struct MachineSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_bin: Option<String>,
+    /// the binary for resume, stop and rm where it is not `claude_bin` (a
+    /// file with this key carries `NATIVE_BIN_MIN_NIMITZ`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_claude_bin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
 }
+
+/// The oldest nimitz that knows `native_claude_bin` (0.7.16 refuses the key).
+pub const NATIVE_BIN_MIN_NIMITZ: &str = "0.7.17";
 
 /// `H/machines.toml`: each machine's own settings, by label (shared: a lead
 /// may set another machine's; only that machine uses them). A nimitz older
@@ -185,22 +194,30 @@ pub fn unreadable(id: Option<&Id>, e: &str) -> Issue {
     }
 }
 
-/// The `claude_bin` the machines file sets for this machine (its label by
-/// `machine_label_at`): read while the Env is built, so it cannot use one.
-/// None when unset or unreadable (the launch's checks then refuse). On
-/// Windows an npm `claude.cmd` is followed to its `claude.exe`, as on PATH.
-pub fn claude_bin_for(home: &std::path::Path, state: &std::path::Path, hostname: &str) -> Option<String> {
+/// The (`claude_bin`, `native_claude_bin`) the machines file sets for this
+/// machine (its label by `machine_label_at`): read while the Env is built, so
+/// it cannot use one. None when unset or unreadable (the launch's checks then
+/// refuse). On Windows an npm `claude.cmd` is followed to its `claude.exe`,
+/// as on PATH.
+pub fn machine_bins(home: &std::path::Path, state: &std::path::Path, hostname: &str) -> (Option<String>, Option<String>) {
     // (every nimitz process builds an Env, every hook too: no file, no parse)
     if !machines_path(home).exists() {
-        return None;
+        return (None, None);
     }
-    let m = load_machines(home).ok()?;
-    if !m.machines.values().any(|s| s.claude_bin.as_deref().is_some_and(|b| !b.is_empty())) {
-        return None;
+    let Ok(m) = load_machines(home) else { return (None, None) };
+    let set = |b: &Option<String>| b.as_deref().is_some_and(|b| !b.is_empty());
+    if !m.machines.values().any(|s| set(&s.claude_bin) || set(&s.native_claude_bin)) {
+        return (None, None);
     }
-    let label = machine_label_at(state, hostname).ok()?;
-    let bin = m.machines.get(&label)?.claude_bin.clone().filter(|b| !b.is_empty())?;
-    Some(crate::env::npm_target(std::path::Path::new(&bin)).map(|p| p.to_string_lossy().into_owned()).unwrap_or(bin))
+    let Ok(label) = machine_label_at(state, hostname) else { return (None, None) };
+    let Some(s) = m.machines.get(&label) else { return (None, None) };
+    let real = |b: &Option<String>| b.clone().filter(|b| !b.is_empty()).map(|b| crate::env::npm_target(std::path::Path::new(&b)).map(|p| p.to_string_lossy().into_owned()).unwrap_or(b));
+    (real(&s.claude_bin), real(&s.native_claude_bin))
+}
+
+/// This machine's `claude_bin` (`machine_bins`).
+pub fn claude_bin_for(home: &std::path::Path, state: &std::path::Path, hostname: &str) -> Option<String> {
+    machine_bins(home, state, hostname).0
 }
 
 /// Every machine label nimitz knows: this machine's and every fleet's.
@@ -214,30 +231,31 @@ fn known_labels(env: &Env) -> Vec<String> {
     v
 }
 
-/// `nimitz machine set <label> [--claude-bin P] [--provider P]` (`Some("")`
-/// clears either). The file is shared; a machine reads its own label's.
-pub fn plan_machine_set(env: &Env, label: &str, claude_bin: Option<&str>, provider: Option<&str>) -> Plan {
+/// `nimitz machine set <label> [--claude-bin P] [--native-bin P] [--provider P]`
+/// (`Some("")` clears one). The file is shared; a machine reads its own label's.
+pub fn plan_machine_set(env: &Env, label: &str, claude_bin: Option<&str>, native_bin: Option<&str>, provider: Option<&str>) -> Plan {
     let mut plan = Plan { summary: format!("set machine {label}"), ..Default::default() };
     let refuse = |plan: &mut Plan, msg: String, fix: Option<String>| plan.refusals.push(Issue { code: "config.invalid".into(), severity: Severity::Error, message: msg, fix, id: None });
     if label.is_empty() || !label.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
         refuse(&mut plan, format!("{label:?} is not a machine label (letters, digits, . _ -)"), None);
         return plan;
     }
-    if claude_bin.is_none() && provider.is_none() {
-        refuse(&mut plan, "nothing to set".into(), Some(format!("nimitz machine set {label} --provider anthropic|bedrock|vertex [--claude-bin PATH]")));
+    if claude_bin.is_none() && native_bin.is_none() && provider.is_none() {
+        refuse(&mut plan, "nothing to set".into(), Some(format!("nimitz machine set {label} --provider anthropic|bedrock|vertex [--claude-bin PATH] [--native-bin PATH]")));
         return plan;
     }
     if let Some(p) = provider.filter(|p| !p.is_empty() && api_of(p).is_none()) {
         refuse(&mut plan, format!("--provider {p}: use anthropic, bedrock or vertex"), None);
         return plan;
     }
-    if let Some(b) = claude_bin.filter(|b| !b.is_empty()) {
+    for (flag, bin) in [("--claude-bin", claude_bin), ("--native-bin", native_bin)] {
+        let Some(b) = bin.filter(|b| !b.is_empty()) else { continue };
         if !std::path::Path::new(b).is_absolute() {
-            refuse(&mut plan, format!("--claude-bin {b}: an absolute path"), None);
+            refuse(&mut plan, format!("{flag} {b}: an absolute path"), None);
             return plan;
         }
         if this_machine(env).is_ok_and(|me| me == label) && !std::path::Path::new(b).is_file() {
-            refuse(&mut plan, format!("--claude-bin {b}: no such file on this machine"), Some("nimitz doctor  # lists the claude binaries it finds".into()));
+            refuse(&mut plan, format!("{flag} {b}: no such file on this machine"), Some("nimitz doctor  # lists the claude binaries it finds".into()));
             return plan;
         }
     }
@@ -264,11 +282,18 @@ pub fn plan_machine_set(env: &Env, label: &str, claude_bin: Option<&str>, provid
     if let Some(b) = claude_bin {
         s.claude_bin = Some(b.to_string()).filter(|b| !b.is_empty());
     }
+    if let Some(b) = native_bin {
+        s.native_claude_bin = Some(b.to_string()).filter(|b| !b.is_empty());
+    }
     if let Some(p) = provider {
         s.provider = Some(p.to_string()).filter(|p| !p.is_empty());
     }
     if m.machines.get(label).is_some_and(|s| *s == MachineSettings::default()) {
         m.machines.remove(label);
+    }
+    // an older nimitz refuses the key: it says "newer nimitz needed" instead
+    if m.machines.values().any(|s| s.native_claude_bin.is_some()) && m.min_nimitz.as_deref().is_none_or(|v| crate::compat::older(v, NATIVE_BIN_MIN_NIMITZ)) {
+        m.min_nimitz = Some(NATIVE_BIN_MIN_NIMITZ.to_string());
     }
     if m != before {
         let text = match toml::to_string_pretty(&m) {
@@ -885,9 +910,14 @@ pub fn issues(env: &Env, live: &[(Id, String)]) -> Vec<Issue> {
 // ------------------------------------------------------------------ doctor
 
 /// The `claude` binaries `doctor` lists (never writes): what PATH finds, the
-/// native installer's launcher, a localtools install, an npm global install.
+/// native installer's launcher, the configured binaries, the native
+/// installer's versions (oldest first), an npm global install.
 pub fn claude_bin_candidates(env: &Env) -> Vec<String> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
+    candidates_in(env, &home)
+}
+
+fn candidates_in(env: &Env, home: &std::path::Path) -> Vec<String> {
     let mut c: Vec<String> = vec![];
     let mut add = |p: Option<String>| {
         if let Some(p) = p.filter(|p| std::path::Path::new(p).is_file() && !c.contains(p)) {
@@ -898,10 +928,24 @@ pub fn claude_bin_candidates(env: &Env) -> Vec<String> {
     add(Some(home.join(".local/bin").join(crate::os::exe_name("claude")).to_string_lossy().into_owned()));
     add(Some(env.native_claude_bin.clone()));
     add(Some(env.claude_bin.clone()));
-    if let Ok(rd) = std::fs::read_dir(home.join(".localtools/tools/claude-code")) {
-        for e in rd.flatten() {
-            add(Some(e.path().join(crate::os::exe_name("claude")).to_string_lossy().into_owned()));
-        }
+    // a version is a file, or a folder that holds the binary
+    let mut versions: Vec<PathBuf> =
+        std::fs::read_dir(home.join(".local/share/claude/versions")).map(|rd| rd.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    // by number, each part's digits: 2.1.99 < 2.1.288 < 2.1.288-beta
+    let number = |v: &PathBuf| -> Vec<u64> {
+        let name = v.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        name.split('.').filter_map(|x| x.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok()).collect()
+    };
+    versions.sort_by_cached_key(|v| (number(v), v.clone()));
+    for v in versions {
+        add(Some(v.join(crate::os::exe_name("claude")).to_string_lossy().into_owned()));
+        add(Some(v.to_string_lossy().into_owned()));
+    }
+    for dir in [home.join(".npm-global/bin"), PathBuf::from("/usr/local/bin")] {
+        add(Some(dir.join(crate::os::exe_name("claude")).to_string_lossy().into_owned()));
+    }
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        add(crate::env::npm_target(&PathBuf::from(appdata).join("npm/claude.cmd")).map(|p| p.to_string_lossy().into_owned()));
     }
     c
 }
@@ -970,34 +1014,40 @@ mod tests {
         let me = this_machine(&env).unwrap();
         assert_eq!(me, "box", "the host name's label: up to its first dot");
         let apply = |p: &Plan| assert!(crate::config::apply_config_plan(&env, p).verified, "{p:?}");
-        assert!(!plan_machine_set(&env, &me, None, Some("openai")).ok());
-        assert!(!plan_machine_set(&env, &me, None, None).ok());
-        assert!(!plan_machine_set(&env, &me, Some("claude"), None).ok(), "relative");
-        assert!(!plan_machine_set(&env, &me, Some("/nowhere/claude"), None).ok(), "this machine's must exist");
-        apply(&plan_machine_set(&env, "work", Some("/nowhere/claude"), Some("bedrock")));
-        apply(&plan_machine_set(&env, &me, None, Some("anthropic")));
+        assert!(!plan_machine_set(&env, &me, None, None, Some("openai")).ok());
+        assert!(!plan_machine_set(&env, &me, None, None, None).ok());
+        assert!(!plan_machine_set(&env, &me, Some("claude"), None, None).ok(), "relative");
+        assert!(!plan_machine_set(&env, &me, Some("/nowhere/claude"), None, None).ok(), "this machine's must exist");
+        apply(&plan_machine_set(&env, "work", Some("/nowhere/claude"), None, Some("bedrock")));
+        apply(&plan_machine_set(&env, &me, None, None, Some("anthropic")));
         assert_eq!(expected(&env).unwrap().as_deref(), Some("anthropic"));
         let m = load_machines(&env.home).unwrap();
-        assert_eq!(m.machines["work"], MachineSettings { claude_bin: Some("/nowhere/claude".into()), provider: Some("bedrock".into()) });
+        assert_eq!(m.machines["work"], MachineSettings { claude_bin: Some("/nowhere/claude".into()), provider: Some("bedrock".into()), ..Default::default() });
         // one label for every reader: a registry naming the machine `work`
         std::fs::create_dir_all(&env.state).unwrap();
         std::fs::write(env.state.join("registry.json"), json!({"version": 3, "machine": "work"}).to_string()).unwrap();
         assert_eq!(this_machine(&env).unwrap(), "work");
         assert_eq!(claude_bin_for(&env.home, &env.state, "box.local"), Some("/nowhere/claude".into()));
+        // both binaries: the machine's, with no variable saying otherwise
+        let mut bare = vars.clone();
+        bare.remove("NIMITZ_CLAUDE_BIN");
+        bare.remove("NIMITZ_NATIVE_CLAUDE_BIN");
+        let e = Env::from_vars(&bare);
+        assert_eq!((e.claude_bin.as_str(), e.native_claude_bin.as_str()), ("/nowhere/claude", "/nowhere/claude"));
         assert_eq!(expected(&env).unwrap().as_deref(), Some("bedrock"));
         std::fs::remove_file(env.state.join("registry.json")).unwrap();
         // a label nobody knows: a warning, not a refusal
-        let p = plan_machine_set(&env, "elsewhere", None, Some("vertex"));
+        let p = plan_machine_set(&env, "elsewhere", None, None, Some("vertex"));
         assert!(p.ok() && p.warnings.iter().any(|w| w.code == "machine.unknown" && w.message.contains("known: box")), "{p:?}");
-        assert!(plan_machine_set(&env, &me, None, Some("anthropic")).steps.is_empty(), "nothing changes");
-        apply(&plan_machine_set(&env, &me, None, Some("")));
+        assert!(plan_machine_set(&env, &me, None, None, Some("anthropic")).steps.is_empty(), "nothing changes");
+        apply(&plan_machine_set(&env, &me, None, None, Some("")));
         assert!(!load_machines(&env.home).unwrap().machines.contains_key(&me), "an empty entry goes");
         // format 1 needs no min_nimitz (older nimitz ignore the file); one a
         // newer nimitz may set is kept on every rewrite
         assert!(load_machines(&env.home).unwrap().min_nimitz.is_none());
         let text = std::fs::read_to_string(machines_path(&env.home)).unwrap();
         std::fs::write(machines_path(&env.home), format!("min_nimitz = \"0.7.15\"\n{text}")).unwrap();
-        apply(&plan_machine_set(&env, &me, None, Some("vertex")));
+        apply(&plan_machine_set(&env, &me, None, None, Some("vertex")));
         assert_eq!(load_machines(&env.home).unwrap().min_nimitz.as_deref(), Some("0.7.15"));
     }
 
@@ -1028,7 +1078,7 @@ mod tests {
         assert_eq!(i.len(), 1, "{i:?}");
         assert!(i[0].code == "provider.mismatch" && i[0].id.as_ref() == Some(&ids[2]) && i[0].fix.as_deref().unwrap().contains("--fresh"), "{i:?}");
         // expected anthropic: the two Bedrock ones
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, &this_machine(&env).unwrap(), None, Some("anthropic")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, &this_machine(&env).unwrap(), None, None, Some("anthropic")));
         let i = issues(&env, &live);
         assert_eq!(i.iter().filter_map(|i| i.id.clone()).collect::<Vec<_>>(), ids[..2].to_vec());
         // a model that disagrees with its selectors
@@ -1085,7 +1135,7 @@ mod tests {
         let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
         // optional machine: nothing to compare
         assert!(check_started(&env, &id, "sid", 0.0, true).unwrap().is_none());
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("bedrock")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, None, Some("bedrock")));
         record(&env, &id, "sid", &json!({"model": "us.anthropic.claude-opus-5-5"}), &bedrock);
         let at = record_of(&env, &id).unwrap().at;
         assert!(check_started(&env, &id, "sid", at - 1.0, false).unwrap().is_none());
@@ -1121,11 +1171,11 @@ mod tests {
         let stow = session_record(&env, "stow").unwrap();
         assert!(stow.id.is_empty() && stow.env.keys().all(|k| k.starts_with("CLAUDE_CODE_USE_")), "{stow:?}");
         // optional machine: a missing record only warns
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, None, Some("")));
         assert_eq!(check_adopt(&env, &id, "other").unwrap().unwrap().severity, Severity::Warn);
         assert!(wake_as_saved(&env, "nojob"));
         // providerEnv (the launcher's, saved with the job) counts for a wake, under --settings
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("bedrock")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, None, Some("bedrock")));
         let d = env.claude_home.join("jobs").join("j2");
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("state.json"), json!({"providerEnv": {"CLAUDE_CODE_USE_BEDROCK": "1"}, "respawnFlags": ["--settings", r#"{"env":{"NIMITZ_ID":"A/S/T"}}"#]}).to_string()).unwrap();
@@ -1141,7 +1191,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let env = temp_env(td.path());
         let id = Id::ship("A", "S", "T");
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("bedrock")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, None, Some("bedrock")));
         let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
         record(&env, &id, "sid", &json!({}), &bedrock);
         let at = session_record(&env, "sid").unwrap().at;
@@ -1177,7 +1227,7 @@ mod tests {
         assert_eq!(claude_bin_for(&env.home, &env.state, "box"), None);
         assert!(wakes_as_saved(&env, None));
         std::fs::remove_file(env.state.join("registry.json")).unwrap();
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, &this_machine(&env).unwrap(), None, Some("bedrock")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, &this_machine(&env).unwrap(), None, None, Some("bedrock")));
         assert!(!wakes_as_saved(&env, None), "no job, no saved flags: relaunched where it is checked");
         // prune: gone sessions only, and only records older than the read
         record_session(&env, "old", &json!({}), &HashMap::new());
@@ -1202,7 +1252,7 @@ mod tests {
     fn the_session_gate_and_the_recheck_before_posting() {
         let td = tempfile::tempdir().unwrap();
         let env = temp_env(td.path());
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("bedrock")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, None, Some("bedrock")));
         let bedrock: HashMap<String, String> = [("CLAUDE_CODE_USE_BEDROCK".to_string(), "1".to_string())].into();
         let me = std::process::id() as i64;
         record_session(&env, "s1", &json!({}), &bedrock);
@@ -1226,11 +1276,64 @@ mod tests {
         assert!(e.message.contains("changed since the plan"), "{e:?}");
         assert!(recheck(&env, &id, Some(&s("s1")), None, Some(me)).is_err(), "gone since the plan");
         // a machines file that does not list this machine, an unreadable registry: refused
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, Some("")));
-        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "other", None, Some("bedrock")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "box", None, None, Some("")));
+        crate::config::apply_config_plan(&env, &plan_machine_set(&env, "other", None, None, Some("bedrock")));
         std::fs::create_dir_all(&env.state).unwrap();
         std::fs::write(env.state.join("registry.json"), "not json").unwrap();
         assert!(expected(&env).is_err());
         assert_eq!(check_launch(&env, None, &["/nowhere/claude".to_string()], None).unwrap_err().code, "provider.unreadable");
+    }
+
+    /// `--native-bin`: the rules of `--claude-bin`, its own place in the
+    /// order, and a file an older nimitz says it is too old for.
+    #[test]
+    fn native_bin_sets_clears_and_comes_before_claude_bin() {
+        let td = tempfile::tempdir().unwrap();
+        let mut vars: HashMap<String, String> =
+            ["HOME", "NIMITZ_HOME", "NIMITZ_STATE", "NIMITZ_CLAUDE_HOME"].iter().map(|k| (k.to_string(), td.path().join(k).to_string_lossy().into_owned())).collect();
+        vars.insert("NIMITZ_HOSTNAME".into(), "box".into());
+        let env = Env::from_vars(&vars);
+        let apply = |p: &Plan| assert!(crate::config::apply_config_plan(&env, p).verified, "{p:?}");
+        let me = this_machine(&env).unwrap();
+        assert!(!plan_machine_set(&env, &me, None, Some("claude"), None).ok(), "relative");
+        assert!(!plan_machine_set(&env, &me, None, Some("/nowhere/claude"), None).ok(), "this machine's must exist");
+        assert!(plan_machine_set(&env, "other", None, Some("/nowhere/claude"), None).ok(), "another machine's need not");
+        let bin = |n: &str| {
+            let p = td.path().join(n);
+            std::fs::write(&p, "x").unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        let (wrapper, real) = (bin("wrapper"), bin("real"));
+        apply(&plan_machine_set(&env, &me, Some(&wrapper), Some(&real), None));
+        assert_eq!(load_machines(&env.home).unwrap().min_nimitz.as_deref(), Some(NATIVE_BIN_MIN_NIMITZ));
+        // the order: the variable, the machine's native binary, its claude_bin
+        let e = Env::from_vars(&vars);
+        assert_eq!((e.claude_bin.as_str(), e.native_claude_bin.as_str()), (wrapper.as_str(), real.as_str()));
+        let mut given = vars.clone();
+        given.insert("NIMITZ_NATIVE_CLAUDE_BIN".into(), "/x/native".into());
+        assert_eq!(Env::from_vars(&given).native_claude_bin, "/x/native");
+        // '' clears it; the file's floor stays, a raise is never lowered
+        apply(&plan_machine_set(&env, &me, None, Some(""), None));
+        assert_eq!(Env::from_vars(&vars).native_claude_bin, wrapper);
+        assert_eq!(load_machines(&env.home).unwrap().min_nimitz.as_deref(), Some(NATIVE_BIN_MIN_NIMITZ));
+    }
+
+    /// The versions the doctor lists sort as numbers: 2.1.99 before 2.1.288.
+    #[test]
+    fn candidates_list_the_versions_in_number_order() {
+        let td = tempfile::tempdir().unwrap();
+        let vars: HashMap<String, String> =
+            ["HOME", "NIMITZ_HOME", "NIMITZ_STATE", "NIMITZ_CLAUDE_HOME"].iter().map(|k| (k.to_string(), td.path().join(k).to_string_lossy().into_owned())).collect();
+        let env = Env::from_vars(&vars);
+        let home = td.path().join("HOME");
+        let versions = home.join(".local/share/claude/versions");
+        std::fs::create_dir_all(versions.join("2.1.300")).unwrap();
+        std::fs::write(versions.join("2.1.300").join(crate::os::exe_name("claude")), "x").unwrap();
+        for v in ["2.1.288-beta", "2.1.288", "2.1.99"] {
+            std::fs::write(versions.join(v), "x").unwrap();
+        }
+        let got: Vec<String> = candidates_in(&env, &home).into_iter().filter(|c| std::path::Path::new(c).starts_with(&versions)).collect();
+        let want = [versions.join("2.1.99"), versions.join("2.1.288"), versions.join("2.1.288-beta"), versions.join("2.1.300").join(crate::os::exe_name("claude"))];
+        assert_eq!(got, want.map(|p| p.to_string_lossy().into_owned()));
     }
 }

@@ -154,15 +154,19 @@ pub fn cli_command(env: &Env, bin: &str) -> std::process::Command {
     c.env("NIMITZ_HOME", p(&env.home))
         .env("NIMITZ_STATE", p(&env.state))
         .env("NIMITZ_CLAUDE_HOME", p(&env.claude_home))
-        .env("NIMITZ_NATIVE_CLAUDE_BIN", &env.native_claude_bin)
         .env("NIMITZ_HOSTNAME", &env.hostname);
-    // the cold-launch claude: an explicit one as given; else the command
-    // reads this machine's `claude_bin` (machines.toml) or PATH itself, now,
-    // not as it was when Admiralty started
+    // both claudes: an explicit one as given; else the command reads this
+    // machine's (machines.toml) or PATH itself, now, not as it was when
+    // Admiralty started
     if env.claude_bin_set {
         c.env("NIMITZ_CLAUDE_BIN", &env.claude_bin);
     } else {
         c.env_remove("NIMITZ_CLAUDE_BIN");
+    }
+    if env.native_claude_bin_set {
+        c.env("NIMITZ_NATIVE_CLAUDE_BIN", &env.native_claude_bin);
+    } else {
+        c.env_remove("NIMITZ_NATIVE_CLAUDE_BIN");
     }
     match &env.mux {
         Some(m) => c.env("NIMITZ_MUX", m),
@@ -779,5 +783,22 @@ mod tests {
         };
         assert_eq!(passed(&vars(Some("/w/claude"))), Some(Some("/w/claude".into())));
         assert_eq!(passed(&vars(None)), Some(None), "removed: the command reads it itself");
+    }
+
+    #[test]
+    fn the_native_claude_is_passed_only_when_it_was_given() {
+        let vars = |bin: Option<&str>| {
+            let mut v: std::collections::HashMap<String, String> =
+                [("HOME", "/h"), ("NIMITZ_HOME", "/n"), ("NIMITZ_STATE", "/s"), ("NIMITZ_CLAUDE_BIN", "/x/claude")].iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+            if let Some(b) = bin {
+                v.insert("NIMITZ_NATIVE_CLAUDE_BIN".into(), b.into());
+            }
+            nimitz_core::env::Env::from_vars(&v)
+        };
+        let passed = |env: &nimitz_core::env::Env| {
+            super::cli_command(env, "nimitz").get_envs().find(|(k, _)| *k == "NIMITZ_NATIVE_CLAUDE_BIN").map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(passed(&vars(Some("/n/claude"))), Some(Some("/n/claude".into())));
+        assert_eq!(passed(&vars(None)), Some(None), "removed: a `machine set` inside Admiralty takes effect");
     }
 }

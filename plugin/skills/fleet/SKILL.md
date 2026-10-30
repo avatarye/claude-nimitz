@@ -91,6 +91,7 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 | Retire a ship | `nimitz ship rm <F/SQ/SHIP>` (stops it, removes job rows, keeps transcripts) |
 | Delete a squadron or fleet | `nimitz squadron rm <F/SQ>`, `nimitz fleet rm <F>` (only when empty and not live) |
 | Add or remove a machine | `nimitz machine add <F> <label> [--dir F/SQ/SHIP=<folder>]`, `nimitz machine rm <F> <label>` |
+| Name a machine's claude | `nimitz machine set <label> --claude-bin <path>` (every launch and resume), `--native-bin <path>` (resume, stop and rm only: PATH's `claude` is a wrapper) |
 | A fleet's settings | `nimitz settings get [<key>] --fleet <F>`, `nimitz settings set <key> <value> --fleet <F>` |
 | Bring members up | `nimitz start <path>...`: the jobs only, no pane. Down or parked: woken by its exact id; live on an older Claude Code: relaunched (same id and history); live and current: nothing; never run and named exactly: a first launch. `--parked` also wakes the parked and stopped ships a `...` covers; `--fresh` a named member's new conversation |
 | Relaunch live members too | `nimitz restart <path>...` (same id and history; a pane its attach showed is reattached; a turn in flight is dropped, and the plan says so). `--force` is separate: a cold launch over a broken lineage or an untested Claude Code, only with the user's OK (rule 3) |

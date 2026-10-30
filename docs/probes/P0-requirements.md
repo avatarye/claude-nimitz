@@ -4,8 +4,8 @@
 
 claude-nimitz gives each agent its identity at launch and reads its state from
 Claude Code. The design depends on facts about `claude --bg` that the docs do
-not state, or that differ between builds. a company's internal build (ACME) wraps
-Claude Code and can behave differently from the public build. The probes record
+not state, or that differ between builds. A company's internal build can wrap
+Claude Code and behave differently from the public build. The probes record
 the facts for each build, so the design uses only what all builds do.
 
 ## What each probe checks
@@ -51,6 +51,6 @@ The result is `$NIMITZ_PROBE_DIR/results.json` (default
    for example `results-vanilla-2.1.288-subscription.json`. Remove
    `last_assistant_message` fields.
 2. Write `docs/probes/findings-<build>-<version>.md` in the same form as
-   `findings-acme-2.1.288.md`.
+   `findings-public-2.1.288.md`.
 3. Add a row per probe to the comparison table in `docs/probes/README.md`.
 4. Commit and push.

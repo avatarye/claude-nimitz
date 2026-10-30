@@ -131,7 +131,7 @@ act on every session on the machine (ctrl+x deletes, enter opens), and starts a 
 - Transcript folders left for the user:
   - `~/.claude/projects/-home-user--cache-nimitz-e2e-nimitz-e2e-map-cli-647776-ship1/` (9b737eb1, 533ea11e,
     1e271213 + memory/). The 9b737eb1 transcript has one stale `custom-title "[HOME.GITHUB]-NIMITZ_DEV"` line (G0), superseded by a later correct one; deleting the folder removes it.
-  - **Mistake:** `~/.claude/projects/-home-user-Github-claude-nimitz/00000000-2222-4222-8333-555555555555.jsonl`,
+  - **Mistake:** `~/.claude/projects/-home-user-Github-claude-nimitz/11111111-2222-4333-8444-555555555555.jsonl`,
     an accidental print-mode session caused by `cl claude help agents` (= `claude claude help agents`) in the repo cwd. It
     ran one turn (prompt "claude") and exited. It also wrote 4 **unlabelled** hook lines (SessionStart/UserPromptSubmit/Stop/SessionEnd,
     pid 657362) to the live `~/.local/state/nimitz/events.jsonl`. It is harmless (ended, no labels), but you can delete it.

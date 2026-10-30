@@ -69,8 +69,7 @@ Facts. Each one was seen on this machine or is stated in the fleet skill.
 5. **`claude agents --json --all`** is job rows plus session files. It gives a
    `pid` only for live sessions.
 6. **`claude -c` continues the newest session in a directory with the same
-   session id.** Seen: the ARGOS lead kept session `0def5678` when its pid
-   changed from 27315 to 39801.
+   session id.** Seen: a lead kept its session id when its pid changed.
 7. **`claude --bg --resume <id>` makes a new session id and a new job row.** The
    new transcript holds a copy of the old one. The old job row stays. (Fleet
    skill, "What --resume actually does".) Thus each relaunch adds one stale row.
@@ -78,8 +77,8 @@ Facts. Each one was seen on this machine or is stated in the fleet skill.
 9. **A sub-agent has no status field.** Only the time of its last write tells you
    if it still works.
 10. **Claude Code sometimes writes a session file badly.** It rewrites the file
-    without truncation, so old bytes stay after the JSON. Seen on the ARGOS lead
-    (`sessions/39801.json`). `claude agents --json` then drops that live session.
+    without truncation, so old bytes stay after the JSON. Seen on a lead's
+    `sessions/<pid>.json`. `claude agents --json` then drops that live session.
 11. **An interactive session has no job row.** When a lead stops, only its
     transcript stays.
 
@@ -134,8 +133,8 @@ stops other launches (for example from the agent view TUI) in a fleet directory.
 Nothing records who started it.
 
 ### Gap C. "Off-config" is a different identity, but the watch shows it as the same agent.
-**What you see:** `[GX]-BOGS` live in `AcmeWS`, but the config says
-`AcmeFleet`.
+**What you see:** `[GX]-BOGS` live in `AssetWS`, but the config says
+`AssetFleet`.
 **Cause:** The skill says identity is (directory, name). By that rule, this is a
 second agent with a borrowed name. The watch groups by name only and adds a flag.
 
@@ -261,7 +260,7 @@ id: skill_owner
 type: choice
 question: Q5. Who changes the fleet skill?
 options:
-  - "Me, through /mycc (the skill lives in the my_claude store)"
+  - "Me, by hand"
   - "[GENERAL]-CONFIGS (its fleet owns the configs)"
   - "Write the change as a diff first; I decide after"
 ```

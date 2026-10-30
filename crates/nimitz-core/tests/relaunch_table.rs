@@ -989,7 +989,7 @@ fn fake_claude_reproduces_every_probed_resume_case() {
     assert_eq!(rc, 0);
     assert!(out.contains("saved options"), "{out}");
 
-    // ACME: the PATH wrapper adds its own --settings, so a resume through it is a
+    // A wrapper on PATH adds its own --settings, so a resume through it is a
     // copy (any stopped row shows it; this one is the 0.3.x tender's)
     let tr = w.rows().into_iter().find(|r| r.name == "[MAIN.ARGOS]-COMMODORE/fixci" && !r.live()).expect("a stopped row");
     let tsid = tr.session_id.clone();
@@ -2235,7 +2235,7 @@ fn an_attach_never_wakes_a_job_the_start_would_relabel() {
     assert!(e.code == "provider.wake" && e.fix.as_deref().unwrap().contains(&format!("nimitz start {}", w.ship("STOPPED"))), "{e:?}");
     // an optional machine: a clean stopped job attaches (and wakes)
     let label = nimitz_core::provider::this_machine(&w.env).unwrap();
-    nimitz_core::config::apply_config_plan(&w.env, &nimitz_core::provider::plan_machine_set(&w.env, &label, None, Some("")));
+    nimitz_core::config::apply_config_plan(&w.env, &nimitz_core::provider::plan_machine_set(&w.env, &label, None, None, Some("")));
     let t = nimitz_core::layout::attach_tab(&w.env, &parked).expect("a clean stopped job attaches");
     assert!(t.wakes);
 }

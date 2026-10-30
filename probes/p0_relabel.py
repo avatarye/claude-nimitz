@@ -1,6 +1,6 @@
 """P0.9 probe for claude-nimitz: does a resume with flags keep the history?
 
-Found by the adversarial tester on ACME 2.1.288 (BUG-53):
+Found by the adversarial tester on a wrapper build, 2.1.288 (BUG-53):
   A  `--bg --resume <id>` WITH flags while the stopped session's job row exists
      -> a new session id and NO history.
   B  `claude rm <row>` first, then the same resume with flags
@@ -24,9 +24,7 @@ WORK.mkdir(parents=True, exist_ok=True)
 EV = BASE / "events9.jsonl"
 HOOK = BASE / "hook9.py"
 CLAUDE_HOME = Path(os.environ.get("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude")))
-_tb = sorted(glob.glob(os.path.expanduser("~/.localtools/tools/claude-code/*/claude")),
-             key=lambda p: [int(x) for x in p.split(os.sep)[-2].split(".") if x.isdigit()])
-NATIVE = _tb[-1] if _tb else (shutil.which("claude") or "claude")
+NATIVE = os.environ.get("NIMITZ_NATIVE_CLAUDE_BIN") or shutil.which("claude") or "claude"
 LAUNCH = shutil.which("claude") or "claude"
 PY = sys.executable
 WORD = "PINEAPPLE"

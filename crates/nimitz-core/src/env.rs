@@ -12,6 +12,8 @@ pub struct Env {
     /// `claude_bin` or PATH: a long-lived process reads it again per action)
     pub claude_bin_set: bool,
     pub native_claude_bin: String,
+    /// `native_claude_bin` came from `NIMITZ_NATIVE_CLAUDE_BIN` (as `claude_bin_set`)
+    pub native_claude_bin_set: bool,
     pub herdr_bin: Option<String>,
     pub hostname: String,
     pub mux: Option<String>,
@@ -166,26 +168,6 @@ pub(crate) fn npm_target(found: &Path) -> Option<PathBuf> {
     (stem == "claude" && exe.is_file()).then_some(exe)
 }
 
-/// Newest `~/.localtools/tools/claude-code/<version>/claude`, else None (ACME).
-fn localtools_claude(home: &Path) -> Option<String> {
-    let dir = home.join(".localtools/tools/claude-code");
-    let mut vs: Vec<(Vec<u64>, PathBuf)> = std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.join("claude").is_file())
-        .map(|p| {
-            let v = p
-                .file_name()
-                .map(|n| n.to_string_lossy().split('.').filter_map(|x| x.parse().ok()).collect())
-                .unwrap_or_default();
-            (v, p.join("claude"))
-        })
-        .collect();
-    vs.sort();
-    vs.pop().map(|(_, p)| p.to_string_lossy().into_owned())
-}
-
 /// The system host name (`os::hostname`), lowercased, without the domain part.
 fn local_hostname() -> String {
     crate::os::hostname().to_lowercase().split('.').next().unwrap_or("").to_string()
@@ -204,19 +186,25 @@ impl Env {
         let nimitz_home = expand(&get("NIMITZ_HOME").unwrap_or("~/.claude-nimitz".into()), &home);
         let state = expand(&get("NIMITZ_STATE").unwrap_or("~/.local/state/nimitz".into()), &home);
         let hostname = get("NIMITZ_HOSTNAME").map(|h| h.to_lowercase()).unwrap_or_else(local_hostname);
+        // this machine's binaries, read once: where PATH's `claude` is a
+        // wrapper, `native_claude_bin` names the real one (a resume through a
+        // wrapper makes a copy); `claude_bin` alone moves both
+        let (machine_bin, machine_native) = crate::provider::machine_bins(&nimitz_home, &state, &hostname);
         Env {
             claude_bin_set: get("NIMITZ_CLAUDE_BIN").is_some(),
+            native_claude_bin_set: get("NIMITZ_NATIVE_CLAUDE_BIN").is_some(),
             claude_home: expand(&get("NIMITZ_CLAUDE_HOME").unwrap_or("~/.claude".into()), &home),
             // the cold-launch binary: NIMITZ_CLAUDE_BIN, else this machine's
             // `claude_bin` (machines.toml, #12), else PATH's
             claude_bin: get("NIMITZ_CLAUDE_BIN")
-                .or_else(|| crate::provider::claude_bin_for(&nimitz_home, &state, &hostname))
+                .or_else(|| machine_bin.clone())
                 .or_else(|| which("claude"))
                 .unwrap_or("claude".into()),
             home: nimitz_home,
             state,
             native_claude_bin: get("NIMITZ_NATIVE_CLAUDE_BIN")
-                .or_else(|| localtools_claude(&home))
+                .or(machine_native)
+                .or(machine_bin)
                 .or_else(|| which("claude"))
                 .unwrap_or("claude".into()),
             herdr_bin,

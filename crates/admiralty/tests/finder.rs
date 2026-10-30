@@ -103,13 +103,13 @@ fn initials_rank_their_member_first() {
     assert_eq!(h.idx.iter().map(|i| text[*i as usize]).collect::<String>(), "MAS");
 }
 
-/// Every space-separated term must match: `argos busy` leaves the busy
+/// Every space-separated term must match: `main/argos busy` leaves the busy
 /// members of ARGOS only.
 #[test]
 fn several_terms_must_all_match() {
     let b = world();
     let mut f = Finder::new(&b.snap);
-    let got = ranked(&mut f, "argos busy");
+    let got = ranked(&mut f, "main/argos busy");
     let want: Vec<String> = b.snap.fleets.iter().flat_map(admiralty::view::fleet_members).filter(|m| m.id.squadron() == Some("ARGOS") && m.status == Status::Busy).map(|m| format!("M:{}", m.id.0)).collect();
     assert!(!want.is_empty());
     let mut sorted = got.clone();
@@ -117,8 +117,8 @@ fn several_terms_must_all_match() {
     let mut w = want.clone();
     w.sort();
     assert_eq!(sorted, w, "{got:?}");
-    assert!(ranked(&mut f, "argos").len() > got.len(), "one term alone matches more");
-    assert!(ranked(&mut f, "argos zzzz").is_empty());
+    assert!(ranked(&mut f, "main/argos").len() > got.len(), "one term alone matches more");
+    assert!(ranked(&mut f, "main/argos zzzz").is_empty());
 }
 
 /// Enter puts the cursor on the member, on its own tab, through a fold and
@@ -168,7 +168,7 @@ fn enter_lands_on_the_member_switching_tab() {
 fn esc_leaves_cursor_tab_and_filter_unchanged() {
     let mut t = fixture_app(world(), false);
     tab(&mut t.app, "MAIN");
-    t.app.filter = "BS".into();
+    t.app.filter = "BO".into();
     t.app.rebuild();
     goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
     let (cursor, tab_was, rows) = (t.app.cursor, t.app.tab.clone(), t.app.rows.len());
@@ -184,7 +184,7 @@ fn esc_leaves_cursor_tab_and_filter_unchanged() {
     }
     press(&mut t.app, KeyCode::Esc);
     assert!(t.app.modal.is_none());
-    assert_eq!((t.app.cursor, t.app.tab.clone(), t.app.filter.as_str(), t.app.rows.len()), (cursor, tab_was, "BS", rows));
+    assert_eq!((t.app.cursor, t.app.tab.clone(), t.app.filter.as_str(), t.app.rows.len()), (cursor, tab_was, "BO", rows));
 }
 
 /// `space` opens the finder; `z` folds what space folded (a squadron);
@@ -243,7 +243,7 @@ fn the_panel_shows_the_ranked_list_and_previews_the_selection() {
 fn enter_keeps_a_filter_that_does_not_hide_the_row() {
     let mut t = fixture_app(world(), false);
     tab(&mut t.app, "MAIN");
-    t.app.filter = "BS".into();
+    t.app.filter = "BO".into();
     t.app.rebuild();
     goto(&mut t.app, "SQ:MAIN/ARGOS");
     press(&mut t.app, KeyCode::Char('z'));
@@ -251,7 +251,7 @@ fn enter_keeps_a_filter_that_does_not_hide_the_row() {
     open(&mut t.app).push("argos/bolt");
     press(&mut t.app, KeyCode::Enter);
     assert_eq!(t.app.current().unwrap().node.id, "M:MAIN/ARGOS/BOLT");
-    assert_eq!(t.app.filter, "BS", "the filter stays");
+    assert_eq!(t.app.filter, "BO", "the filter stays");
     // the state filter hides ARGOS
     let b = t.app.bundle.clone().unwrap();
     let f = &b.snap.fleets[0];
@@ -263,7 +263,7 @@ fn enter_keeps_a_filter_that_does_not_hide_the_row() {
     open(&mut t.app).push("argos/boom");
     press(&mut t.app, KeyCode::Enter);
     assert_eq!(t.app.current().unwrap().node.id, "M:MAIN/ARGOS/BOOM");
-    assert!(t.app.fleet_states[i] && t.app.filter == "BS");
+    assert!(t.app.fleet_states[i] && t.app.filter == "BO");
     // hidden stowaways (no filter: a search never lists stowaways)
     t.app.filter.clear();
     t.app.flagged_only = true;
@@ -337,9 +337,9 @@ fn by_default_only_rows_with_a_pane_and_the_topic_unmatched() {
     let s = screen(&mut t.app, 200, 60);
     assert!(s.contains(&format!("5 / {all} \u{b7} {} without a pane  [pane] [no topic]", all - 5)), "{s}");
     assert!(s.contains("a pane only") && s.contains("t topic") && s.contains("s stowaways") && s.contains("f this fleet") && s.contains("l ships only"), "the toggle keys:\n{s}");
-    // BOLT's topic (`Fixing the layout ...`): no match until ctrl-t
+    // BOLT's topic (`Fixing the layout bug in the importer preview`): no match until ctrl-t
     ctrl(&mut t.app, 'a');
-    keys(&mut t.app, "shadow");
+    keys(&mut t.app, "preview");
     let Some(Modal::Finder(f)) = t.app.modal.as_ref() else { panic!("open") };
     assert!(f.hits.is_empty() && f.hidden.no_pane == 0, "{:?}", hit_ids(f));
     ctrl(&mut t.app, 't');

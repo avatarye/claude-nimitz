@@ -672,9 +672,9 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
         (&["/v/claude/versions/2.1.293", "attach", "f8eee8dfx"], false),
         (&["/v/claude/versions/2.1.293", "attach", "0000aaaa"], false),
         (&["/v/claude/versions/2.1.293", "attach", "f8eee8df", "--x"], false),
-        // a localtools install, with its build component
-        (&["/Users/u/.localtools/tools/claude-code/2.1.294.1000/claude", "attach", "f8eee8df"], true),
-        (&["/Users/u/.localtools/tools/claude-code/2.1.288.1000/claude", "attach", "f8eee8df"], false),
+        // a versioned install, with its build component
+        (&["/opt/tools/claude-code/2.1.294.1000/claude", "attach", "f8eee8df"], true),
+        (&["/opt/tools/claude-code/2.1.288.1000/claude", "attach", "f8eee8df"], false),
         (&[], false),
     ];
     for (i, (fg, want)) in cases.iter().enumerate() {
@@ -692,7 +692,7 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
         mux.with_tab("W", &format!("TC{}", n.get()), &pane, fg);
         nimitz_mux::attach_check(&mux, &nimitz_mux::PaneRef { pane_id: pane, tab_id: None, workspace_id: None }, "f8eee8df")
     };
-    let old = check(&["/Users/u/.localtools/tools/claude-code/2.1.288.1000/claude", "attach", "f8eee8df"]);
+    let old = check(&["/opt/tools/claude-code/2.1.288.1000/claude", "attach", "f8eee8df"]);
     assert_eq!(old, AttachCheck::Older("2.1.288.1000".into()));
     assert_eq!(
         old.refusal("pc1", "f8eee8df"),

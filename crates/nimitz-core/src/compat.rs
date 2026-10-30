@@ -25,7 +25,7 @@ pub fn supported() -> Compat {
 }
 
 /// The version inside a `--version` line, tolerant of both builds:
-/// `2.1.288 (Claude Code)` and `claude 2.1.288.1000 (ACME wrapper ...)`.
+/// `2.1.288 (Claude Code)` and `claude 2.1.288.1000 (a wrapper's ...)`.
 /// A pre-release suffix is kept (`2.1.288-beta`, `2.1.288-rc.1`); build
 /// metadata (`+build`) is dropped, as it carries no order.
 pub fn parse_version(raw: &str) -> Option<String> {
@@ -72,7 +72,7 @@ pub fn older(v: &str, than: &str) -> bool {
 }
 
 /// The Claude Code version in an executable's path: the official
-/// installer's `.../claude/versions/<v>[/...]` or a localtools install's
+/// installer's `.../claude/versions/<v>[/...]` or a versioned install's
 /// `.../claude-code/<v>/claude` (`<v>` may carry a fourth, build component:
 /// `2.1.294.1000`; `at_least` compares it componentwise). A binary replaced
 /// since the process started reads `<path> (deleted)` on Linux; the version
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn parses_both_version_shapes() {
         assert_eq!(parse_version("2.1.288 (Claude Code)").as_deref(), Some("2.1.288"));
-        assert_eq!(parse_version("claude 2.1.288.1000 (ACME wrapper, Bedrock)").as_deref(), Some("2.1.288.1000"));
+        assert_eq!(parse_version("claude 2.1.288.1000 (a wrapper, Bedrock)").as_deref(), Some("2.1.288.1000"));
         assert_eq!(parse_version("  2.1.289\n").as_deref(), Some("2.1.289"));
         assert_eq!(parse_version("2.1.288-beta (Claude Code)").as_deref(), Some("2.1.288-beta"));
         assert_eq!(parse_version("claude 2.1.288-rc.1+build.5").as_deref(), Some("2.1.288-rc.1"));
@@ -420,7 +420,7 @@ mod tests {
     fn installed_reads_the_native_binary() {
         let td = tempfile::tempdir().unwrap();
         let bin = td.path().join("claude");
-        std::fs::write(&bin, "#!/bin/sh\necho 'claude 2.1.288.1000 (ACME wrapper)'\n").unwrap();
+        std::fs::write(&bin, "#!/bin/sh\necho 'claude 2.1.288.1000 (a wrapper)'\n").unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let v: HashMap<String, String> = [

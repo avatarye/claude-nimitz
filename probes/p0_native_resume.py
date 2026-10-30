@@ -1,4 +1,4 @@
-"""ACME follow-up: launch through the PATH wrapper, then stop and resume through the
+"""Wrapper-build follow-up: launch through the PATH wrapper, then stop and resume through the
 native binary with no flags. Writes $NIMITZ_PROBE_DIR/native-resume.json."""
 import json, os, sys, time
 sys.path.insert(0, "probes")

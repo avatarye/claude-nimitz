@@ -1,4 +1,4 @@
-"""Render docs/screens/admiralty-*.png from Admiralty's own drawing.
+"""Render docs/img/admiralty-*.png from Admiralty's own drawing.
 
 Each screen runs the real TUI (`admiralty --demo`, `--demo-monitor` or
 `--sandbox`) in a private, detached tmux server of a fixed size, sends the
@@ -11,7 +11,7 @@ change; the run stops when it exists, and removes only the one it made).
 
     cargo build -p admiralty
     uv run --with pillow tools/admiralty_screens.py [--bin target/debug/admiralty]
-        [--font DIR_OR_REGULAR_TTF] [--out docs/screens] [--only NAME ...]
+        [--font DIR_OR_REGULAR_TTF] [--out docs/img] [--only NAME ...]
 
 Needs tmux. The font: --font, else $ADMIRALTY_SCREENS_FONT, else the first
 JetBrainsMono Nerd Font found under ~/.local/share/fonts, ~/.fonts,
@@ -46,7 +46,7 @@ SCREENS: dict[str, tuple[int, int, str, list[str]]] = {
     "admiralty-80x24": (80, 24, "demo-monitor", ["2", "/ANVIL", "<Enter>", "n", "<Escape>", "x"]),
     "admiralty-narrow": (100, 30, "demo", []),
     "admiralty-help": (200, 50, "demo", ["?"]),
-    "admiralty-finder": (200, 50, "demo", ["<Space>", "argos busy"]),
+    "admiralty-finder": (200, 50, "demo", ["<Space>", "main/argos busy"]),
     "admiralty-issues-view": (200, 50, "demo", ["i", "j", "j"]),
     "admiralty-issue-detail": (200, 50, "demo", ["2", "/HAMMER", "<Enter>", "n", "<Escape>", "x"]),
     "admiralty-confirm": (200, 50, "demo", ["/DOCS", "<Enter>", "n", "<Escape>", "a"]),
@@ -374,7 +374,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--bin", default=str(REPO / "target" / "debug" / "admiralty"))
     ap.add_argument("--font")
-    ap.add_argument("--out", default=str(REPO / "docs" / "screens"))
+    ap.add_argument("--out", default=str(REPO / "docs" / "img"))
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--keep-text", action="store_true", help="also write each capture as NAME.ansi")
     a = ap.parse_args()

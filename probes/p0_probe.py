@@ -13,10 +13,8 @@ BASE = Path(os.environ.get("NIMITZ_PROBE_DIR", os.path.expanduser("~/.cache/nimi
 BASE.mkdir(parents=True, exist_ok=True)
 EV = BASE / "events.jsonl"
 HOOK = BASE / "hook.py"
-# ACME (Acme) builds put a wrapper on PATH; job-mutating commands need the native binary
-_tb = sorted(glob.glob(os.path.expanduser("~/.localtools/tools/claude-code/*/claude")),
-             key=lambda p: [int(x) for x in p.split("/")[-2].split(".") if x.isdigit()])
-NATIVE = _tb[-1] if _tb else (shutil.which("claude") or "claude")
+# A managed install can put a wrapper on PATH; job-mutating commands need the real binary: set NIMITZ_NATIVE_CLAUDE_BIN
+NATIVE = os.environ.get("NIMITZ_NATIVE_CLAUDE_BIN") or shutil.which("claude") or "claude"
 EVENTS = ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "Notification"]
 results = {"base": str(BASE), "native": NATIVE, "path_claude": shutil.which("claude"), "probes": {}}
 

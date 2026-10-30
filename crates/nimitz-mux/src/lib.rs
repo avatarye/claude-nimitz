@@ -559,8 +559,8 @@ mod tests {
     fn the_claude_version_is_read_from_either_install_path() {
         assert_eq!(claude_version_in("/home/u/.local/share/claude/versions/2.1.293").as_deref(), Some("2.1.293"));
         assert_eq!(claude_version_in("/home/u/.local/share/claude/versions/2.1.293/claude").as_deref(), Some("2.1.293"));
-        assert_eq!(claude_version_in("/Users/u/.localtools/tools/claude-code/2.1.288.1000/claude").as_deref(), Some("2.1.288.1000"));
-        assert_eq!(claude_version_in("/Users/u/.localtools/tools/claude-code/2.1.288.1000/other"), None);
+        assert_eq!(claude_version_in("/opt/tools/claude-code/2.1.288.1000/claude").as_deref(), Some("2.1.288.1000"));
+        assert_eq!(claude_version_in("/opt/tools/claude-code/2.1.288.1000/other"), None);
         // an npm install: its package.json, when it is there (#13)
         assert_eq!(claude_version_in("/nowhere/node_modules/@anthropic-ai/claude-code/cli.js"), None);
         let td = std::env::temp_dir().join(format!("nimitz-mux-npm-{}", std::process::id()));

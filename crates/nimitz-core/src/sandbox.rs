@@ -108,7 +108,7 @@ pub fn env_for(base: &Path) -> HashMap<String, String> {
         ("NIMITZ_HOME".into(), p("nimitz")),
         ("NIMITZ_STATE".into(), p("state")),
         ("NIMITZ_CLAUDE_HOME".into(), p("claude_home")),
-        // like ACME: the PATH `claude` is a wrapper that adds its own --settings
+        // a corporate machine: the PATH `claude` is a wrapper that adds its own --settings
         ("NIMITZ_CLAUDE_BIN".into(), p(&format!("bin/{}", crate::os::exe_name("claude-wrapper")))),
         ("NIMITZ_NATIVE_CLAUDE_BIN".into(), p(&format!("bin/{}", crate::os::exe_name("claude")))),
         ("NIMITZ_HOSTNAME".into(), HOST.into()),
@@ -483,7 +483,7 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
     write_json(&base.join("hook-cmd.json"), &json!([exe.to_string_lossy(), "hook"]));
     let fake = vec!["__fake-claude".to_string(), base.to_string_lossy().into_owned()];
     let bin = crate::os::write_shim(&base.join("bin").join("claude"), exe, &fake).map_err(|e| e.to_string())?;
-    // The ACME wrapper (findings-acme-2.1.288.md): it puts its own `--settings`
+    // The wrapper (docs/probes/README.md): it puts its own `--settings`
     // before your arguments, so a resume through it is always a copy. Cold
     // launches go through it; resume, stop, rm and agents must not.
     let settings = ["--settings".to_string(), r#"{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}"#.to_string()];
@@ -710,9 +710,9 @@ pub fn create(base: &Path, exe: &Path) -> Result<(), String> {
         return Err(format!("sandbox formats: {:?}", ran.failed));
     }
     crate::formats::record_machine(&env(&base));
-    // the wrapper launches on Bedrock (like ACME): the machine says so (#12)
+    // the wrapper launches on Bedrock: the machine says so (#12)
     let e = env(&base);
-    apply_cfg(&e, &crate::provider::plan_machine_set(&e, &crate::provider::this_machine(&e)?, None, Some("bedrock")))?;
+    apply_cfg(&e, &crate::provider::plan_machine_set(&e, &crate::provider::this_machine(&e)?, None, None, Some("bedrock")))?;
     Ok(())
 }
 

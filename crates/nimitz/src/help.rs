@@ -82,8 +82,8 @@ pub const USAGES: &[Usage] = &[
             "Run a fleet on another machine too, or stop doing so. add: --hostname H (another machine), --dir F/SQ/SHIP=PATH (repeat); rm warns about live members when <label> is this machine.",
         ),
         (
-            "machine set <label> [--claude-bin PATH] [--provider anthropic|bedrock|vertex]",
-            "That machine's settings, for every fleet (machines.toml; '' clears one): the claude a cold launch runs (NIMITZ_CLAUDE_BIN still wins) and the API provider its members must run on. bedrock and vertex are forced into each member's --settings env. A cold launch whose provider (claude auth status) differs is refused before anything starts; a machine that runs Bedrock members must name one.",
+            "machine set <label> [--claude-bin PATH] [--native-bin PATH] [--provider anthropic|bedrock|vertex]",
+            "That machine's settings, for every fleet (machines.toml; '' clears one): the claude a cold launch runs, and resume, stop and rm too (NIMITZ_CLAUDE_BIN still wins); the claude for resume, stop and rm alone (--native-bin, for a machine whose PATH claude is a wrapper; NIMITZ_NATIVE_CLAUDE_BIN still wins); and the API provider its members must run on. bedrock and vertex are forced into each member's --settings env. A cold launch whose provider (claude auth status) differs is refused before anything starts; a machine that runs Bedrock members must name one.",
         ),
     ]),
     u("settings", false, "settings get|set [<key>] [<value>]", "the fleet's settings.json", &[

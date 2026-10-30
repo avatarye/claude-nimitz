@@ -2,7 +2,7 @@
 
 Date: 2026-10-04. Tester: Opus agent (tester-opus). Base: dev 090f77a.
 Layers: sandbox (`/tmp/nz-sb-*`, fake claude, fake herdr); real Claude Code
-ACME 2.1.288.1000 in `~/.cache/nimitz-e2e/nimitz-e2e-adv1`, fleet
+2.1.288.1000 (wrapper build) in `~/.cache/nimitz-e2e/nimitz-e2e-adv1`, fleet
 `NIMITZ_E2E_ADV`, model haiku. 17 real sessions started; all stopped and
 removed; none left. Scenario G (Admiralty) not run in this round.
 
@@ -82,7 +82,7 @@ Also: the form accepts a ship named COMMODORE (BUG-26); the demo's role.backgrou
 
 # Re-test of round 1 and round 2 (dev 45f627f)
 
-Real Claude Code: ACME 2.1.288.1000, `~/.cache/nimitz-e2e/nimitz-e2e-adv2`, fleet
+Real Claude Code: 2.1.288.1000 (wrapper build), `~/.cache/nimitz-e2e/nimitz-e2e-adv2`, fleet
 `NIMITZ_E2E_ADV2`; 22 real sessions, all stopped and removed.
 
 ## Re-test of round 1

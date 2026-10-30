@@ -9,16 +9,14 @@ Throwaway sessions named nimitz-probe2-*, under $NIMITZ_PROBE_DIR (default
 interactive session in a private tmux server (`tmux -L nimitz-probe`).
 Writes results2.json in that folder.
 """
-import glob, json, os, shutil, subprocess, time
+import json, os, shutil, subprocess, time
 from pathlib import Path
 
 BASE = Path(os.environ.get("NIMITZ_PROBE_DIR", os.path.expanduser("~/.cache/nimitz-probe")))
 BASE.mkdir(parents=True, exist_ok=True)
 EV = BASE / "events2.jsonl"
 HOOK = BASE / "hook2.py"
-_tb = sorted(glob.glob(os.path.expanduser("~/.localtools/tools/claude-code/*/claude")),
-             key=lambda p: [int(x) for x in p.split("/")[-2].split(".") if x.isdigit()])
-NATIVE = _tb[-1] if _tb else (shutil.which("claude") or "claude")
+NATIVE = os.environ.get("NIMITZ_NATIVE_CLAUDE_BIN") or shutil.which("claude") or "claude"
 EVENTS = ["SessionStart", "Stop", "SessionEnd", "PreToolUse", "PostToolUse"]
 
 HOOK.write_text('''import json, os, sys

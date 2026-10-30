@@ -508,8 +508,9 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     // The native binary and the supported range.
     let range = nimitz_core::compat::supported();
     let native_v = nimitz_core::compat::installed(env);
+    let label = nimitz_core::provider::this_machine(env).unwrap_or("<label>".into());
     match &native_v {
-        None => r.err(&format!("native claude {} does not answer --version", env.native_claude_bin), Some("set NIMITZ_NATIVE_CLAUDE_BIN")),
+        None => r.err(&format!("native claude {} does not answer --version", env.native_claude_bin), Some(&format!("nimitz machine set {label} --native-bin <real binary>, or set NIMITZ_NATIVE_CLAUDE_BIN"))),
         Some(v) => match nimitz_core::compat::position(&range, v) {
             0 => r.ok(&format!("native claude {} is {v} (supported {} - {})", resolved(&env.native_claude_bin), range.min, range.max)),
             1 => r.warn(
@@ -519,7 +520,13 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             _ => r.err(&format!("Claude Code {v} is older than the supported floor {}", range.min), Some("update Claude Code")),
         },
     }
-    // The launch binary (cold launches): NIMITZ_CLAUDE_BIN or `claude` on PATH.
+    // A resume through a wrapper makes a copy: the native binary must be the real one.
+    if is_wrapper(&env.native_claude_bin) {
+        // the variable wins over the machine's setting: it is the one to change
+        let fix = if env.native_claude_bin_set { "set NIMITZ_NATIVE_CLAUDE_BIN to the real binary".to_string() } else { format!("nimitz machine set {label} --native-bin <real binary>") };
+        r.warn(&format!("native claude {} is a script or a wrapper: a resume through it may make a copy", resolved(&env.native_claude_bin)), Some(&fix));
+    }
+    // The launch binary (cold launches): NIMITZ_CLAUDE_BIN, this machine's claude_bin, or `claude` on PATH.
     let launch = resolved(&env.claude_bin);
     let mut launch_cmd = std::process::Command::new(&env.claude_bin);
     launch_cmd.arg("--version");
@@ -543,7 +550,7 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
             }
             if let Some(n) = &native_v {
                 if !same_version(v, n) {
-                    r.warn(&format!("launch claude is {v} but the native claude is {n}: launches and resumes run different builds"), Some("set NIMITZ_CLAUDE_BIN / NIMITZ_NATIVE_CLAUDE_BIN to one install"));
+                    r.warn(&format!("launch claude is {v} but the native claude is {n}: launches and resumes run different builds"), Some(&format!("nimitz machine set {label} --claude-bin <one install>, or --native-bin; NIMITZ_CLAUDE_BIN / NIMITZ_NATIVE_CLAUDE_BIN win over them")));
                 }
             }
         }
@@ -830,7 +837,31 @@ fn is_shim(path: &str) -> bool {
     path.contains("/shims/") || path.contains("/mise/") || path.contains("/.asdf/")
 }
 
-/// `2.1.288.1000` (ACME) and `2.1.288` name one build.
+/// Is this binary a script or a known wrapper? None of npm's launcher (a node
+/// script, and the real Claude Code), a pnpm or Nix install, or a version
+/// manager's shim adds flags. A `.cmd` or `.bat` still here is no npm shim
+/// `which` followed to its `claude.exe`: a script, unless npm's own beside its package.
+fn is_wrapper(bin: &str) -> bool {
+    use std::io::Read;
+    let Some(p) = (if bin.contains('/') || Path::new(bin).is_absolute() { Some(PathBuf::from(bin)) } else { nimitz_core::env::which(bin).map(PathBuf::from) }) else {
+        return false;
+    };
+    let real = nimitz_core::os::canonical(&p).unwrap_or(p);
+    let text = real.to_string_lossy().replace('\\', "/");
+    if text.contains("/node_modules/@anthropic-ai/claude-code/") || text.contains("/.pnpm/") || text.contains("/nix/store/") || is_shim(&text) || is_shim(bin) {
+        return false;
+    }
+    if real.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat")) {
+        return !real.parent().is_some_and(|d| d.join("node_modules/@anthropic-ai/claude-code").is_dir());
+    }
+    if real.file_name().is_some_and(|n| n.to_string_lossy().contains("wrapper")) {
+        return true;
+    }
+    let mut head = [0u8; 2];
+    std::fs::File::open(&real).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head == *b"#!"
+}
+
+/// `2.1.288.1000` (a wrapper's) and `2.1.288` name one build.
 fn same_version(a: &str, b: &str) -> bool {
     a == b || a.starts_with(&format!("{b}.")) || b.starts_with(&format!("{a}."))
 }
@@ -859,7 +890,25 @@ mod tests {
         assert!(!same_version("2.1.2881", "2.1.288"));
         assert!(is_shim("/Users/x/.local/share/mise/shims/claude"));
         assert!(is_shim("/Users/x/.asdf/shims/claude"));
-        assert!(!is_shim("/Users/x/.localtools/bin/claude"));
+        assert!(!is_shim("/opt/tools/bin/claude"));
+        let td = tempfile::tempdir().unwrap();
+        let file = |rel: &str, body: &[u8]| {
+            let p = td.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, body).unwrap();
+            p.to_string_lossy().into_owned()
+        };
+        assert!(is_wrapper(&file("bin/claude", b"#!/bin/sh\nexec real \"$@\"\n")), "a script");
+        assert!(is_wrapper(&file("bin/claude-wrapper", b"\x7fELF")), "a known wrapper");
+        assert!(!is_wrapper(&file("real/claude", b"\x7fELF")), "a binary");
+        assert!(!is_wrapper(&file("lib/node_modules/@anthropic-ai/claude-code/cli.js", b"#!/usr/bin/env node\n")), "npm's launcher");
+        assert!(!is_wrapper(&file("store/.pnpm/claude/cli.js", b"#!/usr/bin/env node\n")), "a pnpm install");
+        assert!(is_wrapper(&file("corp/claude.cmd", b"@echo off\r\n")), "a Windows wrapper");
+        assert!(is_wrapper(&file("corp/claude.BAT", b"@echo off\r\n")), "in any case");
+        let cmd = file("npm/claude.cmd", b"@echo off\r\n");
+        file("npm/node_modules/@anthropic-ai/claude-code/cli.js", b"x");
+        assert!(!is_wrapper(&cmd), "npm's own");
+        assert!(!is_wrapper("/nowhere/claude"), "nothing there: the version line reports that");
         let fix = plugin_install_fix();
         assert!(fix.starts_with("claude plugin marketplace add ") && fix.ends_with("claude plugin install nimitz@claude-nimitz"), "{fix}");
         assert!(!fix.contains('<'), "no placeholder: {fix}");

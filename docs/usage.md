@@ -110,8 +110,17 @@ hands the outcome to the member's next session start.
 ## The provider a machine runs on
 
 `nimitz machine set <label> --provider anthropic|bedrock|vertex` names the API
-provider every member on that machine must run on, and `--claude-bin PATH` the
-claude a cold launch runs (`NIMITZ_CLAUDE_BIN` still wins; `''` clears either).
+provider every member on that machine must run on. `--claude-bin PATH` names
+the claude this machine runs: every cold launch, and resume, stop and rm too
+(in 0.7.16 it meant cold launches only). `--native-bin PATH` names the claude
+for resume, stop and rm alone. On a machine whose PATH `claude` is a wrapper, use
+`--native-bin <real binary>`: cold launches stay on the wrapper, and resumes go
+through the real binary, because a resume through a wrapper makes a copy.
+`--claude-bin <real binary>` moves both. `nimitz doctor` lists the binaries it
+finds, and warns when the native one is a script or a wrapper.
+`NIMITZ_CLAUDE_BIN` and `NIMITZ_NATIVE_CLAUDE_BIN` still win, but only for a
+process that has them, and `''` clears a setting. A nimitz older than 0.7.17
+refuses a file with `--native-bin` set, and says a newer one is needed.
 The settings live in the shared `machines.toml`; a nimitz older than 0.7.16
 ignores that file, so update every machine before relying on it. A label
 nimitz does not know is set with a warning (a machine set up ahead of time).

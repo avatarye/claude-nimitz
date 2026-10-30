@@ -1,0 +1,64 @@
+{
+  "fleet": "ECHO",
+  "instructions": "FLEET.md",
+  "machines": {
+    "other-ubuntu": {
+      "hostname": "box01.corp.example.com",
+      "os": "linux"
+    },
+    "home-ubuntu": {
+      "hostname": "HOME-UBUNTU",
+      "os": "linux"
+    },
+    "home-windows": {
+      "hostname": "Home-Desktop",
+      "os": "windows"
+    },
+    "home-server": {
+      "hostname": "home-server",
+      "os": "linux"
+    }
+  },
+  "agents": [
+    {
+      "name": "STORAGE",
+      "prompt": "You are STORAGE. You own one repository and nothing else.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/Packages_Echo/PlainStorage"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "WIDGETS",
+      "prompt": "You are WIDGETS — you own one repository; ask the commodore before you change another.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/work/EchoWS/src/EchoWidgets"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "NOTES",
+      "prompt": "You are NOTES. You own one repository and nothing else.",
+      "dirs": {
+        "home-server": "/home/user/Github/notes"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "GADGET",
+      "prompt": "You are GADGET — you own one repository; ask the commodore before you change another.",
+      "dirs": {
+        "home-windows": "C:/Projects/Github/gadget"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    }
+  ]
+}

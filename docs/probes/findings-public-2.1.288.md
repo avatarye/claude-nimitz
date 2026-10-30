@@ -2,48 +2,48 @@
 
 Machine: home Ubuntu server (`home-server`). Date: 2026-10-03.
 `claude --version` on PATH and native: `2.1.288 (Claude Code)`, vanilla build at
-`~/.local/bin/claude` (no ACME localtools). Provider: Claude subscription login (no
+`~/.local/bin/claude` (no wrapper). Provider: Claude subscription login (no
 `CLAUDE_CODE_USE_*`, no `ANTHROPIC_API_KEY`). Raw data:
 `results-public-2.1.288-subscription.json`.
 
 This run uses the **revised** `p0_probe.py` (see "What was done"). Probes 2 and 2c
 were rewritten and 2a and 2b are new, because the first script passed flags on
 every resume and so only ever tested the copy path. Results that differ from the
-ACME build are in **bold**.
+wrapper build are in **bold**.
 
 | Id | Result |
 | --- | --- |
 | 0 | Refused. `--bg` in an untrusted folder exits 1: "Workspace not trusted. Run `claude` in <dir> once and accept the trust prompt, then retry." **The home folder was not a trusted parent here: accepting the trust prompt in `~` was not saved (`~/.claude.json` keeps `hasTrustDialogAccepted: false` for the home folder), so `~/.cache/nimitz-probe` had to be trusted on its own.** |
 | 1 | Ignored. "warning: --bg manages the session id; ignoring --session-id". The daemon chooses the id; the job id is its first 8 characters. |
-| 2a (new) | **Cannot choose an id this way.** `--bg --resume <uuid that names no session>` returns `backgrounded · <that uuid>`, but the session never runs: only SessionEnd fires (with the requested id), no SessionStart, UserPromptSubmit or Stop, and the row ends `failed` with no pid. The ACME run 1-then-2 sequence hit the same case by accident (its row `d4d4525f` also ended `failed`). |
+| 2a (new) | **Cannot choose an id this way.** `--bg --resume <uuid that names no session>` returns `backgrounded · <that uuid>`, but the session never runs: only SessionEnd fires (with the requested id), no SessionStart, UserPromptSubmit or Stop, and the row ends `failed` with no pid. The wrapper build's run 1-then-2 sequence hit the same case by accident (its row `d4d4525f` also ended `failed`). |
 | 2b (new) | **Copy, unlabelled.** `--bg --resume <id>` of a **live** session with no flags starts a copy with a new id: "session X is already running in the background, so this started a copy as Y". The copy fired **no hooks at all**, so it carries none of the original's `--settings` labels or hooks. Its name was an auto-generated title in run 1 and the original `--name` in run 2. |
-| 2 | Copy. `--bg --resume <id>` of a live session **with** flags starts a copy with a new id, SessionStart `source: "fork"`, carrying only the flags passed. The original stays live. **The copy's row stays `done`/idle, not `failed` as on ACME.** |
+| 2 | Copy. `--bg --resume <id>` of a live session **with** flags starts a copy with a new id, SessionStart `source: "fork"`, carrying only the flags passed. The original stays live. **The copy's row stays `done`/idle, not `failed` as on the wrapper build.** |
 | 2c1 (new) | **Same id.** After `claude stop`, `--bg --resume <id>` with **no flags** continues the same session: "woke session X with its saved options (--name, --permission-mode, --settings)". Same session id, SessionStart `source: "resume"`, the original labels reach the hooks, no new row. |
 | 2c2 (new) | **Copy, unlabelled.** After stop, `--resume <id> --name <same name>` starts a copy with a new id ("the flags you passed started a copy"). The copy fired no hooks: passing `--name` alone drops the saved `--settings`. |
-| 2c3 | New id (copy). After stop, `--resume <id>` with all flags (`--name`, `--permission-mode`, `--settings`) starts a copy, SessionStart `source: "fork"`, with the new labels; the old row stays `done`. This is what the ACME run measured as "2c"; the public build agrees. |
+| 2c3 | New id (copy). After stop, `--resume <id>` with all flags (`--name`, `--permission-mode`, `--settings`) starts a copy, SessionStart `source: "fork"`, with the new labels; the old row stays `done`. This is what the wrapper build's run measured as "2c"; the public build agrees. |
 | 3 | Yes. The `env` labels from `--settings` reached every hook. Fired: SessionStart (`source: startup`), UserPromptSubmit, Stop; SessionEnd at stop (`reason: other`). No Notification in run 2 (run 1 saw one Notification per session after it sat idle, so it depends on timing). |
 | 4 | Title only. The hook's `sessionTitle` reached later hook input as `session_title`; `claude agents --json` and the session file kept the `--name` value (`nameSource: "peer"`). |
 | 5 | Allowed. Two live `--bg` sessions with the same name; neither got a variant name. |
 
-Other facts seen (same as ACME):
+Other facts seen (same as the wrapper build):
 
 - A `--bg` session stays live and `idle` after its prompt finishes.
 - `claude agents --json` fields: `cwd, id, kind, name, pid, sessionId, startedAt, state, status`.
 - Session file fields: `cwd, entrypoint, jobId, kind, messagingSocketPath, name, nameSince, nameSource, peerFeatures, peerProtocol, pid, pidDomain, procStart, sessionId, startedAt, status, statusUpdatedAt, updatedAt, version`.
 - `stop` and `rm` worked with the plain `claude` on PATH; `cleanup.rows_left` was empty after both runs.
 
-## Differences from ACME
+## Differences from the wrapper build
 
-1. **Home-folder trust.** On ACME the home folder was a trusted parent of the probe
+1. **Home-folder trust.** On the wrapper build the home folder was a trusted parent of the probe
    folder. Here accepting the trust prompt in `~` was not persisted, so the probe
    folder needed its own trust. This may be a property of the public build or of
    this machine's history; it was not tested further.
-2. **State of copied rows.** On ACME the copies made by resuming a live session
+2. **State of copied rows.** On the wrapper build the copies made by resuming a live session
    ended `failed`; here they stayed `done` and idle with a live pid.
 
-Everything else matches, including the copy notes, which the ACME output already
+Everything else matches, including the copy notes, which the wrapper build's output already
 printed word for word ("Without flags, the same command continues X itself"). The
-ACME "2c: new id" was caused by the old probe passing flags, not by the build.
+wrapper build's "2c: new id" was caused by the old probe passing flags, not by the build.
 
 ## What this changes in the plan
 
@@ -65,9 +65,9 @@ ACME "2c: new id" was caused by the old probe passing flags, not by the build.
 
 ## What was done
 
-1. Cloned the repo; read `HANDOFF.md`, `P0-requirements.md`, the ACME findings and
+1. Cloned the repo; read `P0-requirements.md`, the wrapper build's findings and
    raw JSON, and `p0_probe.py`.
-2. Found from the ACME raw output that probes 2 and 2c only tested the copy path:
+2. Found from the wrapper build's raw output that probes 2 and 2c only tested the copy path:
    the script passed `--name`, `--permission-mode` and `--settings` on every
    resume, and the CLI itself said "the flags you passed started a copy ... Without
    flags, the same command continues X itself". Probe 2 also resumed an id that did
@@ -86,8 +86,8 @@ ACME "2c: new id" was caused by the old probe passing flags, not by the build.
 
 ## P0.6 to P0.8 (`probes/p0_probe2.py`)
 
-Run on 2026-10-04 with **2.1.289** (Claude Code updated itself after round 1; ACME
-measured these on 2.1.288). Raw data: `results2-public-2.1.289-subscription.json`.
+Run on 2026-10-04 with **2.1.289** (Claude Code updated itself after round 1; the wrapper
+build measured these on 2.1.288). Raw data: `results2-public-2.1.289-subscription.json`.
 `cleanup.rows_left` empty; the private tmux server `nimitz-probe` was gone afterwards.
 
 | Id | Result |
@@ -99,10 +99,10 @@ measured these on 2.1.288). Raw data: `results2-public-2.1.289-subscription.json
 PreToolUse input fields: `cwd, effort, hook_event_name, permission_mode, prompt_id,
 **scratchpad_dir**, session_id, tool_input, tool_name, tool_use_id, transcript_path`.
 
-### Differences from ACME (round 2)
+### Differences from the wrapper build (round 2)
 
-1. **Version:** public 2.1.289 against ACME 2.1.288.
-2. **PreToolUse input has `scratchpad_dir`**, which the ACME field list does not.
+1. **Version:** public 2.1.289 against the wrapper build's 2.1.288.
+2. **PreToolUse input has `scratchpad_dir`**, which the wrapper build's field list does not.
    Likely the version, not the build. `nimitz` should not depend on the exact field set.
 
-All three results match ACME.
+All three results match the wrapper build.

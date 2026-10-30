@@ -6,7 +6,7 @@ issues) and the multiplexer's panes (`nimitz-mux`); every action is a core plan
 (`sessions::plan_*`, `config::plan_*`) shown in full before it runs. It parses
 no Claude Code files itself.
 
-![overview](../../docs/screens/admiralty-wide.png)
+![overview](../../docs/img/admiralty-wide.png)
 
 ## Run
 
@@ -136,7 +136,7 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
 ## Keys
 
-![finder](../../docs/screens/admiralty-finder.png)
+![finder](../../docs/img/admiralty-finder.png)
 
 `space` opens the finder: every member of every fleet, one line each in tree
 order (its path `MAIN/ARGOS/SIGNAL`, its expected name `[MAIN.ARGOS]-SIGNAL`,
@@ -211,7 +211,7 @@ agents` follows right after, and keys typed meanwhile are kept.
 
 ## Screens
 
-`docs/screens/`: `admiralty-wide`, `admiralty-issue-detail`,
+`docs/img/`: `admiralty-wide`, `admiralty-issue-detail`,
 `admiralty-issues-view`, `admiralty-confirm`, `admiralty-actions-menu`,
 `admiralty-form`, `admiralty-fleet-menu`,
 `admiralty-legacy`, `admiralty-broken-config`, `admiralty-sandbox-monitor-only`,

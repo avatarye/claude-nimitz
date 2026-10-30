@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.17 (unreleased)
+
+### Changed
+
+- **The repository holds generic names only.** Example fleets, ships, machines
+  and paths in the sources, tests, docs and screens are invented; the legacy
+  migration fixtures are synthetic (`tests/fixtures/legacy-fleets`), and the
+  screens moved to `docs/img`. The whole history was rewritten the same way, so
+  every commit hash and tag changed: re-clone, don't pull.
+- **A private tool folder is no longer searched for Claude Code.** The native
+  binary (resume, stop, rm) is `NIMITZ_NATIVE_CLAUDE_BIN`, else the machine's
+  `native_claude_bin`, else its `claude_bin`, else PATH. `--claude-bin`, which
+  covered launches only in 0.7.16, now moves both. `nimitz doctor` lists generic
+  candidates only.
+
+### Added
+
+- **`nimitz machine set <label> --native-bin <path>`** keeps a machine's cold
+  launches on a PATH wrapper and its resumes on the real binary, and `doctor`
+  warns when the native binary is a script or a wrapper (a resume through it
+  makes a copy).
+
+### Upgrading
+
+- Install both crates and update the plugin as usual, from a fresh clone.
+- A machine whose PATH `claude` is a wrapper needs the real binary named, in
+  this order: export `NIMITZ_NATIVE_CLAUDE_BIN=<real binary>` before updating
+  (0.7.16 has no `--native-bin`); update every machine; run `nimitz machine set
+  <label> --native-bin <real binary>`; then drop the variable. Update every
+  machine first because 0.7.16 refuses a `machines.toml` holding that key
+  (`min_nimitz` 0.7.17).
+
 ## 0.7.16 (2026-10-30)
 
 ### Added
@@ -417,7 +449,7 @@
 - Commands that act on one member (`attach`, `adopt`'s target, `fleet`,
   `squadron` and `ship` new|set|rm, `machine`, `harness --for`, `--fleet`)
   refuse a pattern, saying why and naming the exact form.
-- Admiralty's screenshots (`docs/screens/`) show the 0.7.3 layout, made by
+- Admiralty's screenshots (`docs/img/`) show the 0.7.3 layout, made by
   `tools/admiralty_screens.py` (see crates/admiralty/README.md); the design
   page has a "UI as shipped" section.
 

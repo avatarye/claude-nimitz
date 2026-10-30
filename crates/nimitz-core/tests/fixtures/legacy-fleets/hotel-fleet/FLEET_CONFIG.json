@@ -1,0 +1,63 @@
+{
+  "fleet": "HOTEL",
+  "instructions": "FLEET.md",
+  "machines": {
+    "other-ubuntu": {
+      "hostname": "box01.corp.example.com",
+      "os": "linux"
+    },
+    "macbook": {
+      "hostname": "3f2c1d0e9b7a",
+      "os": "darwin"
+    },
+    "home-ubuntu": {
+      "hostname": "HOME-UBUNTU",
+      "os": "linux"
+    },
+    "home-server": {
+      "hostname": "home-server",
+      "os": "linux"
+    }
+  },
+  "agents": [
+    {
+      "name": "DEV",
+      "prompt": "You are DEV — you own one repository; ask the commodore before you change another.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/Dropbox/Vaults.2026/hotel-development",
+        "macbook": "/Users/user/Dropbox/Vaults.2026/hotel-development",
+        "home-ubuntu": "/home/user/Dropbox/Vaults.2026/hotel-development",
+        "home-server": "/mnt/data/shared/Vaults.2026/hotel-development"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "DOCS",
+      "prompt": "You are DOCS — you own one repository; ask the commodore before you change another.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/Dropbox/Vaults.2026/hotel-docs",
+        "macbook": "/Users/user/Dropbox/Vaults.2026/hotel-docs",
+        "home-ubuntu": "/home/user/Dropbox/Vaults.2026/hotel-docs",
+        "home-server": "/mnt/data/shared/Vaults.2026/hotel-docs"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "KB",
+      "prompt": "You are KB — you own one repository → report to the commodore when a task is done.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/Dropbox/Vaults.2026/knowledge-base",
+        "macbook": "/Users/user/Dropbox/Vaults.2026/knowledge-base",
+        "home-ubuntu": "/home/user/Dropbox/Vaults.2026/knowledge-base",
+        "home-server": "/mnt/data/shared/Vaults.2026/knowledge-base"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    }
+  ]
+}
