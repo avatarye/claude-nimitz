@@ -1,0 +1,197 @@
+{
+  "description": "nimitz: bind sessions to identities, log crew, end reasons and SendMessage, tell a commodore when its ship blocks on the user, hold the kb-scribe and kb-ref subagents to the knowledge base",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "SessionStart"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "rules",
+              "harness"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "SessionEnd"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "UserPromptSubmit"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "rules",
+              "harness"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "Stop"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "Notification"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "SubagentStart"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "SubagentStop"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "PreToolUse"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "PreToolUse"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "kb-guard"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nimitz",
+            "args": [
+              "hook",
+              "PermissionRequest"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

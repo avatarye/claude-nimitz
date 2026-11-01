@@ -1,0 +1,5 @@
+# Old fleet-skill session names and the nimitz identity each became.
+# Written by `nimitz migrate fleet-skill`; a live session with one of these
+# names belongs to the old fleet (issue `legacy`).
+[names]
+"[GENERAL]-HOME" = "MAIN/GENERAL/HOME"

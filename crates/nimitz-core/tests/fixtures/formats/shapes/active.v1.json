@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "at": 1.5,
+  "machine": "work",
+  "herdr": {
+    "session": "NIMITZ",
+    "socket": "/s"
+  },
+  "members": {
+    "MAIN": {
+      "job": "ab12cd34",
+      "session": "s1",
+      "status": "idle",
+      "waiting_for": "you",
+      "attached": true,
+      "place": {
+        "workspace_id": "w1",
+        "workspace": "MAIN",
+        "tab_id": "t1",
+        "tab": "MAIN",
+        "pane_id": "p1"
+      }
+    }
+  }
+}

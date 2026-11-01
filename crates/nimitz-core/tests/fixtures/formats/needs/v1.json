@@ -1,0 +1,12 @@
+{
+  "ts": 1791668932.2862926,
+  "id": "MAIN/ARGOS/CLEAN",
+  "session_id": "2287e6e4-5b0c-4d1e-9f2a-000000000004",
+  "kind": "permission",
+  "event": "PermissionRequest",
+  "tool_use_id": null,
+  "detail": "may it use Bash? input: {\"command\":\"rm -rf build\"}",
+  "delivery": "failed",
+  "delivery_note": "MAIN/ARGOS runs Claude Code (version unknown), older than 2.1.293 where nimitz verified the inbox line; and no multiplexer in the member's env can type into MAIN/ARGOS's pane (none): only an explicit NIMITZ_MUX, or the Herdr server a nimitz command of the user recorded in active.json (by its session name), is used; fix: run nimitz status inside Herdr once",
+  "delivered_at": null
+}

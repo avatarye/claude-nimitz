@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "kb": {
+    "remote": "git@github.com:u/kb.git",
+    "dirs": {
+      "work": "~/kb"
+    }
+  }
+}

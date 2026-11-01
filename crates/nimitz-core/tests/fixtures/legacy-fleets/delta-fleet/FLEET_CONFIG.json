@@ -1,0 +1,38 @@
+{
+  "fleet": "DELTA",
+  "instructions": "FLEET.md",
+  "machines": {
+    "other-ubuntu": {
+      "hostname": "box01.corp.example.com",
+      "os": "linux"
+    },
+    "macbook": {
+      "hostname": "3f2c1d0e9b7a",
+      "os": "darwin"
+    }
+  },
+  "agents": [
+    {
+      "name": "LIB",
+      "prompt": "You are LIB — you own one repository; ask the commodore before you change another.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/work/DeltaLibWS/src/DeltaLib",
+        "macbook": "/Users/user/work/DeltaWS/src/DeltaLib"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "BUILDER",
+      "prompt": "You are BUILDER — you own one repository → report to the commodore when a task is done.",
+      "dirs": {
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/work/DeltaLibWS/src/DeltaImageBuild",
+        "macbook": "/Users/user/work/DeltaWS/src/DeltaImageBuild"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    }
+  ]
+}

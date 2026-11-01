@@ -1,0 +1,14 @@
+{
+  "bridgeSessionId": null,
+  "cwd": "@@BASE@@/dirs/main/stopped",
+  "entrypoint": "cli",
+  "jobId": "d5a94781",
+  "kind": "bg",
+  "name": "[MAIN.ARGOS]-STOPPED",
+  "pid": 1,
+  "sessionId": "d5a94781-5b0c-4d1e-9f2a-000000000009",
+  "startedAt": 1791667200658,
+  "status": "idle",
+  "statusUpdatedAt": 1791667200658,
+  "version": "2.1.288"
+}

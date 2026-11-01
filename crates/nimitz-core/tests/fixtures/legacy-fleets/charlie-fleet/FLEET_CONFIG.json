@@ -1,0 +1,49 @@
+{
+  "fleet": "CHARLIE",
+  "instructions": "FLEET.md",
+  "machines": {
+    "ubuntu-box": {
+      "hostname": "box01.corp.example.com",
+      "os": "linux"
+    },
+    "macbook": {
+      "hostname": "3f2c1d0e9b7a",
+      "os": "darwin"
+    }
+  },
+  "agents": [
+    {
+      "name": "PARSER",
+      "prompt": "You are PARSER. You own one repository and nothing else.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/CharlieWS/src/PlainParser",
+        "macbook": "/Users/user/work/CharlieFleet/src/PlainParser"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "CODEC",
+      "prompt": "You are CODEC. You own one repository and nothing else.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/CharlieWS/src/PlainCodec",
+        "macbook": "/Users/user/work/CharlieFleet/src/PlainCodec"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "STORAGE",
+      "prompt": "You are STORAGE. You own one repository and nothing else.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/CharlieWS/src/PlainStorage",
+        "macbook": "/Users/user/work/CharlieFleet/src/PlainStorage"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    }
+  ]
+}

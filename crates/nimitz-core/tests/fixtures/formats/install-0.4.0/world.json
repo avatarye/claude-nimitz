@@ -1,0 +1,96 @@
+{
+  "cc_version": "2.1.288",
+  "next": 1000,
+  "sessions": [
+    {
+      "name": "[MAIN]-ADMIRAL",
+      "session_id": "c46d79b9-5b0c-4d1e-9f2a-000000000001",
+      "short_id": "c46d79b9"
+    },
+    {
+      "name": "[MAIN.ARGOS]-COMMODORE",
+      "session_id": "6634f372-5b0c-4d1e-9f2a-000000000002",
+      "short_id": "6634f372"
+    },
+    {
+      "name": "[MAIN.BOREAL]-COMMODORE",
+      "session_id": "80fc6d2b-5b0c-4d1e-9f2a-000000000003",
+      "short_id": "80fc6d2b"
+    },
+    {
+      "name": "[MAIN.ARGOS]-CLEAN",
+      "session_id": "2287e6e4-5b0c-4d1e-9f2a-000000000004",
+      "short_id": "2287e6e4"
+    },
+    {
+      "name": "[MAIN.ARGOS]-DRIFT-quiet-otter",
+      "session_id": "4d4f609d-5b0c-4d1e-9f2a-000000000005",
+      "short_id": "4d4f609d"
+    },
+    {
+      "name": "[MAIN.ARGOS]-NOLABEL",
+      "session_id": "ef16da56-5b0c-4d1e-9f2a-000000000006",
+      "short_id": "ef16da56"
+    },
+    {
+      "name": "[MAIN.ARGOS]-TWIN",
+      "session_id": "09de540f-5b0c-4d1e-9f2a-000000000007",
+      "short_id": "09de540f"
+    },
+    {
+      "name": "[MAIN.ARGOS]-TWIN",
+      "session_id": "abe1cdc8-5b0c-4d1e-9f2a-000000000008",
+      "short_id": "abe1cdc8"
+    },
+    {
+      "name": "[MAIN.ARGOS]-STOPPED",
+      "session_id": "d5a94781-5b0c-4d1e-9f2a-000000000009",
+      "short_id": "d5a94781"
+    },
+    {
+      "name": "[MAIN.ARGOS]-BARE",
+      "session_id": "7470c13a-5b0c-4d1e-9f2a-00000000000a",
+      "short_id": "7470c13a"
+    },
+    {
+      "name": "[MAIN.ARGOS]-FAILED",
+      "session_id": "96383af3-5b0c-4d1e-9f2a-00000000000b",
+      "short_id": "96383af3"
+    },
+    {
+      "name": "[MAIN.ARGOS]-COPIES",
+      "session_id": "30c3b4ac-5b0c-4d1e-9f2a-00000000000c",
+      "short_id": "30c3b4ac"
+    },
+    {
+      "name": "[MAIN.ARGOS]-COPIES",
+      "session_id": "528b2e65-5b0c-4d1e-9f2a-00000000000d",
+      "short_id": "528b2e65"
+    },
+    {
+      "name": "[MAIN.ARGOS]-COPIES",
+      "session_id": "fd52a81e-5b0c-4d1e-9f2a-00000000000e",
+      "short_id": "fd52a81e"
+    },
+    {
+      "name": "[MAIN.ARGOS]-TAKEN",
+      "session_id": "b92d9b90-5b0c-4d1e-9f2a-000000000010",
+      "short_id": "b92d9b90"
+    },
+    {
+      "name": "[MAIN.ARGOS]-MISLABEL",
+      "session_id": "dbf51549-5b0c-4d1e-9f2a-000000000011",
+      "short_id": "dbf51549"
+    },
+    {
+      "name": "[MAIN.ARGOS]-COMMODORE/fixci",
+      "session_id": "45bc8f02-5b0c-4d1e-9f2a-000000000012",
+      "short_id": "45bc8f02"
+    },
+    {
+      "name": "quick look at the logs",
+      "session_id": "060f8274-5b0c-4d1e-9f2a-000000000014",
+      "short_id": "060f8274"
+    }
+  ]
+}

@@ -1,0 +1,96 @@
+//! Running a session plan: every step goes to `sessions::apply` (every member
+//! is a background job). The multiplexer only attaches: `attach_in_tab` shows
+//! a member's job in its tab (`nimitz open`, `signal` to a lead, a restore).
+use crate::{out, Ctx};
+use nimitz_core::env::Env;
+use nimitz_core::{Id, Issue, Member, Outcome, Plan, Severity};
+use nimitz_mux::{AttachError, Attached, Mux, PaneRef, Place};
+use std::path::Path;
+
+/// Herdr workspace for a member: `F` for the admiral, `F.SQ` for the rest.
+pub fn workspace_of(id: &Id) -> String {
+    nimitz_core::layout::workspace_of(id)
+}
+
+/// Tab label: `F.ADMIRAL`, `F.SQ.COMMODORE` or `F.SQ.SHIP`.
+pub fn tab_of(id: &Id) -> String {
+    nimitz_core::layout::tab_of(id)
+}
+
+pub fn place_for(id: &Id) -> Place {
+    Place::Tab { workspace: workspace_of(id), label: tab_of(id) }
+}
+
+/// The pane that shows `session_id`, with how nimitz knows (`Pane.inferred`).
+pub fn shown_in(mux: &dyn Mux, session_id: &str) -> Option<nimitz_mux::Pane> {
+    mux.panes().into_iter().find(|p| p.session_id.as_deref() == Some(session_id))
+}
+
+/// Why nothing is typed into a pane whose session nimitz read from its
+/// `claude attach <job>` alone (`Pane.inferred`) when it does not run
+/// exactly that attach now (`nimitz_mux::runs_exact_attach`): text typed
+/// into the agent view (R-24) would dispatch a new session.
+pub fn untypeable(id: &Id, pane: &PaneRef) -> Issue {
+    refusal(
+        "tab.unverified",
+        format!("{id}'s tab (pane {}) is known by its attach alone and does not run exactly `claude attach <its job>` now (the agent view after /exit re-execs as `claude agents`, R-24); nothing is typed into it", pane.pane_id),
+        Some(format!("nimitz open {id}, and type it there yourself")),
+        Some(id.clone()),
+    )
+}
+
+/// Wait up to `secs` for a pane to show `session_id` (an attach that just
+/// ran), polling the mux. None when none does in time.
+pub fn wait_for_session(mux: &dyn Mux, session_id: &str, secs: f64) -> Option<nimitz_mux::Pane> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(secs.max(0.0));
+    loop {
+        if let Some(p) = shown_in(mux, session_id) {
+            return Some(p);
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+pub fn refusal(code: &str, message: String, fix: Option<String>, id: Option<Id>) -> Issue {
+    Issue { code: code.into(), severity: Severity::Error, message, fix, id }
+}
+
+/// Gate, then run. Returns the exit code.
+pub fn session_plan(ctx: &Ctx, plan: Plan) -> i32 {
+    match ctx.gate(&plan) {
+        out::Go::Exit(code) => code,
+        out::Go::Run => out::outcome(&plan, &execute(ctx, &plan)),
+    }
+}
+
+pub fn execute(ctx: &Ctx, plan: &Plan) -> Outcome {
+    nimitz_core::sessions::apply(&ctx.env, plan)
+}
+
+/// Show `m`'s job in its tab (`claude attach <job>` in its folder, tab
+/// `F.ADMIRAL` / `F.SQ.COMMODORE` / `F.SQ.SHIP`; a parked job wakes): focus
+/// the pane that shows it, claim its tab's shell pane, or open the tab
+/// (`nimitz_mux::attach`). A member with no job, or one whose tab runs
+/// something else (`tab.taken`: nothing is typed), is an `Err` with the issue
+/// that says what to do. The attach-a-lead step a restore uses too.
+pub fn attach_in_tab(mux: &dyn Mux, env: &Env, m: &Member) -> Result<Attached, Issue> {
+    let tab = nimitz_core::layout::attach_tab(env, m)?;
+    nimitz_mux::attach(mux, &tab.cmd, Path::new(&tab.cwd), place_for(&m.id), tab.session_id.as_deref()).map_err(|e| attach_issue(&m.id, e))
+}
+
+/// The issue for a failed attach: a taken tab names the pane and what runs
+/// there, with the one fix (end it there, or ctrl-z an attach of another job).
+pub fn attach_issue(id: &Id, e: AttachError) -> Issue {
+    match e {
+        AttachError::Taken { pane, running } => refusal(
+            "tab.taken",
+            format!("{id}'s tab is open but its pane {} runs `{running}`, not a shell; nothing was typed into it", pane.pane_id),
+            Some(format!("in pane {}: ctrl-z (an attach) or quit `{running}`, then nimitz open {id}", pane.pane_id)),
+            Some(id.clone()),
+        ),
+        AttachError::Mux(e) => refusal("mux.failed", format!("attaching {id} failed: {e}"), None, Some(id.clone())),
+    }
+}

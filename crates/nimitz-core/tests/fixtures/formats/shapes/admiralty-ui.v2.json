@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "expanded": {
+    "MAIN": true
+  },
+  "filter": "argos",
+  "fleet_states": [
+    true,
+    false
+  ],
+  "flagged_only": true,
+  "show_stowaways": true,
+  "tab": "MAIN",
+  "anim": false,
+  "finder": {
+    "pane_only": false,
+    "topic": true,
+    "no_stowaways": true,
+    "this_fleet": true,
+    "ships_only": true
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "ts": 1.5,
+  "id": "MAIN/@KB",
+  "session_id": "s1",
+  "kind": "dead",
+  "event": "inbox",
+  "tool_use_id": "t1",
+  "detail": "d",
+  "delivery": "delivered",
+  "delivery_note": "n",
+  "delivered_at": 2.0,
+  "item": "000000000017"
+}

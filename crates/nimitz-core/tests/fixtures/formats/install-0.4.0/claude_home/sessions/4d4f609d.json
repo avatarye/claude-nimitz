@@ -1,0 +1,14 @@
+{
+  "bridgeSessionId": null,
+  "cwd": "@@BASE@@/dirs/main/drift",
+  "entrypoint": "cli",
+  "jobId": "4d4f609d",
+  "kind": "bg",
+  "name": "[MAIN.ARGOS]-DRIFT-quiet-otter",
+  "pid": 1,
+  "sessionId": "4d4f609d-5b0c-4d1e-9f2a-000000000005",
+  "startedAt": 1791663595052,
+  "status": "idle",
+  "statusUpdatedAt": 1791667135052,
+  "version": "2.1.288"
+}

@@ -1,0 +1,51 @@
+{
+  "fleet": "BRAVO",
+  "instructions": "FLEET.md",
+  "machines": {
+    "ubuntu-box": {
+      "hostname": "box01.corp.example.com",
+      "os": "linux"
+    },
+    "west-mac": {
+      "hostname": "3f2c1d0e9b7a",
+      "os": "darwin",
+      "model": "Mac15,6"
+    }
+  },
+  "agents": [
+    {
+      "name": "BRAVO",
+      "prompt": "You are BRAVO. You own one repository and nothing else.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/BravoWS/src/Bravo",
+        "west-mac": "/Users/user/work/BravoFleet/src/Bravo"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "RUNNER",
+      "prompt": "You are RUNNER — you own one repository; ask the commodore before you change another.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/BravoWS/src/BravoRunner",
+        "west-mac": "/Users/user/work/BravoFleet/src/BravoRunner"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": [
+        "bravo"
+      ]
+    },
+    {
+      "name": "TYPES",
+      "prompt": "You are TYPES — you own one repository → report to the commodore when a task is done.",
+      "dirs": {
+        "west-mac": "/Users/user/work/BravoFleet/src/BravoTypes"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    }
+  ]
+}

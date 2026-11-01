@@ -1,0 +1,66 @@
+{
+  "fleet": "GOLF",
+  "instructions": "FLEET.md",
+  "machines": {
+    "ubuntu-box": {
+      "hostname": "box01.corp.example.com",
+      "os": "linux"
+    },
+    "west-mac": {
+      "hostname": "3f2c1d0e9b7a",
+      "os": "darwin"
+    }
+  },
+  "agents": [
+    {
+      "name": "SERVER",
+      "prompt": "You are SERVER. You own one repository and nothing else.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/GolfWS/src/GolfServer",
+        "west-mac": "/Users/user/work/GOLFFleet/src/GolfServer"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    },
+    {
+      "name": "CLIENT",
+      "prompt": "You are CLIENT. You own one repository and nothing else.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/GolfWS/src/GolfClient",
+        "west-mac": "/Users/user/work/GOLFFleet/src/GolfClient"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": [
+        "SERVER"
+      ]
+    },
+    {
+      "name": "PACKER",
+      "prompt": "You are PACKER. You own one repository and nothing else.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/GolfWS/src/GolfPacker",
+        "west-mac": "/Users/user/work/GOLFFleet/src/GolfPacker"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": [
+        "SERVER"
+      ]
+    },
+    {
+      "name": "EDITOR",
+      "prompt": "You are EDITOR. You own one repository and nothing else.",
+      "dirs": {
+        "ubuntu-box": "/home/CORP.EXAMPLE.COM/user/work/GolfWS/src/GolfEditor",
+        "west-mac": "/Users/user/work/GOLFFleet/src/GolfEditor"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": [
+        "CLIENT"
+      ]
+    }
+  ]
+}

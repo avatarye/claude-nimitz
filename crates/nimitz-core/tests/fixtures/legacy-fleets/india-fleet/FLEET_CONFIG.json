@@ -1,0 +1,27 @@
+{
+  "fleet": "INDIA",
+  "instructions": "FLEET.md",
+  "machines": {
+    "west-mac": {
+      "hostname": "3f2c1d0e9b7a",
+      "os": "darwin"
+    },
+    "other-ubuntu": {
+      "hostname": "box01.corp.example.com",
+      "os": "linux"
+    }
+  },
+  "agents": [
+    {
+      "name": "ATLAS",
+      "prompt": "You are ATLAS. You own one repository and nothing else.",
+      "dirs": {
+        "west-mac": "/Users/user/work/IndiaFleet/src/IndiaAtlas",
+        "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/work/IndiaFleet/src/IndiaAtlas"
+      },
+      "permission_mode": {},
+      "bg_isolation": {},
+      "depends_on": []
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+# a squadron.toml as nimitz 0.7.11 writes it: format 1 (no stamp), no effort
+squadron = "ARGOS"
+brief = "SQUADRON.md"
+permission_mode = "acceptEdits"
+
+[[ships]]
+name = "CLEAN"
+prompt = "You are the ship CLEAN."
+depends_on = []
+
+[ships.dirs]
+work = "managed"
+
+[ships.permission_mode]
+work = "plan"

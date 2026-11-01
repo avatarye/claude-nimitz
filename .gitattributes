@@ -1,0 +1,3 @@
+# LF in every checkout (core.autocrlf too): Claude Code's fallback for
+# frontmatter that is not strict YAML skips CRLF lines (#7)
+plugin/**/*.md text eol=lf

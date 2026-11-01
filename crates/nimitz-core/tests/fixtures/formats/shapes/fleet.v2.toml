@@ -1,0 +1,10 @@
+format = 2
+min_nimitz = "0.5.0"
+fleet = "MAIN"
+
+[machines.work]
+hostname = "west-mac"
+os = "macos"
+
+[admiral]
+permission_mode = "plan"

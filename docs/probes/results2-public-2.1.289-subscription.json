@@ -1,0 +1,195 @@
+{
+ "native": "/home/user/.local/bin/claude",
+ "version": "2.1.289 (Claude Code)",
+ "path_version": "2.1.289 (Claude Code)",
+ "p06_labels_in_bash": {
+  "launch": {
+   "rc": 0,
+   "out": "backgrounded \u00b7 20ff61e4 \u00b7 nimitz-probe2-env\n  claude agents             list sessions\n  claude attach 20ff61e4    open in this terminal\n  claude logs 20ff61e4      show recent output\n  claude stop 20ff61e4      stop this session\nStarting background service\u2026"
+  },
+  "bash_tool_used": [
+   "{\"command\": \"env | grep NIMITZ_ | sort > /home/user/.cache/nimitz-probe/p6/env.txt\", \"description\": \"Write NIMITZ_ env vars to env.txt\"}"
+  ],
+  "env_file": [
+   "NIMITZ_ID=PROBE/p6",
+   "NIMITZ_PROBE=p6",
+   "NIMITZ_ROLE=ship"
+  ],
+  "labels_reached_bash": true
+ },
+ "p07_sendmessage": {
+  "target": {
+   "rc": 0,
+   "out": "backgrounded \u00b7 2d3f954e \u00b7 nimitz-probe2-target\n  claude agents             list sessions\n  claude attach 2d3f954e    open in this terminal\n  claude logs 2d3f954e      show recent output\n  claude stop 2d3f954e      stop this session"
+  },
+  "allow_run": {
+   "rc": 0,
+   "out": "backgrounded \u00b7 a0103952 \u00b7 nimitz-probe2-sender\n  claude agents             list sessions\n  claude attach a0103952    open in this terminal\n  claude logs a0103952      show recent output\n  claude stop a0103952      stop this session"
+  },
+  "deny_run": {
+   "rc": 0,
+   "out": "backgrounded \u00b7 87d48b54 \u00b7 nimitz-probe2-sender-deny\n  claude agents             list sessions\n  claude attach 87d48b54    open in this terminal\n  claude logs 87d48b54      show recent output\n  claude stop 87d48b54      stop this session"
+  },
+  "allow_tool_calls": [
+   {
+    "event": "PreToolUse",
+    "tool_name": "ToolSearch",
+    "tool_input": "{\"query\": \"select:SendMessage\", \"max_results\": 1}",
+    "keys": [
+     "cwd",
+     "effort",
+     "hook_event_name",
+     "permission_mode",
+     "prompt_id",
+     "scratchpad_dir",
+     "session_id",
+     "tool_input",
+     "tool_name",
+     "tool_use_id",
+     "transcript_path"
+    ]
+   },
+   {
+    "event": "PostToolUse",
+    "tool_name": "ToolSearch",
+    "tool_input": "{\"query\": \"select:SendMessage\", \"max_results\": 1}",
+    "keys": [
+     "cwd",
+     "duration_ms",
+     "effort",
+     "hook_event_name",
+     "permission_mode",
+     "prompt_id",
+     "scratchpad_dir",
+     "session_id",
+     "tool_input",
+     "tool_name",
+     "tool_response",
+     "tool_use_id",
+     "transcript_path"
+    ]
+   },
+   {
+    "event": "PreToolUse",
+    "tool_name": "SendMessage",
+    "tool_input": "{\"to\": \"nimitz-probe2-target\", \"summary\": \"Ping probe target session\", \"message\": \"ping from probe\", \"type\": \"message\", \"recipient\": \"nimitz-probe2-target\", \"content\": \"ping from probe\"}",
+    "keys": [
+     "cwd",
+     "effort",
+     "hook_event_name",
+     "permission_mode",
+     "prompt_id",
+     "scratchpad_dir",
+     "session_id",
+     "tool_input",
+     "tool_name",
+     "tool_use_id",
+     "transcript_path"
+    ]
+   },
+   {
+    "event": "PostToolUse",
+    "tool_name": "SendMessage",
+    "tool_input": "{\"to\": \"nimitz-probe2-target\", \"summary\": \"Ping probe target session\", \"message\": \"ping from probe\", \"type\": \"message\", \"recipient\": \"nimitz-probe2-target\", \"content\": \"ping from probe\"}",
+    "keys": [
+     "cwd",
+     "duration_ms",
+     "effort",
+     "hook_event_name",
+     "permission_mode",
+     "prompt_id",
+     "scratchpad_dir",
+     "session_id",
+     "tool_input",
+     "tool_name",
+     "tool_response",
+     "tool_use_id",
+     "transcript_path"
+    ]
+   }
+  ],
+  "deny_tool_calls": [
+   {
+    "event": "PreToolUse",
+    "tool_name": "ToolSearch",
+    "tool_input": "{\"query\": \"select:SendMessage\", \"max_results\": 1}",
+    "keys": [
+     "cwd",
+     "effort",
+     "hook_event_name",
+     "permission_mode",
+     "prompt_id",
+     "scratchpad_dir",
+     "session_id",
+     "tool_input",
+     "tool_name",
+     "tool_use_id",
+     "transcript_path"
+    ]
+   },
+   {
+    "event": "PostToolUse",
+    "tool_name": "ToolSearch",
+    "tool_input": "{\"query\": \"select:SendMessage\", \"max_results\": 1}",
+    "keys": [
+     "cwd",
+     "duration_ms",
+     "effort",
+     "hook_event_name",
+     "permission_mode",
+     "prompt_id",
+     "scratchpad_dir",
+     "session_id",
+     "tool_input",
+     "tool_name",
+     "tool_response",
+     "tool_use_id",
+     "transcript_path"
+    ]
+   },
+   {
+    "event": "PreToolUse",
+    "tool_name": "SendMessage",
+    "tool_input": "{\"to\": \"nimitz-probe2-target\", \"summary\": \"ping probe target\", \"message\": \"ping from probe\", \"type\": \"message\", \"recipient\": \"nimitz-probe2-target\", \"content\": \"ping from probe\"}",
+    "keys": [
+     "cwd",
+     "effort",
+     "hook_event_name",
+     "permission_mode",
+     "prompt_id",
+     "scratchpad_dir",
+     "session_id",
+     "tool_input",
+     "tool_name",
+     "tool_use_id",
+     "transcript_path"
+    ]
+   }
+  ],
+  "send_tool_names": [
+   "SendMessage"
+  ],
+  "deny_blocked": true
+ },
+ "p08_interactive_continue": {
+  "available": true,
+  "first_screen_tail": "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 nimitz-probe2-interactive \u2500\n\u276f\u00a0\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  Opus 5.5 | nimitz-probe2-interactive | ~/.cache/nimitz-probe/p8\n  \u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 5% 52.3k/1M | $0.22 | high | 5h 1%\n  -- INSERT -- \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 4 agents",
+  "first_started": true,
+  "second_screen_tail": "\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 nimitz-probe2-interactive \u2500\n\u276f\u00a0\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  Opus 5.5 | nimitz-probe2-interactive | ~/.cache/nimitz-probe/p8\n  \u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591 5% 52.3k/1M | $0.23 | high | 5h 1%\n  -- INSERT -- \u23f5\u23f5 auto mode on (shift+tab to cycle) \u00b7 \u2190 4 agents",
+  "second_started": true,
+  "session_starts": [
+   [
+    "c0ce54a0-11a1-4804-80e9-a012a415e965",
+    "startup"
+   ],
+   [
+    "c0ce54a0-11a1-4804-80e9-a012a415e965",
+    "resume"
+   ]
+  ],
+  "same_id_after_c": true
+ },
+ "cleanup": {
+  "rows_left": []
+ }
+}

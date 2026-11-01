@@ -1,0 +1,46 @@
+{
+  "projects": {
+    "@@BASE@@/dirs/main/bare": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/broken": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/clean": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/copies": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/drift": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/failed": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/fresh": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/gone": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/mislabel": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/nolabel": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/noprompt": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/stopped": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/taken": {
+      "hasTrustDialogAccepted": true
+    },
+    "@@BASE@@/dirs/main/twin": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}
