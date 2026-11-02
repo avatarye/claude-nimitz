@@ -444,7 +444,11 @@ fn x_shows_the_actions_with_the_rows_detail_below_and_w_opens_nothing() {
         let ls = lines(&draw(&mut t.app, w, h));
         let menu = ls.iter().position(|l| l.contains("actions: [MAIN.ARGOS]-BOOM")).unwrap_or_else(|| panic!("{w}x{h}: the menu\n{}", ls.join("\n")));
         let det = ls.iter().position(|l| l.contains(" detail ")).unwrap_or_else(|| panic!("{w}x{h}: the detail\n{}", ls.join("\n")));
-        assert!(det > menu + 5, "{w}x{h}: the detail sits below the menu");
+        if w < 120 {
+            assert!(det > menu + 5, "{w}x{h}: the detail sits below the menu");
+        } else {
+            assert!(det == menu && ls[det].find(" detail ") > ls[det].find("actions: "), "{w}x{h}: the detail sits beside the menu");
+        }
         let s = ls.join("\n");
         assert!(s.contains("identity    MAIN/ARGOS/BOOM") && s.contains("WHY THIS STATUS"), "{w}x{h}: the row's detail\n{s}");
         assert!(!s.contains("ACTIONS"), "{w}x{h}: no ACTIONS block under the menu\n{s}");
@@ -721,7 +725,7 @@ fn question_mark_toggles_the_keys_panel() {
     let mut t = demo();
     keys(&mut t.app, "?");
     assert!(matches!(t.app.modal, Some(Modal::Help { .. })));
-    assert!(screen(&mut t.app, 200, 120).contains("keys (? or esc closes, j/k scroll)"));
+    assert!(screen(&mut t.app, 200, 120).contains("? or esc close"));
     keys(&mut t.app, "?");
     assert!(t.app.modal.is_none(), "? closes it");
 }
@@ -734,7 +738,7 @@ fn help_lists_every_key() {
     for k in ["gg / G", "ctrl-d / ctrl-u", "J / K", "c / e / D", "f / F"] {
         assert!(s.contains(k), "help shows {k}");
     }
-    assert!(s.contains("the row's detail below them"), "help says x shows the detail");
+    assert!(admiralty::app::HELP.iter().any(|(k, d)| *k == "x" && d.contains("the row's detail beside them")), "help says x shows the detail");
     assert!(!s.contains("floating detail panel"), "no w panel in help");
     press(&mut t.app, KeyCode::Esc);
     assert!(t.app.modal.is_none());
@@ -959,7 +963,19 @@ fn actions_over_detail(app: &mut admiralty::app::App, what: &str) -> Vec<String>
     // the menu's inside: what sits between its borders
     let inner = |l: &String| -> String { l.split('\u{2503}').nth(1).unwrap_or_default().to_string() };
     let top = ls.iter().position(|l| l.contains("actions: ")).unwrap_or_else(|| panic!("{what}: no menu\n{s}"));
-    let listed: Vec<String> = ls[top + 1..top + 1 + menu.len()].iter().map(inner).collect();
+    // one entry a row, or more when it wraps under itself: each starts with its key
+    let mut listed: Vec<String> = vec![];
+    for l in ls[top + 1..].iter().map(inner) {
+        let next = menu.get(listed.len()).map(|it| format!("{}   ", it.key));
+        if next.is_some_and(|k| l.trim_start().starts_with(&k)) {
+            listed.push(l);
+        } else if l.trim().is_empty() {
+            break;
+        } else if let Some(last) = listed.last_mut() {
+            last.push_str(l.trim());
+        }
+    }
+    assert_eq!(listed.len(), menu.len(), "{what}\n{s}");
     for (it, l) in menu.iter().zip(&listed) {
         assert!(l.trim_start().starts_with(&format!("{}   ", it.key)), "{what}: {l} / {}", it.key);
         let head: String = it.label.chars().take(30).collect();
@@ -976,8 +992,7 @@ fn actions_over_detail(app: &mut admiralty::app::App, what: &str) -> Vec<String>
             }
         }
     }
-    let det = ls.iter().position(|l| l.contains(" detail ")).unwrap_or_else(|| panic!("{what}: no detail panel\n{s}"));
-    assert!(det > top + menu.len(), "{what}: the detail is below the menu\n{s}");
+    assert!(ls[top].contains(" detail "), "{what}: the detail is beside the menu\n{s}");
     assert!(!s.contains("ACTIONS"), "{what}: no ACTIONS block\n{s}");
     listed
 }
@@ -1220,7 +1235,7 @@ fn at_80x24_the_issues_view_wraps_and_help_scrolls() {
     press(&mut t.app, KeyCode::Esc);
     keys(&mut t.app, "?");
     let first = screen(&mut t.app, 80, 24);
-    assert!(first.contains("j for more"), "help says it scrolls:\n{first}");
+    assert!(first.contains("j/k scroll"), "help says it scrolls:\n{first}");
     for _ in 0..80 {
         keys(&mut t.app, "j");
     }
@@ -2380,7 +2395,7 @@ fn the_message_panel_shows_the_last_output_and_scrolls() {
     }
     // the scrollbar: the panel's last column inside its border
     let ls = lines(&draw(&mut t.app, 80, 24));
-    let thumb = ls.iter().filter(|l| l.chars().nth(75) == Some('\u{2588}')).count();
+    let thumb = ls.iter().filter(|l| l.chars().nth(76) == Some('\u{2588}')).count();
     assert!(thumb >= 1, "a scrollbar thumb:\n{}", ls.join("\n"));
     press(&mut t.app, KeyCode::Home);
     let top = screen(&mut t.app, 80, 24);
@@ -2428,7 +2443,7 @@ fn the_panels_fit_their_content_and_grow_from_the_middle() {
     // the middle of the body: the tabs above it, two status rows under it
     assert!((short_top + short_end).abs_diff(tall - 2) <= 2, "in the middle: {short_top}..{short_end}");
     let inside: Vec<&String> = ls.iter().filter(|l| l.contains("row ")).collect();
-    assert!(inside.len() > 20 && ls.iter().any(|l| l.chars().nth(115) == Some('\u{2588}')), "long, it stops at the margin and scrolls:\n{}", ls.join("\n"));
+    assert!(inside.len() > 20 && ls.iter().any(|l| l.chars().nth(109) == Some('\u{2588}')), "long, it stops at the margin and scrolls:\n{}", ls.join("\n"));
     // `x`: the menu and the detail together, in the middle, in the view
     let mut t = demo();
     goto(&mut t.app, "M:MAIN/ARGOS");
@@ -2437,4 +2452,28 @@ fn the_panels_fit_their_content_and_grow_from_the_middle() {
     let (top, _) = box_rows(&ls, "\u{250f} actions: ");
     let (_, end) = box_rows(&ls, "\u{250f} detail ");
     assert!(end - top < 45 && (top + end).abs_diff(60) <= 4, "as tall as its content, in the middle: {top}..{end}\n{}", ls.join("\n"));
+}
+
+/// Every popup has one of the three widths, inside the margin, at any window;
+/// its keys are its last line.
+#[test]
+fn the_popups_share_their_widths() {
+    let width = |t: &mut TestApp, w: u16, title: &str| {
+        let ls = lines(&draw(&mut t.app, w, 50));
+        let l = ls.iter().find(|l| l.contains(title)).unwrap_or_else(|| panic!("{title} at {w}:\n{}", ls.join("\n")));
+        let c: Vec<char> = l.chars().collect();
+        let from = l[..l.find(title).unwrap()].chars().count();
+        (from..c.len()).find(|x| c[*x] == '\u{2513}').map(|x| x + 1 - from).unwrap()
+    };
+    for (key, title, wide) in [("?", "\u{250f} keys ", 100), ("i", "\u{250f} issues", 160), ("c", "\u{250f} create", 100)] {
+        let mut t = demo();
+        keys(&mut t.app, key);
+        assert_eq!(width(&mut t, 200, title), wide, "{title}");
+        assert_eq!(width(&mut t, 80, title), 74, "{title} at 80 keeps the margin");
+    }
+    let mut t = demo();
+    keys(&mut t.app, "?");
+    let ls = lines(&draw(&mut t.app, 120, 30));
+    let at = ls.iter().rposition(|l| l.contains("? or esc close")).unwrap();
+    assert!(ls[at + 1].contains('\u{2517}'), "the keys are the last line:\n{}", ls.join("\n"));
 }

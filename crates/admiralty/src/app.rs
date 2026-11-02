@@ -237,9 +237,9 @@ pub struct App {
     /// lines the actions menu's detail panel is scrolled down (ctrl-e /
     /// ctrl-y, PgDn / PgUp); 0 on a new row and each time the menu opens
     pub detail_scroll: usize,
-    /// the message panel's output as last drawn: the most rows it scrolls
-    /// up, the rows it shows
-    pub message_rows: std::cell::Cell<(usize, usize)>,
+    /// the scrolling popup as last drawn: the most rows it scrolls, the rows
+    /// it shows
+    pub panel_rows: std::cell::Cell<(usize, usize)>,
     detail_for: Option<String>,
     pub page: usize,
     last_g: Option<Instant>,
@@ -281,7 +281,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("a", "start it: nimitz start <id> (confirms)"),
     ("u", "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked; confirms)"),
     ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
-    ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines; the row's detail below them (ctrl-e / ctrl-y or PgDn / PgUp scroll it)"),
+    ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines; the row's detail beside them (ctrl-e / ctrl-y or PgDn / PgUp scroll it)"),
     ("m", "message: its last output, then a box typed into its pane (nimitz signal <id> <text>)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
@@ -350,7 +350,7 @@ impl App {
             state_path,
             busy: None,
             detail_scroll: 0,
-            message_rows: Default::default(),
+            panel_rows: Default::default(),
             detail_for: None,
             page: 20,
             last_g: None,
@@ -842,6 +842,12 @@ impl App {
         self.bundle.as_ref().and_then(|b| actions::find_member(&b.snap, id))
     }
 
+    /// Ask before `p` runs, from the top of its plan.
+    fn confirm(&mut self, p: Pending) {
+        self.detail_scroll = 0;
+        self.modal = Some(Modal::Confirm(p));
+    }
+
     /// What member `id` last wrote, from its session's transcript.
     fn last_output(&self, id: &Id) -> Option<String> {
         let s = self.member(id)?.session.as_ref()?;
@@ -1054,14 +1060,14 @@ impl App {
         // (demo data has no CLI world behind it: there the plans are previews)
         if matches!(act, Act::Restore | Act::Start | Act::Relaunch | Act::Up) && (self.ctx.live || act == Act::Restore) {
             match actions::prepare_start(&self.ctx, b.mux_caps, &b.snap, &self.target(), act) {
-                Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                Ok(p) => self.confirm(p),
                 Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),
             }
             return None;
         }
         if let (Act::Layout | Act::LayoutShips, Target::Fleet(f)) = (act, self.target()) {
             match actions::prepare_layout(&self.ctx, b.mux_caps, &b.snap, &b.panes, &f, act == Act::LayoutShips) {
-                Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                Ok(p) => self.confirm(p),
                 Err(why) => self.notify(format!("layout: not available. {why}"), st(mono::WARN)),
             }
             return None;
@@ -1115,7 +1121,7 @@ impl App {
                 }
                 _ if self.ctx.live && matches!(self.target(), Target::Member(_)) => {
                     match actions::prepare_start(&self.ctx, b.mux_caps, &b.snap, &self.target(), Act::Open) {
-                        Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                        Ok(p) => self.confirm(p),
                         Err(why) => self.notify(format!("open: not available. {why}"), st(mono::WARN)),
                     }
                     return None;
@@ -1125,7 +1131,7 @@ impl App {
             }
         }
         match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {
-            Ok(p) => self.modal = Some(Modal::Confirm(p)),
+            Ok(p) => self.confirm(p),
             Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),
         }
         None
@@ -1346,7 +1352,7 @@ impl App {
                 if let Some(f) = self.current_fleet() {
                     let b = self.bundle.as_ref()?;
                     match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &Target::Fleet(Id(f)), Act::Up, None) {
-                        Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                        Ok(p) => self.confirm(p),
                         Err(why) => self.notify(format!("up: not available. {why}"), st(mono::WARN)),
                     }
                 }
@@ -1574,10 +1580,24 @@ impl App {
                     return Some(Effect::Run(p));
                 }
                 KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {}
-                _ => self.modal = Some(Modal::Confirm(p)),
+                _ => {
+                    let (max, view) = self.panel_rows.get();
+                    let page = view.saturating_sub(1).max(1);
+                    let at = self.detail_scroll.min(max);
+                    match k.code {
+                        KeyCode::PageDown => self.detail_scroll = (at + page).min(max),
+                        KeyCode::PageUp => self.detail_scroll = at.saturating_sub(page),
+                        KeyCode::Down | KeyCode::Char('j') => self.detail_scroll = (at + 1).min(max),
+                        KeyCode::Up | KeyCode::Char('k') => self.detail_scroll = at.saturating_sub(1),
+                        KeyCode::Char('e') if ctrl => self.detail_scroll = (at + 1).min(max),
+                        KeyCode::Char('y') if ctrl => self.detail_scroll = at.saturating_sub(1),
+                        _ => {}
+                    }
+                    self.modal = Some(Modal::Confirm(p));
+                }
             },
             Modal::Message { plan, mut text, output, back } => {
-                let (max, view) = self.message_rows.get();
+                let (max, view) = self.panel_rows.get();
                 let page = view.saturating_sub(1).max(1);
                 let up = |n: usize| (back + n).min(max);
                 let down = |n: usize| back.min(max).saturating_sub(n);
@@ -1628,7 +1648,8 @@ impl App {
                     }
                     FormKey::Submit => {
                         if form.ok() {
-                            self.modal = Some(Modal::Confirm(form.pending()));
+                            let p = form.pending();
+                            self.confirm(p);
                         } else {
                             self.notify("The form has errors; fix the fields marked in red.", st(mono::ERROR));
                             self.modal = Some(Modal::Form(form));
