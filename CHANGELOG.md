@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.20 (unreleased)
+
+### Added
+
+- **Admiralty takes the mouse.** On the list, a click selects a row, a click
+  on a fold marker folds it, a double click does what enter does, the wheel
+  scrolls, and a click on a fleet tab shows it. In popups the wheel scrolls and
+  a click picks an entry (a double click opens it). A click outside a popup
+  closes it only when nothing would be lost, and nothing on the confirm panel
+  reacts to the mouse: only `y` runs a plan. `M` turns the mouse off and on
+  while Admiralty runs, so the terminal can select text again (most terminals
+  also select with shift-drag); `ADMIRALTY_MOUSE=0` starts with it off.
+
+### Fixed
+
+- **A jump from Admiralty's Herdr overlay could leave the target pane zoomed.**
+  Herdr keeps one zoom per tab on the focused pane, so a jump to a pane in the
+  overlay's own tab handed it the overlay's zoom. The overlay now leaves zoom as
+  it found it: the target is zoomed only if it was the zoomed pane before.
+
+### Upgrading
+
+- Install both crates and update the plugin as usual.
+
 ## 0.7.19 (2026-11-02)
 
 ### Added
