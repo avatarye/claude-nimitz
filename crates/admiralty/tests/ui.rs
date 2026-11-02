@@ -444,7 +444,11 @@ fn x_shows_the_actions_with_the_rows_detail_below_and_w_opens_nothing() {
         let ls = lines(&draw(&mut t.app, w, h));
         let menu = ls.iter().position(|l| l.contains("actions: [MAIN.ARGOS]-BOOM")).unwrap_or_else(|| panic!("{w}x{h}: the menu\n{}", ls.join("\n")));
         let det = ls.iter().position(|l| l.contains(" detail ")).unwrap_or_else(|| panic!("{w}x{h}: the detail\n{}", ls.join("\n")));
-        assert!(det > menu + 5, "{w}x{h}: the detail sits below the menu");
+        if w < 120 {
+            assert!(det > menu + 5, "{w}x{h}: the detail sits below the menu");
+        } else {
+            assert!(det == menu && ls[det].find(" detail ") > ls[det].find("actions: "), "{w}x{h}: the detail sits beside the menu");
+        }
         let s = ls.join("\n");
         assert!(s.contains("identity    MAIN/ARGOS/BOOM") && s.contains("WHY THIS STATUS"), "{w}x{h}: the row's detail\n{s}");
         assert!(!s.contains("ACTIONS"), "{w}x{h}: no ACTIONS block under the menu\n{s}");
@@ -721,7 +725,7 @@ fn question_mark_toggles_the_keys_panel() {
     let mut t = demo();
     keys(&mut t.app, "?");
     assert!(matches!(t.app.modal, Some(Modal::Help { .. })));
-    assert!(screen(&mut t.app, 200, 120).contains("keys (? or esc closes, j/k scroll)"));
+    assert!(screen(&mut t.app, 200, 120).contains("? or esc close"));
     keys(&mut t.app, "?");
     assert!(t.app.modal.is_none(), "? closes it");
 }
@@ -734,7 +738,7 @@ fn help_lists_every_key() {
     for k in ["gg / G", "ctrl-d / ctrl-u", "J / K", "c / e / D", "f / F"] {
         assert!(s.contains(k), "help shows {k}");
     }
-    assert!(s.contains("the row's detail below them"), "help says x shows the detail");
+    assert!(admiralty::app::HELP.iter().any(|(k, d)| *k == "x" && d.contains("the row's detail beside them")), "help says x shows the detail");
     assert!(!s.contains("floating detail panel"), "no w panel in help");
     press(&mut t.app, KeyCode::Esc);
     assert!(t.app.modal.is_none());
@@ -959,7 +963,19 @@ fn actions_over_detail(app: &mut admiralty::app::App, what: &str) -> Vec<String>
     // the menu's inside: what sits between its borders
     let inner = |l: &String| -> String { l.split('\u{2503}').nth(1).unwrap_or_default().to_string() };
     let top = ls.iter().position(|l| l.contains("actions: ")).unwrap_or_else(|| panic!("{what}: no menu\n{s}"));
-    let listed: Vec<String> = ls[top + 1..top + 1 + menu.len()].iter().map(inner).collect();
+    // one entry a row, or more when it wraps under itself: each starts with its key
+    let mut listed: Vec<String> = vec![];
+    for l in ls[top + 1..].iter().map(inner) {
+        let next = menu.get(listed.len()).map(|it| format!("{}   ", it.key));
+        if next.is_some_and(|k| l.trim_start().starts_with(&k)) {
+            listed.push(l);
+        } else if l.trim().is_empty() {
+            break;
+        } else if let Some(last) = listed.last_mut() {
+            last.push_str(l.trim());
+        }
+    }
+    assert_eq!(listed.len(), menu.len(), "{what}\n{s}");
     for (it, l) in menu.iter().zip(&listed) {
         assert!(l.trim_start().starts_with(&format!("{}   ", it.key)), "{what}: {l} / {}", it.key);
         let head: String = it.label.chars().take(30).collect();
@@ -976,8 +992,7 @@ fn actions_over_detail(app: &mut admiralty::app::App, what: &str) -> Vec<String>
             }
         }
     }
-    let det = ls.iter().position(|l| l.contains(" detail ")).unwrap_or_else(|| panic!("{what}: no detail panel\n{s}"));
-    assert!(det > top + menu.len(), "{what}: the detail is below the menu\n{s}");
+    assert!(ls[top].contains(" detail "), "{what}: the detail is beside the menu\n{s}");
     assert!(!s.contains("ACTIONS"), "{what}: no ACTIONS block\n{s}");
     listed
 }
@@ -1220,7 +1235,7 @@ fn at_80x24_the_issues_view_wraps_and_help_scrolls() {
     press(&mut t.app, KeyCode::Esc);
     keys(&mut t.app, "?");
     let first = screen(&mut t.app, 80, 24);
-    assert!(first.contains("j for more"), "help says it scrolls:\n{first}");
+    assert!(first.contains("j/k scroll"), "help says it scrolls:\n{first}");
     for _ in 0..80 {
         keys(&mut t.app, "j");
     }
@@ -1255,14 +1270,14 @@ fn bug43_messages_are_sanitised_in_preview_command_and_send_and_empty_ones_refus
     goto(&mut t.app, "M:MAIN");
     let plan = t.app.message_plan().unwrap();
     let raw = "\u{1b}[31mhello\u{1b}[0m\nthere\u{7}\u{1b}]0;title\u{7}";
-    t.app.modal = Some(Modal::Message { plan: plan.clone(), text: raw.into() });
+    t.app.modal = Some(Modal::Message { plan: plan.clone(), text: raw.into(), output: None, back: 0 });
     let s = screen(&mut t.app, 200, 50);
     assert!(s.contains("> hello there"), "preview shows what will be sent:\n{s}");
     assert!(s.contains("nimitz signal MAIN 'hello there'"), "and so does the command");
     press(&mut t.app, KeyCode::Enter);
     assert_eq!(t.mux.calls.lock().unwrap().as_slice(), ["type p1 hello there"]);
     // nothing left after cleaning: refused, the box stays open
-    t.app.modal = Some(Modal::Message { plan, text: "\u{1b}[2J\n\t \u{7}".into() });
+    t.app.modal = Some(Modal::Message { plan, text: "\u{1b}[2J\n\t \u{7}".into(), output: None, back: 0 });
     press(&mut t.app, KeyCode::Enter);
     assert!(matches!(t.app.modal, Some(Modal::Message { .. })));
     assert!(toast(&t.app).contains("empty"));
@@ -2351,4 +2366,223 @@ fn a_stopped_stowaway_is_not_woken_by_attach() {
     let e = open(&sid_of("ef22ef22")).unwrap_err();
     assert!(e.contains("not running") && e.contains("nimitz adopt ef22ef22 <id>") && e.contains("nimitz start <id>"), "{e}");
     assert!(open(&sid_of("ee11ee11")).is_ok(), "a live stowaway is only attached");
+}
+
+/// `m` shows what the member last wrote, read from its transcript, above the
+/// box. It opens at the end of a long output with a scrollbar beside it;
+/// arrows and PgUp/PgDn scroll, letters still go to the box, at 80 and 120.
+#[test]
+fn the_message_panel_shows_the_last_output_and_scrolls() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    let (sid, cwd) = {
+        let b = fixtures::demo();
+        let m = actions::find_member(&b.snap, &Id("MAIN/ARGOS".into())).unwrap().session.clone().unwrap();
+        (m.session_id, m.cwd)
+    };
+    let dir = t.dir.path().join("claude/projects/p");
+    std::fs::create_dir_all(&dir).unwrap();
+    t.app.ctx.env.claude_home = t.dir.path().join("claude");
+    let said: String = (1..=200).map(|i| format!("output line {i}\n")).collect::<String>() + "\u{1b}[31mthe end\u{1b}[0m";
+    let line = serde_json::json!({"type": "assistant", "uuid": "u1", "cwd": cwd, "message": {"content": [{"type": "text", "text": said}]}});
+    std::fs::write(dir.join(format!("{sid}.jsonl")), format!("{line}\n")).unwrap();
+    press(&mut t.app, KeyCode::Char('m'));
+    assert!(matches!(&t.app.modal, Some(Modal::Message { output: Some(_), .. })), "{}", toast(&t.app));
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let s = screen(&mut t.app, w, h);
+        assert!(s.contains("the end") && !s.contains("[31m") && !s.contains("output line 1 "), "it opens at the end:\n{s}");
+        assert!(s.contains('\u{2588}') && s.contains("PgUp/PgDn"), "{s}");
+    }
+    // the scrollbar: the panel's last column inside its border
+    let ls = lines(&draw(&mut t.app, 80, 24));
+    let thumb = ls.iter().filter(|l| l.chars().nth(76) == Some('\u{2588}')).count();
+    assert!(thumb >= 1, "a scrollbar thumb:\n{}", ls.join("\n"));
+    press(&mut t.app, KeyCode::Home);
+    let top = screen(&mut t.app, 80, 24);
+    assert!(top.contains("output line 1 ") && !top.contains("the end"), "{top}");
+    press(&mut t.app, KeyCode::Up);
+    assert_eq!(screen(&mut t.app, 80, 24), top, "the top stops");
+    press(&mut t.app, KeyCode::Down);
+    assert!(!screen(&mut t.app, 80, 24).contains("output line 1 "), "a row down");
+    press(&mut t.app, KeyCode::End);
+    assert!(screen(&mut t.app, 80, 24).contains("the end"));
+    keys(&mut t.app, "go on");
+    assert!(matches!(&t.app.modal, Some(Modal::Message { text, .. }) if text == "go on"), "letters go to the box");
+    press(&mut t.app, KeyCode::Enter);
+    assert!(t.app.modal.is_none(), "sent");
+}
+
+/// The `m` and `x` panels are as tall as what they show, in the middle of the
+/// view; only when that does not fit do they stop at the margin and scroll.
+#[test]
+fn the_panels_fit_their_content_and_grow_from_the_middle() {
+    // a panel's rows: from its title to the first bottom corner in that column
+    let box_rows = |ls: &[String], title: &str| {
+        let top = ls.iter().position(|l| l.contains(title)).unwrap_or_else(|| panic!("{title}:\n{}", ls.join("\n")));
+        let x = ls[top][..ls[top].find(title).unwrap()].chars().count();
+        (top, (top..ls.len()).find(|y| ls[*y].chars().nth(x) == Some('\u{2517}')).unwrap())
+    };
+    let open = |output: String| {
+        let mut t = fixture_app(fixtures::demo(), true);
+        goto(&mut t.app, "M:MAIN/ARGOS");
+        press(&mut t.app, KeyCode::Char('m'));
+        if let Some(Modal::Message { output: o, .. }) = &mut t.app.modal {
+            *o = Some(output);
+        }
+        t
+    };
+    let (tall, cols) = (40usize, 120u16);
+    let long: String = (1..=300).map(|i| format!("row {i}\n")).collect();
+    let (short_top, short_end) = box_rows(&lines(&draw(&mut open("one line".into()).app, cols, tall as u16)), "\u{250f} message ");
+    let (mid_top, mid_end) = box_rows(&lines(&draw(&mut open("a\nb\nc\nd\ne\nf".into()).app, cols, tall as u16)), "\u{250f} message ");
+    let mut t = open(long);
+    let ls = lines(&draw(&mut t.app, cols, tall as u16));
+    assert!(short_end - short_top < 12, "as tall as its content: {short_top}..{short_end}");
+    assert_eq!(mid_end - mid_top, short_end - short_top + 5, "five more rows");
+    assert!(mid_top < short_top && mid_end > short_end, "it grows both ways");
+    // the middle of the body: the tabs above it, two status rows under it
+    assert!((short_top + short_end).abs_diff(tall - 2) <= 2, "in the middle: {short_top}..{short_end}");
+    let inside: Vec<&String> = ls.iter().filter(|l| l.contains("row ")).collect();
+    assert!(inside.len() > 20 && ls.iter().any(|l| l.chars().nth(109) == Some('\u{2588}')), "long, it stops at the margin and scrolls:\n{}", ls.join("\n"));
+    // `x`: the menu and the detail together, in the middle, in the view
+    let mut t = demo();
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('x'));
+    let ls = lines(&draw(&mut t.app, 120, 60));
+    let (top, _) = box_rows(&ls, "\u{250f} actions: ");
+    let (_, end) = box_rows(&ls, "\u{250f} detail ");
+    assert!(end - top < 45 && (top + end).abs_diff(60) <= 4, "as tall as its content, in the middle: {top}..{end}\n{}", ls.join("\n"));
+}
+
+/// Every popup has one of the three widths, inside the margin, at any window;
+/// its keys are its last line.
+#[test]
+fn the_popups_share_their_widths() {
+    let width = |t: &mut TestApp, w: u16, title: &str| {
+        let ls = lines(&draw(&mut t.app, w, 50));
+        let l = ls.iter().find(|l| l.contains(title)).unwrap_or_else(|| panic!("{title} at {w}:\n{}", ls.join("\n")));
+        let c: Vec<char> = l.chars().collect();
+        let from = l[..l.find(title).unwrap()].chars().count();
+        (from..c.len()).find(|x| c[*x] == '\u{2513}').map(|x| x + 1 - from).unwrap()
+    };
+    for (key, title, wide) in [("?", "\u{250f} keys ", 100), ("i", "\u{250f} issues", 160), ("c", "\u{250f} create", 100)] {
+        let mut t = demo();
+        keys(&mut t.app, key);
+        assert_eq!(width(&mut t, 200, title), wide, "{title}");
+        assert_eq!(width(&mut t, 80, title), 74, "{title} at 80 keeps the margin");
+    }
+    let mut t = demo();
+    keys(&mut t.app, "?");
+    let ls = lines(&draw(&mut t.app, 120, 30));
+    let at = ls.iter().rposition(|l| l.contains("? or esc close")).unwrap();
+    assert!(ls[at + 1].contains('\u{2517}'), "the keys are the last line:\n{}", ls.join("\n"));
+}
+
+/// Review of 0.7.19: in the confirm panel a control key never runs or closes:
+/// `ctrl-y` scrolls in every panel, it must not run a stop or an rm.
+#[test]
+fn a_control_key_never_runs_a_plan() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
+    keys(&mut t.app, "x");
+    press(&mut t.app, KeyCode::Char('s'));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "{}", toast(&t.app));
+    assert!(ctrl(&mut t.app, 'y').is_none(), "ctrl-y scrolls, it does not run");
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "still asking");
+    ctrl(&mut t.app, 'n');
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "ctrl-n does not close it");
+    assert!(matches!(press(&mut t.app, KeyCode::Char('y')), Some(Effect::Run(_))), "y runs");
+}
+
+/// A popup too long for the window keeps its keys and shows the selection.
+#[test]
+fn long_popups_keep_their_keys_and_their_selection() {
+    let mut t = demo();
+    let items: Vec<admiralty::app::NeedItem> =
+        (0..30).map(|i| admiralty::app::NeedItem { row_id: format!("M:X{i}"), name: format!("member-{i}"), age: "1m".into(), text: "a question".into() }).collect();
+    t.app.modal = Some(Modal::Needs { items, sel: 25 });
+    let s = screen(&mut t.app, 80, 24);
+    assert!(s.contains("member-25") && s.contains("esc back") && !s.contains("member-0 "), "{s}");
+}
+
+/// The end of a long detail can be reached, whatever the wrapping.
+#[test]
+fn the_end_of_the_detail_is_reachable() {
+    for (w, h) in [(120u16, 20u16), (120, 24), (128, 24), (80, 24)] {
+        let mut t = demo();
+        goto(&mut t.app, "M:MAIN");
+        keys(&mut t.app, "x");
+        lines(&draw(&mut t.app, w, h));
+        for _ in 0..60 {
+            ctrl(&mut t.app, 'e');
+            draw(&mut t.app, w, h);
+        }
+        let s = screen(&mut t.app, w, h);
+        assert!(s.contains("on the row"), "{w}x{h}:\n{s}");
+    }
+}
+
+/// One word as long as a whole output is cut in one pass, and the panel wraps
+/// it once, not on every draw.
+#[test]
+fn a_huge_word_does_not_hold_the_panel_up() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    if let Some(Modal::Message { output, .. }) = &mut t.app.modal {
+        *output = Some("x".repeat(256 * 1024));
+    }
+    let from = std::time::Instant::now();
+    for _ in 0..50 {
+        draw(&mut t.app, 80, 24);
+    }
+    assert!(from.elapsed() < std::time::Duration::from_secs(2), "{:?}", from.elapsed());
+}
+
+/// Review of 0.7.19: another member's output is never shown from the wrapped
+/// rows of the last one, even at the same length and address.
+#[test]
+fn the_output_rows_belong_to_their_text() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    for text in ["first output", "other output"] {
+        if let Some(Modal::Message { output, .. }) = &mut t.app.modal {
+            *output = Some(text.to_string());
+        }
+        assert!(screen(&mut t.app, 120, 40).contains(text), "{text}");
+    }
+}
+
+/// Emoji sequences are wider than their chars: they wrap, in the width, and end.
+#[test]
+fn emoji_sequences_wrap_and_end() {
+    use admiralty::frames::wrap;
+    use ratatui::text::Span;
+    for text in ["\u{26a0}\u{fe0f}".repeat(40) + " tail", "\u{26a0}\u{fe0f}".repeat(40), "\u{1f468}\u{200d}\u{1f4bb}".repeat(50)] {
+        for w in [76usize, 20, 8] {
+            let ls = wrap(vec![Span::raw(text.clone())], w, 0);
+            let widths: Vec<usize> = ls.iter().map(|l| unicode_width::UnicodeWidthStr::width(admiralty::render::plain(l).trim_end())).collect();
+            assert!(widths.iter().all(|x| *x <= w), "{w}: {widths:?}");
+        }
+    }
+}
+
+/// A long form's end shows: what core says, past the fields, by PgDn.
+#[test]
+fn a_long_forms_end_is_reachable() {
+    let mut t = demo();
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    keys(&mut t.app, "c");
+    press(&mut t.app, KeyCode::Char('s'));
+    assert!(matches!(t.app.modal, Some(Modal::Form(_))), "{}", toast(&t.app));
+    let top = screen(&mut t.app, 80, 16);
+    assert!(top.contains("PgUp/PgDn more"), "{top}");
+    for _ in 0..20 {
+        press(&mut t.app, KeyCode::PageDown);
+        draw(&mut t.app, 80, 16);
+    }
+    let end = screen(&mut t.app, 80, 16);
+    assert_ne!(top, end, "it moved");
+    assert!(end.contains("command") || end.contains("CORE SAYS NO"), "{end}");
 }

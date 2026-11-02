@@ -60,6 +60,9 @@ impl MenuItem {
     }
 }
 
+/// Rows of a member's output, as the message panel draws them.
+pub type OutputRows = std::rc::Rc<Vec<ratatui::text::Line<'static>>>;
+
 pub enum Modal {
     Help { scroll: usize },
     /// `f`: which fleet states are shown
@@ -67,10 +70,12 @@ pub enum Modal {
     Needs { items: Vec<NeedItem>, sel: usize },
     /// `i`: every issue, worst first
     Issues { sel: usize },
-    /// `detail`: the row's detail panel sits below the list (`x`, not `c`)
+    /// `detail`: the row's detail panel sits beside the list (`x`, not `c`)
     Menu { title: String, items: Vec<MenuItem>, sel: usize, detail: bool },
     Confirm(Pending),
-    Message { plan: MessagePlan, text: String },
+    /// `output`: the member's last output, shown above the box when it has
+    /// one; `back`: rows scrolled up from its end
+    Message { plan: MessagePlan, text: String, output: Option<String>, back: usize },
     Form(Box<Form>),
     /// `space`: find a member or stowaway in every fleet
     Finder(Box<crate::finder::Finder>),
@@ -235,6 +240,12 @@ pub struct App {
     /// lines the actions menu's detail panel is scrolled down (ctrl-e /
     /// ctrl-y, PgDn / PgUp); 0 on a new row and each time the menu opens
     pub detail_scroll: usize,
+    /// the scrolling popup as last drawn: the most rows it scrolls, the rows
+    /// it shows
+    pub panel_rows: std::cell::Cell<(usize, usize)>,
+    /// the message panel's output as rows, kept for its (text, width): wrapped
+    /// once, not on every draw
+    output_cache: std::cell::RefCell<Option<((u64, usize), OutputRows)>>,
     detail_for: Option<String>,
     pub page: usize,
     last_g: Option<Instant>,
@@ -276,8 +287,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("a", "start it: nimitz start <id> (confirms)"),
     ("u", "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked; confirms)"),
     ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
-    ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines; the row's detail below them (ctrl-e / ctrl-y or PgDn / PgUp scroll it)"),
-    ("m", "message: typed into its pane (nimitz signal <id> <text>)"),
+    ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines; the row's detail beside them (ctrl-e / ctrl-y or PgDn / PgUp scroll it)"),
+    ("m", "message: its last output, then a box typed into its pane (nimitz signal <id> <text>)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
@@ -345,6 +356,8 @@ impl App {
             state_path,
             busy: None,
             detail_scroll: 0,
+            panel_rows: Default::default(),
+            output_cache: Default::default(),
             detail_for: None,
             page: 20,
             last_g: None,
@@ -836,6 +849,36 @@ impl App {
         self.bundle.as_ref().and_then(|b| actions::find_member(&b.snap, id))
     }
 
+    /// `output` as rows `width` wide, made by `make` once for that text and width.
+    pub fn output_rows(&self, output: &str, width: usize, make: fn(&str, usize) -> Vec<ratatui::text::Line<'static>>) -> OutputRows {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        output.hash(&mut h);
+        let key = (h.finish(), width);
+        let mut cache = self.output_cache.borrow_mut();
+        match &*cache {
+            Some((k, rows)) if *k == key => rows.clone(),
+            _ => {
+                let rows = std::rc::Rc::new(make(output, width));
+                *cache = Some((key, rows.clone()));
+                rows
+            }
+        }
+    }
+
+    /// Ask before `p` runs, from the top of its plan.
+    fn confirm(&mut self, p: Pending) {
+        self.detail_scroll = 0;
+        self.modal = Some(Modal::Confirm(p));
+    }
+
+    /// What member `id` last wrote, from its session's transcript.
+    fn last_output(&self, id: &Id) -> Option<String> {
+        let s = self.member(id)?.session.as_ref()?;
+        let cwd = Some(s.cwd.as_str()).filter(|c| !c.is_empty());
+        nimitz_core::evidence::last_output(&nimitz_core::evidence::transcript(&self.ctx.env, &mut Default::default(), cwd, &s.session_id)?)
+    }
+
     /// Where `m` would go for the selected row.
     pub fn message_plan(&self) -> Result<MessagePlan, String> {
         let b = self.bundle.as_ref().ok_or("loading")?;
@@ -897,7 +940,7 @@ impl App {
     }
 
     /// The action menu (`x`) for the selected row: `row_actions`.
-    /// `x`: the row's actions, its detail in a panel below them.
+    /// `x`: the row's actions, its detail in a panel beside them.
     pub fn open_actions(&mut self) {
         let title = self.current().map(|r| full_name(&r)).unwrap_or_default();
         self.detail_scroll = 0;
@@ -1012,7 +1055,10 @@ impl App {
             }
             MenuAction::Message => {
                 match self.message_plan() {
-                    Ok(plan) => self.modal = Some(Modal::Message { plan, text: String::new() }),
+                    Ok(plan) => {
+                        let output = self.last_output(&plan.id);
+                        self.modal = Some(Modal::Message { plan, text: String::new(), output, back: 0 })
+                    }
                     Err(why) => self.notify(format!("message: not available. {why}"), st(mono::WARN)),
                 }
                 None
@@ -1038,14 +1084,14 @@ impl App {
         // (demo data has no CLI world behind it: there the plans are previews)
         if matches!(act, Act::Restore | Act::Start | Act::Relaunch | Act::Up) && (self.ctx.live || act == Act::Restore) {
             match actions::prepare_start(&self.ctx, b.mux_caps, &b.snap, &self.target(), act) {
-                Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                Ok(p) => self.confirm(p),
                 Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),
             }
             return None;
         }
         if let (Act::Layout | Act::LayoutShips, Target::Fleet(f)) = (act, self.target()) {
             match actions::prepare_layout(&self.ctx, b.mux_caps, &b.snap, &b.panes, &f, act == Act::LayoutShips) {
-                Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                Ok(p) => self.confirm(p),
                 Err(why) => self.notify(format!("layout: not available. {why}"), st(mono::WARN)),
             }
             return None;
@@ -1099,7 +1145,7 @@ impl App {
                 }
                 _ if self.ctx.live && matches!(self.target(), Target::Member(_)) => {
                     match actions::prepare_start(&self.ctx, b.mux_caps, &b.snap, &self.target(), Act::Open) {
-                        Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                        Ok(p) => self.confirm(p),
                         Err(why) => self.notify(format!("open: not available. {why}"), st(mono::WARN)),
                     }
                     return None;
@@ -1109,7 +1155,7 @@ impl App {
             }
         }
         match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &self.target(), act, None) {
-            Ok(p) => self.modal = Some(Modal::Confirm(p)),
+            Ok(p) => self.confirm(p),
             Err(why) => self.notify(format!("{}: not available. {why}", act.word()), st(mono::WARN)),
         }
         None
@@ -1330,7 +1376,7 @@ impl App {
                 if let Some(f) = self.current_fleet() {
                     let b = self.bundle.as_ref()?;
                     match actions::prepare(&self.ctx, b.mux_caps, &b.snap, &Target::Fleet(Id(f)), Act::Up, None) {
-                        Ok(p) => self.modal = Some(Modal::Confirm(p)),
+                        Ok(p) => self.confirm(p),
                         Err(why) => self.notify(format!("up: not available. {why}"), st(mono::WARN)),
                     }
                 }
@@ -1409,8 +1455,8 @@ impl App {
             },
             Modal::Help { scroll } => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {}
-                _ if down => self.modal = Some(Modal::Help { scroll: scroll + 1 }),
-                _ if up => self.modal = Some(Modal::Help { scroll: scroll.saturating_sub(1) }),
+                _ if down => self.modal = Some(Modal::Help { scroll: (scroll + 1).min(self.panel_rows.get().0) }),
+                _ if up => self.modal = Some(Modal::Help { scroll: scroll.min(self.panel_rows.get().0).saturating_sub(1) }),
                 _ => self.modal = Some(Modal::Help { scroll }),
             },
             Modal::FleetFilter { mut sel } => match k.code {
@@ -1467,7 +1513,7 @@ impl App {
                         self.modal = Some(Modal::Issues { sel });
                     }
                     _ if up => self.modal = Some(Modal::Issues { sel: sel.saturating_sub(1) }),
-                    KeyCode::Char('y') => {
+                    KeyCode::Char('y') if !ctrl => {
                         match issues.get(sel).and_then(|i| i.fix.clone()) {
                             Some(fix) => {
                                 copy_to_clipboard(&fix);
@@ -1507,7 +1553,7 @@ impl App {
             Modal::Menu { title, items, mut sel, detail } => {
                 let pick = match k.code {
                     KeyCode::Esc | KeyCode::Char('q') => return None,
-                    // the detail panel below the actions scrolls; a control
+                    // the detail panel with the actions scrolls; a control
                     // key never picks an entry
                     KeyCode::Char('e') if detail && ctrl => {
                         self.detail_scroll += 1;
@@ -1550,38 +1596,76 @@ impl App {
                 }
             }
             Modal::Confirm(p) => match k.code {
-                KeyCode::Char('y') | KeyCode::Enter if p.plan.ok() => {
+                KeyCode::Char('y') | KeyCode::Enter if p.plan.ok() && !ctrl => {
                     if !self.ctx.live {
                         self.notify(format!("{}: demo data, nothing ran. The plan above is what core would do.", p.act.word()), st(mono::WARN));
                         return None;
                     }
                     return Some(Effect::Run(p));
                 }
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {}
-                _ => self.modal = Some(Modal::Confirm(p)),
-            },
-            Modal::Message { plan, mut text } => match k.code {
                 KeyCode::Esc => {}
-                KeyCode::Enter => {
-                    if nimitz_mux::strip_controls(&text).trim().is_empty() {
-                        self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::WARN));
-                        self.modal = Some(Modal::Message { plan, text });
-                    } else {
-                        self.send_message(&plan, &text);
+                KeyCode::Char('n') | KeyCode::Char('q') if !ctrl => {}
+                _ => {
+                    let (max, view) = self.panel_rows.get();
+                    let page = view.saturating_sub(1).max(1);
+                    let at = self.detail_scroll.min(max);
+                    match k.code {
+                        KeyCode::PageDown => self.detail_scroll = (at + page).min(max),
+                        KeyCode::PageUp => self.detail_scroll = at.saturating_sub(page),
+                        KeyCode::Down | KeyCode::Char('j') => self.detail_scroll = (at + 1).min(max),
+                        KeyCode::Up | KeyCode::Char('k') => self.detail_scroll = at.saturating_sub(1),
+                        KeyCode::Char('e') if ctrl => self.detail_scroll = (at + 1).min(max),
+                        KeyCode::Char('y') if ctrl => self.detail_scroll = at.saturating_sub(1),
+                        _ => {}
                     }
+                    self.modal = Some(Modal::Confirm(p));
                 }
-                KeyCode::Backspace => {
-                    text.pop();
-                    self.modal = Some(Modal::Message { plan, text });
-                }
-                KeyCode::Char('u') if ctrl => self.modal = Some(Modal::Message { plan, text: String::new() }),
-                KeyCode::Char(c) if !ctrl => {
-                    text.push(c);
-                    self.modal = Some(Modal::Message { plan, text });
-                }
-                _ => self.modal = Some(Modal::Message { plan, text }),
             },
+            Modal::Message { plan, mut text, output, back } => {
+                let (max, view) = self.panel_rows.get();
+                let page = view.saturating_sub(1).max(1);
+                let up = |n: usize| (back + n).min(max);
+                let down = |n: usize| back.min(max).saturating_sub(n);
+                match k.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        if nimitz_mux::strip_controls(&text).trim().is_empty() {
+                            self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::WARN));
+                            self.modal = Some(Modal::Message { plan, text, output, back });
+                        } else {
+                            self.send_message(&plan, &text);
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        text.pop();
+                        self.modal = Some(Modal::Message { plan, text, output, back });
+                    }
+                    KeyCode::PageUp => self.modal = Some(Modal::Message { plan, text, output, back: up(page) }),
+                    KeyCode::PageDown => self.modal = Some(Modal::Message { plan, text, output, back: down(page) }),
+                    KeyCode::Up => self.modal = Some(Modal::Message { plan, text, output, back: up(1) }),
+                    KeyCode::Down => self.modal = Some(Modal::Message { plan, text, output, back: down(1) }),
+                    KeyCode::Char('y') if ctrl => self.modal = Some(Modal::Message { plan, text, output, back: up(1) }),
+                    KeyCode::Char('e') if ctrl => self.modal = Some(Modal::Message { plan, text, output, back: down(1) }),
+                    KeyCode::Home => self.modal = Some(Modal::Message { plan, text, output, back: max }),
+                    KeyCode::End => self.modal = Some(Modal::Message { plan, text, output, back: 0 }),
+                    KeyCode::Char('u') if ctrl => self.modal = Some(Modal::Message { plan, text: String::new(), output, back }),
+                    KeyCode::Char(c) if !ctrl => {
+                        text.push(c);
+                        self.modal = Some(Modal::Message { plan, text, output, back });
+                    }
+                    _ => self.modal = Some(Modal::Message { plan, text, output, back }),
+                }
+            }
+            Modal::Form(form) if matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) => {
+                // a long form's rows past its fields: what core says, the plan
+                let (max, view) = self.panel_rows.get();
+                let page = view.saturating_sub(1).max(1);
+                let at = self.detail_scroll.min(max);
+                self.detail_scroll = if k.code == KeyCode::PageDown { (at + page).min(max) } else { at.saturating_sub(page) };
+                self.modal = Some(Modal::Form(form));
+            }
             Modal::Form(mut form) => {
+                self.detail_scroll = 0;
                 let r = form.on_key(k);
                 if let Some(b) = &self.bundle {
                     form.validate(&self.ctx.env, &b.snap);
@@ -1598,7 +1682,8 @@ impl App {
                     }
                     FormKey::Submit => {
                         if form.ok() {
-                            self.modal = Some(Modal::Confirm(form.pending()));
+                            let p = form.pending();
+                            self.confirm(p);
                         } else {
                             self.notify("The form has errors; fix the fields marked in red.", st(mono::ERROR));
                             self.modal = Some(Modal::Form(form));

@@ -127,8 +127,8 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   under one row per run (the workflow's name, else its `wf_` run id; live /
   total; the newest agent's phase), open while one of them runs. A run, like a
   crew, folds into `+N done` once all its agents finished over 30 min ago.
-- The row's detail is under its actions: `x` opens the actions menu with a
-  panel below it (the list keeps the full width otherwise). A large picture of
+- The row's detail is with its actions: `x` opens the actions menu with a
+  panel beside it (below it under 120 columns). A large picture of
   the row's kind, status, WHY THIS STATUS (core's reasons), ISSUES with their
   `nimitz` fix commands and the session. The panel takes what room the menu
   leaves; a long one scrolls (`ctrl-e` / `ctrl-y` a line, `PgDn` / `PgUp`
@@ -139,8 +139,8 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 ![finder](../../docs/img/admiralty-finder.png)
 
 `space` opens the finder, a panel in the middle of the view with the selected
-row's detail beside it (from 120 columns), both the same height: all the room
-but a margin. It lists every member of every fleet in tree
+row's detail beside it (from 120 columns), both the same height, up to 160 by 40
+and a margin. It lists every member of every fleet in tree
 order, then the stowaways, in columns like the main view: NAME (the path
 `MAIN/ARGOS/SIGNAL`, a stowaway's name), RANK, STATUS and, with room, TOPIC. It
 also matches a member's expected name `[MAIN.ARGOS]-SIGNAL` and a stowaway's
@@ -171,8 +171,8 @@ a member with crew done over 30 min ago: its `+N done`), `/` filter
 row, `ctrl-o` to its pane, `y` yanks the fix), `a` start (top-down), `u` up a fleet, `A` attach a background session (ship, stowaway) in a
 new Herdr tab named `F.SQ.SHIP` (the same as `nimitz open <id>`), `x` actions (every action of the row: start, open, stop, restart, sweep, rm, adopt, remove from config, message;
 on a fleet band also up, `layout F/... [--ships]`, `R` muster and removing a machine; a closed one says why; sweep is
-scoped to the row: member, squadron or fleet; the row's detail sits below the menu),
-`m` message (typed into the member's own pane, a ship's too), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
+scoped to the row: member, squadron or fleet; the row's detail sits beside the menu, below it under 120 columns),
+`m` message (the member's last output, scrollable, above a box typed into its own pane, a ship's too), `c` create fleet / squadron / ship, `e` edit ship, `D` remove
 from config, `y` yank the session id, `I` stowaways, `f` filter squadrons by state (a note says how many are hidden), `F`
 flagged only, `R` refresh, `?` the keys panel (`?` or `esc` closes it), `q` quit. `esc` closes what is open, one
 thing at a time (a dialog, menu or form, the `/` name filter), and

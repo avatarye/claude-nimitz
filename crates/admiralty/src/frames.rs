@@ -619,20 +619,30 @@ pub fn wrap(spans: Vec<Span<'static>>, width: usize, indent: usize) -> Vec<Line<
             words.push(w);
         }
         for word in words {
-            let mut word = word;
+            // what is left of the word, its width kept: a word as long as a
+            // whole output is cut in one pass
+            let mut rest: &str = &word;
+            let mut rest_w = word.width();
+            let trail = rest_w.saturating_sub(word.trim_end().width());
             loop {
-                let ww = word.trim_end().width();
+                let ww = rest_w.saturating_sub(trail);
                 if used + ww <= width || (used <= indent && ww > width - indent) {
                     // fits, or a single word longer than a line: cut it
                     let room = width - used;
-                    if word.width() > room && ww > room {
+                    if rest_w > room && ww > room {
                         let cut: String = {
+                            // measured whole: an emoji sequence is wider than its chars
                             let mut c = String::new();
-                            for ch in word.chars() {
-                                if c.width() + ch.to_string().width() > room {
+                            for ch in rest.chars() {
+                                c.push(ch);
+                                if c.width() > room {
+                                    c.pop();
                                     break;
                                 }
-                                c.push(ch);
+                            }
+                            // never nothing: the word must get shorter
+                            if c.is_empty() {
+                                c.extend(rest.chars().next());
                             }
                             // a path or file:line breaks after a `/` or `:` when it can
                             match c.rfind(['/', ':']) {
@@ -640,15 +650,17 @@ pub fn wrap(spans: Vec<Span<'static>>, width: usize, indent: usize) -> Vec<Line<
                                 _ => c,
                             }
                         };
-                        word = word[cut.len()..].to_string();
+                        rest = &rest[cut.len()..];
+                        // widths of parts need not add up: the end is measured
+                        rest_w = if rest.len() < 4 * width { rest.width() } else { rest_w.saturating_sub(cut.width()) };
                         cur.push(Span::styled(cut, style));
                         lines.push(Line::from(std::mem::take(&mut cur)));
                         cur.push(Span::raw(" ".repeat(indent)));
                         used = indent;
                         continue;
                     }
-                    used += word.width();
-                    cur.push(Span::styled(word, style));
+                    used += rest_w;
+                    cur.push(Span::styled(rest.to_string(), style));
                     break;
                 }
                 lines.push(Line::from(std::mem::take(&mut cur)));

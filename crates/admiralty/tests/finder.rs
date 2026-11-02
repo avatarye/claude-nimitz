@@ -429,12 +429,13 @@ fn the_toggles_are_kept_across_finders_and_runs() {
 }
 
 /// The finder is one group in the middle of the view: the list and, from 120
-/// columns, the detail beside it, the same height, all the room but a margin.
+/// columns, the detail beside it, the same height, one fixed size up to a
+/// margin.
 #[test]
 fn the_finder_is_a_centred_group_of_one_height() {
     use admiralty::render::finder_areas;
     use ratatui::layout::Rect;
-    for (w, h, group_w, group_h) in [(120u16, 50u16, 114u16, 45u16), (200, 50, 194, 45), (300, 90, 294, 85), (240, 30, 234, 25)] {
+    for (w, h, group_w, group_h) in [(120u16, 50u16, 114u16, 40u16), (200, 50, 160, 40), (300, 90, 160, 40), (240, 30, 160, 25)] {
         let area = Rect { x: 0, y: 0, width: w, height: h };
         let body = Rect { x: 0, y: 1, width: w, height: h - 3 };
         let (list, detail) = finder_areas(area, body);
@@ -445,7 +446,7 @@ fn the_finder_is_a_centred_group_of_one_height() {
         assert!(left.abs_diff(right) <= 1 && left >= 3, "{w}x{h}: centred, a margin: {left} {right}");
         let (top, under) = (list.y - body.y, body.y + body.height - list.y - list.height);
         assert!(top.abs_diff(under) <= 1 && top >= 1, "{w}x{h}: {top} {under}");
-        assert!(list.width >= 72 && d.width >= 40, "{list:?} {d:?}");
+        assert!(list.width >= 74 && d.width >= 40, "{list:?} {d:?}");
     }
     let area = Rect { x: 0, y: 0, width: 100, height: 30 };
     let (list, detail) = finder_areas(area, Rect { x: 0, y: 1, width: 100, height: 27 });
