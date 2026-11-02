@@ -245,7 +245,7 @@ pub struct App {
     pub panel_rows: std::cell::Cell<(usize, usize)>,
     /// the message panel's output as rows, kept for its (text, width): wrapped
     /// once, not on every draw
-    output_cache: std::cell::RefCell<Option<((usize, usize, usize), OutputRows)>>,
+    output_cache: std::cell::RefCell<Option<((u64, usize), OutputRows)>>,
     detail_for: Option<String>,
     pub page: usize,
     last_g: Option<Instant>,
@@ -851,7 +851,10 @@ impl App {
 
     /// `output` as rows `width` wide, made by `make` once for that text and width.
     pub fn output_rows(&self, output: &str, width: usize, make: fn(&str, usize) -> Vec<ratatui::text::Line<'static>>) -> OutputRows {
-        let key = (output.as_ptr() as usize, output.len(), width);
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        output.hash(&mut h);
+        let key = (h.finish(), width);
         let mut cache = self.output_cache.borrow_mut();
         match &*cache {
             Some((k, rows)) if *k == key => rows.clone(),
@@ -1510,7 +1513,7 @@ impl App {
                         self.modal = Some(Modal::Issues { sel });
                     }
                     _ if up => self.modal = Some(Modal::Issues { sel: sel.saturating_sub(1) }),
-                    KeyCode::Char('y') => {
+                    KeyCode::Char('y') if !ctrl => {
                         match issues.get(sel).and_then(|i| i.fix.clone()) {
                             Some(fix) => {
                                 copy_to_clipboard(&fix);
@@ -1653,7 +1656,16 @@ impl App {
                     _ => self.modal = Some(Modal::Message { plan, text, output, back }),
                 }
             }
+            Modal::Form(form) if matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) => {
+                // a long form's rows past its fields: what core says, the plan
+                let (max, view) = self.panel_rows.get();
+                let page = view.saturating_sub(1).max(1);
+                let at = self.detail_scroll.min(max);
+                self.detail_scroll = if k.code == KeyCode::PageDown { (at + page).min(max) } else { at.saturating_sub(page) };
+                self.modal = Some(Modal::Form(form));
+            }
             Modal::Form(mut form) => {
+                self.detail_scroll = 0;
                 let r = form.on_key(k);
                 if let Some(b) = &self.bundle {
                     form.validate(&self.ctx.env, &b.snap);

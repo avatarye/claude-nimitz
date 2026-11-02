@@ -623,22 +623,26 @@ pub fn wrap(spans: Vec<Span<'static>>, width: usize, indent: usize) -> Vec<Line<
             // whole output is cut in one pass
             let mut rest: &str = &word;
             let mut rest_w = word.width();
-            let trail = rest_w - word.trim_end().width();
+            let trail = rest_w.saturating_sub(word.trim_end().width());
             loop {
-                let ww = rest_w - trail;
+                let ww = rest_w.saturating_sub(trail);
                 if used + ww <= width || (used <= indent && ww > width - indent) {
                     // fits, or a single word longer than a line: cut it
                     let room = width - used;
                     if rest_w > room && ww > room {
                         let cut: String = {
-                            let (mut c, mut cw) = (String::new(), 0);
+                            // measured whole: an emoji sequence is wider than its chars
+                            let mut c = String::new();
                             for ch in rest.chars() {
-                                let w = ch.to_string().width();
-                                if cw + w > room {
+                                c.push(ch);
+                                if c.width() > room {
+                                    c.pop();
                                     break;
                                 }
-                                cw += w;
-                                c.push(ch);
+                            }
+                            // never nothing: the word must get shorter
+                            if c.is_empty() {
+                                c.extend(rest.chars().next());
                             }
                             // a path or file:line breaks after a `/` or `:` when it can
                             match c.rfind(['/', ':']) {
@@ -647,7 +651,8 @@ pub fn wrap(spans: Vec<Span<'static>>, width: usize, indent: usize) -> Vec<Line<
                             }
                         };
                         rest = &rest[cut.len()..];
-                        rest_w -= cut.width();
+                        // widths of parts need not add up: the end is measured
+                        rest_w = if rest.len() < 4 * width { rest.width() } else { rest_w.saturating_sub(cut.width()) };
                         cur.push(Span::styled(cut, style));
                         lines.push(Line::from(std::mem::take(&mut cur)));
                         cur.push(Span::raw(" ".repeat(indent)));

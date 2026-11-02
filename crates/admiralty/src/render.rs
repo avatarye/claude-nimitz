@@ -136,7 +136,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
         }
         Some(Modal::Message { plan, text, output, back }) => draw_message(app, f, area, body, plan, text, output.as_deref(), *back),
         Some(Modal::FleetFilter { sel }) => draw_fleet_filter(f, area, body, &app.fleet_states, *sel),
-        Some(Modal::Form(form)) => draw_form(f, area, body, form),
+        Some(Modal::Form(form)) => draw_form(app, f, area, body, form),
         Some(Modal::Finder(fd)) => draw_finder(app, f, area, body, fd),
         None => {}
     }
@@ -1020,7 +1020,7 @@ fn output_rows(output: &str, width: usize) -> Vec<Line<'static>> {
         .lines()
         .flat_map(|l| {
             let clean = nimitz_mux::strip_controls(&l.replace('\t', "    "));
-            let clean: String = clean.chars().filter(|c| !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).collect();
+            let clean: String = clean.chars().filter(|c| !matches!(c, '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).collect();
             if clean.is_empty() {
                 vec![Line::raw("")]
             } else {
@@ -1030,14 +1030,14 @@ fn output_rows(output: &str, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn draw_form(f: &mut Frame, area: Rect, body: Rect, form: &Form) {
+fn draw_form(app: &App, f: &mut Frame, area: Rect, body: Rect, form: &Form) {
     let width = text_width(panel(area, body, PANEL_STD, 1));
     let mut lines = vec![];
-    let mut focus = 0;
+    let mut focus = (0, 0);
     for (i, fl) in form.fields.iter().enumerate() {
         let focused = i == form.focus;
         if focused {
-            focus = lines.len();
+            focus.0 = lines.len();
         }
         let label = Span::styled(format!("  {:<14}", fl.label), if focused { bold(mono::ACCENT) } else { st(mono::SOFT) });
         let value = match &fl.kind {
@@ -1065,6 +1065,9 @@ fn draw_form(f: &mut Frame, area: Rect, body: Rect, form: &Form) {
             None if focused && !fl.hint.is_empty() => lines.push(Line::styled(format!("  {:<14}{}", "", fl.hint), st(mono::COMMENT))),
             None => {}
         }
+        if focused {
+            focus.1 = lines.len();
+        }
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![Span::styled("command  ", st(mono::COMMENT)), Span::styled(form.command.clone(), bold(mono::ACCENT))]));
@@ -1085,13 +1088,18 @@ fn draw_form(f: &mut Frame, area: Rect, body: Rect, form: &Form) {
     }
     let keys = vec![keys_line(&[("tab/\u{2191}\u{2193}", "field"), ("\u{2190}\u{2192}", "choose"), ("ctrl-e", "$EDITOR"), ("ctrl-s / enter on last", "save"), ("esc", "cancel")])];
     let ok_color = if form.ok() { mono::BUSY } else { mono::ERROR };
-    let focus = rows_of(&lines[..focus], width) as usize;
+    let from = rows_of(&lines[..focus.0], width) as usize;
+    let to = rows_of(&lines[..focus.1], width) as usize;
     let rows = wrapped(&lines, width);
-    let keys = wrapped(&keys, width);
+    let mut keys = wrapped(&keys, width);
     let r = panel(area, body, PANEL_STD, rows16(rows.len() + keys.len()) + 2);
-    let at = follow(focus, focus + 3, (r.height as usize).saturating_sub(2 + keys.len()));
-    let block = modal_block(form.title.clone(), ok_color).title_bottom(Span::styled(if form.ok() { " ready " } else { " fix the fields in red " }, st(ok_color)));
-    scrolled(f, r, block, rows, keys, at);
+    if rows.len() + keys.len() + 2 > r.height as usize {
+        keys.extend(wrapped(&[keys_line(&[("PgUp/PgDn", "more")])], width));
+    }
+    let view = (r.height as usize).saturating_sub(2 + keys.len());
+    let at = follow(from, to, view) + app.detail_scroll;
+    let bottom = Span::styled(if form.ok() { " ready " } else { " fix the fields in red " }, bold(ok_color));
+    app.panel_rows.set((scrolled(f, r, modal_block(form.title.clone(), ok_color).title_bottom(bottom), rows, keys, at).0.saturating_sub(follow(from, to, view)), view));
 }
 
 /// For tests: the plain text of a line.

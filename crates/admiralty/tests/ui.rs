@@ -2532,10 +2532,57 @@ fn a_huge_word_does_not_hold_the_panel_up() {
     if let Some(Modal::Message { output, .. }) = &mut t.app.modal {
         *output = Some("x".repeat(256 * 1024));
     }
-    draw(&mut t.app, 80, 24);
     let from = std::time::Instant::now();
     for _ in 0..50 {
         draw(&mut t.app, 80, 24);
     }
     assert!(from.elapsed() < std::time::Duration::from_secs(2), "{:?}", from.elapsed());
+}
+
+/// Review of 0.7.19: another member's output is never shown from the wrapped
+/// rows of the last one, even at the same length and address.
+#[test]
+fn the_output_rows_belong_to_their_text() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    for text in ["first output", "other output"] {
+        if let Some(Modal::Message { output, .. }) = &mut t.app.modal {
+            *output = Some(text.to_string());
+        }
+        assert!(screen(&mut t.app, 120, 40).contains(text), "{text}");
+    }
+}
+
+/// Emoji sequences are wider than their chars: they wrap, in the width, and end.
+#[test]
+fn emoji_sequences_wrap_and_end() {
+    use admiralty::frames::wrap;
+    use ratatui::text::Span;
+    for text in ["\u{26a0}\u{fe0f}".repeat(40) + " tail", "\u{26a0}\u{fe0f}".repeat(40), "\u{1f468}\u{200d}\u{1f4bb}".repeat(50)] {
+        for w in [76usize, 20, 8] {
+            let ls = wrap(vec![Span::raw(text.clone())], w, 0);
+            let widths: Vec<usize> = ls.iter().map(|l| unicode_width::UnicodeWidthStr::width(admiralty::render::plain(l).trim_end())).collect();
+            assert!(widths.iter().all(|x| *x <= w), "{w}: {widths:?}");
+        }
+    }
+}
+
+/// A long form's end shows: what core says, past the fields, by PgDn.
+#[test]
+fn a_long_forms_end_is_reachable() {
+    let mut t = demo();
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    keys(&mut t.app, "c");
+    press(&mut t.app, KeyCode::Char('s'));
+    assert!(matches!(t.app.modal, Some(Modal::Form(_))), "{}", toast(&t.app));
+    let top = screen(&mut t.app, 80, 16);
+    assert!(top.contains("PgUp/PgDn more"), "{top}");
+    for _ in 0..20 {
+        press(&mut t.app, KeyCode::PageDown);
+        draw(&mut t.app, 80, 16);
+    }
+    let end = screen(&mut t.app, 80, 16);
+    assert_ne!(top, end, "it moved");
+    assert!(end.contains("command") || end.contains("CORE SAYS NO"), "{end}");
 }
