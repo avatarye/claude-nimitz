@@ -12,7 +12,9 @@ the focused pane's width inside a tab-wide box, or at the whole tab's size
 (2 rows and 2 columns larger than the box) when that pane was zoomed.
 `placement = "zoomed"` and `placement = "tab"` start at the same wrong size.
 
-Closing the overlay also clears a zoom the user had on the pane under it.
+Closing the overlay with `herdr plugin pane close` also clears a zoom the
+user had on the pane under it; an overlay that exits after the focus moved
+to another pane of its tab leaves that pane zoomed.
 
 ## Version
 
@@ -43,19 +45,42 @@ box (`44 67` -> `42 30` -> `42 131`): the zoomed size is right once a zoom
 changes.
 
 Zoom: with the pane under it zoomed (`herdr pane zoom w1:p1 --on`), opening
-and then closing the overlay leaves `zoomed: false` on that tab. Zooming the
-pane while the overlay is open does not survive the close either.
+and then closing the overlay with `herdr plugin pane close` leaves `zoomed:
+false` on that tab. Zooming the pane while the overlay is open does not
+survive the close either.
+
+Zoom is one flag per tab (`pane layout` reports `zoomed` and the tab's
+`focused_pane_id`), on the pane with the tab's focus. When the overlay's own
+process exits instead (a private server, 2026-11-02; tab `w1:t1` is
+`w1:p1 | w1:p2`, `w1:t2` is `w1:p3 | w1:p4`, every pane an agent):
+
+| Tab 1 before | then, overlay open | tab 1 after the exit |
+| --- | --- | --- |
+| not zoomed | nothing | not zoomed |
+| `w1:p1` zoomed | nothing | `w1:p1` zoomed |
+| not zoomed | `tab focus w1:t1; agent focus w1:p2` | `w1:p2` zoomed |
+| `w1:p1` zoomed | `agent focus w1:p2` | `w1:p2` zoomed |
+| `w1:p1` zoomed | `tab focus w1:t2; agent focus w1:p4` | `w1:p1` zoomed, `w1:t2` untouched |
+
+So an exiting overlay that still has its tab's focus gives the tab back its
+zoom from before it opened, but one that lost the focus to another pane of
+its tab leaves the overlay's zoom on that pane. With `plugin pane close`
+instead, the third row ends `w1:p2`, not zoomed.
 
 ## Expected
 
 - The overlay's terminal starts at the inner size of the box Herdr draws for
   it, whatever pane had the focus (and the same for `zoomed` and `tab`
   placements: the size of what is drawn).
-- Closing an overlay leaves the zoom of the panes under it as it was.
+- Closing an overlay leaves the zoom of the panes under it as it was, by
+  either path, whether or not the focus moved within its tab.
 
 ## Workaround (claude-nimitz 0.7.9)
 
 The Admiralty overlay (`admiralty herdr watch`) runs `herdr pane zoom
 $HERDR_PANE_ID --off` and `--on` before it draws; the toggle notes the zoom of
-the pane under the overlay and turns it back on once the overlay is gone
-(`crates/admiralty/src/herdr_plugin.rs`). Both go away when Herdr fixes this.
+the pane under the overlay and turns it back on once the overlay is gone;
+and the watch, as it quits, turns off the zoom a jump within the overlay's
+tab handed to its target, unless that pane was the zoomed one (after 0.7.19,
+`settle_zoom` in `crates/admiralty/src/herdr_plugin.rs`). All go away when
+Herdr fixes this.

@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::theme::{bold, mono, pane_color, pane_dot, st, Icons};
-use crate::view::{Row, Section};
+use crate::view::{Kind, Row, Section};
 
 //                 NAME STATUS AGE DETAIL
 pub const COL_MIN: [u16; 4] = [12, 12, 4, 0];
@@ -163,6 +163,19 @@ pub fn drop_spans(spans: &[Span<'static>], rank: &[u8], w: usize) -> Vec<Span<'s
 
 fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.width()).sum()
+}
+
+/// The column a row's fold marker starts at, from the left of the list (`None`:
+/// a row that doesn't fold). `admiral_top`, `band` and `name_cell` draw it there.
+pub fn fold_x(r: &Row, sp: Spacing) -> Option<u16> {
+    if r.node.children.is_empty() || r.node.kind == Kind::Note {
+        return None;
+    }
+    Some(match r.section {
+        Section::FleetBand => 3,
+        Section::SquadronBand | Section::StowBand => 2,
+        _ => (sp.side() + 2 + r.prefix.width()) as u16,
+    })
 }
 
 /// NAME cell: pane dot, tree guides, fold marker, kind icon, name. (The

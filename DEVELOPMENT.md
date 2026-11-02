@@ -884,7 +884,7 @@ Empty means unset. On Windows names are upper-cased.
 | `NIMITZ_CRASH_WINDOW` (20) | Seconds after a crash to wait |
 | `NIMITZ_PREFLIGHT_TIMEOUT` (20) | Provider preflight seconds |
 | `NIMITZ_SIGNAL_WAIT`, `NIMITZ_NOTIFY_RETRY` (600), `NIMITZ_SELF_END_WAIT` (600), `NIMITZ_REATTACH_WAIT`, `NIMITZ_FOCUS_RETRY_MS` | Waits |
-| `ADMIRALTY_ICONS=ascii`, `ADMIRALTY_STATE`, `ADMIRALTY_EXIT_AFTER_JUMP`, `ADMIRALTY_INSET`, `ADMIRALTY_ARGS`, `ADMIRALTY_NO_CLIPBOARD` | Admiralty |
+| `ADMIRALTY_ICONS=ascii`, `ADMIRALTY_STATE`, `ADMIRALTY_EXIT_AFTER_JUMP`, `ADMIRALTY_INSET`, `ADMIRALTY_ARGS`, `ADMIRALTY_NO_CLIPBOARD`, `ADMIRALTY_MOUSE=0` | Admiralty |
 
 Test only: `NIMITZ_E2E*`, `NIMITZ_HERDR_E2E`, `NIMITZ_BLESS`, `NIMITZ_HOOK_PID`,
 `NIMITZ_HOOK_SESSION_FILE`, `NIMITZ_PLUGIN_HOOKS`, `NIMITZ_TEST_ANCESTORS`,
@@ -956,6 +956,7 @@ lines. `app` holds state and keys, `render` draws, `run` is the terminal loop.
 | `main` | Args, env, `dump`, `sandbox`, `herdr` subcommands |
 | `run` | Terminal loop, loader thread, workers, `$EDITOR` |
 | `app` | `App` state, every key, `Modal`, `Effect`, `Saved`, `HELP`. No terminal |
+| `mouse` | `Hits` (what the last frame put where), `App::on_mouse`. No terminal |
 | `actions` | `Ctx`, `Target`, `Act`, `Pending`, availability, plans, CLI calls, `apply`, log |
 | `data` | `Bundle`, `DataSource`, `CoreSource`, `FixtureSource`, `merge_check` |
 | `view` | Snapshot to nodes and rows, `SHIP_INDENT`. Pure |
@@ -984,12 +985,38 @@ results change. `split` gives the wide popups a list and the detail beside it,
 from 120 columns. The message panel reads `evidence::last_output` once, when it
 opens. `App.panel_rows` holds what the last draw could scroll.
 
+### Mouse
+
+`draw` starts a fresh `App.hits` (`mouse::Hits`) and records what is
+hit-testable as it draws: the tabs' columns, the list's lines and spacing, each
+popup's rect, each entry's screen rows, the actions menu's detail. `on_mouse`
+reads an event against that frame only (it ignores one from before any draw or
+from another popup), inside `area`, so the inset is never hit. Everything
+routes to the keys' code: a double click is `enter`, a popup's wheel is up and
+down (ctrl-e / ctrl-y over the menu's detail), a click outside a popup is `esc`
+where that loses nothing (`outside_closes`: not a confirm, a form, or a message
+with text). A click on an entry sets the `sel` the arrows set; on a fleet
+filter's `[x]` it is `space`. New code paths: the list's wheel moves `scroll`,
+the cursor kept on a row in view (`scroll_list`); a form's wheel is
+`panel_scroll`, PgDn's code in smaller steps. The fold marker's column is
+`frames::fold_x`, next to the code that draws it; a test checks the glyph is
+there at every width. Nothing on the confirm panel is hit-testable. The loop
+drops pointer moves, releases and drags before they wake a draw, and every
+other event is followed by a draw, so a click always meets the frame on screen.
+
+Capture: `init_terminal(app.mouse)` turns it on after the terminal is set up;
+`release_input` turns it and bracketed paste off in `leave_terminal` (quit,
+errors, before `$EDITOR`) and in the panic hook. `M` flips it
+(`Effect::Mouse`); `ADMIRALTY_MOUSE=0` starts it off. Not done: dragging a
+scrollbar, clicking a form's field, a kill by signal (raw mode is not
+restored then either).
+
 ### Loop
 
 A **loader** thread owns the `DataSource`: load, send, wait the interval (default
 2 s, floor 0.5 s), or loop at once on a partial look. A **worker** thread per
 action runs `actions::apply`. **Main** draws, reads keys and carries out `Effect`s
-(`Quit`, `Refresh`, `Run(Pending)`, `Editor`). `prepare_start`, focus and typing
+(`Quit`, `Refresh`, `Run(Pending)`, `Editor`, `Mouse`). `prepare_start`, focus and typing
 block main.
 
 The first load uses a throwaway env with no claude binary: it's a fast partial
@@ -1041,6 +1068,7 @@ From `app::handle_key`. Ctrl is ignored on the main list unless named.
 | `!`, `i`, `?` | Needs list, issues, help |
 | `I`, `f`, `F` | Stowaways, state filter, flagged only |
 | `R`, `y`, `v` | Refresh, yank session id, motion |
+| `M` | Mouse capture on / off |
 | `a`, `u`, `A`, `D` | Start, up, open, remove |
 | `x` | Actions menu: `a u A s r w x d D m`; on a fleet `R L S M` |
 | `c` | Create menu: `f s p e` |

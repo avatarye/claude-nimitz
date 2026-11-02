@@ -19,7 +19,8 @@ admiralty dump [--width N] [...]   # the list as plain text
 admiralty --exit-after-jump        # quit once a pane jump lands (ADMIRALTY_EXIT_AFTER_JUMP=1; the Herdr plugin sets it)
 ```
 
-`ADMIRALTY_ICONS=ascii` for a terminal without a Nerd Font. Folds, filters and
+`ADMIRALTY_ICONS=ascii` for a terminal without a Nerd Font, `ADMIRALTY_MOUSE=0`
+to leave the mouse to the terminal. Folds, filters and
 the fleet tab are saved to `$NIMITZ_STATE/admiralty-ui.json` (`ADMIRALTY_STATE`
 moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 
@@ -177,6 +178,17 @@ from config, `y` yank the session id, `I` stowaways, `f` filter squadrons by sta
 flagged only, `R` refresh, `?` the keys panel (`?` or `esc` closes it), `q` quit. `esc` closes what is open, one
 thing at a time (a dialog, menu or form, the `/` name filter), and
 with nothing open quits (not while an action runs: `q` quits then).
+
+The mouse: a click selects a row, a click on its fold marker folds or
+unfolds it, a double click does what `enter` does, a click on a fleet tab
+shows it, and the wheel moves the view (the cursor stays on a row in view). In
+a popup the wheel scrolls it; in a menu, the finder, `!`, `i` and `f` a click
+selects an entry and a double click is `enter` (a click on a `[x]` in `f`
+turns it over). A click outside a popup closes it when `esc` would lose nothing:
+never a confirm, a form, or a message with text typed. No click runs a plan:
+`y` or `enter` does. Capturing the mouse takes the terminal's own
+drag-to-select: most terminals still select with shift-drag, `M` turns
+capture off and on while Admiralty runs, and `ADMIRALTY_MOUSE=0` starts it off.
 
 Every action and form shows the exact `nimitz` command and core's plan steps
 (refusals with their fixes) and waits for `y`. Forms validate as you type

@@ -57,13 +57,20 @@ pane's width one time and the tab's the next. The watch zooms its own pane off
 and on before it draws (`herdr pane zoom <own pane> --off`, then `--on`), and
 Herdr then sizes the terminal to the box: it always fills it. It does so only
 in its own overlay (a plugin pane, or one labelled `Admiralty`): `admiralty
-herdr watch` run by hand in an ordinary pane zooms nothing. Closing an
-overlay also drops the zoom of the pane under it, so the toggle notes that
-zoom (`$HERDR_PLUGIN_STATE_DIR/zoom-<tab>`, one per tab) and gives it back
-once the overlay is gone (it waits up to 5 s for it), whether the toggle
-closed it or the watch quit (`admiralty herdr rezoom <overlay> <tab>`, started
-detached as it quits); a jump to another pane of the tab leaves it off. See
-`docs/design/herdr-overlay-size.md`.
+herdr watch` run by hand in an ordinary pane zooms nothing.
+
+Zoom: the overlay leaves it as it found it. Herdr 0.9.3 keeps one zoom flag per
+tab, on whichever pane has the tab's focus. `herdr plugin pane close` (the
+toggle) turns that flag off, so the toggle notes the zoom of the pane under the
+overlay (`$HERDR_PLUGIN_STATE_DIR/zoom-<tab>`, one per tab) and gives it back
+once the overlay is gone (it waits up to 5 s for it), whether the toggle closed
+it or the watch quit (`admiralty herdr rezoom <overlay> <tab>`, started
+detached as it quits). A jump to another pane of the overlay's own tab moves
+the overlay's zoom onto that pane, and Herdr leaves it on when the overlay
+exits, so the watch, as it quits, turns it off there unless that pane is the
+one that was zoomed. A jump to another tab touches neither tab's zoom (that
+tab's own zoom follows its focus, as it does when you switch panes by hand).
+See `docs/design/herdr-overlay-size.md`.
 
 The state dir (`$HERDR_PLUGIN_STATE_DIR/pane_id`) holds the id of the watch pane the
 toggle opened. A stale id fails `pane get`; an id that now names another pane fails

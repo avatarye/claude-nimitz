@@ -116,6 +116,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     f.render_widget(Block::new().style(Style::new().bg(mono::BG).fg(mono::FG)), full);
     // the part the user sees: Herdr's overlay hides its last rows and columns
     let area = Rect { width: full.width.saturating_sub(app.inset.1), height: full.height.saturating_sub(app.inset.0), ..full };
+    app.hits.replace(crate::mouse::Hits::begin(area, app.modal.as_ref()));
     // fleet tabs on top; two status rows at the bottom: the fleets (ADMIRALTY)
     // over the versions, the machine and the refresh
     let [tabs, body, top, bottom] =
@@ -128,14 +129,14 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     match &app.modal {
         Some(Modal::Help { scroll }) => draw_help(app, f, area, body, *scroll),
         Some(Modal::Confirm(p)) => draw_confirm(app, f, area, body, p),
-        Some(Modal::Needs { items, sel }) => draw_needs(f, area, body, items, *sel),
+        Some(Modal::Needs { items, sel }) => draw_needs(app, f, area, body, items, *sel),
         Some(Modal::Issues { sel }) => draw_issues(app, f, area, body, *sel),
         Some(Modal::Menu { title, items, sel, detail }) => {
             let (title, items, sel, detail) = (title.clone(), items.clone(), *sel, *detail);
             draw_menu(app, f, area, body, &title, &items, sel, detail)
         }
         Some(Modal::Message { plan, text, output, back }) => draw_message(app, f, area, body, plan, text, output.as_deref(), *back),
-        Some(Modal::FleetFilter { sel }) => draw_fleet_filter(f, area, body, &app.fleet_states, *sel),
+        Some(Modal::FleetFilter { sel }) => draw_fleet_filter(app, f, area, body, *sel),
         Some(Modal::Form(form)) => draw_form(app, f, area, body, form),
         Some(Modal::Finder(fd)) => draw_finder(app, f, area, body, fd),
         None => {}
@@ -151,10 +152,11 @@ fn tab_line(app: &App, width: usize) -> Line<'static> {
         b.snap.fleets.iter().filter(|f| f.id.0 == tab).flat_map(crate::view::fleet_members).filter(|m| m.status == nimitz_core::Status::NeedsYou).count()
     };
     let tabs = crate::view::tabs(&b.snap);
-    let mut parts: Vec<(Vec<Span<'static>>, bool)> = vec![];
+    // each tab's spans, whether it's the shown one, its name
+    let mut parts: Vec<(Vec<Span<'static>>, bool, Option<String>)> = vec![];
     let searching = !app.filter.trim().is_empty();
     if searching {
-        parts.push((vec![Span::styled(" search: every fleet ".to_string(), Style::new().fg(mono::BG).bg(mono::WARN).add_modifier(Modifier::BOLD)), Span::raw(" ")], true));
+        parts.push((vec![Span::styled(" search: every fleet ".to_string(), Style::new().fg(mono::BG).bg(mono::WARN).add_modifier(Modifier::BOLD)), Span::raw(" ")], true, None));
     }
     for (i, t) in tabs.iter().enumerate() {
         let on = !searching && app.tab.as_deref() == Some(t.as_str());
@@ -197,17 +199,22 @@ fn tab_line(app: &App, width: usize) -> Line<'static> {
                 s.style = s.style.bg(mono::ACCENT_DIM).fg(crate::theme::readable_on(c, mono::ACCENT_DIM, bold));
             }
         }
-        parts.push((sp, on));
+        parts.push((sp, on, Some(t.clone())));
     }
     let w = |v: &[Span]| v.iter().map(|s| s.content.width()).sum::<usize>();
-    let mut used = parts.iter().filter(|(_, on)| *on).map(|(sp, _)| w(sp)).sum::<usize>();
+    let mut used = parts.iter().filter(|(_, on, _)| *on).map(|(sp, _, _)| w(sp)).sum::<usize>();
     let mut out = vec![];
-    for (sp, on) in parts {
+    let mut x = 0;
+    for (sp, on, tab) in parts {
         let n = w(&sp);
         if on || used + n <= width {
             if !on {
                 used += n;
             }
+            if let Some(tab) = tab {
+                app.hits.borrow_mut().tab(x.min(width) as u16, (x + n).min(width) as u16, tab);
+            }
+            x += n;
             out.extend(sp);
         }
     }
@@ -450,7 +457,7 @@ fn ago(secs: f64) -> String {
 
 fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
     let view = area.height.saturating_sub(1) as usize;
-    let (lines, _) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons, app.frame());
+    let (lines, spacing) = layout(&app.rows, area.width, Some(view), app.cursor, app.icons, app.frame());
     app.page = view.max(2);
     if let Some(pos) = lines.iter().position(|(_, r)| *r == Some(app.cursor)) {
         if pos < app.scroll {
@@ -460,6 +467,7 @@ fn draw_list(app: &mut App, f: &mut Frame, area: Rect) {
         }
     }
     app.scroll = app.scroll.min(lines.len().saturating_sub(view));
+    app.hits.borrow_mut().list(area, lines.iter().map(|(_, r)| *r).collect(), app.scroll, view, spacing);
     // the first row stays blank: the fleet tabs never sit on the first box's border
     let mut shown = vec![Line::raw("")];
     if lines.is_empty() {
@@ -540,6 +548,7 @@ fn draw_help(app: &App, f: &mut Frame, area: Rect, body: Rect, scroll: usize) {
     }
     lines.extend(wrap(vec![Span::styled("  Band counts read `icon n`; under 100 columns only needs-you and errors stay.", st(mono::COMMENT))], width, 2));
     let r = panel(area, body, PANEL_STD, rows16(lines.len()) + 4);
+    app.hits.borrow_mut().panel(r);
     let rows = scrolled(f, r, modal_block("keys".into(), mono::ACCENT), lines, keys_under(&[("j/k", "scroll"), ("? or esc", "close")]), scroll);
     app.panel_rows.set(rows);
 }
@@ -614,13 +623,15 @@ fn draw_confirm(app: &App, f: &mut Frame, area: Rect, body: Rect, p: &Pending) {
     // the keys stay on screen; a long plan scrolls above them
     let mut keys = lines.pop().unwrap_or_default();
     let r = panel(area, body, PANEL_STD, rows16(lines.len()) + 3);
+    app.hits.borrow_mut().panel(r);
     if lines.len() + 3 > r.height as usize {
         keys.spans.extend(keys_line(&[("j/k", "scroll")]).spans);
     }
     app.panel_rows.set(scrolled(f, r, modal_block(p.act.word().to_string(), color), lines, vec![keys], app.detail_scroll));
 }
 
-fn draw_fleet_filter(f: &mut Frame, area: Rect, body: Rect, on: &[bool; 7], sel: usize) {
+fn draw_fleet_filter(app: &App, f: &mut Frame, area: Rect, body: Rect, sel: usize) {
+    let on = &app.fleet_states;
     let mut lines = vec![Line::styled("Show fleets that are", bold(mono::FG)), Line::raw("")];
     for (i, s) in FleetState::ALL.iter().enumerate() {
         let mut l = Line::from(vec![
@@ -635,11 +646,19 @@ fn draw_fleet_filter(f: &mut Frame, area: Rect, body: Rect, on: &[bool; 7], sel:
     }
     let keys = keys_under(&[("space", "toggle"), ("a", "all"), ("esc", "close")]);
     let r = panel(area, body, PANEL_SMALL, rows16(lines.len()) + 4);
-    let at = follow(sel + 2, sel + 3, (r.height as usize).saturating_sub(4));
+    let view = (r.height as usize).saturating_sub(4);
+    let at = follow(sel + 2, sel + 3, view);
+    let rows: Vec<(usize, usize)> = (0..FleetState::ALL.len()).map(|i| (i + 2, i + 3)).collect();
+    let mut hits = app.hits.borrow_mut();
+    hits.panel(r);
+    hits.entries(r, &rows, at, view);
+    // ` [x] `, after the frame and the padding
+    hits.ticks = Some((r.x + 2, r.x + 7));
+    drop(hits);
     scrolled(f, r, modal_block("squadrons by state".into(), mono::ACCENT), lines, keys, at);
 }
 
-fn draw_needs(f: &mut Frame, area: Rect, body: Rect, items: &[NeedItem], sel: usize) {
+fn draw_needs(app: &App, f: &mut Frame, area: Rect, body: Rect, items: &[NeedItem], sel: usize) {
     let width = text_width(panel(area, body, PANEL_STD, 1)) as usize;
     let mut lines = vec![];
     if items.is_empty() {
@@ -655,7 +674,13 @@ fn draw_needs(f: &mut Frame, area: Rect, body: Rect, items: &[NeedItem], sel: us
     }
     let keys = keys_under(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "back")]);
     let r = panel(area, body, PANEL_STD, rows16(lines.len()) + 4);
-    let at = follow(sel, sel + 1, (r.height as usize).saturating_sub(4));
+    let view = (r.height as usize).saturating_sub(4);
+    let at = follow(sel, sel + 1, view);
+    let rows: Vec<(usize, usize)> = (0..items.len()).map(|i| (i, i + 1)).collect();
+    let mut hits = app.hits.borrow_mut();
+    hits.panel(r);
+    hits.entries(r, &rows, at, view);
+    drop(hits);
     scrolled(f, r, modal_block("waiting on you".into(), mono::NEEDS), lines, keys, at);
 }
 
@@ -667,6 +692,7 @@ fn draw_issues(app: &App, f: &mut Frame, area: Rect, body_r: Rect, sel: usize) {
         body.push(Line::styled("No issues. Every fleet's shape matches its config.", st(mono::MUTED)));
     }
     let (mut sel_from, mut sel_to) = (0, 0);
+    let mut rows = vec![];
     for (i, is) in issues.iter().enumerate() {
         let start = body.len();
         let c = severity_color(is.severity);
@@ -694,10 +720,16 @@ fn draw_issues(app: &App, f: &mut Frame, area: Rect, body_r: Rect, sel: usize) {
         if i == sel {
             (sel_from, sel_to) = (start, body.len());
         }
+        rows.push((start, body.len()));
     }
     let keys = keys_under(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("y", "yank fix"), ("esc", "back")]);
     let r = panel(area, body_r, PANEL_WIDE, rows16(body.len()) + 4);
-    let at = follow(sel_from, sel_to, (r.height as usize).saturating_sub(4));
+    let view = (r.height as usize).saturating_sub(4);
+    let at = follow(sel_from, sel_to, view);
+    let mut hits = app.hits.borrow_mut();
+    hits.panel(r);
+    hits.entries(r, &rows, at, view);
+    drop(hits);
     let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
     let block = modal_block(format!("issues: {} ({errors} errors)", issues.len()), if errors > 0 { mono::ERROR } else { mono::WARN });
     scrolled(f, r, block, body, keys, at);
@@ -705,11 +737,11 @@ fn draw_issues(app: &App, f: &mut Frame, area: Rect, body_r: Rect, sel: usize) {
 
 /// A menu's rows in `width` columns: one per entry (a closed one says why right
 /// after its label). A long entry wraps under itself, or is cut under 120
-/// columns (`one_row`), where the detail needs the height. Also the selected
-/// entry's rows.
-fn menu_lines(items: &[MenuItem], sel: usize, width: usize, one_row: bool) -> (Vec<Line<'static>>, (usize, usize)) {
+/// columns (`one_row`), where the detail needs the height. Also each entry's
+/// rows.
+fn menu_lines(items: &[MenuItem], sel: usize, width: usize, one_row: bool) -> (Vec<Line<'static>>, Vec<(usize, usize)>) {
     let mut lines = vec![];
-    let mut sel_rows = (0, 0);
+    let mut rows = vec![];
     for (i, it) in items.iter().enumerate() {
         let (ks, ls) = match &it.enabled {
             Ok(()) => (bold(mono::ACCENT), st(mono::FG)),
@@ -726,11 +758,9 @@ fn menu_lines(items: &[MenuItem], sel: usize, width: usize, one_row: bool) -> (V
         } else {
             lines.extend(wrap(spans, width, 4).into_iter().map(|l| selectable(l, i == sel)));
         }
-        if i == sel {
-            sel_rows = (from, lines.len());
-        }
+        rows.push((from, lines.len()));
     }
-    (lines, sel_rows)
+    (lines, rows)
 }
 
 /// The row's detail in `width` columns, with where `enter` goes.
@@ -748,10 +778,16 @@ fn menu_detail(app: &App, width: u16, compact: bool) -> Vec<Line<'static>> {
 fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, items: &[MenuItem], sel: usize, detail: bool) {
     let one_row = body.width < 120;
     let menu_h = |width: u16| rows16(menu_lines(items, sel, width as usize, one_row).0.len()) + 4;
-    let menu = |r: Rect, h: u16, f: &mut Frame| {
+    let menu = |app: &App, r: Rect, h: u16, f: &mut Frame| {
         let r = Rect { height: h, ..r };
-        let (lines, (from, to)) = menu_lines(items, sel, text_width(r) as usize, one_row);
-        let at = follow(from, to, (r.height as usize).saturating_sub(4));
+        let (lines, rows) = menu_lines(items, sel, text_width(r) as usize, one_row);
+        let (from, to) = rows.get(sel).copied().unwrap_or((0, 0));
+        let view = (r.height as usize).saturating_sub(4);
+        let at = follow(from, to, view);
+        let mut hits = app.hits.borrow_mut();
+        hits.panel(r);
+        hits.entries(r, &rows, at, view);
+        drop(hits);
         scrolled(f, r, modal_block(title.to_string(), mono::ACCENT), lines, keys_under(&[("key or enter", "choose"), ("esc", "close")]), at);
     };
     if detail && body.width >= 120 {
@@ -760,7 +796,7 @@ fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, 
         let h = menu_h(text_width(list)).max(rows_of(&text, text_width(right)) + 2);
         let group = panel(area, body, list.width + right.width, h);
         let (list, right) = split(group);
-        menu(list, group.height, f);
+        menu(app, list, group.height, f);
         detail_scrolled(app, f, right, text);
         return;
     }
@@ -770,20 +806,24 @@ fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, 
     let whole = panel(area, body, PANEL_STD, menu_h);
     // under the menu, a panel only when it holds a few lines (borders and three)
     if !detail || left < 5 {
-        menu(whole, whole.height, f);
+        menu(app, whole, whole.height, f);
         return;
     }
     // a short panel drops the picture and the blank lines: the reasons first
     let text = menu_detail(app, text_width(whole), left < 16);
     let det_h = left.min(rows_of(&text, text_width(whole)) + 2);
     let y = body.y + (body.height - menu_h - det_h) / 2;
-    menu(Rect { y, ..whole }, menu_h, f);
+    menu(app, Rect { y, ..whole }, menu_h, f);
     detail_scrolled(app, f, Rect { y: y + menu_h, height: det_h, ..whole }, text);
 }
 
 /// The detail panel with `app.detail_scroll` kept in reach.
 fn detail_scrolled(app: &mut App, f: &mut Frame, r: Rect, text: Vec<Line<'static>>) {
     app.detail_scroll = app.detail_scroll.min((rows_of(&text, text_width(r)) as usize).saturating_sub(r.height.saturating_sub(2) as usize));
+    let mut hits = app.hits.borrow_mut();
+    hits.panel(r);
+    hits.detail = Some(r);
+    drop(hits);
     detail_box(f, r, text, Some(app.detail_scroll));
 }
 
@@ -844,10 +884,18 @@ fn draw_finder(app: &App, f: &mut Frame, area: Rect, body: Rect, fd: &Finder) {
     lines.push(Line::styled(finder_head(cols), bold(mono::COMMENT)));
     let room = (r.height as usize).saturating_sub(2 + lines.len() + 2);
     let start = (fd.sel + 1).saturating_sub(room);
+    let mut hit_rows = app.hits.borrow_mut();
+    hit_rows.panel(r);
+    if let Some(right) = right {
+        hit_rows.panel(right);
+    }
     for (i, h) in fd.hits.iter().enumerate().skip(start).take(room) {
+        // the border, the query, the counts, the header
+        hit_rows.entry(Rect { x: r.x + 1, y: r.y + 1 + lines.len() as u16, width: r.width.saturating_sub(2), height: 1 }, i);
         let line = finder_row(&fd.cands[h.cand], h, cols, app.icons);
         lines.push(selectable(Line::from(truncate_spans(line, inner_w)), i == fd.sel));
     }
+    drop(hit_rows);
     if fd.hits.is_empty() {
         // the hint only when a row without a pane would match
         let why = if fd.hidden.no_pane_matching > 0 { "  nothing matches (ctrl-a: rows without a pane too)" } else { "  nothing matches" };
@@ -989,12 +1037,14 @@ fn draw_message(app: &App, f: &mut Frame, area: Rect, body: Rect, plan: &Message
     let Some(output) = output else {
         let lines = [head, foot].concat();
         let r = panel(area, body, PANEL_STD, rows16(lines.len()) + 2);
+        app.hits.borrow_mut().panel(r);
         f.render_widget(Clear, r);
         f.render_widget(Paragraph::new(lines).block(modal_block("message".into(), mono::ACCENT)), r);
         return;
     };
     let rows = app.output_rows(output, w as usize, output_rows);
     let r = panel(area, body, PANEL_STD, rows16(rows.len()).saturating_add(rows16(foot.len()) + 4));
+    app.hits.borrow_mut().panel(r);
     let block = modal_block("message".into(), mono::ACCENT);
     let inner = block.inner(r);
     f.render_widget(Clear, r);
@@ -1093,6 +1143,7 @@ fn draw_form(app: &App, f: &mut Frame, area: Rect, body: Rect, form: &Form) {
     let rows = wrapped(&lines, width);
     let mut keys = wrapped(&keys, width);
     let r = panel(area, body, PANEL_STD, rows16(rows.len() + keys.len()) + 2);
+    app.hits.borrow_mut().panel(r);
     if rows.len() + keys.len() + 2 > r.height as usize {
         keys.extend(wrapped(&[keys_line(&[("PgUp/PgDn", "more")])], width));
     }

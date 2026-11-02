@@ -24,6 +24,7 @@ env: NIMITZ_HOME, NIMITZ_STATE, NIMITZ_CLAUDE_HOME, NIMITZ_MUX ... (contracts.md
      ADMIRALTY_ICONS=ascii (no Nerd Font), ADMIRALTY_STATE (where folds and filters are saved),
      ADMIRALTY_EXIT_AFTER_JUMP=1 (same as --exit-after-jump: quit once a pane jump lands),
      ADMIRALTY_INSET=rows,cols (left blank at the bottom and right: the Herdr overlay hides them),
+     ADMIRALTY_MOUSE=0 (start without mouse capture: the terminal selects text; M turns it on),
      NIMITZ_NO_ANIM=1 or NO_COLOR (no status motion)";
 
 enum Source {
@@ -137,6 +138,7 @@ fn main() -> ExitCode {
     if let Some((r, c)) = vars.get("ADMIRALTY_INSET").and_then(|v| v.split_once(',')) {
         app.inset = (r.trim().parse().unwrap_or(0), c.trim().parse().unwrap_or(0));
     }
+    app.mouse = vars.get("ADMIRALTY_MOUSE").is_none_or(|v| v != "0");
     app.fixed_now = fixed_now;
     // the demo and a dump render the same clock every time
     if fixed_now.is_some() || dump {
@@ -182,6 +184,10 @@ fn main() -> ExitCode {
     let every = app.interval;
     let ran = run::run(app, make, every);
     if let Some(fill) = watch {
+        // a watch that quit on its own (q, a jump): one Herdr closed is gone
+        if ran.is_ok() {
+            herdr_plugin::settle_zoom(&vars, fill);
+        }
         herdr_plugin::rezoom_later(&vars, fill);
     }
     match ran {

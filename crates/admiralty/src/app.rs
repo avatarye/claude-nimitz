@@ -88,6 +88,8 @@ pub enum Effect {
     Run(Pending),
     /// edit the focused form field in `$EDITOR`
     Editor,
+    /// `M`: the terminal's mouse capture on or off
+    Mouse(bool),
 }
 
 pub struct Toast {
@@ -243,6 +245,13 @@ pub struct App {
     /// the scrolling popup as last drawn: the most rows it scrolls, the rows
     /// it shows
     pub panel_rows: std::cell::Cell<(usize, usize)>,
+    /// what the last draw put where (`crate::mouse`)
+    pub hits: std::cell::RefCell<crate::mouse::Hits>,
+    /// mouse capture on (`ADMIRALTY_MOUSE=0` starts it off; `M` turns it over;
+    /// off, the terminal's own drag-to-select works)
+    pub mouse: bool,
+    /// the last click, for a double click
+    pub(crate) last_click: Option<(crate::mouse::Spot, Instant)>,
     /// the message panel's output as rows, kept for its (text, width): wrapped
     /// once, not on every draw
     output_cache: std::cell::RefCell<Option<((u64, usize), OutputRows)>>,
@@ -294,6 +303,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("I", "show / hide stowaways"),
     ("f / F", "filter squadrons by state / flagged rows only"),
     ("R", "refresh now"),
+    ("M", "mouse on / off (off, the terminal selects text again; on, shift-drag does in most terminals; ADMIRALTY_MOUSE=0 starts it off)"),
+    ("mouse", "click selects, double-click is enter; a fold marker folds; a fleet tab shows it; the wheel scrolls. In a popup: click an entry, double-click it, wheel; a click outside closes what esc closes safely (never a confirm or a form); only y or enter runs a plan"),
     ("esc", "close what is open (a dialog, the / name filter); with nothing open and nothing running, quit"),
     ("? / q", "these keys (? or esc closes them) / quit"),
 ];
@@ -357,6 +368,9 @@ impl App {
             busy: None,
             detail_scroll: 0,
             panel_rows: Default::default(),
+            hits: Default::default(),
+            mouse: true,
+            last_click: None,
             output_cache: Default::default(),
             detail_for: None,
             page: 20,
@@ -796,7 +810,7 @@ impl App {
         }
     }
 
-    fn toggle(&mut self) {
+    pub(crate) fn toggle(&mut self) {
         if let Some(r) = self.current().cloned() {
             if !r.node.children.is_empty() {
                 self.set_expanded(&r.node.id, !r.expanded);
@@ -1232,6 +1246,7 @@ impl App {
     /// Handle one key; returns work the run loop must do. Sticky state is
     /// saved after every key that changed it.
     pub fn on_key(&mut self, k: KeyEvent) -> Option<Effect> {
+        self.last_click = None;
         let effect = self.handle_key(k);
         self.after_input();
         effect
@@ -1239,7 +1254,7 @@ impl App {
 
     /// After a key or a paste: save sticky state, and start the detail at
     /// the top when the cursor's row changed.
-    fn after_input(&mut self) {
+    pub(crate) fn after_input(&mut self) {
         self.persist();
         let now = self.current().map(|r| r.node.id.clone());
         if now != self.detail_for {
@@ -1370,6 +1385,12 @@ impl App {
                 self.rebuild();
             }
             (KeyCode::Char('R'), _) => return Some(Effect::Refresh),
+            (KeyCode::Char('M'), _) => {
+                self.mouse = !self.mouse;
+                let msg = if self.mouse { "Mouse on (M turns it off; shift-drag selects text in most terminals)" } else { "Mouse off: the terminal selects text again (M turns it on)" };
+                self.notify(msg, st(mono::COMMENT));
+                return Some(Effect::Mouse(self.mouse));
+            }
             (KeyCode::Char('y'), _) => self.yank(),
             (KeyCode::Char('a'), _) => return self.start_act(Act::Start),
             (KeyCode::Char('u'), _) => {
@@ -1658,11 +1679,9 @@ impl App {
             }
             Modal::Form(form) if matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) => {
                 // a long form's rows past its fields: what core says, the plan
-                let (max, view) = self.panel_rows.get();
-                let page = view.saturating_sub(1).max(1);
-                let at = self.detail_scroll.min(max);
-                self.detail_scroll = if k.code == KeyCode::PageDown { (at + page).min(max) } else { at.saturating_sub(page) };
+                let page = self.panel_rows.get().1.saturating_sub(1).max(1) as i64;
                 self.modal = Some(Modal::Form(form));
+                self.panel_scroll(if k.code == KeyCode::PageDown { page } else { -page });
             }
             Modal::Form(mut form) => {
                 self.detail_scroll = 0;
@@ -1693,6 +1712,12 @@ impl App {
             }
         }
         None
+    }
+
+    /// Scroll the popup that keeps its place in `detail_scroll`, `by` rows.
+    pub(crate) fn panel_scroll(&mut self, by: i64) {
+        let max = self.panel_rows.get().0;
+        self.detail_scroll = (self.detail_scroll.min(max) as i64 + by).clamp(0, max as i64) as usize;
     }
 
     fn send_message(&mut self, plan: &MessagePlan, text: &str) {
