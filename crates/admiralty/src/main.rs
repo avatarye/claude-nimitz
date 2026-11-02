@@ -159,7 +159,7 @@ fn main() -> ExitCode {
             }
         }
         // the whole screen: a height asked for, or the actions menu with the
-        // row's detail below it
+        // row's detail with it
         if height.is_some() || detail {
             if detail {
                 app.open_actions();

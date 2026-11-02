@@ -1412,6 +1412,23 @@ mod tests {
     /// A second project's `<sid>` folder (only `workflows/scripts`) is never
     /// taken for the session's, whichever the directory lists first.
     #[test]
+    fn the_session_dir_is_the_one_beside_the_transcript() {
+        for (real, decoy) in [("-a-real", "-b-decoy"), ("-b-real", "-a-decoy")] {
+            let td = tempfile::tempdir().unwrap();
+            let vars: HashMap<String, String> = [("NIMITZ_CLAUDE_HOME".to_string(), td.path().to_string_lossy().into_owned())].into();
+            let env = Env::from_vars(&vars);
+            let sid = "5e55e55e-0000-4000-8000-000000000000";
+            let projects = td.path().join("projects");
+            fs::create_dir_all(projects.join(decoy).join(sid).join("workflows/scripts")).unwrap();
+            fs::create_dir_all(projects.join(real).join(sid).join("subagents")).unwrap();
+            fs::write(projects.join(real).join(format!("{sid}.jsonl")), "{}\n").unwrap();
+            fs::write(projects.join(real).join(sid).join("subagents/agent-x1.meta.json"), r#"{"description":"x"}"#).unwrap();
+            let recs = read_subagents(&env, &mut FileCache::default(), sid);
+            assert_eq!(recs.iter().map(|r| r.agent_id.as_str()).collect::<Vec<_>>(), ["x1"], "{real} vs {decoy}");
+        }
+    }
+
+    #[test]
     fn the_last_output_is_the_sessions_own_last_text() {
         let td = tempfile::tempdir().unwrap();
         let p = td.path().join("s.jsonl");
@@ -1431,23 +1448,6 @@ mod tests {
         fs::write(&p, line(said(&format!("{}END", "x".repeat(LAST_OUTPUT_MAX * 2))))).unwrap();
         let t = last_output(&p).unwrap();
         assert!(t.starts_with("[... the start") && t.ends_with("END") && t.len() < LAST_OUTPUT_MAX + 100);
-    }
-
-    #[test]
-    fn the_session_dir_is_the_one_beside_the_transcript() {
-        for (real, decoy) in [("-a-real", "-b-decoy"), ("-b-real", "-a-decoy")] {
-            let td = tempfile::tempdir().unwrap();
-            let vars: HashMap<String, String> = [("NIMITZ_CLAUDE_HOME".to_string(), td.path().to_string_lossy().into_owned())].into();
-            let env = Env::from_vars(&vars);
-            let sid = "5e55e55e-0000-4000-8000-000000000000";
-            let projects = td.path().join("projects");
-            fs::create_dir_all(projects.join(decoy).join(sid).join("workflows/scripts")).unwrap();
-            fs::create_dir_all(projects.join(real).join(sid).join("subagents")).unwrap();
-            fs::write(projects.join(real).join(format!("{sid}.jsonl")), "{}\n").unwrap();
-            fs::write(projects.join(real).join(sid).join("subagents/agent-x1.meta.json"), r#"{"description":"x"}"#).unwrap();
-            let recs = read_subagents(&env, &mut FileCache::default(), sid);
-            assert_eq!(recs.iter().map(|r| r.agent_id.as_str()).collect::<Vec<_>>(), ["x1"], "{real} vs {decoy}");
-        }
     }
 
     /// A crew's description is its own field, and a log whose last entry is

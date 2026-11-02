@@ -139,8 +139,8 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 ![finder](../../docs/img/admiralty-finder.png)
 
 `space` opens the finder, a panel in the middle of the view with the selected
-row's detail beside it (from 120 columns), both the same height: all the room
-but a margin. It lists every member of every fleet in tree
+row's detail beside it (from 120 columns), both the same height, up to 160 by 40
+and a margin. It lists every member of every fleet in tree
 order, then the stowaways, in columns like the main view: NAME (the path
 `MAIN/ARGOS/SIGNAL`, a stowaway's name), RANK, STATUS and, with room, TOPIC. It
 also matches a member's expected name `[MAIN.ARGOS]-SIGNAL` and a stowaway's

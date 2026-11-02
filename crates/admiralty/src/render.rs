@@ -8,7 +8,7 @@ use nimitz_core::{Plan, Severity, Step};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -45,6 +45,53 @@ fn panel(area: Rect, body: Rect, w: u16, h: u16) -> Rect {
 /// The columns a popup's text gets.
 fn text_width(r: Rect) -> u16 {
     r.width.saturating_sub(PANEL_FRAME)
+}
+
+/// `lines` as screen rows `width` wide, so a popup knows its height exactly.
+fn wrapped(lines: &[Line<'static>], width: u16) -> Vec<Line<'static>> {
+    lines
+        .iter()
+        .flat_map(|l| {
+            if l.width() <= width as usize {
+                return vec![l.clone()];
+            }
+            wrap(l.spans.clone(), width as usize, 0).into_iter().map(|w| w.style(l.style)).collect()
+        })
+        .collect()
+}
+
+/// The top row that keeps rows `from..to` in a view of `view` rows.
+fn follow(from: usize, to: usize, view: usize) -> usize {
+    if to > view {
+        (to - view).min(from)
+    } else {
+        0
+    }
+}
+
+/// A popup's text in `r`: `body`, from row `at`, a scrollbar when it does not
+/// fit, and `keys` always under it. Returns the most it scrolls and the rows
+/// it shows.
+fn scrolled(f: &mut Frame, r: Rect, block: Block<'static>, body: Vec<Line<'static>>, keys: Vec<Line<'static>>, at: usize) -> (usize, usize) {
+    let view = (r.height as usize).saturating_sub(2 + keys.len());
+    let max = body.len().saturating_sub(view);
+    let at = at.min(max);
+    let mut shown: Vec<Line<'static>> = body.into_iter().skip(at).take(view).collect();
+    shown.extend(keys);
+    f.render_widget(Clear, r);
+    f.render_widget(Paragraph::new(shown).block(block), r);
+    border_bar(f, r, r.y + 1, view, max, at);
+    (max, view)
+}
+
+/// The keys of a popup, a blank line above them.
+fn keys_under(pairs: &[(&str, &str)]) -> Vec<Line<'static>> {
+    vec![Line::raw(""), keys_line(pairs)]
+}
+
+/// A count of rows as a height.
+fn rows16(n: usize) -> u16 {
+    n.min(u16::MAX as usize / 2) as u16
 }
 
 /// A wide popup's two parts, from 120 columns: a list and the detail beside it.
@@ -492,16 +539,9 @@ fn draw_help(app: &App, f: &mut Frame, area: Rect, body: Rect, scroll: usize) {
         lines.extend(wrap(vec![Span::styled(format!("  {icon}  "), style), Span::styled(what.to_string(), st(mono::SOFT))], width, 5));
     }
     lines.extend(wrap(vec![Span::styled("  Band counts read `icon n`; under 100 columns only needs-you and errors stay.", st(mono::COMMENT))], width, 2));
-    let keys = keys_line(&[("j/k", "scroll"), ("? or esc", "close")]);
-    let r = panel(area, body, PANEL_STD, lines.len() as u16 + 4);
-    let view = r.height.saturating_sub(4) as usize;
-    let max = lines.len().saturating_sub(view);
-    let at = scroll.min(max);
-    let mut shown: Vec<Line> = lines.into_iter().skip(at).take(view).collect();
-    shown.extend([Line::raw(""), keys]);
-    f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(shown).block(modal_block("keys".into(), mono::ACCENT)), r);
-    border_bar(f, r, r.y + 1, view, max, at);
+    let r = panel(area, body, PANEL_STD, rows16(lines.len()) + 4);
+    let rows = scrolled(f, r, modal_block("keys".into(), mono::ACCENT), lines, keys_under(&[("j/k", "scroll"), ("? or esc", "close")]), scroll);
+    app.panel_rows.set(rows);
 }
 
 /// One plan step: what runs, where, and why (wrapped to `width`, indent kept).
@@ -572,17 +612,12 @@ fn draw_confirm(app: &App, f: &mut Frame, area: Rect, body: Rect, p: &Pending) {
     }
     let color = if p.plan.ok() { mono::ACCENT } else { mono::ERROR };
     // the keys stay on screen; a long plan scrolls above them
-    let keys = lines.pop().unwrap_or_default();
-    let r = panel(area, body, PANEL_STD, lines.len() as u16 + 3);
-    let view = r.height.saturating_sub(3) as usize;
-    let max = lines.len().saturating_sub(view);
-    let at = app.detail_scroll.min(max);
-    app.panel_rows.set((max, view));
-    let mut shown: Vec<Line> = lines.into_iter().skip(at).take(view).collect();
-    shown.push(keys);
-    f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(shown).block(modal_block(p.act.word().to_string(), color)), r);
-    border_bar(f, r, r.y + 1, view, max, at);
+    let mut keys = lines.pop().unwrap_or_default();
+    let r = panel(area, body, PANEL_STD, rows16(lines.len()) + 3);
+    if lines.len() + 3 > r.height as usize {
+        keys.spans.extend(keys_line(&[("j/k", "scroll")]).spans);
+    }
+    app.panel_rows.set(scrolled(f, r, modal_block(p.act.word().to_string(), color), lines, vec![keys], app.detail_scroll));
 }
 
 fn draw_fleet_filter(f: &mut Frame, area: Rect, body: Rect, on: &[bool; 7], sel: usize) {
@@ -598,11 +633,10 @@ fn draw_fleet_filter(f: &mut Frame, area: Rect, body: Rect, on: &[bool; 7], sel:
         }
         lines.push(l);
     }
-    lines.push(Line::raw(""));
-    lines.push(keys_line(&[("space", "toggle"), ("a", "all"), ("esc", "close")]));
-    let r = panel(area, body, PANEL_SMALL, lines.len() as u16 + 2);
-    f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).block(modal_block("squadrons by state".into(), mono::ACCENT)), r);
+    let keys = keys_under(&[("space", "toggle"), ("a", "all"), ("esc", "close")]);
+    let r = panel(area, body, PANEL_SMALL, rows16(lines.len()) + 4);
+    let at = follow(sel + 2, sel + 3, (r.height as usize).saturating_sub(4));
+    scrolled(f, r, modal_block("squadrons by state".into(), mono::ACCENT), lines, keys, at);
 }
 
 fn draw_needs(f: &mut Frame, area: Rect, body: Rect, items: &[NeedItem], sel: usize) {
@@ -619,10 +653,10 @@ fn draw_needs(f: &mut Frame, area: Rect, body: Rect, items: &[NeedItem], sel: us
         ];
         lines.push(selectable(Line::from(truncate_spans(spans, width)), i == sel));
     }
-    lines.extend([Line::raw(""), keys_line(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "back")])]);
-    let r = panel(area, body, PANEL_STD, lines.len() as u16 + 2);
-    f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).block(modal_block("waiting on you".into(), mono::NEEDS)), r);
+    let keys = keys_under(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("esc", "back")]);
+    let r = panel(area, body, PANEL_STD, rows16(lines.len()) + 4);
+    let at = follow(sel, sel + 1, (r.height as usize).saturating_sub(4));
+    scrolled(f, r, modal_block("waiting on you".into(), mono::NEEDS), lines, keys, at);
 }
 
 fn draw_issues(app: &App, f: &mut Frame, area: Rect, body_r: Rect, sel: usize) {
@@ -661,27 +695,21 @@ fn draw_issues(app: &App, f: &mut Frame, area: Rect, body_r: Rect, sel: usize) {
             (sel_from, sel_to) = (start, body.len());
         }
     }
-    let keys = keys_line(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("y", "yank fix"), ("esc", "back")]);
-    let r = panel(area, body_r, PANEL_WIDE, body.len() as u16 + 4);
-    let view = r.height.saturating_sub(4) as usize;
-    let max = body.len().saturating_sub(view);
-    let at = if sel_to > view { (sel_to - view).min(sel_from) } else { 0 };
-    let mut lines: Vec<Line<'static>> = body.into_iter().skip(at).take(view).collect();
-    lines.extend([Line::raw(""), keys]);
+    let keys = keys_under(&[("j/k", "move"), ("enter", "row"), ("ctrl-o", "pane"), ("y", "yank fix"), ("esc", "back")]);
+    let r = panel(area, body_r, PANEL_WIDE, rows16(body.len()) + 4);
+    let at = follow(sel_from, sel_to, (r.height as usize).saturating_sub(4));
     let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
-    f.render_widget(Clear, r);
-    f.render_widget(
-        Paragraph::new(lines).block(modal_block(format!("issues: {} ({errors} errors)", issues.len()), if errors > 0 { mono::ERROR } else { mono::WARN })),
-        r,
-    );
-    border_bar(f, r, r.y + 1, view, max, at.min(max));
+    let block = modal_block(format!("issues: {} ({errors} errors)", issues.len()), if errors > 0 { mono::ERROR } else { mono::WARN });
+    scrolled(f, r, block, body, keys, at);
 }
 
-/// A menu's lines in `width` columns: one per entry (a closed one says why
-/// right after its label), then its keys. A long entry wraps under itself, or
-/// is cut where the height is short (`one_row`).
-fn menu_lines(items: &[MenuItem], sel: usize, width: usize, one_row: bool) -> Vec<Line<'static>> {
+/// A menu's rows in `width` columns: one per entry (a closed one says why right
+/// after its label). A long entry wraps under itself, or is cut under 120
+/// columns (`one_row`), where the detail needs the height. Also the selected
+/// entry's rows.
+fn menu_lines(items: &[MenuItem], sel: usize, width: usize, one_row: bool) -> (Vec<Line<'static>>, (usize, usize)) {
     let mut lines = vec![];
+    let mut sel_rows = (0, 0);
     for (i, it) in items.iter().enumerate() {
         let (ks, ls) = match &it.enabled {
             Ok(()) => (bold(mono::ACCENT), st(mono::FG)),
@@ -692,15 +720,17 @@ fn menu_lines(items: &[MenuItem], sel: usize, width: usize, one_row: bool) -> Ve
             let why = if why == crate::actions::MONITOR_ONLY { "monitor-only: no multiplexer".to_string() } else { why.clone() };
             spans.push(Span::styled(format!("  ({why})"), st(mono::DIM)));
         }
+        let from = lines.len();
         if one_row {
             lines.push(selectable(Line::from(truncate_spans(spans, width)), i == sel));
         } else {
             lines.extend(wrap(spans, width, 4).into_iter().map(|l| selectable(l, i == sel)));
         }
+        if i == sel {
+            sel_rows = (from, lines.len());
+        }
     }
-    lines.push(Line::raw(""));
-    lines.push(keys_line(&[("key or enter", "choose"), ("esc", "close")]));
-    lines
+    (lines, sel_rows)
 }
 
 /// The row's detail in `width` columns, with where `enter` goes.
@@ -716,16 +746,18 @@ fn menu_detail(app: &App, width: u16, compact: bool) -> Vec<Line<'static>> {
 /// same height (under it below 120 columns), scrolled by `app.detail_scroll`.
 #[allow(clippy::too_many_arguments)]
 fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, items: &[MenuItem], sel: usize, detail: bool) {
+    let one_row = body.width < 120;
+    let menu_h = |width: u16| rows16(menu_lines(items, sel, width as usize, one_row).0.len()) + 4;
     let menu = |r: Rect, h: u16, f: &mut Frame| {
         let r = Rect { height: h, ..r };
-        f.render_widget(Clear, r);
-        f.render_widget(Paragraph::new(menu_lines(items, sel, text_width(r) as usize, body.width < 120)).block(modal_block(title.to_string(), mono::ACCENT)), r);
+        let (lines, (from, to)) = menu_lines(items, sel, text_width(r) as usize, one_row);
+        let at = follow(from, to, (r.height as usize).saturating_sub(4));
+        scrolled(f, r, modal_block(title.to_string(), mono::ACCENT), lines, keys_under(&[("key or enter", "choose"), ("esc", "close")]), at);
     };
     if detail && body.width >= 120 {
         let (list, right) = split(panel(area, body, PANEL_WIDE, 1));
-        let menu_h = menu_lines(items, sel, text_width(list) as usize, false).len() as u16 + 2;
         let text = menu_detail(app, text_width(right), false);
-        let h = menu_h.max(rows_of(&text, text_width(right)) as u16 + 2);
+        let h = menu_h(text_width(list)).max(rows_of(&text, text_width(right)) + 2);
         let group = panel(area, body, list.width + right.width, h);
         let (list, right) = split(group);
         menu(list, group.height, f);
@@ -733,7 +765,7 @@ fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, 
         return;
     }
     let width = text_width(panel(area, body, PANEL_STD, 1));
-    let menu_h = menu_lines(items, sel, width as usize, body.width < 120).len() as u16 + 2;
+    let menu_h = menu_h(width);
     let left = body.height.saturating_sub(menu_h);
     let whole = panel(area, body, PANEL_STD, menu_h);
     // under the menu, a panel only when it holds a few lines (borders and three)
@@ -743,7 +775,7 @@ fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, 
     }
     // a short panel drops the picture and the blank lines: the reasons first
     let text = menu_detail(app, text_width(whole), left < 16);
-    let det_h = left.min(rows_of(&text, text_width(whole)) as u16 + 2);
+    let det_h = left.min(rows_of(&text, text_width(whole)) + 2);
     let y = body.y + (body.height - menu_h - det_h) / 2;
     menu(Rect { y, ..whole }, menu_h, f);
     detail_scrolled(app, f, Rect { y: y + menu_h, height: det_h, ..whole }, text);
@@ -751,13 +783,13 @@ fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, 
 
 /// The detail panel with `app.detail_scroll` kept in reach.
 fn detail_scrolled(app: &mut App, f: &mut Frame, r: Rect, text: Vec<Line<'static>>) {
-    app.detail_scroll = app.detail_scroll.min(rows_of(&text, text_width(r)).saturating_sub(r.height.saturating_sub(2) as usize));
+    app.detail_scroll = app.detail_scroll.min((rows_of(&text, text_width(r)) as usize).saturating_sub(r.height.saturating_sub(2) as usize));
     detail_box(f, r, text, Some(app.detail_scroll));
 }
 
-/// Screen rows `text` takes, wrapped at `width`.
-fn rows_of(text: &[Line], width: u16) -> usize {
-    text.iter().map(|l| l.width().max(1).div_ceil(width.max(1) as usize)).sum()
+/// Screen rows `text` takes in `width` columns.
+fn rows_of(text: &[Line<'static>], width: u16) -> u16 {
+    rows16(wrapped(text, width).len())
 }
 
 /// The detail panel (beside the actions menu and the finder), scrolled down
@@ -765,12 +797,14 @@ fn rows_of(text: &[Line], width: u16) -> usize {
 /// more than it shows).
 fn detail_box(f: &mut Frame, r: Rect, text: Vec<Line<'static>>, scroll: Option<usize>) {
     let room = r.height.saturating_sub(2) as usize;
-    let total = rows_of(&text, text_width(r));
+    let rows = wrapped(&text, text_width(r));
+    let total = rows.len();
     let more = scroll.is_some_and(|s| total > room + s || s > 0);
     let title = if more { "detail  ctrl-e/ctrl-y PgDn/PgUp scroll" } else { "detail" };
     let at = scroll.unwrap_or(0);
+    let shown: Vec<Line<'static>> = rows.into_iter().skip(at).take(room).collect();
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(text).scroll((at as u16, 0)).wrap(Wrap { trim: false }).block(modal_block(title.into(), mono::ACCENT)), r);
+    f.render_widget(Paragraph::new(shown).block(modal_block(title.into(), mono::ACCENT)), r);
     if scroll.is_some() {
         border_bar(f, r, r.y + 1, room, total.saturating_sub(room), at);
     }
@@ -951,24 +985,26 @@ fn draw_message(app: &App, f: &mut Frame, area: Rect, body: Rect, plan: &Message
         keys_line(&keys),
     ];
     let w = text_width(panel(area, body, PANEL_STD, 1));
+    let foot = wrapped(&foot, w);
     let Some(output) = output else {
         let lines = [head, foot].concat();
-        let r = panel(area, body, PANEL_STD, rows_of(&lines, w) as u16 + 2);
+        let r = panel(area, body, PANEL_STD, rows16(lines.len()) + 2);
         f.render_widget(Clear, r);
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(modal_block("message".into(), mono::ACCENT)), r);
+        f.render_widget(Paragraph::new(lines).block(modal_block("message".into(), mono::ACCENT)), r);
         return;
     };
-    let rows = output_rows(output, w as usize);
-    let foot_h = rows_of(&foot, w) as u16;
-    let r = panel(area, body, PANEL_STD, (rows.len() as u16).saturating_add(foot_h + 4));
+    let rows = app.output_rows(output, w as usize, output_rows);
+    let r = panel(area, body, PANEL_STD, rows16(rows.len()).saturating_add(rows16(foot.len()) + 4));
     let block = modal_block("message".into(), mono::ACCENT);
     let inner = block.inner(r);
     f.render_widget(Clear, r);
     f.render_widget(block, r);
-    let foot_h = foot_h.min(inner.height.saturating_sub(3));
+    // a foot too long to show keeps its end: the keys
+    let foot_h = rows16(foot.len()).min(inner.height.saturating_sub(3));
+    let foot: Vec<Line<'static>> = foot[foot.len() - foot_h as usize..].to_vec();
     let [top, mid, bottom] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1), Constraint::Length(foot_h)]).areas(inner);
     f.render_widget(Paragraph::new(head), top);
-    f.render_widget(Paragraph::new(foot).wrap(Wrap { trim: false }), bottom);
+    f.render_widget(Paragraph::new(foot), bottom);
     let view = mid.height as usize;
     let max = rows.len().saturating_sub(view);
     app.panel_rows.set((max, view));
@@ -977,12 +1013,14 @@ fn draw_message(app: &App, f: &mut Frame, area: Rect, body: Rect, plan: &Message
     border_bar(f, r, mid.y, view, max, top_row);
 }
 
-/// A member's output as screen rows, `width` wide: no control characters.
+/// A member's output as screen rows, `width` wide: no control characters, and
+/// no marks that reorder the text around them.
 fn output_rows(output: &str, width: usize) -> Vec<Line<'static>> {
     output
         .lines()
         .flat_map(|l| {
             let clean = nimitz_mux::strip_controls(&l.replace('\t', "    "));
+            let clean: String = clean.chars().filter(|c| !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).collect();
             if clean.is_empty() {
                 vec![Line::raw("")]
             } else {
@@ -995,8 +1033,12 @@ fn output_rows(output: &str, width: usize) -> Vec<Line<'static>> {
 fn draw_form(f: &mut Frame, area: Rect, body: Rect, form: &Form) {
     let width = text_width(panel(area, body, PANEL_STD, 1));
     let mut lines = vec![];
+    let mut focus = 0;
     for (i, fl) in form.fields.iter().enumerate() {
         let focused = i == form.focus;
+        if focused {
+            focus = lines.len();
+        }
         let label = Span::styled(format!("  {:<14}", fl.label), if focused { bold(mono::ACCENT) } else { st(mono::SOFT) });
         let value = match &fl.kind {
             FieldKind::Fixed => Span::styled(fl.value.clone(), st(mono::COMMENT)),
@@ -1041,16 +1083,15 @@ fn draw_form(f: &mut Frame, area: Rect, body: Rect, form: &Form) {
         lines.extend(plan_lines(&form.plan, &[], width as usize));
         lines.push(Line::raw(""));
     }
-    lines.push(keys_line(&[("tab/\u{2191}\u{2193}", "field"), ("\u{2190}\u{2192}", "choose"), ("ctrl-e", "$EDITOR"), ("ctrl-s / enter on last", "save"), ("esc", "cancel")]));
+    let keys = vec![keys_line(&[("tab/\u{2191}\u{2193}", "field"), ("\u{2190}\u{2192}", "choose"), ("ctrl-e", "$EDITOR"), ("ctrl-s / enter on last", "save"), ("esc", "cancel")])];
     let ok_color = if form.ok() { mono::BUSY } else { mono::ERROR };
-    let r = panel(area, body, PANEL_STD, rows_of(&lines, width) as u16 + 2);
-    f.render_widget(Clear, r);
-    f.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(modal_block(form.title.clone(), ok_color).title_bottom(Span::styled(if form.ok() { " ready " } else { " fix the fields in red " }, bold(ok_color)))),
-        r,
-    );
+    let focus = rows_of(&lines[..focus], width) as usize;
+    let rows = wrapped(&lines, width);
+    let keys = wrapped(&keys, width);
+    let r = panel(area, body, PANEL_STD, rows16(rows.len() + keys.len()) + 2);
+    let at = follow(focus, focus + 3, (r.height as usize).saturating_sub(2 + keys.len()));
+    let block = modal_block(form.title.clone(), ok_color).title_bottom(Span::styled(if form.ok() { " ready " } else { " fix the fields in red " }, st(ok_color)));
+    scrolled(f, r, block, rows, keys, at);
 }
 
 /// For tests: the plain text of a line.
@@ -1139,7 +1180,7 @@ mod separator_tests {
             MenuItem { key: 'l', label: "layout --ships: and a tab attaching each live ship".into(), enabled: Err(crate::actions::MONITOR_ONLY.into()), action: MenuAction::NewFleet },
         ];
         let mut t = Terminal::new(TestBackend::new(140, 12)).unwrap();
-        t.draw(|f| f.render_widget(Paragraph::new(menu_lines(&items, 0, 96, false)), f.area())).unwrap();
+        t.draw(|f| f.render_widget(Paragraph::new(menu_lines(&items, 0, 96, false).0), f.area())).unwrap();
         let shown = text(t.backend().buffer());
         assert!(shown.contains("stale job rows  (no stale job rows)"), "{shown}");
         assert!(shown.contains("each live ship  (monitor-only: no multiplexer)"), "{shown}");

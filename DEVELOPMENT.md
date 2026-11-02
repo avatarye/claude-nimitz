@@ -978,8 +978,8 @@ Modes: `admiralty`, `--demo`, `--demo-monitor`, `--fixture FILE`, `--sandbox DIR
 Every popup goes through `render::panel`: one of three widths (`PANEL_SMALL` 50,
 `PANEL_STD` 100, `PANEL_WIDE` 160), the height of its content, centred in the
 body, stopping at `PANEL_MARGIN`. Past that it scrolls, with `border_bar` on its
-right border. `modal_block` is the one frame, and a popup's keys are its last
-line. The finder has a fixed height (`FINDER_HEIGHT`) so it doesn't jump as its
+right border. `modal_block` is the one frame, `scrolled` draws a body with its
+keys always under it, and `wrapped` makes rows exact, so nothing is cut off. The finder has a fixed height (`FINDER_HEIGHT`) so it doesn't jump as its
 results change. `split` gives the wide popups a list and the detail beside it,
 from 120 columns. The message panel reads `evidence::last_output` once, when it
 opens. `App.panel_rows` holds what the last draw could scroll.

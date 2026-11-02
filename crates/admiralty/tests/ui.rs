@@ -2477,3 +2477,65 @@ fn the_popups_share_their_widths() {
     let at = ls.iter().rposition(|l| l.contains("? or esc close")).unwrap();
     assert!(ls[at + 1].contains('\u{2517}'), "the keys are the last line:\n{}", ls.join("\n"));
 }
+
+/// Review of 0.7.19: in the confirm panel a control key never runs or closes:
+/// `ctrl-y` scrolls in every panel, it must not run a stop or an rm.
+#[test]
+fn a_control_key_never_runs_a_plan() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS/BOOM");
+    keys(&mut t.app, "x");
+    press(&mut t.app, KeyCode::Char('s'));
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "{}", toast(&t.app));
+    assert!(ctrl(&mut t.app, 'y').is_none(), "ctrl-y scrolls, it does not run");
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "still asking");
+    ctrl(&mut t.app, 'n');
+    assert!(matches!(t.app.modal, Some(Modal::Confirm(_))), "ctrl-n does not close it");
+    assert!(matches!(press(&mut t.app, KeyCode::Char('y')), Some(Effect::Run(_))), "y runs");
+}
+
+/// A popup too long for the window keeps its keys and shows the selection.
+#[test]
+fn long_popups_keep_their_keys_and_their_selection() {
+    let mut t = demo();
+    let items: Vec<admiralty::app::NeedItem> =
+        (0..30).map(|i| admiralty::app::NeedItem { row_id: format!("M:X{i}"), name: format!("member-{i}"), age: "1m".into(), text: "a question".into() }).collect();
+    t.app.modal = Some(Modal::Needs { items, sel: 25 });
+    let s = screen(&mut t.app, 80, 24);
+    assert!(s.contains("member-25") && s.contains("esc back") && !s.contains("member-0 "), "{s}");
+}
+
+/// The end of a long detail can be reached, whatever the wrapping.
+#[test]
+fn the_end_of_the_detail_is_reachable() {
+    for (w, h) in [(120u16, 20u16), (120, 24), (128, 24), (80, 24)] {
+        let mut t = demo();
+        goto(&mut t.app, "M:MAIN");
+        keys(&mut t.app, "x");
+        lines(&draw(&mut t.app, w, h));
+        for _ in 0..60 {
+            ctrl(&mut t.app, 'e');
+            draw(&mut t.app, w, h);
+        }
+        let s = screen(&mut t.app, w, h);
+        assert!(s.contains("on the row"), "{w}x{h}:\n{s}");
+    }
+}
+
+/// One word as long as a whole output is cut in one pass, and the panel wraps
+/// it once, not on every draw.
+#[test]
+fn a_huge_word_does_not_hold_the_panel_up() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('m'));
+    if let Some(Modal::Message { output, .. }) = &mut t.app.modal {
+        *output = Some("x".repeat(256 * 1024));
+    }
+    draw(&mut t.app, 80, 24);
+    let from = std::time::Instant::now();
+    for _ in 0..50 {
+        draw(&mut t.app, 80, 24);
+    }
+    assert!(from.elapsed() < std::time::Duration::from_secs(2), "{:?}", from.elapsed());
+}

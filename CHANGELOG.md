@@ -12,13 +12,13 @@
 ### Changed
 
 - **One design for Admiralty's popups.** Three widths (50, 100, 160), the height
-  of what they show, in the middle of the view, a scrollbar when long, one frame,
-  and the keys on the last line, in the finder, `m`, `x`, `?`, confirm, forms,
+  of what they show, in the middle of the view, scrolling when long, one frame,
+  and the keys at the bottom, in the finder, `m`, `x`, `?`, confirm, forms,
   needs-you, issues and the fleet filter.
 - **`x` has the detail beside the actions** (below them under 120 columns), and
   a closed action's reason right after its label.
 - **A long plan scrolls** in the confirm panel (`j`/`k`, `PgUp`/`PgDn`) instead
-  of being cut.
+  of being cut. Long forms, menus and needs-you follow the selection.
 
 ### Upgrading
 

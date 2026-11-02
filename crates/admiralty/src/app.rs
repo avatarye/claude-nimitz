@@ -60,6 +60,9 @@ impl MenuItem {
     }
 }
 
+/// Rows of a member's output, as the message panel draws them.
+pub type OutputRows = std::rc::Rc<Vec<ratatui::text::Line<'static>>>;
+
 pub enum Modal {
     Help { scroll: usize },
     /// `f`: which fleet states are shown
@@ -67,7 +70,7 @@ pub enum Modal {
     Needs { items: Vec<NeedItem>, sel: usize },
     /// `i`: every issue, worst first
     Issues { sel: usize },
-    /// `detail`: the row's detail panel sits below the list (`x`, not `c`)
+    /// `detail`: the row's detail panel sits beside the list (`x`, not `c`)
     Menu { title: String, items: Vec<MenuItem>, sel: usize, detail: bool },
     Confirm(Pending),
     /// `output`: the member's last output, shown above the box when it has
@@ -240,6 +243,9 @@ pub struct App {
     /// the scrolling popup as last drawn: the most rows it scrolls, the rows
     /// it shows
     pub panel_rows: std::cell::Cell<(usize, usize)>,
+    /// the message panel's output as rows, kept for its (text, width): wrapped
+    /// once, not on every draw
+    output_cache: std::cell::RefCell<Option<((usize, usize, usize), OutputRows)>>,
     detail_for: Option<String>,
     pub page: usize,
     last_g: Option<Instant>,
@@ -351,6 +357,7 @@ impl App {
             busy: None,
             detail_scroll: 0,
             panel_rows: Default::default(),
+            output_cache: Default::default(),
             detail_for: None,
             page: 20,
             last_g: None,
@@ -842,6 +849,20 @@ impl App {
         self.bundle.as_ref().and_then(|b| actions::find_member(&b.snap, id))
     }
 
+    /// `output` as rows `width` wide, made by `make` once for that text and width.
+    pub fn output_rows(&self, output: &str, width: usize, make: fn(&str, usize) -> Vec<ratatui::text::Line<'static>>) -> OutputRows {
+        let key = (output.as_ptr() as usize, output.len(), width);
+        let mut cache = self.output_cache.borrow_mut();
+        match &*cache {
+            Some((k, rows)) if *k == key => rows.clone(),
+            _ => {
+                let rows = std::rc::Rc::new(make(output, width));
+                *cache = Some((key, rows.clone()));
+                rows
+            }
+        }
+    }
+
     /// Ask before `p` runs, from the top of its plan.
     fn confirm(&mut self, p: Pending) {
         self.detail_scroll = 0;
@@ -916,7 +937,7 @@ impl App {
     }
 
     /// The action menu (`x`) for the selected row: `row_actions`.
-    /// `x`: the row's actions, its detail in a panel below them.
+    /// `x`: the row's actions, its detail in a panel beside them.
     pub fn open_actions(&mut self) {
         let title = self.current().map(|r| full_name(&r)).unwrap_or_default();
         self.detail_scroll = 0;
@@ -1431,8 +1452,8 @@ impl App {
             },
             Modal::Help { scroll } => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {}
-                _ if down => self.modal = Some(Modal::Help { scroll: scroll + 1 }),
-                _ if up => self.modal = Some(Modal::Help { scroll: scroll.saturating_sub(1) }),
+                _ if down => self.modal = Some(Modal::Help { scroll: (scroll + 1).min(self.panel_rows.get().0) }),
+                _ if up => self.modal = Some(Modal::Help { scroll: scroll.min(self.panel_rows.get().0).saturating_sub(1) }),
                 _ => self.modal = Some(Modal::Help { scroll }),
             },
             Modal::FleetFilter { mut sel } => match k.code {
@@ -1529,7 +1550,7 @@ impl App {
             Modal::Menu { title, items, mut sel, detail } => {
                 let pick = match k.code {
                     KeyCode::Esc | KeyCode::Char('q') => return None,
-                    // the detail panel below the actions scrolls; a control
+                    // the detail panel with the actions scrolls; a control
                     // key never picks an entry
                     KeyCode::Char('e') if detail && ctrl => {
                         self.detail_scroll += 1;
@@ -1572,14 +1593,15 @@ impl App {
                 }
             }
             Modal::Confirm(p) => match k.code {
-                KeyCode::Char('y') | KeyCode::Enter if p.plan.ok() => {
+                KeyCode::Char('y') | KeyCode::Enter if p.plan.ok() && !ctrl => {
                     if !self.ctx.live {
                         self.notify(format!("{}: demo data, nothing ran. The plan above is what core would do.", p.act.word()), st(mono::WARN));
                         return None;
                     }
                     return Some(Effect::Run(p));
                 }
-                KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {}
+                KeyCode::Esc => {}
+                KeyCode::Char('n') | KeyCode::Char('q') if !ctrl => {}
                 _ => {
                     let (max, view) = self.panel_rows.get();
                     let page = view.saturating_sub(1).max(1);
