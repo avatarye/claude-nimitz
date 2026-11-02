@@ -14,6 +14,7 @@ pub mod fixtures;
 pub mod forms;
 pub mod frames;
 pub mod herdr_plugin;
+pub mod mouse;
 pub mod render;
 pub mod run;
 pub mod theme;

@@ -6,7 +6,8 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyModifiers};
+use ratatui::crossterm::execute;
 
 use crate::actions::Pending;
 use crate::app::{App, Effect};
@@ -18,21 +19,42 @@ type Term = ratatui::Terminal<crate::backend::GlyphSafe<ratatui::backend::Crosst
 
 /// Raw mode, the alternate screen and the panic hook from `ratatui::init`, on
 /// a backend that keeps positions right whatever the terminal's glyph widths.
-fn init_terminal() -> std::io::Result<Term> {
+/// `mouse`: capture the mouse too.
+fn init_terminal(mouse: bool) -> std::io::Result<Term> {
     drop(ratatui::init());
     // a panic restores the terminal through ratatui's hook; this one turns
-    // bracketed paste off first (installed once: init runs again after $EDITOR)
-    static PASTE_HOOK: std::sync::Once = std::sync::Once::new();
-    PASTE_HOOK.call_once(|| {
+    // mouse capture and bracketed paste off first (installed once: init runs
+    // again after $EDITOR)
+    static RESTORE_HOOK: std::sync::Once = std::sync::Once::new();
+    RESTORE_HOOK.call_once(|| {
         let next = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::DisableBracketedPaste);
+            release_input();
             next(info);
         }));
     });
     // a paste arrives whole (Event::Paste), never as keystrokes
-    let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::EnableBracketedPaste);
-    ratatui::Terminal::new(crate::backend::GlyphSafe(ratatui::backend::CrosstermBackend::new(std::io::stdout())))
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    let term = ratatui::Terminal::new(crate::backend::GlyphSafe(ratatui::backend::CrosstermBackend::new(std::io::stdout())))?;
+    if mouse {
+        set_mouse(true)?;
+    }
+    Ok(term)
+}
+
+fn set_mouse(on: bool) -> std::io::Result<()> {
+    if on {
+        execute!(std::io::stdout(), EnableMouseCapture)
+    } else {
+        execute!(std::io::stdout(), DisableMouseCapture)
+    }
+}
+
+/// Mouse capture and bracketed paste off, each whatever the other does, on
+/// every way out (the terminal must not go on reporting to the user's shell).
+fn release_input() {
+    let _ = set_mouse(false);
+    let _ = execute!(std::io::stdout(), DisableBracketedPaste);
 }
 
 enum Cmd {
@@ -62,9 +84,10 @@ fn spawn_loader(make: SourceMaker, interval: Duration) -> (mpsc::Sender<Cmd>, mp
     (cmd_tx, rx)
 }
 
-/// Leave the terminal: bracketed paste off, then ratatui's own restore.
+/// Leave the terminal: mouse capture and bracketed paste off, then ratatui's
+/// own restore.
 fn leave_terminal() {
-    let _ = ratatui::crossterm::execute!(std::io::stdout(), ratatui::crossterm::event::DisableBracketedPaste);
+    release_input();
     ratatui::restore();
 }
 
@@ -130,6 +153,11 @@ fn effect(app: &mut App, e: Effect, terminal: &mut Term, cmd_tx: &mpsc::Sender<C
         Effect::Refresh => {
             let _ = cmd_tx.send(Cmd::Refresh);
         }
+        Effect::Mouse(on) => {
+            if let Err(e) = set_mouse(on) {
+                app.notify(format!("mouse: {e}"), crate::theme::st(crate::theme::mono::ERROR));
+            }
+        }
         Effect::Run(p) => {
             if app.busy.is_some() {
                 app.notify("An action is still running; wait for it.", crate::theme::st(crate::theme::mono::WARN));
@@ -146,7 +174,7 @@ fn effect(app: &mut App, e: Effect, terminal: &mut Term, cmd_tx: &mpsc::Sender<C
             if let Some(text) = app.editor_text() {
                 leave_terminal();
                 let edited = with_inset_size(app.inset, || edit_in_editor(&text));
-                match init_terminal() {
+                match init_terminal(app.mouse) {
                     Ok(t) => *terminal = t,
                     Err(e) => app.notify(format!("terminal: {e}"), crate::theme::st(crate::theme::mono::ERROR)),
                 }
@@ -164,7 +192,7 @@ fn effect(app: &mut App, e: Effect, terminal: &mut Term, cmd_tx: &mpsc::Sender<C
 pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Result<()> {
     let (cmd_tx, data_rx) = spawn_loader(make, interval);
     let (done_tx, done_rx) = mpsc::channel::<(Pending, nimitz_core::Outcome)>();
-    let mut terminal = init_terminal()?;
+    let mut terminal = init_terminal(app.mouse)?;
     let mut dirty = true;
     let mut last_draw = Instant::now();
     // status motion: its own tick, never a refresh or a nimitz call; only the
@@ -234,7 +262,24 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
             Ok(e) => e,
             Err(e) => break Err(e),
         };
+        // crossterm's capture reports every move of the pointer: none of that
+        // wakes a draw. The rest always draws before the next event is read,
+        // so a click meets the frame the user sees (`App.hits`).
+        if matches!(&ev, Event::Mouse(m) if !crate::mouse::matters(m.kind)) {
+            continue;
+        }
         dirty = true;
+        if let Event::Mouse(m) = ev {
+            // (no list yet: nothing to click, and a click is not kept for later)
+            if app.bundle.is_some() {
+                if let Some(e) = app.on_mouse(m) {
+                    if effect(&mut app, e, &mut terminal, &cmd_tx, &done_tx) {
+                        break Ok(());
+                    }
+                }
+            }
+            continue;
+        }
         if matches!(ev, Event::Paste(_)) && app.bundle.is_none() {
             early.push(ev);
             continue;
