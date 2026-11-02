@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.20 (unreleased)
+## 0.7.20 (2026-11-02)
 
 ### Added
 
