@@ -1073,6 +1073,45 @@ pub fn transcript_title(cache: &mut FileCache, jsonl: &Path) -> Option<String> {
     found
 }
 
+/// How far back from a transcript's end `last_output` looks, and how much of
+/// the text it keeps (its end, the part just written).
+const LAST_OUTPUT_TAIL: u64 = 4 * 1024 * 1024;
+const LAST_OUTPUT_MAX: usize = 256 * 1024;
+
+/// A session's last output: the text of the last message it wrote in its own
+/// conversation (a sub-agent's lines are not its own), from the transcript's
+/// end. None when that holds no text.
+pub fn last_output(jsonl: &Path) -> Option<String> {
+    let mut f = fs::File::open(jsonl).ok()?;
+    let size = f.seek(SeekFrom::End(0)).ok()?;
+    let start = size.saturating_sub(LAST_OUTPUT_TAIL);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut raw = vec![];
+    f.read_to_end(&mut raw).ok()?;
+    let text = String::from_utf8_lossy(&raw);
+    // past the start of the file, the first line is a part of one
+    let whole = if start == 0 { &text[..] } else { text.split_once('\n').map(|x| x.1).unwrap_or("") };
+    whole.lines().rev().filter(|l| l.contains("\"assistant\"")).find_map(|l| {
+        let v: Value = serde_json::from_str(l).ok()?;
+        if v.get("type")?.as_str()? != "assistant" || v.get("isSidechain").and_then(Value::as_bool).unwrap_or(false) {
+            return None;
+        }
+        let content = v.get("message")?.get("content")?;
+        let text = match content.as_str() {
+            Some(t) => t.to_string(),
+            None => content.as_array()?.iter().filter(|c| c.get("type").and_then(Value::as_str) == Some("text")).filter_map(|c| c.get("text")?.as_str()).collect::<Vec<_>>().join("\n\n"),
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        Some(match text.char_indices().rev().nth(LAST_OUTPUT_MAX) {
+            Some((at, _)) => format!("[... the start of this message is cut ...]\n{}", &text[at..]),
+            None => text.to_string(),
+        })
+    })
+}
+
 // ------------------------------------------------------------------ sub-agents and tasks
 
 #[derive(Clone, Debug)]
@@ -1372,6 +1411,28 @@ mod tests {
 
     /// A second project's `<sid>` folder (only `workflows/scripts`) is never
     /// taken for the session's, whichever the directory lists first.
+    #[test]
+    fn the_last_output_is_the_sessions_own_last_text() {
+        let td = tempfile::tempdir().unwrap();
+        let p = td.path().join("s.jsonl");
+        let line = |v: Value| format!("{v}\n");
+        let said = |t: &str| serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": t}, {"type": "tool_use", "name": "Bash"}]}});
+        let mut raw = line(said("older"));
+        raw += &line(said("the last words"));
+        raw += &line(serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}}));
+        raw += &line(serde_json::json!({"type": "assistant", "isSidechain": true, "message": {"content": [{"type": "text", "text": "a sub-agent"}]}}));
+        raw += &line(serde_json::json!({"type": "user", "message": {"content": "next"}}));
+        fs::write(&p, &raw).unwrap();
+        assert_eq!(last_output(&p).as_deref(), Some("the last words"));
+        fs::write(&p, line(serde_json::json!({"type": "user", "message": {"content": "only a question"}}))).unwrap();
+        assert_eq!(last_output(&p), None);
+        assert_eq!(last_output(&td.path().join("gone.jsonl")), None);
+        // a very long message keeps its end, and says so
+        fs::write(&p, line(said(&format!("{}END", "x".repeat(LAST_OUTPUT_MAX * 2))))).unwrap();
+        let t = last_output(&p).unwrap();
+        assert!(t.starts_with("[... the start") && t.ends_with("END") && t.len() < LAST_OUTPUT_MAX + 100);
+    }
+
     #[test]
     fn the_session_dir_is_the_one_beside_the_transcript() {
         for (real, decoy) in [("-a-real", "-b-decoy"), ("-b-real", "-a-decoy")] {

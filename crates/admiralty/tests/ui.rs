@@ -1255,14 +1255,14 @@ fn bug43_messages_are_sanitised_in_preview_command_and_send_and_empty_ones_refus
     goto(&mut t.app, "M:MAIN");
     let plan = t.app.message_plan().unwrap();
     let raw = "\u{1b}[31mhello\u{1b}[0m\nthere\u{7}\u{1b}]0;title\u{7}";
-    t.app.modal = Some(Modal::Message { plan: plan.clone(), text: raw.into() });
+    t.app.modal = Some(Modal::Message { plan: plan.clone(), text: raw.into(), output: None, back: 0 });
     let s = screen(&mut t.app, 200, 50);
     assert!(s.contains("> hello there"), "preview shows what will be sent:\n{s}");
     assert!(s.contains("nimitz signal MAIN 'hello there'"), "and so does the command");
     press(&mut t.app, KeyCode::Enter);
     assert_eq!(t.mux.calls.lock().unwrap().as_slice(), ["type p1 hello there"]);
     // nothing left after cleaning: refused, the box stays open
-    t.app.modal = Some(Modal::Message { plan, text: "\u{1b}[2J\n\t \u{7}".into() });
+    t.app.modal = Some(Modal::Message { plan, text: "\u{1b}[2J\n\t \u{7}".into(), output: None, back: 0 });
     press(&mut t.app, KeyCode::Enter);
     assert!(matches!(t.app.modal, Some(Modal::Message { .. })));
     assert!(toast(&t.app).contains("empty"));
@@ -2351,4 +2351,48 @@ fn a_stopped_stowaway_is_not_woken_by_attach() {
     let e = open(&sid_of("ef22ef22")).unwrap_err();
     assert!(e.contains("not running") && e.contains("nimitz adopt ef22ef22 <id>") && e.contains("nimitz start <id>"), "{e}");
     assert!(open(&sid_of("ee11ee11")).is_ok(), "a live stowaway is only attached");
+}
+
+/// `m` shows what the member last wrote, read from its transcript, above the
+/// box. It opens at the end of a long output with a scrollbar beside it;
+/// arrows and PgUp/PgDn scroll, letters still go to the box, at 80 and 120.
+#[test]
+fn the_message_panel_shows_the_last_output_and_scrolls() {
+    let mut t = fixture_app(fixtures::demo(), true);
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    let (sid, cwd) = {
+        let b = fixtures::demo();
+        let m = actions::find_member(&b.snap, &Id("MAIN/ARGOS".into())).unwrap().session.clone().unwrap();
+        (m.session_id, m.cwd)
+    };
+    let dir = t.dir.path().join("claude/projects/p");
+    std::fs::create_dir_all(&dir).unwrap();
+    t.app.ctx.env.claude_home = t.dir.path().join("claude");
+    let said: String = (1..=200).map(|i| format!("output line {i}\n")).collect::<String>() + "\u{1b}[31mthe end\u{1b}[0m";
+    let line = serde_json::json!({"type": "assistant", "uuid": "u1", "cwd": cwd, "message": {"content": [{"type": "text", "text": said}]}});
+    std::fs::write(dir.join(format!("{sid}.jsonl")), format!("{line}\n")).unwrap();
+    press(&mut t.app, KeyCode::Char('m'));
+    assert!(matches!(&t.app.modal, Some(Modal::Message { output: Some(_), .. })), "{}", toast(&t.app));
+    for (w, h) in [(80u16, 24u16), (120, 40)] {
+        let s = screen(&mut t.app, w, h);
+        assert!(s.contains("the end") && !s.contains("[31m") && !s.contains("output line 1 "), "it opens at the end:\n{s}");
+        assert!(s.contains('\u{2588}') && s.contains("PgUp/PgDn"), "{s}");
+    }
+    // the scrollbar: the panel's last column inside its border
+    let ls = lines(&draw(&mut t.app, 80, 24));
+    let thumb = ls.iter().filter(|l| l.chars().nth(75) == Some('\u{2588}')).count();
+    assert!(thumb >= 1, "a scrollbar thumb:\n{}", ls.join("\n"));
+    press(&mut t.app, KeyCode::Home);
+    let top = screen(&mut t.app, 80, 24);
+    assert!(top.contains("output line 1 ") && !top.contains("the end"), "{top}");
+    press(&mut t.app, KeyCode::Up);
+    assert_eq!(screen(&mut t.app, 80, 24), top, "the top stops");
+    press(&mut t.app, KeyCode::Down);
+    assert!(!screen(&mut t.app, 80, 24).contains("output line 1 "), "a row down");
+    press(&mut t.app, KeyCode::End);
+    assert!(screen(&mut t.app, 80, 24).contains("the end"));
+    keys(&mut t.app, "go on");
+    assert!(matches!(&t.app.modal, Some(Modal::Message { text, .. }) if text == "go on"), "letters go to the box");
+    press(&mut t.app, KeyCode::Enter);
+    assert!(t.app.modal.is_none(), "sent");
 }

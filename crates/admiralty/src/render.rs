@@ -8,7 +8,7 @@ use nimitz_core::{Plan, Severity, Step};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -25,9 +25,8 @@ use crate::view::FleetState;
 /// but a margin, the list and (from 120 columns) the detail beside it, the
 /// same height. Returns the list, then the detail.
 pub fn finder_areas(area: Rect, body: Rect) -> (Rect, Option<Rect>) {
-    let w = body.width.saturating_sub(2 * FINDER_MARGIN.0);
-    let h = body.height.saturating_sub(2 * FINDER_MARGIN.1);
-    let group = Rect { x: area.x + (area.width.saturating_sub(w)) / 2, y: body.y + (body.height - h) / 2, width: w, height: h };
+    let group = finder_group(area, body);
+    let w = group.width;
     if body.width < 120 {
         return (group, None);
     }
@@ -35,6 +34,13 @@ pub fn finder_areas(area: Rect, body: Rect) -> (Rect, Option<Rect>) {
     let lw = (w * 58 / 100).max(72);
     let list = Rect { width: lw, ..group };
     (list, Some(Rect { x: list.x + lw, width: w - lw, ..group }))
+}
+
+/// A large panel in the middle of the view: all the room but a margin.
+fn finder_group(area: Rect, body: Rect) -> Rect {
+    let w = body.width.saturating_sub(2 * FINDER_MARGIN.0);
+    let h = body.height.saturating_sub(2 * FINDER_MARGIN.1);
+    Rect { x: area.x + (area.width.saturating_sub(w)) / 2, y: body.y + (body.height - h) / 2, width: w, height: h }
 }
 
 /// Columns and rows left free around the finder.
@@ -63,7 +69,7 @@ pub fn draw(app: &mut App, f: &mut Frame) {
             let (title, items, sel, detail) = (title.clone(), items.clone(), *sel, *detail);
             draw_menu(app, f, area, body, &title, &items, sel, detail)
         }
-        Some(Modal::Message { plan, text }) => draw_message(f, area, plan, text),
+        Some(Modal::Message { plan, text, output, back }) => draw_message(app, f, area, body, plan, text, output.as_deref(), *back),
         Some(Modal::FleetFilter { sel }) => draw_fleet_filter(f, area, &app.fleet_states, *sel),
         Some(Modal::Form(form)) => draw_form(f, area, form),
         Some(Modal::Finder(fd)) => draw_finder(app, f, area, body, fd),
@@ -878,21 +884,64 @@ fn toggle_keys(t: &crate::finder::Toggles, fleet_tab: bool) -> Line<'static> {
     Line::from(v)
 }
 
-fn draw_message(f: &mut Frame, area: Rect, plan: &MessagePlan, text: &str) {
+fn draw_message(app: &App, f: &mut Frame, area: Rect, body: Rect, plan: &MessagePlan, text: &str, output: Option<&str>, back: usize) {
     let how = format!("typed into its pane {}", plan.pane.pane_id);
-    let lines = vec![
-        Line::styled(format!("Message {}", plan.to), bold(mono::FG)),
-        Line::styled(how, st(mono::COMMENT)),
+    let head = vec![Line::styled(format!("Message {}", plan.to), bold(mono::FG)), Line::styled(how, st(mono::COMMENT))];
+    let mut keys = vec![("enter", "send"), ("esc", "cancel"), ("ctrl-u", "clear")];
+    if output.is_some() {
+        keys.insert(0, ("PgUp/PgDn \u{2191}\u{2193}", "scroll"));
+    }
+    let foot = vec![
         Line::raw(""),
         // what is typed is shown as it will be sent: no control characters
         Line::from(vec![Span::styled("> ", bold(mono::ACCENT)), Span::styled(nimitz_mux::strip_controls(text), st(mono::FG)), Span::styled("\u{2588}", st(mono::ACCENT))]),
         Line::raw(""),
         Line::from(vec![Span::styled("command  ", st(mono::COMMENT)), Span::styled(crate::actions::signal_command(plan, if text.is_empty() { "..." } else { text }), bold(mono::ACCENT))]),
-        keys_line(&[("enter", "send"), ("esc", "cancel"), ("ctrl-u", "clear")]),
+        keys_line(&keys),
     ];
-    let r = centered(area, 96, 10);
+    let Some(output) = output else {
+        let r = centered(area, 96, 10);
+        f.render_widget(Clear, r);
+        let lines = [head, foot].concat();
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(modal_block("message".into(), mono::ACCENT)), r);
+        return;
+    };
+    let r = finder_group(area, body);
+    let block = modal_block("message".into(), mono::ACCENT);
+    let inner = block.inner(r);
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(modal_block("message".into(), mono::ACCENT)), r);
+    f.render_widget(block, r);
+    let foot_h = (rows_of(&foot, inner.width) as u16).min(inner.height.saturating_sub(3));
+    let [top, mid, bottom] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1), Constraint::Length(foot_h)]).areas(inner);
+    f.render_widget(Paragraph::new(head), top);
+    f.render_widget(Paragraph::new(foot).wrap(Wrap { trim: false }), bottom);
+    let [text_r, bar] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(mid);
+    let rows = output_rows(output, text_r.width as usize);
+    let view = text_r.height as usize;
+    let max = rows.len().saturating_sub(view);
+    app.message_rows.set((max, view));
+    let top_row = max - back.min(max);
+    f.render_widget(Paragraph::new(rows[top_row..].iter().take(view).cloned().collect::<Vec<_>>()), text_r);
+    if max > 0 {
+        let mut state = ScrollbarState::new(max).viewport_content_length(view).position(top_row);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight).begin_symbol(None).end_symbol(None).thumb_style(st(mono::ACCENT)).track_style(st(mono::COMMENT));
+        f.render_stateful_widget(scrollbar, bar, &mut state);
+    }
+}
+
+/// A member's output as screen rows, `width` wide: no control characters.
+fn output_rows(output: &str, width: usize) -> Vec<Line<'static>> {
+    output
+        .lines()
+        .flat_map(|l| {
+            let clean = nimitz_mux::strip_controls(&l.replace('\t', "    "));
+            if clean.is_empty() {
+                vec![Line::raw("")]
+            } else {
+                crate::frames::wrap(vec![Span::styled(clean, st(mono::FG))], width.max(1), 0)
+            }
+        })
+        .collect()
 }
 
 fn draw_form(f: &mut Frame, area: Rect, form: &Form) {

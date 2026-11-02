@@ -70,7 +70,9 @@ pub enum Modal {
     /// `detail`: the row's detail panel sits below the list (`x`, not `c`)
     Menu { title: String, items: Vec<MenuItem>, sel: usize, detail: bool },
     Confirm(Pending),
-    Message { plan: MessagePlan, text: String },
+    /// `output`: the member's last output, shown above the box when it has
+    /// one; `back`: rows scrolled up from its end
+    Message { plan: MessagePlan, text: String, output: Option<String>, back: usize },
     Form(Box<Form>),
     /// `space`: find a member or stowaway in every fleet
     Finder(Box<crate::finder::Finder>),
@@ -235,6 +237,9 @@ pub struct App {
     /// lines the actions menu's detail panel is scrolled down (ctrl-e /
     /// ctrl-y, PgDn / PgUp); 0 on a new row and each time the menu opens
     pub detail_scroll: usize,
+    /// the message panel's output as last drawn: the most rows it scrolls
+    /// up, the rows it shows
+    pub message_rows: std::cell::Cell<(usize, usize)>,
     detail_for: Option<String>,
     pub page: usize,
     last_g: Option<Instant>,
@@ -277,7 +282,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("u", "up: start everything this fleet runs here, parked ships too (nimitz start F/... --parked; confirms)"),
     ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
     ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines; the row's detail below them (ctrl-e / ctrl-y or PgDn / PgUp scroll it)"),
-    ("m", "message: typed into its pane (nimitz signal <id> <text>)"),
+    ("m", "message: its last output, then a box typed into its pane (nimitz signal <id> <text>)"),
     ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
@@ -345,6 +350,7 @@ impl App {
             state_path,
             busy: None,
             detail_scroll: 0,
+            message_rows: Default::default(),
             detail_for: None,
             page: 20,
             last_g: None,
@@ -836,6 +842,13 @@ impl App {
         self.bundle.as_ref().and_then(|b| actions::find_member(&b.snap, id))
     }
 
+    /// What member `id` last wrote, from its session's transcript.
+    fn last_output(&self, id: &Id) -> Option<String> {
+        let s = self.member(id)?.session.as_ref()?;
+        let cwd = Some(s.cwd.as_str()).filter(|c| !c.is_empty());
+        nimitz_core::evidence::last_output(&nimitz_core::evidence::transcript(&self.ctx.env, &mut Default::default(), cwd, &s.session_id)?)
+    }
+
     /// Where `m` would go for the selected row.
     pub fn message_plan(&self) -> Result<MessagePlan, String> {
         let b = self.bundle.as_ref().ok_or("loading")?;
@@ -1012,7 +1025,10 @@ impl App {
             }
             MenuAction::Message => {
                 match self.message_plan() {
-                    Ok(plan) => self.modal = Some(Modal::Message { plan, text: String::new() }),
+                    Ok(plan) => {
+                        let output = self.last_output(&plan.id);
+                        self.modal = Some(Modal::Message { plan, text: String::new(), output, back: 0 })
+                    }
                     Err(why) => self.notify(format!("message: not available. {why}"), st(mono::WARN)),
                 }
                 None
@@ -1560,27 +1576,41 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Esc | KeyCode::Char('q') => {}
                 _ => self.modal = Some(Modal::Confirm(p)),
             },
-            Modal::Message { plan, mut text } => match k.code {
-                KeyCode::Esc => {}
-                KeyCode::Enter => {
-                    if nimitz_mux::strip_controls(&text).trim().is_empty() {
-                        self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::WARN));
-                        self.modal = Some(Modal::Message { plan, text });
-                    } else {
-                        self.send_message(&plan, &text);
+            Modal::Message { plan, mut text, output, back } => {
+                let (max, view) = self.message_rows.get();
+                let page = view.saturating_sub(1).max(1);
+                let up = |n: usize| (back + n).min(max);
+                let down = |n: usize| back.min(max).saturating_sub(n);
+                match k.code {
+                    KeyCode::Esc => {}
+                    KeyCode::Enter => {
+                        if nimitz_mux::strip_controls(&text).trim().is_empty() {
+                            self.notify("Nothing to send: the message is empty once control characters are removed.", st(mono::WARN));
+                            self.modal = Some(Modal::Message { plan, text, output, back });
+                        } else {
+                            self.send_message(&plan, &text);
+                        }
                     }
+                    KeyCode::Backspace => {
+                        text.pop();
+                        self.modal = Some(Modal::Message { plan, text, output, back });
+                    }
+                    KeyCode::PageUp => self.modal = Some(Modal::Message { plan, text, output, back: up(page) }),
+                    KeyCode::PageDown => self.modal = Some(Modal::Message { plan, text, output, back: down(page) }),
+                    KeyCode::Up => self.modal = Some(Modal::Message { plan, text, output, back: up(1) }),
+                    KeyCode::Down => self.modal = Some(Modal::Message { plan, text, output, back: down(1) }),
+                    KeyCode::Char('y') if ctrl => self.modal = Some(Modal::Message { plan, text, output, back: up(1) }),
+                    KeyCode::Char('e') if ctrl => self.modal = Some(Modal::Message { plan, text, output, back: down(1) }),
+                    KeyCode::Home => self.modal = Some(Modal::Message { plan, text, output, back: max }),
+                    KeyCode::End => self.modal = Some(Modal::Message { plan, text, output, back: 0 }),
+                    KeyCode::Char('u') if ctrl => self.modal = Some(Modal::Message { plan, text: String::new(), output, back }),
+                    KeyCode::Char(c) if !ctrl => {
+                        text.push(c);
+                        self.modal = Some(Modal::Message { plan, text, output, back });
+                    }
+                    _ => self.modal = Some(Modal::Message { plan, text, output, back }),
                 }
-                KeyCode::Backspace => {
-                    text.pop();
-                    self.modal = Some(Modal::Message { plan, text });
-                }
-                KeyCode::Char('u') if ctrl => self.modal = Some(Modal::Message { plan, text: String::new() }),
-                KeyCode::Char(c) if !ctrl => {
-                    text.push(c);
-                    self.modal = Some(Modal::Message { plan, text });
-                }
-                _ => self.modal = Some(Modal::Message { plan, text }),
-            },
+            }
             Modal::Form(mut form) => {
                 let r = form.on_key(k);
                 if let Some(b) = &self.bundle {
