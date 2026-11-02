@@ -182,6 +182,10 @@ fn main() -> ExitCode {
     let every = app.interval;
     let ran = run::run(app, make, every);
     if let Some(fill) = watch {
+        // a watch that quit on its own (q, a jump): one Herdr closed is gone
+        if ran.is_ok() {
+            herdr_plugin::settle_zoom(&vars, fill);
+        }
         herdr_plugin::rezoom_later(&vars, fill);
     }
     match ran {

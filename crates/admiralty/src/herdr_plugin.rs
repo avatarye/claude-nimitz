@@ -14,9 +14,13 @@
 //! the focus (half the tab when it is one of two, the whole tab when it was
 //! zoomed), and draws the box over the whole tab: the TUI took the pane's
 //! width or the tab's by chance. Zoom off and on again resizes it to the box.
-//! Closing the overlay also drops the zoom of the pane under it; the toggle
-//! notes that zoom (the `zoom` file) and it comes back once the overlay is
-//! gone (docs/design/herdr-overlay-size.md).
+//! The overlay leaves zoom as it found it. Herdr's zoom is one flag per tab,
+//! on the pane with the tab's focus. `plugin pane close` turns it off; the
+//! toggle notes it (the `zoom` file) and it comes back once the overlay is
+//! gone (`restore_zoom`). A jump within the overlay's tab hands the overlay's
+//! zoom to the target, and Herdr keeps it when the overlay exits; the watch
+//! turns it off as it quits (`settle_zoom`). See
+//! docs/design/herdr-overlay-size.md.
 //!
 //! The id of the overlay the toggle opened is kept in the plugin state dir. A
 //! stale id (the watch quit on its own) fails `pane get`; one that now names
@@ -83,7 +87,7 @@ fn note_zoom(state: &std::path::Path, tab: &str, pane: Option<&str>, herdr: &dyn
 
 /// Once the overlay of tab `tab` is gone, zoom the pane it covered back in,
 /// if it was zoomed and still has its tab's focus (a jump to another pane of
-/// the tab leaves the zoom off). The `zoom` file is used once.
+/// the tab leaves the zoom off: `settle_zoom`). The `zoom` file is used once.
 pub fn restore_zoom(state: &std::path::Path, tab: &str, herdr: &dyn Fn(&[&str]) -> Option<String>) -> bool {
     let file = zoom_file(state, tab);
     let Some(pane) = std::fs::read_to_string(&file).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else { return false };
@@ -251,6 +255,33 @@ pub fn rezoom_later(vars: &HashMap<String, String>, fill: Fill) {
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["herdr", "rezoom", me, tab]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     let _ = nimitz_core::os::spawn_detached(&mut cmd);
+}
+
+/// `admiralty herdr watch` in our overlay (`fill`), as it quits on its own
+/// (`q`, or a jump), the overlay still up: Herdr's zoom is one flag per tab
+/// and follows the tab's focus, so a jump to another pane of the overlay's
+/// tab hands the overlay's zoom to that pane, and Herdr 0.9.3 leaves it on
+/// when an overlay without the focus exits. Turn it off there, unless that
+/// pane is the one the overlay found zoomed (`zoom_file`). A jump to another
+/// tab leaves the focus of this one on the overlay: nothing to do, and the
+/// other tab's zoom is never touched. True when it turned a zoom off.
+pub fn settle_zoom_with(vars: &HashMap<String, String>, fill: Fill, herdr: &dyn Fn(&[&str]) -> Option<String>) -> bool {
+    let get = |k: &str| vars.get(k).filter(|v| !v.is_empty());
+    let (Some(me), Some(tab)) = (get("HERDR_PANE_ID"), get("HERDR_TAB_ID")) else { return false };
+    if fill == Fill::NotOverlay {
+        return false;
+    }
+    let Some(layout) = herdr(&["pane", "layout", "--pane", me]) else { return false };
+    let Some(focused) = field("focused_pane_id", &layout).filter(|f| f != me) else { return false };
+    if flag("zoomed", &layout) != Some(true) {
+        return false;
+    }
+    let noted = std::fs::read_to_string(zoom_file(&state_path(vars), tab)).ok().map(|s| s.trim().to_string());
+    noted.as_deref() != Some(focused.as_str()) && herdr(&["pane", "zoom", &focused, "--off"]).is_some()
+}
+
+pub fn settle_zoom(vars: &HashMap<String, String>, fill: Fill) -> bool {
+    settle_zoom_with(vars, fill, &herdr_cli(vars))
 }
 
 /// `admiralty herdr rezoom <overlay> <tab>`: wait (up to 5 s) for the
@@ -431,6 +462,63 @@ mod tests {
         assert_eq!(fill_overlay_with(&plugin, &|a| if a[1] == "zoom" { None } else { f.run(a) }), Fill::Failed);
         assert_eq!(watch_setup(&HashMap::new(), Fill::Failed).0[1].1, "2,2", "a failed fill keeps the border's rows clear");
         assert_eq!(watch_setup(&HashMap::new(), Fill::NotOverlay).0[1].1, "0,0");
+    }
+
+    /// The watch quits after a jump, its overlay still up (Herdr 0.9.3: one
+    /// zoom flag per tab that follows the tab's focus; an overlay without the
+    /// focus exits and leaves that flag as it is). The overlay leaves zoom as
+    /// it found it: a jump within its tab leaves the target unzoomed unless
+    /// it was the zoomed pane; a jump to another tab touches nothing.
+    #[test]
+    fn a_jump_leaves_zoom_as_the_overlay_found_it() {
+        // (zoomed before the overlay, the jump's target in the overlay's tab
+        // or None for another tab) -> the zoomed pane once the overlay is gone
+        for (before, target, after) in [
+            (None, Some("w1:p3"), None),
+            (Some("w1:p1"), Some("w1:p3"), None),
+            (Some("w1:p1"), Some("w1:p1"), Some("w1:p1")),
+            (None, None, None),
+            (Some("w1:p1"), None, Some("w1:p1")),
+        ] {
+            let td = tempfile::tempdir().unwrap();
+            let dir = td.path().join("state");
+            let state = dir.join("pane_id");
+            let mut f = Fake::new();
+            *f.zoomed.borrow_mut() = before.map(String::from);
+            let Toggled::Opened(ov) = press(&mut f, &state, "w1:t1") else { panic!("not opened") };
+            *f.focused.borrow_mut() = ov.clone();
+            let vars: HashMap<String, String> = [("HERDR_PANE_ID", ov.as_str()), ("HERDR_TAB_ID", "w1:t1"), ("HERDR_PLUGIN_STATE_DIR", dir.to_str().unwrap())].map(|(k, v)| (k.to_string(), v.to_string())).into();
+            assert_eq!(fill_overlay_with(&vars, &|a| f.run(a)), Fill::Filled);
+            f.zooms.borrow_mut().clear();
+            if let Some(t) = target {
+                // the jump: the tab's focus, and its zoom with it
+                *f.focused.borrow_mut() = t.into();
+                *f.zoomed.borrow_mut() = Some(t.into());
+            }
+            let off = settle_zoom_with(&vars, Fill::Filled, &|a| f.run(a));
+            assert_eq!(off, target.is_some() && target != before, "{before:?} {target:?}");
+            match target {
+                // an overlay without the focus exits: Herdr leaves the zoom
+                Some(_) => f.panes.borrow_mut().retain(|p| p.0 != ov),
+                // with the focus (no jump in this tab): Herdr gives it back
+                None => {
+                    f.panes.borrow_mut().retain(|p| p.0 != ov);
+                    *f.focused.borrow_mut() = "w1:p1".into();
+                    *f.zoomed.borrow_mut() = before.map(String::from);
+                }
+            }
+            restore_zoom(&state, "w1:t1", &|a| f.run(a));
+            assert_eq!(f.zoomed.borrow().as_deref(), after, "{before:?} {target:?}");
+        }
+        // outside our overlay, or with the focus still on the overlay: no call
+        let f = Fake::new();
+        let vars: HashMap<String, String> = [("HERDR_PANE_ID", "w1:p1"), ("HERDR_TAB_ID", "w1:t1")].map(|(k, v)| (k.to_string(), v.to_string())).into();
+        *f.zoomed.borrow_mut() = Some("w1:p3".into());
+        *f.focused.borrow_mut() = "w1:p3".into();
+        assert!(!settle_zoom_with(&vars, Fill::NotOverlay, &|a| f.run(a)));
+        *f.focused.borrow_mut() = "w1:p1".into();
+        assert!(!settle_zoom_with(&vars, Fill::Filled, &|a| f.run(a)));
+        assert!(f.zooms.borrow().is_empty());
     }
 
     /// Herdr may close a pane after `close` returns: the zoom comes back only
