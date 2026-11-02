@@ -9,7 +9,7 @@
   scrolls, and a click on a fleet tab shows it. In popups the wheel scrolls and
   a click picks an entry (a double click opens it). A click outside a popup
   closes it only when nothing would be lost, and nothing on the confirm panel
-  reacts to the mouse: only `y` runs a plan. `M` turns the mouse off and on
+  reacts to the mouse: only `y` or enter runs a plan. `M` turns the mouse off and on
   while Admiralty runs, so the terminal can select text again (most terminals
   also select with shift-drag); `ADMIRALTY_MOUSE=0` starts with it off.
 

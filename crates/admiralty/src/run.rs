@@ -6,7 +6,7 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode, KeyModifiers};
+use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyModifiers};
 use ratatui::crossterm::execute;
 
 use crate::actions::Pending;
@@ -19,8 +19,9 @@ type Term = ratatui::Terminal<crate::backend::GlyphSafe<ratatui::backend::Crosst
 
 /// Raw mode, the alternate screen and the panic hook from `ratatui::init`, on
 /// a backend that keeps positions right whatever the terminal's glyph widths.
-/// `mouse`: capture the mouse too.
-fn init_terminal(mouse: bool) -> std::io::Result<Term> {
+/// `mouse`: capture the mouse too; a terminal that refuses it leaves `mouse`
+/// false and Admiralty runs on the keyboard.
+fn init_terminal(mouse: &mut bool) -> std::io::Result<Term> {
     drop(ratatui::init());
     // a panic restores the terminal through ratatui's hook; this one turns
     // mouse capture and bracketed paste off first (installed once: init runs
@@ -36,17 +37,34 @@ fn init_terminal(mouse: bool) -> std::io::Result<Term> {
     // a paste arrives whole (Event::Paste), never as keystrokes
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let term = ratatui::Terminal::new(crate::backend::GlyphSafe(ratatui::backend::CrosstermBackend::new(std::io::stdout())))?;
-    if mouse {
-        set_mouse(true)?;
+    if *mouse && set_mouse(true).is_err() {
+        let _ = set_mouse(false);
+        *mouse = false;
     }
     Ok(term)
 }
 
+/// Mouse reports on or off. On Unix: clicks, the wheel and drags with a
+/// button held (1000, 1002, SGR 1006), never bare pointer moves (crossterm's
+/// capture adds 1003, which reports every move); Windows: crossterm's console
+/// mode.
 fn set_mouse(on: bool) -> std::io::Result<()> {
-    if on {
-        execute!(std::io::stdout(), EnableMouseCapture)
-    } else {
-        execute!(std::io::stdout(), DisableMouseCapture)
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        let seq = if on { "\x1b[?1000h\x1b[?1002h\x1b[?1006h" } else { "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1003l\x1b[?1015l" };
+        let mut out = std::io::stdout();
+        out.write_all(seq.as_bytes())?;
+        out.flush()
+    }
+    #[cfg(not(unix))]
+    {
+        use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+        if on {
+            execute!(std::io::stdout(), EnableMouseCapture)
+        } else {
+            execute!(std::io::stdout(), DisableMouseCapture)
+        }
     }
 }
 
@@ -174,8 +192,14 @@ fn effect(app: &mut App, e: Effect, terminal: &mut Term, cmd_tx: &mpsc::Sender<C
             if let Some(text) = app.editor_text() {
                 leave_terminal();
                 let edited = with_inset_size(app.inset, || edit_in_editor(&text));
-                match init_terminal(app.mouse) {
-                    Ok(t) => *terminal = t,
+                let had = app.mouse;
+                match init_terminal(&mut app.mouse) {
+                    Ok(t) => {
+                        *terminal = t;
+                        if had && !app.mouse {
+                            app.notify("mouse: the terminal refused it; keys only", crate::theme::st(crate::theme::mono::WARN));
+                        }
+                    }
                     Err(e) => app.notify(format!("terminal: {e}"), crate::theme::st(crate::theme::mono::ERROR)),
                 }
                 let _ = terminal.clear();
@@ -192,7 +216,11 @@ fn effect(app: &mut App, e: Effect, terminal: &mut Term, cmd_tx: &mpsc::Sender<C
 pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Result<()> {
     let (cmd_tx, data_rx) = spawn_loader(make, interval);
     let (done_tx, done_rx) = mpsc::channel::<(Pending, nimitz_core::Outcome)>();
-    let mut terminal = init_terminal(app.mouse)?;
+    let had = app.mouse;
+    let mut terminal = init_terminal(&mut app.mouse)?;
+    if had && !app.mouse {
+        app.notify("mouse: the terminal refused it; keys only", crate::theme::st(crate::theme::mono::WARN));
+    }
     let mut dirty = true;
     let mut last_draw = Instant::now();
     // status motion: its own tick, never a refresh or a nimitz call; only the
@@ -272,6 +300,9 @@ pub fn run(mut app: App, make: SourceMaker, interval: Duration) -> std::io::Resu
         if let Event::Mouse(m) = ev {
             // (no list yet: nothing to click, and a click is not kept for later)
             if app.bundle.is_some() {
+                // more input already waiting: clicks queued while main was
+                // busy, never the user's double click
+                app.mouse_burst = event::poll(Duration::ZERO).unwrap_or(false);
                 if let Some(e) = app.on_mouse(m) {
                     if effect(&mut app, e, &mut terminal, &cmd_tx, &done_tx) {
                         break Ok(());

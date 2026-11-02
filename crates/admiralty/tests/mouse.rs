@@ -392,3 +392,25 @@ fn m_turns_the_mouse_off_and_on() {
     assert_eq!(id(&t.app), "M:MAIN/ARGOS/BOOM");
     assert!(admiralty::app::HELP.iter().any(|(k, d)| *k == "M" && d.contains("ADMIRALTY_MOUSE")));
 }
+
+/// Review of 0.7.20: clicks queued behind other input (main was busy) never
+/// make a double click.
+#[test]
+fn queued_clicks_make_no_double_click() {
+    let mut t = demo();
+    draw(&mut t.app, 120, 40);
+    let rows = lines(&draw(&mut t.app, 120, 40));
+    let y = rows.iter().position(|l| l.contains("COMMODORE")).unwrap() as u16;
+    let down = ratatui::crossterm::event::MouseEvent {
+        kind: ratatui::crossterm::event::MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left),
+        column: 12,
+        row: y,
+        modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+    };
+    t.app.mouse_burst = true;
+    assert!(t.app.on_mouse(down).is_none());
+    draw(&mut t.app, 120, 40);
+    t.app.mouse_burst = false;
+    assert!(t.app.on_mouse(down).is_none(), "the second of two queued clicks is a single click");
+    assert!(t.app.modal.is_none(), "{:?}", t.app.modal.is_some());
+}

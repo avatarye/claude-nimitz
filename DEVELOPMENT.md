@@ -1002,7 +1002,10 @@ the cursor kept on a row in view (`scroll_list`); a form's wheel is
 `frames::fold_x`, next to the code that draws it; a test checks the glyph is
 there at every width. Nothing on the confirm panel is hit-testable. The loop
 drops pointer moves, releases and drags before they wake a draw, and every
-other event is followed by a draw, so a click always meets the frame on screen.
+other event is followed by a draw, so a click always meets the frame on screen. On Unix `run::set_mouse` asks for clicks, drags and the wheel only (1000, 1002,
+SGR 1006), never bare pointer moves, and a terminal that refuses capture leaves
+Admiralty on the keyboard. A click with more input already waiting
+(`App.mouse_burst`) makes no double click: it was queued while main was busy.
 
 Capture: `init_terminal(app.mouse)` turns it on after the terminal is set up;
 `release_input` turns it and bracketed paste off in `leave_terminal` (quit,

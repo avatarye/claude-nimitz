@@ -252,6 +252,9 @@ pub struct App {
     pub mouse: bool,
     /// the last click, for a double click
     pub(crate) last_click: Option<(crate::mouse::Spot, Instant)>,
+    /// the click being handled was queued behind other input: it makes no
+    /// double click
+    pub mouse_burst: bool,
     /// the message panel's output as rows, kept for its (text, width): wrapped
     /// once, not on every draw
     output_cache: std::cell::RefCell<Option<((u64, usize), OutputRows)>>,
@@ -371,6 +374,7 @@ impl App {
             hits: Default::default(),
             mouse: true,
             last_click: None,
+            mouse_burst: false,
             output_cache: Default::default(),
             detail_for: None,
             page: 20,

@@ -286,6 +286,10 @@ impl App {
 
     /// Note a click on `spot`: is it the second of a double click?
     fn double(&mut self, spot: Spot, now: Instant) -> bool {
+        if self.mouse_burst {
+            self.last_click = None;
+            return false;
+        }
         let again = self.last_click.take().is_some_and(|(last, t)| last == spot && now.saturating_duration_since(t) < DOUBLE_CLICK);
         if !again {
             self.last_click = Some((spot, now));

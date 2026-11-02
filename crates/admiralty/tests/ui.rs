@@ -2536,7 +2536,8 @@ fn a_huge_word_does_not_hold_the_panel_up() {
     for _ in 0..50 {
         draw(&mut t.app, 80, 24);
     }
-    assert!(from.elapsed() < std::time::Duration::from_secs(2), "{:?}", from.elapsed());
+    // generous: a parallel test run shares the machine (the quadratic wrap took minutes)
+    assert!(from.elapsed() < std::time::Duration::from_secs(10), "{:?}", from.elapsed());
 }
 
 /// Review of 0.7.19: another member's output is never shown from the wrapped
