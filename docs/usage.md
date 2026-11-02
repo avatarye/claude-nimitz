@@ -201,6 +201,12 @@ message, `!` what waits on you, `i` every issue with its fix, `c`/`e`/`D`
 create, edit, remove, `?` all keys (`?` again closes them), `q` quit (in the
 `?` panel).
 
+The mouse works too: click a row or a fleet tab, click a fold marker, double
+click for `enter`, the wheel to scroll; in popups click and double click an
+entry. Nothing runs from a click: a confirm waits for `y`. Mouse capture takes
+the terminal's drag-to-select; shift-drag still selects in most terminals, `M`
+turns capture off and on, and `ADMIRALTY_MOUSE=0` starts without it.
+
 The two status rows at the bottom show the fleets' counts and `? keys`, then
 `Nimitz: v0.7.15  Claude Code: v2.1.312 (supported)  Machine: laptop` (a
 mismatch or an out-of-range Claude Code as a warning) and the local date and
