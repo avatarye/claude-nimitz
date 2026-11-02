@@ -2396,3 +2396,45 @@ fn the_message_panel_shows_the_last_output_and_scrolls() {
     press(&mut t.app, KeyCode::Enter);
     assert!(t.app.modal.is_none(), "sent");
 }
+
+/// The `m` and `x` panels are as tall as what they show, in the middle of the
+/// view; only when that does not fit do they stop at the margin and scroll.
+#[test]
+fn the_panels_fit_their_content_and_grow_from_the_middle() {
+    // a panel's rows: from its title to the first bottom corner in that column
+    let box_rows = |ls: &[String], title: &str| {
+        let top = ls.iter().position(|l| l.contains(title)).unwrap_or_else(|| panic!("{title}:\n{}", ls.join("\n")));
+        let x = ls[top][..ls[top].find(title).unwrap()].chars().count();
+        (top, (top..ls.len()).find(|y| ls[*y].chars().nth(x) == Some('\u{2517}')).unwrap())
+    };
+    let open = |output: String| {
+        let mut t = fixture_app(fixtures::demo(), true);
+        goto(&mut t.app, "M:MAIN/ARGOS");
+        press(&mut t.app, KeyCode::Char('m'));
+        if let Some(Modal::Message { output: o, .. }) = &mut t.app.modal {
+            *o = Some(output);
+        }
+        t
+    };
+    let (tall, cols) = (40usize, 120u16);
+    let long: String = (1..=300).map(|i| format!("row {i}\n")).collect();
+    let (short_top, short_end) = box_rows(&lines(&draw(&mut open("one line".into()).app, cols, tall as u16)), "\u{250f} message ");
+    let (mid_top, mid_end) = box_rows(&lines(&draw(&mut open("a\nb\nc\nd\ne\nf".into()).app, cols, tall as u16)), "\u{250f} message ");
+    let mut t = open(long);
+    let ls = lines(&draw(&mut t.app, cols, tall as u16));
+    assert!(short_end - short_top < 12, "as tall as its content: {short_top}..{short_end}");
+    assert_eq!(mid_end - mid_top, short_end - short_top + 5, "five more rows");
+    assert!(mid_top < short_top && mid_end > short_end, "it grows both ways");
+    // the middle of the body: the tabs above it, two status rows under it
+    assert!((short_top + short_end).abs_diff(tall - 2) <= 2, "in the middle: {short_top}..{short_end}");
+    let inside: Vec<&String> = ls.iter().filter(|l| l.contains("row ")).collect();
+    assert!(inside.len() > 20 && ls.iter().any(|l| l.chars().nth(115) == Some('\u{2588}')), "long, it stops at the margin and scrolls:\n{}", ls.join("\n"));
+    // `x`: the menu and the detail together, in the middle, in the view
+    let mut t = demo();
+    goto(&mut t.app, "M:MAIN/ARGOS");
+    press(&mut t.app, KeyCode::Char('x'));
+    let ls = lines(&draw(&mut t.app, 120, 60));
+    let (top, _) = box_rows(&ls, "\u{250f} actions: ");
+    let (_, end) = box_rows(&ls, "\u{250f} detail ");
+    assert!(end - top < 45 && (top + end).abs_diff(60) <= 4, "as tall as its content, in the middle: {top}..{end}\n{}", ls.join("\n"));
+}

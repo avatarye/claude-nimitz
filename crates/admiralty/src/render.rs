@@ -703,7 +703,7 @@ fn draw_menu(app: &mut App, f: &mut Frame, area: Rect, body: Rect, title: &str, 
     if let Some(hint) = crate::detail::jump_hint(app) {
         text.extend([Line::raw(""), hint]);
     }
-    let det_h = left.min(text.len() as u16 + 2);
+    let det_h = left.min(rows_of(&text, w.saturating_sub(2)) as u16 + 2);
     let x = area.x + (area.width - w) / 2;
     let y = body.y + (body.height - menu_h - det_h) / 2;
     let r = Rect { x, y, width: w, height: menu_h };
@@ -727,6 +727,8 @@ fn detail_box(f: &mut Frame, r: Rect, text: Vec<Line<'static>>, scroll: Option<u
     let room = r.height.saturating_sub(2) as usize;
     let more = scroll.is_some_and(|s| rows_of(&text, r.width.saturating_sub(2)) > room + s || s > 0);
     let title = if more { " detail  ctrl-e/ctrl-y PgDn/PgUp scroll " } else { " detail " };
+    let total = rows_of(&text, r.width.saturating_sub(2));
+    let bar = scroll.filter(|_| total > room);
     let scroll = scroll.unwrap_or(0);
     f.render_widget(Clear, r);
     f.render_widget(
@@ -735,6 +737,19 @@ fn detail_box(f: &mut Frame, r: Rect, text: Vec<Line<'static>>, scroll: Option<u
         ),
         r,
     );
+    if let Some(at) = bar {
+        // on the right border, between the corners
+        let rail = Rect { y: r.y + 1, height: r.height.saturating_sub(2), ..r };
+        scrollbar(f, rail, total - room, room, at);
+    }
+}
+
+/// A vertical scrollbar in the last column of `r`: `max` rows to scroll, `view`
+/// rows shown, at row `at`.
+fn scrollbar(f: &mut Frame, r: Rect, max: usize, view: usize, at: usize) {
+    let mut state = ScrollbarState::new(max).viewport_content_length(view).position(at);
+    let bar = Scrollbar::new(ScrollbarOrientation::VerticalRight).begin_symbol(None).end_symbol(None).thumb_style(st(mono::ACCENT)).track_style(st(mono::COMMENT));
+    f.render_stateful_widget(bar, r, &mut state);
 }
 
 /// The finder: the query, the ranked list in columns with the matched letters
@@ -900,32 +915,35 @@ fn draw_message(app: &App, f: &mut Frame, area: Rect, body: Rect, plan: &Message
         keys_line(&keys),
     ];
     let Some(output) = output else {
-        let r = centered(area, 96, 10);
-        f.render_widget(Clear, r);
         let lines = [head, foot].concat();
+        let r = centered(area, 96, rows_of(&lines, 94) as u16 + 2);
+        f.render_widget(Clear, r);
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(modal_block("message".into(), mono::ACCENT)), r);
         return;
     };
-    let r = finder_group(area, body);
+    // as tall as it needs, in the middle: long, it stops at the margin and scrolls
+    let most = finder_group(area, body);
+    let inner_w = most.width.saturating_sub(2);
+    let rows = output_rows(output, inner_w.saturating_sub(1) as usize);
+    let foot_h = rows_of(&foot, inner_w) as u16;
+    let h = (rows.len() as u16).saturating_add(foot_h + 4).min(most.height);
+    let r = Rect { y: body.y + (body.height - h) / 2, height: h, ..most };
     let block = modal_block("message".into(), mono::ACCENT);
     let inner = block.inner(r);
     f.render_widget(Clear, r);
     f.render_widget(block, r);
-    let foot_h = (rows_of(&foot, inner.width) as u16).min(inner.height.saturating_sub(3));
+    let foot_h = foot_h.min(inner.height.saturating_sub(3));
     let [top, mid, bottom] = Layout::vertical([Constraint::Length(2), Constraint::Fill(1), Constraint::Length(foot_h)]).areas(inner);
     f.render_widget(Paragraph::new(head), top);
     f.render_widget(Paragraph::new(foot).wrap(Wrap { trim: false }), bottom);
     let [text_r, bar] = Layout::horizontal([Constraint::Fill(1), Constraint::Length(1)]).areas(mid);
-    let rows = output_rows(output, text_r.width as usize);
     let view = text_r.height as usize;
     let max = rows.len().saturating_sub(view);
     app.message_rows.set((max, view));
     let top_row = max - back.min(max);
     f.render_widget(Paragraph::new(rows[top_row..].iter().take(view).cloned().collect::<Vec<_>>()), text_r);
     if max > 0 {
-        let mut state = ScrollbarState::new(max).viewport_content_length(view).position(top_row);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight).begin_symbol(None).end_symbol(None).thumb_style(st(mono::ACCENT)).track_style(st(mono::COMMENT));
-        f.render_stateful_widget(scrollbar, bar, &mut state);
+        scrollbar(f, bar, max, view, top_row);
     }
 }
 
