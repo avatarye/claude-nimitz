@@ -7,7 +7,7 @@
 Run a whole team of Claude Code sessions the way a navy runs its ships: with
 names, a chain of command, and one screen that shows you everything.
 
-Version 0.7.18 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.316).
+Version 0.7.19 ([CHANGELOG](CHANGELOG.md): read "Upgrading" first). Status: in testing (Claude Code 2.1.288 - 2.1.316).
 
 Claude Code can leave work running in the background. One or two sessions are
 easy to follow. A dozen are not: which one is stuck on a question, which one

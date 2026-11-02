@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.19 (unreleased)
+
+### Added
+
+- **Admiralty's message panel (`m`) shows the member's last output**, read from
+  its transcript when the panel opens, above the box. It opens at the end, with
+  a scrollbar when long (`PgUp`/`PgDn`, arrows, `Home`/`End`, `ctrl-e`/`ctrl-y`);
+  letters still go to the box.
+
+### Changed
+
+- **One design for Admiralty's popups.** Three widths (50, 100, 160), the height
+  of what they show, in the middle of the view, a scrollbar when long, one frame,
+  and the keys on the last line, in the finder, `m`, `x`, `?`, confirm, forms,
+  needs-you, issues and the fleet filter.
+- **`x` has the detail beside the actions** (below them under 120 columns), and
+  a closed action's reason right after its label.
+- **A long plan scrolls** in the confirm panel (`j`/`k`, `PgUp`/`PgDn`) instead
+  of being cut.
+
+### Upgrading
+
+- Install both crates and update the plugin as usual.
+
 ## 0.7.18 (2026-11-01)
 
 ### Changed
