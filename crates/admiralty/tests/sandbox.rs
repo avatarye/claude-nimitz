@@ -588,8 +588,9 @@ fn a_broken_fleet_toml_is_a_red_band_with_the_error_in_full_and_the_other_fleets
     let buf = draw(&mut app, 200, 60);
     let ls = lines(&buf);
     assert!(ls[0].contains("BAD") && ls[0].contains("config does not load"), "the broken fleet's tab says so: {}", ls[0]);
-    let y = ls.iter().position(|l| l.starts_with('\u{250f}')).expect("its box is on screen");
-    assert_eq!(buf[(0, y as u16)].fg, admiralty::theme::mono::ERROR, "its box takes the error hue");
+    let y = ls.iter().position(|l| is_bar(l) && l.contains(" BAD ")).expect("its bar is on screen");
+    assert_eq!(buf[(2, y as u16)].bg, admiralty::theme::mono::ERROR, "its bar takes the error hue");
+    assert!(ls[y].contains("config does not load"), "{}", ls[y]);
     let all = ls.join("\n");
     assert!(all.contains("fleet.toml") && all.contains(":3:3") && all.contains("unclosed table"), "the file, line and the parse error's own words:\n{all}");
     assert!(all.contains("fix: fix") && all.contains("line 3"), "{all}");

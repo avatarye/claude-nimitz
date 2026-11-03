@@ -427,6 +427,41 @@ pub fn demo_snapshot() -> Snapshot {
     }
 }
 
+/// The demo fleets' knowledge bases: MAIN's in step, FORGE's with edits not
+/// committed, LAB's none here (not on this machine).
+pub fn demo_kb() -> BTreeMap<String, crate::data::KbLook> {
+    use nimitz_core::kb::Facts;
+    let main = Facts {
+        dir: "/home/u/kb/main-wiki".into(),
+        remote: Some("git@git.example.com:u/main-wiki.git".into()),
+        branch: Some("main".into()),
+        upstream: Some("origin/main".into()),
+        head: Some("4be1c0d".into()),
+        title: Some("ingest(auto): probe logs rotate daily".into()),
+        committed_at: Some(NOW - 180.0),
+        pages: 142,
+        ..Facts::default()
+    };
+    let forge = Facts {
+        dir: "/home/u/kb/forge-wiki".into(),
+        remote: Some("git@git.example.com:u/forge-wiki.git".into()),
+        branch: Some("main".into()),
+        upstream: Some("origin/main".into()),
+        head: Some("9d02e7a".into()),
+        title: Some("ingest(auto): release checklist".into()),
+        committed_at: Some(NOW - 7200.0),
+        pages: 57,
+        edits: 3,
+        behind: 1,
+        ..Facts::default()
+    };
+    BTreeMap::from([
+        ("MAIN".to_string(), Ok(main)),
+        ("FORGE".to_string(), Ok(forge)),
+        ("LAB".to_string(), Err("the fleet does not run on this machine".to_string())),
+    ])
+}
+
 /// Demo world inside a full multiplexer (every pane state appears once).
 pub fn demo() -> Bundle {
     Bundle {
@@ -441,12 +476,13 @@ pub fn demo() -> Bundle {
         mux_name: "herdr".into(),
         mux_caps: Caps { open: true, focus: true, type_text: true, layout: true },
         partial: false,
+        kb: demo_kb(),
     }
 }
 
 /// The same world with no multiplexer: Admiralty must go monitor-only.
 pub fn demo_monitor_only() -> Bundle {
-    Bundle { snap: demo_snapshot(), panes: vec![], mux_name: "none".into(), mux_caps: Caps::default(), partial: false }
+    Bundle { snap: demo_snapshot(), panes: vec![], mux_name: "none".into(), mux_caps: Caps::default(), partial: false, kb: demo_kb() }
 }
 
 /// An Env for demo data that points nowhere real: plans read empty folders,

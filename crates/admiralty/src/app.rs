@@ -550,6 +550,7 @@ impl App {
             icons: self.icons,
             now,
             tab: self.tab.as_deref(),
+            kb: &b.kb,
         };
         let nodes = build_nodes(&b.snap, &view);
         self.rows = flatten(&nodes, &self.expanded);

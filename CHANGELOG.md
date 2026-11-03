@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **One bar for every section in Admiralty.** The fleet's admiral, each
+  squadron and the stowaways now share one bar: fold marker, glyph, name,
+  role, state and size, each part in the same column on every bar, with the
+  tallies on the right. The admiral's framed box is gone: the fleet's bar
+  (`MAIN  fleet · admiral  ☾ idle  1 crew`) sits over a box like a
+  squadron's. Each bar takes the colour of the worst state in its section.
+  On a narrow terminal a bar drops parts from the right instead of wrapping.
+
+### Added
+
+- **The fleet's knowledge base on its bar.** `KB ✓ 3m · 142 pages` when the
+  clone is in step (age of the last commit, wiki pages), `KB ⚠ 3 edits` for
+  edits not committed, `KB ✗ conflict` while a rebase or merge is under way,
+  `KB ↑2` for commits not pushed (compared with the last fetch: Admiralty
+  never fetches), `KB –` when the fleet has no KB here. The fleet's actions
+  menu (`x` on its bar) shows the full picture: path, remote, last commit,
+  pages, edits, ahead and behind. Admiralty reads only the local clone,
+  checks it at most every 30 seconds, and never on the drawing thread.
+
 ## 0.7.20 (2026-11-02)
 
 ### Added

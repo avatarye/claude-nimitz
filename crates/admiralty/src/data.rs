@@ -2,8 +2,9 @@
 //! and previews inject fixtures, and the real binary reads nimitz-core and
 //! nimitz-mux. The TUI itself never parses Claude Code files.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use nimitz_core::Snapshot;
 use nimitz_mux::{Caps, Mux, Pane};
@@ -19,7 +20,18 @@ pub struct Bundle {
     /// a quick first look (session files only, no `claude agents`); the full
     /// snapshot follows at once
     pub partial: bool,
+    /// each fleet's knowledge base on this machine, by fleet id (a fleet not
+    /// looked at yet has none: its bar shows no KB until it is)
+    pub kb: BTreeMap<String, KbLook>,
 }
+
+/// A fleet's KB as the loader last looked at it: its clone's facts, or why
+/// there is none (no `kb` in its settings, no clone here, another repo).
+pub type KbLook = Result<nimitz_core::kb::Facts, String>;
+
+/// How often the loader looks at a fleet's KB clone again (it runs git
+/// there: never more often than this, and never on the draw path).
+pub const KB_EVERY: Duration = Duration::from_secs(30);
 
 /// One refresh at a time; the loader thread owns the source (it is built there,
 /// so a multiplexer adapter never crosses threads).
@@ -56,6 +68,9 @@ pub struct FixtureFile {
     pub mux_type_text: bool,
     #[serde(default)]
     pub mux_layout: bool,
+    /// each fleet's KB, by fleet id: `{"Ok": {facts}}` or `{"Err": "why"}`
+    #[serde(default)]
+    pub kb: BTreeMap<String, KbLook>,
 }
 
 /// serde mirror of `nimitz_mux::Pane` (which has no serde derives).
@@ -98,6 +113,7 @@ pub fn load_fixture_file(path: &PathBuf) -> Result<Bundle, String> {
         mux_name: f.mux_name.unwrap_or_else(|| "fixture".into()),
         mux_caps: Caps { open: f.mux_open, focus: f.mux_focus, type_text: f.mux_type_text, layout: f.mux_layout },
         partial: false,
+        kb: f.kb,
     })
 }
 
@@ -110,6 +126,8 @@ pub struct CoreSource {
     pub mux: Box<dyn Mux>,
     /// the next load is the first: make it quick
     pub first: bool,
+    /// each fleet's KB and when it was looked at (`KB_EVERY`)
+    pub kb: HashMap<String, (Instant, KbLook)>,
 }
 
 impl CoreSource {
@@ -118,7 +136,7 @@ impl CoreSource {
         // outside a Herdr pane, the Herdr server the user's commands recorded
         // (`active::user_mux_vars`): Admiralty sees the leads' panes wherever it runs
         let mux = nimitz_mux::detect(&nimitz_core::active::user_mux_vars(&env, vars));
-        CoreSource { env, cache: nimitz_core::snapshot::Cache::default(), mux, first: false }
+        CoreSource { env, cache: nimitz_core::snapshot::Cache::default(), mux, first: false, kb: HashMap::new() }
     }
 }
 
@@ -161,7 +179,7 @@ impl DataSource for CoreSource {
             quick.claude_bin = "/nonexistent/claude".into();
             let mut snap = nimitz_core::snapshot::snapshot(&quick, &mut nimitz_core::snapshot::Cache::default());
             snap.compat_ok = true; // not known yet: no warning until it is
-            return Bundle { snap, panes: self.mux.panes(), mux_name: self.mux.name().to_string(), mux_caps: self.mux.caps(), partial: true };
+            return Bundle { snap, panes: self.mux.panes(), mux_name: self.mux.name().to_string(), mux_caps: self.mux.caps(), partial: true, kb: BTreeMap::new() };
         }
         let mut snap = nimitz_core::snapshot::snapshot(&self.env, &mut self.cache);
         let mut found = nimitz_core::check::check(&self.env, &snap, None);
@@ -171,13 +189,37 @@ impl DataSource for CoreSource {
             }
         }
         merge_check(&mut snap, found);
+        let kb = self.kb_looks(&snap);
         Bundle {
             snap,
             panes: self.mux.panes(),
             mux_name: self.mux.name().to_string(),
             mux_caps: self.mux.caps(),
             partial: false,
+            kb,
         }
+    }
+}
+
+impl CoreSource {
+    /// Each fleet's KB here: looked at again once its last look is
+    /// `KB_EVERY` old (on the loader thread, never the draw's); a fleet gone
+    /// is forgotten.
+    fn kb_looks(&mut self, snap: &Snapshot) -> BTreeMap<String, KbLook> {
+        let now = Instant::now();
+        self.kb.retain(|k, _| snap.fleets.iter().any(|f| f.id.0 == *k));
+        let mut out = BTreeMap::new();
+        for f in &snap.fleets {
+            let fresh = self.kb.get(&f.id.0).is_some_and(|(at, _)| now.duration_since(*at) < KB_EVERY);
+            if !fresh {
+                let look = if f.machine.is_none() { Err("the fleet does not run on this machine".to_string()) } else { nimitz_core::kb::look(&self.env, f.id.fleet()) };
+                self.kb.insert(f.id.0.clone(), (now, look));
+            }
+            if let Some((_, l)) = self.kb.get(&f.id.0) {
+                out.insert(f.id.0.clone(), l.clone());
+            }
+        }
+        out
     }
 }
 

@@ -164,7 +164,11 @@ pub fn col_of(lines: &[String], line_has: &str, needle: &str) -> usize {
 /// ship count (`<ship icon> 6`, either icon set); a ship row has the icon
 /// before its name instead.
 pub fn is_sq_bar(l: &str) -> bool {
-    [admiralty::theme::NERD.ship, admiralty::theme::ASCII.ship].iter().any(|icon| {
-        l.match_indices(&format!("   {icon} ")).any(|(at, m)| l[at + m.len()..].starts_with(|c: char| c.is_ascii_digit()))
-    })
+    is_bar(l) && l.contains("  squadron ")
+}
+
+/// A section's bar (the fleet's, a squadron's, the stowaways'): its end
+/// cell, then the fold marker in column 2.
+pub fn is_bar(l: &str) -> bool {
+    l.starts_with("  \u{25be} ") || l.starts_with("  \u{25b8} ")
 }

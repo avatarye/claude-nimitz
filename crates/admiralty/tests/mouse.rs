@@ -110,6 +110,18 @@ fn a_click_on_a_fold_marker_folds_and_unfolds() {
     // two quick clicks on a marker are two folds, never an enter
     click(&mut t.app, at, y);
     assert!(t.app.current().unwrap().expanded && t.app.rows.len() == n, "unfolded");
+    // the fleet's bar, the same: its marker in column 2, the rest selects it
+    let ls = lines(&draw(&mut t.app, 120, 50));
+    let y = ls.iter().position(|l| is_bar(l) && l.contains(" MAIN ")).unwrap() as u16;
+    click(&mut t.app, 60, y);
+    assert_eq!(id(&t.app), "F:MAIN");
+    assert!(t.app.current().unwrap().expanded, "a click off the marker only selects");
+    draw(&mut t.app, 120, 50);
+    click(&mut t.app, 2, y);
+    assert!(!t.app.current().unwrap().expanded && t.app.rows.len() < n, "the fleet folded");
+    draw(&mut t.app, 120, 50);
+    click(&mut t.app, 2, y);
+    assert!(t.app.current().unwrap().expanded && t.app.rows.len() == n, "the fleet unfolded");
 }
 
 #[test]

@@ -99,7 +99,7 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let now = app.now();
     match (&r.node.kind, app.target()) {
         (Kind::FleetBand, Target::Fleet(id)) => match snap.fleets.iter().find(|f| f.id == id) {
-            Some(f) => fleet_detail(f, now, width),
+            Some(f) => fleet_detail(f, b.kb.get(&f.id.0), now, width),
             None => broken_detail(snap, &id, width),
         },
         (Kind::Note, _) => match &r.node.member {
@@ -222,7 +222,53 @@ fn issues_block(title: &str, issues: &[&Issue], width: usize) -> Vec<Line<'stati
     v
 }
 
-fn fleet_detail(f: &Fleet, now: f64, width: usize) -> Vec<Line<'static>> {
+/// The fleet's KB, in full: where, what remote, the last commit, pages,
+/// edits, ahead and behind (as of the last fetch: nothing is fetched), and
+/// its state in words.
+pub fn kb_lines(look: Option<&crate::data::KbLook>, now: f64) -> Vec<Line<'static>> {
+    let mut v = vec![blank(), heading("KNOWLEDGE BASE")];
+    let f = match look {
+        None => {
+            v.push(Line::styled("not looked at yet", st(mono::COMMENT)));
+            return v;
+        }
+        Some(Err(why)) => {
+            v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "state"), st(mono::COMMENT)), Span::styled("NONE HERE", bold(mono::MUTED))]));
+            v.push(kv("why", why.clone()));
+            return v;
+        }
+        Some(Ok(f)) => f,
+    };
+    let (word, color) = if let Some(op) = &f.op {
+        (format!("CONFLICT: a {op} is under way"), mono::ERROR)
+    } else if let Some(stray) = &f.stray {
+        (format!("STOPPED: {stray} changed, not committed"), mono::ERROR)
+    } else if f.edits > 0 {
+        ("EDITS NOT COMMITTED".to_string(), mono::WARN)
+    } else if f.ahead > 0 {
+        ("COMMITS NOT PUSHED".to_string(), mono::ACCENT)
+    } else {
+        ("IN STEP".to_string(), mono::BUSY)
+    };
+    v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "state"), st(mono::COMMENT)), Span::styled(word, bold(color))]));
+    v.push(kv("path", f.dir.clone()));
+    v.push(kv("remote", f.remote.clone().unwrap_or_else(|| "none (no origin)".into())));
+    let age = f.committed_at.map(|t| format!("{} ago", crate::view::age_or_unknown(now - t))).unwrap_or_default();
+    v.push(kv("last commit", match (&f.head, &f.title) {
+        (Some(h), Some(t)) => format!("{h}  {t}  {age}"),
+        _ => "none".into(),
+    }));
+    v.push(kv("pages", format!("{} (markdown under wiki/, not _index.md, _log.md)", f.pages)));
+    v.push(kv("edits", if f.stray.is_some() { "not read (git status is not run)".to_string() } else { f.edits.to_string() }));
+    let branch = f.branch.clone().unwrap_or_else(|| "none (a detached HEAD)".into());
+    v.push(kv("branch", match &f.upstream {
+        Some(u) => format!("{branch}: {} ahead, {} behind {u} (as of the last fetch)", f.ahead, f.behind),
+        None => format!("{branch}: no upstream"),
+    }));
+    v
+}
+
+fn fleet_detail(f: &Fleet, kb: Option<&crate::data::KbLook>, now: f64, width: usize) -> Vec<Line<'static>> {
     let state = FleetState::of(f);
     let members = fleet_members(f);
     let live = members.iter().filter(|m| crate::view::member_live(m)).count();
@@ -236,6 +282,7 @@ fn fleet_detail(f: &Fleet, now: f64, width: usize) -> Vec<Line<'static>> {
         kv("squadrons", f.squadrons.iter().map(|s| s.id.squadron().unwrap_or("?").to_string()).collect::<Vec<_>>().join(", ")),
         kv("members", format!("{} declared, {live} live", members.len())),
     ];
+    v.extend(kb_lines(kb, now));
     v.extend(issues_block("FLEET ISSUES", &f.issues.iter().collect::<Vec<_>>(), width));
     let all = fleet_issues(f);
     if all.len() > f.issues.len() {

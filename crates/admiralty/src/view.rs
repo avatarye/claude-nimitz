@@ -257,6 +257,8 @@ pub struct Node {
     pub title_right: Vec<Span<'static>>,
     /// band only: the counts, laid out by `frames` to fit the band
     pub counts: Vec<Count>,
+    /// band only: what its bar shows, in the one grammar every bar shares
+    pub head: Option<Header>,
     /// per DETAIL span, its rank when the cell is too narrow: spans go whole,
     /// the highest rank first; empty: cut the end
     pub drop_rank: Vec<u8>,
@@ -293,6 +295,7 @@ impl Node {
             band_bg: None,
             title_right: vec![],
             counts: vec![],
+            head: None,
             drop_rank: vec![],
             facts: vec![],
             children: vec![],
@@ -313,6 +316,94 @@ pub struct View<'a> {
     pub now: f64,
     /// the tab shown: a fleet id, or UNASSIGNED; None shows every fleet
     pub tab: Option<&'a str>,
+    /// each fleet's KB as the loader last looked (`data::KbLook`)
+    pub kb: &'a std::collections::BTreeMap<String, crate::data::KbLook>,
+}
+
+// ------------------------------------------------------------------ bars
+
+/// A section's bar, one grammar for the fleet (its admiral), each squadron
+/// and the stowaways, its parts in the same columns on every bar:
+/// fold marker, glyph, NAME, role word, state, size, and on the right the
+/// KB (the fleet's alone) and the tallies. `frames::bar` lays it out and
+/// drops parts right to left when the width runs short.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Header {
+    /// the section's glyph: the admiral's crown, the squadron flag, the stowaway
+    pub glyph: &'static str,
+    pub name: String,
+    /// `fleet · admiral`, `squadron`; the stowaways' text (`free`)
+    pub role: String,
+    /// the role is free text that ends the left side (never padded)
+    pub free: bool,
+    /// `glyph word`: the section's state
+    pub state: Option<String>,
+    /// how many it holds: `3 ships`, `1 crew`
+    pub size: Option<String>,
+    /// an issue code beside the size (a squadron's own issue)
+    pub note: Option<String>,
+    pub kb: Option<KbBadge>,
+    /// right-aligned counts (`frames` keeps only the key ones when narrow)
+    pub tallies: Vec<Count>,
+    /// right-aligned text in the tallies' place (the stowaways' `1 live / 2 total`)
+    pub tally_text: Option<String>,
+    /// the bar's fill: the worst state in the section
+    pub fill: Color,
+}
+
+/// The fleet bar's KB part: `KB ✓` and its details (`3m`, `142 pages`), the
+/// details dropped first, last one first, when the bar runs short.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KbBadge {
+    pub head: String,
+    pub parts: Vec<String>,
+}
+
+impl KbBadge {
+    pub fn text(&self, parts: usize) -> String {
+        let shown: Vec<&str> = self.parts.iter().take(parts).map(String::as_str).collect();
+        if shown.is_empty() {
+            self.head.clone()
+        } else {
+            format!("{} {}", self.head, shown.join(" \u{b7} "))
+        }
+    }
+}
+
+/// The KB's word for a fleet bar, worst first: `KB ✗ conflict` (a rebase or
+/// merge under way; `✗ attributes`: an attributes file changed, so nothing
+/// else is read), `KB ⚠ 3 edits` (not committed), `KB ↑2` (commits not
+/// pushed, as of the last fetch), `KB ✓ 3m · 142 pages`; `KB –`: no KB, or
+/// no clone here. `None`: not looked at yet.
+pub fn kb_badge(look: Option<&crate::data::KbLook>, now: f64, icons: &Icons) -> Option<KbBadge> {
+    let b = |head: String, parts: Vec<String>| Some(KbBadge { head, parts });
+    match look? {
+        Err(_) => b(format!("KB {}", icons.kb_none), vec![]),
+        Ok(f) if f.op.is_some() => b(format!("KB {} conflict", icons.kb_bad), vec![]),
+        Ok(f) if f.stray.is_some() => b(format!("KB {} attributes", icons.kb_bad), vec![]),
+        Ok(f) if f.edits > 0 => b(format!("KB {} {} edit{}", icons.kb_edits, f.edits, if f.edits == 1 { "" } else { "s" }), vec![]),
+        Ok(f) if f.ahead > 0 => b(format!("KB {}{}", icons.kb_ahead, f.ahead), vec![]),
+        Ok(f) => {
+            let age = f.committed_at.map(|t| age_or_unknown(now - t)).unwrap_or_else(|| "no commits".into());
+            b(format!("KB {}", icons.kb_ok), vec![age, format!("{} page{}", f.pages, if f.pages == 1 { "" } else { "s" })])
+        }
+    }
+}
+
+/// `n word` with its plural (`1 ship`, `3 ships`; `crew` stays).
+fn size_word(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The fill for a rank of `squadron_rank` (neutral: the muted step, so it still reads as a bar).
+fn rank_fill(rank: u8) -> Color {
+    match rank {
+        4 => mono::NEEDS,
+        3 => mono::ERROR,
+        2 => mono::WARN,
+        1 => mono::BUSY,
+        _ => mono::MUTED,
+    }
 }
 
 /// The tab of stowaways that no one fleet's folders hold (`~` is never in a fleet name).
@@ -955,10 +1046,67 @@ fn squadron_node(f: &Fleet, sq: &Squadron, v: &View, matches: &dyn Fn(&Member) -
         n.detail.push(Span::styled(format!("   {} {}", v.icons.issue, i.code), bold(theme::severity_color(i.severity))));
     }
     n.counts = status_counts(&members, &own_issues, v.icons);
+    n.head = Some(Header {
+        glyph: v.icons.squadron,
+        name: n.name.clone(),
+        role: "squadron".into(),
+        free: false,
+        state: Some(if load_errors.is_empty() { format!("{} {}", state.icon(v.icons), state.squadron_label()) } else { format!("{} config does not load", v.icons.issue) }),
+        size: Some(size_word(sq.ships.len(), "ship", "ships")),
+        note: sq.issues.first().map(|i| format!("{} {}", v.icons.issue, i.code)),
+        kb: None,
+        tallies: n.counts.clone(),
+        tally_text: None,
+        fill: if frame == mono::LINE { mono::MUTED } else { frame },
+    });
     // a squadron.toml that does not load: the error in full, above its members
     n.children = error_notes(&sq.id, &load_errors);
     n.children.extend(shown.iter().map(|m| member_node(m, v)));
     Some(n)
+}
+
+/// The fleet's bar: its admiral's section, as a squadron's bar is its
+/// commodore's and ships'. Its state, tallies and fill are the admiral's
+/// with the fleet's own issues; its size and tallies count the admiral's
+/// crew too (a running one is busy); on the right the fleet's KB.
+fn admiral_header(f: &Fleet, broken: bool, v: &View) -> Header {
+    let adm = &f.admiral;
+    let issues: Vec<&Issue> = f.issues.iter().filter(|i| !is_load_error(i)).chain(adm.issues.iter()).collect();
+    let state = if f.machine.is_none() { FleetState::Elsewhere } else { FleetState::of_group(&[adm], &issues, Some(adm)) };
+    let busy_crew = adm.crew.iter().filter(|c| crew_work(c) == Work::Busy).count();
+    let mut tallies = status_counts(&[adm], &issues, v.icons);
+    if busy_crew > 0 {
+        match tallies.iter_mut().find(|c| c.icon == v.icons.s_busy) {
+            Some(c) => c.n += busy_crew,
+            None => {
+                // in `status_counts`' order: busy before the quieter states
+                let quiet = [v.icons.s_idle, v.icons.s_stopped, v.icons.s_parked, v.icons.s_off, v.icons.s_unknown];
+                let at = tallies.iter().position(|c| quiet.contains(&c.icon)).unwrap_or(tallies.len());
+                tallies.insert(at, Count { icon: v.icons.s_busy, n: busy_crew, style: status_style(Status::Busy).add_modifier(Modifier::BOLD), key: false });
+            }
+        }
+    }
+    let own = if f.issues.iter().any(|i| i.severity == Severity::Error) {
+        3
+    } else if f.issues.iter().any(|i| i.severity == Severity::Warn) {
+        2
+    } else {
+        0
+    };
+    let rank = squadron_rank(&[adm]).max(own).max(if busy_crew > 0 { 1 } else { 0 });
+    Header {
+        glyph: v.icons.admiral,
+        name: f.id.0.clone(),
+        role: "fleet \u{b7} admiral".into(),
+        free: false,
+        state: Some(if broken { format!("{} config does not load", v.icons.issue) } else { format!("{} {}", state.icon(v.icons), state.label()) }),
+        size: Some(size_word(adm.crew.len(), "crew", "crew")),
+        note: None,
+        kb: kb_badge(v.kb.get(&f.id.0), v.now, v.icons),
+        tallies,
+        tally_text: None,
+        fill: if broken { mono::ERROR } else { rank_fill(rank) },
+    }
 }
 
 fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
@@ -1089,6 +1237,19 @@ fn broken_band(snap: &Snapshot, id: &nimitz_core::Id, v: &View) -> Node {
         .collect();
     n.issue_count = errors.len();
     n.counts = vec![Count { icon: v.icons.issue, n: errors.len(), style: bold(mono::ERROR), key: true }];
+    n.head = Some(Header {
+        glyph: if fleet { v.icons.admiral } else { v.icons.squadron },
+        name: if fleet { id.0.clone() } else { n.name.clone() },
+        role: if fleet { "fleet \u{b7} admiral".into() } else { "squadron".into() },
+        free: false,
+        state: Some(format!("{} config does not load", v.icons.issue)),
+        size: None,
+        note: None,
+        kb: if fleet { kb_badge(v.kb.get(&id.0), v.now, v.icons) } else { None },
+        tallies: n.counts.clone(),
+        tally_text: None,
+        fill: mono::ERROR,
+    });
     n.children = error_notes(id, &errors);
     let unlisted = unlisted_sessions(snap, id);
     if unlisted > 0 {
@@ -1150,6 +1311,7 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
             ]
         };
         n.counts = status_counts(&fleet_members(f), &issues, v.icons);
+        n.head = Some(admiral_header(f, broken, v));
         n.children = error_notes(&f.id, &load_errors);
         if matches(&f.admiral) {
             n.children.push(member_node(&f.admiral, v));
@@ -1203,6 +1365,20 @@ pub fn build_nodes(snap: &Snapshot, v: &View) -> Vec<Node> {
         };
         n.detail = vec![Span::styled(scope, st(mono::SOFT))];
         n.title_right = vec![Span::styled(format!("{live} live / {} total", stowaways.len()), bold(hue))];
+        n.head = Some(Header {
+            glyph: v.icons.stowaway,
+            name: n.name.clone(),
+            // on the unassigned tab, where they are too
+            role: if v.tab == Some(UNASSIGNED) { "in no fleet's folders, no labels \u{2014} adopt or remove".into() } else { "no labels \u{2014} adopt or remove".into() },
+            free: true,
+            state: None,
+            size: None,
+            note: None,
+            kb: None,
+            tallies: vec![],
+            tally_text: Some(format!("{live} live / {} total", stowaways.len())),
+            fill: if live > 0 { mono::WARN } else { mono::MUTED },
+        });
         n.children = stowaways.iter().map(|s| stow_node(s, snap, v)).collect();
         out.push(n);
     }

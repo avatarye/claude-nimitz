@@ -200,6 +200,12 @@ pub struct Icons {
     pub s_parked: &'static str,
     pub s_off: &'static str,
     pub s_unknown: &'static str,
+    /// the fleet bar's KB: in step, edits not committed, a conflict, commits not pushed, none
+    pub kb_ok: &'static str,
+    pub kb_edits: &'static str,
+    pub kb_bad: &'static str,
+    pub kb_ahead: &'static str,
+    pub kb_none: &'static str,
     /// busy, frame by frame (the status motion)
     pub spin: &'static [&'static str],
     /// busy waiting on a background shell, frame by frame (slower)
@@ -230,6 +236,11 @@ pub const NERD: Icons = Icons {
     s_parked: "\u{f04b2}",  // nf-md-sleep
     s_off: "\u{f10c}",      // empty circle
     s_unknown: "\u{f059}",  // question circle
+    kb_ok: "\u{2713}",
+    kb_edits: "\u{f071}",  // nf-fa-warning
+    kb_bad: "\u{2717}",
+    kb_ahead: "\u{2191}",
+    kb_none: "\u{2013}",
     // nf-md-circle-slice-1..8: a pie that fills; nf-md-timer-sand-empty, -sand, -full
     spin: &["\u{f0a9e}", "\u{f0a9f}", "\u{f0aa0}", "\u{f0aa1}", "\u{f0aa2}", "\u{f0aa3}", "\u{f0aa4}", "\u{f0aa5}"],
     wait: &["\u{f06ad}", "\u{f051f}", "\u{f078c}", "\u{f051f}"],
@@ -259,6 +270,11 @@ pub const ASCII: Icons = Icons {
     s_parked: "z",
     s_off: "o",
     s_unknown: "?",
+    kb_ok: "+",
+    kb_edits: "~",
+    kb_bad: "x",
+    kb_ahead: "^",
+    kb_none: "-",
     // no other status's glyph (`-` idle, `o` not started, `.` finished)
     spin: &["|", "/", "=", "\\"],
     wait: &[",", ";", ":", ";"],
@@ -270,7 +286,7 @@ impl Icons {
         vec![
             self.fleet, self.admiral, self.squadron, self.commodore, self.ship, self.crew, self.teammate, self.stowaway,
             self.issue, self.legacy, self.finished, self.row, self.completed, self.in_progress, self.pending, self.pane, self.s_needs,
-            self.s_busy, self.s_idle, self.s_stopped, self.s_parked, self.s_off, self.s_unknown,
+            self.s_busy, self.s_idle, self.s_stopped, self.s_parked, self.s_off, self.s_unknown, self.kb_ok, self.kb_edits, self.kb_bad, self.kb_ahead, self.kb_none,
         ]
         .into_iter()
         .chain(self.spin.iter().copied())

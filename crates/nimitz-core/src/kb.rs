@@ -672,10 +672,149 @@ pub fn restore(env: &Env, dir: &Path, paths: &[String], backup: &Path) -> Result
     Ok(done)
 }
 
+/// What a look at a fleet's KB clone found (Admiralty's fleet bar and
+/// detail): read-only, from the clone alone (never a fetch: ahead and behind
+/// are against the remote-tracking ref of the last fetch).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Facts {
+    /// the clone's folder
+    pub dir: String,
+    /// its `origin` URL
+    #[serde(default)]
+    pub remote: Option<String>,
+    /// the branch checked out (none: a detached HEAD)
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// the branch's upstream (`origin/main`), if it has one
+    #[serde(default)]
+    pub upstream: Option<String>,
+    /// the last commit: short id, title, committer time (unix seconds)
+    #[serde(default)]
+    pub head: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub committed_at: Option<f64>,
+    /// `wiki/**/*.md` at HEAD, but the wiki's own `_index.md`, `_log.md` (any `_*.md`)
+    #[serde(default)]
+    pub pages: usize,
+    /// `git status --porcelain` entries (edits not committed, untracked files, conflicted copies)
+    #[serde(default)]
+    pub edits: usize,
+    #[serde(default)]
+    pub ahead: usize,
+    #[serde(default)]
+    pub behind: usize,
+    /// a rebase, merge, cherry-pick or revert under way
+    #[serde(default)]
+    pub op: Option<String>,
+    /// an attributes or modules file changed and not committed: `status` is
+    /// not run (a filter it names would run), so `edits` is not known
+    #[serde(default)]
+    pub stray: Option<String>,
+}
+
+/// The facts of the clone in `dir`, read-only: no lock, no fetch, no write
+/// (`status --no-optional-locks` leaves the index alone).
+pub fn facts(dir: &Path) -> Result<Facts, String> {
+    let g = git_dir(dir).ok_or_else(|| format!("{} is no git clone", dir.display()))?;
+    let mut f = Facts { dir: dir.to_string_lossy().into_owned(), remote: origin(dir), ..Facts::default() };
+    let read = |args: &[&str]| -> Option<String> {
+        let mut c = git(dir);
+        c.args(args);
+        run(c).ok().map(|s| s.trim_end_matches('\n').to_string())
+    };
+    f.branch = read(&["symbolic-ref", "-q", "--short", "HEAD"]).filter(|s| !s.is_empty());
+    f.op = [("rebase-merge", "rebase"), ("rebase-apply", "rebase"), ("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")]
+        .iter()
+        .find(|(file, _)| g.join(file).exists())
+        .map(|(_, op)| op.to_string());
+    if let Some(log) = read(&["log", "-1", "--no-show-signature", "--format=%h%x00%ct%x00%s", "HEAD"]) {
+        let mut it = log.splitn(3, '\0');
+        f.head = it.next().map(str::to_string).filter(|s| !s.is_empty());
+        f.committed_at = it.next().and_then(|t| t.trim().parse::<f64>().ok());
+        f.title = it.next().map(str::to_string);
+        if let Some(names) = read(&["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", "wiki"]) {
+            f.pages = names
+                .split('\0')
+                .filter(|p| {
+                    let name = p.rsplit('/').next().unwrap_or(p);
+                    name.to_lowercase().ends_with(".md") && !name.starts_with('_')
+                })
+                .count();
+        }
+    }
+    if f.branch.is_some() {
+        f.upstream = read(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).filter(|s| !s.is_empty());
+        if f.upstream.is_some() {
+            if let Some(counts) = read(&["rev-list", "--left-right", "--count", "HEAD...@{upstream}"]) {
+                let mut it = counts.split_whitespace().map(|n| n.parse::<usize>().unwrap_or(0));
+                f.ahead = it.next().unwrap_or(0);
+                f.behind = it.next().unwrap_or(0);
+            }
+        }
+    }
+    f.stray = stray_attributes(dir);
+    if f.stray.is_none() {
+        let mut c = git(dir);
+        c.args(["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]);
+        f.edits = run(c)?.lines().filter(|l| !l.trim().is_empty()).count();
+    }
+    Ok(f)
+}
+
+/// The fleet's KB on this machine, as `nimitz kb path` finds it (the
+/// settings, a clone there, its origin the fleet's `kb.remote`), then its
+/// `facts`; or why there is none.
+pub fn look(env: &Env, fleet: &str) -> Result<Facts, String> {
+    let k = crate::fleet_settings::kb(env, fleet)?;
+    if !k.dir.join(".git").exists() {
+        return Err(format!("not cloned on this machine ({})", k.dir.display()));
+    }
+    if let Some(remote) = &k.remote {
+        let got = origin(&k.dir);
+        if !got.as_deref().is_some_and(|g| same_remote(g, remote)) {
+            return Err(format!("{} is no clone of kb.remote {remote} (its origin is {})", k.dir.display(), got.as_deref().unwrap_or("none")));
+        }
+    }
+    facts(&k.dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::tests::test_env;
+
+    #[test]
+    fn facts_count_pages_edits_and_commits_ahead_without_a_fetch() {
+        let up = repo();
+        let td = tempfile::tempdir().unwrap();
+        let d = td.path().join("clone");
+        let o = Command::new("git").arg("clone").arg("-q").arg(up.path()).arg(&d).output().unwrap();
+        assert!(o.status.success());
+        g(&d, &["config", "user.email", "t@t"]);
+        g(&d, &["config", "user.name", "t"]);
+        std::fs::write(d.join("wiki/_index.md"), "index\n").unwrap();
+        std::fs::create_dir_all(d.join("wiki/topics")).unwrap();
+        std::fs::write(d.join("wiki/topics/two.md"), "two\n").unwrap();
+        std::fs::write(d.join("wiki/notes.txt"), "not a page\n").unwrap();
+        g(&d, &["add", "-A"]);
+        g(&d, &["commit", "-qm", "add pages"]);
+        let f = facts(&d).unwrap();
+        assert_eq!(f.pages, 2, "wiki/page.md and wiki/topics/two.md; not _index.md, not .txt, not raw/");
+        assert_eq!((f.ahead, f.behind, f.edits), (1, 0, 0));
+        assert_eq!(f.title.as_deref(), Some("add pages"));
+        assert_eq!(f.branch.as_deref(), Some("main"));
+        assert_eq!(f.upstream.as_deref(), Some("origin/main"));
+        assert!(f.committed_at.is_some() && f.op.is_none() && f.stray.is_none());
+        std::fs::write(d.join("wiki/page.md"), "changed\n").unwrap();
+        std::fs::write(d.join("raw/new.md"), "new\n").unwrap();
+        assert_eq!(facts(&d).unwrap().edits, 2);
+        // a merge under way
+        std::fs::write(d.join(".git/MERGE_HEAD"), "0000000000000000000000000000000000000000\n").unwrap();
+        assert_eq!(facts(&d).unwrap().op.as_deref(), Some("merge"));
+        assert!(facts(td.path()).is_err(), "no clone, no facts");
+    }
 
     fn g(d: &Path, args: &[&str]) -> String {
         let o = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();

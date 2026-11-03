@@ -1093,6 +1093,35 @@ shorten by fit, not at a fixed width.
 A squadron's ships sit two columns in from their commodore
 (`view::SHIP_INDENT`), and their crew and notes follow them.
 
+### Section bars
+
+Every section, the fleet's (its admiral and crew), each squadron's and the
+stowaways', is one filled bar (`frames::bar`) over a rounded, neutral box. The
+bar's parts come from `view::Header`: fold marker, glyph, NAME, role
+(`fleet · admiral`, `squadron`, or the stowaways' free text), state, size
+(`1 crew`, `3 ships`), then, right-aligned, the KB (fleet bar only) and the
+tallies. `frames::bar_cols` pads NAME, role and state to the widest among the
+list's bars, so each part starts in the same column on every bar. The fill
+is the worst state in the section (`squadron_rank`; for the fleet bar, the
+admiral, its running crew and the fleet's own issues). When a bar runs short
+(`BarFit::step`) it drops, in order: the KB's details (pages, then age), the
+tallies (non-key ones, then all), the KB, the column padding, the size, the
+state, the role. Then the name is cut. A bar never wraps. Its fold marker is
+in column 2 (`fold_x`). The fleet's tab still carries the fleet-wide state and
+counts.
+
+The KB part reads `data::KbLook` per fleet in `Bundle.kb`. `CoreSource`
+fills it on the loader thread via `nimitz_core::kb::look` (settings, clone,
+origin check as `nimitz kb path`, then `kb::facts`), at most every `KB_EVERY`
+(30 s) per fleet. `facts` is read-only, uses the hardened `kb::git`, and never
+fetches: ahead and behind compare with the remote-tracking ref of the last
+fetch. Pages are `wiki/**/*.md` at HEAD, except `_`-prefixed files (`_index.md`,
+`_log.md`). `view::kb_badge` picks the word: conflict (`op`) or a changed
+attributes file, then edits, then ahead, then `✓ age · pages`; `–` for no KB.
+A fleet not yet looked at shows no KB part. The full facts are in the fleet's
+detail (`detail::kb_lines`), so `x` on the fleet bar shows them. The demo's
+`fixtures::demo_kb` has MAIN in step, FORGE with edits, and LAB with none.
+
 The finder (`render::finder_areas`, `draw_finder`) is one group in the middle of
 the view, filling it but for a margin of 3 columns and 1 row (`FINDER_MARGIN`).
 From 120 columns the detail panel sits beside the list at the same height, and the

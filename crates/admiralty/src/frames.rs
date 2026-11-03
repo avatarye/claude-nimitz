@@ -1,8 +1,8 @@
-//! The tree as a list of boxes. A fleet is one tinted band line (its state
-//! and counts; the fleet's tab already frames it), then its admiral in a
-//! heavy box (`┏━ ADMIRAL ━┓`), then a rounded box per squadron whose top
-//! border carries its title in the squadron's status colour, and a box for
-//! stowaways. Columns NAME / STATUS / AGE / DETAIL start at the same x
+//! The tree as a list of sections, each a filled bar in one grammar (`bar`:
+//! fold marker, glyph, NAME, role, state, size; KB and tallies on the right)
+//! over a rounded box of its rows: the fleet's bar over its admiral and
+//! crew, a squadron's over its commodore and ships, the stowaways'. Each
+//! bar is filled with the worst state in its section. Columns NAME / STATUS / AGE / DETAIL start at the same x
 //! in every box, so they line up down the whole list. Spacing (blank lines
 //! between boxes, padding inside them, wider column gaps) is the first thing
 //! to go when the width or the height runs short (`Spacing`). Pure: rows in,
@@ -166,14 +166,13 @@ fn spans_width(spans: &[Span]) -> usize {
 }
 
 /// The column a row's fold marker starts at, from the left of the list (`None`:
-/// a row that doesn't fold). `admiral_top`, `band` and `name_cell` draw it there.
+/// a row that doesn't fold). `bar` and `name_cell` draw it there.
 pub fn fold_x(r: &Row, sp: Spacing) -> Option<u16> {
     if r.node.children.is_empty() || r.node.kind == Kind::Note {
         return None;
     }
     Some(match r.section {
-        Section::FleetBand => 3,
-        Section::SquadronBand | Section::StowBand => 2,
+        Section::FleetBand | Section::SquadronBand | Section::StowBand => 2,
         _ => (sp.side() + 2 + r.prefix.width()) as u16,
     })
 }
@@ -293,88 +292,125 @@ fn row_spans_anim(r: &Row, w: &[u16; 4], inner: usize, gap: usize, icons: &Icons
     out
 }
 
-/// A title band `width` columns wide including its two corner cells.
-/// Bands narrower than this show only the key counts (needs you, errors).
+/// A bar `width` columns wide including its two end cells.
+/// Bars narrower than this show only the key tallies (needs you, errors).
 pub const NARROW_BAND: usize = 100;
 
-/// `pad` columns before the right corner keep top-level and nested bands' counts in one column.
-/// With `rule` the band is a box's top border instead: no tint, the gaps
-/// drawn as `─` in the edge colour, the title inside the line.
-fn band(r: &Row, width: usize, corners: (&str, &str), edge: Style, selected: bool, pad_right: usize, rule: bool) -> Vec<Span<'static>> {
-    let n = &r.node;
-    let color = n.frame.unwrap_or(mono::SOFT);
-    let bg = if selected { mono::SEL } else if rule { mono::BG } else { n.band_bg.unwrap_or(mono::BG_HI) };
-    let b = Style::new().bg(bg);
-    let fill = |k: usize| if rule { Span::styled("\u{2500}".repeat(k), edge.bg(bg)) } else { Span::styled(" ".repeat(k), b) };
-    // on the cursor band, faint and muted text is lifted so it stays readable
-    let lift = |s: Style| match s.fg {
-        Some(c) if selected && (c == mono::FAINT || c == mono::MUTED) => s.fg(mono::FG),
-        _ => s,
-    };
-    let marker = if n.children.is_empty() {
-        "\u{25b8}"
-    } else if r.expanded {
-        "\u{25be}"
-    } else {
-        "\u{25b8}"
-    };
-    let mut left = if rule { vec![fill(1)] } else { vec![] };
-    left.push(Span::styled(format!(" {marker} "), lift(b.fg(if n.children.is_empty() { mono::FAINT } else { color }))));
-    if let Some(state) = &n.pane_state {
-        left.push(Span::styled(format!("{} ", pane_dot(state)), b.fg(pane_color(state)).add_modifier(Modifier::BOLD)));
-    }
-    left.push(Span::styled(format!("{} ", n.icon), lift(b.patch(n.icon_style))));
-    left.push(Span::styled(n.name.clone(), lift(b.patch(n.name_style)).add_modifier(Modifier::BOLD)));
-    if !n.detail.is_empty() {
-        left.push(Span::styled("   ", b));
-        left.extend(n.detail.iter().map(|s| Span::styled(s.content.clone(), lift(b.patch(s.style)))));
-    }
-    if rule {
-        left.push(Span::styled(" ", b));
-    }
-    let mut right: Vec<Span<'static>> = n.title_right.iter().map(|s| Span::styled(s.content.clone(), lift(b.patch(s.style)))).collect();
-    // counts: `icon n`, slashes between them, right-aligned as a group; a narrow
-    // band keeps only needs-you and errors
-    let narrow = width < NARROW_BAND;
-    let shown: Vec<&crate::view::Count> = n.counts.iter().filter(|c| !narrow || c.key).collect();
-    for (i, c) in shown.iter().enumerate() {
-        if i > 0 {
-            right.push(Span::styled(" / ", lift(b.fg(mono::FAINT))));
-        }
-        right.push(Span::styled(c.text(), lift(b.patch(c.style))));
-    }
-    // on a border line the counts sit in a gap of their own
-    if rule && !right.is_empty() {
-        right.insert(0, Span::styled(" ", b));
-        right.push(Span::styled(" ", b));
-    }
-    right.push(fill(pad_right));
-    let room = width.saturating_sub(2);
-    // a band too narrow for its counts cuts them too: never past its corner
-    if spans_width(&right) > room {
-        right = truncate_spans(right, room);
-    }
-    let right_w = spans_width(&right);
-    let left = truncate_spans(left, room.saturating_sub(right_w + 1));
-    let used = spans_width(&left);
-    let mut out = vec![Span::styled(corners.0.to_string(), edge.bg(bg))];
-    out.extend(left);
-    out.push(fill(room.saturating_sub(used + right_w)));
-    out.extend(right);
-    out.push(Span::styled(corners.1.to_string(), edge.bg(bg)));
-    out
+/// The columns every bar shares: NAME, the role word and the state, each as
+/// wide as the widest among the list's bars (`bar_cols`), so a part starts
+/// in the same column on every bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BarCols {
+    pub name: usize,
+    pub role: usize,
+    pub state: usize,
 }
 
-/// A squadron's (or the stowaways') title bar: filled with its status colour
-/// (neutral: the muted step, so it still reads as a bar), its text in `INK`
-/// (the counts by their icons' shapes). On the cursor the fill and the text
-/// stay, so the contrast does too: the text is underlined and the end cells
-/// take the selection colour.
-fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>) -> Line<'static> {
-    let mut fill = match r.node.frame.unwrap_or(mono::LINE) {
-        c if c == mono::LINE => mono::MUTED,
-        c => c,
-    };
+/// NAME is padded to at most this many columns (a longer name pushes its own bar's parts on).
+const BAR_NAME_MAX: usize = 16;
+
+pub fn bar_cols(rows: &[Row]) -> BarCols {
+    let mut c = BarCols::default();
+    for h in rows.iter().filter_map(|r| r.node.head.as_ref()) {
+        c.name = c.name.max(h.name.width().min(BAR_NAME_MAX));
+        if !h.free {
+            c.role = c.role.max(h.role.width());
+        }
+        if let Some(s) = &h.state {
+            c.state = c.state.max(s.width());
+        }
+    }
+    c
+}
+
+/// What a bar shows at a width: the parts still on it. `step` takes the
+/// next one away, right to left: the KB's details (pages, then the age), the
+/// tallies (all but the key ones, then those), the KB, the column padding,
+/// the size, the state, the role.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BarFit {
+    kb_parts: usize,
+    kb: bool,
+    /// 2 every tally, 1 the key ones, 0 none
+    tallies: u8,
+    pad: bool,
+    size: bool,
+    state: bool,
+    role: bool,
+}
+
+impl BarFit {
+    fn step(mut self) -> Option<BarFit> {
+        if self.kb && self.kb_parts > 0 {
+            self.kb_parts -= 1;
+        } else if self.tallies > 0 {
+            self.tallies -= 1;
+        } else if self.kb {
+            self.kb = false;
+        } else if self.pad {
+            self.pad = false;
+        } else if self.size {
+            self.size = false;
+        } else if self.state {
+            self.state = false;
+        } else if self.role {
+            self.role = false;
+        } else {
+            return None;
+        }
+        Some(self)
+    }
+}
+
+/// A bar's left text (fold marker to size) and right text (KB, tallies) at a fit.
+fn bar_text(r: &Row, h: &crate::view::Header, fit: BarFit, cols: BarCols) -> (String, String) {
+    let n = &r.node;
+    let marker = if r.expanded && !n.children.is_empty() { "\u{25be}" } else { "\u{25b8}" };
+    let padded = |s: &str, w: usize| if fit.pad { pad(s, w) } else { s.to_string() };
+    let mut left = format!(" {marker} ");
+    if let Some(state) = &n.pane_state {
+        left.push_str(&format!("{} ", pane_dot(state)));
+    }
+    left.push_str(&format!("{} {}", h.glyph, padded(&h.name, cols.name)));
+    if fit.role {
+        left.push_str("  ");
+        left.push_str(&if h.free { h.role.clone() } else { padded(&h.role, cols.role) });
+    }
+    if fit.state {
+        if let Some(s) = &h.state {
+            left.push_str(&format!("   {}", padded(s, cols.state)));
+        }
+    }
+    if fit.size {
+        for s in [&h.size, &h.note].into_iter().flatten() {
+            left.push_str(&format!("   {s}"));
+        }
+    }
+    let mut right = vec![];
+    if fit.kb {
+        if let Some(kb) = &h.kb {
+            right.push(kb.text(fit.kb_parts));
+        }
+    }
+    let tallies: Vec<String> = h.tallies.iter().filter(|c| fit.tallies == 2 || (fit.tallies == 1 && c.key)).map(|c| c.text()).collect();
+    if !tallies.is_empty() {
+        right.push(tallies.join(" / "));
+    } else if fit.tallies > 0 {
+        right.extend(h.tally_text.clone());
+    }
+    (left.trim_end().to_string(), right.join("   "))
+}
+
+/// A section's bar (the fleet's, a squadron's, the stowaways'), one grammar:
+/// `▾ ♛ MAIN  fleet · admiral   ☾ idle   1 crew ...  KB ✓ 3m · 142 pages   ⚡1`.
+/// Filled with the worst state in its section (neutral: the muted step, so
+/// it still reads as a bar), its text in `INK`. Parts go right to left when
+/// it runs short (`BarFit`); it never wraps nor passes its end. On the
+/// cursor the fill and the text stay, so the contrast does too: the text is
+/// underlined and the end cells take the selection colour.
+pub fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>, cols: BarCols) -> Line<'static> {
+    let Some(h) = r.node.head.as_ref() else { return Line::raw(" ".repeat(width)) };
+    let mut fill = h.fill;
     // its status just got worse: one pulse toward white over a second, then it holds
     if let (Some(f), crate::view::Anim::Flash(from)) = (frame, r.node.anim) {
         if f >= from && f - from < 10 {
@@ -385,41 +421,27 @@ fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>) -> Line<'stati
     if selected {
         text = text.add_modifier(Modifier::UNDERLINED);
     }
-    let mut spans = band(r, width, (" ", " "), Style::new(), false, 1, false)
-        .into_iter()
-        .map(|s| Span::styled(s.content, text))
-        .collect::<Vec<_>>();
-    if selected {
-        if let Some(first) = spans.first_mut() {
-            *first = Span::styled(first.content.clone(), Style::new().bg(mono::ACCENT));
+    // the end cells, and one cell of room before the right one
+    let room = width.saturating_sub(3);
+    let narrow = width < NARROW_BAND;
+    let mut fit = Some(BarFit { kb_parts: h.kb.as_ref().map_or(0, |k| k.parts.len()), kb: true, tallies: if narrow { 1 } else { 2 }, pad: true, size: true, state: true, role: true });
+    let (mut left, mut right) = (String::new(), String::new());
+    while let Some(f) = fit {
+        (left, right) = bar_text(r, h, f, cols);
+        let need = left.width() + if right.is_empty() { 0 } else { 2 + right.width() };
+        if need <= room {
+            break;
         }
-        if let Some(last) = spans.last_mut() {
-            *last = Span::styled(last.content.clone(), Style::new().bg(mono::ACCENT));
-        }
+        fit = f.step();
     }
-    Line::from(spans)
-}
-
-/// The admiral's heavy box's top: its title, and the fleet row it is (the
-/// fleet's fold marker; the fleet's state and counts are on its tab).
-fn admiral_top(head: &Row, width: usize, selected: bool, e: Style) -> Line<'static> {
-    let marker = if head.expanded { "\u{25be}" } else { "\u{25b8}" };
-    // the fleet's name: in a search every fleet's box is on one screen
-    let title = truncate(&format!(" {marker} {} ADMIRAL ", head.node.name), width.saturating_sub(3));
-    let (l, r) = if head.expanded { ("\u{250f}\u{2501}", "\u{2513}") } else { ("\u{257a}\u{2501}", "\u{2578}") };
-    let rest = width.saturating_sub(3 + title.width());
-    let line = Line::from(vec![Span::styled(l, e), Span::styled(title, bold(mono::STRONG)), Span::styled(format!("{}{r}", "\u{2501}".repeat(rest)), e)]);
-    selectable(line, selected)
-}
-
-/// A fleet's frame: neutral, or the hue of what it needs (its frame colour);
-/// error when its config does not load.
-fn fleet_edge(r: &Row) -> Style {
-    if r.node.children.iter().any(|c| c.kind == crate::view::Kind::Note) {
-        bold(mono::ERROR) // its config does not load
-    } else {
-        st(r.node.frame.unwrap_or(mono::LINE))
+    if fit.is_none() {
+        // not even the name fits: cut it, never past the end
+        right.clear();
+        left = truncate(&left, room);
     }
+    let gap = room.saturating_sub(left.width() + right.width());
+    let end = |sel: bool| Span::styled(" ", if sel { Style::new().bg(mono::ACCENT) } else { text });
+    Line::from(vec![end(selected), Span::styled(format!("{left}{}{right} ", " ".repeat(gap)), text), end(selected)])
 }
 
 /// The cursor row: selection background, and dim text lifted so it stays readable.
@@ -466,13 +488,14 @@ struct Edges {
     style: Style,
 }
 
-const ROUND: (&str, (&str, &str, &str)) = ("\u{2502}", ("\u{2570}", "\u{2500}", "\u{256f}"));
-const HEAVY: (&str, (&str, &str, &str)) = ("\u{2503}", ("\u{2517}", "\u{2501}", "\u{251b}"));
+/// Every section's box under its bar: rounded, neutral (the bar carries the state).
+const ROUND: Edges = Edges { v: "\u{2502}", bottom: ("\u{2570}", "\u{2500}", "\u{256f}"), style: Style::new().fg(mono::LINE) };
 
 fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spacing, frame: Option<u64>) -> Vec<(Line<'static>, Option<usize>)> {
     let inner = sp.inner(width);
     let w = col_widths_gap(inner as u16, sp.gap as u16);
     let pad = " ".repeat(sp.pad);
+    let cols = bar_cols(rows);
     let mut out: Vec<(Line<'static>, Option<usize>)> = vec![];
     // a row inside a box: border, padding, the row, padding, border
     let boxed_row = |out: &mut Vec<(Line<'static>, Option<usize>)>, r: &Row, i: usize, e: Edges| {
@@ -485,7 +508,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
         }
     };
     // the admiral's box with nothing in it (the filters hide the admiral)
-    let empty_heavy = |out: &mut Vec<(Line<'static>, Option<usize>)>, e: Edges| {
+    let empty_box = |out: &mut Vec<(Line<'static>, Option<usize>)>, e: Edges| {
         let text = truncate("  the admiral is hidden by the filters", inner + 2 * sp.pad);
         let rest = (inner + 2 * sp.pad).saturating_sub(text.width());
         out.push((Line::from(vec![Span::styled(e.v, e.style), Span::styled(format!("{text}{}", " ".repeat(rest)), st(mono::FAINT)), Span::styled(e.v, e.style)]), None));
@@ -504,50 +527,46 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
         let head = &rows[i];
         // a blank line between fleets and before the stowaways, as spacing
         blank(&mut out);
-        let stow = head.section == Section::StowBand;
-        if stow {
-            // the stowaways: a rounded box, its band the top border
-            let e = Edges { v: ROUND.0, bottom: ROUND.1, style: st(head.node.frame.unwrap_or(mono::LINE)) };
-            let e = Edges { style: st(mono::LINE), ..e };
-            out.push((bar(head, width, i == cursor, frame), Some(i)));
-            i += 1;
+        out.push((bar(head, width, i == cursor, frame, cols), Some(i)));
+        i += 1;
+        if head.section == Section::StowBand {
+            // the stowaways: their bar, then their box
             let mut any = false;
             while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
-                boxed_row(&mut out, &rows[i], i, e);
+                boxed_row(&mut out, &rows[i], i, ROUND);
                 any = true;
                 i += 1;
             }
             if any && head.expanded {
-                close(&mut out, e);
+                close(&mut out, ROUND);
             }
             continue;
         }
-        // the fleet: no line of its own (its tab carries its state and counts);
-        // its row is the top of the admiral's heavy box
-        let heavy = Edges { v: HEAVY.0, bottom: HEAVY.1, style: if fleet_edge(head).fg == Some(mono::ERROR) { bold(mono::ERROR) } else { st(mono::FG) } };
-        out.push((admiral_top(head, width, i == cursor, heavy.style), Some(i)));
-        i += 1;
-        // what is open: the admiral's box, or a squadron's
-        let mut open: Option<Edges> = if head.expanded { Some(heavy) } else { None };
+        // the fleet's bar is its admiral's section's: the admiral and its crew
+        // in the box under it, then each squadron's bar and box
+        let mut open: Option<Edges> = if head.expanded { Some(ROUND) } else { None };
+        // the box open is the admiral's
+        let mut admiral_open = head.expanded;
         let mut members_seen = false;
         // rows in the admiral's box (a box with none says why)
-        let mut in_heavy = 0usize;
+        let mut in_admiral = 0usize;
         while i < rows.len() && !matches!(rows[i].section, Section::FleetBand | Section::StowBand) {
             let r = &rows[i];
             match r.section {
                 Section::SquadronBand => {
                     if let Some(e) = open.take() {
-                        if e.v == HEAVY.0 && in_heavy == 0 {
-                            empty_heavy(&mut out, e);
+                        if admiral_open && in_admiral == 0 {
+                            empty_box(&mut out, e);
                         }
                         close(&mut out, e);
                     }
+                    admiral_open = false;
                     blank(&mut out);
                     members_seen = true;
                     // the bar carries the status; the sides stay neutral
-                    out.push((bar(r, width, i == cursor, frame), Some(i)));
+                    out.push((bar(r, width, i == cursor, frame, cols), Some(i)));
                     if r.expanded {
-                        open = Some(Edges { v: ROUND.0, bottom: ROUND.1, style: st(mono::LINE) });
+                        open = Some(ROUND);
                     }
                 }
                 Section::SquadronBody => match open {
@@ -556,24 +575,22 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                 },
                 _ if r.node.kind == crate::view::Kind::Note => {
                     // a fleet's note (its config does not load, squadrons the state
-                    // filter hides), in full, outside any box
-                    // a gap from a box above (open, or a collapsed squadron's
-                    // line); a broken fleet's error stays right under its band,
-                    // its lines together
-                    // before any member (the fleet's config error): inside the
-                    // admiral's box, under its title; after (squadrons the state
-                    // filter hides): below the boxes
+                    // filter hides), in full: before any member (the fleet's
+                    // config error), inside the admiral's box, under its bar;
+                    // after (squadrons the state filter hides), below the boxes,
+                    // a gap from a box above (open, or a collapsed squadron's line)
                     if !members_seen {
                         if let Some(e) = open {
                             boxed_row(&mut out, r, i, e);
-                            in_heavy += 1;
+                            in_admiral += 1;
                             i += 1;
                             continue;
                         }
                     }
-                    if let Some(e) = open.filter(|e| e.v == HEAVY.0 && in_heavy == 0) {
-                        empty_heavy(&mut out, e);
+                    if let Some(e) = open.filter(|_| admiral_open && in_admiral == 0) {
+                        empty_box(&mut out, e);
                     }
+                    admiral_open = false;
                     let after_box = open.take().map(|e| close(&mut out, e)).is_some() || rows.get(i.wrapping_sub(1)).is_some_and(|p| p.section == Section::SquadronBand);
                     if after_box {
                         blank(&mut out);
@@ -585,20 +602,17 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     }
                 }
                 _ => {
-                    // the admiral and its crew, in the heavy box the fleet row opened
+                    // the admiral and its crew, in the box under the fleet's bar
                     members_seen = true;
-                    in_heavy += 1;
-                    match open {
-                        Some(e) => boxed_row(&mut out, r, i, e),
-                        None => boxed_row(&mut out, r, i, heavy),
-                    }
+                    in_admiral += 1;
+                    boxed_row(&mut out, r, i, open.unwrap_or(ROUND));
                 }
             }
             i += 1;
         }
         if let Some(e) = open.take() {
-            if e.v == HEAVY.0 && in_heavy == 0 {
-                empty_heavy(&mut out, e);
+            if admiral_open && in_admiral == 0 {
+                empty_box(&mut out, e);
             }
             close(&mut out, e);
         }

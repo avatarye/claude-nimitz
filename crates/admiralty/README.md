@@ -48,30 +48,36 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   hues with one meaning each (pink needs you, the only filled chip; orange
   error; yellow warning and legacy; green busy; cyan focus, key hints and fix
   commands) and four neutral steps (faint not started, muted ages and paths,
-  body text and idle, bright live names). Squadron and stowaway title bars are
-  filled with their status colour, their text dark; on the cursor the text is
-  underlined and the bar's ends turn cyan. On the cursor row, faint and muted
-  text is lifted.
-- A fleet has no line of its own: its tab carries its state word and its
-  `icon n / icon n` status and issue counts (info issues are not counted;
-  under 100 columns only needs-you and errors). The other tabs show how many
-  need you.
-- The admiral sits in a heavy box (`┏━ ▾ ADMIRAL ━┓`, a brighter title) with
-  its crew; that top line is the fleet's row (folding it folds the fleet, `x`
-  on it has the fleet's actions), and a fleet whose config does not load
-  shows its error in full under it.
-- A box per squadron under a title bar filled with the squadron's status, the
-  worst of its commodore and ships, in this order: pink needs you, orange
-  error (an issue at Error, or a config that does not load), yellow warning
-  (an issue at Warn), green busy, else neutral (idle, stopped, parked, not
-  started; info issues do not count), a muted grey that still reads as a bar.
-  The bar reads `▾ <flag> ARGOS   <status glyph> busy   <ship icon> 6  ...counts`:
-  the same icons as the rows (the status glyph of the squadron's state: needs
-  you, an issue mark for broken, busy, idle, stopped for no commodore, off for
-  inactive; then the ship icon and the number of ships; `ADMIRALTY_ICONS=ascii`:
-  `* busy   S 6`). The text and the icons on the bar are dark (`INK`, at least
-  5.9:1 on every fill). The sides
-  stay neutral. Ships are rows; crew, tasks and extra job rows sit under their
+  body text and idle, bright live names). Every section's bar is filled with
+  its status colour, its text dark; on the cursor the text is underlined and
+  the bar's ends turn cyan. On the cursor row, faint and muted text is lifted.
+- The fleet's tab carries its state word and its `icon n / icon n` status and
+  issue counts (info issues are not counted; under 100 columns only needs-you
+  and errors). The other tabs show how many need you.
+- Every section is a bar over a rounded box, in one grammar, each part in the
+  same column on every bar:
+  `▾ <crown> MAIN  fleet · admiral   <glyph> idle   1 crew ... KB ✓ 3m · 142 pages   counts`,
+  `▾ <flag> ARGOS  squadron   <glyph> busy   3 ships ... counts`,
+  `▾ <stowaway> STOWAWAYS  no labels — adopt or remove ... 1 live / 2 total`.
+  The fleet's bar is its admiral's section (the admiral and its crew under
+  it); folding it folds the fleet, `x` on it has the fleet's actions and,
+  beside them, the fleet's detail with its knowledge base in full. A fleet
+  whose config does not load shows its error in full at the top of its box.
+- A bar's colour is the worst in its section, in this order: pink needs you,
+  orange error (an issue at Error, or a config that does not load), yellow
+  warning (an issue at Warn), green busy, else neutral (idle, stopped, parked,
+  not started; info issues do not count), a muted grey that still reads as a
+  bar. A squadron's state glyph is the rows' (needs you, an issue mark for
+  broken, busy, idle, stopped for no commodore, off for inactive). The text
+  and the icons on the bar are dark (`INK`, at least 5.9:1 on every fill).
+  On a narrow terminal a bar drops parts right to left (the KB's details,
+  the tallies, the KB, then the size, the state, the role); it never wraps.
+- The fleet bar's KB: `KB ✓ <age of the last commit> · <N pages>` in step,
+  `KB ⚠ <n> edits` not committed, `KB ✗ conflict` while a rebase or merge is
+  under way, `KB ↑<n>` commits not pushed (as of the last fetch; Admiralty
+  never fetches), `KB –` no KB on this machine. Read from the local clone at
+  most every 30 s, off the drawing thread.
+- The box sides stay neutral. Ships are rows; crew, tasks and extra job rows sit under their
   member with tree guides. Crew show while running and for 30 minutes after
   they finish (a nested crew follows its parent; a running one keeps its
   parent in view); older ones fold into one `+N done` row per
