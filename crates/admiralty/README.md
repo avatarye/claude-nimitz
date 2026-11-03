@@ -54,11 +54,14 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
 - The fleet's tab carries its state word and its `icon n / icon n` status and
   issue counts (info issues are not counted; under 100 columns only needs-you
   and errors). The other tabs show how many need you.
-- Every section is a bar over a rounded box, in one grammar, each part in the
-  same column on every bar:
-  `▾ <crown> MAIN  fleet · admiral   <glyph> idle   1 crew ... KB ✓ 3m · 142 pages   counts`,
-  `▾ <flag> ARGOS  squadron   <glyph> busy   3 ships ... counts`,
-  `▾ <stowaway> STOWAWAYS  no labels — adopt or remove ... 1 live / 2 total`.
+- Every section is a bar over a rounded box, in one grammar:
+  `▾ <crown> MAIN - admiral  KB ✓ 3m   <glyph> idle ...   1 crew  <slots>`,
+  `▾ <flag> MAIN/ARGOS - commodore   <glyph> busy ...   3 ships  <slots>`,
+  `▾ <stowaway> MAIN - stowaways   no labels — adopt or remove ...   2 stowaways  <slots>`.
+  The title is the path and the lead's role. The state starts in the member
+  rows' STATUS column, glyph over glyph. On the right, every bar ends in a
+  block of one width: the size, then a count for every slot (needs you,
+  issues, busy, idle, off), zeros kept, so the counts line up down the list.
   The fleet's bar is its admiral's section (the admiral and its crew under
   it); folding it folds the fleet, `x` on it has the fleet's actions and,
   beside them, the fleet's detail with its knowledge base in full. A fleet
@@ -70,13 +73,14 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   bar. A squadron's state glyph is the rows' (needs you, an issue mark for
   broken, busy, idle, stopped for no commodore, off for inactive). The text
   and the icons on the bar are dark (`INK`, at least 5.9:1 on every fill).
-  On a narrow terminal a bar drops parts right to left (the KB's details,
-  the tallies, the KB, then the size, the state, the role); it never wraps.
-- The fleet bar's KB: `KB ✓ <age of the last commit> · <N pages>` in step,
-  `KB ⚠ <n> edits` not committed, `KB ✗ conflict` while a rebase or merge is
-  under way, `KB ↑<n>` commits not pushed (as of the last fetch; Admiralty
-  never fetches), `KB –` no KB on this machine. Read from the local clone at
-  most every 30 s, off the drawing thread.
+  A bar leaves a part out only when it would not fit (the KB's details first,
+  then the KB, then the counts block); it never wraps.
+- The fleet bar's KB, between its title and its state: `KB ✓ <age of the last
+  commit> · <N pages>` in step, `KB ⚠ <n> edits` not committed, `KB ✗
+  conflict` while a rebase or merge is under way, `KB ↑<n>` commits not pushed
+  (as of the last fetch; Admiralty never fetches), `KB –` no KB on this
+  machine. Its details go first when the gap is short. Read from the local
+  clone at most every 30 s, off the drawing thread.
 - The box sides stay neutral. Ships are rows; crew, tasks and extra job rows sit under their
   member with tree guides. Crew show while running and for 30 minutes after
   they finish (a nested crew follows its parent; a running one keeps its

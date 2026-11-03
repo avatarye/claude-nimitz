@@ -71,7 +71,7 @@ fn bug35_a_broken_squadron_toml_keeps_the_fleet_on_screen() {
     let mut app = app_on(&w, false);
     tab(&mut app, "MAIN");
     let sc = screen(&mut app, 120, 40);
-    assert!(sc.lines().any(|l| l.contains(" MAIN ") && l.contains("fleet \u{b7} admiral")), "fleet MAIN (8 live sessions) is gone from the screen:\n{sc}");
+    assert!(sc.lines().any(|l| l.contains(" MAIN ") && l.contains(" - admiral")), "fleet MAIN (8 live sessions) is gone from the screen:\n{sc}");
 }
 
 #[test]

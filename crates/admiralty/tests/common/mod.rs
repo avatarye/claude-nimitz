@@ -164,7 +164,7 @@ pub fn col_of(lines: &[String], line_has: &str, needle: &str) -> usize {
 /// ship count (`<ship icon> 6`, either icon set); a ship row has the icon
 /// before its name instead.
 pub fn is_sq_bar(l: &str) -> bool {
-    is_bar(l) && l.contains("  squadron ")
+    is_bar(l) && l.contains(" - commodore")
 }
 
 /// A section's bar (the fleet's, a squadron's, the stowaways'): its end

@@ -258,12 +258,12 @@ pub fn kb_lines(look: Option<&crate::data::KbLook>, now: f64) -> Vec<Line<'stati
         (Some(h), Some(t)) => format!("{h}  {t}  {age}"),
         _ => "none".into(),
     }));
-    v.push(kv("pages", format!("{} (markdown under wiki/, not _index.md, _log.md)", f.pages)));
+    v.push(kv("pages", format!("{} (wiki/**/*.md, not _*.md)", f.pages)));
     v.push(kv("edits", if f.stray.is_some() { "not read (git status is not run)".to_string() } else { f.edits.to_string() }));
     let branch = f.branch.clone().unwrap_or_else(|| "none (a detached HEAD)".into());
     v.push(kv("branch", match &f.upstream {
-        Some(u) => format!("{branch}: {} ahead, {} behind {u} (as of the last fetch)", f.ahead, f.behind),
-        None => format!("{branch}: no upstream"),
+        Some(u) => format!("{branch}  \u{2191}{} \u{2193}{} vs {u} (last fetch)", f.ahead, f.behind),
+        None => format!("{branch}  no upstream"),
     }));
     v
 }

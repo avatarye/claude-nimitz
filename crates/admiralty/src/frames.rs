@@ -292,123 +292,145 @@ fn row_spans_anim(r: &Row, w: &[u16; 4], inner: usize, gap: usize, icons: &Icons
     out
 }
 
-/// A bar `width` columns wide including its two end cells.
-/// Bars narrower than this show only the key tallies (needs you, errors).
+
+/// A band `width` columns wide: under this, the fleet's tab shows only the
+/// key counts (needs you, errors).
 pub const NARROW_BAND: usize = 100;
 
-/// The columns every bar shares: NAME, the role word and the state, each as
-/// wide as the widest among the list's bars (`bar_cols`), so a part starts
-/// in the same column on every bar.
+/// The column the member rows' STATUS cell starts at, in a list `width`
+/// columns wide with spacing `sp`: the box's side and padding, NAME, a gap.
+/// A bar puts its state there, glyph over glyph.
+pub fn status_x(width: usize, sp: Spacing) -> usize {
+    let w = col_widths_gap(sp.inner(width) as u16, sp.gap as u16);
+    sp.side() + w[0] as usize + sp.gap
+}
+
+/// What the bars on screen share: the size's width, so every bar's right
+/// block (size and slots) has one width and its slots line up.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BarCols {
-    pub name: usize,
-    pub role: usize,
-    pub state: usize,
+    pub size: usize,
 }
-
-/// NAME is padded to at most this many columns (a longer name pushes its own bar's parts on).
-const BAR_NAME_MAX: usize = 16;
 
 pub fn bar_cols(rows: &[Row]) -> BarCols {
-    let mut c = BarCols::default();
-    for h in rows.iter().filter_map(|r| r.node.head.as_ref()) {
-        c.name = c.name.max(h.name.width().min(BAR_NAME_MAX));
-        if !h.free {
-            c.role = c.role.max(h.role.width());
-        }
-        if let Some(s) = &h.state {
-            c.state = c.state.max(s.width());
-        }
-    }
-    c
+    BarCols { size: rows.iter().filter_map(|r| r.node.head.as_ref()).map(|h| h.size.width()).max().unwrap_or(0) }
 }
 
-/// What a bar shows at a width: the parts still on it. `step` takes the
-/// next one away, right to left: the KB's details (pages, then the age), the
-/// tallies (all but the key ones, then those), the KB, the column padding,
-/// the size, the state, the role.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct BarFit {
-    kb_parts: usize,
-    kb: bool,
-    /// 2 every tally, 1 the key ones, 0 none
-    tallies: u8,
-    pad: bool,
-    size: bool,
-    state: bool,
-    role: bool,
+/// The parts a bar shows besides its title (always there, cut last).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BarFit {
+    pub state: bool,
+    /// the size and every slot, as one block
+    pub block: bool,
+    pub kb: bool,
+    /// how many of the KB's details (age, pages)
+    pub kb_parts: usize,
 }
 
-impl BarFit {
-    fn step(mut self) -> Option<BarFit> {
-        if self.kb && self.kb_parts > 0 {
-            self.kb_parts -= 1;
-        } else if self.tallies > 0 {
-            self.tallies -= 1;
-        } else if self.kb {
-            self.kb = false;
-        } else if self.pad {
-            self.pad = false;
-        } else if self.size {
-            self.size = false;
-        } else if self.state {
-            self.state = false;
-        } else if self.role {
-            self.role = false;
-        } else {
-            return None;
-        }
-        Some(self)
+/// The title's column (after the end cell, the fold marker and the glyph).
+const TITLE_X: usize = 6;
+
+/// The right block: the size, right-aligned in the screen's widest, then a
+/// count per slot (`view::slot_glyphs`), zeros too, two columns each.
+fn bar_block(h: &crate::view::Header, cols: BarCols, icons: &Icons) -> String {
+    let slots: Vec<String> = crate::view::slot_glyphs(icons).iter().zip(h.slots).map(|(g, n)| format!("{g}{n:>2}")).collect();
+    format!("{:>w$}  {}", h.size, slots.join(" "), w = cols.size)
+}
+
+/// The right side at a fit: the block, or nothing.
+fn bar_right(h: &crate::view::Header, fit: BarFit, cols: BarCols, icons: &Icons) -> String {
+    if fit.block {
+        bar_block(h, cols, icons)
+    } else {
+        String::new()
     }
 }
 
-/// A bar's left text (fold marker to size) and right text (KB, tallies) at a fit.
-fn bar_text(r: &Row, h: &crate::view::Header, fit: BarFit, cols: BarCols) -> (String, String) {
-    let n = &r.node;
-    let marker = if r.expanded && !n.children.is_empty() { "\u{25be}" } else { "\u{25b8}" };
-    let padded = |s: &str, w: usize| if fit.pad { pad(s, w) } else { s.to_string() };
-    let mut left = format!(" {marker} ");
-    if let Some(state) = &n.pane_state {
-        left.push_str(&format!("{} ", pane_dot(state)));
+/// The KB part at a fit (the fleet's bar only), after the title.
+fn bar_kb(h: &crate::view::Header, fit: BarFit) -> Option<String> {
+    h.kb.as_ref().filter(|_| fit.kb).map(|k| k.text(fit.kb_parts))
+}
+
+/// The room the title has at a fit: up to the state's column, else up to the right side.
+fn title_room(h: &crate::view::Header, width: usize, sx: usize, fit: BarFit, right_w: usize) -> usize {
+    if fit.state && h.state.is_some() {
+        sx.saturating_sub(TITLE_X + 1)
+    } else {
+        width.saturating_sub(2 + TITLE_X + if right_w > 0 { right_w + 2 } else { 0 })
     }
-    left.push_str(&format!("{} {}", h.glyph, padded(&h.name, cols.name)));
-    if fit.role {
-        left.push_str("  ");
-        left.push_str(&if h.free { h.role.clone() } else { padded(&h.role, cols.role) });
+}
+
+/// The title in `room` columns: in full, else without its fleet's part, else cut.
+fn bar_title(h: &crate::view::Header, room: usize) -> String {
+    if h.title.width() <= room {
+        return h.title.clone();
     }
-    if fit.state {
-        if let Some(s) = &h.state {
-            left.push_str(&format!("   {}", padded(s, cols.state)));
+    match &h.short {
+        Some(s) if s.width() <= room => s.clone(),
+        _ => truncate(h.short.as_ref().unwrap_or(&h.title), room),
+    }
+}
+
+/// Does the bar fit `width` columns with these parts (beside the state the
+/// title may be cut, else it is whole or shortened)? Text runs from column
+/// 1 to `width - 3`. The KB sits two columns after the title and ends a
+/// column before the state; the
+/// state starts at the rows' STATUS column; two columns at least before the
+/// right block.
+pub fn bar_fits(r: &Row, width: usize, sp: Spacing, cols: BarCols, icons: &Icons, fit: BarFit) -> bool {
+    let Some(h) = r.node.head.as_ref() else { return true };
+    let sx = status_x(width, sp);
+    let right_w = bar_right(h, fit, cols, icons).width();
+    let room = title_room(h, width, sx, fit, right_w);
+    // beside the state the title may be cut (the state keeps its column); without it, whole or shortened
+    let title_ok = if fit.state && h.state.is_some() { room >= 4 } else { h.title.width() <= room || h.short.as_ref().is_some_and(|s| s.width() <= room) };
+    let lead_end = TITLE_X + bar_title(h, room).width() + bar_kb(h, fit).map_or(0, |k| 2 + k.width());
+    let left_end = match (&h.state, fit.state) {
+        (Some(s), true) => {
+            if lead_end + 1 > sx {
+                return false;
+            }
+            sx + s.width()
+        }
+        _ => lead_end,
+    };
+    let end = width.saturating_sub(2);
+    title_ok && if right_w == 0 { left_end <= end } else { left_end + 2 + right_w <= end }
+}
+
+/// The parts a bar shows at `width`: each one that fits beside those before
+/// it, in this order: the state, the block, the KB, the KB's details. A part
+/// is left out only when adding it would overflow (or push the state off
+/// the STATUS column).
+pub fn bar_fit(r: &Row, width: usize, sp: Spacing, cols: BarCols, icons: &Icons) -> BarFit {
+    let Some(h) = r.node.head.as_ref() else { return BarFit::default() };
+    let mut fit = BarFit::default();
+    let add = |cur: BarFit, next: BarFit| if bar_fits(r, width, sp, cols, icons, next) { next } else { cur };
+    if h.state.is_some() {
+        fit = add(fit, BarFit { state: true, ..fit });
+    }
+    fit = add(fit, BarFit { block: true, ..fit });
+    if let Some(kb) = &h.kb {
+        fit = add(fit, BarFit { kb: true, ..fit });
+        for n in 1..=kb.parts.len() {
+            if fit.kb && fit.kb_parts == n - 1 {
+                fit = add(fit, BarFit { kb_parts: n, ..fit });
+            }
         }
     }
-    if fit.size {
-        for s in [&h.size, &h.note].into_iter().flatten() {
-            left.push_str(&format!("   {s}"));
-        }
-    }
-    let mut right = vec![];
-    if fit.kb {
-        if let Some(kb) = &h.kb {
-            right.push(kb.text(fit.kb_parts));
-        }
-    }
-    let tallies: Vec<String> = h.tallies.iter().filter(|c| fit.tallies == 2 || (fit.tallies == 1 && c.key)).map(|c| c.text()).collect();
-    if !tallies.is_empty() {
-        right.push(tallies.join(" / "));
-    } else if fit.tallies > 0 {
-        right.extend(h.tally_text.clone());
-    }
-    (left.trim_end().to_string(), right.join("   "))
+    fit
 }
 
 /// A section's bar (the fleet's, a squadron's, the stowaways'), one grammar:
-/// `▾ ♛ MAIN  fleet · admiral   ☾ idle   1 crew ...  KB ✓ 3m · 142 pages   ⚡1`.
+/// `▾ ♛ MAIN - admiral  KB ✓ 3m   ☾ idle ...   1 crew  ♟ 0 ⚠ 0 ⚡ 1 ☾ 1 ○ 0`.
+/// The title, the fleet's KB after it, the state in the member rows'
+/// STATUS column (`status_x`), and a right block of one width on every bar.
 /// Filled with the worst state in its section (neutral: the muted step, so
-/// it still reads as a bar), its text in `INK`. Parts go right to left when
-/// it runs short (`BarFit`); it never wraps nor passes its end. On the
-/// cursor the fill and the text stay, so the contrast does too: the text is
-/// underlined and the end cells take the selection colour.
-pub fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>, cols: BarCols) -> Line<'static> {
+/// it still reads as a bar), its text in `INK`. Parts go only when they do
+/// not fit (`bar_fit`); it never wraps nor passes its end. On the cursor the
+/// fill and the text stay, so the contrast does too: the text is underlined
+/// and the end cells take the selection colour.
+pub fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>, sp: Spacing, cols: BarCols, icons: &Icons) -> Line<'static> {
     let Some(h) = r.node.head.as_ref() else { return Line::raw(" ".repeat(width)) };
     let mut fill = h.fill;
     // its status just got worse: one pulse toward white over a second, then it holds
@@ -421,28 +443,32 @@ pub fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>, cols: BarC
     if selected {
         text = text.add_modifier(Modifier::UNDERLINED);
     }
-    // the end cells, and one cell of room before the right one
-    let room = width.saturating_sub(3);
-    let narrow = width < NARROW_BAND;
-    let mut fit = Some(BarFit { kb_parts: h.kb.as_ref().map_or(0, |k| k.parts.len()), kb: true, tallies: if narrow { 1 } else { 2 }, pad: true, size: true, state: true, role: true });
-    let (mut left, mut right) = (String::new(), String::new());
-    while let Some(f) = fit {
-        (left, right) = bar_text(r, h, f, cols);
-        let need = left.width() + if right.is_empty() { 0 } else { 2 + right.width() };
-        if need <= room {
-            break;
-        }
-        fit = f.step();
+    let fit = bar_fit(r, width, sp, cols, icons);
+    let sx = status_x(width, sp);
+    let right = bar_right(h, fit, cols, icons);
+    let room = title_room(h, width, sx, fit, right.width());
+    let marker = if r.expanded && !r.node.children.is_empty() { "\u{25be}" } else { "\u{25b8}" };
+    // the text from column 1: what lands at column c is at width c - 1
+    let mut s = format!(" {marker} {} {}", h.glyph, bar_title(h, room));
+    if let Some(kb) = bar_kb(h, fit) {
+        s.push_str("  ");
+        s.push_str(&kb);
     }
-    if fit.is_none() {
-        // not even the name fits: cut it, never past the end
-        right.clear();
-        left = truncate(&left, room);
+    if let (Some(state), true) = (&h.state, fit.state) {
+        s = pad(&s, sx - 1);
+        s.push_str(state);
     }
-    let gap = room.saturating_sub(left.width() + right.width());
-    let end = |sel: bool| Span::styled(" ", if sel { Style::new().bg(mono::ACCENT) } else { text });
-    Line::from(vec![end(selected), Span::styled(format!("{left}{}{right} ", " ".repeat(gap)), text), end(selected)])
+    let end = width.saturating_sub(2);
+    if !right.is_empty() {
+        s = pad(&s, end.saturating_sub(right.width()) - 1);
+        s.push_str(&right);
+    }
+    // never past the end: the space before the end cell, then the end cell
+    let s = pad(&truncate(&s, end.saturating_sub(1)), end.saturating_sub(1));
+    let cap = |sel: bool| Span::styled(" ", if sel { Style::new().bg(mono::ACCENT) } else { text });
+    Line::from(vec![cap(selected), Span::styled(format!("{s} "), text), cap(selected)])
 }
+
 
 /// The cursor row: selection background, and dim text lifted so it stays readable.
 pub fn selectable(line: Line<'static>, selected: bool) -> Line<'static> {
@@ -527,7 +553,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
         let head = &rows[i];
         // a blank line between fleets and before the stowaways, as spacing
         blank(&mut out);
-        out.push((bar(head, width, i == cursor, frame, cols), Some(i)));
+        out.push((bar(head, width, i == cursor, frame, sp, cols, icons), Some(i)));
         i += 1;
         if head.section == Section::StowBand {
             // the stowaways: their bar, then their box
@@ -564,7 +590,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     blank(&mut out);
                     members_seen = true;
                     // the bar carries the status; the sides stay neutral
-                    out.push((bar(r, width, i == cursor, frame, cols), Some(i)));
+                    out.push((bar(r, width, i == cursor, frame, sp, cols, icons), Some(i)));
                     if r.expanded {
                         open = Some(ROUND);
                     }

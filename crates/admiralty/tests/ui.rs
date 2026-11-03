@@ -62,7 +62,7 @@ fn every_section_is_a_bar_over_a_box_the_fleets_too() {
         let ls = lines(&draw(&mut t.app, 200, 60));
         assert!(!ls.iter().any(|l| l.starts_with('\u{2554}') || l.starts_with('\u{2551}') || l.starts_with('\u{255a}')), "no double frame on {fleet}");
         assert!(!ls.iter().any(|l| l.contains('\u{2503}') || l.contains('\u{250f}') || l.contains('\u{2517}')), "no heavy box on {fleet}");
-        assert!(is_bar(&ls[2]) && ls[2].contains(&format!(" {fleet} ")) && ls[2].contains("fleet \u{b7} admiral"), "{fleet}: the list starts with the fleet's bar:\n{}", ls.join("\n"));
+        assert!(is_bar(&ls[2]) && ls[2].contains(&format!(" {fleet} - admiral ")), "{fleet}: the list starts with the fleet's bar:\n{}", ls.join("\n"));
     }
     tab(&mut t.app, "MAIN");
     let buf = draw(&mut t.app, 200, 60);
@@ -80,15 +80,14 @@ fn every_section_is_a_bar_over_a_box_the_fleets_too() {
     // the fleet row is that bar: fleet actions keep a row to stand on
     goto(&mut t.app, "F:MAIN");
     assert_eq!(t.app.current().unwrap().node.kind, Kind::FleetBand);
-    // squadron bars: filled in the status colour, dark text
-    let kits = ls.iter().position(|l| l.contains("KITS") && is_sq_bar(l)).unwrap();
+    // squadron bars: titled by path and lead, filled in the status colour, dark text
+    let kits = ls.iter().position(|l| l.contains("MAIN/KITS - commodore") && is_sq_bar(l)).unwrap();
     let x = ls[kits].find("KITS").unwrap() as u16;
     assert_eq!((buf[(x, kits as u16)].bg, buf[(x, kits as u16)].fg), (mono::NEEDS, mono::INK), "KITS needs you");
     assert_eq!(buf[(0, (kits + 1) as u16)].fg, mono::LINE, "the sides stay neutral");
-    // issue #3: the rows' status glyph, in the same dark ink; the size in words
     let icons = t.app.icons;
     let glyph = format!("{} needs you", icons.s_needs);
-    assert!(ls[kits].contains(&glyph) && ls[kits].contains("   2 ships"), "{}", ls[kits]);
+    assert!(ls[kits].contains(&glyph) && ls[kits].contains("2 ships  "), "{}", ls[kits]);
     for at in [ls[kits].find(&glyph).unwrap(), ls[kits].find("2 ships").unwrap()] {
         let x = ls[kits][..at].chars().count() as u16;
         assert_eq!((buf[(x, kits as u16)].bg, buf[(x, kits as u16)].fg), (mono::NEEDS, mono::INK), "the glyph at {x}: {}", ls[kits]);
@@ -103,14 +102,14 @@ fn every_section_is_a_bar_over_a_box_the_fleets_too() {
     };
     assert_eq!(buf[(2, argos as u16)].bg, want);
     assert!(ls[argos - 1].trim().is_empty() && ls[kits - 1].trim().is_empty(), "blank lines between the boxes");
-    let s = ls.iter().position(|l| l.contains("STOWAWAYS")).unwrap();
+    let s = ls.iter().position(|l| l.contains("MAIN - stowaways")).unwrap();
     assert_eq!(buf[(2, s as u16)].bg, mono::WARN, "the stowaways: yellow while one is live");
     // the cursor on a bar keeps its fill and dark text (the contrast holds)
     for id in ["SQ:MAIN/KITS", "F:MAIN"] {
         goto(&mut t.app, id);
         let buf = draw(&mut t.app, 200, 60);
         let ls = lines(&buf);
-        let name = if id == "F:MAIN" { "MAIN " } else { "KITS" };
+        let name = if id == "F:MAIN" { "MAIN - admiral" } else { "KITS" };
         let y = ls.iter().position(|l| l.contains(name) && is_bar(l)).unwrap();
         let x = ls[y].find(name).unwrap() as u16;
         let c = &buf[(x, y as u16)];
@@ -120,51 +119,77 @@ fn every_section_is_a_bar_over_a_box_the_fleets_too() {
     }
 }
 
-/// One grammar on every bar: fold marker, glyph, NAME, role, state, size,
-/// each part starting in the same column on the fleet's bar and the
-/// squadrons'; the stowaways' text starts where the role does. The right
-/// side ends in the same column on every bar.
+/// The column of `needle`'s first character in `l` (every glyph is one cell).
+fn char_col(l: &str, needle: &str) -> Option<usize> {
+    l.find(needle).map(|at| l[..at].chars().count())
+}
+
+/// A bar's state starts in the member rows' STATUS column, glyph over glyph,
+/// on the fleet's bar, a squadron's and the stowaways', at every width it
+/// shows (the same `frames::status_x` the rows go by).
 #[test]
-fn every_bar_has_one_grammar_in_the_same_columns() {
+fn a_bars_state_sits_in_the_rows_status_column() {
     let mut t = demo();
     tab(&mut t.app, "MAIN");
+    let icons = t.app.icons;
+    for w in [200u16, 160, 120, 100, 80, 70, 60] {
+        let ls = lines(&draw(&mut t.app, w, 90));
+        let row = |name: &str| ls.iter().find(|l| l.starts_with('\u{2502}') && l.contains(name)).unwrap_or_else(|| panic!("{name} at {w}:\n{}", ls.join("\n")));
+        // the rows' STATUS column, read off the screen
+        let x = char_col(row("ADMIRAL "), &format!("{} idle", icons.s_idle)).unwrap();
+        assert_eq!(char_col(row("COMMODO"), &format!("{} busy", icons.s_busy)), Some(x), "{w}: the rows agree");
+        assert_eq!(x, admiralty::frames::status_x(w as usize, admiralty::frames::spacing_for(w as usize)), "{w}");
+        let bars: Vec<&String> = ls.iter().filter(|l| is_bar(l)).collect();
+        assert_eq!(bars.len(), 4, "{w}: MAIN, ARGOS, KITS, the stowaways");
+        let bar = |title: &str| bars[["MAIN", "ARGOS", "KITS", "stowaways"].iter().position(|t| *t == title).unwrap()].as_str();
+        assert_eq!(char_col(bar("MAIN"), &format!("{} idle", icons.s_idle)), Some(x), "{w}: the fleet's bar\n{}", bar("MAIN"));
+        assert_eq!(char_col(bar("ARGOS"), &format!("{} busy", icons.s_busy)), Some(x), "{w}: ARGOS\n{}", bar("ARGOS"));
+        assert_eq!(char_col(bar("KITS"), &format!("{} needs you", icons.s_needs)), Some(x), "{w}: KITS\n{}", bar("KITS"));
+        if w >= 80 {
+            assert_eq!(char_col(bar("stowaways"), "no labels"), Some(x), "{w}: the stowaways\n{}", bar("stowaways"));
+        }
+    }
+}
+
+/// The right block has one width on every bar: the size, right-aligned,
+/// then a count for every slot, zeros kept, in one order; it ends one cell
+/// before the bar's end, so the slots line up down the list.
+#[test]
+fn every_bar_ends_in_one_fixed_block_of_counts() {
+    let mut t = demo();
+    tab(&mut t.app, "MAIN");
+    let icons = t.app.icons;
+    let glyphs = admiralty::view::slot_glyphs(icons);
     let ls = lines(&draw(&mut t.app, 200, 60));
     let bars: Vec<&String> = ls.iter().filter(|l| is_bar(l)).collect();
-    assert_eq!(bars.len(), 4, "MAIN, ARGOS, KITS, STOWAWAYS:\n{}", ls.join("\n"));
-    let col = |l: &str, word: &str| l.find(word).map(|at| l[..at].chars().count()).unwrap_or_else(|| panic!("{word} in {l}"));
-    let (main, argos, kits, stow) = (bars[0].as_str(), bars[1].as_str(), bars[2].as_str(), bars[3].as_str());
-    let icons = t.app.icons;
-    // the glyph and NAME
-    assert_eq!(col(main, icons.admiral), col(argos, icons.squadron));
-    assert_eq!(col(main, "MAIN"), col(argos, "ARGOS"));
-    assert_eq!(col(main, "MAIN"), col(stow, "STOWAWAYS"));
-    // the role
-    assert_eq!(col(main, "fleet \u{b7} admiral"), col(argos, "squadron"));
-    assert_eq!(col(argos, "squadron"), col(kits, "squadron"));
-    assert_eq!(col(main, "fleet \u{b7} admiral"), col(stow, "no labels \u{2014} adopt or remove"));
-    // the state: glyph and word
-    assert_eq!(col(main, &format!("{} idle", icons.s_idle)), col(argos, &format!("{} busy", icons.s_busy)));
-    assert_eq!(col(argos, &format!("{} busy", icons.s_busy)), col(kits, &format!("{} needs you", icons.s_needs)));
-    // the size
-    assert_eq!(col(main, "1 crew"), col(argos, "3 ships"));
-    assert_eq!(col(argos, "3 ships"), col(kits, "2 ships"));
-    // the right side ends one cell before the end cell, on every bar
+    assert_eq!(bars.len(), 4, "MAIN, ARGOS, KITS, the stowaways:\n{}", ls.join("\n"));
+    let block_w = 5 * 3 + 4;
+    let mut slots = vec![];
     for b in &bars {
-        assert_eq!(b.chars().count(), 200);
-        assert!(b.trim_end().chars().count() >= 196, "right-aligned: {b}");
+        let cs: Vec<char> = b.chars().collect();
+        assert_eq!(cs.len(), 200);
+        assert_eq!(cs[198], ' ', "{b}");
+        let block: String = cs[198 - block_w..198].iter().collect();
+        for (k, g) in glyphs.iter().enumerate() {
+            assert_eq!(&block[..].chars().skip(4 * k).take(1).collect::<String>(), g, "slot {k} in {b}");
+        }
+        slots.push(block.clone());
+        assert_eq!(cs[198 - block_w - 1], ' ', "{b}");
+        assert_eq!(cs[198 - block_w - 2], ' ', "two spaces after the size: {b}");
     }
-    assert!(main.contains(&format!("KB {} 3m \u{b7} 142 pages", icons.kb_ok)), "{main}");
-    assert!(stow.trim_end().ends_with("1 live / 2 total"), "{stow}");
-    // the fold marker where the mouse looks for it
-    let rows = t.app.rows.clone();
-    for (i, r) in rows.iter().enumerate().filter(|(_, r)| r.node.head.is_some()) {
-        let sp = admiralty::frames::spacing_for(200);
-        assert_eq!(admiralty::frames::fold_x(r, sp), Some(2), "row {i}");
+    let n = |g: &str, k: u32| format!("{g}{k:>2}");
+    assert!(slots[0].contains(&n(glyphs[2], 1)) && slots[0].contains(&n(glyphs[3], 1)) && slots[0].contains(&n(glyphs[0], 0)), "MAIN: {}", slots[0]);
+    assert!(slots[1].contains(&n(glyphs[2], 3)) && slots[1].contains(&n(glyphs[3], 1)) && slots[1].contains(&n(glyphs[4], 0)), "ARGOS: {}", slots[1]);
+    assert!(slots[2].contains(&n(glyphs[0], 2)) && slots[2].contains(&n(glyphs[2], 0)), "KITS, zeros kept: {}", slots[2]);
+    // the sizes end in one column
+    for (b, size) in bars.iter().zip(["1 crew", "3 ships", "2 ships", "2 stowaways"]) {
+        assert_eq!(char_col(b, size).map(|c| c + size.chars().count()), Some(198 - block_w - 2), "{b}");
     }
 }
 
 /// The fleet bar's KB, each state: in step (age of the last commit, pages),
-/// edits not committed, a conflict, commits not pushed, none.
+/// edits not committed, a conflict, commits not pushed, none. It sits after
+/// the fleet's title, before its state, on the fleet's bar only.
 #[test]
 fn the_kb_label_for_each_state() {
     use admiralty::view::kb_badge;
@@ -184,70 +209,75 @@ fn the_kb_label_for_each_state() {
     // the details go first, the last one first
     let b = kb_badge(Some(&Ok(ok)), now, icons).unwrap();
     assert_eq!((b.text(1), b.text(0)), ("KB \u{2713} 3m".to_string(), "KB \u{2713}".to_string()));
-    // the demo shows a healthy KB, one with edits, and one with none
+    // the demo: a healthy KB, one with edits, and none, each on its fleet's
+    // bar between the title and the state
     let mut t = demo();
     let icons = t.app.icons;
-    for (fleet, want) in [("MAIN", format!("KB {} 3m \u{b7} 142 pages", icons.kb_ok)), ("FORGE", format!("KB {} 3 edits", icons.kb_edits)), ("LAB", format!("KB {}", icons.kb_none))] {
+    for (fleet, want, state) in [("MAIN", format!("KB {} 3m", icons.kb_ok), "idle"), ("FORGE", format!("KB {}", icons.kb_edits), "busy"), ("LAB", format!("KB {}", icons.kb_none), "elsewhere")] {
         tab(&mut t.app, fleet);
         let ls = lines(&draw(&mut t.app, 200, 50));
-        assert!(ls[2].contains(&want), "{fleet}: {}", ls[2]);
+        let at = char_col(&ls[2], &want).unwrap_or_else(|| panic!("{fleet}: {}", ls[2]));
+        assert!(at > char_col(&ls[2], "- admiral").unwrap() && at < char_col(&ls[2], state).unwrap(), "{fleet}: after the title, before the state: {}", ls[2]);
+        assert!(!ls.iter().filter(|l| is_bar(l) && !l.contains("- admiral")).any(|l| l.contains("KB ")), "{fleet}: the fleet's bar only");
     }
 }
 
-/// A narrow bar drops its parts right to left, never wraps nor overflows:
-/// the KB's details first, then the tallies, then the KB, then the
-/// padding, the size, the state and the role; the name is cut last.
+/// A bar never drops a part that would still fit: at every width from 24
+/// to 200, each part it leaves out (the state, the block, the KB, a KB
+/// detail) would overflow it, or push the state off its column. Every bar
+/// is exactly the width, one line.
 #[test]
-fn a_narrow_bar_drops_its_parts_right_to_left() {
+fn a_bar_drops_a_part_only_when_it_would_overflow() {
+    use admiralty::frames::{bar_cols, bar_fit, bar_fits, spacing_for, status_x, BarFit};
     let mut t = demo();
-    tab(&mut t.app, "MAIN");
-    let mut seen_pages = false;
-    let mut seen_bare_kb = false;
-    for w in (24u16..=200).rev() {
-        let ls = lines(&draw(&mut t.app, w, 50));
-        let main = ls.iter().find(|l| is_bar(l) && l.contains(" MAIN")).unwrap_or_else(|| panic!("{w}:\n{}", ls.join("\n")));
-        assert_eq!(main.chars().count(), w as usize, "{w}: one line, exactly the width: {main}");
-        for l in ls.iter().filter(|l| is_bar(l)) {
-            assert_eq!(l.chars().count(), w as usize, "{w}: {l}");
-        }
-        let kb = main.contains("KB ");
-        let pages = main.contains("pages");
-        let age = main.contains("3m");
-        let tallies = main.contains(&format!("{}1", t.app.icons.s_busy)) || main.contains(&format!("{} 1", t.app.icons.s_busy));
-        if pages {
-            seen_pages = true;
-        }
-        if kb && !age {
-            seen_bare_kb = true;
-        }
-        // whatever is shown, everything left of it is too (right to left)
-        if pages {
-            assert!(age && kb, "{w}: {main}");
-        }
-        if tallies {
-            assert!(kb, "{w}: the tallies go before the KB does: {main}");
-        }
-        if kb {
-            assert!(main.contains("1 crew"), "{w}: the KB goes before the size: {main}");
-        }
-        if main.contains("1 crew") {
-            assert!(main.contains("idle"), "{w}: {main}");
-        }
-        if main.contains("idle") {
-            assert!(main.contains("fleet \u{b7} admiral"), "{w}: {main}");
-        }
-        if w >= 120 {
-            assert!(pages && tallies, "{w}: room for everything: {main}");
-        }
-        if w <= 40 {
-            assert!(!kb, "{w}: {main}");
+    for fleet in ["MAIN", "FORGE"] {
+        tab(&mut t.app, fleet);
+        for w in (24u16..=200).rev() {
+            let ls = lines(&draw(&mut t.app, w, 60));
+            for l in ls.iter().filter(|l| is_bar(l)) {
+                assert_eq!(l.chars().count(), w as usize, "{w}: {l}");
+            }
+            let (sp, cols) = (spacing_for(w as usize), bar_cols(&t.app.rows));
+            for r in t.app.rows.iter().filter(|r| r.node.head.is_some()) {
+                let h = r.node.head.as_ref().unwrap();
+                let fit = bar_fit(r, w as usize, sp, cols, t.app.icons);
+                assert!(fit == BarFit::default() || bar_fits(r, w as usize, sp, cols, t.app.icons, fit), "{w} {}", r.node.id);
+                let mut more: Vec<BarFit> = vec![];
+                if h.state.is_some() && !fit.state {
+                    more.push(BarFit { state: true, ..fit });
+                }
+                if !fit.block {
+                    more.push(BarFit { block: true, ..fit });
+                }
+                if let Some(kb) = &h.kb {
+                    if !fit.kb {
+                        more.push(BarFit { kb: true, ..fit });
+                    } else if fit.kb_parts < kb.parts.len() {
+                        more.push(BarFit { kb_parts: fit.kb_parts + 1, ..fit });
+                    }
+                }
+                for m in more {
+                    assert!(!bar_fits(r, w as usize, sp, cols, t.app.icons, m), "{fleet} {w}: {} left out {m:?} though it fits", r.node.id);
+                }
+                // what it shows, it shows where it should
+                if let (true, Some(state)) = (fit.state, &h.state) {
+                    let l = ls.iter().find(|l| is_bar(l) && l.contains(&h.title[..h.title.len().min(4)]) && l.contains(state.as_str())).cloned();
+                    if let Some(l) = l {
+                        assert_eq!(char_col(&l, state), Some(status_x(w as usize, sp)), "{w}: {l}");
+                    }
+                }
+            }
         }
     }
-    assert!(seen_pages && seen_bare_kb, "the KB's details went before the KB did");
-    // at 80 columns the name, role, state and size stay
+    // at 120 columns everything but the KB's pages; at 80 the state and the block
+    tab(&mut t.app, "MAIN");
+    let (sp, cols) = (spacing_for(120), bar_cols(&t.app.rows));
+    let r = t.app.rows.iter().find(|r| r.node.id == "F:MAIN").unwrap();
+    let fit = bar_fit(r, 120, sp, cols, t.app.icons);
+    assert!(fit.state && fit.block && fit.kb && fit.kb_parts == 1, "{fit:?}");
     let ls = lines(&draw(&mut t.app, 80, 24));
     let main = ls.iter().find(|l| is_bar(l) && l.contains(" MAIN")).unwrap();
-    assert!(main.contains("fleet \u{b7} admiral") && main.contains("idle") && main.contains("1 crew") && main.contains("KB"), "{main}");
+    assert!(main.contains("MAIN - admiral") && main.contains("idle") && main.contains("1 crew"), "{main}");
 }
 
 /// Dark text on every fill passes WCAG AA (4.5:1); the neutral fill is the
@@ -297,7 +327,7 @@ fn a_squadrons_colour_is_its_worst_member_in_the_theme_order() {
 
 /// Spacing goes first: below 71 columns no padding and single gaps; the
 /// blank lines between boxes stay at any width while the list fits the
-/// height, and go (all of them, the one before STOWAWAYS too) when it does not.
+/// height, and go (all of them, the one before the stowaways too) when it does not.
 #[test]
 fn spacing_collapses_before_content() {
     use admiralty::frames::{spacing_for, ROOMY, TIGHT};
@@ -315,7 +345,7 @@ fn spacing_collapses_before_content() {
     };
     for w in [200u16, 90] {
         let ls = lines(&draw(&mut t.app, w, 80));
-        for top in ["ARGOS", "KITS", "STOWAWAYS"] {
+        for top in ["ARGOS", "KITS", "- stowaways"] {
             assert!(between(&ls, top), "{w}: a blank line above {top}");
         }
     }
@@ -337,7 +367,7 @@ fn the_admiral_box_corners_line_up() {
         let side = ls.iter().find(|l| l.starts_with('\u{2502}')).unwrap();
         let bottom = ls.iter().find(|l| l.starts_with('\u{2570}')).unwrap();
         let end = |l: &str, c: char| l.chars().position(|x| x == c).unwrap();
-        assert!(top.contains("fleet \u{b7} admiral") && top.chars().count() == w as usize, "{w}: {top}");
+        assert!(top.contains(" - admiral") && top.chars().count() == w as usize, "{w}: {top}");
         assert_eq!(side.chars().collect::<Vec<_>>().iter().rposition(|x| *x == '\u{2502}').unwrap(), w as usize - 1);
         assert_eq!(end(bottom, '\u{256f}'), w as usize - 1);
     }
@@ -352,7 +382,7 @@ fn collapsed_boxes_and_the_state_filter_note_sit_outside() {
     let id = t.app.current().unwrap().node.id.clone();
     press(&mut t.app, KeyCode::Char('z'));
     let ls = lines(&draw(&mut t.app, 200, 60));
-    let s = ls.iter().position(|l| l.contains("STOWAWAYS")).unwrap();
+    let s = ls.iter().position(|l| l.contains("- stowaways")).unwrap();
     assert!(!ls.get(s + 1).is_some_and(|l| l.starts_with('\u{2502}')), "{id}: folded, a bar alone: {}", ls[s]);
     // hide busy squadrons: the note says so, below the last box, not in it
     t.app.fleet_states[admiralty::view::FleetState::Busy.index()] = false;
@@ -1844,7 +1874,7 @@ fn a_broken_fleets_error_stays_together_under_its_band() {
     let mut t = fixture_app(b, false);
     tab(&mut t.app, &id.0);
     let ls = lines(&draw(&mut t.app, 120, 60));
-    let top = ls.iter().position(|l| is_bar(l) && l.contains("fleet \u{b7} admiral")).unwrap();
+    let top = ls.iter().position(|l| is_bar(l) && l.contains(" - admiral")).unwrap();
     let first = ls.iter().position(|l| l.contains("fleet.toml:3")).unwrap_or_else(|| panic!("the error:\n{}", ls.join("\n")));
     let adm = ls.iter().position(|l| l.starts_with('\u{2502}') && l.contains("ADMIRAL   ")).unwrap();
     assert_eq!(first, top + 1, "right under the bar:\n{}", ls.join("\n"));

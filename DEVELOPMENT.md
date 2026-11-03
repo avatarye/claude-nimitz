@@ -1097,18 +1097,34 @@ A squadron's ships sit two columns in from their commodore
 
 Every section, the fleet's (its admiral and crew), each squadron's and the
 stowaways', is one filled bar (`frames::bar`) over a rounded, neutral box. The
-bar's parts come from `view::Header`: fold marker, glyph, NAME, role
-(`fleet · admiral`, `squadron`, or the stowaways' free text), state, size
-(`1 crew`, `3 ships`), then, right-aligned, the KB (fleet bar only) and the
-tallies. `frames::bar_cols` pads NAME, role and state to the widest among the
-list's bars, so each part starts in the same column on every bar. The fill
-is the worst state in the section (`squadron_rank`; for the fleet bar, the
-admiral, its running crew and the fleet's own issues). When a bar runs short
-(`BarFit::step`) it drops, in order: the KB's details (pages, then age), the
-tallies (non-key ones, then all), the KB, the column padding, the size, the
-state, the role. Then the name is cut. A bar never wraps. Its fold marker is
-in column 2 (`fold_x`). The fleet's tab still carries the fleet-wide state and
-counts.
+bar's parts come from `view::Header`:
+
+- From column 2: the fold marker (`fold_x`), the glyph, and the title, which is
+  the path and the lead's role: `MAIN - admiral`, `MAIN/ARGOS - commodore`,
+  `MAIN - stowaways`. A squadron's title drops its fleet part
+  (`ARGOS - commodore`) when the full title doesn't fit before the state.
+- The fleet's bar only: the KB after the title, in the gap before the state.
+- The state, starting at `frames::status_x`. That is the member rows' STATUS
+  column (box side, padding, NAME, gap), so the bar's glyph sits over the rows'
+  glyphs. For the stowaways the state is what to do with them.
+- Right-aligned, one width on every bar: the size (`1 crew`, `3 ships`,
+  `2 stowaways`), right-aligned to the widest on screen (`bar_cols`), then a
+  count for every slot in `view::SLOTS` order. The slots are needs you, issues
+  at Warn or Error, busy, idle, and off (stopped, parked, not started, unknown).
+  Zeros are kept, each count is two digits wide, so the slots line up down the
+  list. The fleet's bar counts its admiral and crew (a running crew counts as
+  busy). A squadron's bar counts its commodore and ships; the stowaways count
+  live ones as busy and dead ones as off.
+
+The fill is the worst state in the section (`squadron_rank`; for the fleet's
+bar, the admiral, its running crew and the fleet's own issues).
+
+`frames::bar_fit` adds parts in priority order, each only if it fits next to
+those already in (`bar_fits`): the state, the right block, the KB, the KB's
+details (age, then pages, or the edit count). A part is left out only when
+adding it would overflow the bar or push the state off its column. Beside the
+state the title may be cut. A bar never wraps. The fleet's tab still carries
+the fleet-wide state and counts.
 
 The KB part reads `data::KbLook` per fleet in `Bundle.kb`. `CoreSource`
 fills it on the loader thread via `nimitz_core::kb::look` (settings, clone,
@@ -1116,11 +1132,14 @@ origin check as `nimitz kb path`, then `kb::facts`), at most every `KB_EVERY`
 (30 s) per fleet. `facts` is read-only, uses the hardened `kb::git`, and never
 fetches: ahead and behind compare with the remote-tracking ref of the last
 fetch. Pages are `wiki/**/*.md` at HEAD, except `_`-prefixed files (`_index.md`,
-`_log.md`). `view::kb_badge` picks the word: conflict (`op`) or a changed
-attributes file, then edits, then ahead, then `✓ age · pages`; `–` for no KB.
-A fleet not yet looked at shows no KB part. The full facts are in the fleet's
-detail (`detail::kb_lines`), so `x` on the fleet bar shows them. The demo's
-`fixtures::demo_kb` has MAIN in step, FORGE with edits, and LAB with none.
+`_log.md`). `view::kb_badge` picks the word: `✗ conflict` (`op`) or
+`✗ attributes` (a changed attributes file), then `⚠ N edits`, then `↑N`, then
+`✓ age · pages`; `–` for no KB. A fleet not yet looked at shows no KB part.
+The full facts are in the fleet's detail (`detail::kb_lines`), so `x` on the
+fleet bar shows them. The demo's `fixtures::demo_kb` has MAIN in step, FORGE
+with edits, and LAB with none.
+
+### Finder layout
 
 The finder (`render::finder_areas`, `draw_finder`) is one group in the middle of
 the view, filling it but for a margin of 3 columns and 1 row (`FINDER_MARGIN`).
