@@ -1095,36 +1095,33 @@ A squadron's ships sit two columns in from their commodore
 
 ### Section bars
 
-Every section, the fleet's (its admiral and crew), each squadron's and the
-stowaways', is one filled bar (`frames::bar`) over a rounded, neutral box. The
-bar's parts come from `view::Header`:
+Every section is one filled bar (`frames::bar`) over a box of its rows. The
+fleet's bar sits over its admiral and crew in a thick box (`THICK`). Each
+squadron's bar and the stowaways' bar sit over a rounded box (`ROUND`). Box
+sides are neutral. The bar's parts come from `view::Header`:
 
-- From column 2: the fold marker (`fold_x`), the glyph, and the title, which is
-  the path and the lead's role: `MAIN - admiral`, `MAIN/ARGOS - commodore`,
-  `MAIN - stowaways`. A squadron's title drops its fleet part
-  (`ARGOS - commodore`) when the full title doesn't fit before the state.
-- The fleet's bar only: the KB after the title, in the gap before the state.
+- From column 2: the fold marker (`fold_x`), the glyph, and the title. The
+  title is the path (`MAIN`, `MAIN/ARGOS`) or `STOWAWAYS`. A squadron's title
+  drops its fleet part (`ARGOS`) when the full path doesn't fit before the
+  state.
 - The state, starting at `frames::status_x`. That is the member rows' STATUS
-  column (box side, padding, NAME, gap), so the bar's glyph sits over the rows'
-  glyphs. For the stowaways the state is what to do with them.
-- Right-aligned, one width on every bar: the size (`1 crew`, `3 ships`,
-  `2 stowaways`), right-aligned to the widest on screen (`bar_cols`), then a
-  count for every slot in `view::SLOTS` order. The slots are needs you, issues
-  at Warn or Error, busy, idle, and off (stopped, parked, not started, unknown).
-  Zeros are kept, each count is two digits wide, so the slots line up down the
-  list. The fleet's bar counts its admiral and crew (a running crew counts as
-  busy). A squadron's bar counts its commodore and ships; the stowaways count
-  live ones as busy and dead ones as off.
+  column (box side, padding, NAME, gap), so the bar's glyph sits over the
+  rows' glyphs. For the stowaways the state is what to do with them.
+- Right-aligned: the KB (fleet's bar only), then one count with its icon and
+  no words. The fleet's bar counts squadrons (the squadron flag), a squadron's
+  bar counts ships (the ship icon), and the stowaways' bar counts stowaways (the
+  stowaway icon). The number is right-aligned to the widest on screen
+  (`bar_cols`), so the icons line up down the list. A config that doesn't load
+  shows `-`.
 
 The fill is the worst state in the section (`squadron_rank`; for the fleet's
 bar, the admiral, its running crew and the fleet's own issues).
 
 `frames::bar_fit` adds parts in priority order, each only if it fits next to
-those already in (`bar_fits`): the state, the right block, the KB, the KB's
+those already in (`bar_fits`): the state, the count, the KB, then the KB's
 details (age, then pages, or the edit count). A part is left out only when
-adding it would overflow the bar or push the state off its column. Beside the
-state the title may be cut. A bar never wraps. The fleet's tab still carries
-the fleet-wide state and counts.
+adding it would overflow the bar. Beside the state the title may be cut. A bar
+never wraps. The fleet's tab still carries the fleet-wide state and counts.
 
 The KB part reads `data::KbLook` per fleet in `Bundle.kb`. `CoreSource`
 fills it on the loader thread via `nimitz_core::kb::look` (settings, clone,

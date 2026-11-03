@@ -5,20 +5,19 @@
 ### Changed
 
 - **One bar for every section in Admiralty.** The fleet's admiral, each
-  squadron and the stowaways now share one bar. Its title is the path and the
-  lead's role (`MAIN - admiral`, `MAIN/ARGOS - commodore`,
-  `MAIN - stowaways`). Its state starts in the same column as the member
-  rows' status. On the right is a block of fixed width: the size (`3 ships`),
-  then a count for every status (needs you, issues, busy, idle, off), zeros
-  included, so the counts line up from bar to bar. The admiral's framed box
-  is gone: the fleet's bar sits over a box like a squadron's. Each bar takes
-  the colour of the worst state in its section. A bar leaves a part out only
-  when it would not fit, and never wraps.
+  squadron and the stowaways now share one bar. Its title is the path (`MAIN`,
+  `MAIN/ARGOS`, `STOWAWAYS`). Its state starts in the same column as the
+  member rows' status. On the right is one count with an icon: the fleet's
+  squadrons, a squadron's ships, the stowaways, lined up from bar to bar. The
+  admiral and its crew sit in a thick box under the fleet's bar; squadrons
+  and stowaways get rounded boxes. Each bar takes the colour of the worst
+  state in its section. A bar leaves a part out only when it would not fit,
+  and never wraps.
 
 ### Added
 
-- **The fleet's knowledge base on its bar,** between the title and the
-  state. `KB ✓ 3m · 142 pages` when the
+- **The fleet's knowledge base on its bar,** on the right before its count.
+  `KB ✓ 3m · 142 pages` when the
   clone is in step (age of the last commit, wiki pages), `KB ⚠ 3 edits` for
   edits not committed, `KB ✗ conflict` while a rebase or merge is under way,
   `KB ↑2` for commits not pushed (compared with the last fetch: Admiralty

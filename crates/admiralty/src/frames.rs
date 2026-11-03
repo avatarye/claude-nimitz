@@ -1,8 +1,9 @@
 //! The tree as a list of sections, each a filled bar in one grammar (`bar`:
-//! fold marker, glyph, NAME, role, state, size; KB and tallies on the right)
-//! over a rounded box of its rows: the fleet's bar over its admiral and
-//! crew, a squadron's over its commodore and ships, the stowaways'. Each
-//! bar is filled with the worst state in its section. Columns NAME / STATUS / AGE / DETAIL start at the same x
+//! fold marker, glyph, path, the state in the STATUS column; the fleet's KB
+//! and a count on the right) over a box of its rows: the fleet's bar over
+//! its admiral and crew (a thick box), a squadron's over its commodore and
+//! ships, the stowaways' (rounded). Each bar is filled with the worst state
+//! in its section. Columns NAME / STATUS / AGE / DETAIL start at the same x
 //! in every box, so they line up down the whole list. Spacing (blank lines
 //! between boxes, padding inside them, wider column gaps) is the first thing
 //! to go when the width or the height runs short (`Spacing`). Pure: rows in,
@@ -305,50 +306,49 @@ pub fn status_x(width: usize, sp: Spacing) -> usize {
     sp.side() + w[0] as usize + sp.gap
 }
 
-/// What the bars on screen share: the size's width, so every bar's right
-/// block (size and slots) has one width and its slots line up.
+/// What the bars on screen share: the count's digits, so every bar's count
+/// has one width and its icon lines up down the list.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BarCols {
-    pub size: usize,
+    pub digits: usize,
 }
 
 pub fn bar_cols(rows: &[Row]) -> BarCols {
-    BarCols { size: rows.iter().filter_map(|r| r.node.head.as_ref()).map(|h| h.size.width()).max().unwrap_or(0) }
+    let digits = rows.iter().filter_map(|r| r.node.head.as_ref()).map(|h| h.count.1.map_or(1, |n| n.to_string().len())).max().unwrap_or(1);
+    BarCols { digits }
 }
 
 /// The parts a bar shows besides its title (always there, cut last).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BarFit {
     pub state: bool,
-    /// the size and every slot, as one block
+    /// the count (its icon and number)
     pub block: bool,
     pub kb: bool,
-    /// how many of the KB's details (age, pages)
+    /// how many of the KB's details (age, pages; or the edit count)
     pub kb_parts: usize,
 }
 
 /// The title's column (after the end cell, the fold marker and the glyph).
 const TITLE_X: usize = 6;
 
-/// The right block: the size, right-aligned in the screen's widest, then a
-/// count per slot (`view::slot_glyphs`), zeros too, two columns each.
-fn bar_block(h: &crate::view::Header, cols: BarCols, icons: &Icons) -> String {
-    let slots: Vec<String> = crate::view::slot_glyphs(icons).iter().zip(h.slots).map(|(g, n)| format!("{g}{n:>2}")).collect();
-    format!("{:>w$}  {}", h.size, slots.join(" "), w = cols.size)
+/// The count: its icon and its number, right-aligned in the screen's digits
+/// (`-`: not known).
+fn bar_count(h: &crate::view::Header, cols: BarCols) -> String {
+    let n = h.count.1.map_or("-".to_string(), |n| n.to_string());
+    format!("{} {n:>w$}", h.count.0, w = cols.digits)
 }
 
-/// The right side at a fit: the block, or nothing.
-fn bar_right(h: &crate::view::Header, fit: BarFit, cols: BarCols, icons: &Icons) -> String {
-    if fit.block {
-        bar_block(h, cols, icons)
-    } else {
-        String::new()
+/// The right side at a fit: the KB (the fleet's bar), then the count.
+fn bar_right(h: &crate::view::Header, fit: BarFit, cols: BarCols) -> String {
+    let mut right = vec![];
+    if let Some(kb) = h.kb.as_ref().filter(|_| fit.kb) {
+        right.push(kb.text(fit.kb_parts));
     }
-}
-
-/// The KB part at a fit (the fleet's bar only), after the title.
-fn bar_kb(h: &crate::view::Header, fit: BarFit) -> Option<String> {
-    h.kb.as_ref().filter(|_| fit.kb).map(|k| k.text(fit.kb_parts))
+    if fit.block {
+        right.push(bar_count(h, cols));
+    }
+    right.join("   ")
 }
 
 /// The room the title has at a fit: up to the state's column, else up to the right side.
@@ -373,35 +373,25 @@ fn bar_title(h: &crate::view::Header, room: usize) -> String {
 
 /// Does the bar fit `width` columns with these parts (beside the state the
 /// title may be cut, else it is whole or shortened)? Text runs from column
-/// 1 to `width - 3`. The KB sits two columns after the title and ends a
-/// column before the state; the
-/// state starts at the rows' STATUS column; two columns at least before the
-/// right block.
-pub fn bar_fits(r: &Row, width: usize, sp: Spacing, cols: BarCols, icons: &Icons, fit: BarFit) -> bool {
+/// 1 to `width - 3`; the state starts at the rows' STATUS column; two
+/// columns at least before the right side.
+pub fn bar_fits(r: &Row, width: usize, sp: Spacing, cols: BarCols, _icons: &Icons, fit: BarFit) -> bool {
     let Some(h) = r.node.head.as_ref() else { return true };
     let sx = status_x(width, sp);
-    let right_w = bar_right(h, fit, cols, icons).width();
+    let right_w = bar_right(h, fit, cols).width();
     let room = title_room(h, width, sx, fit, right_w);
-    // beside the state the title may be cut (the state keeps its column); without it, whole or shortened
     let title_ok = if fit.state && h.state.is_some() { room >= 4 } else { h.title.width() <= room || h.short.as_ref().is_some_and(|s| s.width() <= room) };
-    let lead_end = TITLE_X + bar_title(h, room).width() + bar_kb(h, fit).map_or(0, |k| 2 + k.width());
     let left_end = match (&h.state, fit.state) {
-        (Some(s), true) => {
-            if lead_end + 1 > sx {
-                return false;
-            }
-            sx + s.width()
-        }
-        _ => lead_end,
+        (Some(s), true) => sx + s.width(),
+        _ => TITLE_X + bar_title(h, room).width(),
     };
     let end = width.saturating_sub(2);
     title_ok && if right_w == 0 { left_end <= end } else { left_end + 2 + right_w <= end }
 }
 
 /// The parts a bar shows at `width`: each one that fits beside those before
-/// it, in this order: the state, the block, the KB, the KB's details. A part
-/// is left out only when adding it would overflow (or push the state off
-/// the STATUS column).
+/// it, in this order: the state, the count, the KB, the KB's details. A part
+/// is left out only when adding it would overflow.
 pub fn bar_fit(r: &Row, width: usize, sp: Spacing, cols: BarCols, icons: &Icons) -> BarFit {
     let Some(h) = r.node.head.as_ref() else { return BarFit::default() };
     let mut fit = BarFit::default();
@@ -422,14 +412,14 @@ pub fn bar_fit(r: &Row, width: usize, sp: Spacing, cols: BarCols, icons: &Icons)
 }
 
 /// A section's bar (the fleet's, a squadron's, the stowaways'), one grammar:
-/// `▾ ♛ MAIN - admiral  KB ✓ 3m   ☾ idle ...   1 crew  ♟ 0 ⚠ 0 ⚡ 1 ☾ 1 ○ 0`.
-/// The title, the fleet's KB after it, the state in the member rows'
-/// STATUS column (`status_x`), and a right block of one width on every bar.
-/// Filled with the worst state in its section (neutral: the muted step, so
-/// it still reads as a bar), its text in `INK`. Parts go only when they do
-/// not fit (`bar_fit`); it never wraps nor passes its end. On the cursor the
-/// fill and the text stay, so the contrast does too: the text is underlined
-/// and the end cells take the selection colour.
+/// `▾ ♛ MAIN   ☾ idle ...   KB ✓ 3m · 142 pages   ⚑ 2`.
+/// The title, the state in the member rows' STATUS column (`status_x`), and
+/// right-aligned the fleet's KB and the count (its icon in one column on
+/// every bar). Filled with the worst state in its section (neutral: the
+/// muted step, so it still reads as a bar), its text in `INK`. Parts go only
+/// when they do not fit (`bar_fit`); it never wraps nor passes its end. On
+/// the cursor the fill and the text stay, so the contrast does too: the text
+/// is underlined and the end cells take the selection colour.
 pub fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>, sp: Spacing, cols: BarCols, icons: &Icons) -> Line<'static> {
     let Some(h) = r.node.head.as_ref() else { return Line::raw(" ".repeat(width)) };
     let mut fill = h.fill;
@@ -445,15 +435,11 @@ pub fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>, sp: Spacin
     }
     let fit = bar_fit(r, width, sp, cols, icons);
     let sx = status_x(width, sp);
-    let right = bar_right(h, fit, cols, icons);
+    let right = bar_right(h, fit, cols);
     let room = title_room(h, width, sx, fit, right.width());
     let marker = if r.expanded && !r.node.children.is_empty() { "\u{25be}" } else { "\u{25b8}" };
     // the text from column 1: what lands at column c is at width c - 1
     let mut s = format!(" {marker} {} {}", h.glyph, bar_title(h, room));
-    if let Some(kb) = bar_kb(h, fit) {
-        s.push_str("  ");
-        s.push_str(&kb);
-    }
     if let (Some(state), true) = (&h.state, fit.state) {
         s = pad(&s, sx - 1);
         s.push_str(state);
@@ -468,7 +454,6 @@ pub fn bar(r: &Row, width: usize, selected: bool, frame: Option<u64>, sp: Spacin
     let cap = |sel: bool| Span::styled(" ", if sel { Style::new().bg(mono::ACCENT) } else { text });
     Line::from(vec![cap(selected), Span::styled(format!("{s} "), text), cap(selected)])
 }
-
 
 /// The cursor row: selection background, and dim text lifted so it stays readable.
 pub fn selectable(line: Line<'static>, selected: bool) -> Line<'static> {
@@ -514,8 +499,10 @@ struct Edges {
     style: Style,
 }
 
-/// Every section's box under its bar: rounded, neutral (the bar carries the state).
+/// A squadron's and the stowaways' box under its bar: rounded, neutral (the bar carries the state).
 const ROUND: Edges = Edges { v: "\u{2502}", bottom: ("\u{2570}", "\u{2500}", "\u{256f}"), style: Style::new().fg(mono::LINE) };
+/// The admiral's box under the fleet's bar: thick, neutral.
+const THICK: Edges = Edges { v: "\u{2503}", bottom: ("\u{2517}", "\u{2501}", "\u{251b}"), style: Style::new().fg(mono::LINE) };
 
 fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spacing, frame: Option<u64>) -> Vec<(Line<'static>, Option<usize>)> {
     let inner = sp.inner(width);
@@ -570,7 +557,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
         }
         // the fleet's bar is its admiral's section's: the admiral and its crew
         // in the box under it, then each squadron's bar and box
-        let mut open: Option<Edges> = if head.expanded { Some(ROUND) } else { None };
+        let mut open: Option<Edges> = if head.expanded { Some(THICK) } else { None };
         // the box open is the admiral's
         let mut admiral_open = head.expanded;
         let mut members_seen = false;
@@ -631,7 +618,7 @@ fn lines_with(rows: &[Row], width: usize, cursor: usize, icons: &Icons, sp: Spac
                     // the admiral and its crew, in the box under the fleet's bar
                     members_seen = true;
                     in_admiral += 1;
-                    boxed_row(&mut out, r, i, open.unwrap_or(ROUND));
+                    boxed_row(&mut out, r, i, open.unwrap_or(THICK));
                 }
             }
             i += 1;

@@ -60,7 +60,7 @@ fn every_broken_shape_of_the_sandbox_shows_up() {
     tab(&mut app, "MAIN");
     let s = screen(&mut app, 200, 60);
     assert!(s.contains("DRIFT"), "the drifted ship, by its own part");
-    assert!(s.contains("MAIN - stowaways"));
+    assert!(s.contains("STOWAWAYS"));
     // no multiplexer in the sandbox: monitor-only
     assert!(s.contains("MONITOR-ONLY"));
 }

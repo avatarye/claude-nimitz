@@ -164,7 +164,11 @@ pub fn col_of(lines: &[String], line_has: &str, needle: &str) -> usize {
 /// ship count (`<ship icon> 6`, either icon set); a ship row has the icon
 /// before its name instead.
 pub fn is_sq_bar(l: &str) -> bool {
-    is_bar(l) && l.contains(" - commodore")
+    // its count at the end: the ship icon and a number
+    is_bar(l)
+        && [admiralty::theme::NERD.ship, admiralty::theme::ASCII.ship].iter().any(|s| {
+            l.trim_end().rsplit_once(' ').is_some_and(|(a, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) && a.trim_end().ends_with(s))
+        })
 }
 
 /// A section's bar (the fleet's, a squadron's, the stowaways'): its end
