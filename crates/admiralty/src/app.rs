@@ -970,7 +970,7 @@ impl App {
     /// The action menu (`x`) for the selected row: `row_actions`.
     /// `x`: the row's actions, its detail in a panel beside them.
     pub fn open_actions(&mut self) {
-        let title = self.current().map(|r| path_name(&r)).unwrap_or_default();
+        let title = self.current().map(path_name).unwrap_or_default();
         self.detail_scroll = 0;
         self.modal = Some(Modal::Menu { title: format!("actions: {title}"), items: self.action_menu(), sel: 0, detail: true });
     }
