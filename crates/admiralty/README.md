@@ -140,8 +140,9 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   total; the newest agent's phase), open while one of them runs. A run, like a
   crew, folds into `+N done` once all its agents finished over 30 min ago.
 - The row's detail is with its actions: `x` opens the actions menu with a
-  panel beside it (below it under 120 columns). A large picture of
-  the row's kind, status, WHY THIS STATUS (core's reasons), ISSUES with their
+  panel beside it (below it under 120 columns). Its title is the row's path, as
+  the bars name it (`MAIN`, `MAIN/ARGOS`, `MAIN/ARGOS/BOLT`), then its status,
+  WHY THIS STATUS (core's reasons), ISSUES with their
   `nimitz` fix commands and the session. The panel takes what room the menu
   leaves; a long one scrolls (`ctrl-e` / `ctrl-y` a line, `PgDn` / `PgUp`
   five), and its title says so.
@@ -230,7 +231,7 @@ and the error in full (file:line and the parser's words) above its members; a
 fleet's, in full at the top of its admiral's box.
 
 At 80x24 the ADMIRALTY row keeps the mux state and `? keys`, the row under it
-keeps the versions and the clock, DETAIL keeps room for issue codes, the detail under `x` drops its picture to
+keeps the versions and the clock, DETAIL keeps room for issue codes, the detail under `x` drops its blank lines to
 show the reasons first (ctrl-e / ctrl-y, PgDn / PgUp scroll it), and help and the issues view
 wrap and scroll. The first frame comes from the session files alone; `claude
 agents` follows right after, and keys typed meanwhile are kept.

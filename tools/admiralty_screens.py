@@ -54,6 +54,7 @@ SCREENS: dict[str, tuple[int, int, str, list[str]]] = {
     "admiralty-confirm": (200, 50, "demo", ["/DOCS", "<Enter>", "n", "<Escape>", "a"]),
     "admiralty-actions-menu": (200, 50, "demo", ["/BOLT", "<Enter>", "n", "<Escape>", "x"]),
     "admiralty-fleet-menu": (200, 50, "demo", ["gg", "x"]),
+    "admiralty-ship-detail": (160, 44, "demo", ["/BOLT", "<Enter>", "n", "<Escape>", "x"]),
     "admiralty-kb-detail": (200, 50, "demo", ["2", "gg", "x"]),
     "admiralty-form": (200, 50, "demo", ["c", "s", "OPS", "<Tab>", "Release builds and their notes"]),
     "admiralty-legacy": (200, 50, "demo", ["G", "x"]),

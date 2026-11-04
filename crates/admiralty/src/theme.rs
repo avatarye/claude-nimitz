@@ -315,58 +315,6 @@ impl Icons {
     }
 }
 
-// ------------------------------------------------------------------ detail-pane art
-
-const ART_ANCHOR: [&str; 5] = ["    _O_", "     |", "  \\  |  /", "   '-+-'", "  ~~~~~~~"];
-const ART_CROWN: [&str; 5] = ["  .  ^  .", " /\\ / \\ /\\", " \\  V V  /", "  \\_____/", "  [_____]"];
-const ART_FLAG: [&str; 5] = ["  |\\______", "  |  >>>  )", "  |______/", "  |", "  |"];
-const ART_ROSETTE: [&str; 5] = ["   .-\"\"-.", "  / *  * \\", "  \\  **  /", "   '-..-'", "    |  |"];
-const ART_SHIP: [&str; 5] = ["     |\\", "     | \\", "     |__\\", "  ___|_____", "  \\_______/"];
-const ART_BOT: [&str; 5] = ["", "   .---.", "  ( o o )", "   | = |", "   '---'"];
-const ART_TEAM: [&str; 5] = ["", "  o    o", " /|\\  /|\\", " / \\  / \\", ""];
-const ART_MASK: [&str; 5] = ["   _____", "  / ? ? \\", "  \\__ __/", "   /   \\", "  (_____)"];
-const ART_WARN: [&str; 5] = ["     /\\", "    /  \\", "   / !! \\", "  /  !!  \\", " /________\\"];
-const ART_TASK_DONE: [&str; 5] = ["  +------+", "  |    / |", "  | \\ /  |", "  |  V   |", "  +------+"];
-const ART_TASK_WIP: [&str; 5] = ["  +------+", "  | //// |", "  | //   |", "  |      |", "  +------+"];
-const ART_TASK_TODO: [&str; 5] = ["  +------+", "  |      |", "  |      |", "  |      |", "  +------+"];
-const ART_CLOCK: [&str; 5] = ["   .---.", "  / 12  \\", " |   |_  |", "  \\     /", "   '---'"];
-
-/// Which picture the detail pane shows for a row kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Art {
-    Fleet,
-    Admiral,
-    Squadron,
-    Commodore,
-    Ship,
-    Crew,
-    Teammate,
-    Stowaway,
-    Issue,
-    TaskDone,
-    TaskWip,
-    TaskTodo,
-    StaleRow,
-}
-
-pub fn art(a: Art) -> &'static [&'static str; 5] {
-    match a {
-        Art::Fleet => &ART_ANCHOR,
-        Art::Admiral => &ART_CROWN,
-        Art::Squadron => &ART_FLAG,
-        Art::Commodore => &ART_ROSETTE,
-        Art::Ship => &ART_SHIP,
-        Art::Crew => &ART_BOT,
-        Art::Teammate => &ART_TEAM,
-        Art::Stowaway => &ART_MASK,
-        Art::Issue => &ART_WARN,
-        Art::TaskDone => &ART_TASK_DONE,
-        Art::TaskWip => &ART_TASK_WIP,
-        Art::TaskTodo => &ART_TASK_TODO,
-        Art::StaleRow => &ART_CLOCK,
-    }
-}
-
 // ------------------------------------------------------------------ ages
 
 pub fn age(seconds: f64) -> String {

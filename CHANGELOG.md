@@ -13,6 +13,11 @@
   and stowaways get rounded boxes. Each bar takes the colour of the worst
   state in its section. A bar leaves a part out only when it would not fit,
   and never wraps.
+- **The `x` panel names rows by their path,** like the bars: `MAIN`,
+  `MAIN/ARGOS`, `MAIN/ARGOS/BOLT`, in the menu title and the detail's first
+  line (in place of `FLEET [MAIN]` or `[MAIN.ARGOS]-BOLT`). The session name
+  is the SESSION block's `name` field. The detail's ASCII pictures are gone,
+  so the facts start at the top.
 
 ### Added
 

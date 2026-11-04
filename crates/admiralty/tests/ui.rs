@@ -579,6 +579,33 @@ fn renders_at_narrow_and_wide_sizes() {
     }
 }
 
+/// The `x` panel names a row by its path, as the bars do (`MAIN`,
+/// `MAIN/ARGOS`, `MAIN/ARGOS/BOLT`; a lead by its own path, the admiral's
+/// `MAIN`), in its title and the detail's first line, with no picture; the
+/// session's name is a field of its SESSION block.
+#[test]
+fn the_x_panel_names_rows_by_their_path_with_no_picture() {
+    let mut t = demo();
+    tab(&mut t.app, "MAIN");
+    for (id, path, what) in [("F:MAIN", "MAIN", "fleet"), ("SQ:MAIN/ARGOS", "MAIN/ARGOS", "squadron"), ("M:MAIN/ARGOS/BOLT", "MAIN/ARGOS/BOLT", "ship"), ("M:MAIN/ARGOS", "MAIN/ARGOS", "commodore"), ("M:MAIN", "MAIN", "admiral")] {
+        goto(&mut t.app, id);
+        keys(&mut t.app, "x");
+        let ls = lines(&draw(&mut t.app, 200, 50));
+        assert!(ls.iter().any(|l| l.contains(&format!("actions: {path} "))), "{id}: the menu's title\n{}", ls.join("\n"));
+        let det = ls.iter().position(|l| l.contains(" detail ")).unwrap();
+        assert!(ls[det + 1].contains(&format!("\u{2503} {path}   {what} ")), "{id}: the detail's first line: {}", ls[det + 1]);
+        for art in ["_O_", "~~~~~~~", "|\\", "|__\\", "\\_______/", ".-\"\"-."] {
+            assert!(!ls.iter().any(|l| l.contains(art)), "{id}: no picture ({art})\n{}", ls.join("\n"));
+        }
+        assert!(!ls.iter().any(|l| l.contains("FLEET [") || l.contains("SQUADRON MAIN") || l.contains("identity  ")), "{id}: no old titles");
+        if id == "M:MAIN/ARGOS/BOLT" {
+            assert!(ls.iter().any(|l| l.contains("name        [MAIN.ARGOS]-BOLT")), "the session's name as a field");
+        }
+        keys(&mut t.app, "\u{1b}");
+        press(&mut t.app, KeyCode::Esc);
+    }
+}
+
 /// 0.7.8: no `w` panel. `x` shows the row's actions and, below them, its
 /// detail (what `w` showed, minus its ACTIONS), at 80 and 120 columns alike;
 /// a long detail scrolls (ctrl-e / ctrl-y, PgDn / PgUp).
@@ -595,7 +622,7 @@ fn x_shows_the_actions_with_the_rows_detail_below_and_w_opens_nothing() {
     keys(&mut t.app, "x");
     for (w, h) in [(80u16, 24u16), (120, 40), (200, 50)] {
         let ls = lines(&draw(&mut t.app, w, h));
-        let menu = ls.iter().position(|l| l.contains("actions: [MAIN.ARGOS]-BOOM")).unwrap_or_else(|| panic!("{w}x{h}: the menu\n{}", ls.join("\n")));
+        let menu = ls.iter().position(|l| l.contains("actions: MAIN/ARGOS/BOOM")).unwrap_or_else(|| panic!("{w}x{h}: the menu\n{}", ls.join("\n")));
         let det = ls.iter().position(|l| l.contains(" detail ")).unwrap_or_else(|| panic!("{w}x{h}: the detail\n{}", ls.join("\n")));
         if w < 120 {
             assert!(det > menu + 5, "{w}x{h}: the detail sits below the menu");
@@ -603,7 +630,7 @@ fn x_shows_the_actions_with_the_rows_detail_below_and_w_opens_nothing() {
             assert!(det == menu && ls[det].find(" detail ") > ls[det].find("actions: "), "{w}x{h}: the detail sits beside the menu");
         }
         let s = ls.join("\n");
-        assert!(s.contains("identity    MAIN/ARGOS/BOOM") && s.contains("WHY THIS STATUS"), "{w}x{h}: the row's detail\n{s}");
+        assert!(s.contains("MAIN/ARGOS/BOOM   ship") && s.contains("WHY THIS STATUS"), "{w}x{h}: the row's detail\n{s}");
         assert!(!s.contains("ACTIONS"), "{w}x{h}: no ACTIONS block under the menu\n{s}");
         assert!(ls[h as usize - 1].trim_end().ends_with("15:42"), "{w}x{h}: the status rows stay clear\n{s}");
     }

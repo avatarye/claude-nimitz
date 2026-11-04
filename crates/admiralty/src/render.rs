@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{shell, MessagePlan, Pending};
 use crate::app::{App, MenuItem, Modal, NeedItem, HELP};
-use crate::detail::{badge, detail_with_art, preview_lines};
+use crate::detail::{badge, detail_text, preview_lines};
 use crate::finder::{Cand, Finder, Hit};
 use crate::forms::{FieldKind, Form};
 use crate::frames::{layout, pad, selectable, truncate_spans, wrap};
@@ -765,7 +765,7 @@ fn menu_lines(items: &[MenuItem], sel: usize, width: usize, one_row: bool) -> (V
 
 /// The row's detail in `width` columns, with where `enter` goes.
 fn menu_detail(app: &App, width: u16, compact: bool) -> Vec<Line<'static>> {
-    let mut text = detail_with_art(app, width as usize, compact);
+    let mut text = detail_text(app, width as usize, compact);
     if let Some(hint) = crate::detail::jump_hint(app) {
         text.extend([Line::raw(""), hint]);
     }

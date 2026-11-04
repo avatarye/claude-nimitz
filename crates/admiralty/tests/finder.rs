@@ -234,9 +234,9 @@ fn the_panel_shows_the_ranked_list_and_previews_the_selection() {
         let x = ls[y][..x].chars().count() as u16;
         assert_eq!(buf[(x, y as u16)].fg, admiralty::theme::mono::ACCENT, "M is lit");
         assert_ne!(buf[(x + 1, y as u16)].fg, admiralty::theme::mono::ACCENT, "A of MAIN is not");
-        assert!(s.contains("identity    MAIN/ARGOS/SIGNAL"), "the preview:\n{s}");
+        assert!(s.contains("MAIN/ARGOS/SIGNAL   ship"), "the preview:\n{s}");
         let s = screen(&mut t.app, 100, 30);
-        assert!(s.contains("> mas") && !s.contains("identity    MAIN/ARGOS/SIGNAL"), "{s}");
+        assert!(s.contains("> mas") && !s.contains("MAIN/ARGOS/SIGNAL   ship"), "{s}");
     }
 }
 

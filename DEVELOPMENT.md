@@ -985,6 +985,14 @@ results change. `split` gives the wide popups a list and the detail beside it,
 from 120 columns. The message panel reads `evidence::last_output` once, when it
 opens. `App.panel_rows` holds what the last draw could scroll.
 
+The `x` panel (`detail::detail_text`) names a row by its path, the way the
+bars do: `MAIN` (the fleet, and its admiral), `MAIN/ARGOS` (the squadron, and
+its commodore), `MAIN/ARGOS/BOLT` (a ship), then what it is (`fleet`, `ship`,
+and so on). The menu title (`actions: MAIN/ARGOS/BOLT`) does the same. The
+session name (`[MAIN.ARGOS]-BOLT`) appears only as the `name` field of the
+SESSION block, whose id is `id`. There are no pictures: the facts start at the
+top.
+
 ### Mouse
 
 `draw` starts a fresh `App.hits` (`mouse::Hits`) and records what is

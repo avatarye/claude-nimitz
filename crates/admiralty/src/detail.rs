@@ -1,17 +1,17 @@
-//! The detail pane: a large picture of the row's kind top-left, then what the
-//! row is, why its status is what it is, its issues with their fixes, and what
-//! each key would do here (or why it will not).
+
+//! The detail pane: what the row is, named by its path as the bars name it,
+//! why its status is what it is, its issues with their fixes, and what each
+//! key would do here (or why it will not).
 
 use nimitz_core::{Fleet, Issue, Member, SessionInfo, Snapshot, Squadron};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
 
 use crate::actions::{find_member, Target};
 use crate::app::App;
-use crate::frames::{pad, truncate_spans, wrap};
-use crate::theme::{art, bold, mono, pane_color, pane_dot, severity_color, severity_word, st, status_style, status_word, Art};
-use crate::view::{fleet_issues, fleet_members, squadron_members, FleetState, Kind, Node};
+use crate::frames::wrap;
+use crate::theme::{bold, mono, pane_color, pane_dot, severity_color, severity_word, st, status_style, status_word};
+use crate::view::{fleet_issues, fleet_members, squadron_members, FleetState, Kind};
 
 const KEY_W: usize = 12;
 
@@ -27,57 +27,22 @@ fn blank() -> Line<'static> {
     Line::raw("")
 }
 
-pub fn art_for(n: &Node) -> Art {
-    match n.kind {
-        Kind::FleetBand => Art::Fleet,
-        Kind::SquadronBand => Art::Squadron,
-        Kind::StowBand | Kind::Stowaway => Art::Stowaway,
-        Kind::ExtraRow => Art::StaleRow,
-        Kind::Note => Art::Issue,
-        Kind::Crew if n.kind_text == "teammate" => Art::Teammate,
-        Kind::Crew | Kind::CrewFold | Kind::Workflow => Art::Crew,
-        Kind::Task if n.status.0.ends_with(crate::view::Work::Done.word()) => Art::TaskDone,
-        Kind::Task if n.status.0.ends_with(crate::view::Work::Busy.word()) => Art::TaskWip,
-        Kind::Task => Art::TaskTodo,
-        Kind::Member(r) => match r {
-            nimitz_core::Role::Admiral => Art::Admiral,
-            nimitz_core::Role::Commodore => Art::Commodore,
-            nimitz_core::Role::Ship => Art::Ship,
-        },
-    }
-}
-
-/// The pane's lines with the picture beside the first ones.
-/// `compact`: a short pane gets no picture and no blank lines, so the reasons
-/// and the fixes come first.
-pub fn detail_with_art(app: &App, width: usize, compact: bool) -> Vec<Line<'static>> {
+/// The pane's lines. `compact`: a short pane gets no blank lines, so the
+/// reasons and the fixes come first.
+pub fn detail_text(app: &App, width: usize, compact: bool) -> Vec<Line<'static>> {
     let lines = detail_lines(app, width);
     if compact {
         return lines.into_iter().filter(|l| !l.spans.iter().all(|s| s.content.trim().is_empty())).collect();
     }
-    let Some(r) = app.current() else { return lines };
-    let pic = art(art_for(&r.node));
-    let art_w = pic.iter().map(|l| l.width()).max().unwrap_or(0) + 3;
-    if width < art_w + 28 {
-        return lines;
-    }
-    let style = match r.node.kind {
-        Kind::FleetBand => bold(mono::STRONG),
-        Kind::SquadronBand | Kind::StowBand => r.node.frame.map(bold).unwrap_or_default(),
-        _ => r.node.icon_style.add_modifier(Modifier::BOLD),
-    };
-    let mut it = lines.into_iter();
-    let mut out = vec![];
-    for a in pic.iter() {
-        let mut spans = vec![Span::styled(pad(a, art_w), style)];
-        if let Some(l) = it.next() {
-            spans.extend(truncate_spans(l.spans, width - art_w));
-        }
-        out.push(Line::from(spans));
-    }
-    out.extend(it);
-    out
+    lines
 }
+
+/// A detail's title: the path, as the bars name it (`MAIN`, `MAIN/ARGOS`,
+/// `MAIN/ARGOS/BOLT`), then what it is.
+fn title(path: &str, what: &str, style: Style) -> Line<'static> {
+    Line::from(vec![Span::styled(path.to_string(), style), Span::styled(format!("   {what}"), st(mono::COMMENT))])
+}
+
 
 /// The finder's preview of the member or stowaway it has selected (its row
 /// need not be in the list): the detail pane's lines, without the ACTIONS.
@@ -123,7 +88,7 @@ pub fn detail_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         (Kind::ExtraRow, Target::ExtraRow { owner, session_id }) => {
             let s = find_member(snap, &owner).and_then(|m| m.extra_rows.iter().find(|x| x.session_id == session_id)).cloned();
             match s {
-                Some(s) => extra_detail(&owner.name(), &s, now),
+                Some(s) => extra_detail(&owner.0, &s, now),
                 None => vec![],
             }
         }
@@ -180,7 +145,7 @@ fn broken_detail(snap: &Snapshot, id: &nimitz_core::Id, width: usize) -> Vec<Lin
         .filter(|i| i.id.as_ref().map(|x| x == id || (fleet && x.fleet() == id.fleet())).unwrap_or(false))
         .collect();
     let mut v = vec![
-        Line::styled(format!("{} {}", if fleet { "FLEET" } else { "SQUADRON" }, id.0), bold(mono::ERROR)),
+        title(&id.0, if fleet { "fleet" } else { "squadron" }, bold(mono::ERROR)),
         blank(),
         Line::styled("Its config does not load, so nimitz cannot show or start its members.", st(mono::SOFT)),
         Line::styled("Their sessions keep running; fix the file and the frame comes back.", st(mono::SOFT)),
@@ -273,12 +238,12 @@ fn fleet_detail(f: &Fleet, kb: Option<&crate::data::KbLook>, now: f64, width: us
     let members = fleet_members(f);
     let live = members.iter().filter(|m| crate::view::member_live(m)).count();
     let mut v = vec![
-        Line::from(vec![Span::styled(format!("FLEET [{}]", f.id.0), bold(mono::STRONG))]),
+        title(&f.id.0, "fleet", bold(mono::STRONG)),
         blank(),
         Line::from(vec![Span::styled(format!("{:<KEY_W$}", "state"), st(mono::COMMENT)), Span::styled(state.label().to_uppercase(), bold(state.color()))]),
         kv("machine", f.machine.clone().unwrap_or_else(|| "not in fleet.toml machines: does not run here".into())),
         kv("folder", f.dir.clone()),
-        kv("admiral", format!("{}  {}{}", f.admiral.expected_name, status_word(f.admiral.status), member_age(&f.admiral, now))),
+        kv("admiral", format!("{}{}", status_word(f.admiral.status), member_age(&f.admiral, now))),
         kv("squadrons", f.squadrons.iter().map(|s| s.id.squadron().unwrap_or("?").to_string()).collect::<Vec<_>>().join(", ")),
         kv("members", format!("{} declared, {live} live", members.len())),
     ];
@@ -295,10 +260,10 @@ fn fleet_detail(f: &Fleet, kb: Option<&crate::data::KbLook>, now: f64, width: us
 fn squadron_detail(f: &Fleet, sq: &Squadron, width: usize) -> Vec<Line<'static>> {
     let state = FleetState::of_squadron(f, sq);
     let mut v = vec![
-        Line::styled(format!("SQUADRON {}", sq.id.0), bold(mono::FG)),
+        title(&sq.id.0, "squadron", bold(mono::FG)),
         blank(),
         Line::from(vec![Span::styled(format!("{:<KEY_W$}", "state"), st(mono::COMMENT)), Span::styled(state.squadron_label().to_uppercase(), bold(state.color()))]),
-        kv("commodore", format!("{}  {}", sq.commodore.expected_name, status_word(sq.commodore.status))),
+        kv("commodore", status_word(sq.commodore.status)),
         kv("ships", sq.ships.iter().map(|s| s.id.parts().last().unwrap_or(&"?").to_string()).collect::<Vec<_>>().join(", ")),
     ];
     v.extend(issues_block("SQUADRON ISSUES", &sq.issues.iter().collect::<Vec<_>>(), width));
@@ -321,7 +286,7 @@ fn member_age(m: &Member, now: f64) -> String {
 
 fn session_lines(s: &SessionInfo, now: f64, expected_name: Option<&str>) -> Vec<Line<'static>> {
     let mut v = vec![
-        kv("session", s.session_id.clone()),
+        kv("id", s.session_id.clone()),
         kv("kind", format!("{}   {}", s.kind, s.short_id.clone().unwrap_or_default())),
         kv("pid", s.pid.map(|x| x.to_string()).unwrap_or_else(|| "-  (not running)".into())),
     ];
@@ -348,14 +313,13 @@ fn session_lines(s: &SessionInfo, now: f64, expected_name: Option<&str>) -> Vec<
 
 fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'static>> {
     let mut v = vec![
-        Line::styled(m.expected_name.clone(), bold(mono::FG)),
+        title(&m.id.0, m.role.as_str(), bold(mono::FG)),
         blank(),
         Line::from(vec![
             Span::styled(format!("{:<KEY_W$}", "status"), st(mono::COMMENT)),
             Span::styled(status_word(m.status).to_uppercase(), status_style(m.status).add_modifier(Modifier::BOLD)),
             Span::styled(member_age(m, now), st(mono::COMMENT)),
         ]),
-        kv("identity", format!("{}   {}", m.id.0, m.role.as_str())),
     ];
     if let Some(c) = &m.cwd {
         v.push(kv("folder", c.clone()));
@@ -431,7 +395,7 @@ fn member_detail(app: &App, m: &Member, now: f64, width: usize) -> Vec<Line<'sta
 
 fn stowaway_detail(snap: &Snapshot, s: &SessionInfo, now: f64, width: usize) -> Vec<Line<'static>> {
     let mut v = vec![
-        Line::styled(if s.name.is_empty() { s.session_id.clone() } else { s.name.clone() }, bold(mono::WARN)),
+        title(if s.name.is_empty() { &s.session_id } else { &s.name }, "stowaway", bold(mono::WARN)),
         blank(),
         Line::from(vec![
             Span::styled(format!("{:<KEY_W$}", "status"), st(mono::COMMENT)),

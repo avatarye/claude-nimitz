@@ -267,12 +267,21 @@ pub struct App {
     state_kept: bool,
 }
 
-/// A row's name where its context is missing (a toast, a menu title): a
+/// A row's name where its context is missing (a toast): a
 /// member's full expected name (`[F.SQ]-NAME`; the row may show its own part,
 /// or a drifted session's name), else the row's own name.
 fn full_name(r: &Row) -> String {
     match (&r.node.member, r.node.kind) {
         (Some(id), Kind::Member(_)) => id.name(),
+        _ => r.node.name.clone(),
+    }
+}
+
+/// A row by its path, as the bars and the `x` panel name it (`MAIN`,
+/// `MAIN/ARGOS`, `MAIN/ARGOS/BOLT`); a row with none by its name.
+fn path_name(r: &Row) -> String {
+    match (&r.node.member, r.node.kind) {
+        (Some(id), Kind::Member(_) | Kind::FleetBand | Kind::SquadronBand) => id.0.clone(),
         _ => r.node.name.clone(),
     }
 }
@@ -961,7 +970,7 @@ impl App {
     /// The action menu (`x`) for the selected row: `row_actions`.
     /// `x`: the row's actions, its detail in a panel beside them.
     pub fn open_actions(&mut self) {
-        let title = self.current().map(|r| full_name(&r)).unwrap_or_default();
+        let title = self.current().map(|r| path_name(&r)).unwrap_or_default();
         self.detail_scroll = 0;
         self.modal = Some(Modal::Menu { title: format!("actions: {title}"), items: self.action_menu(), sel: 0, detail: true });
     }
