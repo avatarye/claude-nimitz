@@ -197,9 +197,13 @@ pub fn kb_lines(look: Option<&crate::data::KbLook>, now: f64) -> Vec<Line<'stati
             v.push(Line::styled("not looked at yet", st(mono::COMMENT)));
             return v;
         }
-        Some(Err(why)) => {
-            v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "state"), st(mono::COMMENT)), Span::styled("NONE HERE", bold(mono::MUTED))]));
-            v.push(kv("why", why.clone()));
+        Some(Err(miss)) => {
+            let (word, color) = match miss {
+                nimitz_core::kb::Miss::Absent(_) => ("NONE HERE", mono::MUTED),
+                nimitz_core::kb::Miss::Broken(_) => ("BROKEN", mono::ERROR),
+            };
+            v.push(Line::from(vec![Span::styled(format!("{:<KEY_W$}", "state"), st(mono::COMMENT)), Span::styled(word, bold(color))]));
+            v.push(kv("why", miss.why().to_string()));
             return v;
         }
         Some(Ok(f)) => f,
@@ -210,8 +214,16 @@ pub fn kb_lines(look: Option<&crate::data::KbLook>, now: f64) -> Vec<Line<'stati
         (format!("STOPPED: {stray} changed, not committed"), mono::ERROR)
     } else if f.edits > 0 {
         ("EDITS NOT COMMITTED".to_string(), mono::WARN)
+    } else if f.branch.is_none() {
+        ("DETACHED HEAD".to_string(), mono::WARN)
+    } else if f.upstream.is_none() {
+        ("NO UPSTREAM".to_string(), mono::WARN)
+    } else if f.ahead > 0 && f.behind > 0 {
+        ("DIVERGED".to_string(), mono::WARN)
     } else if f.ahead > 0 {
         ("COMMITS NOT PUSHED".to_string(), mono::ACCENT)
+    } else if f.behind > 0 {
+        ("COMMITS NOT PULLED".to_string(), mono::ACCENT)
     } else {
         ("IN STEP".to_string(), mono::BUSY)
     };

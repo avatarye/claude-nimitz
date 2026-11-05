@@ -766,18 +766,43 @@ pub fn facts(dir: &Path) -> Result<Facts, String> {
 /// The fleet's KB on this machine, as `nimitz kb path` finds it (the
 /// settings, a clone there, its origin the fleet's `kb.remote`), then its
 /// `facts`; or why there is none.
-pub fn look(env: &Env, fleet: &str) -> Result<Facts, String> {
-    let k = crate::fleet_settings::kb(env, fleet)?;
+/// Why a look found no facts: `Absent`, the fleet keeps no KB on this
+/// machine (none set, no folder here, not cloned yet); `Broken`, it should
+/// and something is wrong (the config does not load, the clone's origin is
+/// another repo, git cannot read it).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum Miss {
+    Absent(String),
+    Broken(String),
+}
+
+impl Miss {
+    pub fn why(&self) -> &str {
+        match self {
+            Miss::Absent(w) | Miss::Broken(w) => w,
+        }
+    }
+}
+
+/// The facts of a fleet's KB clone on this machine, checked as `nimitz kb
+/// path` checks it (the settings, the clone, its origin), read-only.
+pub fn look(env: &Env, fleet: &str) -> Result<Facts, Miss> {
+    let f = crate::config::load_fleet(env, fleet).map_err(|i| Miss::Broken(i.message))?;
+    let s = crate::fleet_settings::load(&f).map_err(Miss::Broken)?;
+    if !matches!(s.get("kb"), Some(serde_json::Value::Object(_))) {
+        return Err(Miss::Absent(format!("fleet {fleet} has no knowledge base")));
+    }
+    let k = crate::fleet_settings::kb(env, fleet).map_err(Miss::Absent)?;
     if !k.dir.join(".git").exists() {
-        return Err(format!("not cloned on this machine ({})", k.dir.display()));
+        return Err(Miss::Absent(format!("not cloned on this machine ({})", k.dir.display())));
     }
     if let Some(remote) = &k.remote {
         let got = origin(&k.dir);
         if !got.as_deref().is_some_and(|g| same_remote(g, remote)) {
-            return Err(format!("{} is no clone of kb.remote {remote} (its origin is {})", k.dir.display(), got.as_deref().unwrap_or("none")));
+            return Err(Miss::Broken(format!("{} is no clone of kb.remote {remote} (its origin is {})", k.dir.display(), got.as_deref().unwrap_or("none"))));
         }
     }
-    facts(&k.dir)
+    facts(&k.dir).map_err(Miss::Broken)
 }
 
 #[cfg(test)]
@@ -814,6 +839,36 @@ mod tests {
         std::fs::write(d.join(".git/MERGE_HEAD"), "0000000000000000000000000000000000000000\n").unwrap();
         assert_eq!(facts(&d).unwrap().op.as_deref(), Some("merge"));
         assert!(facts(td.path()).is_err(), "no clone, no facts");
+    }
+
+    /// A look tells a fleet with no KB here (none set, no folder, not cloned)
+    /// from one whose clone is wrong (another repo's origin): Admiralty shows
+    /// the first as `KB –` and the second as `KB ✗ broken`.
+    #[test]
+    fn a_look_tells_no_kb_from_a_broken_one() {
+        use crate::fleet_settings::plan_set;
+        use serde_json::json;
+        let (td, env) = test_env();
+        crate::config::tests::make_fleet(&env);
+        let set = |k: &str, v: serde_json::Value| {
+            let p = plan_set(&env, "MAIN", k, Some(v));
+            assert!(p.ok(), "{p:?}");
+            assert!(crate::config::apply_config_plan(&env, &p).verified);
+        };
+        assert!(matches!(look(&env, "MAIN"), Err(Miss::Absent(_))), "no kb set");
+        let up = repo();
+        set("kb.remote", json!(up.path().to_string_lossy()));
+        assert!(matches!(look(&env, "MAIN"), Err(Miss::Absent(_))), "no folder here");
+        let d = td.path().join("kb");
+        set("kb.dirs.test-mac", json!(d.to_string_lossy()));
+        assert!(matches!(look(&env, "MAIN"), Err(Miss::Absent(_))), "not cloned");
+        let other = repo();
+        let o = Command::new("git").arg("clone").arg("-q").arg(other.path()).arg(&d).output().unwrap();
+        assert!(o.status.success());
+        assert!(matches!(look(&env, "MAIN"), Err(Miss::Broken(_))), "another repo's clone");
+        g(&d, &["remote", "set-url", "origin", &up.path().to_string_lossy()]);
+        g(&d, &["fetch", "-q", "origin"]);
+        assert!(look(&env, "MAIN").is_ok(), "{:?}", look(&env, "MAIN"));
     }
 
     fn g(d: &Path, args: &[&str]) -> String {

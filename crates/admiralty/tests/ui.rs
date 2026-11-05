@@ -183,7 +183,7 @@ fn the_kb_label_for_each_state() {
     use nimitz_core::kb::Facts;
     let icons = &admiralty::theme::NERD;
     let now = 1_000_000.0;
-    let ok = Facts { committed_at: Some(now - 180.0), pages: 142, ..Facts::default() };
+    let ok = Facts { committed_at: Some(now - 180.0), pages: 142, branch: Some("main".into()), upstream: Some("origin/main".into()), ..Facts::default() };
     let label = |l: Option<&admiralty::data::KbLook>| kb_badge(l, now, icons).map(|b| b.text(9));
     assert_eq!(label(Some(&Ok(ok.clone()))).unwrap(), "KB \u{2713} 3m \u{b7} 142 pages");
     assert_eq!(label(Some(&Ok(Facts { edits: 3, ..ok.clone() }))).unwrap(), format!("KB {} 3 edits", icons.kb_edits));
@@ -191,7 +191,13 @@ fn the_kb_label_for_each_state() {
     assert_eq!(label(Some(&Ok(Facts { op: Some("rebase".into()), edits: 2, ..ok.clone() }))).unwrap(), "KB \u{2717} conflict", "a conflict outranks edits");
     assert_eq!(label(Some(&Ok(Facts { ahead: 2, ..ok.clone() }))).unwrap(), "KB \u{2191}2");
     assert_eq!(label(Some(&Ok(Facts { ahead: 2, edits: 1, ..ok.clone() }))).unwrap(), format!("KB {} 1 edit", icons.kb_edits), "edits outrank commits not pushed");
-    assert_eq!(label(Some(&Err("no kb".into()))).unwrap(), "KB \u{2013}");
+    assert_eq!(label(Some(&Ok(Facts { behind: 3, ..ok.clone() }))).unwrap(), "KB \u{2193}3", "behind is never in step");
+    assert_eq!(label(Some(&Ok(Facts { ahead: 2, behind: 3, ..ok.clone() }))).unwrap(), "KB \u{2191}2 \u{2193}3");
+    assert_eq!(label(Some(&Ok(Facts { upstream: None, ..ok.clone() }))).unwrap(), format!("KB {} no upstream", icons.kb_edits));
+    assert_eq!(label(Some(&Ok(Facts { branch: None, upstream: None, ..ok.clone() }))).unwrap(), format!("KB {} detached", icons.kb_edits));
+    use nimitz_core::kb::Miss;
+    assert_eq!(label(Some(&Err(Miss::Absent("no kb".into())))).unwrap(), "KB \u{2013}");
+    assert_eq!(label(Some(&Err(Miss::Broken("bad origin".into())))).unwrap(), "KB \u{2717} broken", "a broken clone is not a missing one");
     assert_eq!(label(None), None, "not looked at yet: nothing, never a guess");
     // the details go first, the last one first
     let b = kb_badge(Some(&Ok(ok)), now, icons).unwrap();

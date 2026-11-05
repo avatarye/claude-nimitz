@@ -458,7 +458,7 @@ pub fn demo_kb() -> BTreeMap<String, crate::data::KbLook> {
     BTreeMap::from([
         ("MAIN".to_string(), Ok(main)),
         ("FORGE".to_string(), Ok(forge)),
-        ("LAB".to_string(), Err("the fleet does not run on this machine".to_string())),
+        ("LAB".to_string(), Err(nimitz_core::kb::Miss::Absent("the fleet does not run on this machine".to_string()))),
     ])
 }
 

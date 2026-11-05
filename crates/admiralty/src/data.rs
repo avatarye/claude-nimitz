@@ -27,7 +27,7 @@ pub struct Bundle {
 
 /// A fleet's KB as the loader last looked at it: its clone's facts, or why
 /// there is none (no `kb` in its settings, no clone here, another repo).
-pub type KbLook = Result<nimitz_core::kb::Facts, String>;
+pub type KbLook = Result<nimitz_core::kb::Facts, nimitz_core::kb::Miss>;
 
 /// How often the loader looks at a fleet's KB clone again (it runs git
 /// there: never more often than this, and never on the draw path).
@@ -68,7 +68,7 @@ pub struct FixtureFile {
     pub mux_type_text: bool,
     #[serde(default)]
     pub mux_layout: bool,
-    /// each fleet's KB, by fleet id: `{"Ok": {facts}}` or `{"Err": "why"}`
+    /// each fleet's KB, by fleet id: `{"Ok": {facts}}`, `{"Err": {"Absent": "why"}}` or `{"Err": {"Broken": "why"}}`
     #[serde(default)]
     pub kb: BTreeMap<String, KbLook>,
 }
@@ -212,7 +212,7 @@ impl CoreSource {
         for f in &snap.fleets {
             let fresh = self.kb.get(&f.id.0).is_some_and(|(at, _)| now.duration_since(*at) < KB_EVERY);
             if !fresh {
-                let look = if f.machine.is_none() { Err("the fleet does not run on this machine".to_string()) } else { nimitz_core::kb::look(&self.env, f.id.fleet()) };
+                let look = if f.machine.is_none() { Err(nimitz_core::kb::Miss::Absent("the fleet does not run on this machine".to_string())) } else { nimitz_core::kb::look(&self.env, f.id.fleet()) };
                 self.kb.insert(f.id.0.clone(), (now, look));
             }
             if let Some((_, l)) = self.kb.get(&f.id.0) {

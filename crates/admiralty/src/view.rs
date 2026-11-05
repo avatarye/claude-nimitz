@@ -368,19 +368,34 @@ impl KbBadge {
     }
 }
 
-/// The KB's word for a fleet bar, worst first: `KB ✗ conflict` (a rebase or
-/// merge under way; `✗ attributes`: an attributes file changed, so nothing
-/// else is read), `KB ⚠ 3 edits` (not committed), `KB ↑2` (commits not
-/// pushed, as of the last fetch), `KB ✓ 3m · 142 pages`; `KB –`: no KB, or
-/// no clone here. `None`: not looked at yet.
+/// The KB's word for a fleet bar, worst first: `KB ✗ broken` (it should be
+/// here and cannot be read), `KB ✗ conflict` (a rebase or merge under way;
+/// `✗ attributes`: an attributes file changed, so nothing else is read),
+/// `KB ⚠ 3 edits` (not committed), `KB ⚠ detached` or `KB ⚠ no upstream`
+/// (nothing to be in step with), `KB ↑2` / `KB ↓1` / `KB ↑2 ↓1` (commits not
+/// pushed or not pulled, as of the last fetch), `KB ✓ 3m · 142 pages`;
+/// `KB –`: no KB on this machine. `None`: not looked at yet.
 pub fn kb_badge(look: Option<&crate::data::KbLook>, now: f64, icons: &Icons) -> Option<KbBadge> {
+    use nimitz_core::kb::Miss;
     let b = |head: String, parts: Vec<String>| Some(KbBadge { head, parts });
     match look? {
-        Err(_) => b(format!("KB {}", icons.kb_none), vec![]),
+        Err(Miss::Absent(_)) => b(format!("KB {}", icons.kb_none), vec![]),
+        Err(Miss::Broken(_)) => b(format!("KB {}", icons.kb_bad), vec!["broken".into()]),
         Ok(f) if f.op.is_some() => b(format!("KB {}", icons.kb_bad), vec!["conflict".into()]),
         Ok(f) if f.stray.is_some() => b(format!("KB {}", icons.kb_bad), vec!["attributes".into()]),
         Ok(f) if f.edits > 0 => b(format!("KB {}", icons.kb_edits), vec![format!("{} edit{}", f.edits, if f.edits == 1 { "" } else { "s" })]),
-        Ok(f) if f.ahead > 0 => b(format!("KB {}{}", icons.kb_ahead, f.ahead), vec![]),
+        Ok(f) if f.branch.is_none() => b(format!("KB {}", icons.kb_edits), vec!["detached".into()]),
+        Ok(f) if f.upstream.is_none() => b(format!("KB {}", icons.kb_edits), vec!["no upstream".into()]),
+        Ok(f) if f.ahead > 0 || f.behind > 0 => {
+            let mut head = "KB".to_string();
+            if f.ahead > 0 {
+                head.push_str(&format!(" {}{}", icons.kb_ahead, f.ahead));
+            }
+            if f.behind > 0 {
+                head.push_str(&format!(" {}{}", icons.kb_behind, f.behind));
+            }
+            b(head, vec![])
+        }
         Ok(f) => {
             let age = f.committed_at.map(|t| age_or_unknown(now - t)).unwrap_or_else(|| "no commits".into());
             b(format!("KB {}", icons.kb_ok), vec![age, format!("{} page{}", f.pages, if f.pages == 1 { "" } else { "s" })])
