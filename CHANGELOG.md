@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.7.21 (2026-11-05)
+
+Tested with Claude Code 2.1.288 - 2.1.318.
 
 ### Changed
 
@@ -25,8 +27,11 @@
   `KB ✓ 3m · 142 pages` when the
   clone is in step (age of the last commit, wiki pages), `KB ⚠ 3 edits` for
   edits not committed, `KB ✗ conflict` while a rebase or merge is under way,
-  `KB ↑2` for commits not pushed (compared with the last fetch: Admiralty
-  never fetches), `KB –` when the fleet has no KB here. The fleet's actions
+  `KB ↑2` or `KB ↓1` for commits not pushed or not pulled (compared with
+  the last fetch: Admiralty never fetches), `KB ⚠ detached` or
+  `KB ⚠ no upstream` when there is nothing to be in step with,
+  `KB ✗ broken` when the clone is there but cannot be read or is another
+  repo's, `KB –` when the fleet has no KB here. The fleet's actions
   menu (`x` on its bar) shows the full picture: path, remote, last commit,
   pages, edits, ahead and behind. Admiralty reads only the local clone,
   checks it at most every 30 seconds, and never on the drawing thread.
