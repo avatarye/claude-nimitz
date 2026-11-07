@@ -32,6 +32,17 @@ pub type KbLook = Result<nimitz_core::kb::Facts, nimitz_core::kb::Miss>;
 /// How often the loader looks at a fleet's KB clone again (it runs git
 /// there: never more often than this, and never on the draw path).
 pub const KB_EVERY: Duration = Duration::from_secs(30);
+/// A look still under way after this long is reported as broken (git that
+/// does not answer: a folder on a mount that stopped responding).
+pub const KB_STUCK: Duration = Duration::from_secs(60);
+
+/// Each fleet's KB looks, shared with the threads that take them: the last
+/// look and when it was taken, and the looks under way and since when.
+#[derive(Default)]
+pub struct KbLooks {
+    pub done: HashMap<String, (Instant, KbLook)>,
+    pub running: HashMap<String, Instant>,
+}
 
 /// One refresh at a time; the loader thread owns the source (it is built there,
 /// so a multiplexer adapter never crosses threads).
@@ -126,8 +137,9 @@ pub struct CoreSource {
     pub mux: Box<dyn Mux>,
     /// the next load is the first: make it quick
     pub first: bool,
-    /// each fleet's KB and when it was looked at (`KB_EVERY`)
-    pub kb: HashMap<String, (Instant, KbLook)>,
+    /// each fleet's KB and when it was looked at (`KB_EVERY`), filled by
+    /// one thread per look so a git that hangs never holds up a load
+    pub kb: std::sync::Arc<std::sync::Mutex<KbLooks>>,
 }
 
 impl CoreSource {
@@ -136,7 +148,7 @@ impl CoreSource {
         // outside a Herdr pane, the Herdr server the user's commands recorded
         // (`active::user_mux_vars`): Admiralty sees the leads' panes wherever it runs
         let mux = nimitz_mux::detect(&nimitz_core::active::user_mux_vars(&env, vars));
-        CoreSource { env, cache: nimitz_core::snapshot::Cache::default(), mux, first: false, kb: HashMap::new() }
+        CoreSource { env, cache: nimitz_core::snapshot::Cache::default(), mux, first: false, kb: Default::default() }
     }
 }
 
@@ -202,21 +214,38 @@ impl DataSource for CoreSource {
 }
 
 impl CoreSource {
-    /// Each fleet's KB here: looked at again once its last look is
-    /// `KB_EVERY` old (on the loader thread, never the draw's); a fleet gone
-    /// is forgotten.
+    /// Each fleet's KB here, as last looked at. A look older than
+    /// `KB_EVERY` starts a new one on its own thread (one per fleet at a
+    /// time), so the load never waits on git: until it ends, the last look
+    /// stands, and one still under way after `KB_STUCK` shows as broken. A
+    /// fleet gone is forgotten.
     fn kb_looks(&mut self, snap: &Snapshot) -> BTreeMap<String, KbLook> {
         let now = Instant::now();
-        self.kb.retain(|k, _| snap.fleets.iter().any(|f| f.id.0 == *k));
+        let mut looks = self.kb.lock().unwrap_or_else(|p| p.into_inner());
+        looks.done.retain(|k, _| snap.fleets.iter().any(|f| f.id.0 == *k));
         let mut out = BTreeMap::new();
         for f in &snap.fleets {
-            let fresh = self.kb.get(&f.id.0).is_some_and(|(at, _)| now.duration_since(*at) < KB_EVERY);
-            if !fresh {
-                let look = if f.machine.is_none() { Err(nimitz_core::kb::Miss::Absent("the fleet does not run on this machine".to_string())) } else { nimitz_core::kb::look(&self.env, f.id.fleet()) };
-                self.kb.insert(f.id.0.clone(), (now, look));
+            let key = f.id.0.clone();
+            let fresh = looks.done.get(&key).is_some_and(|(at, _)| now.duration_since(*at) < KB_EVERY);
+            if !fresh && !looks.running.contains_key(&key) {
+                if f.machine.is_none() {
+                    looks.done.insert(key.clone(), (now, Err(nimitz_core::kb::Miss::Absent("the fleet does not run on this machine".to_string()))));
+                } else {
+                    looks.running.insert(key.clone(), now);
+                    let (env, fleet, shared, k) = (self.env.clone(), f.id.fleet().to_string(), self.kb.clone(), key.clone());
+                    std::thread::spawn(move || {
+                        let look = nimitz_core::kb::look(&env, &fleet);
+                        let mut l = shared.lock().unwrap_or_else(|p| p.into_inner());
+                        l.running.remove(&k);
+                        l.done.insert(k, (Instant::now(), look));
+                    });
+                }
             }
-            if let Some((_, l)) = self.kb.get(&f.id.0) {
-                out.insert(f.id.0.clone(), l.clone());
+            let stuck = looks.running.get(&key).map(|since| now.duration_since(*since)).filter(|d| *d >= KB_STUCK);
+            if let Some(d) = stuck {
+                out.insert(key, Err(nimitz_core::kb::Miss::Broken(format!("git has not answered for {}s (a folder that does not respond?)", d.as_secs()))));
+            } else if let Some((_, l)) = looks.done.get(&key) {
+                out.insert(key, l.clone());
             }
         }
         out

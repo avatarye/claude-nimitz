@@ -577,8 +577,8 @@ fn plan_open(ctx: &Ctx, snap: &Snapshot, target: &Target) -> Result<Pending, Str
             let m = find_member(snap, id).ok_or("not in the snapshot")?;
             let tab = nimitz_core::layout::attach_tab(&ctx.env, m).map_err(|i| i.message)?;
             let wake = if tab.wakes { "; it wakes the parked job" } else { "" };
-            let step = Step { id: Some(id.clone()), cmd: tab.cmd, cwd: Some(tab.cwd), why: format!("attach to {} in tab {}{wake}; detaching (ctrl-z) leaves it running", m.expected_name, tab.label) };
-            (step, place_for(id), m.expected_name.clone())
+            let step = Step { id: Some(id.clone()), cmd: tab.cmd, cwd: Some(tab.cwd), why: format!("attach to {} in tab {}{wake}; detaching (ctrl-z) leaves it running", id.0, tab.label) };
+            (step, place_for(id), id.0.clone())
         }
         Target::Stowaway(sid) => {
             let s = snap.stowaways.iter().find(|s| &s.session_id == sid).cloned().ok_or("not in the snapshot")?;
@@ -721,24 +721,24 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     // every member gets it itself, a ship too (0.7.3: no relay through its commodore)
     let via_m = m;
     if !live(via_m) {
-        return Err(format!("{} is not running: a starts it", via_m.expected_name));
+        return Err(format!("{} is not running: a starts it", via_m.id.0));
     }
-    let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into: A opens its tab, then m (or nimitz signal {} <text>, which opens its tab and delivers it)", via_m.expected_name, via_m.id.0))?;
+    let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into: A opens its tab, then m (or nimitz signal {} <text>, which opens its tab and delivers it)", via_m.id.0, via_m.id.0))?;
     let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone: R refreshes"))?;
     // typed only into the pane that shows its session (a pane matched by its
     // title and folder alone may be anything, the agent view included)
     let via_sid = via_m.session.as_ref().map(|s| s.session_id.as_str());
     if !panes.iter().any(|p| p.pane.pane_id == pane_id && p.session_id.as_deref().is_some() && p.session_id.as_deref() == via_sid) {
-        return Err(format!("{}'s pane {pane_id} matches it by title only, not by its session; nothing is typed: enter jumps there to type it yourself", via_m.expected_name));
+        return Err(format!("{}'s pane {pane_id} matches it by title only, not by its session; nothing is typed: enter jumps there to type it yourself", via_m.id.0));
     }
     // read from its `claude attach` alone: typed into only while it runs
     // exactly that attach (checked when the message is sent)
     let attach_job = if panes.iter().any(|p| p.pane.pane_id == pane_id && p.inferred) {
-        Some(via_m.session.as_ref().and_then(|s| s.short_id.clone()).ok_or_else(|| format!("{}'s pane {pane_id} is known by its attach alone and it has no job to check it against; nothing is typed: enter jumps there to type it yourself", via_m.expected_name))?)
+        Some(via_m.session.as_ref().and_then(|s| s.short_id.clone()).ok_or_else(|| format!("{}'s pane {pane_id} is known by its attach alone and it has no job to check it against; nothing is typed: enter jumps there to type it yourself", via_m.id.0))?)
     } else {
         None
     };
-    Ok(MessagePlan { id: id.clone(), to: m.expected_name.clone(), via: via_m.expected_name.clone(), pane, attach_job })
+    Ok(MessagePlan { id: id.clone(), to: id.0.clone(), via: via_m.id.0.clone(), pane, attach_job })
 }
 
 /// The CLI command that sends the same message (its text as it will be sent).

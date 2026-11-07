@@ -743,3 +743,42 @@ fn workflow_agents_show_under_a_row_per_run() {
     assert!(s.contains("sandbox-fanout") && s.contains("L0:lane zero") && s.contains("+1 done"), "{s}");
 }
 
+
+/// A KB look runs on its own thread: the load never waits on git. Until it
+/// ends the last look stands; one still under way after `KB_STUCK` shows as
+/// broken, and no second look starts beside it.
+#[test]
+fn a_kb_look_that_hangs_never_holds_up_a_load() {
+    use admiralty::data::{KB_STUCK, KB_EVERY};
+    use nimitz_core::kb::Miss;
+    let w = world();
+    let mut src = CoreSource::detect(&w.vars);
+    let fleet = src.load().snap.fleets.iter().find(|f| f.machine.is_some()).map(|f| f.id.0.clone()).expect("a fleet on this machine");
+    let long_ago = std::time::Instant::now().checked_sub(KB_STUCK + KB_EVERY).unwrap();
+    // the first load's own looks end first (they would clear what is set below)
+    let wait = std::time::Instant::now();
+    while !src.kb.lock().unwrap().running.is_empty() {
+        assert!(wait.elapsed() < std::time::Duration::from_secs(30), "the sandbox's looks never ended");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    {
+        let mut l = src.kb.lock().unwrap();
+        l.done.clear();
+        l.running.insert(fleet.clone(), long_ago);
+    }
+    let t = std::time::Instant::now();
+    let b = src.load();
+    assert!(t.elapsed() < std::time::Duration::from_secs(10), "the load waited");
+    match b.kb.get(&fleet) {
+        Some(Err(Miss::Broken(why))) => assert!(why.contains("has not answered"), "{why}"),
+        other => panic!("{fleet}: {other:?}"),
+    }
+    assert_eq!(src.kb.lock().unwrap().running.get(&fleet), Some(&long_ago), "no second look beside the stuck one");
+    // the look ends: its answer replaces the broken word at the next load
+    {
+        let mut l = src.kb.lock().unwrap();
+        l.running.remove(&fleet);
+        l.done.insert(fleet.clone(), (std::time::Instant::now(), Err(Miss::Absent("no kb".into()))));
+    }
+    assert!(matches!(src.load().kb.get(&fleet), Some(Err(Miss::Absent(_)))));
+}

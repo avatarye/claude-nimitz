@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A KB that does not answer no longer stops Admiralty.** Each fleet's KB
+  is now read on its own thread, one at a time per fleet, so the list keeps
+  updating while git runs. A read still running after 60 seconds (a folder
+  on a mount that stopped responding) shows as `KB ✗ broken`, and no second
+  read starts beside it.
+- **Admiralty's messages name members by their path** (`MAIN/ARGOS/BOLT`),
+  as the bars and the `x` panel do: the `m` entry when there is no pane,
+  `open`'s plan, and the "Sent to" notices.
+
 ## 0.7.21 (2026-11-05)
 
 Tested with Claude Code 2.1.288 - 2.1.318.

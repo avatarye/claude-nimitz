@@ -763,9 +763,6 @@ pub fn facts(dir: &Path) -> Result<Facts, String> {
     Ok(f)
 }
 
-/// The fleet's KB on this machine, as `nimitz kb path` finds it (the
-/// settings, a clone there, its origin the fleet's `kb.remote`), then its
-/// `facts`; or why there is none.
 /// Why a look found no facts: `Absent`, the fleet keeps no KB on this
 /// machine (none set, no folder here, not cloned yet); `Broken`, it should
 /// and something is wrong (the config does not load, the clone's origin is

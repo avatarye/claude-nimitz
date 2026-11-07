@@ -1190,7 +1190,7 @@ fn message_goes_to_the_member_itself_a_ship_too() {
     goto(&mut t.app, "M:MAIN/ARGOS/BOLT");
     match t.app.message_plan() {
         Ok(p) => assert_eq!(p.via, p.to, "never relayed"),
-        Err(why) => assert!(why.contains("[MAIN.ARGOS]-BOLT") && !why.contains("COMMODORE"), "{why}"),
+        Err(why) => assert!(why.starts_with("MAIN/ARGOS/BOLT ") && !why.contains("[MAIN.ARGOS]") && !why.contains("COMMODORE"), "{why}"),
     }
     goto(&mut t.app, "M:MAIN");
     let p = t.app.message_plan().unwrap();

@@ -1132,14 +1132,20 @@ adding it would overflow the bar. Beside the state the title may be cut. A bar
 never wraps. The fleet's tab still carries the fleet-wide state and counts.
 
 The KB part reads `data::KbLook` per fleet in `Bundle.kb`. `CoreSource`
-fills it on the loader thread via `nimitz_core::kb::look` (settings, clone,
-origin check as `nimitz kb path`, then `kb::facts`), at most every `KB_EVERY`
-(30 s) per fleet. `facts` is read-only, uses the hardened `kb::git`, and never
-fetches: ahead and behind compare with the remote-tracking ref of the last
-fetch. Pages are `wiki/**/*.md` at HEAD, except `_`-prefixed files (`_index.md`,
-`_log.md`). `view::kb_badge` picks the word: `✗ conflict` (`op`) or
-`✗ attributes` (a changed attributes file), then `⚠ N edits`, then `↑N`, then
-`✓ age · pages`; `–` for no KB. A fleet not yet looked at shows no KB part.
+starts a look via `nimitz_core::kb::look` (settings, clone, origin check as
+`nimitz kb path`, then `kb::facts`) on its own thread once the last one is
+`KB_EVERY` (30 s) old, one per fleet at a time (`data::KbLooks`: `done` and
+`running`), so a git that hangs never holds up a load; the last look stands
+until the new one ends, and one still running after `KB_STUCK` (60 s) shows as
+broken. `look` returns `kb::Miss::Absent` (no KB set, no folder here, not
+cloned) or `Miss::Broken` (config, origin or git fails). `facts` is read-only,
+uses the hardened `kb::git`, and never fetches: ahead and behind compare with
+the remote-tracking ref of the last fetch. Pages are `wiki/**/*.md` at HEAD,
+except `_`-prefixed files (`_index.md`, `_log.md`). `view::kb_badge` picks the
+word, worst first: `✗ broken`, `✗ conflict` (`op`) or `✗ attributes` (a changed
+attributes file), `⚠ N edits`, `⚠ detached`, `⚠ no upstream`, `↑N` / `↓N`,
+then `✓ age · pages`; `–` for no KB here. A fleet not yet looked at shows no
+KB part.
 The full facts are in the fleet's detail (`detail::kb_lines`), so `x` on the
 fleet bar shows them. The demo's `fixtures::demo_kb` has MAIN in step, FORGE
 with edits, and LAB with none.
