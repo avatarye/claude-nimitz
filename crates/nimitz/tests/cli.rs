@@ -2116,9 +2116,8 @@ fn branch_then_stop_then_start_resumes_the_branch_with_every_flag() {
 }
 
 /// The agent view's draft spare in a LEAD folder (`spare: true`, no job, no
-/// labels, a pre-warmed process the view claimed just now) is ignored for
-/// the grace time, as in a ship folder: no `lead.intruder`, no stowaway
-/// (acceptance inside FAIL-2).
+/// labels, a pre-warmed process the view claimed just now) is ignored, as in
+/// a ship folder: no `lead.intruder`, no stowaway (acceptance inside FAIL-2).
 #[test]
 fn a_draft_spare_in_a_lead_folder_is_not_an_intruder() {
     let sb = Sb::new(false);
@@ -2142,6 +2141,38 @@ fn a_draft_spare_in_a_lead_folder_is_not_an_intruder() {
     assert!(!adm["issues"].as_array().unwrap().iter().any(|i| i["code"] == "lead.intruder"), "{adm}");
     let r = sb.run(&["check", "MAIN"]);
     assert!(!r.out.contains("lead.intruder") && !r.out.contains("spare-draft-0000"), "{}", r.out);
+}
+
+/// #2: the daemon's pre-warmed `bg-spare` in a LEAD folder, long past the
+/// grace time (`spare: true`, `kind: bg`, a `jobId` with no row and no
+/// transcript, idle, its session file untouched for an hour, a SessionStart
+/// `startup` of `kind: bg` naming that job, no labels): `check`, `status`
+/// and `sweep` all ignore it.
+#[test]
+fn a_daemon_spare_in_a_lead_folder_is_ignored_at_any_age() {
+    let sb = Sb::new(false);
+    let adm = sb.member("MAIN");
+    let dir = adm["cwd"].as_str().unwrap().to_string();
+    let ago = nimitz_core::evidence::now() - 3600.0;
+    let home = PathBuf::from(&sb.vars["NIMITZ_CLAUDE_HOME"]);
+    let f = home.join("sessions").join("434343.json");
+    std::fs::write(&f, serde_json::json!({"pid": 1, "sessionId": "c0ffee00-5ba2-4e00-8000-000000000000", "jobId": "c0ffee00", "cwd": dir, "kind": "bg", "entrypoint": "cli", "spare": true, "status": "idle", "startedAt": ago * 1000.0}).to_string()).unwrap();
+    std::fs::File::options().write(true).open(&f).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(3600)).unwrap();
+    std::fs::create_dir_all(home.join("jobs").join("c0ffee00").join("tmp")).unwrap();
+    let ev = PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("events.jsonl");
+    let line = serde_json::json!({"ts": ago, "event": "SessionStart", "session_id": "c0ffee00-5ba2-4e00-8000-000000000000", "source": "startup", "reason": null, "pid": 1, "labels": {}, "rules": null, "job": "c0ffee00", "kind": "bg", "entrypoint": "cli", "binding": null, "cwd": dir});
+    let mut all = std::fs::read_to_string(&ev).unwrap_or_default();
+    all.push_str(&format!("{line}\n"));
+    std::fs::write(&ev, all).unwrap();
+    let text = sb.status().to_string();
+    assert!(!text.contains("c0ffee00"), "the daemon spare shows: {text}");
+    let r = sb.run(&["check", "MAIN"]);
+    assert!(!r.out.contains("lead.intruder") && !r.out.contains("c0ffee00"), "{}", r.out);
+    let r = sb.run(&["sweep", "--plan"]);
+    assert!(!r.out.contains("c0ffee00"), "{}", r.out);
+    let r = sb.run(&["sweep", "--yes"]);
+    assert!(!r.out.contains("c0ffee00"), "{}", r.out);
+    assert!(f.is_file(), "sweep touched the spare's session file");
 }
 
 /// `/fork` in an attached lead: the fork is a second live job in the lead's

@@ -485,19 +485,23 @@ fix, no row). An interactive or SDK session of another home carries no labels
 anywhere nimitz can read (its labels live in that process's env only, and the
 hook of this home writes no line), so it cannot be recognised: it is
 classified as an unlabelled session (the user's own in a ship folder, a
-stowaway elsewhere in scope). Also not rows, for
-`snapshot::TRANSIENT_GRACE_S` (120 s) after its session file appeared (the
-earliest of the file's birth time, its mtime and `startedAt`; for a spare,
-its mtime alone: a pre-warmed process the agent view claims later), a picker:
-a live process with no job, no transcript and no SessionStart yet (the agent
-view's draft or "new session", `spare: true`, is one until it has a
-conversation; in a lead's folder too: no `lead.intruder` for a draft, inside
-FAIL-2); after the grace time, or once it has a conversation, it is classified
-like any other row (the agent view's draft fires a SessionStart `startup`
-the moment it is claimed, so a spare is a picker whether or not it has one;
-and it may carry a `jobId`, the pre-warmed `bg-spare` job the view claimed,
-cli-L3b: a spare is a picker with or without a job, until it has a
-conversation).
+stowaway elsewhere in scope). Also not rows, at any age: a spare, a live,
+unlabelled `spare: true` session with no transcript (the agent view's draft
+or "new session", and the daemon's pre-warmed `bg-spare`, which it starts in
+the cwd of the last background launch, #2). It has no conversation to lose,
+and stopping it is pointless (the daemon pre-warms another), so `status`,
+`check` and `sweep` never see it, in a lead's folder too (no `lead.intruder`,
+inside FAIL-2). Neither its SessionStart nor its job tells it apart: the
+agent view's draft fires a SessionStart `startup` the moment it is claimed,
+and the daemon's spare fires one of `kind: bg` with its `jobId` (cli-L3b: a
+spare may carry a `jobId` whose job dir holds no row). Once it has a
+conversation it is classified like any other row; a labelled row (a job
+whose row saved its labels) is never hidden, whatever Claude Code does with
+`spare`. Not rows either, for `snapshot::TRANSIENT_GRACE_S` (120 s) after its
+session file appeared (the earliest of the file's birth time, its mtime and
+`startedAt`), a picker: a live process with no job, no transcript and no
+SessionStart yet; after the grace time, or once it has a conversation, it is
+classified like any other row.
 A member's row is the registry's `job`, for a lead too: a hand rm + resume
 binds the new job beside an older labelled stray, and the registry job stays
 the lead (the stray is its `lead.intruder`; neither a relaunch's `dup.live`

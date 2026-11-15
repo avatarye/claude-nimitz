@@ -5,7 +5,8 @@
 //! transcript, a resume of a lineage id, or its name) is the ship's extra row
 //! with `copy` set and one working fix per kind; `sweep` stops and removes
 //! background copies; another home's sessions never appear; Claude Code's
-//! transient processes (spares, pickers) are ignored for a grace time.
+//! transient processes are ignored: a spare with no conversation at any age
+//! (#2), a picker for a grace time.
 //! Everything runs through the sandbox's fake `claude` (`sandbox.rs`).
 use nimitz_core::env::Env;
 use nimitz_core::types::*;
@@ -347,29 +348,85 @@ fn nimitz_g7_sessions_labelled_for_another_home_never_appear() {
 
 // ------------------------------------------------------------------ transient processes
 
+/// Append one hook line to `events.jsonl`, as the hook would.
+fn append_event(w: &W, line: Value) {
+    let mut all = std::fs::read_to_string(w.env.events_path()).unwrap_or_default();
+    all.push_str(&format!("{line}\n"));
+    std::fs::write(w.env.events_path(), all).unwrap();
+}
+
+/// Give a session a transcript with one message, under its folder.
+fn write_transcript(w: &W, cwd: &str, sid: &str) {
+    let proj = w.env.claude_home.join("projects").join(evidence::project_dir_name(cwd));
+    std::fs::create_dir_all(&proj).unwrap();
+    let line = json!({"type": "user", "cwd": cwd, "sessionId": sid, "uuid": format!("u-{sid}"), "parentUuid": null});
+    std::fs::write(proj.join(format!("{sid}.jsonl")), format!("{line}\n")).unwrap();
+}
+
+/// Age a session file past the grace time (its mtime and `startedAt`).
+fn age_session_file(w: &W, name: &str) {
+    let f = std::fs::File::options().write(true).open(w.env.claude_home.join("sessions").join(format!("{name}.json"))).unwrap();
+    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(snapshot::TRANSIENT_GRACE_S as u64 + 60)).unwrap();
+}
+
 #[test]
-fn cli_05_a_spare_session_file_is_ignored_for_the_grace_time() {
+fn cli_05_a_spare_session_file_is_never_a_row() {
     let w = world();
     let sq = w.member(&w.snap(), &Id::commodore("MAIN", "ARGOS")).cwd.unwrap();
     // the agent view's "new session": `spare: true`, no labels, in a fleet folder
     let sid = w.session_file("28f3d8a7", &sq, json!({"spare": true, "kind": "bg"}));
     // the real draft fires a SessionStart `startup` the moment the view claims it (byhand 2c-live)
-    let line = json!({"ts": evidence::now(), "event": "SessionStart", "session_id": sid, "source": "startup", "reason": null, "pid": sandbox::LIVE_PID, "labels": {}, "rules": null, "job": null, "kind": "interactive", "entrypoint": "cli", "binding": null, "cwd": sq});
-    let mut all = std::fs::read_to_string(w.env.events_path()).unwrap_or_default();
-    all.push_str(&format!("{line}\n"));
-    std::fs::write(w.env.events_path(), all).unwrap();
+    append_event(&w, json!({"ts": evidence::now(), "event": "SessionStart", "session_id": sid, "source": "startup", "reason": null, "pid": sandbox::LIVE_PID, "labels": {}, "rules": null, "job": null, "kind": "interactive", "entrypoint": "cli", "binding": null, "cwd": sq}));
     let snap = w.snap();
     assert!(!stowaway(&snap, &sid), "{:?}", snap.stowaways);
     assert!(!check::check(&w.env, &snap, None).iter().any(|i| i.code == "stowaway" && i.message.contains(&sid)));
-    // after the grace time it is classified as normal: a stowaway in the squadron
-    // folder. A spare's age is its last touch (the view claims a pre-warmed
-    // process: `startedAt` is old long before), so the file's mtime ages it
+    // old (its startedAt and its file's mtime past the grace time): still no
+    // row (#2): it has no conversation, and the daemon would only spawn another
     let old = ((evidence::now() - snapshot::TRANSIENT_GRACE_S - 60.0) * 1000.0) as i64;
     w.session_file("28f3d8a7", &sq, json!({"spare": true, "kind": "bg", "startedAt": old}));
-    assert!(!stowaway(&w.snap(), &sid), "an old startedAt alone does not age a spare");
-    let f = std::fs::File::options().write(true).open(w.env.claude_home.join("sessions").join("28f3d8a7.json")).unwrap();
-    f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(snapshot::TRANSIENT_GRACE_S as u64 + 60)).unwrap();
+    age_session_file(&w, "28f3d8a7");
+    let snap = w.snap();
+    assert!(!stowaway(&snap, &sid), "{:?}", snap.stowaways);
+    let issues = check::check(&w.env, &snap, None);
+    assert!(!issues.iter().any(|i| i.message.contains("28f3d8a7")), "{issues:?}");
+    // once used (the view's draft got a prompt) it has a conversation: classified as normal
+    write_transcript(&w, &sq, &sid);
     assert!(stowaway(&w.snap(), &sid));
+}
+
+/// #2: the daemon's pre-warmed `bg-spare` in a LEAD's folder, the exact shape
+/// seen: `spare: true`, `kind: bg`, a `jobId` whose job dir holds no row and
+/// no transcript, status idle, an old session file, and a SessionStart
+/// `startup` (`kind: bg`, that job, no labels). It is no member, copy or
+/// stowaway: no `lead.intruder`, no row in `status --json`, and `sweep`
+/// leaves it alone.
+#[test]
+fn issue_2_a_daemon_spare_in_a_lead_folder_is_no_intruder_at_any_age() {
+    let w = world();
+    let lead = Id::commodore("MAIN", "ARGOS");
+    let sq = w.member(&w.snap(), &lead).cwd.unwrap();
+    let old = ((evidence::now() - 3600.0) * 1000.0) as i64;
+    let sid = w.session_file("5e1f0b2a", &sq, json!({"spare": true, "kind": "bg", "jobId": "5e1f0b2a", "status": "idle", "startedAt": old}));
+    age_session_file(&w, "5e1f0b2a");
+    // the job dir holds only an empty tmp/
+    std::fs::create_dir_all(w.env.claude_home.join("jobs").join("5e1f0b2a").join("tmp")).unwrap();
+    append_event(&w, json!({"ts": evidence::now() - 3600.0, "event": "SessionStart", "session_id": sid, "source": "startup", "reason": null, "pid": sandbox::LIVE_PID, "labels": {}, "rules": null, "job": "5e1f0b2a", "kind": "bg", "entrypoint": "cli", "binding": null, "cwd": sq}));
+    let snap = w.snap();
+    assert!(!stowaway(&snap, &sid) && !stowaway(&snap, "5e1f0b2a"), "{:?}", snap.stowaways);
+    let m = w.member(&snap, &lead);
+    assert!(!has(&m.issues, "lead.intruder"), "{:?}", m.issues);
+    assert!(m.extra_rows.iter().all(|r| r.session_id != sid), "{:?}", m.extra_rows);
+    let issues = check::check(&w.env, &snap, None);
+    assert!(!issues.iter().any(|i| i.code == "lead.intruder" || i.message.contains("5e1f0b2a")), "{issues:?}");
+    // `status --json` shows no row for it
+    let s = serde_json::to_string(&snap).unwrap();
+    assert!(!s.contains(&sid) && !s.contains("5e1f0b2a"), "{s}");
+    // `sweep` leaves it alone: no stop, no rm, no warning
+    for ids in [None, Some(vec![lead.clone()])] {
+        let plan = sessions::plan_sweep(&w.env, &snap, ids.as_deref(), &Caller::User);
+        assert!(!plan.steps.iter().any(|s| s.cmd.iter().any(|a| a.contains("5e1f0b2a"))), "{:?}", plan.steps);
+        assert!(!plan.warnings.iter().any(|i| i.message.contains("5e1f0b2a")), "{:?}", plan.warnings);
+    }
 }
 
 #[test]

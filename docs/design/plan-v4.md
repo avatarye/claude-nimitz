@@ -120,8 +120,10 @@ lock (same rules). Labels are kept **per pid** in evidence, not per session id.
   that ship (Warn; `sweep <ship>` stops and removes copies after one confirm).
 - Anywhere else under `NIMITZ_HOME`: a stowaway, as before.
 - Sessions labelled for another `NIMITZ_HOME` never appear (no issue, no fix).
-- Ignore for a short time: `spare: true` session files, sessions with no transcript
-  and no SessionStart (pickers), the agent view's draft.
+- Ignore for a short time: sessions with no transcript and no SessionStart
+  (pickers). Ignore at any age: unlabelled `spare: true` session files with no
+  transcript (the agent view's draft, the daemon's pre-warmed `bg-spare`; #2,
+  contracts.md section 6).
 
 ## 7. Leads as background jobs (option A)
 

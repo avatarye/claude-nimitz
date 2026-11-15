@@ -12,6 +12,13 @@
 - **Admiralty's messages name members by their path** (`MAIN/ARGOS/BOLT`),
   as the bars and the `x` panel do: the `m` entry when there is no pane,
   `open`'s plan, and the "Sent to" notices.
+- **Claude Code's pre-warmed spare is never a row (#2).** The daemon keeps a
+  `bg-spare` process ready in the folder of its last background launch. Once
+  it was two minutes old, `check` called it a stowaway, and in a lead's folder
+  a `lead.intruder` whose fix (`stop`, then `rm`) only made the daemon start
+  another. A live `spare: true` session with no labels and no transcript is
+  now ignored at any age by `check`, `status`, `sweep` and Admiralty. Once
+  it has a conversation, it is judged like any other session.
 
 ## 0.7.21 (2026-11-05)
 

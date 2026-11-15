@@ -453,8 +453,9 @@ pub struct SessionRow {
     pub entrypoint: Option<String>,
     /// the job is in `jobs/pins.json`
     pub pinned: bool,
-    /// the session file says `spare: true` (a pre-warmed process the agent
-    /// view claims as its "new session" or draft)
+    /// the session file says `spare: true` (a pre-warmed process: the agent
+    /// view's "new session" or draft, the daemon's `bg-spare` for the next
+    /// background launch)
     pub spare: bool,
     /// where an interactive process runs, from the session file (`tmux`
     /// `<session>:@<window>.%<pane>`, a Herdr pane)
@@ -671,10 +672,9 @@ pub fn rows_from_files(env: &Env, cache: &mut FileCache) -> Option<Vec<SessionRo
             entrypoint: s(&d, "entrypoint"),
             spare,
             terminal: terminal_of(&d),
-            // a spare (the agent view's draft or "new session") is a pre-warmed
-            // process the view claims later: its age is its last touch, so the
-            // grace time (`snapshot::TRANSIENT_GRACE_S`) runs from the claim
-            appeared_at: if spare { mtime_secs(&p) } else { [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min) },
+            // (the picker's grace time, `snapshot::TRANSIENT_GRACE_S`, runs from
+            // here; a spare's age does not matter, #2)
+            appeared_at: [birth_secs(&p), mtime_secs(&p), ts(&d, "startedAt")].into_iter().flatten().reduce(f64::min),
         };
         match job.as_ref().and_then(|j| by_job.get(j)) {
             // a live background process: its job row gains pid, status and the

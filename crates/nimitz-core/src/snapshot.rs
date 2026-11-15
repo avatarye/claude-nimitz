@@ -20,9 +20,10 @@ const CLI_EVERY_S: f64 = 10.0;
 const VERSION_EVERY_S: f64 = 60.0;
 /// A sub-agent that wrote within this window of a live session counts as running.
 const ACTIVE_WINDOW_S: f64 = 90.0;
-/// How long a transient process (a `spare: true` session file, a picker with
-/// no transcript and no SessionStart) is ignored after its session file
-/// appeared; after that it is classified like any other row (plan-v4 section 6).
+/// How long a picker (a live process with no job, no transcript and no
+/// SessionStart) is ignored after its session file appeared; after that it is
+/// classified like any other row (plan-v4 section 6). A spare (`spare: true`,
+/// unlabelled, no transcript) is ignored at any age (#2).
 pub const TRANSIENT_GRACE_S: f64 = 120.0;
 
 /// Caches between refreshes (mtime-keyed JSON, titles, session dirs, the CLI
@@ -99,10 +100,11 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
     let seen_jobs: HashSet<String> = rows.iter().filter_map(|r| r.short_id.clone()).collect();
     rows.extend(cli_rows.into_iter().filter(|r| !seen.contains(&r.session_id) && !r.short_id.as_ref().is_some_and(|j| seen_jobs.contains(j))));
     // Not rows at all (plan-v4 section 6): sessions labelled for another
-    // nimitz home (the hook writes no line for them either), and, for a grace
-    // time after their session file appeared, Claude Code's transient
-    // processes: a `spare: true` file (the agent view's "new session" or
-    // draft) and a picker (no transcript, no SessionStart yet).
+    // nimitz home (the hook writes no line for them either), and Claude
+    // Code's transient processes: a `spare: true` file with no conversation
+    // (the agent view's "new session" or draft, the daemon's pre-warmed
+    // `bg-spare`) at any age, and, for a grace time after its session file
+    // appeared, a picker (no transcript, no SessionStart yet).
     let labels = evidence::session_labels(&events, &rows);
     let started: HashSet<&str> = events.iter().filter(|e| e.event == "SessionStart").filter_map(|e| e.session_id.as_deref()).collect();
     let mut transient: Vec<String> = vec![];
@@ -111,18 +113,21 @@ pub fn snapshot(env: &Env, cache: &mut Cache) -> Snapshot {
             return false;
         }
         let young = r.appeared_at.is_some_and(|t| now - t < TRANSIENT_GRACE_S);
-        // the picker rule: a live process with no job, no transcript, and no
-        // SessionStart yet, or a spare (the agent view's draft fires a
-        // SessionStart `startup` the moment it is claimed, byhand 2c-live;
-        // its age is its last touch, and a long-lived one is touched again and
-        // again): hidden only while it has no conversation. A dispatched job
-        // that was a pre-warmed spare keeps `spare` and is never hidden.
-        // (a spare may carry a `jobId`: the view claims a pre-warmed
-        // `bg-spare` job, cli-L3b; a dispatched one grows a transcript). A
-        // labelled row is never a picker, whatever Claude Code does with `spare`.
+        // the spare rule (#2): a live, unlabelled `spare: true` row with no
+        // transcript is never a row, whatever its age. It has no conversation
+        // to lose, and stopping it is pointless: the daemon pre-warms another
+        // in the cwd of its last background launch. It fires a SessionStart
+        // `startup` (the agent view's draft the moment it is claimed, byhand
+        // 2c-live; the daemon's `bg-spare` with its `jobId`, `kind: bg`), and
+        // it may carry a `jobId` (cli-L3b), so neither tells it apart. A
+        // dispatched job that was a pre-warmed spare and kept `spare` grows a
+        // transcript and is never hidden; a labelled row (a job whose row saved
+        // its labels) is never hidden, whatever Claude Code does with `spare`.
+        // The picker rule: a live process with no job, no transcript, and no
+        // SessionStart yet, hidden for the grace time only.
         let labelled = labels.get(&evidence::row_key(r)).is_some_and(evidence::is_labelled);
-        let mut picker = || r.live() && !labelled && (r.spare || (r.short_id.is_none() && !started.contains(r.session_id.as_str()))) && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none();
-        if young && picker() {
+        let candidate = r.live() && !labelled && (r.spare || (young && r.short_id.is_none() && !started.contains(r.session_id.as_str())));
+        if candidate && evidence::transcript(env, &mut cache.files, Some(&r.cwd), &r.session_id).is_none() {
             transient.push(r.session_id.clone());
             return false;
         }
