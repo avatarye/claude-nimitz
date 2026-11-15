@@ -441,6 +441,42 @@ fn stop_takes_paths_and_stops_the_live_ones() {
     assert_eq!(v["steps"][2]["cmd"], serde_json::json!(["hold", "MAIN"]), "{}", r.out);
 }
 
+/// #4 review: `stop F/...` holds a lead that is down already with its hold
+/// alone. A process with no job on its conversation (an SDK host, Herdr's
+/// resume after a restart) is no reason to refuse the rest of the plan.
+#[test]
+fn a_set_stop_holds_a_down_lead_held_by_a_process_and_stops_the_rest() {
+    let sb = Sb::new(false);
+    let adm = nimitz_core::Id::admiral("MAIN");
+    let (cwd, sid, short) = {
+        let m = sb.member("MAIN");
+        (m["cwd"].as_str().unwrap().to_string(), m["session"]["session_id"].as_str().unwrap().to_string(), m["session"]["short_id"].as_str().unwrap().to_string())
+    };
+    // the admiral stopped by hand, then its conversation held by an SDK host
+    let fake = sb.base.join("bin").join(nimitz_core::os::exe_name("claude"));
+    let env = nimitz_core::env::Env::from_vars(&sb.vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+    let run = |args: &[String]| Command::new(&fake).args(args).current_dir(&cwd).env_clear().env("PATH", "/usr/bin:/bin").envs(&sb.vars).output().unwrap();
+    assert!(run(&["stop".into(), short]).status.success());
+    let host = ["-p".to_string(), "--resume".into(), sid, "--name".into(), adm.name(), "--settings".into(), nimitz_core::claude::settings_json(&env, &adm, false)];
+    assert!(run(&host).status.success());
+    assert!(sb.member("MAIN")["issues"].as_array().unwrap().iter().any(|i| i["code"] == "held"), "{}", sb.member("MAIN"));
+    // the admiral named exactly: refused as before (nimitz cannot stop that process)
+    let r = sb.run(&["stop", "MAIN", "--plan"]);
+    assert!(r.code == 1 && r.out.contains("(session.interactive)"), "{}", r.out);
+    // under a `...`: its hold alone, and the rest stops
+    let r = sb.run(&["stop", "MAIN/...", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("hold MAIN") && r.out.contains("not stopped from here"), "{}", r.out);
+    let j: Value = serde_json::from_str(sb.run(&["stop", "MAIN/...", "--plan", "--json"]).out.trim()).unwrap();
+    let main: Vec<&Value> = j["steps"].as_array().unwrap().iter().filter(|s| s["id"] == "MAIN").collect();
+    assert!(main.len() == 1 && main[0]["cmd"] == serde_json::json!(["hold", "MAIN"]), "the admiral: its hold alone: {j}");
+    assert!(j["steps"].as_array().unwrap().iter().any(|s| s["id"] == "MAIN/ARGOS/CLEAN"), "the rest stops: {j}");
+    let r = sb.run(&["stop", "MAIN/...", "--yes"]);
+    assert!(!r.out.contains("(session.interactive)"), "{}", r.out);
+    let held: Value = serde_json::from_slice(&std::fs::read(sb.base.join("state").join("held.json")).unwrap()).unwrap();
+    assert!(held.get("MAIN").is_some() && held.get("MAIN/ARGOS").is_some(), "{held}");
+}
+
 #[test]
 fn mutating_needs_yes_off_a_terminal() {
     let sb = Sb::new(false);

@@ -390,13 +390,23 @@ pub fn stop(ctx: &Ctx) -> Result<i32, String> {
     let own_session = |s: &str| mine.as_ref().is_some_and(|r| r.session_id == s || r.short_id.as_deref() == Some(s));
     let self_note = |id: &Id| Plan { warnings: vec![Issue { code: "self.end".into(), severity: Severity::Info, message: format!("{id} runs this stop: its own stop runs after it, once its turn ends"), fix: None, id: Some(id.clone()) }], ..Default::default() };
     let (mut plans, mut ids, mut myself) = (vec![], vec![], None);
+    // leads a `...` finds down already (and no path names): held down, nothing more
+    let (mut exact, mut down_leads): (Vec<Id>, Vec<Id>) = (vec![], vec![]);
     for t in targets(ctx, &snap)? {
         match t {
             Target::Members(p, found) if found.is_empty() => plans.push(Plan { refusals: vec![nimitz_core::paths::unknown(&snap, &p)], ..Default::default() }),
             Target::Members(p, found) => {
-                // (under a `...`, a lead that is down already is held down too, #4)
-                let wanted = |id: &Id| p.member().is_some() || member(&snap, id).is_some_and(|m| live(m) || (m.role.lead() && m.status != Status::NotStarted));
-                for id in found.into_iter().filter(|id| wanted(id)) {
+                for id in found {
+                    let m = member(&snap, &id);
+                    if p.member().is_some() {
+                        exact.push(id.clone());
+                    } else if !m.is_some_and(live) {
+                        // (under a `...`, a lead that is down already is held down too, #4)
+                        if m.is_some_and(|m| m.role.lead() && m.status != Status::NotStarted) && !down_leads.contains(&id) {
+                            down_leads.push(id);
+                        }
+                        continue;
+                    }
                     if !ids.contains(&id) {
                         ids.push(id);
                     }
@@ -405,6 +415,11 @@ pub fn stop(ctx: &Ctx) -> Result<i32, String> {
             Target::Session(s) if own_session(&s) => myself = Some(s),
             Target::Session(s) => plans.push(ses::plan_stop_session(&ctx.env, &snap, &s, &ctx.caller)),
         }
+    }
+    // a lead a path names exactly gets `plan_stop` (its checks); one a `...`
+    // found down, its hold alone
+    for id in down_leads.into_iter().filter(|id| !exact.contains(id)) {
+        plans.push(ses::plan_hold(&ctx.env, &snap, &id));
     }
     bottom_up(&mut ids);
     let mut own = myself.clone();

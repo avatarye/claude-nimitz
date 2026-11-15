@@ -1147,6 +1147,22 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
     plan
 }
 
+/// `nimitz stop F/...` of a lead that is down already: its hold alone. No
+/// stop and no session checks: a process with no job that holds its
+/// conversation (Herdr's resume after a restart, an SDK host) is not
+/// nimitz's to stop, and never blocks the rest of the plan. Held already, or
+/// never started: nothing.
+pub fn plan_hold(env: &Env, snap: &Snapshot, id: &Id) -> Plan {
+    let mut plan = Plan { summary: format!("hold {id}"), ..Default::default() };
+    if let Some((_, m)) = member(snap, id).filter(|(_, m)| m.role.lead() && m.status != Status::NotStarted) {
+        if !crate::held::is_held(env, id) {
+            let held = held_of(m).map(|h| format!("; its conversation runs in a process with no job ({}), not stopped from here", h.entrypoint.as_deref().unwrap_or(&h.kind))).unwrap_or_default();
+            plan.steps.push(hold_step(id, &format!("not live; held down from now on: muster and layout leave it until nimitz start (or open, restart, muster --parked){held}")));
+        }
+    }
+    plan
+}
+
 /// The step that records `id` as held down (`held::hold`; `apply` runs it
 /// after the stop before it, which must have worked).
 fn hold_step(id: &Id, why: &str) -> Step {
