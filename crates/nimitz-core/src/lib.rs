@@ -26,6 +26,7 @@ pub mod claude;
 pub mod evidence;
 pub mod fleet_settings;
 pub mod harness;
+pub mod held;
 pub mod hook;
 pub mod inbox;
 pub mod kb;

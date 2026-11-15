@@ -370,7 +370,7 @@ A member is live when `session.pid` is non-null. With paths, `status` filters
 `fleets`, but `stowaways` and top-level `issues` are not filtered.
 
 `steps[].cmd[0]` is a program, or an internal verb: `write`, `mkdir`, `archive`,
-`bind`, `trust`, `pin`, `label`, `inbox`, `type`, `herdr ...`.
+`bind`, `trust`, `pin`, `hold`, `unhold`, `label`, `inbox`, `type`, `herdr ...`.
 
 `found` appears only on restore-engine plans. `found[].job` is one of `relaunch`,
 `wake`, `launch`, `fresh`, `skip`, `refuse`, `nothing`; `pane` is `reattach`,
@@ -434,6 +434,7 @@ Everything in `crates/nimitz-core/src`. `lib.rs` re-exports `types::*`.
 | `trust` | Claude Code's trust file | `target`, `too_broad`, `step`, `fix` |
 | `active` | `active.json` | `note_start`, `note_end`, `user_mux_vars`, `member_mux_vars` |
 | `pins`, `self_end` | Pins, deferred self-ending | `pin`, `unpin`; `claim`, `hold`, `release`, `write_note`, `take_note` |
+| `held` | Leads `nimitz stop` holds down (#4) | `hold`, `release`, `is_held`, `load` |
 | `os` | Platform layer | `pid_alive`, `is_same_process`, `spawn_detached`, `replace`, `hostname` |
 | `sandbox` | Fake world | `create`, `env`, `env_for`, `fake_claude` |
 
@@ -640,12 +641,12 @@ shell pane, optional rename), `Open`, `Pin`, `Rename`, `Relaunch`, `Split`,
   relaunched; relaunches run last, ships then commodores then admirals. Self:
   deferred to `__self-end`. Otherwise repin, and add a tab step if wanted.
 - **Job row, no pid:** wanted if `always_on`, `--parked`, or in the active set and
-  not stopped. Under `muster` and `layout` a lead stopped on purpose
-  (`snapshot::stopped_on_purpose`: its last own event a SessionEnd, no
-  `failed` row, no pending relaunch) is not `always_on`: it gets the `stopped`
-  report and no tab (#4). Refused beside a live copy, or on `TABLE_HANDLED`
-  exceptions. Then by `find_tab`: shown attaches, shell claims, taken refuses,
-  none opens.
+  not stopped. Under `muster` and `layout` a lead `nimitz stop` held down
+  (`held::is_held`, `S/held.json`) is not `always_on`: it gets the `stopped`
+  report and no tab (#4); the same in the no-row branch. A SessionEnd alone
+  holds nothing: a clean OS shutdown fires one on every worker. Refused beside
+  a live copy, or on `TABLE_HANDLED` exceptions. Then by `find_tab`: shown
+  attaches, shell claims, taken refuses, none opens.
 - **No row:** with a transcript and wanted, relaunch from the transcript;
   otherwise `not.started`.
 
@@ -803,6 +804,7 @@ S/inbox/<session>.json socket records
 S/pending/<id>.json    relaunch in progress
 S/provider/sessions/<session>.json
 S/pins.json            nimitz's own pins
+S/held.json            leads `nimitz stop` holds down: {id: {at, job}}
 S/restore.json         progress of a restore run
 S/locks/               per-identity and KB locks
 S/self-end/            locks and notes
@@ -848,6 +850,7 @@ Read tolerantly: `C/sessions/<pid>.json`, `C/jobs/<id>/state.json`,
 | inbox-records | local | 1 | 1 |
 | needs | local | 2 | 1 |
 | own-pins | local | 1 | 1 |
+| held | local | 1 | 1 |
 | admiralty-ui | local | 2 | 1 |
 | provider-records | local | 1 | 1 |
 

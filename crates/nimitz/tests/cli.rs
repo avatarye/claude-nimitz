@@ -436,7 +436,9 @@ fn stop_takes_paths_and_stops_the_live_ones() {
     let r = sb.run(&["stop", "MAIN", "MAIN/ARGOS/CLEAN", "--plan", "--json"]);
     let v: Value = serde_json::from_str(r.out.trim()).unwrap_or_else(|e| panic!("{e}: {}", r.out));
     let order: Vec<&str> = v["steps"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str()).collect();
-    assert_eq!(order, ["MAIN/ARGOS/CLEAN", "MAIN"], "{}", r.out);
+    // (a lead's stop, then its hold: muster leaves it down, #4)
+    assert_eq!(order, ["MAIN/ARGOS/CLEAN", "MAIN", "MAIN"], "{}", r.out);
+    assert_eq!(v["steps"][2]["cmd"], serde_json::json!(["hold", "MAIN"]), "{}", r.out);
 }
 
 #[test]

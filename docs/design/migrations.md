@@ -33,6 +33,7 @@ its fixture, or when a type's shape moves without a version.
 | `admiralty-ui` | `S/admiralty-ui.json` | local | `format` key (absent = 1) | 1 | 1; 0.7.15: 2 (the finder's optional toggles; the step stamps `format`) |
 | `machines` | `H/machines.toml` | shared | `format` key (absent = 1) | (none) | (0.7.16: born at 1; each machine's `claude_bin` and `provider`, #12); 0.7.17: optional `native_claude_bin`; writing it sets `min_nimitz = "0.7.17"` (0.7.16 refuses the key), and clearing it never lowers that |
 | `provider-records` | `S/provider/sessions/*.json` | local | manifest | (none) | (0.7.16: born at 1; each session's provider view at SessionStart, a member's or not, #12) |
+| `held` | `S/held.json` | local | manifest | (none) | (born at 1 after 0.7.21: the leads `nimitz stop` holds down, `{id: {at, job}}`, #4; a separate file, not a registry field, so the registry keeps version 3 and an older nimitz simply never reads it, waking those leads as before) |
 | CC-owned | `~/.claude.json` trust, `C/jobs/pins.json`, settings | Claude Code's | pinned formats (doctor) | n/a | n/a |
 
 The **manifest** is `S/formats.json`: `{nimitz: "<version that last ran

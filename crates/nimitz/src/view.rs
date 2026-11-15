@@ -53,7 +53,7 @@ impl Paint {
 fn verb_colour(v: &str) -> Rgb {
     match v {
         "wake" | "launch" | "fresh" | "create" | "write" | "bind" | "adopt" => BUSY,
-        "relaunch" | "remove" | "archive" | "rename" | "warn" | "trust" => WARN,
+        "relaunch" | "remove" | "archive" | "rename" | "warn" | "trust" | "hold" => WARN,
         "reattach" | "open pane" | "focus" => ACCENT,
         "skip" => NEEDS,
         "refuse" | "stop" | "taken" => ERROR,
@@ -99,6 +99,8 @@ pub fn step_verb(s: &Step) -> &'static str {
         Some("archive") => "archive",
         Some("bind") => "bind",
         Some("pin") => "pin",
+        Some("hold") => "hold",
+        Some("unhold") => "unhold",
         Some("herdr") => {
             if a("focus") {
                 "focus"
@@ -153,7 +155,7 @@ impl View {
                 let mut verbs: Vec<&str> = vec![];
                 for s in steps.iter() {
                     let v = step_verb(s);
-                    if !verbs.contains(&v) && v != "pin" && v != "bind" {
+                    if !verbs.contains(&v) && v != "pin" && v != "bind" && v != "unhold" {
                         verbs.push(v);
                     }
                 }
@@ -193,6 +195,7 @@ impl View {
             ("launch", "to launch"),
             ("fresh", "to start fresh"),
             ("stop", "to stop"),
+            ("hold", "to hold down"),
             ("remove", "to remove"),
             ("write", "to write"),
             ("create", "to create"),

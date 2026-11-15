@@ -40,13 +40,18 @@ update or a Herdr closure. It tells the three apart, member by member:
 - Reboot: the leads and the ships live at the last look are woken by their
   exact session id (`--parked`: the rest too), then attached.
 
-A member stopped on purpose (`nimitz stop`, `/stop`, `claude stop`) is left
-alone, a lead as much as a ship: no wake and no tab, reported as `stopped on
-purpose` with `nimitz start <id>` as the fix. `layout` leaves it too. A reboot,
-a crash or the daemon's idle retire is no stop: those members are `down` or
-`parked` and come back as above. So `nimitz stop F/...` is how a fleet stays
-down on this machine through every muster: `nimitz start F/...` brings it
-back (`--parked` for its ships), and so does `muster F/... --parked`.
+To keep a lead down on this machine, stop it with `nimitz stop`; a stop by
+hand (`claude stop`, `/stop`) or a reboot does not hold it down. `nimitz stop`
+of an admiral or commodore records it as held down (`NIMITZ_STATE/held.json`),
+and `muster` and `layout` then leave it: no wake and no tab, reported as
+`stopped on purpose` with `nimitz start <id>` as the fix. A lead whose job just
+ended comes back as above, whatever ended it: a reboot fires the same
+SessionEnd a stop does, so only nimitz's own record tells them apart.
+`nimitz start`, `open`, `restart` and `muster --parked` wake a held lead and
+drop its hold, as does its retire. So `nimitz stop F/...` keeps a fleet down
+here through every muster (it holds the fleet's leads that are down already
+too); `nimitz start F/...` brings it back (`--parked` for its ships). A ship
+stopped on purpose was left alone before, and still is.
 
 With no multiplexer it runs the job steps and skips the pane steps. Run twice,
 the second run does nothing. What a plan looks like:
@@ -115,9 +120,9 @@ machine stay there.
   keeps on what the job is doing (`-- Inspecting ...`, cut to a terminal's
   width, never in a pipe; `topic` in the JSON). `down`: taken down while
   active (a `...` start wakes it); `parked`: retired by the daemon or not
-  active (`--parked` wakes it); `stopped`: its job ended (`nimitz stop`,
-  `/stop`, a `failed` row) or its row is gone; `muster` leaves one stopped on
-  purpose, a lead too (`nimitz start <id>` wakes it).
+  active (`--parked` wakes it); `stopped`: its job ended (a stop, `/stop`, a
+  reboot, a `failed` row) or its row is gone. A lead `nimitz stop` holds down
+  says so in its reasons; `muster` leaves it (`nimitz start <id>` wakes it).
 - `check F` and `check F/...` are the same: a check never hides a ship's
   errors.
 - `ship --effort low|medium|high|xhigh|max` is passed as `claude --effort` on

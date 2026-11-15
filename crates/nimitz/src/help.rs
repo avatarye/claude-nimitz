@@ -38,7 +38,7 @@ pub const USAGES: &[Usage] = &[
     )]),
     u("stop", true, "stop <path|session>...", "stop members, or one session by its id", &[(
         "stop <path|session>...",
-        "Under a ...: the live ones, ships first. A member stopped here, a lead too, stays down through muster and layout until nimitz start (or muster --parked) wakes it.",
+        "Under a ...: the live ones, ships first. A lead stopped here (or down already under a ...) is held down: muster and layout leave it until nimitz start, open, restart or muster --parked. To keep a lead down on this machine, stop it with nimitz stop: a stop by hand (claude stop, /stop) or a reboot does not hold it down.",
     )]),
     u("restart", true, "restart <path>... [--parked]", "relaunch the live members and wake the ones that are down", &[(
         "restart <path>... [--parked]",
@@ -46,7 +46,7 @@ pub const USAGES: &[Usage] = &[
     )]),
     u("muster", true, "muster [<path>...] [--parked]", "the one command after a reboot, a Claude Code update or a Herdr closure", &[(
         "muster [<path>...] [--parked] [--here] [--rename] [--force]",
-        "No path: //.... One plan: workers on an older Claude Code relaunched (restart //... relaunches every one), down leads and the active set's down ships woken (--parked: the rest too), every member's pane reattached (its own, else its lead tab); --here, --rename, --force as for layout. A member stopped on purpose (nimitz stop, /stop), a lead too, is left alone with no tab: nimitz stop F/... keeps a fleet down here, nimitz start or --parked wakes it. With no multiplexer: the jobs, the pane steps skipped.",
+        "No path: //.... One plan: workers on an older Claude Code relaunched (restart //... relaunches every one), down leads and the active set's down ships woken (--parked: the rest too), every member's pane reattached (its own, else its lead tab); --here, --rename, --force as for layout. A lead held down by nimitz stop is left alone with no tab (nimitz start or --parked wakes it); to keep a lead down on this machine, stop it with nimitz stop: a stop by hand (claude stop, /stop) or a reboot does not hold it down. With no multiplexer: the jobs, the pane steps skipped.",
     )]),
     u("open", true, "open <path>... [--tab] [--force]", "a pane for each member, focused", &[(
         "open <path>... [--tab] [--force]",
@@ -165,7 +165,7 @@ pub const USAGES: &[Usage] = &[
     )]),
     u("layout", false, "layout <path>... [--ships] [--here] [--rename] [--force]", "the Herdr tabs only: one attaching each lead", &[(
         "layout <path>... [--ships] [--here] [--rename] [--force]",
-        "One tab attaching each lead the paths cover (--ships: and each live ship), but a lead stopped on purpose (nimitz start wakes it); --here: in this Herdr session; --rename: give a tab that shows a member under another name its full name; --force: a second tab beside a taken one.",
+        "One tab attaching each lead the paths cover (--ships: and each live ship), but a lead held down by nimitz stop (nimitz start wakes it); --here: in this Herdr session; --rename: give a tab that shows a member under another name its full name; --force: a second tab beside a taken one.",
     )]),
     u("sandbox", false, "sandbox create|tick|env <dir>", "a fake world for tests and demos", &[("sandbox create|tick|env <dir>", "tick --once: one tick, then exit.")]),
     u("hook", false, "hook <Event>", "the Claude Code hook (reads stdin, always exits 0)", &[]),

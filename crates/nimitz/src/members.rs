@@ -378,8 +378,10 @@ fn merged(summary: String, plans: Vec<Plan>) -> Plan {
 
 /// `nimitz stop <path|session>...`: stop members (a path; under a `...` the
 /// live ones), ships first across every path, or one session by its id;
-/// start's opposite. The caller's own stop (by its path or its own session's
-/// id) runs last, detached, once its turn ends (`self_end`).
+/// start's opposite. A lead it takes down, or finds down, is held down:
+/// muster and layout leave it until `start` (`held`, #4). The caller's own
+/// stop (by its path or its own session's id) runs last, detached, once its
+/// turn ends (`self_end`).
 pub fn stop(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     let snap = ctx.snap();
@@ -392,7 +394,9 @@ pub fn stop(ctx: &Ctx) -> Result<i32, String> {
         match t {
             Target::Members(p, found) if found.is_empty() => plans.push(Plan { refusals: vec![nimitz_core::paths::unknown(&snap, &p)], ..Default::default() }),
             Target::Members(p, found) => {
-                for id in found.into_iter().filter(|id| p.member().is_some() || member(&snap, id).is_some_and(live)) {
+                // (under a `...`, a lead that is down already is held down too, #4)
+                let wanted = |id: &Id| p.member().is_some() || member(&snap, id).is_some_and(|m| live(m) || (m.role.lead() && m.status != Status::NotStarted));
+                for id in found.into_iter().filter(|id| wanted(id)) {
                     if !ids.contains(&id) {
                         ids.push(id);
                     }

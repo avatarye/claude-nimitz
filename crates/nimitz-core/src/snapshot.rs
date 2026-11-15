@@ -705,21 +705,15 @@ fn same_dir(a: &str, b: &str) -> bool {
     a.trim_end_matches('/') == b.trim_end_matches('/') || norm_dir(a) == norm_dir(b)
 }
 
-/// How a member's reason starts when its job ended with a SessionEnd.
-pub(crate) const SESSION_END: &str = "SessionEnd event";
-
-/// Stopped on purpose (`nimitz stop`, `claude stop`, `/stop`): a job row with
-/// no live process whose last own event is a SessionEnd. Never a `failed`
-/// row, nor one the machine took down (no SessionEnd fires for a reboot, a
-/// crash or the daemon's retire: parked), nor a member with no row.
-pub fn stopped_on_purpose(m: &Member) -> bool {
-    m.status == Status::Stopped && m.session.as_ref().is_some_and(|s| s.pid.is_none()) && m.reasons.iter().any(|r| r.starts_with(SESSION_END))
-}
-
 /// A job with no live process: stopped when its last event is a SessionEnd
-/// (`claude stop`, `/stop`, an exit), else parked (the daemon retired it, it
-/// crashed, or the machine went down: no SessionEnd fires for those; plan-v4
-/// section 4). Only the job's own processes count: those whose SessionStart
+/// (`claude stop`, `/stop`, an exit), else parked (the daemon retired it, or
+/// it was killed: no SessionEnd fires for those; plan-v4 section 4). A
+/// machine that went down may leave either: a power cut or a kill fires no
+/// SessionEnd, but a clean OS shutdown does, reason `other` (the reason a
+/// `claude stop` gives too) on every live worker at once (a field
+/// observation, measured 2026-10-31 on Linux). So `stopped` never means "on
+/// purpose": only `nimitz stop` of a lead records that (`held`, #4). Only
+/// the job's own processes count: those whose SessionStart
 /// names the job (or a line an older nimitz wrote). A SessionEnd from a pid
 /// that never sent a SessionStart (a refused `-p --resume`) does not count,
 /// nor does a process with no job on the conversation (M21, `held`). A
@@ -737,7 +731,7 @@ pub(crate) fn parked_or_stopped(env: &Env, p: &SessionRow, events: &[Event]) -> 
     let started: HashSet<i64> = events.iter().filter(|e| own_start(e)).filter_map(|e| e.pid).collect();
     let last = events.iter().rev().find(|e| own_start(e) || (e.event == "SessionEnd" && e.pid.is_some_and(|pid| started.contains(&pid))));
     if let Some(end) = last.filter(|e| e.event == "SessionEnd") {
-        return (Status::Stopped, format!("{SESSION_END}, reason {}", end.reason.as_deref().unwrap_or("not given")));
+        return (Status::Stopped, format!("SessionEnd event, reason {}", end.reason.as_deref().unwrap_or("not given")));
     }
     let since = last.map(|e| e.ts);
     let why = match (p.short_id.as_deref().and_then(|j| evidence::daemon_retired(env, j, since)), p.state.as_deref()) {
@@ -913,6 +907,11 @@ fn build_member(
             }
         }
     };
+
+    // a lead `nimitz stop` holds down: muster and layout leave it (#4)
+    if id.role().lead() && !primary.as_ref().is_some_and(|p| p.live()) && crate::held::is_held(env, id) {
+        reasons.push(format!("held down by nimitz stop: muster and layout leave it; nimitz start {id} wakes it"));
+    }
 
     // A ship lock this machine left, for a session that is no longer live (it
     // was stopped outside nimitz, or crashed): clear it, or every other machine

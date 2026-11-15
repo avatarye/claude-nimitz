@@ -1107,8 +1107,17 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         refuse(&mut plan, "session.interactive", i.message, i.fix, Some(id.clone()));
         return plan;
     }
+    // a lead `nimitz stop` takes down stays down: muster and layout leave it
+    // (`held`, #4); a stop by hand or a reboot holds nothing
+    let lead = id.role().lead();
     let Some(p) = m.session.as_ref().filter(|p| p.pid.is_some()) else {
-        if plan.steps.is_empty() {
+        // a lead that is down already, but would come back with the next
+        // muster: held down from now on (held already: nothing to do)
+        if lead && m.status != Status::NotStarted {
+            if !crate::held::is_held(env, id) {
+                plan.steps.push(hold_step(id, "not live; held down from now on: muster and layout leave it until nimitz start (or open, restart, muster --parked)"));
+            }
+        } else if plan.steps.is_empty() {
             refuse(&mut plan, "session.none", format!("{id} is not live"), None, Some(id.clone()));
         }
         return plan;
@@ -1125,13 +1134,28 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         );
         return plan;
     };
+    let held = if lead { "; held down: muster and layout leave it until nimitz start" } else { "" };
     plan.steps.push(Step {
         id: Some(id.clone()),
         cmd: crate::claude::stop(env, short),
         cwd: m.cwd.clone(),
-        why: "stop through the native binary; the job row stays for a later resume".into(),
+        why: format!("stop through the native binary; the job row stays for a later resume{held}"),
     });
+    if lead {
+        plan.steps.push(hold_step(id, "held down: muster and layout leave it until nimitz start (or open, restart, muster --parked)"));
+    }
     plan
+}
+
+/// The step that records `id` as held down (`held::hold`; `apply` runs it
+/// after the stop before it, which must have worked).
+fn hold_step(id: &Id, why: &str) -> Step {
+    Step { id: Some(id.clone()), cmd: vec!["hold".into(), id.0.clone()], cwd: None, why: why.into() }
+}
+
+/// The step that drops `id`'s hold (`held::release`): the lead's retire.
+fn unhold_step(id: &Id) -> Step {
+    Step { id: Some(id.clone()), cmd: vec!["unhold".into(), id.0.clone()], cwd: None, why: "drop its hold: the member goes".into() }
 }
 
 /// `nimitz stop <short>`: stop one live background session by its job id or
@@ -1560,8 +1584,17 @@ pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan
         retire_rows(env, &mut plan, m, id, matches!(id.role(), Role::Ship));
     }
     plan.steps.extend(cfg.steps);
+    unhold_under(env, snap, &mut plan, id);
     dedup_issues(&mut plan);
     plan
+}
+
+/// The holds of the leads a retire of `scope` removes go with them, last.
+fn unhold_under(env: &Env, snap: &Snapshot, plan: &mut Plan, scope: &Id) {
+    let holds = crate::held::load(env);
+    for (_, m) in members(snap).into_iter().filter(|(_, m)| m.role.lead() && inside(&m.id, scope) && holds.contains_key(&m.id.0)) {
+        plan.steps.push(unhold_step(&m.id));
+    }
 }
 
 /// The command that retires a fleet or squadron with everything in it.
@@ -1675,6 +1708,7 @@ pub fn plan_retire_all(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> 
         ));
     }
     plan.steps.extend(cfg.steps);
+    unhold_under(env, snap, &mut plan, id);
     dedup_issues(&mut plan);
     plan
 }
@@ -1687,6 +1721,8 @@ enum Kind {
     Bind,
     /// a config step (`mkdir`, `write`, `archive`), run by `config::apply_config_plan`
     Config,
+    /// `hold <id>` / `unhold <id>`: a lead held down for muster and layout, or not (`held`)
+    Hold { on: bool },
     /// a command `apply` never runs (`claude attach`, a step with no `--bg`):
     /// the multiplexer's, or no plan of core's
     Other,
@@ -1702,6 +1738,8 @@ fn classify(step: &Step) -> Kind {
     match c.as_slice() {
         ["bind", ..] => Kind::Bind,
         ["mkdir", _] | ["write", _, _] | ["archive", _] | ["trust", _] => Kind::Config,
+        ["hold", _] => Kind::Hold { on: true },
+        ["unhold", _] => Kind::Hold { on: false },
         [_, "stop", short] => Kind::Stop { short: short.to_string() },
         [_, "rm", short] => Kind::Rm { short: short.to_string() },
         _ if !step.cmd.contains(&"--bg".to_string()) => Kind::Other,
@@ -2122,6 +2160,31 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
             }
             continue;
         }
+        if let Kind::Hold { on } = kind {
+            let id = Id(step.cmd[1].clone());
+            // (the job its stop ended, for the record)
+            let job = plan.steps.iter().filter(|s| s.id.as_ref() == Some(&id)).find_map(|s| match classify(s) {
+                Kind::Stop { short } => Some(short),
+                _ => None,
+            });
+            let done = if on { crate::held::hold(env, &id, job.as_deref()).map(|_| format!("{id} held down: muster and layout leave it")) } else { crate::held::release(env, &id).map(|_| format!("{id}'s hold dropped")) };
+            match done {
+                Ok(text) => out.ran.push((step.clone(), 0, text)),
+                Err(e) => {
+                    out.ran.push((step.clone(), -1, e.to_string()));
+                    out.issues.push(issue("step.failed", Severity::Error, format!("{} could not be written: {e}", crate::held::path(env).display()), None, Some(id)));
+                    return out;
+                }
+            }
+            continue;
+        }
+        // a lead brought up on purpose is no longer held down (whatever the
+        // wake comes to: the intent was to have it up)
+        if matches!(kind, Kind::Launch | Kind::Relaunch | Kind::Resume { .. }) {
+            if let Some(id) = step.id.as_ref().filter(|i| i.role().lead()) {
+                let _ = crate::held::release(env, id);
+            }
+        }
         if kind == Kind::Bind {
             let (id, sid, via) = (Id(step.cmd[1].clone()), step.cmd[2].clone(), step.cmd[3].clone());
             let (role, name) = (id.role(), id.name());
@@ -2400,7 +2463,7 @@ pub fn apply(env: &Env, plan: &Plan) -> Outcome {
                     note(&mut out, "; unpinned");
                 }
             }
-            Kind::Bind | Kind::Other | Kind::Config => unreachable!(),
+            Kind::Bind | Kind::Other | Kind::Config | Kind::Hold { .. } => unreachable!(),
         }
     }
     // Verify again once every step ran (an rm must not have hit the new row).
