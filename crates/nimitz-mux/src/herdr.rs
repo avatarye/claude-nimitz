@@ -69,7 +69,10 @@ pub fn shell_join(cmd: &[String]) -> String {
 /// `attach_check`, `session_of_attach` read it), and it reads the same in
 /// every shell (csh and old fish have no `NAME= cmd` prefix).
 pub fn unix_line(cmd: &[String]) -> String {
-    let claude = cmd.first().is_some_and(|p| nimitz_core::restore::program_name(p).eq_ignore_ascii_case("claude"));
+    // an attach whatever its binary is called (the native one is often
+    // `.../claude/versions/<v>` or a wrapper's `claude-real`), or any claude
+    let attach = cmd.get(1).is_some_and(|a| a == "attach");
+    let claude = attach || cmd.first().is_some_and(|p| nimitz_core::restore::program_name(p).eq_ignore_ascii_case("claude"));
     if !claude {
         return shell_join(cmd);
     }
@@ -938,6 +941,9 @@ mod tests {
         assert_eq!(unix_line(&v(&["/home/u/.local/bin/claude", "attach", "4c1d2e3f"])), "env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= /home/u/.local/bin/claude attach 4c1d2e3f");
         assert_eq!(unix_line(&v(&["/opt/my apps/claude", "attach", "it's"])), "env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= '/opt/my apps/claude' attach 'it'\\''s'");
         assert_eq!(unix_line(&v(&["claude", "attach", "j"])), "env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= claude attach j");
+        // a native binary not named claude: an attach is wrapped all the same
+        assert_eq!(unix_line(&v(&["/home/u/.local/share/claude/versions/2.1.300", "attach", "j"])), "env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= /home/u/.local/share/claude/versions/2.1.300 attach j");
+        assert_eq!(unix_line(&v(&["/opt/claude-real", "attach", "j"])), "env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= /opt/claude-real attach j");
         // every pane var, blank
         for k in nimitz_core::claude::HERDR_PANE_VARS {
             assert!(unix_line(&v(&["claude", "attach", "j"])).contains(&format!(" {k}= ")), "{k}");
