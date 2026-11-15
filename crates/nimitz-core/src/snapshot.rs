@@ -711,8 +711,10 @@ fn same_dir(a: &str, b: &str) -> bool {
 /// machine that went down may leave either: a power cut or a kill fires no
 /// SessionEnd, but a clean OS shutdown does, reason `other` (the reason a
 /// `claude stop` gives too) on every live worker at once (a field
-/// observation, measured 2026-10-31 on Linux). So `stopped` never means "on
-/// purpose": only `nimitz stop` of a lead records that (`held`, #4). Only
+/// observation, measured 2026-10-31 on Linux). So a SessionEnd from before
+/// this machine's boot (`Env.boot_s`) reads as parked: the machine took the
+/// job down. And `stopped` never means "on purpose": only `nimitz stop` of
+/// a lead records that (`held`, #4). Only
 /// the job's own processes count: those whose SessionStart
 /// names the job (or a line an older nimitz wrote). A SessionEnd from a pid
 /// that never sent a SessionStart (a refused `-p --resume`) does not count,
@@ -731,6 +733,12 @@ pub(crate) fn parked_or_stopped(env: &Env, p: &SessionRow, events: &[Event]) -> 
     let started: HashSet<i64> = events.iter().filter(|e| own_start(e)).filter_map(|e| e.pid).collect();
     let last = events.iter().rev().find(|e| own_start(e) || (e.event == "SessionEnd" && e.pid.is_some_and(|pid| started.contains(&pid))));
     if let Some(end) = last.filter(|e| e.event == "SessionEnd") {
+        // a SessionEnd from before this boot: the machine's clean shutdown
+        // ended it (or a stop the reboot came after): parked, so a restore
+        // brings an active-set ship back as it does after a power cut
+        if env.boot_s.is_some_and(|b| end.ts < b) {
+            return (Status::Parked, format!("parked: it ended before this machine booted (SessionEnd, reason {}); a start wakes it", end.reason.as_deref().unwrap_or("not given")));
+        }
         return (Status::Stopped, format!("SessionEnd event, reason {}", end.reason.as_deref().unwrap_or("not given")));
     }
     let since = last.map(|e| e.ts);

@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-## Unreleased
-
 ### Added
 
 - **`doctor` checks Admiralty's Herdr plugin (#1).** When `herdr` is on PATH,
@@ -30,6 +28,14 @@
   Admiralty's `D` on a fleet's or squadron's bar offers the same plan.
 
 ### Fixed
+
+- **Muster brings ships back after a clean reboot.** A clean OS shutdown
+  fires Claude Code's SessionEnd (reason `other`) on every live worker, the
+  same line a stop by hand leaves, so after a reboot every active-set ship
+  read as stopped and `muster` left it down. A SessionEnd from before the
+  machine's last boot now reads as parked: the machine took the job down,
+  and `muster` wakes it as after a power cut. A stop after the boot is still
+  left alone.
 
 - **`muster` no longer wakes a lead you stopped with `nimitz stop` (#4).**
   To keep a lead down on this machine, stop it with `nimitz stop`; a stop by

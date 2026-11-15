@@ -554,8 +554,11 @@ SessionEnd (`claude stop`, `/stop`, an exit) or its state is `failed`, else
 <id>: <why>` line in the Claude home's `daemon.log` newer than the job's last
 start, named in the reason; `<why>` is any text after the colon, as seen:
 `settled, idle 61m`, `idle-prompt, idle 61m`, `abandoned-stale, idle 48h, worker
-2.1.289 (daemon 2.1.292)`; it crashed; or the machine went down: no SessionEnd
-fires for those).
+2.1.289 (daemon 2.1.292)`; it crashed; or the machine went down: a power cut
+fires no SessionEnd, and a clean OS shutdown does (reason `other`, on every
+live worker), so a SessionEnd from before the machine's last boot
+(`Env.boot_s`: `/proc/stat` `btime`, `kern.boottime`, `GetTickCount64`;
+`NIMITZ_BOOT_TIME` overrides it) reads as Parked too).
 Parked is not an error; `start` wakes it by id.
 A live row goes by its session file.
 Session files of `kind` `daemon` or `daemon-worker` are Claude Code's own

@@ -498,6 +498,7 @@ pub fn demo_env() -> nimitz_core::env::Env {
         ("NIMITZ_CLAUDE_BIN".to_string(), "/nonexistent/claude".to_string()),
         ("NIMITZ_NATIVE_CLAUDE_BIN".to_string(), "/nonexistent/claude".to_string()),
         ("NIMITZ_HOSTNAME".to_string(), "west-mac".to_string()),
+        ("NIMITZ_BOOT_TIME".to_string(), "0".to_string()),
         ("NIMITZ_MUX".to_string(), "none".to_string()),
     ]);
     nimitz_core::env::Env::from_vars(&vars)

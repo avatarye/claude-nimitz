@@ -1581,6 +1581,30 @@ fn r28_a_ship_stopped_on_purpose_after_the_last_write_is_left_alone() {
     assert!(sb.live("MAIN/ARGOS/CLEAN"));
 }
 
+/// A clean OS shutdown fires SessionEnd (reason `other`) on every live
+/// worker, the same line a stop by hand leaves. One from before this
+/// machine's boot is the machine's: the ship reads parked, and muster
+/// brings an active-set ship back as it does after a power cut. The same
+/// SessionEnd after the boot is a stop: left alone (r28).
+#[test]
+fn r28b_a_ship_that_ended_before_this_boot_comes_back() {
+    let mut sb = Sb::new(true);
+    lay(&sb);
+    let clean = sb.short("MAIN/ARGOS/CLEAN");
+    let sid = sb.sid("MAIN/ARGOS/CLEAN");
+    sb.claude(&sb.cwd_of("MAIN/ARGOS/CLEAN"), &["stop", &clean]);
+    // the set as it was written before the shutdown: CLEAN live
+    sb.write_active(|a| a["members"]["MAIN/ARGOS/CLEAN"] = json!({"job": clean, "session": sid, "status": "idle", "attached": false, "place": null}));
+    // the machine booted after that SessionEnd
+    let boot = nimitz_core::evidence::now() + 1.0;
+    sb.vars.insert("NIMITZ_BOOT_TIME".into(), format!("{boot}"));
+    let st = sb.ok(&["status", "MAIN/ARGOS/CLEAN", "--json"]);
+    assert!(st.contains("ended before this machine booted"), "{st}");
+    let r = sb.ok(&["muster", "MAIN/...", "--yes"]);
+    assert!(!r.contains("nimitz start MAIN/ARGOS/CLEAN"), "{r}");
+    assert!(sb.live("MAIN/ARGOS/CLEAN"), "{r}");
+}
+
 /// #4, R-24: a lead `nimitz stop` took down is held down (`NIMITZ_STATE/held.json`):
 /// `muster` and `layout` leave it, with no wake and no tab, reported as
 /// stopped on purpose with `nimitz start` as the fix. A lead whose job merely

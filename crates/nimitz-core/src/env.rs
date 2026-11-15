@@ -20,6 +20,10 @@ pub struct Env {
     /// how long a start waits for the daemon to restart a crashed job before
     /// it resumes the job itself (`NIMITZ_CRASH_WINDOW`, seconds; default 20)
     pub crash_window_s: f64,
+    /// when this machine last booted (epoch seconds; `NIMITZ_BOOT_TIME`
+    /// overrides it, tests): a job that ended before it ended with the
+    /// machine (`snapshot::parked_or_stopped`)
+    pub boot_s: Option<f64>,
 }
 
 /// `$HOME` from the given vars first (tests), then the process env; on
@@ -211,6 +215,10 @@ impl Env {
             hostname,
             mux: get("NIMITZ_MUX"),
             crash_window_s: get("NIMITZ_CRASH_WINDOW").and_then(|v| v.parse().ok()).unwrap_or(20.0),
+            boot_s: match get("NIMITZ_BOOT_TIME") {
+                Some(v) => v.parse().ok(),
+                None => crate::os::boot_secs(),
+            },
         }
     }
 

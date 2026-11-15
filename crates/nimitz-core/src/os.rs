@@ -105,6 +105,34 @@ pub fn process_started_ms(pid: i64) -> Option<i64> {
     }
 }
 
+/// When this machine last booted (epoch seconds): `/proc/stat` `btime` on
+/// Linux, `kern.boottime` on macOS, now less `GetTickCount64` on Windows.
+/// None where it cannot be read.
+pub fn boot_secs() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/stat").ok()?.lines().find_map(|l| l.strip_prefix("btime ")).and_then(|v| v.trim().parse::<f64>().ok())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut tv = libc::timeval { tv_sec: 0, tv_usec: 0 };
+        let mut len = std::mem::size_of::<libc::timeval>();
+        let name = c"kern.boottime";
+        let r = unsafe { libc::sysctlbyname(name.as_ptr(), &mut tv as *mut _ as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0) };
+        (r == 0 && tv.tv_sec > 0).then(|| tv.tv_sec as f64 + tv.tv_usec as f64 / 1e6)
+    }
+    #[cfg(windows)]
+    {
+        let up_ms = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs_f64();
+        Some(now - up_ms as f64 / 1000.0)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        None
+    }
+}
+
 /// When process `pid` started (epoch ms), wherever it can be read: the
 /// creation time on Windows; on Linux the boot time (`/proc/stat` `btime`)
 /// plus its start ticks. None elsewhere and for a pid that cannot be read.

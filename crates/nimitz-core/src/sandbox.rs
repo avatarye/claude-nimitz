@@ -113,6 +113,9 @@ pub fn env_for(base: &Path) -> HashMap<String, String> {
         ("NIMITZ_NATIVE_CLAUDE_BIN".into(), p(&format!("bin/{}", crate::os::exe_name("claude")))),
         ("NIMITZ_HOSTNAME".into(), HOST.into()),
         ("NIMITZ_MUX".into(), "none".into()),
+        // a machine that booted at the epoch: no fixture's SessionEnd is
+        // from before it (a test that needs a reboot sets its own)
+        ("NIMITZ_BOOT_TIME".into(), "0".into()),
     ])
 }
 

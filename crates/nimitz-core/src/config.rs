@@ -1585,6 +1585,7 @@ pub(crate) mod tests {
             ("NIMITZ_CLAUDE_BIN", "/usr/bin/false".into()),
             ("NIMITZ_NATIVE_CLAUDE_BIN", "/usr/bin/false".into()),
             ("NIMITZ_HOSTNAME", "test-mac".into()),
+            ("NIMITZ_BOOT_TIME", "0".into()),
         ]
         .map(|(k, v)| (k.to_string(), v))
         .into();
