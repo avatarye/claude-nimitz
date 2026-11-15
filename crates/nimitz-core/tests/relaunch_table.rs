@@ -1235,6 +1235,43 @@ fn retire_a_squadron_or_fleet_refuses_while_anything_in_it_is_live() {
     assert!(!sessions::plan_retire(&w.env, &snap, &Caller::User, &Id::admiral("MAIN")).ok());
 }
 
+/// #5: a squadron's or a fleet's plain retire names the whole unit's as its
+/// fix; the whole unit's stops what is live and archives the config in one
+/// verified apply. A member whose conversation a process with no job holds
+/// refuses it: nimitz cannot stop that process.
+#[test]
+fn retire_all_stops_what_is_live_and_a_member_held_by_a_process_refuses_it() {
+    let w = world();
+    let snap = w.snap();
+    let boreal = Id::commodore("MAIN", "BOREAL");
+    let plain = sessions::plan_retire(&w.env, &snap, &Caller::User, &boreal);
+    assert!(plain.refusals.iter().any(|i| i.code == "session.live" && i.fix.as_deref().is_some_and(|f| f.starts_with("nimitz squadron rm MAIN/BOREAL/..."))), "{:?}", plain.refusals);
+    let plan = sessions::plan_retire_all(&w.env, &snap, &Caller::User, &boreal);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let kinds: Vec<&str> = plan.steps.iter().map(|s| s.cmd.get(1).map(String::as_str).filter(|c| ["stop", "rm"].contains(c)).unwrap_or(s.cmd[0].as_str())).collect();
+    assert_eq!(kinds, vec!["stop", "rm", "archive"], "{:?}", plan.steps);
+    assert!(plan.warnings.iter().any(|i| i.code == "retire.live" && i.id.as_ref() == Some(&boreal)), "{:?}", plan.warnings);
+    let sq_dir = nimitz_core::config::load_fleet(&w.env, "MAIN").unwrap().squadrons.into_iter().find(|(_, s)| s.squadron == "BOREAL").unwrap().0;
+    let out = sessions::apply(&w.env, &plan);
+    assert!(out.verified, "{:?}", out.issues);
+    assert!(!sq_dir.join("squadron.toml").exists() && sq_dir.join("squadron.toml.archived").is_file());
+
+    // the admiral stopped, then its conversation held by an SDK host
+    let adm = Id::admiral("MAIN");
+    let (cwd, sid) = {
+        let m = w.member(&w.snap(), &adm);
+        (m.cwd.unwrap(), m.session.unwrap().session_id)
+    };
+    assert!(sessions::apply(&w.env, &sessions::plan_stop(&w.env, &w.snap(), &adm, &Caller::User)).verified);
+    let host = vec![w.env.claude_bin.clone(), "-p".into(), "--resume".into(), sid, "--name".into(), adm.name(), "--settings".into(), claude::settings_json(&w.env, &adm, false)];
+    assert_eq!(claude::run(&host, Some(&cwd)).0, 0);
+    let plan = sessions::plan_retire_all(&w.env, &w.snap(), &Caller::User, &adm);
+    let held = plan.refusals.iter().find(|i| i.id.as_ref() == Some(&adm) && i.code == "session.live").unwrap_or_else(|| panic!("{:?}", plan.refusals));
+    assert!(held.message.contains("process with no job") && held.fix.as_deref() == Some("type /exit in its pane"), "{held:?}");
+    assert!(!sessions::apply(&w.env, &plan).verified, "a refused plan runs nothing");
+    assert!(nimitz_core::config::load_fleet(&w.env, "MAIN").is_ok(), "the fleet's config stays");
+}
+
 #[test]
 fn layout_spec_attaches_live_leads_and_with_ships_live_ships() {
     use nimitz_core::layout;

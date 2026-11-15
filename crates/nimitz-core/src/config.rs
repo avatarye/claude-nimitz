@@ -1112,6 +1112,19 @@ pub fn plan_ship_set(env: &Env, id: &Id, ship: ShipDef) -> Plan {
 }
 
 pub fn plan_rm(env: &Env, id: &Id) -> Plan {
+    rm_plan(env, id, false)
+}
+
+/// `fleet rm F/...`, `squadron rm F/SQ/...` (#5): the unit with everything in
+/// it, each config archived as `plan_rm` archives an empty one: every
+/// squadron's `squadron.toml`, its ships still listed in it, then a fleet's
+/// `fleet.toml`. A ship's id is `plan_rm`'s. Only the config: the job rows go
+/// first, in `sessions::plan_retire_all`.
+pub fn plan_rm_all(env: &Env, id: &Id) -> Plan {
+    rm_plan(env, id, true)
+}
+
+fn rm_plan(env: &Env, id: &Id, all: bool) -> Plan {
     let mut plan = Plan { summary: format!("remove {id} from the config"), ..Default::default() };
     let f = match load_fleet_for_write(env, id.fleet()) {
         Ok(f) => f,
@@ -1120,18 +1133,25 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
             return plan;
         }
     };
+    let with_ships = |n: usize| if n == 0 { "archive the squadron config".to_string() } else { format!("archive the squadron config, its {n} ship(s) still listed in it") };
     match id.role() {
         Role::Admiral => {
-            // Delete the fleet: only with no squadrons left; the config is archived.
-            if !f.squadrons.is_empty() {
+            // Delete the fleet: only with no squadrons left (or all of them
+            // with it, `F/...`); the config is archived.
+            if !all && !f.squadrons.is_empty() {
                 refuse(
                     &mut plan,
                     "config.nonempty",
                     format!("fleet {} still has {} squadron(s)", id.fleet(), f.squadrons.len()),
-                    Some(format!("nimitz squadron rm {}/<SQ>", id.fleet())),
+                    Some(format!("nimitz fleet rm {}/...  # its squadrons and ships too, stopped and retired in one plan", id.fleet())),
                     Some(id.clone()),
                 );
             } else {
+                if all {
+                    for (sd, sqc) in &f.squadrons {
+                        plan.steps.push(step_archive(Some(Id::commodore(id.fleet(), &sqc.squadron)), &sd.join("squadron.toml"), &with_ships(sqc.ships.len())));
+                    }
+                }
                 plan.steps.push(step_archive(Some(id.clone()), &f.dir.join("fleet.toml"), "archive the fleet config"));
             }
         }
@@ -1139,16 +1159,14 @@ pub fn plan_rm(env: &Env, id: &Id) -> Plan {
             let sq_name = id.squadron().unwrap_or_default().to_string();
             match f.squadrons.iter().find(|(_, s)| s.squadron == sq_name) {
                 None => refuse(&mut plan, "config.missing", format!("no squadron {id}"), None, Some(id.clone())),
-                Some((sd, sqc)) if !sqc.ships.is_empty() => refuse(
+                Some((sd, sqc)) if !all && !sqc.ships.is_empty() => refuse(
                     &mut plan,
                     "config.nonempty",
                     format!("squadron {id} still has {} ship(s) at {}", sqc.ships.len(), sd.display()),
-                    Some(format!("nimitz ship rm {id}/<SHIP>")),
+                    Some(format!("nimitz squadron rm {id}/...  # its ships too, stopped and retired in one plan")),
                     Some(id.clone()),
                 ),
-                Some((sd, _)) => {
-                    plan.steps.push(step_archive(Some(id.clone()), &sd.join("squadron.toml"), "archive the squadron config"))
-                }
+                Some((sd, sqc)) => plan.steps.push(step_archive(Some(id.clone()), &sd.join("squadron.toml"), &with_ships(sqc.ships.len()))),
             }
         }
         Role::Ship => {

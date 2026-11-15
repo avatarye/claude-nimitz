@@ -609,7 +609,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `authority` | the caller may not do this (plan-v3 5.5); partial or inconsistent `NIMITZ_*` labels make a caller with no authority, never the user |
 | `config.missing` | the id names no fleet, squadron, ship or machine label in the config |
 | `config.exists` | `new`/`add` of something that is already there |
-| `config.nonempty` | `rm` of a fleet or squadron that still has squadrons or ships |
+| `config.nonempty` | `rm` of a fleet or squadron that still has squadrons or ships; the fix is the whole unit's retire, `nimitz fleet rm F/...` or `nimitz squadron rm F/SQ/...` (#5), never a chain of single removes |
 | `config.write` | a config step failed, or the re-read does not match |
 | `machine.host` | `machine add` would give one host a second label (no `--hostname`, or the hostname is taken) |
 | `machine.live` | (warning) `machine rm` of this machine while members of the fleet are live here; lists them |
@@ -618,7 +618,7 @@ Refusal-only codes (in `Plan.refusals`, not from `check`):
 | `machine.missing` | the fleet does not run on this machine |
 | `session.unknown` | the target names no member's session, no stowaway and no holder of a fleet name |
 | `session.none` | the action needs a (live, background) session and there is none |
-| `session.live` | the action needs the session stopped first (`rm`, retire). `nimitz stop <short>` of a copy plans its `rm` with the stop, as `sweep` does: a never-prompted copy has no name, no labels and no transcript once stopped, and no command would see its row again (cli-N1) |
+| `session.live` | the action needs the session stopped first (`rm`, retire; a plain `fleet rm F` or `squadron rm F/SQ` names the whole unit's retire as its fix, which stops it in the same plan). `nimitz stop <short>` of a copy plans its `rm` with the stop, as `sweep` does: a never-prompted copy has no name, no labels and no transcript once stopped, and no command would see its row again (cli-N1) |
 | `session.interactive` | the member runs in a process with no job (a 0.3.x interactive lead, an SDK host, a `claude --resume` of its conversation by hand: `held`): `stop` and `relaunch` cannot reach it, and never answer `session.none` or `dup.live` with a `nimitz stop <sid>` that cannot work (cli-18); the fix is the held one: end that process in its host, then `nimitz start` |
 | `session.live` | also `wake_steps` of a live job: a resume of a live job starts a copy |
 | `session.unreadable` | the session file cannot be read; its process may be live, so no resume or relaunch |
@@ -689,7 +689,14 @@ conversation may be at work): it removes stopped copies only and names the
 live one with the fix `nimitz sweep <id>` for the user or its commodore.
 Core owns a plan for every mutating command, including `fleet set`,
 `squadron set`, `machine rm`, retire (`sessions::plan_retire`: `ship|squadron|fleet rm`,
-session and config steps in one plan, one verified `apply`) and the layout
+session and config steps in one plan, one verified `apply`; the whole unit's,
+`sessions::plan_retire_all`: `fleet rm F/...`, `squadron rm F/SQ/...` (#5),
+stops every live member bottom-up (ships, commodores, the admiral) and removes
+every member's job rows, then archives each `squadron.toml` with its ships in
+it and the `fleet.toml`, the archive steps of `config::plan_rm`; a live
+member is `retire.live` Warn (its conversation ends), members with no job row
+here are named in `retire.config` Info, what stays in `retire.kept` Info; a
+live process with no job refuses it) and the layout
 (`layout::plan` -> `LayoutSpec`, mux-free; the CLI and Admiralty map it onto
 `nimitz_mux::LayoutPlan`, dropping attach tabs a pane already shows with `layout::drop_shown`).
 `layout::attach_tab(env, member)` is the one tab that shows a member: `claude

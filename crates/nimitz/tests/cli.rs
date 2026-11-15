@@ -1278,6 +1278,128 @@ fn ship_rm_stops_and_removes_rows_first() {
     assert!(!argos["ships"].as_array().unwrap().iter().any(|m| m["id"] == "MAIN/ARGOS/CLEAN"));
 }
 
+/// #5: `fleet rm F/...` and `squadron rm F/SQ/...` retire a whole unit in one
+/// plan: live members stopped bottom-up (ships, commodores, the admiral),
+/// every job row removed, then each squadron.toml archived (its ships still
+/// listed) and the fleet.toml; transcripts and ship folders stay. The plain
+/// forms still refuse, their fix the set path; `--plan` changes nothing.
+#[test]
+fn a_whole_fleet_or_squadron_retires_in_one_plan() {
+    let sb = Sb::new(false);
+    for args in [
+        vec!["fleet", "new", "OLD", "--yes"],
+        vec!["squadron", "new", "OLD/SQA", "--brief", "A.", "--yes"],
+        vec!["squadron", "new", "OLD/SQB", "--brief", "B.", "--yes"],
+        vec!["ship", "new", "OLD/SQA/S1", "--dir", "managed", "--prompt", "You are S1.", "--yes"],
+        vec!["ship", "new", "OLD/SQA/S2", "--dir", "managed", "--prompt", "You are S2.", "--yes"],
+        vec!["ship", "new", "OLD/SQB/S3", "--dir", "managed", "--prompt", "You are S3.", "--yes"],
+        vec!["ship", "new", "OLD/SQB/S4", "--dir", "managed", "--prompt", "You are S4.", "--yes"],
+        // live: OLD, OLD/SQA, OLD/SQA/S1, OLD/SQB, OLD/SQB/S3 (top-down); S2 and S4 never started
+        vec!["start", "OLD/SQA/S1", "OLD/SQB/S3", "--yes"],
+    ] {
+        let r = sb.run(&args);
+        assert_eq!(r.code, 0, "{args:?}:\n{}", r.out);
+    }
+    let fleet_dir = sb.base.join("nimitz").join("old");
+    let sq_toml = |sq: &str| fleet_dir.join("squadrons").join(sq).join("squadron.toml");
+    let live_ids = ["OLD", "OLD/SQA", "OLD/SQA/S1", "OLD/SQB", "OLD/SQB/S3"];
+    let shorts: Vec<String> = live_ids.iter().map(|id| sb.member(id)["session"]["short_id"].as_str().expect(id).to_string()).collect();
+    let folders: Vec<PathBuf> = ["OLD/SQA/S1", "OLD/SQA/S2", "OLD/SQB/S3", "OLD/SQB/S4"].iter().map(|id| PathBuf::from(sb.member(id)["cwd"].as_str().expect(id))).collect();
+    let mut transcripts = vec![];
+    walk(&sb.base.join("claude_home").join("projects"), &mut transcripts);
+    let transcripts: Vec<PathBuf> = transcripts.into_iter().map(|(p, _)| p).filter(|p| p.extension().is_some_and(|x| x == "jsonl")).collect();
+    assert!(!transcripts.is_empty() && folders.iter().all(|f| f.is_dir()));
+    let row = |short: &str| sb.base.join("claude_home").join("jobs").join(short);
+
+    // the plain forms refuse, and their fix is the set path, not a chain of single removes
+    let before = sb.files();
+    let r = sb.run(&["fleet", "rm", "OLD", "--plan"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(config.nonempty)") && r.out.contains("fix: nimitz fleet rm OLD/..."), "{}", r.out);
+    assert!(!r.out.contains("nimitz squadron rm OLD/<SQ>") && !r.out.contains("fix: nimitz stop"), "{}", r.out);
+    let r = sb.run(&["squadron", "rm", "OLD/SQA", "--plan"]);
+    assert!(r.code == 1 && r.out.contains("(config.nonempty)") && r.out.contains("fix: nimitz squadron rm OLD/SQA/..."), "{}", r.out);
+    // a set path of the wrong kind is a usage error that names the right verb
+    let r = sb.run(&["fleet", "rm", "OLD/SQA/...", "--plan"]);
+    assert!(r.code == 2 && r.out.contains("nimitz squadron rm OLD/SQA/..."), "{}", r.out);
+    let r = sb.run(&["squadron", "rm", "OLD/...", "--plan"]);
+    assert!(r.code == 2 && r.out.contains("nimitz fleet rm OLD/..."), "{}", r.out);
+
+    // the fleet's plan: every member, bottom-up, then the configs
+    let r = sb.run(&["fleet", "rm", "OLD/...", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let p: Value = serde_json::from_str(sb.run(&["fleet", "rm", "OLD/...", "--plan", "--json"]).out.trim()).unwrap();
+    assert!(p["refusals"].as_array().unwrap().is_empty(), "{p}");
+    let steps: Vec<(String, String)> = p["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            let c: Vec<&str> = s["cmd"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+            let verb = if c[0] == "archive" { format!("archive {}", Path::new(c[1]).strip_prefix(&fleet_dir).unwrap().display()) } else { c[1].to_string() };
+            (s["id"].as_str().unwrap().to_string(), verb)
+        })
+        .collect();
+    let st = |id: &str, v: &str| (id.to_string(), v.to_string());
+    assert_eq!(
+        steps,
+        vec![
+            st("OLD/SQA/S1", "stop"),
+            st("OLD/SQA/S1", "rm"),
+            st("OLD/SQB/S3", "stop"),
+            st("OLD/SQB/S3", "rm"),
+            st("OLD/SQA", "stop"),
+            st("OLD/SQA", "rm"),
+            st("OLD/SQB", "stop"),
+            st("OLD/SQB", "rm"),
+            st("OLD", "stop"),
+            st("OLD", "rm"),
+            st("OLD/SQA", &format!("archive {}", Path::new("squadrons").join("sqa").join("squadron.toml").display())),
+            st("OLD/SQB", &format!("archive {}", Path::new("squadrons").join("sqb").join("squadron.toml").display())),
+            st("OLD", "archive fleet.toml"),
+        ],
+        "{p}"
+    );
+    let issues = |code: &str| -> Vec<Value> { p["warnings"].as_array().unwrap().iter().filter(|i| i["code"] == code).cloned().collect() };
+    let called: Vec<String> = issues("retire.live").iter().map(|i| i["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(called, vec!["OLD/SQA/S1", "OLD/SQB/S3", "OLD/SQA", "OLD/SQB", "OLD"], "each live member is called out, bottom-up: {p}");
+    assert!(issues("retire.live").iter().all(|i| i["severity"] == "Warn" && i["message"].as_str().unwrap().contains("its conversation ends here")), "{p}");
+    let rowless: Vec<String> = issues("retire.config").iter().map(|i| format!("{} {}", i["id"].as_str().unwrap(), i["message"].as_str().unwrap())).collect();
+    assert!(rowless.len() == 2 && rowless[0].starts_with("OLD/SQA ") && rowless[0].contains(": S2;") && rowless[1].starts_with("OLD/SQB ") && rowless[1].contains(": S4;"), "the never started are named: {rowless:?}");
+    let kept = issues("retire.kept");
+    assert!(kept.len() == 1 && ["transcript", "ship folders", "fleet.toml.archived", "squadron.toml.archived"].iter().all(|w| kept[0]["message"].as_str().unwrap().contains(w)), "{kept:?}");
+    assert!(r.out.contains("retire OLD/... (7 member(s))") && r.out.contains("(retire.live)") && r.out.contains("(retire.kept)"), "{}", r.out);
+    // --plan, refused or not, changed nothing
+    assert_eq!(before, sb.files(), "--plan changed a file");
+    assert!(sq_toml("sqa").is_file() && fleet_dir.join("fleet.toml").is_file());
+
+    // a squadron with its ships first: SQB goes, SQA and the fleet stay
+    let r = sb.run(&["squadron", "rm", "OLD/SQB/...", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!sq_toml("sqb").exists() && sq_toml("sqb").with_extension("toml.archived").is_file());
+    assert!(std::fs::read_to_string(sq_toml("sqb").with_extension("toml.archived")).unwrap().contains("S4"), "the ships stay listed in the archive");
+    assert!(sq_toml("sqa").is_file() && fleet_dir.join("fleet.toml").is_file());
+    assert!(!row(&shorts[3]).exists() && !row(&shorts[4]).exists(), "SQB's job rows are gone");
+    assert!(live(&sb.member("OLD")) && live(&sb.member("OLD/SQA/S1")), "the rest runs on");
+
+    // then the whole fleet
+    let r = sb.run(&["fleet", "rm", "OLD/...", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("verified by re-reading"), "{}", r.out);
+    assert!(!fleet_dir.join("fleet.toml").exists() && fleet_dir.join("fleet.toml.archived").is_file());
+    assert!(!sq_toml("sqa").exists() && std::fs::read_to_string(sq_toml("sqa").with_extension("toml.archived")).unwrap().contains("S2"));
+    for s in &shorts {
+        assert!(!row(s).exists(), "job row {s} is gone");
+    }
+    for t in &transcripts {
+        assert!(t.is_file(), "the transcript stays: {}", t.display());
+    }
+    for f in &folders {
+        assert!(f.is_dir(), "the ship folder stays: {}", f.display());
+    }
+    assert!(!sb.status()["fleets"].as_array().unwrap().iter().any(|f| f["id"] == "OLD"), "OLD is gone from status");
+}
+
 // ------------------------------------------------------------------ mux commands
 
 #[test]

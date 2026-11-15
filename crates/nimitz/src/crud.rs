@@ -40,6 +40,13 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "new|set|rm")?;
     let fleet = ctx.args.need(1, "fleet")?;
     ctx.args.at_most(2)?;
+    // `fleet rm F/...`: the fleet with everything in it, one plan (#5)
+    if verb == "rm" {
+        if let Some(id) = crate::members::whole_unit(fleet, Role::Admiral)? {
+            ctx.args.allow(&[])?;
+            return Ok(retire(ctx, &id, true));
+        }
+    }
     let id = Id(crate::members::fleet_name(fleet, "a fleet's config is one fleet's")?);
     split(&id, Role::Admiral, "fleet")?;
     let plan = match verb {
@@ -57,7 +64,7 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
         }
         "rm" => {
             ctx.args.allow(&[])?;
-            return Ok(retire(ctx, &id));
+            return Ok(retire(ctx, &id, false));
         }
         v => return Err(format!("fleet {v}: use new, set or rm")),
     };
@@ -68,8 +75,16 @@ pub fn fleet(ctx: &Ctx) -> Result<i32, String> {
 
 pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
     let verb = ctx.args.need(0, "new|set|rm")?;
-    let id = parse_one(ctx.args.need(1, "squadron id F/SQ")?, "a squadron's config is one squadron's")?;
+    let arg = ctx.args.need(1, "squadron id F/SQ")?;
     ctx.args.at_most(2)?;
+    // `squadron rm F/SQ/...`: the squadron with its ships, one plan (#5)
+    if verb == "rm" {
+        if let Some(id) = crate::members::whole_unit(arg, Role::Commodore)? {
+            ctx.args.allow(&[])?;
+            return Ok(retire(ctx, &id, true));
+        }
+    }
+    let id = parse_one(arg, "a squadron's config is one squadron's")?;
     let parts = split(&id, Role::Commodore, "squadron")?;
     let (fleet, sq) = (parts[0], parts[1]);
     let plan = match verb {
@@ -87,7 +102,7 @@ pub fn squadron(ctx: &Ctx) -> Result<i32, String> {
         }
         "rm" => {
             ctx.args.allow(&[])?;
-            return Ok(retire(ctx, &id));
+            return Ok(retire(ctx, &id, false));
         }
         v => return Err(format!("squadron {v}: use new, set or rm")),
     };
@@ -245,7 +260,7 @@ pub fn ship(ctx: &Ctx) -> Result<i32, String> {
     let (fleet, sq, name) = (parts[0], parts[1], parts[2]);
     if verb == "rm" {
         ctx.args.allow(&[])?;
-        return Ok(retire(ctx, &id));
+        return Ok(retire(ctx, &id, false));
     }
     ctx.args.allow(SHIP_FLAGS)?;
     let f = match load(ctx, fleet) {
@@ -342,8 +357,10 @@ fn trust_step(ctx: &Ctx, plan: &mut Plan, id: &Id, label: Option<&str>, dir: Opt
 /// rows, then the config), applied and verified in one go.
 /// A retire that takes its caller (`ship rm` of itself, `fleet rm` of its
 /// fleet) runs whole, last, detached, once the caller's turn ends (`self_end`).
-fn retire(ctx: &Ctx, id: &Id) -> i32 {
-    let plan = nimitz_core::sessions::plan_retire(&ctx.env, &ctx.snap(), &ctx.caller, id);
+/// `all`: `fleet rm F/...`, `squadron rm F/SQ/...`, the unit with everything
+/// in it (`sessions::plan_retire_all`).
+fn retire(ctx: &Ctx, id: &Id, all: bool) -> i32 {
+    let plan = if all { nimitz_core::sessions::plan_retire_all(&ctx.env, &ctx.snap(), &ctx.caller, id) } else { nimitz_core::sessions::plan_retire(&ctx.env, &ctx.snap(), &ctx.caller, id) };
     let snap = ctx.snap();
     let me = crate::self_end::me(ctx, &snap).filter(|m| nimitz_core::sessions::inside(m, id));
     let verb = match id.role() {
@@ -351,13 +368,14 @@ fn retire(ctx: &Ctx, id: &Id) -> i32 {
         Role::Commodore => "squadron",
         Role::Ship => "ship",
     };
+    let path = if all { format!("{id}/...") } else { id.0.clone() };
     match ctx.gate(&plan) {
         out::Go::Exit(c) => c.max(match (&me, ctx.plan_only() && plan.ok()) {
-            (Some(m), true) => crate::self_end::defer(ctx, m, &[verb.to_string(), "rm".into(), id.0.clone()]),
+            (Some(m), true) => crate::self_end::defer(ctx, m, &[verb.to_string(), "rm".into(), path.clone()]),
             _ => 0,
         }),
         out::Go::Run => match &me {
-            Some(m) => crate::self_end::defer(ctx, m, &[verb.to_string(), "rm".into(), id.0.clone()]),
+            Some(m) => crate::self_end::defer(ctx, m, &[verb.to_string(), "rm".into(), path.clone()]),
             None => {
                 let code = out::outcome(&plan, &nimitz_core::sessions::apply(&ctx.env, &plan));
                 // a removed member's self-end notes go with it

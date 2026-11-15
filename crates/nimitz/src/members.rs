@@ -5,7 +5,7 @@
 use crate::run::{self, refusal};
 use crate::{out, Ctx};
 use nimitz_core::sessions as ses;
-use nimitz_core::{Caller, Id, Issue, Member, Plan, Severity, Snapshot, Status, Step};
+use nimitz_core::{Caller, Id, Issue, Member, Plan, Role, Severity, Snapshot, Status, Step};
 
 /// Parse and shape-check an identity id (contracts.md section 4).
 pub fn parse_id(s: &str) -> Result<Id, String> {
@@ -39,6 +39,20 @@ pub fn fleet_name(s: &str, why: &str) -> Result<String, String> {
         Ok(nimitz_core::paths::Path::Member(id) | nimitz_core::paths::Path::Under(Some(id))) => Err(format!("{s:?} is not a fleet's name; {why}: name the fleet ({})", id.fleet())),
         Ok(nimitz_core::paths::Path::Under(None)) => Err(format!("{s:?} covers every fleet; {why}: name one fleet (F)")),
         Err(_) => Err(format!("{s:?} is not a fleet's name (F; names are [A-Z0-9_]+)")),
+    }
+}
+
+/// `fleet rm F/...` (`role` Admiral), `squadron rm F/SQ/...` (Commodore): the
+/// unit a set path names whole, for its retire with everything in it (#5).
+/// `None`: not a set path under one member (the exact forms parse as before);
+/// a set path under another kind of member is a usage error naming the right verb.
+pub fn whole_unit(s: &str, role: Role) -> Result<Option<Id>, String> {
+    let Ok(nimitz_core::paths::Path::Under(Some(id))) = nimitz_core::paths::Path::parse(s) else { return Ok(None) };
+    match id.role() {
+        r if r == role => Ok(Some(id)),
+        Role::Admiral => Err(format!("{s:?} is a whole fleet: nimitz fleet rm {id}/... retires it")),
+        Role::Commodore => Err(format!("{s:?} is a whole squadron: nimitz squadron rm {id}/... retires it")),
+        Role::Ship => Err(format!("{s:?} names a ship: nimitz ship rm {id} retires one ship")),
     }
 }
 

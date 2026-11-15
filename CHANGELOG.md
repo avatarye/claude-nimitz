@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## Unreleased
+
 ### Added
 
 - **`doctor` checks Admiralty's Herdr plugin (#1).** When `herdr` is on PATH,
@@ -14,6 +16,18 @@
   `doctor --fix` does the linking itself when the checkout is there. A Herdr
   that can't list plugins is noted and skipped. The README's Setup block now
   includes `herdr plugin link`, marked "if you use Herdr".
+- **Retire a whole fleet or squadron in one command (#5).** `nimitz fleet rm
+  F/...` and `nimitz squadron rm F/SQ/...` make one plan: every live member
+  is stopped (ships first, then the commodores, then the admiral), every
+  member's job rows are removed, then each `squadron.toml` is archived with
+  its ships still listed in it, and the `fleet.toml` too. The plan names
+  every member, the never started ones included, calls out each live one
+  (its conversation ends there), and says what stays: transcripts, ship
+  folders, the fleet's folders and the archived configs. It waits for the
+  user's OK like any `fleet rm`. The plain `fleet rm F` and `squadron rm
+  F/SQ` still refuse a unit that has members or anything live, and their fix
+  now names the `F/...` form instead of a chain of single removes.
+  Admiralty's `D` on a fleet's or squadron's bar offers the same plan.
 
 ### Fixed
 

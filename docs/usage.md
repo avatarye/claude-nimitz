@@ -73,6 +73,31 @@ that step last: a detached `nimitz __self-end` waits for the member's turn to
 end (up to 10 minutes), runs it, logs to `NIMITZ_STATE/relaunch-self.log` and
 hands the outcome to the member's next session start.
 
+## Retiring a fleet or a squadron
+
+`ship rm F/SQ/SHIP` retires one ship: it stops it, removes its job rows and
+takes it out of `squadron.toml`. `squadron rm F/SQ` and `fleet rm F` remove an
+empty unit with nothing live in it, and refuse otherwise (`config.nonempty`,
+`session.live`); their fix names the set path.
+
+`fleet rm F/...` and `squadron rm F/SQ/...` retire the unit with everything
+in it, as one plan:
+
+1. every live member is stopped, ships first, then the commodores, then the
+   admiral, and every member's job rows are removed (each live one is a
+   warning: its conversation ends here, and a turn in flight is dropped);
+2. each squadron's `squadron.toml` is archived (`squadron.toml.archived`),
+   with its ships still listed in it;
+3. for a fleet, `fleet.toml` is archived too.
+
+The plan names every member, the ones with no job row here included, and
+what stays: the transcripts, the ship folders, and the fleet and squadron
+folders with their briefs, prompts and archived configs. A member that runs
+in a process with no job (an SDK host, a `claude --resume` by hand) refuses
+the plan: end it in its own terminal first. `--plan` prints it, `--yes`
+runs it; it is on the list that waits for the user's OK. Job rows on another
+machine stay there.
+
 ## Two rules
 
 - Never start, resume or stop a member with `claude` yourself (`--resume`,
@@ -214,7 +239,8 @@ the ships), `z` fold / unfold, `enter` jump to a pane, `a` start, `A` a pane for
 it, `x` more actions with the row's detail beside them (stop, restart, sweep,
 rm, adopt; on a fleet: `R` muster), `u` up a fleet with its parked ships, `m`
 message, `!` what waits on you, `i` every issue with its fix, `c`/`e`/`D`
-create, edit, remove, `?` all keys (`?` again closes them), `q` quit (in the
+create, edit, remove (`D` on a fleet's or squadron's bar: with everything in
+it, as `fleet rm F/...`), `?` all keys (`?` again closes them), `q` quit (in the
 `?` panel).
 
 The mouse works too: click a row or a fleet tab, click a fold marker, double

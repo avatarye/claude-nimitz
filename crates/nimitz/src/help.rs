@@ -66,16 +66,25 @@ pub const USAGES: &[Usage] = &[
             "The sender is what nimitz verifies: a member's id, else the Claude Code session above it (its own session file), else an unidentified process; a non-member's header adds \"; not a fleet member, unverified\". --from <label> (non-members only, a short plain ASCII label) is a claim, shown quoted (says it is \"<label>\"), refused when it mimics a member, nimitz or the user. One path: a member, or F/... or F/SQ/... for every live member under it but the sender (never //...), all or nothing, one gate. A member named exactly that is down is refused, never woken; under a ... it is skipped.",
         ),
     ]),
-    u("squadron", true, "squadron new|set|rm <F/SQ> [--brief T] [--mode M] [--effort E]", "a squadron's config", &[(
-        "squadron new|set|rm <F/SQ> [--brief T] [--mode M] [--effort E]",
-        "--mode and --effort are its ships' defaults; a ship's own wins.",
-    )]),
+    u("squadron", true, "squadron new|set|rm <F/SQ> [--brief T] [--mode M] [--effort E]", "a squadron's config", &[
+        ("squadron new|set|rm <F/SQ> [--brief T] [--mode M] [--effort E]", "--mode and --effort are its ships' defaults; a ship's own wins. rm F/SQ: only a squadron with no ships and nothing live."),
+        (
+            "squadron rm <F/SQ/...>",
+            "The squadron with its ships, one plan: live members stopped (the ships first), every job row removed, then squadron.toml archived with its ships still listed in it. Transcripts and ship folders stay.",
+        ),
+    ]),
     u("ship", true, "ship new|set|rm <F/SQ/SHIP> [--dir PATH|managed] [--prompt T] ...", "a ship's config", &[(
         "ship new|set|rm <F/SQ/SHIP> [--dir PATH|managed] [--machine L] [--prompt T|--prompt-file P] [--mode M] [--depends A,B] [--effort low|medium|high|xhigh|max]",
         "--effort '' clears it; a live ship takes a change at its restart.",
     )]),
     // ---------------------------------------------------------------- less used
-    u("fleet", false, "fleet new|set|rm <F>", "a fleet's config", &[("fleet new|set|rm <F> [--machine L] [--admiral-mode M]", "new: --machine L; set: --admiral-mode M.")]),
+    u("fleet", false, "fleet new|set|rm <F>", "a fleet's config", &[
+        ("fleet new|set|rm <F> [--machine L] [--admiral-mode M]", "new: --machine L; set: --admiral-mode M; rm F: only a fleet with no squadrons and nothing live."),
+        (
+            "fleet rm <F/...>",
+            "The fleet with everything in it, one plan: live members stopped (ships, then commodores, then the admiral), every job row removed, then each squadron.toml (its ships still listed) and fleet.toml archived. Transcripts and ship folders stay.",
+        ),
+    ]),
     u("machine", false, "machine add|rm|set ...", "a fleet's machines; a machine's own claude and provider", &[
         (
             "machine add|rm <F> <label> [--hostname H] [--dir F/SQ/SHIP=PATH]",

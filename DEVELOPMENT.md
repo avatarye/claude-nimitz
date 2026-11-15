@@ -154,9 +154,9 @@ member matched twice counts once. A path that matches nothing is refused. No `*`
 ```text
 fleet new <F> [--machine L]
 fleet set <F> [--admiral-mode M]
-fleet rm <F>
+fleet rm <F> | <F/...>
 squadron new|set <F/SQ> [--brief T] [--mode M] [--effort E]
-squadron rm <F/SQ>
+squadron rm <F/SQ> | <F/SQ/...>
 ship new <F/SQ/SHIP> --dir PATH|managed [--machine L] [--prompt T|--prompt-file P]
          [--mode M] [--depends A,B] [--effort low|medium|high|xhigh|max]
 ship set <F/SQ/SHIP> [same flags] [--no-dir <label>] [--edit]
@@ -179,6 +179,11 @@ Notes: `ship new` needs `--dir`. With no prompt flag at a terminal it opens
 the shared `machines.toml`, and `''` clears. `settings set` takes JSON or text;
 `null` removes the key. `fleet|squadron|ship rm` are the exception to
 "config only": they stop members and remove rows first (`crud::retire`).
+`fleet rm F` and `squadron rm F/SQ` take an empty unit with nothing live;
+`fleet rm F/...` and `squadron rm F/SQ/...` take it with everything in it
+(`sessions::plan_retire_all`: stops bottom-up, removes every row, then
+`config::plan_rm_all` archives each squadron.toml with its ships listed, then
+fleet.toml). The plain form's refusal names the set path as its fix.
 
 ### Session control (jobs)
 
@@ -409,7 +414,7 @@ Everything in `crates/nimitz-core/src`. `lib.rs` re-exports `types::*`.
 | `registry` | `registry.json` | `load`, `update`, `try_update`, `save`, `bind`, `bind_job`, `apply_start`, `replay`, `identity_of`, `health` |
 | `evidence` | Read-only Claude Code readers | `rows_from_files`, `events`, `transcript`, `read_subagents`, `read_tasks`, `read_job`, `FileCache`, `SessionRow` |
 | `snapshot` | The picture | `snapshot(env, &mut Cache)`, `stowaway_fleet` |
-| `sessions` | Identity actions and execution | `plan_start`, `plan_start_with`, `plan_stop`, `plan_stop_session`, `plan_relaunch`, `plan_rm`, `plan_sweep`, `plan_adopt`, `plan_retire`, `apply`, `session_issues`, `caller_from_env` |
+| `sessions` | Identity actions and execution | `plan_start`, `plan_start_with`, `plan_stop`, `plan_stop_session`, `plan_relaunch`, `plan_rm`, `plan_sweep`, `plan_adopt`, `plan_retire`, `plan_retire_all`, `apply`, `session_issues`, `caller_from_env` |
 | `restore` | The restore engine | `plan`, `plan_start`, `RestorePlan`, `RestoreStep`, `RestoreOpts` |
 | `layout` | Tab naming and plans | `workspace_of`, `tab_of`, `attach_tab`, `plan`, `drop_shown` |
 | `claude` | Claude Code argv | `launch_bg`, `relaunch_bg`, `resume_bg`, `stop`, `rm`, `attach`, `agents`, `run`, `settings_json`, `labels_for`, `scrub_child_env` |
@@ -579,7 +584,8 @@ Stowaways and copies:
   `lineage.broken` E, `lineage.current` E, `member.unknown` E, `folder.missing` E,
   `prompt.missing` E, `session.unreadable` E/W, `session.none` E,
   `session.live` E/I, `session.interactive` E, `session.unknown` E,
-  `step.failed` E, `pin.failed` W.
+  `step.failed` E, `pin.failed` W, `retire.live` W, `retire.config` I,
+  `retire.kept` I.
 - **Snapshot:** `job.unreadable` E, `lead.intruder` E, `rc.exposed` W,
   `tender.retired` I, `aide.retired` W, `legacy` W/I.
 - **Check:** `folder.untrusted` E/W, `cc.version` E/W, `stowaway` W.
@@ -1112,7 +1118,7 @@ From `app::handle_key`. Ctrl is ignored on the main list unless named.
 | `I`, `f`, `F` | Stowaways, state filter, flagged only |
 | `R`, `y`, `v` | Refresh, yank session id, motion |
 | `M` | Mouse capture on / off |
-| `a`, `u`, `A`, `D` | Start, up, open, remove |
+| `a`, `u`, `A`, `D` | Start, up, open, remove (on a fleet's or squadron's bar: `fleet rm F/...`, `squadron rm F/SQ/...`) |
 | `x` | Actions menu: `a u A s r w x d D m`; on a fleet `R L S M` |
 | `c` | Create menu: `f s p e` |
 | `e` | Edit ship, squadron or fleet |

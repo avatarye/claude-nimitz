@@ -1555,27 +1555,124 @@ pub fn plan_retire(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan
     let _ = caller;
     let cfg = crate::config::plan_rm(env, id);
     plan.refusals.extend(cfg.refusals.iter().cloned());
-    let under = |m: &Id| m == id || m.0.starts_with(&format!("{id}/"));
-    for (_, m) in members(snap).into_iter().filter(|(_, m)| under(&m.id)) {
-        for r in m.session.iter().chain(m.extra_rows.iter()) {
-            let live = r.pid.is_some();
-            if live && (r.kind != "background" || !matches!(id.role(), Role::Ship)) {
-                // a fleet or squadron is removed only with nothing live in it
-                refuse(
-                    &mut plan,
-                    "session.live",
-                    format!("{} is live; {id} is removed only with nothing live in it", m.id),
-                    Some(if r.kind == "background" { format!("nimitz stop {}", m.id) } else { "type /exit in its pane".into() }),
-                    Some(m.id.clone()),
-                );
-                continue;
-            }
-            let Some(short) = &r.short_id else { continue }; // an interactive session leaves no job row
-            if live {
-                plan.steps.push(Step { id: Some(m.id.clone()), cmd: crate::claude::stop(env, short), cwd: m.cwd.clone(), why: "stop it first".into() });
-            }
-            plan.steps.push(Step { id: Some(m.id.clone()), cmd: crate::claude::rm(env, short), cwd: None, why: "remove the job row; the transcript stays".into() });
+    for (_, m) in members(snap).into_iter().filter(|(_, m)| inside(&m.id, id)) {
+        // a fleet or squadron is removed only with nothing live in it
+        retire_rows(env, &mut plan, m, id, matches!(id.role(), Role::Ship));
+    }
+    plan.steps.extend(cfg.steps);
+    dedup_issues(&mut plan);
+    plan
+}
+
+/// The command that retires a fleet or squadron with everything in it.
+fn retire_all_cmd(id: &Id) -> String {
+    match id.role() {
+        Role::Admiral => format!("nimitz fleet rm {id}/..."),
+        _ => format!("nimitz squadron rm {id}/..."),
+    }
+}
+
+/// One member's job rows, for the retire of `scope`: every row, its own and
+/// its copies, is removed (the transcript stays); a live background one is
+/// stopped first when `stop_live`, else it refuses (`session.live`, fixed by
+/// the whole unit's retire). A live process with no job is never stopped
+/// from here: it ends in its own pane.
+fn retire_rows(env: &Env, plan: &mut Plan, m: &Member, scope: &Id, stop_live: bool) {
+    for r in m.session.iter().chain(m.extra_rows.iter()) {
+        let live = r.pid.is_some();
+        if live && (r.kind != "background" || !stop_live) {
+            let (msg, fix) = if r.kind == "background" {
+                (format!("{} is live; {scope} is removed only with nothing live in it", m.id), format!("{}  # stops it and retires everything in {scope}, in one plan", retire_all_cmd(scope)))
+            } else {
+                (format!("{} is live in a process with no job ({}); {scope} is removed only with nothing live in it", m.id, r.kind), "type /exit in its pane".to_string())
+            };
+            refuse(plan, "session.live", msg, Some(fix), Some(m.id.clone()));
+            continue;
         }
+        let Some(short) = &r.short_id else { continue }; // an interactive session leaves no job row
+        if live {
+            plan.steps.push(Step { id: Some(m.id.clone()), cmd: crate::claude::stop(env, short), cwd: m.cwd.clone(), why: "stop it first".into() });
+        }
+        plan.steps.push(Step { id: Some(m.id.clone()), cmd: crate::claude::rm(env, short), cwd: None, why: "remove the job row; the transcript stays".into() });
+    }
+}
+
+/// Retire a fleet or a squadron with everything in it (`fleet rm F/...`,
+/// `squadron rm F/SQ/...`, #5), in one plan `apply` runs and verifies: every
+/// live member stopped, the ships first, then the commodores, then the
+/// admiral, and every member's job rows removed (transcripts stay); then the
+/// configs archived as the single removes archive them
+/// (`config::plan_rm_all`: each squadron.toml with its ships in it, then the
+/// fleet.toml). Every member is named, by its steps or in a note when it has
+/// no job row here; each live one is a warning, since its conversation ends
+/// here; a note says what stays. A live process with no job refuses it. A
+/// ship's id is `plan_retire`'s.
+pub fn plan_retire_all(env: &Env, snap: &Snapshot, caller: &Caller, id: &Id) -> Plan {
+    if id.role() == Role::Ship {
+        return plan_retire(env, snap, caller, id);
+    }
+    let cfg = crate::config::plan_rm_all(env, id);
+    // bottom-up: the ships, then the commodores, then the admiral (config order within each)
+    let mut all: Vec<&Member> = members(snap).into_iter().map(|(_, m)| m).filter(|m| inside(&m.id, id)).collect();
+    all.sort_by_key(|m| std::cmp::Reverse(m.id.parts().len()));
+    let mut plan = Plan { summary: format!("retire {id}/... ({} member(s)): stop, remove job rows, archive the configs", all.len()), ..Default::default() };
+    plan.refusals.extend(cfg.refusals.iter().cloned());
+    if all.is_empty() && plan.refusals.is_empty() {
+        refuse(&mut plan, "member.unknown", format!("{id} is not in any fleet config"), None, Some(id.clone()));
+    }
+    // (squadron -> its ships with nothing to stop or remove here)
+    let mut rowless: Vec<(Id, Vec<String>)> = vec![];
+    for m in &all {
+        let before = plan.steps.len();
+        retire_rows(env, &mut plan, m, id, true);
+        // (what `retire_rows` stops: a live background row with a job)
+        let stops = |r: &SessionInfo| r.pid.is_some() && r.kind == "background" && r.short_id.is_some();
+        let own = m.session.as_ref().is_some_and(stops);
+        let copies = m.extra_rows.iter().filter(|r| stops(r)).count();
+        if own || copies > 0 {
+            let state = match m.status {
+                Status::Busy => "busy",
+                Status::NeedsYou => "waiting on you",
+                Status::Idle => "idle",
+                _ => "live",
+            };
+            let what = match (own, copies) {
+                (true, 0) => "its job".to_string(),
+                (true, n) => format!("its job and {n} live copy(ies)"),
+                (false, n) => format!("{n} live copy(ies) of it"),
+            };
+            let dropped = if matches!(m.status, Status::Busy | Status::NeedsYou) { "; the turn in flight is dropped" } else { "" };
+            plan.warnings.push(issue(
+                "retire.live",
+                Severity::Warn,
+                format!("{} is live ({state}): this stops {what}, so its conversation ends here (the transcript stays){dropped}", m.id),
+                None,
+                Some(m.id.clone()),
+            ));
+        }
+        if m.role == Role::Ship && plan.steps.len() == before && !plan.refusals.iter().any(|i| i.id.as_ref() == Some(&m.id)) {
+            let sq = m.id.parent().unwrap_or_else(|| id.clone());
+            match rowless.iter_mut().find(|(s, _)| *s == sq) {
+                Some((_, v)) => v.push(m.id.parts()[2].to_string()),
+                None => rowless.push((sq, vec![m.id.parts()[2].to_string()])),
+            }
+        }
+    }
+    for (sq, ships) in rowless {
+        plan.warnings.push(issue("retire.config", Severity::Info, format!("no job row here, nothing to stop or remove: {}; they leave the config with {sq}'s squadron.toml", ships.join(", ")), None, Some(sq)));
+    }
+    if let Ok(fod) = crate::config::load_fleet(env, id.fleet()) {
+        let (folder, configs) = match id.role() {
+            Role::Admiral => (fod.dir.clone(), "fleet.toml.archived and each squadron.toml.archived, its ships still listed in it"),
+            _ => (fod.squadrons.iter().find(|(_, s)| Some(s.squadron.as_str()) == id.squadron()).map(|(d, _)| d.clone()).unwrap_or_else(|| fod.dir.clone()), "squadron.toml.archived, its ships still listed in it"),
+        };
+        plan.warnings.push(issue(
+            "retire.kept",
+            Severity::Info,
+            format!("kept: every member's transcript (Claude Code's project folders), the ship folders, {} with its briefs and prompts, and the configs as {configs}; job rows on another machine stay there", folder.display()),
+            None,
+            Some(id.clone()),
+        ));
     }
     plan.steps.extend(cfg.steps);
     dedup_issues(&mut plan);

@@ -86,7 +86,7 @@ impl Act {
             Act::Sweep => "sweep: stop and remove copies, remove stale job rows",
             Act::Rm => "rm job rows (transcripts kept)",
             Act::Adopt => "adopt as a ship",
-            Act::ConfigRm => "remove from the config",
+            Act::ConfigRm => "remove from the config (a fleet or squadron: with everything in it, one plan)",
             Act::Save => "save the config change",
             Act::Layout => "layout: workspaces and tabs for this fleet",
             Act::LayoutShips => "layout --ships: and a tab attaching each live ship",
@@ -397,14 +397,14 @@ pub fn prepare(ctx: &Ctx, caps: Caps, snap: &Snapshot, target: &Target, act: Act
         }
         (Act::Open, _) => plan_open(ctx, snap, target)?,
         (Act::ConfigRm, _) => {
-            // retire: stop, rm the job rows, then the config (core's plan; `apply` runs all of it)
+            // retire: stop, rm the job rows, then the config (core's plan; `apply` runs all of it);
+            // a fleet's or squadron's band: the unit with everything in it (`F/...`, #5)
             let id = member_id(target).ok_or("no member")?;
-            let what = match id.role() {
-                Role::Admiral => "fleet",
-                Role::Commodore => "squadron",
-                Role::Ship => "ship",
-            };
-            with_panes(act, format!("nimitz {what} rm {id}"), nimitz_core::sessions::plan_retire(env, snap, &user, &id))
+            match id.role() {
+                Role::Admiral => with_panes(act, format!("nimitz fleet rm {id}/..."), nimitz_core::sessions::plan_retire_all(env, snap, &user, &id)),
+                Role::Commodore => with_panes(act, format!("nimitz squadron rm {id}/..."), nimitz_core::sessions::plan_retire_all(env, snap, &user, &id)),
+                Role::Ship => with_panes(act, format!("nimitz ship rm {id}"), nimitz_core::sessions::plan_retire(env, snap, &user, &id)),
+            }
         }
         _ => return Err(format!("{} does not apply here", act.word())),
     };

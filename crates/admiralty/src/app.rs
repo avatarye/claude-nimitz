@@ -310,7 +310,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("A", "a pane for it, focused: nimitz open <id> (one that shows it: jump there)"),
     ("x", "actions: start, open, stop, relaunch (restart), sweep, rm, adopt, remove, message; on a fleet: up, R bring the fleet back, layout, machines; the row's detail beside them (ctrl-e / ctrl-y or PgDn / PgUp scroll it)"),
     ("m", "message: its last output, then a box typed into its pane (nimitz signal <id> <text>)"),
-    ("c / e / D", "create fleet, squadron, ship / edit it / remove from config"),
+    ("c / e / D", "create fleet, squadron, ship / edit it / remove from config (a fleet or squadron with everything in it: nimitz fleet rm F/...; confirms)"),
     ("y", "yank the session id (in i: the fix command)"),
     ("I", "show / hide stowaways"),
     ("f / F", "filter squadrons by state / flagged rows only"),

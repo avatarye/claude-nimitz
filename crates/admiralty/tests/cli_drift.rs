@@ -112,6 +112,7 @@ fn session_commands_match_the_cli() {
         (Target::Member(Id("MAIN/ARGOS/COPIES".into())), Act::Rm),
         (Target::Member(Id("MAIN/ARGOS/BROKEN".into())), Act::ConfigRm),
         (Target::Squadron(Id("MAIN/BOREAL".into())), Act::ConfigRm),
+        (Target::Fleet(Id("MAIN".into())), Act::ConfigRm),
     ];
     for (t, a) in cases {
         let p = actions::prepare(&app.ctx, caps, &snap, &t, a, None).unwrap_or_else(|e| panic!("{a:?} {t:?}: {e}"));
