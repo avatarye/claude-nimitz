@@ -368,6 +368,78 @@ fn r02_r23_lead_detached_then_retired_wakes_by_attach_and_is_repinned() {
     assert_eq!(sb.runs().iter().filter(|(p, _)| p == &pane).count(), 2, "the attach typed once more into that pane");
 }
 
+/// #3: the attach nimitz types into a pane runs with the pane's Herdr env
+/// blank (`env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= claude attach
+/// <job>`): a Claude Code daemon that attach starts hands no pane to the
+/// spares and workers it forks. The pane's foreground is still exactly the
+/// attach, so it is found again by it.
+#[test]
+fn an_attach_typed_into_a_pane_runs_with_the_panes_herdr_env_blank() {
+    let sb = Sb::new(true);
+    optional(&sb);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    sb.shell(&pane);
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__unpin", &job]);
+    let log = sb.base.join("calls.log");
+    let from = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+    // the pane's own Herdr env: the fake herdr's shell inherits nimitz's, as
+    // a real pane's shell has the pane's
+    let pane_env = [("HERDR_PANE_ID", "w9:p9"), ("HERDR_TAB_ID", "w9:t9"), ("HERDR_WORKSPACE_ID", "w9")];
+    let r = raw(&sb.vars, &["muster", "MAIN/...", "--yes"], &pane_env);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.live("MAIN/ARGOS"), "the attach woke it:\n{}", r.out);
+    let (_, line) = sb.runs().into_iter().rfind(|(p, _)| p == &pane).expect("typed into its pane");
+    assert!(line.starts_with("env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= ") && line.ends_with(&format!(" attach {job}")), "{line}");
+    assert_eq!(sb.pane_attaching("MAIN/ARGOS"), pane, "the pane's foreground is the attach itself");
+    let calls: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().skip(from).map(|l| serde_json::from_str(l).unwrap()).collect();
+    let attach = calls
+        .iter()
+        .find(|c| c["args"].as_array().is_some_and(|a| a.iter().any(|x| x == "attach") && a.last().is_some_and(|x| x == job.as_str())))
+        .unwrap_or_else(|| panic!("the attach reached claude: {calls:?}"));
+    for (k, _) in pane_env {
+        assert_eq!(attach["env"][k], "", "{k} reached the attach: {attach}");
+    }
+}
+
+/// #3: the same parked lead with a shell tab, whose saved flags do not blank
+/// the Herdr pane env (launched before 0.5.0): the attach does not wake it
+/// natively; muster relaunches it with every flag, then attaches.
+#[test]
+fn a_parked_lead_whose_saved_flags_keep_the_herdr_pane_is_relaunched_then_attached() {
+    let sb = Sb::new(true);
+    optional(&sb);
+    lay(&sb);
+    let pane = sb.pane_attaching("MAIN/ARGOS");
+    let job = sb.short("MAIN/ARGOS");
+    let sid = sb.sid("MAIN/ARGOS");
+    sb.shell(&pane);
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    // the job's saved --settings lose the Herdr pane blanking
+    let p = sb.base.join("claude_home").join("jobs").join(&job).join("state.json");
+    let mut d: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let flags = d["respawnFlags"].as_array_mut().unwrap();
+    let at = flags.iter().position(|f| f == "--settings").expect("saved --settings") + 1;
+    let mut s: Value = serde_json::from_str(flags[at].as_str().unwrap()).unwrap();
+    for k in nimitz_core::claude::HERDR_PANE_VARS {
+        s["env"].as_object_mut().unwrap().remove(k);
+    }
+    flags[at] = Value::from(s.to_string());
+    std::fs::write(&p, serde_json::to_vec_pretty(&d).unwrap()).unwrap();
+    let r = sb.run(&["muster", "MAIN/...", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("the attach wakes the parked job"), "no native wake by the attach:\n{}", r.out);
+    assert!(r.out.contains("do not blank the Herdr pane env") && r.out.contains(&format!("rm {job}")), "a relaunch with every flag:\n{}", r.out);
+    let r = sb.ok(&["muster", "MAIN/...", "--yes"]);
+    assert!(sb.live("MAIN/ARGOS"), "{r}");
+    assert_eq!(sb.sid("MAIN/ARGOS"), sid, "the same conversation");
+    let new_job = sb.short("MAIN/ARGOS");
+    assert_eq!(nimitz_core::evidence::job_blanks_pane(&sb.base.join("claude_home"), Some(&new_job)), Some(true), "{r}");
+    assert_eq!(sb.tabs("MAIN.ARGOS.COMMODORE").len(), 1, "its tab, attached again:\n{r}");
+}
+
 /// #12: where the machine names a provider, the same parked lead with a
 /// shell tab is woken by `start`'s gated wake (its record checked), then
 /// attached; the attach itself never wakes it.

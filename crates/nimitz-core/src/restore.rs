@@ -1089,19 +1089,25 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 // /branch or /resume the registry's later conversation needs the
                 // wake-with-every-flag first, finding 11)
                 // (where the machine checks providers, an attach never wakes:
-                // the wake below goes through the gated start, then the tab)
-                TabMatch::Shell { pane, rename, .. } if wants_tab && !needs_relabel && !crate::sessions::wake_target(env, id, s).relabel && !crate::provider::gated(env) => match crate::layout::attach_tab(env, m) {
-                    Ok(tab) => {
-                        count(rep, lead);
-                        found(rp, id, format!("{down}; its tab is a shell"), format!("wake: attach in pane {} (the attach resumes it by its id)", pane.pane_id));
-                        rp.steps.push(RestoreStep::Claim { id: id.clone(), pane, rename, cmd: tab.cmd, cwd: tab.cwd, session: s.session_id.clone(), wakes: true });
-                        pin_step(env, m, rp);
+                // the wake below goes through the gated start, then the tab;
+                // nor where its saved flags keep the daemon's Herdr pane: the
+                // wake below relaunches it with every flag, #3)
+                TabMatch::Shell { pane, rename, .. }
+                    if wants_tab && !needs_relabel && !crate::sessions::wake_target(env, id, s).relabel && !crate::provider::gated(env) && crate::evidence::job_blanks_pane(&env.claude_home, s.short_id.as_deref()) != Some(false) =>
+                {
+                    match crate::layout::attach_tab(env, m) {
+                        Ok(tab) => {
+                            count(rep, lead);
+                            found(rp, id, format!("{down}; its tab is a shell"), format!("wake: attach in pane {} (the attach resumes it by its id)", pane.pane_id));
+                            rp.steps.push(RestoreStep::Claim { id: id.clone(), pane, rename, cmd: tab.cmd, cwd: tab.cwd, session: s.session_id.clone(), wakes: true });
+                            pin_step(env, m, rp);
+                        }
+                        Err(i) => {
+                            found(rp, id, down, "nothing; see the fix");
+                            fail(rp, rep, Issue { severity: Severity::Error, ..i });
+                        }
                     }
-                    Err(i) => {
-                        found(rp, id, down, "nothing; see the fix");
-                        fail(rp, rep, Issue { severity: Severity::Error, ..i });
-                    }
-                },
+                }
                 TabMatch::Taken { pane, running, agent_view } => {
                     let (code, fix) = taken_fix(id, &pane, &running, agent_view);
                     if opts.force && !agent_view {

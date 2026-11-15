@@ -226,8 +226,7 @@ pub fn candidates_in(snap: &Snapshot, panes: &[Pane]) -> Vec<Cand> {
                     (format!("stowaway {}", if live { "live" } else { "stopped" }), if live { st(mono::WARN) } else { st(mono::COMMENT) }),
                 ],
             );
-            let name = if s.name.is_empty() { s.session_id.chars().take(8).collect() } else { s.name.clone() };
-            c.has_pane = crate::data::pane_for(Some(&s.session_id), &name, Some(&s.cwd), panes).is_some();
+            c.has_pane = crate::data::pane_for(Some(&s.session_id), panes).is_some();
             c.stowaway = true;
             c.tab = tab.clone();
             out.push(c);

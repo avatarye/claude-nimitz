@@ -503,8 +503,7 @@ impl App {
         let mark = |m: &mut Member| {
             if m.pane.is_none() {
                 let sid = m.session.as_ref().map(|s| s.session_id.clone());
-                let name = m.session.as_ref().map(|s| s.name.clone()).unwrap_or(m.expected_name.clone());
-                m.pane = pane_for(sid.as_deref(), &name, m.cwd.as_deref(), &panes).map(|p| p.pane.pane_id.clone());
+                m.pane = pane_for(sid.as_deref(), &panes).map(|p| p.pane.pane_id.clone());
             }
             let blocked = m.pane.as_deref().and_then(|id| panes.iter().find(|p| p.pane.pane_id == id)).map(|p| p.state == "blocked").unwrap_or(false);
             let live = m.session.as_ref().map(|s| s.pid.is_some()).unwrap_or(false);

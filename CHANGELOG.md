@@ -19,6 +19,23 @@
   another. A live `spare: true` session with no labels and no transcript is
   now ignored at any age by `check`, `status`, `sweep` and Admiralty. Once
   it has a conversation, it is judged like any other session.
+- **Admiralty and `status` agree on panes (#3).** Admiralty no longer gives
+  a member a pane because the pane's title and folder look like it. A pane
+  belongs to a member only when it shows the member's session, as in
+  `status`. The agent view (`claude agents`) in a lead's tab therefore shows
+  no member, even with the lead's title on it.
+- **Attaches no longer leak their Herdr pane into Claude Code's daemon
+  (#3).** An attach can start the daemon (after a Claude Code upgrade, for
+  instance). The daemon kept that pane's `HERDR_PANE_ID`, so every spare it
+  forked carried it, and Herdr named that pane for the wrong member. The
+  attach nimitz types into a pane now runs as `env HERDR_PANE_ID=
+  HERDR_TAB_ID= HERDR_WORKSPACE_ID= claude attach <job>` (Unix), and
+  `nimitz attach` blanks the same three. A daemon your own `claude` starts
+  in a Herdr pane can still carry that pane: that is Claude Code's to fix.
+- **`start` and `muster` refresh old launch flags (#3).** A stopped member
+  whose saved flags don't blank the Herdr pane env (launched before 0.5.0)
+  is relaunched with every flag rather than woken: same conversation, new
+  row. A restore no longer wakes such a lead by typing its attach.
 
 ## 0.7.21 (2026-11-05)
 

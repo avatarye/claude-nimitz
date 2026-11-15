@@ -57,6 +57,29 @@ pub fn shell_join(cmd: &[String]) -> String {
         .join(" ")
 }
 
+/// The line `pane run` types into a pane's shell on Unix: `shell_join`, and
+/// a `claude` (the attach every pane nimitz fills runs) goes through `env`
+/// with the pane's Herdr env blank (`claude::HERDR_PANE_VARS`, #3):
+/// `env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= /x/claude attach <job>`.
+/// An attach client starts Claude Code's daemon when none runs, and the
+/// daemon keeps that env for every spare and worker it forks: with the
+/// pane's `HERDR_PANE_ID`, Herdr's hook in a member claimed from such a
+/// spare names this pane for it. `env` execs the program, so the pane's
+/// foreground is still exactly `claude attach <job>` (`tab_state`,
+/// `attach_check`, `session_of_attach` read it), and it reads the same in
+/// every shell (csh and old fish have no `NAME= cmd` prefix).
+pub fn unix_line(cmd: &[String]) -> String {
+    let claude = cmd.first().is_some_and(|p| nimitz_core::restore::program_name(p).eq_ignore_ascii_case("claude"));
+    if !claude {
+        return shell_join(cmd);
+    }
+    let words: Vec<String> = std::iter::once("env".to_string())
+        .chain(nimitz_core::claude::HERDR_PANE_VARS.iter().map(|k| format!("{k}=")))
+        .chain(cmd.iter().cloned())
+        .collect();
+    shell_join(&words)
+}
+
 /// How a shell reads a typed line, by its program name (`-zsh`,
 /// `C:\...\PowerShell.exe` included). None for a shell nimitz does not quote
 /// for (nu) and for none known.
@@ -550,7 +573,8 @@ impl Herdr {
 
     /// `herdr pane run` joins its arguments with spaces and types the line
     /// into the pane's shell, so the command goes over as one quoted line:
-    /// POSIX quoting on Unix; on Windows quoted for the shell the pane runs
+    /// POSIX quoting on Unix, a `claude` with the pane's Herdr env blank
+    /// (`unix_line`); on Windows quoted for the shell the pane runs
     /// (`shell_line`).
     /// Workspace, tab, then agent focus; `agent_not_found` asked again after
     /// each of `waits` (ms). Still not found after its tab was focused, and the
@@ -594,8 +618,11 @@ impl Herdr {
                 shell_line(None, &bare_claude(cmd, nimitz_core::env::which("claude").as_deref()))
             }
         };
+        // (Windows: the pane's Herdr env stays; PowerShell and cmd have no
+        // per-command env prefix, and setting it in the pane's shell would
+        // outlive the attach)
         #[cfg(not(windows))]
-        let line = shell_join(cmd);
+        let line = unix_line(cmd);
         self.run(&["pane", "run", pane_id, &line]).map(|_| ())
     }
 
@@ -828,7 +855,7 @@ impl Mux for Herdr {
 
 #[cfg(test)]
 mod tests {
-    use super::{bare_claude, known_shell, normalize_label, shell_join, shell_line};
+    use super::{bare_claude, known_shell, normalize_label, shell_join, shell_line, unix_line};
 
     fn v(a: &[&str]) -> Vec<String> {
         a.iter().map(|x| x.to_string()).collect()
@@ -902,6 +929,22 @@ mod tests {
             std::fs::remove_dir_all(&td).unwrap();
             assert_eq!(got, v(&["claude", "attach", "j"]));
         }
+    }
+
+    /// #3: an attach typed into a pane runs with the pane's Herdr env blank,
+    /// through `env` (any shell); anything else is typed as it is.
+    #[test]
+    fn a_claude_typed_on_unix_runs_with_the_panes_herdr_env_blank() {
+        assert_eq!(unix_line(&v(&["/home/u/.local/bin/claude", "attach", "4c1d2e3f"])), "env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= /home/u/.local/bin/claude attach 4c1d2e3f");
+        assert_eq!(unix_line(&v(&["/opt/my apps/claude", "attach", "it's"])), "env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= '/opt/my apps/claude' attach 'it'\\''s'");
+        assert_eq!(unix_line(&v(&["claude", "attach", "j"])), "env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= claude attach j");
+        // every pane var, blank
+        for k in nimitz_core::claude::HERDR_PANE_VARS {
+            assert!(unix_line(&v(&["claude", "attach", "j"])).contains(&format!(" {k}= ")), "{k}");
+        }
+        // not claude: as typed
+        assert_eq!(unix_line(&v(&["sh", "-c", "sleep 30"])), "sh -c 'sleep 30'");
+        assert_eq!(unix_line(&v(&["/usr/bin/yazi", "/home/u"])), "/usr/bin/yazi /home/u");
     }
 
     #[test]

@@ -861,6 +861,59 @@ fn native_bin_is_set_from_the_cli_and_doctor_asks_for_it() {
     }
 }
 
+/// Strip the Herdr pane blanking from a job's saved `--settings` (a launch
+/// from before 0.5.0): every `HERDR_PANE_*` key goes from its env.
+fn strip_pane_blanking(sb: &Sb, job: &str) {
+    let p = sb.base.join("claude_home").join("jobs").join(job).join("state.json");
+    let mut d: Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    let flags = d["respawnFlags"].as_array_mut().unwrap();
+    let at = flags.iter().position(|f| f == "--settings").expect("saved --settings") + 1;
+    let mut s: Value = serde_json::from_str(flags[at].as_str().unwrap()).unwrap();
+    for k in nimitz_core::claude::HERDR_PANE_VARS {
+        assert!(s["env"].as_object_mut().unwrap().remove(k).is_some(), "{k} was blank: {s}");
+    }
+    flags[at] = Value::from(s.to_string());
+    std::fs::write(&p, serde_json::to_vec_pretty(&d).unwrap()).unwrap();
+    assert_eq!(nimitz_core::evidence::job_blanks_pane(&sb.base.join("claude_home"), Some(job)), Some(false));
+}
+
+/// #3: a stopped member whose saved launch flags do not blank the Herdr pane
+/// env (launched before 0.5.0) is relaunched with every flag on `start`, not
+/// woken natively: same conversation, a new row whose flags blank the pane.
+/// One whose flags blank it still wakes natively, the same row.
+#[test]
+fn a_wake_on_saved_flags_that_keep_the_herdr_pane_is_a_relaunch() {
+    let sb = Sb::new(false);
+    let id = "MAIN/ARGOS/STOPPED";
+    let job = sb.member(id)["session"]["short_id"].as_str().unwrap().to_string();
+    let sid = sb.member(id)["session"]["session_id"].as_str().unwrap().to_string();
+    let home = sb.base.join("claude_home");
+    assert_eq!(nimitz_core::evidence::job_blanks_pane(&home, Some(&job)), Some(true), "a current launch blanks the pane");
+    let plan = sb.run(&["start", id, "--plan"]).out;
+    assert!(plan.contains("--bg --resume") && !plan.contains(&format!("rm {job}")) && !plan.contains("Herdr pane env"), "a native wake:\n{plan}");
+    strip_pane_blanking(&sb, &job);
+    let plan = sb.run(&["start", id, "--plan"]).out;
+    assert!(plan.contains("do not blank the Herdr pane env (HERDR_PANE_ID, HERDR_TAB_ID, HERDR_WORKSPACE_ID)"), "{plan}");
+    assert!(plan.contains(&format!("rm {job}")) && plan.contains("--settings"), "rm, then every flag:\n{plan}");
+    let log = sb.base.join("calls.log");
+    let from = std::fs::read_to_string(&log).unwrap_or_default().lines().count();
+    let r = sb.run(&["start", id, "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let calls: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines().skip(from).map(|l| serde_json::from_str(l).unwrap()).collect();
+    let ran = |w: &[&str]| calls.iter().any(|c| c["args"].as_array().is_some_and(|a| w.iter().all(|x| a.iter().any(|y| y == x))));
+    assert!(ran(&["rm", &job]) && ran(&["--bg", "--resume", &sid, "--settings"]), "rm, then a resume with every flag: {calls:?}");
+    let m = sb.member(id);
+    assert!(!m["session"]["pid"].is_null(), "live: {m}");
+    // (Claude Code names the new row after the conversation: the short id may be the same)
+    let new_job = m["session"]["short_id"].as_str().unwrap().to_string();
+    assert_eq!(m["session"]["session_id"].as_str(), Some(sid.as_str()), "the same conversation");
+    assert_eq!(nimitz_core::evidence::job_blanks_pane(&home, Some(&new_job)), Some(true), "the new row's flags blank the pane");
+    // the next stop and start: a native wake of that row
+    assert_eq!(sb.run(&["stop", id, "--yes"]).code, 0);
+    let plan = sb.run(&["start", id, "--plan"]).out;
+    assert!(!plan.contains("Herdr pane env") && !plan.contains(&format!("rm {new_job}")), "{plan}");
+}
+
 /// #12 review: a wake on another provider than its saved flags is a
 /// relaunch, checked before anything is stopped or removed; a woken worker
 /// the record shows on another provider is stopped, its row kept; settings

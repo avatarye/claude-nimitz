@@ -168,6 +168,18 @@ pub const NIMITZ_ALLOW: &str = "Bash(nimitz *)";
 /// every member's `--settings`, so no member's worker claims a pane.
 pub const HERDR_PANE_VARS: [&str; 3] = ["HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"];
 
+/// The Herdr pane env blank for a `claude` nimitz hands the user's terminal
+/// (`nimitz attach`; a pane's attach line does the same through `env`,
+/// `herdr::unix_line`): an attach client starts Claude Code's daemon when
+/// none runs, and the daemon keeps its env for every spare and worker it
+/// forks, so Herdr's hook in a member claimed from one would name this pane
+/// (#3). The rest of the user's env stays: an attach is the user's own.
+pub fn blank_pane_vars(c: &mut Command) {
+    for k in HERDR_PANE_VARS {
+        c.env(k, "");
+    }
+}
+
 /// `--settings` JSON: the labels as env, the Herdr pane env blank
 /// (`HERDR_PANE_VARS`), `permissions.allow` for `nimitz`, plus `worktree.bgIsolation
 /// none` for background sessions. It is per launch and lives in the job's
@@ -402,6 +414,17 @@ pub fn job_started(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3: `nimitz attach` runs claude with every Herdr pane var blank, and
+    /// leaves the rest of the env alone.
+    #[test]
+    fn an_attach_in_the_users_terminal_gets_the_herdr_pane_env_blank() {
+        let mut c = Command::new("claude");
+        blank_pane_vars(&mut c);
+        let envs: BTreeMap<String, Option<String>> = c.get_envs().map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_string_lossy().into_owned()))).collect();
+        let want: BTreeMap<String, Option<String>> = HERDR_PANE_VARS.iter().map(|k| (k.to_string(), Some(String::new()))).collect();
+        assert_eq!(envs, want);
+    }
 
     #[test]
     fn launch_argv_carries_name_mode_labels_and_no_isolation() {

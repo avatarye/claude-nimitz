@@ -367,6 +367,66 @@ fn attach_pane_shows_its_lead(claimed: bool) {
     }
 }
 
+/// #3: one pane rule, `nimitz status`'s. A pane titled like a lead, in the
+/// lead's folder, that runs the agent view (`claude agents`, after an
+/// `/exit` in its attach) shows no member: not by its title and folder, and
+/// not by a claim its foreground does not back (a spare's, or another
+/// member's that inherited the pane's `HERDR_PANE_ID` from the daemon). The
+/// row has no pane, as in `status`; once the pane runs the lead's attach
+/// again, the row gets it.
+#[test]
+fn a_pane_titled_like_a_lead_that_runs_the_agent_view_shows_no_member() {
+    for claim in ["none", "spare", "ship"] {
+        let dir = tempfile::tempdir().unwrap();
+        let sb = dir.path().join("sb");
+        let bin = env!("CARGO_BIN_EXE_admiralty");
+        let ok = std::process::Command::new(bin).args(["sandbox", "create", "--herdr"]).arg(&sb).output().unwrap();
+        assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+        let env = String::from_utf8_lossy(&std::process::Command::new(bin).args(["sandbox", "env"]).arg(&sb).output().unwrap().stdout).into_owned();
+        let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for l in env.lines() {
+            let (k, v) = l.trim_start_matches("export ").split_once('=').unwrap();
+            vars.insert(k.into(), v.into());
+        }
+        let b = CoreSource::detect(&vars).load();
+        let lead = b.snap.fleets.iter().flat_map(|f| std::iter::once(&f.admiral).chain(f.squadrons.iter().map(|q| &q.commodore))).find(|m| m.session.as_ref().is_some_and(|s| s.short_id.is_some() && s.pid.is_some()) && m.cwd.is_some()).expect("a live lead with a job").clone();
+        let s = lead.session.clone().unwrap();
+        let ship_sid = b.snap.fleets.iter().flat_map(|f| f.squadrons.iter().flat_map(|q| q.ships.iter())).find_map(|m| m.session.as_ref().map(|s| s.session_id.clone())).expect("a ship with a session");
+        let world = sb.join("herdr").join("world.json");
+        let mut w: serde_json::Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+        let p = &mut w["panes"][0];
+        p.as_object_mut().unwrap().remove("agent_session");
+        match claim {
+            "spare" => p["agent_session"] = serde_json::json!({"kind": "id", "source": "herdr:claude", "value": "5e1f0b2a-0000-4000-8000-000000000000"}),
+            "ship" => p["agent_session"] = serde_json::json!({"kind": "id", "source": "herdr:claude", "value": ship_sid}),
+            _ => {}
+        }
+        p["agent"] = serde_json::json!("claude");
+        p["agent_status"] = serde_json::json!("idle");
+        p["terminal_title_stripped"] = serde_json::json!(s.name);
+        p["cwd"] = serde_json::json!(lead.cwd);
+        p["foreground_cwd"] = serde_json::json!(lead.cwd);
+        p["foreground"] = serde_json::json!(["/home/u/.local/bin/claude", "agents"]);
+        let pane = p["pane_id"].as_str().unwrap().to_string();
+        std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+        let ctx = Ctx { env: nimitz_core::env::Env::from_vars(&vars), mux: nimitz_mux::detect(&vars), live: false, exit_after_jump: false };
+        let mut app = App::new(ctx, None, true);
+        app.apply(CoreSource::detect(&vars).load());
+        let b = app.bundle.as_ref().unwrap();
+        let shown = b.panes.iter().find(|p| p.pane.pane_id == pane).expect("the pane");
+        assert_eq!(shown.session_id, None, "{claim}: the agent view shows no session");
+        let row = b.snap.fleets.iter().flat_map(|f| f.members()).find(|m| m.id == lead.id).unwrap();
+        assert_eq!(row.pane, None, "{claim}: {} gets no pane by its title and folder", lead.id);
+        assert!(b.snap.fleets.iter().flat_map(|f| f.members()).all(|m| m.pane.as_deref() != Some(pane.as_str())), "{claim}: no member is in that pane");
+        // the attach again: the row gets its pane
+        w["panes"][0]["foreground"] = serde_json::json!(["/home/u/.local/bin/claude", "attach", s.short_id.clone().unwrap()]);
+        std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+        app.apply(CoreSource::detect(&vars).load());
+        let row = app.bundle.as_ref().unwrap().snap.fleets.iter().flat_map(|f| f.members()).find(|m| m.id == lead.id).cloned().unwrap();
+        assert_eq!(row.pane.as_deref(), Some(pane.as_str()), "{claim}: its attach shows {}", lead.id);
+    }
+}
+
 /// The user's setup: Admiralty started outside Herdr while three Herdr
 /// servers run (the named NIMITZ the user works in, `default`, `nikitz`),
 /// each with a pane that looks like the lead's. It speaks only to the NIMITZ

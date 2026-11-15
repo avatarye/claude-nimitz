@@ -798,14 +798,30 @@ on), else the conversation a held `claude --resume <sid>` names. A claim
 backed by the attach alone (`evidence::Backing::Attach`: no process names
 the session in its argv or its session file) is inferred too: under that
 argv an older Claude Code may run the agent view. `status`, Admiralty's dots, enter and `J`/`K`, `start -p`
-and a restore's claim and reattach all read the pane so. The root cause
+and a restore's claim and reattach all read the pane so, and by no other
+rule (#3): a member's pane is the pane whose session is the member's, never
+one matched by its title and folder (Admiralty's `data::pane_for` used to
+fall back to that, and disagreed with `status`). So the agent view
+(`claude agents`) in a lead's tab, the lead's title still on it, shows no
+member: the member is not in that pane (it is `TabState::Taken`, never
+typed into), and its row has no pane until its attach runs there again. The root cause
 is closed at launch: every member's `--settings` env blanks
 `HERDR_PANE_ID`, `HERDR_TAB_ID` and `HERDR_WORKSPACE_ID`
 (`claude::HERDR_PANE_VARS`), so a member's worker never claims the pane
 its daemon was started from (`HERDR_ENV` and the socket stay: a member's
-nimitz takes its server from the record). A job launched before keeps the
-daemon's values until `nimitz start <id> -f` relaunches it with the
-settings again. A session read from the attach alone is `Pane.inferred`
+nimitz takes its server from the record). The daemon itself keeps the env
+of whichever `claude` started it, and an attach client starts it when none
+runs (after a Claude Code upgrade restarts it, say): the attach nimitz types
+into a pane runs as `env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID=
+<claude> attach <job>` on Unix (`herdr::unix_line`; `env` execs, so the
+foreground stays exactly `claude attach <job>`), and `nimitz attach` runs
+claude with them blank (`claude::blank_pane_vars`); Windows types the
+attach as is. A daemon started by the user's own `claude` in a Herdr pane
+still hands that pane to every spare it forks (Claude Code's to fix). A job
+launched before the blanking (0.5.0) keeps the daemon's values on a native
+wake, so its wake is a relaunch with every flag instead
+(`evidence::job_blanks_pane`, in `sessions::wake_steps`; a restore never
+wakes it by typing its attach). A session read from the attach alone is `Pane.inferred`
 (`ShapePane.inferred`): shown and focused, and typed into only while every
 non-shell process of its foreground is exactly `claude attach <the job>` on
 a Claude Code at or past `nimitz_mux::ATTACH_EXEC_SINCE` (2.1.293; the

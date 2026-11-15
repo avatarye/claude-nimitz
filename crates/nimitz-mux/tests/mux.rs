@@ -171,6 +171,16 @@ fn cmdv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
+/// The line `pane run` types for `claude attach <job>`: on Unix with the
+/// pane's Herdr env blank (`herdr::unix_line`, #3).
+fn attach_line(job: &str) -> String {
+    if cfg!(windows) {
+        format!("claude attach {job}")
+    } else {
+        format!("env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= claude attach {job}")
+    }
+}
+
 // ---------- fake sanity ----------
 
 fn fake_unknown_command() {
@@ -549,12 +559,12 @@ fn reuse_by_tab_name() {
     let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place.clone(), Some("not-in-any-pane")).expect("attach");
     assert_eq!(a, Attached::Claimed(pane_ref("w1:p2", "w1:t2", "w1")));
     assert_eq!(opened_tabs(&w), 2, "no new tab");
-    assert_eq!(w.pane("w1:p2")["ran"], json!(["claude attach 9aacf927"]));
+    assert_eq!(w.pane("w1:p2")["ran"], json!([attach_line("9aacf927")]));
     // again: the pane runs that very attach now: shown, nothing typed again
     assert_eq!(nimitz_mux::tab_state(&w.mux(), &cmd, &place, Some("not-in-any-pane")).expect("state"), TabState::Shown(pane_ref("w1:p2", "w1:t2", "w1")));
     let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place, Some("not-in-any-pane")).expect("attach");
     assert_eq!(a, Attached::Focused(pane_ref("w1:p2", "w1:t2", "w1")));
-    assert_eq!(w.pane("w1:p2")["ran"], json!(["claude attach 9aacf927"]), "ran once");
+    assert_eq!(w.pane("w1:p2")["ran"], json!([attach_line("9aacf927")]), "ran once");
 }
 
 fn taken_tab_is_never_typed_into() {
@@ -601,7 +611,7 @@ fn reuse_none_opens() {
     let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/clean"), place.clone(), Some("no-such-session")).expect("open");
     let Attached::Opened(p) = a else { panic!("{a:?}") };
     assert_eq!(opened_tabs(&w), before + 1, "a new tab");
-    assert_eq!(w.pane(&p.pane_id)["ran"], json!(["claude attach 2287e6e4"]));
+    assert_eq!(w.pane(&p.pane_id)["ran"], json!([attach_line("2287e6e4")]));
     // and a second call finds that tab, running that attach: focused, nothing more
     let again = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/clean"), place, Some("no-such-session")).expect("again");
     assert_eq!(again, Attached::Focused(p));
@@ -705,7 +715,7 @@ fn fixture_create_replies() {
     let w = World::new(None);
     let r = w.mux().open(&cmdv(&["claude", "attach", "9aacf927"]), Path::new("/x"), Place::Tab { workspace: "NEW".into(), label: "NEW.ADMIRAL".into() }).expect("open");
     assert_eq!(r, pane_ref("w2:p1", "w2:t1", "w2"));
-    assert_eq!(w.pane("w2:p1")["ran"], json!(["claude attach 9aacf927"]));
+    assert_eq!(w.pane("w2:p1")["ran"], json!([attach_line("9aacf927")]));
     assert!(!w.calls().iter().any(|c| c[..2] == ["pane".to_string(), "list".to_string()]), "the reply names the pane: {:?}", w.calls());
     // the fallback, apart: a reply with no tab or pane gives None, which the adapter resolves
     let bare_ws = json!({"result": {"type": "workspace_created", "workspace": {"workspace_id": "w9", "active_tab_id": "w9:t1"}}});

@@ -1164,6 +1164,8 @@ fn exec_attach(ctx: &Ctx, argv: &[String]) -> i32 {
     let _ = std::io::stdout().flush();
     let mut c = std::process::Command::new(&argv[0]);
     c.args(&argv[1..]);
+    // a daemon this attach starts gets no Herdr pane to hand its spares (#3)
+    nimitz_core::claude::blank_pane_vars(&mut c);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

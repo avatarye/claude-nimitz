@@ -252,16 +252,12 @@ impl CoreSource {
     }
 }
 
-/// Pane for a member's current session, by session id first, then title+cwd.
-pub fn pane_for<'a>(session_id: Option<&str>, name: &str, cwd: Option<&str>, panes: &'a [Pane]) -> Option<&'a Pane> {
-    if let Some(id) = session_id {
-        if let Some(hit) = panes.iter().find(|p| p.session_id.as_deref() == Some(id)) {
-            return Some(hit);
-        }
-    }
-    panes.iter().find(|p| {
-        !p.title.is_empty()
-            && (p.title == name || p.title.starts_with(&format!("{name}-")))
-            && cwd.map(|c| p.cwd.trim_end_matches('/') == c.trim_end_matches('/')).unwrap_or(false)
-    })
+/// The pane that shows a session: the one whose session (the adapter's
+/// backed claim, else what its foreground runs: `herdr::shown`) is it. The
+/// rule `nimitz status` uses, and the only one (#3): a pane is never matched
+/// by its title and folder, so a lead's tab that runs the agent view
+/// (`claude agents`, the lead's title still on it) shows no member.
+pub fn pane_for<'a>(session_id: Option<&str>, panes: &'a [Pane]) -> Option<&'a Pane> {
+    let id = session_id?;
+    panes.iter().find(|p| p.session_id.as_deref() == Some(id))
 }

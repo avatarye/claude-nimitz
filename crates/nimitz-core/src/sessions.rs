@@ -770,6 +770,20 @@ pub fn wake_steps(env: &Env, m: &Member, mode: &str, cwd: &str) -> Result<Vec<St
         return Ok(v);
     }
     if p.labels.get("NIMITZ_ID") == Some(&id.0) && !needs_relabel {
+        // a job whose saved flags do not blank the Herdr pane env (launched
+        // before 0.5.0, or by hand) is relaunched with every flag instead: a
+        // native wake keeps the daemon's inherited pane, and Herdr's hook
+        // then claims that pane for it (#3)
+        if crate::evidence::job_blanks_pane(&env.claude_home, p.short_id.as_deref()) == Some(false) {
+            let mut v = relabel_steps(env, id, mode, p, cwd);
+            if let Some(s) = v.last_mut() {
+                s.why = format!(
+                    "its saved launch flags do not blank the Herdr pane env ({}), so a wake would let it claim the pane its daemon came from: resume it with every flag, same history, new row",
+                    crate::claude::HERDR_PANE_VARS.join(", ")
+                );
+            }
+            return Ok(v);
+        }
         // by the job's BIRTH id (`state.json` `sessionId`): Claude Code 2.1.292
         // wakes a stopped job only by that id, and it comes back on the
         // conversation it runs now (after a `/clear`, a later one); any other

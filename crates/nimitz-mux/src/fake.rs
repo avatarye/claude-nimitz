@@ -464,7 +464,7 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                     let line = cmd.join(" ");
                     p["ran"].as_array_mut().expect("ran").push(json!(line));
                     // ... which now runs in the pane's foreground (quotes dropped: enough for `claude attach <job>`)
-                    p["foreground"] = json!(line.split_whitespace().map(|w| w.trim_matches('\'')).collect::<Vec<_>>());
+                    p["foreground"] = json!(foreground_of_line(&line));
                     hit = Some((line, s(p, "cwd")));
                 }
             }
@@ -504,6 +504,21 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
             2
         }
     }
+}
+
+/// What a pane's foreground runs once its shell ran `line`: its words, quotes
+/// dropped; a leading `env` and its `NAME=value` words go, as `env` execs
+/// the program with them in its environment (`herdr::unix_line`).
+fn foreground_of_line(line: &str) -> Vec<String> {
+    let words: Vec<&str> = line.split_whitespace().map(|w| w.trim_matches('\'')).collect();
+    let rest = match words.split_first() {
+        Some((&"env", rest)) => {
+            let n = rest.iter().take_while(|w| w.split_once('=').is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))).count();
+            &rest[n..]
+        }
+        _ => &words[..],
+    };
+    rest.iter().map(|w| w.to_string()).collect()
 }
 
 /// The command a pane's shell would run for `line`: `sh -c` on Unix; on

@@ -378,7 +378,9 @@ pub fn daemon_retired(env: &Env, short: &str, since: Option<f64>) -> Option<Stri
 
 /// The NIMITZ_* labels in a job row's saved launch options: `savedSettings` (a
 /// `--settings` JSON string) or `respawnFlags` (argv: `--settings <json>`).
-pub(crate) fn job_labels(d: &Value) -> BTreeMap<String, String> {
+/// Every `--settings` a job row saved, in order: `savedSettings`, then each
+/// `--settings` of `respawnFlags` (an argv, or an object's `settings`).
+fn saved_settings(d: &Value) -> Vec<String> {
     let mut settings: Vec<String> = vec![];
     if let Some(x) = s(d, "savedSettings") {
         settings.push(x);
@@ -399,6 +401,31 @@ pub(crate) fn job_labels(d: &Value) -> BTreeMap<String, String> {
         }
         _ => {}
     }
+    settings
+}
+
+/// Does a job's saved launch blank the Herdr pane env (every one of
+/// `claude::HERDR_PANE_VARS` set to "" by its saved `--settings` env, the
+/// later winning)? A native wake runs on those flags in the daemon's env, so
+/// a job launched without the blanking (before 0.5.0, or by hand) brings back
+/// whatever pane the daemon inherited, and Herdr's hook claims that pane for
+/// it (#3). `None`: no row to read.
+pub fn job_blanks_pane(claude_home: &Path, job: Option<&str>) -> Option<bool> {
+    let d = std::fs::read(claude_home.join("jobs").join(job?).join("state.json")).ok().and_then(|b| first_json(&b))?;
+    let mut env: BTreeMap<String, String> = BTreeMap::new();
+    for raw in saved_settings(&d) {
+        let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
+        for (k, x) in v.get("env").and_then(Value::as_object).into_iter().flatten() {
+            if let Some(x) = x.as_str() {
+                env.insert(k.clone(), x.to_string());
+            }
+        }
+    }
+    Some(crate::claude::HERDR_PANE_VARS.iter().all(|k| env.get(*k).is_some_and(|v| v.is_empty())))
+}
+
+pub(crate) fn job_labels(d: &Value) -> BTreeMap<String, String> {
+    let settings = saved_settings(d);
     let mut out = BTreeMap::new();
     for raw in settings {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };

@@ -521,8 +521,10 @@ Then by row:
 Afterwards, each non-live `extra_rows` row is removed.
 
 `wake_steps`: `wake_target` chooses the conversation. A transcript is required
-unless inside the crash window (30 s). Labels and name right: native
-`resume_bg(birth)`. Otherwise relabel: `[stop if live], rm, relaunch_bg`.
+unless inside the crash window (30 s). Labels and name right, saved flags that
+select the machine's provider and blank the Herdr pane env
+(`evidence::job_blanks_pane`, #3): native `resume_bg(birth)`. Otherwise relabel:
+`[stop if live], rm, relaunch_bg`.
 
 ## 9. Status and evidence
 
@@ -942,6 +944,30 @@ call timeout**, so a hung `herdr` hangs its caller. `panes()` turns any error in
 an empty list. Each session claim is re-judged by the pane's foreground process,
 because Herdr's hook names a pane by an inherited `HERDR_PANE_ID`.
 
+**One pane rule (#3).** A member's pane is the pane whose session (`Pane.session_id`:
+the backed claim, else what the foreground runs, `herdr::shown`) is the member's.
+`nimitz status` (`members::status`) and Admiralty (`data::pane_for`) use it alone;
+nothing matches a pane by its title and folder. So a lead's tab that runs the
+agent view (`claude agents`, after an `/exit` in its attach) shows no member,
+even with the lead's title: the member is not in that pane (`TabState::Taken`
+says the same). Its row has no pane until its attach runs there again.
+
+**The daemon's pane env.** Claude Code's daemon keeps the env of whichever
+`claude` started it, and every spare and worker it forks inherits it. So:
+
+- a member's `--settings` blank `HERDR_PANE_VARS` (section 8);
+- the line `pane run` types (`herdr::unix_line`, Unix) is
+  `env HERDR_PANE_ID= HERDR_TAB_ID= HERDR_WORKSPACE_ID= <claude> attach <job>`.
+  `env` execs, so the foreground is still exactly `claude attach <job>`;
+  `fake.rs` drops the `env` words the same way. Windows types the attach as is:
+  PowerShell and cmd have no per-command env prefix;
+- `nimitz attach` runs claude with them blank (`claude::blank_pane_vars`);
+- a wake whose saved flags do not blank them (`evidence::job_blanks_pane`) is a
+  relaunch with every flag, and restore never wakes such a job by an attach.
+
+A daemon started by the user's own `claude` in a Herdr pane still carries that
+pane; nimitz cannot reach it (a Claude Code issue).
+
 `mux.none` is an issue code: a refusal for `open`, `layout`, `close` and a `signal`
 that must type; Info for `muster`, which does the jobs. `start`, `restart` and
 `stop` never need a multiplexer.
@@ -1036,8 +1062,9 @@ true, so `Claude Code: not found (supported)` can flash on the first frame, and
 `admiralty dump` on live or sandbox data renders only this partial look. Tests of
 `dump` use `--demo`.
 
-`App::apply` adds panes with `pane_for` and makes one status override: a blocked
-pane on a live session becomes `NeedsYou`.
+`App::apply` adds panes with `pane_for` (by session only, as `status`: section
+14) and makes one status override: a blocked pane on a live session becomes
+`NeedsYou`.
 
 ### Actions: Admiralty does both
 

@@ -1112,7 +1112,7 @@ fn stow_node(s: &SessionInfo, snap: &Snapshot, v: &View) -> Node {
     );
     n.age = s.started_at.map(|t| age_or_unknown(v.now - t)).unwrap_or_else(|| "?".into());
     n.kind_text = "stowaway".into();
-    if let Some(p) = pane_for(Some(&s.session_id), &n.name, Some(&s.cwd), v.panes) {
+    if let Some(p) = pane_for(Some(&s.session_id), v.panes) {
         n.pane_id = Some(p.pane.pane_id.clone());
         n.pane_state = Some(p.state.clone());
     }

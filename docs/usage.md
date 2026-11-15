@@ -180,6 +180,12 @@ What is not checked (the gaps):
   Herdr's config; on a machine that names a provider `doctor` reports it as
   an error until you set `resume_agents_on_restore = false` under
   `[session]` in `~/.config/herdr/config.toml`.
+- Claude Code's daemon keeps the env of whichever `claude` started it,
+  `HERDR_PANE_ID` included, and hands it to every spare and worker. The
+  attaches nimitz runs (`open`, `attach`, a restore's tabs) blank it, and so
+  does every member's launch; a daemon your own `claude` started in a Herdr
+  pane still carries that pane, so Herdr may show a member in it. Admiralty
+  and `status` both ignore a claim the pane's foreground does not back.
 
 ## Colour
 

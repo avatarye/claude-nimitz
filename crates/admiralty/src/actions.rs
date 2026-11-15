@@ -725,11 +725,11 @@ pub fn plan_message(caps: Caps, snap: &Snapshot, panes: &[Pane], target: &Target
     }
     let pane_id = via_m.pane.as_deref().ok_or_else(|| format!("{} has no pane to type into: A opens its tab, then m (or nimitz signal {} <text>, which opens its tab and delivers it)", via_m.id.0, via_m.id.0))?;
     let pane = pane_ref(panes, pane_id).ok_or_else(|| format!("pane {pane_id} is gone: R refreshes"))?;
-    // typed only into the pane that shows its session (a pane matched by its
-    // title and folder alone may be anything, the agent view included)
+    // typed only into the pane that shows its session (`data::pane_for` gives
+    // no other; a pane a fixture names may be anything, the agent view included)
     let via_sid = via_m.session.as_ref().map(|s| s.session_id.as_str());
     if !panes.iter().any(|p| p.pane.pane_id == pane_id && p.session_id.as_deref().is_some() && p.session_id.as_deref() == via_sid) {
-        return Err(format!("{}'s pane {pane_id} matches it by title only, not by its session; nothing is typed: enter jumps there to type it yourself", via_m.id.0));
+        return Err(format!("{}'s pane {pane_id} does not show its session; nothing is typed: enter jumps there to type it yourself", via_m.id.0));
     }
     // read from its `claude attach` alone: typed into only while it runs
     // exactly that attach (checked when the message is sent)

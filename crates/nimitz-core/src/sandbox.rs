@@ -300,10 +300,17 @@ impl World {
         let started = self.now - if o.started_ago == 0.0 { 3600.0 } else { o.started_ago };
         let name = o.name_override.clone().unwrap_or_else(|| name.to_string());
         let labels = o.labels_raw.clone().or_else(|| o.labels_of.or(o.labels).map(|id| crate::claude::labels_for(&env(&self.base), id)));
-        // launched through the wrapper: its Bedrock env merged in (#12)
+        // launched through the wrapper: its Bedrock env merged in (#12); a
+        // nimitz launch blanks the Herdr pane env (`claude::HERDR_PANE_VARS`;
+        // a 0.3.x tender's raw labels never did)
         let settings = labels.as_ref().map(|l| {
             let mut env = l.clone();
             env.insert("CLAUDE_CODE_USE_BEDROCK".into(), "1".into());
+            if o.labels_raw.is_none() {
+                for k in crate::claude::HERDR_PANE_VARS {
+                    env.insert(k.into(), String::new());
+                }
+            }
             json!({"env": env, "worktree": {"bgIsolation": "none"}}).to_string()
         });
         if kind == "background" {
