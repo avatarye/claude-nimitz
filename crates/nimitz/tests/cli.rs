@@ -1441,6 +1441,49 @@ fn a_whole_fleet_or_squadron_retires_in_one_plan() {
     assert!(!sb.status()["fleets"].as_array().unwrap().iter().any(|f| f["id"] == "OLD"), "OLD is gone from status");
 }
 
+/// #5 review: a whole-unit retire whose apply fails partway says it can be
+/// run again, and the second run plans only what is left.
+#[test]
+fn a_whole_unit_retire_that_failed_partway_finishes_on_a_second_run() {
+    let sb = Sb::new(false);
+    for args in [
+        vec!["fleet", "new", "OLD", "--yes"],
+        vec!["squadron", "new", "OLD/SQA", "--brief", "A.", "--yes"],
+        vec!["ship", "new", "OLD/SQA/S1", "--dir", "managed", "--prompt", "You are S1.", "--yes"],
+        vec!["ship", "new", "OLD/SQA/S2", "--dir", "managed", "--prompt", "You are S2.", "--yes"],
+        vec!["start", "OLD/SQA/S1", "OLD/SQA/S2", "--yes"],
+    ] {
+        let r = sb.run(&args);
+        assert_eq!(r.code, 0, "{args:?}:\n{}", r.out);
+    }
+    let world = sb.base.join("world.json");
+    let knob = |on: bool| {
+        let mut w: Value = serde_json::from_slice(&std::fs::read(&world).unwrap()).unwrap();
+        w["rm_fails"] = Value::from(on);
+        std::fs::write(&world, serde_json::to_vec(&w).unwrap()).unwrap();
+    };
+    let steps = |args: &[&str]| -> Vec<(String, String)> {
+        let j: Value = serde_json::from_str(sb.run(args).out.trim()).unwrap();
+        j["steps"].as_array().unwrap().iter().map(|s| (s["id"].as_str().unwrap_or("").to_string(), s["cmd"][1].as_str().map(str::to_string).unwrap_or_else(|| s["cmd"][0].as_str().unwrap().to_string()))).collect()
+    };
+    let before = steps(&["fleet", "rm", "OLD/...", "--plan", "--json"]);
+    assert_eq!(before.first(), Some(&("OLD/SQA/S1".to_string(), "stop".to_string())), "{before:?}");
+    // every rm fails: S1 stops, its rm fails, nothing after it runs
+    knob(true);
+    let r = sb.run(&["fleet", "rm", "OLD/...", "--yes"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("Run `nimitz fleet rm OLD/...` again") && r.out.contains("plans only what is left"), "{}", r.out);
+    assert!(sb.base.join("nimitz").join("old").join("fleet.toml").is_file(), "the configs stay until the rows are gone");
+    // the second run: S1 is stopped already (its rm alone), the rest as before
+    knob(false);
+    let after = steps(&["fleet", "rm", "OLD/...", "--plan", "--json"]);
+    assert_eq!(after.first(), Some(&("OLD/SQA/S1".to_string(), "rm".to_string())), "{after:?}");
+    assert_eq!(after.len(), before.len() - 1, "only the stop that ran is gone: {before:?} -> {after:?}");
+    let r = sb.run(&["fleet", "rm", "OLD/...", "--yes"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.base.join("nimitz").join("old").join("fleet.toml.archived").is_file());
+}
+
 // ------------------------------------------------------------------ mux commands
 
 #[test]

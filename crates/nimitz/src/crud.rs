@@ -381,6 +381,10 @@ fn retire(ctx: &Ctx, id: &Id, all: bool) -> i32 {
                 // a removed member's self-end notes go with it
                 if code == 0 {
                     nimitz_core::self_end::forget_under(&ctx.env, id);
+                } else if all {
+                    // the steps run in order and a failed one stops the rest:
+                    // what ran is done, and a second run plans only what is left
+                    out::line(&format!("[INFO] the retire stopped partway; what ran is done. Run `nimitz {verb} rm {path}` again (once the error above is fixed): it plans only what is left"));
                 }
                 code
             }

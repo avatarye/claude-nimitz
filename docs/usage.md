@@ -102,7 +102,9 @@ folders with their briefs, prompts and archived configs. A member that runs
 in a process with no job (an SDK host, a `claude --resume` by hand) refuses
 the plan: end it in its own terminal first. `--plan` prints it, `--yes`
 runs it; it is on the list that waits for the user's OK. Job rows on another
-machine stay there.
+machine stay there. The steps run in order and a failed one stops the rest:
+what ran is done, the configs stay until every row is gone, and running the
+same command again plans only what is left (the output says so).
 
 ## Two rules
 
