@@ -999,6 +999,13 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
     if opts.fresh {
         plan.warnings.retain(|i| !(i.code == "history.lost" && i.id.as_ref() == Some(id)));
     }
+    // a lead `nimitz stop` held down comes up with this start, the target's
+    // parent too (a start brings its chain up), and loses its hold: said
+    let holds = crate::held::load(env);
+    for s in plan.steps.iter_mut().filter(|s| s.id.as_ref().is_some_and(|i| holds.contains_key(&i.0)) && matches!(classify(s), Kind::Launch | Kind::Resume { .. } | Kind::Relaunch)) {
+        let parent = s.id.as_ref().is_some_and(|i| i != id);
+        s.why.push_str(if parent { "; it was held down by nimitz stop: starting a member under it brings it up and drops the hold" } else { "; it was held down by nimitz stop: this start drops the hold" });
+    }
     dedup_issues(&mut plan);
     mark_repairs(&mut plan);
     debug_assert!(no_fork(snap, &plan), "a plan would fork a session: {:?}", plan.steps);

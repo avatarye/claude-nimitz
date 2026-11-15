@@ -48,7 +48,8 @@ and `muster` and `layout` then leave it: no wake and no tab, reported as
 ended comes back as above, whatever ended it: a reboot fires the same
 SessionEnd a stop does, so only nimitz's own record tells them apart.
 `nimitz start`, `open`, `restart` and `muster --parked` wake a held lead and
-drop its hold, as does its retire. So `nimitz stop F/...` keeps a fleet down
+drop its hold, and so does a start of a member under it (`start F/SQ/SHIP`
+brings its chain up; the plan says so); its retire drops the hold too. So `nimitz stop F/...` keeps a fleet down
 here through every muster (it holds the fleet's leads that are down already
 too); `nimitz start F/...` brings it back (`--parked` for its ships). A ship
 stopped on purpose was left alone before, and still is.

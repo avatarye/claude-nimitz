@@ -1235,6 +1235,22 @@ fn retire_a_squadron_or_fleet_refuses_while_anything_in_it_is_live() {
     assert!(!sessions::plan_retire(&w.env, &snap, &Caller::User, &Id::admiral("MAIN")).ok());
 }
 
+/// #4 review: a start of a ship brings its chain up, a parent `nimitz stop`
+/// held down included, and its step says the hold goes; the wake drops it.
+#[test]
+fn a_ship_start_wakes_a_held_parent_and_says_its_hold_goes() {
+    let w = world();
+    let adm = Id::admiral("MAIN");
+    assert!(sessions::apply(&w.env, &sessions::plan_stop(&w.env, &w.snap(), &adm, &Caller::User)).verified);
+    assert!(nimitz_core::held::is_held(&w.env, &adm));
+    let plan = w.start(&w.snap(), &w.ship("STOPPED"), false);
+    assert!(plan.ok(), "{:?}", plan.refusals);
+    let step = plan.steps.iter().find(|s| s.id.as_ref() == Some(&adm)).expect("the admiral wakes first");
+    assert!(step.why.ends_with("it was held down by nimitz stop: starting a member under it brings it up and drops the hold"), "{}", step.why);
+    assert!(sessions::apply(&w.env, &plan).verified);
+    assert!(!nimitz_core::held::is_held(&w.env, &adm), "the wake dropped the hold");
+}
+
 /// #5: a squadron's or a fleet's plain retire names the whole unit's as its
 /// fix; the whole unit's stops what is live and archives the config in one
 /// verified apply. A member whose conversation a process with no job holds
