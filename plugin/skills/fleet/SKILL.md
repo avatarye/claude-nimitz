@@ -89,14 +89,14 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 | New ship | `nimitz ship new <F/SQ/SHIP> --dir <folder\|managed> [--prompt "<text>"\|--prompt-file <file>] [--mode <permission mode>] [--effort <level>] [--depends A,B]` (no prompt flag on a terminal: `$EDITOR` opens; a `--prompt-file` from outside the squadron's `prompts/` is copied there as `prompts/<SHIP>.txt`, or `.md`) |
 | Change a ship | `nimitz ship set <F/SQ/SHIP> [same flags]` (takes effect at its next relaunch) |
 | Retire a ship | `nimitz ship rm <F/SQ/SHIP>` (stops it, removes job rows, keeps transcripts) |
-| Delete a squadron or fleet | `nimitz squadron rm <F/SQ>`, `nimitz fleet rm <F>` (only when empty and not live) |
+| Delete a squadron or fleet | `nimitz squadron rm <F/SQ>`, `nimitz fleet rm <F>` (only when empty and not live); with everything in it, one plan: `nimitz squadron rm <F/SQ/...>`, `nimitz fleet rm <F/...>` (live members stopped, ships first; job rows removed; each squadron.toml archived with its ships listed, then fleet.toml; transcripts and ship folders stay). Rule 3: the user's OK first |
 | Add or remove a machine | `nimitz machine add <F> <label> [--dir F/SQ/SHIP=<folder>]`, `nimitz machine rm <F> <label>` |
 | Name a machine's claude | `nimitz machine set <label> --claude-bin <path>` (every launch and resume), `--native-bin <path>` (resume, stop and rm only: PATH's `claude` is a wrapper) |
 | A fleet's settings | `nimitz settings get [<key>] --fleet <F>`, `nimitz settings set <key> <value> --fleet <F>` |
 | Bring members up | `nimitz start <path>...`: the jobs only, no pane. Down or parked: woken by its exact id; live on an older Claude Code: relaunched (same id and history); live and current: nothing; never run and named exactly: a first launch. `--parked` also wakes the parked and stopped ships a `...` covers; `--fresh` a named member's new conversation |
 | Relaunch live members too | `nimitz restart <path>...` (same id and history; a pane its attach showed is reattached; a turn in flight is dropped, and the plan says so). `--force` is separate: a cold launch over a broken lineage or an untested Claude Code, only with the user's OK (rule 3) |
-| After a reboot, a Claude Code update, a Herdr closure or crash | `nimitz muster [<path>...]` (no path: every fleet here): workers on an older Claude Code relaunched, down leads and the ships live at the last look woken (`--parked`: the rest), every pane reattached in its own pane, else its lead's tab. One plan. No multiplexer: the jobs, the pane steps skipped |
-| Stop members | `nimitz stop <path>...` (under a `...`, the live ones, ships first); one copy of two: `nimitz stop <short id>` |
+| After a reboot, a Claude Code update, a Herdr closure or crash | `nimitz muster [<path>...]` (no path: every fleet here): workers on an older Claude Code relaunched, down leads and the ships live at the last look woken (`--parked`: the rest), every pane reattached in its own pane, else its lead's tab. A lead held down by `nimitz stop` is left alone with no tab (`nimitz start` or `--parked` wakes it). One plan. No multiplexer: the jobs, the pane steps skipped |
+| Stop members | `nimitz stop <path>...` (under a `...`, the live ones, ships first); one copy of two: `nimitz stop <short id>`. A lead it stops (or, under a `...`, finds down) is held down: `muster` and `layout` leave it until `nimitz start`, `open`, `restart` or `muster --parked`. To keep a lead down on this machine, stop it with `nimitz stop`; a stop by hand (`claude stop`, `/stop`) or a reboot does not hold it down |
 | Remove stale rows and copies | `nimitz sweep [<path>...]` (none: a member's own, else everything), or one row: `nimitz rm <short id>`. A background copy is stopped and removed; a copy with no job (interactive, SDK) is ended in its own terminal |
 | A session with no labels (a stowaway) | `nimitz adopt <session> <F/SQ/SHIP>` (one exact path), or `nimitz rm <session>`; a live one with no job: end it in its terminal |
 | Message a member | `SendMessage` to its name; the user's `nimitz signal <path> <text>` (a plain terminal) types into its tab (its own input), `--inbox` (and a member's, a Claude Code session's or a `--from` signal) posts to its inbox as a request; their `--type` types into its tab, led by `[nimitz signal from <who>]`, with the same pane checks, never into one waiting on the user. `--from <label>` (non-members only) is an unverified claim. One path: a member, or `F/...`/`F/SQ/...` for every live one under it (never `//...`). A member named exactly that is down is refused, never woken |
@@ -113,7 +113,10 @@ whole machine instead of ending the member (`nimitz stop <id>` stops one).
 `not-started`, `stopped`, `down`, `parked`, `idle`, `busy`, `needs-you`,
 `unknown`. `reasons` says why. `down`: the machine took it down while it was
 active (a `...` start or `muster` wakes it). `parked`: the daemon retired it,
-or it was not active; `--parked` wakes it. Neither is an error. `unknown`
+or it was not active; `--parked` wakes it. Neither is an error. `stopped`:
+its job ended (a stop or `/stop` since this machine booted; one that
+ended with a reboot reads `down` or `parked`) or its row is gone; a lead
+`nimitz stop` holds down says so in its `reasons`. `unknown`
 means the evidence does not decide; do not guess.
 
 ## Issues to know
