@@ -1147,6 +1147,9 @@ fn doctor_checks_the_herdr_plugin_and_fix_links_it() {
     // disabled
     sb.herdr_world(|w| w["plugins"][0]["enabled"] = Value::from(false));
     assert!(doctor(&["doctor"]).contains("fix: herdr plugin enable admiralty"));
+    // a JSON-looking line on stderr never reads as the list (stdout alone is parsed)
+    sb.herdr_world(|w| w["plugin_stderr"] = Value::from(r#"{"level":"warn","msg":"socket slow"}"#));
+    assert!(doctor(&["doctor"]).contains("fix: herdr plugin enable admiralty"), "the list is still read");
     // a `plugin list` that fails (a Herdr before 0.9): Info, not checked
     let calls_before = sb.calls().lines().count();
     sb.herdr_world(|w| w["fail"] = Value::from("plugin list"));

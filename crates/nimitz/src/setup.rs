@@ -416,7 +416,9 @@ fn herdr_plugin_get(dir: Option<&Path>) -> String {
 
 /// `program args` with its output read, given up (killed) after `limit`:
 /// a Herdr server that hangs never hangs `doctor`. The env is the caller's.
-fn run_bounded(program: &str, args: &[&str], limit: std::time::Duration) -> Result<(i32, String), String> {
+/// Its exit code, stdout and stderr, apart (a JSON answer is read from stdout
+/// alone; stderr is for the message).
+fn run_bounded(program: &str, args: &[&str], limit: std::time::Duration) -> Result<(i32, String, String), String> {
     use std::io::Read;
     let mut child = std::process::Command::new(program)
         .args(args)
@@ -425,15 +427,15 @@ fn run_bounded(program: &str, args: &[&str], limit: std::time::Duration) -> Resu
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("{program}: {e}"))?;
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)] {
+    let (tx, rx) = std::sync::mpsc::channel::<(usize, String)>();
+    for (n, pipe) in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)].into_iter().enumerate() {
         let tx = tx.clone();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             if let Some(mut p) = pipe {
                 let _ = p.read_to_end(&mut buf);
             }
-            let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+            let _ = tx.send((n, String::from_utf8_lossy(&buf).into_owned()));
         });
     }
     let deadline = std::time::Instant::now() + limit;
@@ -450,14 +452,15 @@ fn run_bounded(program: &str, args: &[&str], limit: std::time::Duration) -> Resu
             Err(e) => return Err(format!("{program}: {e}")),
         }
     };
-    let mut text = String::new();
+    let (mut out, mut err) = (String::new(), String::new());
     for _ in 0..2 {
         match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
-            Ok(t) => text.push_str(&t),
+            Ok((0, t)) => out = t,
+            Ok((_, t)) => err = t,
             Err(_) => return Err(gave_up()),
         }
     }
-    Ok((status.code().unwrap_or(-1), text))
+    Ok((status.code().unwrap_or(-1), out, err))
 }
 
 /// The Herdr plugin (#1): with `herdr` on PATH (or `NIMITZ_HERDR_BIN`),
@@ -470,7 +473,8 @@ fn herdr_plugin_check(ctx: &Ctx, r: &mut Report) {
     let Some(bin) = nimitz_mux::resolve_herdr_bin(&ctx.vars) else { return };
     let version = env!("CARGO_PKG_VERSION");
     let state = match run_bounded(&bin, &["plugin", "list", "--json"], std::time::Duration::from_secs(10)) {
-        Ok((0, text)) => text.find('{').and_then(|at| nimitz_core::evidence::first_json(&text.as_bytes()[at..])).and_then(|v| herdr_plugin_state(&v, version)),
+        // (stdout alone: a warning Herdr prints on stderr never reads as the list)
+        Ok((0, out, _)) => out.find('{').and_then(|at| nimitz_core::evidence::first_json(&out.as_bytes()[at..])).and_then(|v| herdr_plugin_state(&v, version)),
         Ok(_) | Err(_) => None,
     };
     let Some(state) = state else {
@@ -893,8 +897,8 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
                     if s.cmd.get(1).map(String::as_str) == Some("plugin") {
                         let args: Vec<&str> = s.cmd[1..].iter().map(String::as_str).collect();
                         match run_bounded(&s.cmd[0], &args, std::time::Duration::from_secs(30)) {
-                            Ok((0, _)) => out::ok(&format!("fixed: {}", s.why)),
-                            Ok((rc, text)) => out::error(&format!("fix failed: {} (exit {rc}): {}", s.cmd.join(" "), text.trim())),
+                            Ok((0, _, _)) => out::ok(&format!("fixed: {}", s.why)),
+                            Ok((rc, stdout, stderr)) => out::error(&format!("fix failed: {} (exit {rc}): {}", s.cmd.join(" "), if stderr.trim().is_empty() { stdout.trim() } else { stderr.trim() })),
                             Err(e) => out::error(&format!("fix failed: {e}")),
                         }
                         continue;

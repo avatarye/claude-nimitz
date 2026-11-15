@@ -323,6 +323,10 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
                     p["warnings"] = json!(["manifest unavailable: No such file or directory (os error 2)"]);
                 }
             }
+            // (`plugin_stderr`: a line Herdr writes to stderr first, a log's JSON say)
+            if let Some(e) = world.get("plugin_stderr").and_then(|v| v.as_str()) {
+                eprintln!("{e}");
+            }
             println!("{}", json!({"id": "cli:plugin", "result": {"type": "plugin_list", "plugins": plugins}}));
             0
         }
