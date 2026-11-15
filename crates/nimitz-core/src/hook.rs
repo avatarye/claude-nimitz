@@ -182,7 +182,7 @@ fn handle_inner(env: &Env, event: &str, stdin: &str, vars: &HashMap<String, Stri
                 let _ = crate::active::note_start(env, &id, str_at(&session, "jobId").as_deref(), &sid);
                 // up again, by any path (an attach by hand too): no longer held down (#4)
                 if id.role().lead() {
-                    let _ = crate::held::release(env, &id);
+                    let _ = crate::held::release_within(env, &id, crate::held::HOOK_WAIT);
                 }
             }
         }

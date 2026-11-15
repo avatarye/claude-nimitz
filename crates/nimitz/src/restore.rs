@@ -120,6 +120,10 @@ pub fn run_start(ctx: &Ctx, paths: &[nimitz_core::paths::Path], opts: rs::Restor
 /// Plan (`restore::plan`, or `plan_start` for `start`), gate and run.
 fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: rs::RestoreOpts) -> i32 {
     let snap = ctx.snap();
+    // a hold its lead outlived goes (`held::prune`); a plan alone changes nothing
+    if !ctx.plan_only() {
+        let _ = nimitz_core::held::prune(&ctx.env, &snap);
+    }
     // the fleets the paths reach, for the checks after and the run's record
     let fleets: Vec<String> = snap.fleets.iter().filter(|f| f.members().any(|m| nimitz_core::paths::covered(paths, &m.id))).map(|f| f.id.0.clone()).collect();
     let mine = |f: &nimitz_core::Fleet| fleets.contains(&f.id.0);

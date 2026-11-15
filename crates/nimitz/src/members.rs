@@ -385,6 +385,9 @@ fn merged(summary: String, plans: Vec<Plan>) -> Plan {
 pub fn stop(ctx: &Ctx) -> Result<i32, String> {
     ctx.args.allow(&[])?;
     let snap = ctx.snap();
+    if !ctx.plan_only() {
+        let _ = nimitz_core::held::prune(&ctx.env, &snap);
+    }
     let me = crate::self_end::me(ctx, &snap);
     let mine = me.as_ref().and_then(|id| member(&snap, id)).and_then(|m| m.session.clone());
     let own_session = |s: &str| mine.as_ref().is_some_and(|r| r.session_id == s || r.short_id.as_deref() == Some(s));

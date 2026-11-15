@@ -1742,6 +1742,36 @@ fn r24_a_lead_nimitz_stop_holds_down_stays_down_and_one_that_merely_ended_comes_
     assert!(held().is_empty(), "the hold goes with the member: {:?}", held());
 }
 
+/// #4 review: a hold the lead outlived is void. The lead came up after the
+/// hold (an attach by hand) and the hook could not drop it (here: the file
+/// written back as it was); after a reboot muster wakes the lead, and the
+/// run drops the hold.
+#[test]
+fn r24c_a_hold_the_lead_outlived_is_void_and_muster_wakes_it() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    let held_file = sb.base.join("state").join("held.json");
+    sb.ok(&["stop", "MAIN", "--yes"]);
+    let hold = std::fs::read(&held_file).unwrap();
+    // up again by an attach typed by hand: its SessionStart on the job
+    let job = sb.short("MAIN");
+    sb.claude(&sb.cwd_of("MAIN"), &["attach", &job]);
+    assert!(sb.live("MAIN"));
+    // ... whose hook could not drop the hold
+    std::fs::write(&held_file, &hold).unwrap();
+    sb.reboot();
+    let r = sb.run(&["muster", "MAIN/...", "--plan"]);
+    let line = r.out.lines().find(|l| l.split_whitespace().next() == Some("MAIN") && l.contains("->")).unwrap_or("").to_string();
+    assert!(line.contains("down, a lead") && !line.contains("stopped on purpose"), "{}", r.out);
+    assert!(!sb.member("MAIN")["reasons"].to_string().contains("held down"), "status says no hold either");
+    assert_eq!(std::fs::read(&held_file).unwrap(), hold, "--plan drops nothing");
+    let r = sb.run(&["muster", "MAIN/...", "--yes"]);
+    assert!(sb.live("MAIN"), "{}", r.out);
+    let left: Value = serde_json::from_slice(&std::fs::read(&held_file).unwrap()).unwrap();
+    assert!(left.get("MAIN").is_none(), "the void hold is gone: {left}");
+}
+
 /// `muster` with the multiplexer off (`NIMITZ_MUX=none`): the job steps, a
 /// `mux.none` note that the pane steps are skipped, and exit 0.
 #[test]

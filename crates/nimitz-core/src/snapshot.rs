@@ -917,7 +917,8 @@ fn build_member(
     };
 
     // a lead `nimitz stop` holds down: muster and layout leave it (#4)
-    if id.role().lead() && !primary.as_ref().is_some_and(|p| p.live()) && crate::held::is_held(env, id) {
+    let held = || crate::held::load(env).remove(&id.0).filter(|h| !crate::held::started_since(h.at, primary.as_ref().and_then(|p| p.short_id.as_deref()), None, events));
+    if id.role().lead() && !primary.as_ref().is_some_and(|p| p.live()) && crate::held::is_held(env, id) && held().is_some() {
         reasons.push(format!("held down by nimitz stop: muster and layout leave it; nimitz start {id} wakes it"));
     }
 

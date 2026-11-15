@@ -340,6 +340,8 @@ struct Ctx<'a> {
     named: Vec<Id>,
     /// `muster`, `start`, `restart`, `open`, `layout`: the command the fixes name
     verb: &'static str,
+    /// the leads `nimitz stop` holds down, but the void holds (`held::current`)
+    held: std::collections::BTreeMap<String, crate::held::Hold>,
 }
 
 impl Ctx<'_> {
@@ -650,7 +652,8 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
         rp.plan.refusals.push(i);
         return rp;
     }
-    let ctx = Ctx { env, snap, shape, active, opts, job_of, member_of, caller, me, paths: paths.to_vec(), named, verb };
+    let held = crate::held::current(env, snap);
+    let ctx = Ctx { env, snap, shape, active, opts, job_of, member_of, caller, me, paths: paths.to_vec(), named, verb, held };
     for f in snap.fleets.iter().filter(|f| f.members().any(|m| crate::paths::covered(paths, &m.id))) {
         // (a fleet the paths name, not one `//...` sweeps in, refuses when it cannot run)
         let explicit = paths.iter().any(|p| matches!(p, crate::paths::Path::Member(id) | crate::paths::Path::Under(Some(id)) if id.fleet() == f.id.fleet()));
@@ -929,7 +932,7 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
     // layout leave it, with no wake and no tab; `start`, `restart` and `open`
     // wake it, as `--parked` does. A job that merely ended (a stop by hand,
     // `/stop`, a reboot: a clean shutdown fires SessionEnd too) holds nothing.
-    let held_down = lead && matches!(ctx.verb, "muster" | "layout") && crate::held::is_held(env, id);
+    let held_down = lead && matches!(ctx.verb, "muster" | "layout") && ctx.held.contains_key(&id.0);
     // (one the machine's clean shutdown took out of the set still counts)
     let active = ctx.active.and_then(|a| a.member(&id.0, env.boot_s));
     let had_tab = active.map(|a| a.attached).unwrap_or(false);

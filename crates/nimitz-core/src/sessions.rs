@@ -1001,7 +1001,7 @@ pub fn plan_start_with(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller, opt
     }
     // a lead `nimitz stop` held down comes up with this start, the target's
     // parent too (a start brings its chain up), and loses its hold: said
-    let holds = crate::held::load(env);
+    let holds = crate::held::current(env, snap);
     for s in plan.steps.iter_mut().filter(|s| s.id.as_ref().is_some_and(|i| holds.contains_key(&i.0)) && matches!(classify(s), Kind::Launch | Kind::Resume { .. } | Kind::Relaunch)) {
         let parent = s.id.as_ref().is_some_and(|i| i != id);
         s.why.push_str(if parent { "; it was held down by nimitz stop: starting a member under it brings it up and drops the hold" } else { "; it was held down by nimitz stop: this start drops the hold" });
@@ -1121,7 +1121,7 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
         // a lead that is down already, but would come back with the next
         // muster: held down from now on (held already: nothing to do)
         if lead && m.status != Status::NotStarted {
-            if !crate::held::is_held(env, id) {
+            if !crate::held::current(env, snap).contains_key(&id.0) {
                 plan.steps.push(hold_step(id, "not live; held down from now on: muster and layout leave it until nimitz start (or open, restart, muster --parked)"));
             }
         } else if plan.steps.is_empty() {
@@ -1162,7 +1162,7 @@ pub fn plan_stop(env: &Env, snap: &Snapshot, id: &Id, caller: &Caller) -> Plan {
 pub fn plan_hold(env: &Env, snap: &Snapshot, id: &Id) -> Plan {
     let mut plan = Plan { summary: format!("hold {id}"), ..Default::default() };
     if let Some((_, m)) = member(snap, id).filter(|(_, m)| m.role.lead() && m.status != Status::NotStarted) {
-        if !crate::held::is_held(env, id) {
+        if !crate::held::current(env, snap).contains_key(&id.0) {
             let held = held_of(m).map(|h| format!("; its conversation runs in a process with no job ({}), not stopped from here", h.entrypoint.as_deref().unwrap_or(&h.kind))).unwrap_or_default();
             plan.steps.push(hold_step(id, &format!("not live; held down from now on: muster and layout leave it until nimitz start (or open, restart, muster --parked){held}")));
         }
