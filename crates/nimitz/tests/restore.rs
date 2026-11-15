@@ -1591,18 +1591,51 @@ fn r28b_a_ship_that_ended_before_this_boot_comes_back() {
     let mut sb = Sb::new(true);
     lay(&sb);
     let clean = sb.short("MAIN/ARGOS/CLEAN");
-    let sid = sb.sid("MAIN/ARGOS/CLEAN");
+    // the machine's clean shutdown: CLEAN's SessionEnd, by the hook, takes it
+    // out of the set and keeps it as ended, with the end's time
     sb.claude(&sb.cwd_of("MAIN/ARGOS/CLEAN"), &["stop", &clean]);
-    // the set as it was written before the shutdown: CLEAN live
-    sb.write_active(|a| a["members"]["MAIN/ARGOS/CLEAN"] = json!({"job": clean, "session": sid, "status": "idle", "attached": false, "place": null}));
+    let a = sb.active().unwrap();
+    assert!(a["members"].get("MAIN/ARGOS/CLEAN").is_none() && a["ended"]["MAIN/ARGOS/CLEAN"]["member"]["job"] == clean.as_str(), "{a}");
     // the machine booted after that SessionEnd
-    let boot = nimitz_core::evidence::now() + 1.0;
+    let boot = nimitz_core::evidence::now();
     sb.vars.insert("NIMITZ_BOOT_TIME".into(), format!("{boot}"));
     let st = sb.ok(&["status", "MAIN/ARGOS/CLEAN", "--json"]);
     assert!(st.contains("ended before this machine booted"), "{st}");
+    let st = sb.ok(&["status"]);
+    assert!(st.lines().any(|l| l.contains("MAIN/ARGOS/CLEAN") && l.contains("down")), "down, as after a power cut:\n{st}");
     let r = sb.ok(&["muster", "MAIN/...", "--yes"]);
     assert!(!r.contains("nimitz start MAIN/ARGOS/CLEAN"), "{r}");
     assert!(sb.live("MAIN/ARGOS/CLEAN"), "{r}");
+    assert!(sb.active().unwrap().get("ended").and_then(|e| e.get("MAIN/ARGOS/CLEAN")).is_none(), "back in the set, no longer ended");
+    // a stop after the boot is a stop: left alone (r28)
+    let clean = sb.short("MAIN/ARGOS/CLEAN");
+    sb.claude(&sb.cwd_of("MAIN/ARGOS/CLEAN"), &["stop", &clean]);
+    let r = sb.ok(&["muster", "MAIN/...", "--yes"]);
+    assert!(r.contains("stopped on purpose") && r.contains("nimitz start MAIN/ARGOS/CLEAN"), "{r}");
+    assert!(!sb.live("MAIN/ARGOS/CLEAN"), "{r}");
+}
+
+/// A ship stopped by hand well before the machine's clean shutdown stays
+/// down after the reboot: only the shutdown's own ends (within
+/// `SHUTDOWN_WINDOW_S` of the last one) count as active again.
+#[test]
+fn r28c_a_ship_stopped_long_before_the_shutdown_stays_down() {
+    let mut sb = Sb::new(true);
+    lay(&sb);
+    let (clean, drift) = (sb.short("MAIN/ARGOS/CLEAN"), sb.short("MAIN/ARGOS/DRIFT"));
+    sb.claude(&sb.cwd_of("MAIN/ARGOS/CLEAN"), &["stop", &clean]);
+    sb.claude(&sb.cwd_of("MAIN/ARGOS/DRIFT"), &["stop", &drift]);
+    // CLEAN's stop came an hour before the shutdown that ended DRIFT
+    let path = sb.base.join("state").join("active.json");
+    let mut a: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let t = a["ended"]["MAIN/ARGOS/CLEAN"]["at"].as_f64().unwrap();
+    a["ended"]["MAIN/ARGOS/CLEAN"]["at"] = json!(t - 3600.0);
+    std::fs::write(&path, serde_json::to_vec(&a).unwrap()).unwrap();
+    sb.vars.insert("NIMITZ_BOOT_TIME".into(), format!("{}", nimitz_core::evidence::now()));
+    let r = sb.run(&["muster", "MAIN/...", "--plan"]);
+    let line = |id: &str| r.out.lines().find(|l| l.split_whitespace().next() == Some(id) && l.contains("->")).unwrap_or("").to_string();
+    assert!(line("MAIN/ARGOS/DRIFT").contains("down, it was active"), "{}", r.out);
+    assert!(line("MAIN/ARGOS/CLEAN").contains("left parked"), "{}", r.out);
 }
 
 /// #4, R-24: a lead `nimitz stop` took down is held down (`NIMITZ_STATE/held.json`):

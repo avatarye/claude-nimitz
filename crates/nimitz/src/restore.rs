@@ -88,7 +88,7 @@ pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&n
     };
     let seen = shape.map(|s| seen_in(&ctx.env, s));
     let prev = active::load(&ctx.env);
-    let set = active::from_snapshot(snap, seen.as_ref(), active::herdr_identity(&ctx.vars), prev.as_ref());
+    let set = active::from_snapshot_booted(snap, seen.as_ref(), active::herdr_identity(&ctx.vars), prev.as_ref(), ctx.env.boot_s);
     let _ = active::write(&ctx.env, set);
 }
 

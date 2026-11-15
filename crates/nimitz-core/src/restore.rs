@@ -930,7 +930,8 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
     // wake it, as `--parked` does. A job that merely ended (a stop by hand,
     // `/stop`, a reboot: a clean shutdown fires SessionEnd too) holds nothing.
     let held_down = lead && matches!(ctx.verb, "muster" | "layout") && crate::held::is_held(env, id);
-    let active = ctx.active.and_then(|a| a.members.get(&id.0));
+    // (one the machine's clean shutdown took out of the set still counts)
+    let active = ctx.active.and_then(|a| a.member(&id.0, env.boot_s));
     let had_tab = active.map(|a| a.attached).unwrap_or(false);
     let fail = |rp: &mut RestorePlan, rep: &mut FleetReport, i: Issue| {
         rep.failed += 1;

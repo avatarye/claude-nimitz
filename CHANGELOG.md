@@ -34,8 +34,11 @@
   same line a stop by hand leaves, so after a reboot every active-set ship
   read as stopped and `muster` left it down. A SessionEnd from before the
   machine's last boot now reads as parked: the machine took the job down,
-  and `muster` wakes it as after a power cut. A stop after the boot is still
-  left alone.
+  and `muster` wakes it as after a power cut. The hook's SessionEnd no
+  longer just drops the member from the active set: it keeps it, with the
+  time, so a ship the shutdown ended still counts as active after the boot.
+  A stop after the boot, or one well before the shutdown, is still left
+  alone.
 
 - **`muster` no longer wakes a lead you stopped with `nimitz stop` (#4).**
   To keep a lead down on this machine, stop it with `nimitz stop`; a stop by

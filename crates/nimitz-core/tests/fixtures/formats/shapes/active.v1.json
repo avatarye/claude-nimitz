@@ -21,5 +21,17 @@
         "pane_id": "p1"
       }
     }
+  },
+  "ended": {
+    "MAIN/ARGOS/S1": {
+      "at": 1.0,
+      "member": {
+        "job": "ef56ab78",
+        "session": "s2",
+        "status": "busy",
+        "attached": false,
+        "place": null
+      }
+    }
   }
 }

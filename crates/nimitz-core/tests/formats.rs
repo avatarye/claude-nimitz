@@ -202,7 +202,9 @@ work = "plan"
     }
     let active = json!({"version": 1, "at": 1.5, "machine": "work", "herdr": {"session": "NIMITZ", "socket": "/s"},
         "members": {"MAIN": {"job": "ab12cd34", "session": "s1", "status": "idle", "waiting_for": "you", "attached": true,
-            "place": {"workspace_id": "w1", "workspace": "MAIN", "tab_id": "t1", "tab": "MAIN", "pane_id": "p1"}}}});
+            "place": {"workspace_id": "w1", "workspace": "MAIN", "tab_id": "t1", "tab": "MAIN", "pane_id": "p1"}}},
+        // (0.7.22: optional, an older nimitz ignores it; no version step)
+        "ended": {"MAIN/ARGOS/S1": {"at": 1.0, "member": {"job": "ef56ab78", "session": "s2", "status": "busy", "attached": false, "place": null}}}});
     let notice = json!({"ts": 1.5, "id": "MAIN/@KB", "session_id": "s1", "kind": "dead", "event": "inbox", "tool_use_id": "t1", "detail": "d",
         "delivery": "delivered", "delivery_note": "n", "delivered_at": 2.0, "item": "000000000017"});
     let delivered = json!({"ab12cd34": {"version": 5, "at": 1.5, "session_id": "s1", "via": "SessionStart", "harness": "ff"}});

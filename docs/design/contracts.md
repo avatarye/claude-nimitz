@@ -560,6 +560,14 @@ live worker), so a SessionEnd from before the machine's last boot
 (`Env.boot_s`: `/proc/stat` `btime`, `kern.boottime`, `GetTickCount64`;
 `NIMITZ_BOOT_TIME` overrides it) reads as Parked too).
 Parked is not an error; `start` wakes it by id.
+The hook's SessionEnd takes a member out of the active set (`active.json`
+`members`) into `ended`, with the end's time. A restore counts an ended entry
+as active again when it ended before the boot and within
+`active::SHUTDOWN_WINDOW_S` (600 s) of the last end before the boot: the
+shutdown's burst, which ends every live worker in the same second. A stop by
+hand earlier than that, or after the boot, stays out. A full write carries the
+ended entries over, but those live or back in the set, those before the boot
+that are not the shutdown's, and those older than 7 days.
 A live row goes by its session file.
 Session files of `kind` `daemon` or `daemon-worker` are Claude Code's own
 processes: never a row, so never a member or a stowaway.

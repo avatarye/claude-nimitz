@@ -22,7 +22,7 @@ its fixture, or when a type's shape moves without a version.
 | `brief` | lead `CLAUDE.md` | shared | the rules version marker | (text) | (unchanged mechanism: `rules::briefs`) |
 | `ship-lock` | `.nimitz-ship.lock` | shared | `format` key (absent = 1) | 1 | 1 |
 | `registry` | `S/registry.json` | local | `version` | 2 | 3 (role `aide`, unknown records kept; 0.7.0: still 3, the aide records dropped by a cleanup) |
-| `active` | `S/active.json` | local | `version` | 1 | 1 (now checked) |
+| `active` | `S/active.json` | local | `version` | 1 | 1 (now checked); after 0.7.21: still 1, an optional `ended` map (members a SessionEnd took out, with the time) that an older nimitz ignores |
 | `rules-delivered` | `S/rules-delivered.json` | local | manifest | 1 | 1; 0.7.0: 2 (a delivery's optional `harness` hash; nothing to rewrite) |
 | `events` | `S/events.jsonl` | local | manifest | 1 | 1 |
 | `restore` | `S/restore.json` | local | manifest | 1 | 1 |

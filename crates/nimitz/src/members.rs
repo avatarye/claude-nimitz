@@ -157,7 +157,7 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         .max()
         .unwrap_or(0)
         .max(26);
-    let set = nimitz_core::active::load(&ctx.env).map(|a| a.members.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+    let set = nimitz_core::active::load(&ctx.env).map(|a| a.ids(ctx.env.boot_s)).unwrap_or_default();
     let line = |m: &Member, depth: usize| {
         if shown(&m.id) {
             member_line(&ctx.env, m, depth, col, set.contains(&m.id.0));

@@ -64,12 +64,56 @@ pub struct ActiveSet {
     /// the members live at the last write, by id
     #[serde(default)]
     pub members: BTreeMap<String, ActiveMember>,
+    /// members the hook's SessionEnd took out of the set, as they were, with
+    /// the end's time: after a reboot, the ones the machine's shutdown ended
+    /// count as active again (`member`). An older nimitz ignores the field.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ended: BTreeMap<String, Ended>,
 }
+
+/// A member the hook's SessionEnd took out of the set: its entry, and when.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ended {
+    pub at: f64,
+    pub member: ActiveMember,
+}
+
+/// The ends of one shutdown: within this many seconds of the last SessionEnd
+/// before the boot (a clean shutdown ends every live worker in the same
+/// second, measured 2026-10-31 on Linux). A stop by hand earlier than that is
+/// a stop.
+pub const SHUTDOWN_WINDOW_S: f64 = 600.0;
+
+/// An ended entry older than this goes at the next full write.
+pub const ENDED_KEEP_S: f64 = 7.0 * 86400.0;
 
 impl ActiveSet {
     /// The same set, the clock aside.
     fn same_as(&self, other: &ActiveSet) -> bool {
-        self.version == other.version && self.machine == other.machine && self.herdr == other.herdr && self.members == other.members
+        self.version == other.version && self.machine == other.machine && self.herdr == other.herdr && self.members == other.members && self.ended == other.ended
+    }
+
+    /// Ended by the machine's shutdown before `boot`: the end came before the
+    /// boot and within `SHUTDOWN_WINDOW_S` of the last end before it.
+    fn ended_by_shutdown(&self, id: &str, boot: Option<f64>) -> Option<&ActiveMember> {
+        let boot = boot?;
+        let e = self.ended.get(id).filter(|e| e.at < boot)?;
+        let last = self.ended.values().map(|e| e.at).filter(|t| *t < boot).fold(f64::MIN, f64::max);
+        (e.at >= last - SHUTDOWN_WINDOW_S).then_some(&e.member)
+    }
+
+    /// The member as the set had it at the last look: live then, or taken out
+    /// by a SessionEnd of the shutdown before this boot (`boot`: `Env.boot_s`),
+    /// which a reboot's clean shutdown fires on every worker.
+    pub fn member(&self, id: &str, boot: Option<f64>) -> Option<&ActiveMember> {
+        self.members.get(id).or_else(|| self.ended_by_shutdown(id, boot))
+    }
+
+    /// The ids `member` answers for.
+    pub fn ids(&self, boot: Option<f64>) -> Vec<String> {
+        let mut v: Vec<String> = self.members.keys().cloned().collect();
+        v.extend(self.ended.keys().filter(|id| !self.members.contains_key(*id) && self.ended_by_shutdown(id, boot).is_some()).cloned());
+        v
     }
 }
 
@@ -217,6 +261,16 @@ fn status_word(s: Status) -> &'static str {
 /// Herdr identity stays whenever this call has none (`herdr` None: outside
 /// Herdr, or a member's command): a look from outside Herdr forgets no tab.
 pub fn from_snapshot(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrIdentity>, prev: Option<&ActiveSet>) -> ActiveSet {
+    from_snapshot_booted(snap, seen, herdr, prev, None)
+}
+
+/// `from_snapshot`, knowing when the machine booted (`Env.boot_s`): a member
+/// taken out by a SessionEnd of the shutdown before the boot is taken down,
+/// as one a power cut took down is (`ActiveSet::member`). The ended entries
+/// are carried over but for the members live or back in the set now, the
+/// ones that will never count again (before the boot, not the shutdown's)
+/// and the ones older than `ENDED_KEEP_S`.
+pub fn from_snapshot_booted(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrIdentity>, prev: Option<&ActiveSet>, boot: Option<f64>) -> ActiveSet {
     let mut members = BTreeMap::new();
     let all = snap.fleets.iter().flat_map(|f| f.members());
     for m in all {
@@ -227,7 +281,7 @@ pub fn from_snapshot(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrId
             // recorded, until a restore or a stop settles it (R-08). One the
             // daemon retired, or that was stopped, goes.
             let taken_down = m.status == Status::Parked && !m.reasons.iter().any(|r| r.contains("the daemon retired it"));
-            if let Some(p) = prev.and_then(|p| p.members.get(&m.id.0)).filter(|p| taken_down && s.short_id.is_some() && p.job == s.short_id) {
+            if let Some(p) = prev.and_then(|p| p.member(&m.id.0, boot)).filter(|p| taken_down && s.short_id.is_some() && p.job == s.short_id) {
                 members.insert(m.id.0.clone(), p.clone());
             }
             continue;
@@ -252,7 +306,17 @@ pub fn from_snapshot(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<HerdrId
         members.insert(m.id.0.clone(), ActiveMember { job: s.short_id.clone(), session: s.session_id.clone(), status: status_word(m.status).into(), waiting_for: s.waiting_for.clone(), attached, place });
     }
     let herdr = herdr.or_else(|| prev.and_then(|p| p.herdr.clone()));
-    ActiveSet { version: VERSION, at: crate::evidence::now(), machine: snap.machine.clone(), herdr, members }
+    let now = crate::evidence::now();
+    let ended = prev
+        .map(|p| {
+            p.ended
+                .iter()
+                .filter(|(id, e)| !members.contains_key(*id) && e.at >= now - ENDED_KEEP_S && !boot.is_some_and(|b| e.at < b && p.ended_by_shutdown(id, boot).is_none()))
+                .map(|(id, e)| (id.clone(), e.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    ActiveSet { version: VERSION, at: now, machine: snap.machine.clone(), herdr, members, ended }
 }
 
 /// Write `set` under the registry lock (temp file, rename). Ok(false) when
@@ -290,6 +354,7 @@ pub fn note_start(env: &Env, id: &Id, job: Option<&str>, session_id: &str) -> st
     crate::registry::with_lock(env, Some(HOOK_BUDGET), || {
         let mut set = load(env).unwrap_or_default();
         let prev = set.members.remove(&id.0);
+        set.ended.remove(&id.0);
         let same_job = prev.as_ref().map(|p| job.is_some() && p.job.as_deref() == job).unwrap_or(false);
         let keep = prev.filter(|_| same_job);
         set.members.insert(
@@ -311,8 +376,9 @@ pub fn note_start(env: &Env, id: &Id, job: Option<&str>, session_id: &str) -> st
 }
 
 /// The hook's SessionEnd of a member: it is not live any more (a `claude
-/// stop`, `/stop`, an exit; the daemon's retire fires none, and `status`
-/// catches that). Only the entry for that session (or job) goes.
+/// stop`, `/stop`, an exit, a clean shutdown; the daemon's retire fires none,
+/// and `status` catches that). Only the entry for that session (or job)
+/// goes, into `ended` with the time.
 pub fn note_end(env: &Env, id: &Id, session_id: &str, job: Option<&str>) -> std::io::Result<bool> {
     crate::registry::with_lock(env, Some(HOOK_BUDGET), || {
         let Some(mut set) = load(env) else { return Ok(false) };
@@ -323,7 +389,11 @@ pub fn note_end(env: &Env, id: &Id, session_id: &str, job: Option<&str>) -> std:
         if !gone {
             return Ok(false);
         }
-        set.members.remove(&id.0);
+        // kept as it was, with the end's time: after a reboot, an end of the
+        // machine's shutdown still counts as active (`ActiveSet::member`)
+        if let Some(m) = set.members.remove(&id.0) {
+            set.ended.insert(id.0.clone(), Ended { at: crate::evidence::now(), member: m });
+        }
         write_locked(env, &mut set)
     })?
 }
@@ -346,7 +416,7 @@ mod tests {
         let v = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<HashMap<_, _>>();
         // nothing recorded: no multiplexer
         assert_eq!(user_mux_vars(&env, &v(&[])).get("NIMITZ_MUX").map(String::as_str), Some("none"));
-        let set = ActiveSet { version: VERSION, at: 1.0, machine: None, herdr: Some(HerdrIdentity { session: Some("NIMITZ".into()), socket: Some("/s/herdr.sock".into()) }), members: BTreeMap::new() };
+        let set = ActiveSet { version: VERSION, at: 1.0, machine: None, herdr: Some(HerdrIdentity { session: Some("NIMITZ".into()), socket: Some("/s/herdr.sock".into()) }), members: BTreeMap::new(), ended: BTreeMap::new() };
         write(&env, set).unwrap();
         let out = user_mux_vars(&env, &v(&[]));
         assert_eq!((out.get("NIMITZ_MUX").map(String::as_str), out.get("NIMITZ_HERDR_SESSION").map(String::as_str)), (Some("herdr"), Some("NIMITZ")));
@@ -365,7 +435,7 @@ mod tests {
         let raw = serde_json::json!({"version": VERSION + 1, "at": 1.0, "members": {"F": {"session": "s", "status": "idle", "attached": false}}}).to_string();
         std::fs::write(path(&env), &raw).unwrap();
         assert!(load(&env).is_none());
-        let set = ActiveSet { version: VERSION, at: 1.0, machine: None, herdr: None, members: BTreeMap::new() };
+        let set = ActiveSet { version: VERSION, at: 1.0, machine: None, herdr: None, members: BTreeMap::new(), ended: BTreeMap::new() };
         assert!(write(&env, set).unwrap_err().to_string().contains("update nimitz here"));
         assert_eq!(std::fs::read_to_string(path(&env)).unwrap(), raw);
     }
@@ -374,7 +444,7 @@ mod tests {
     fn write_is_atomic_and_skips_an_unchanged_set() {
         let (_td, env) = test_env();
         assert!(load(&env).is_none());
-        let mut set = ActiveSet { version: VERSION, at: 1.0, machine: Some("m1".into()), herdr: None, members: BTreeMap::new() };
+        let mut set = ActiveSet { version: VERSION, at: 1.0, machine: Some("m1".into()), herdr: None, members: BTreeMap::new(), ended: BTreeMap::new() };
         set.members.insert("F".into(), member("j1", "s1"));
         assert!(write(&env, set.clone()).unwrap());
         let back = load(&env).expect("written");
@@ -447,6 +517,42 @@ mod tests {
             terminal: None,
         };
         Member { id: id.clone(), role: id.role(), expected_name: id.name(), cwd: Some("/f".into()), status, topic: None, reasons: reasons.iter().map(|r| r.to_string()).collect(), session: Some(s), extra_rows: vec![], crew: vec![], tasks: vec![], issues: vec![], pane: None, effort: None }
+    }
+
+    /// A SessionEnd keeps the entry as ended; after a reboot the shutdown's
+    /// ends count as active again, a stop well before them and one after the
+    /// boot do not; a start takes the entry out of `ended`.
+    #[test]
+    fn an_end_of_the_shutdown_before_the_boot_counts_as_active() {
+        let (_td, env) = test_env();
+        let (s1, s2, s3) = (Id::ship("F", "SQ", "S1"), Id::ship("F", "SQ", "S2"), Id::ship("F", "SQ", "S3"));
+        let mut set = ActiveSet::default();
+        for (id, j) in [(&s1, "j1"), (&s2, "j2"), (&s3, "j3")] {
+            set.members.insert(id.0.clone(), member(j, &format!("x{j}")));
+        }
+        write(&env, set).unwrap();
+        for (id, j) in [(&s1, "j1"), (&s2, "j2"), (&s3, "j3")] {
+            assert!(note_end(&env, id, &format!("x{j}"), Some(j)).unwrap());
+        }
+        let mut set = load(&env).unwrap();
+        assert!(set.members.is_empty() && set.ended.len() == 3);
+        let t = set.ended[&s1.0].at;
+        set.ended.get_mut(&s2.0).unwrap().at = t - 3600.0; // a stop an hour before the shutdown
+        set.ended.get_mut(&s3.0).unwrap().at = t + 100.0; // a stop after the boot
+        let boot = Some(t + 50.0);
+        assert_eq!(set.member(&s1.0, boot).map(|m| m.job.as_deref()), Some(Some("j1")));
+        assert!(set.member(&s2.0, boot).is_none() && set.member(&s3.0, boot).is_none());
+        assert!(set.member(&s1.0, None).is_none(), "no boot known: no end counts");
+        assert_eq!(set.ids(boot), vec![s1.0.clone()]);
+        write(&env, set).unwrap();
+        // a full write drops the entries that will never count (S2)
+        let snap = Snapshot { taken_at: 0.0, machine: None, fleets: vec![], stowaways: vec![], issues: vec![], cc_version: None, compat_ok: true };
+        let next = from_snapshot_booted(&snap, None, None, load(&env).as_ref(), boot);
+        assert_eq!(next.ended.keys().cloned().collect::<Vec<_>>(), vec![s1.0.clone(), s3.0.clone()]);
+        // a start: out of `ended`
+        note_start(&env, &s1, Some("j1"), "xj1").unwrap();
+        let set = load(&env).unwrap();
+        assert!(set.members.contains_key(&s1.0) && !set.ended.contains_key(&s1.0));
     }
 
     #[test]
