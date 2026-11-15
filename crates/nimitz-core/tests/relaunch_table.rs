@@ -1235,6 +1235,23 @@ fn retire_a_squadron_or_fleet_refuses_while_anything_in_it_is_live() {
     assert!(!sessions::plan_retire(&w.env, &snap, &Caller::User, &Id::admiral("MAIN")).ok());
 }
 
+/// #4 review: `nimitz stop <job>` of a lead's own session holds it down, as
+/// `nimitz stop <lead>` does; a ship's session holds nothing.
+#[test]
+fn a_stop_of_a_leads_session_by_its_id_holds_it_down() {
+    let w = world();
+    let snap = w.snap();
+    let argos = Id::commodore("MAIN", "ARGOS");
+    let short = w.member(&snap, &argos).session.unwrap().short_id.unwrap();
+    let plan = sessions::plan_stop_session(&w.env, &snap, &short, &Caller::User);
+    let cmds: Vec<&str> = plan.steps.iter().map(|s| s.cmd.get(1).filter(|c| *c == "stop").map(String::as_str).unwrap_or(s.cmd[0].as_str())).collect();
+    assert_eq!(cmds, vec!["stop", "hold"], "{:?}", plan.steps);
+    assert!(sessions::apply(&w.env, &plan).verified);
+    assert!(nimitz_core::held::is_held(&w.env, &argos));
+    let clean = w.member(&w.snap(), &w.ship("CLEAN")).session.unwrap().short_id.unwrap();
+    assert!(!sessions::plan_stop_session(&w.env, &w.snap(), &clean, &Caller::User).steps.iter().any(|s| s.cmd[0] == "hold"), "a ship: no hold");
+}
+
 /// #4 review: a start of a ship brings its chain up, a parent `nimitz stop`
 /// held down included, and its step says the hold goes; the wake drops it.
 #[test]

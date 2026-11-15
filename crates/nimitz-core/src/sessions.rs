@@ -1231,6 +1231,12 @@ pub fn plan_stop_session(env: &Env, snap: &Snapshot, target: &str, caller: &Call
         return plan;
     };
     plan.steps.push(Step { id: owner.clone(), cmd: crate::claude::stop(env, &short), cwd: None, why });
+    // a lead's own session, named by its id (the deferred self-stop too):
+    // held down, as `nimitz stop <lead>` holds it (never for a copy of it)
+    let own = owner.as_ref().filter(|o| o.role().lead() && row.copy.is_none()).filter(|o| member(snap, o).is_some_and(|(_, m)| m.session.as_ref().is_some_and(|s| s.session_id == row.session_id)));
+    if let Some(o) = own {
+        plan.steps.push(hold_step(o, "held down: muster and layout leave it until nimitz start (or open, restart, muster --parked)"));
+    }
     // a copy goes with its stop (as `sweep` does): once stopped, a copy that
     // was never prompted has no name, no labels and no transcript, so no
     // nimitz command sees its row again (cli-N1)
