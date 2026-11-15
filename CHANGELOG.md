@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.7.22 (2026-11-15)
+
+Tested with Claude Code 2.1.288 - 2.1.325.
 
 ### Added
 
@@ -82,6 +84,15 @@
   whose saved flags don't blank the Herdr pane env (launched before 0.5.0)
   is relaunched with every flag rather than woken: same conversation, new
   row. A restore no longer wakes such a lead by typing its attach.
+
+### Upgrading
+
+- With Herdr: run `nimitz doctor`. If it warns that the `admiralty` plugin
+  is not linked, `nimitz doctor --fix` (or the `herdr plugin link` line it
+  prints) links it, and the overlay key works.
+- Live sessions: `/reload-plugins` picks up the fleet skill's new text.
+- To keep a lead down on a machine, stop it with `nimitz stop`; `muster`
+  and `layout` then leave it until `nimitz start`.
 
 ## 0.7.21 (2026-11-05)
 
