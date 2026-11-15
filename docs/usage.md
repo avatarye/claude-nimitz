@@ -40,6 +40,14 @@ update or a Herdr closure. It tells the three apart, member by member:
 - Reboot: the leads and the ships live at the last look are woken by their
   exact session id (`--parked`: the rest too), then attached.
 
+A member stopped on purpose (`nimitz stop`, `/stop`, `claude stop`) is left
+alone, a lead as much as a ship: no wake and no tab, reported as `stopped on
+purpose` with `nimitz start <id>` as the fix. `layout` leaves it too. A reboot,
+a crash or the daemon's idle retire is no stop: those members are `down` or
+`parked` and come back as above. So `nimitz stop F/...` is how a fleet stays
+down on this machine through every muster: `nimitz start F/...` brings it
+back (`--parked` for its ships), and so does `muster F/... --parked`.
+
 With no multiplexer it runs the job steps and skips the pane steps. Run twice,
 the second run does nothing. What a plan looks like:
 
@@ -82,7 +90,9 @@ hands the outcome to the member's next session start.
   keeps on what the job is doing (`-- Inspecting ...`, cut to a terminal's
   width, never in a pipe; `topic` in the JSON). `down`: taken down while
   active (a `...` start wakes it); `parked`: retired by the daemon or not
-  active (`--parked` wakes it).
+  active (`--parked` wakes it); `stopped`: its job ended (`nimitz stop`,
+  `/stop`, a `failed` row) or its row is gone; `muster` leaves one stopped on
+  purpose, a lead too (`nimitz start <id>` wakes it).
 - `check F` and `check F/...` are the same: a check never hides a ship's
   errors.
 - `ship --effort low|medium|high|xhigh|max` is passed as `claude --effort` on

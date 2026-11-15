@@ -17,6 +17,14 @@
 
 ### Fixed
 
+- **`muster` no longer wakes a lead you stopped on purpose (#4).** An
+  admiral or commodore stopped with `nimitz stop`, `/stop` or `claude stop`
+  is now left alone by `muster` and `layout`, as a ship already was: no wake
+  and no tab, reported as `stopped on purpose` with `nimitz start <id>` as
+  the fix. So `nimitz stop F/...` keeps a fleet down on this machine through
+  every muster. `nimitz start` and `muster --parked` still wake it. Leads
+  the machine took down (a reboot, a crash, the daemon's retire) come back as
+  before.
 - **A KB that does not answer no longer stops Admiralty.** Each fleet's KB
   is now read on its own thread, one at a time per fleet, so the list keeps
   updating while git runs. A read still running after 60 seconds (a folder

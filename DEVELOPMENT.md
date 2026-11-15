@@ -615,8 +615,9 @@ Admiralty supply the `Shape` and run the steps. Entry points are `restore::plan`
 (`muster`, or `layout` with `shape_only`) and `restore::plan_start`.
 
 Rules of the module: reuse before create; never type into a non-shell pane; resume
-by exact id; leads always come back, and ships from the active set unless
-`--parked`; one member, one tab, one job; idempotent; only the fleets asked for.
+by exact id; leads always come back (but one stopped on purpose), and ships from
+the active set unless `--parked`; one member, one tab, one job; idempotent; only
+the fleets asked for.
 
 `RestoreStep`: `Wake` (through `sessions::apply`), `Claim` (`pane run <cmd>` into a
 shell pane, optional rename), `Open`, `Pin`, `Rename`, `Relaunch`, `Split`,
@@ -633,8 +634,12 @@ shell pane, optional rename), `Open`, `Pin`, `Rename`, `Relaunch`, `Split`,
   relaunched; relaunches run last, ships then commodores then admirals. Self:
   deferred to `__self-end`. Otherwise repin, and add a tab step if wanted.
 - **Job row, no pid:** wanted if `always_on`, `--parked`, or in the active set and
-  not stopped. Refused beside a live copy, or on `TABLE_HANDLED` exceptions. Then
-  by `find_tab`: shown attaches, shell claims, taken refuses, none opens.
+  not stopped. Under `muster` and `layout` a lead stopped on purpose
+  (`snapshot::stopped_on_purpose`: its last own event a SessionEnd, no
+  `failed` row, no pending relaunch) is not `always_on`: it gets the `stopped`
+  report and no tab (#4). Refused beside a live copy, or on `TABLE_HANDLED`
+  exceptions. Then by `find_tab`: shown attaches, shell claims, taken refuses,
+  none opens.
 - **No row:** with a transcript and wanted, relaunch from the transcript;
   otherwise `not.started`.
 

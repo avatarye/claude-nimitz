@@ -1581,6 +1581,83 @@ fn r28_a_ship_stopped_on_purpose_after_the_last_write_is_left_alone() {
     assert!(sb.live("MAIN/ARGOS/CLEAN"));
 }
 
+/// #4, R-24: a lead stopped on purpose (`nimitz stop`) is left alone by
+/// `muster` and `layout`, as a ship is (R-28): no wake and no tab, reported
+/// with `nimitz start` as the fix. A lead the machine took down (a reboot: no
+/// SessionEnd) still comes back, and so does one whose row is `failed` (no
+/// stop); `--parked` and `nimitz start` wake the stopped ones.
+#[test]
+fn r24_a_lead_stopped_on_purpose_stays_down_and_a_rebooted_one_comes_back() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    stop_mislabel(&sb);
+    sb.ok(&["stop", "MAIN", "MAIN/ARGOS", "--yes"]);
+    sb.reboot();
+    assert_eq!(sb.member("MAIN")["status"], "Stopped");
+    assert_eq!(sb.member("MAIN/ARGOS")["status"], "Stopped");
+    assert_eq!(sb.member("MAIN/BOREAL")["status"], "Parked", "a reboot fires no SessionEnd: down, not stopped");
+    let line = |out: &str, id: &str| out.lines().find(|l| l.split_whitespace().next() == Some(id) && l.contains("->")).unwrap_or("").to_string();
+    let plan_json = |args: &[&str]| -> Value {
+        let r = sb.run(args);
+        let mut de = serde_json::Deserializer::from_str(&r.out[r.out.find('{').unwrap()..]).into_iter::<Value>();
+        de.next().unwrap().unwrap_or_else(|e| panic!("{args:?}: {e}\n{}", r.out))
+    };
+    let found = |p: &Value, id: &str| p["found"].as_array().unwrap().iter().find(|f| f["id"] == id).cloned().unwrap_or_else(|| panic!("no line for {id}: {p}"));
+    let stepped = |p: &Value, id: &str| p["steps"].as_array().unwrap().iter().any(|s| s["id"] == id);
+
+    // muster: the stopped leads left alone, the rebooted one woken
+    let r = sb.run(&["muster", "MAIN/...", "--plan"]);
+    assert_eq!(r.code, 0, "{}", r.out);
+    for id in ["MAIN", "MAIN/ARGOS"] {
+        assert!(line(&r.out, id).contains("stopped on purpose (SessionEnd") && line(&r.out, id).contains("left stopped, no tab"), "{id}:\n{}", r.out);
+        assert!(r.out.contains(&format!("nimitz start {id}  # wakes it")), "{id}'s fix:\n{}", r.out);
+    }
+    assert!(line(&r.out, "MAIN/BOREAL").contains("down, a lead"), "{}", r.out);
+    let p = plan_json(&["muster", "MAIN/...", "--plan", "--json"]);
+    for id in ["MAIN", "MAIN/ARGOS"] {
+        let f = found(&p, id);
+        assert!(f["job"] == "nothing" && f["pane"] == "" && !stepped(&p, id), "{id}: no wake, no tab: {f}");
+    }
+    assert_eq!(found(&p, "MAIN/BOREAL")["job"], "wake");
+
+    // a `failed` row is no stop on purpose: the lead is still woken
+    let boreal = sb.short("MAIN/BOREAL");
+    let state = sb.member("MAIN/BOREAL")["session"]["state"].clone();
+    sb.job_row(&boreal, |j| j["state"] = json!("failed"));
+    let r = sb.run(&["muster", "MAIN/...", "--plan"]);
+    assert!(!line(&r.out, "MAIN/BOREAL").contains("stopped on purpose"), "{}", r.out);
+    sb.job_row(&boreal, |j| j["state"] = state);
+
+    // layout leaves them too: no tab for a stopped lead
+    let r = sb.run(&["layout", "MAIN/...", "--plan"]);
+    assert!(line(&r.out, "MAIN").contains("stopped on purpose") && line(&r.out, "MAIN").contains("no tab"), "{}", r.out);
+    assert!(!stepped(&plan_json(&["layout", "MAIN/...", "--plan", "--json"]), "MAIN"));
+
+    // run: BOREAL back; the admiral's shell tab is never typed into, no tab made
+    let tab = sb.tabs("MAIN.ADMIRAL")[0]["tab_id"].as_str().unwrap().to_string();
+    let pane = sb.world()["panes"].as_array().unwrap().iter().find(|p| p["tab_id"] == tab.as_str()).unwrap()["pane_id"].as_str().unwrap().to_string();
+    let typed = || sb.runs().iter().filter(|(p, _)| p == &pane).count();
+    let before = typed();
+    let r = sb.ok(&["muster", "MAIN/...", "--yes"]);
+    assert!(sb.live("MAIN/BOREAL"), "{r}");
+    assert!(!sb.live("MAIN") && !sb.live("MAIN/ARGOS"), "{r}");
+    assert!(r.contains("stopped on purpose"), "{r}");
+    assert_eq!(typed(), before, "nothing typed into MAIN.ADMIRAL:\n{}", sb.calls());
+    assert_eq!(sb.tabs("MAIN.ADMIRAL").len(), 1, "no second tab");
+    // a second muster: still nothing for them
+    let p = plan_json(&["muster", "MAIN/...", "--plan", "--json"]);
+    assert!(!stepped(&p, "MAIN") && !stepped(&p, "MAIN/ARGOS"), "{p}");
+
+    // `start` wakes them (R-24), and so does --parked
+    let p = plan_json(&["start", "MAIN/...", "--plan", "--json"]);
+    assert!(found(&p, "MAIN")["job"] == "wake" && found(&p, "MAIN/ARGOS")["job"] == "wake", "{p}");
+    let p = plan_json(&["muster", "MAIN/...", "--parked", "--plan", "--json"]);
+    assert!(found(&p, "MAIN")["job"] == "wake" && found(&p, "MAIN/ARGOS")["job"] == "wake", "{p}");
+    let sid = sb.sid("MAIN");
+    sb.ok(&["start", "MAIN", "--yes"]);
+    assert!(sb.live("MAIN") && sb.sid("MAIN") == sid, "the same conversation");
+}
+
 /// `muster` with the multiplexer off (`NIMITZ_MUX=none`): the job steps, a
 /// `mux.none` note that the pane steps are skipped, and exit 0.
 #[test]
@@ -1801,8 +1878,9 @@ fn r_a_branched_lead_with_a_shell_tab_is_woken_with_every_flag_then_opened() {
     sb.shell(&pane);
     let out = sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__inside", &job, "branch", "[MAIN.ARGOS]-COMMODORE"]);
     let branch = out.split_whitespace().last().unwrap().to_string();
-    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["stop", &job]);
-    // stopped: the row would wake on the pre-branch conversation; the registry says the branch
+    // retired by the daemon (a lead stopped on purpose would stay down, #4)
+    sb.claude(&sb.cwd_of("MAIN/ARGOS"), &["__retire", &job]);
+    // parked: the row would wake on the pre-branch conversation; the registry says the branch
     assert_ne!(sb.member("MAIN/ARGOS")["session"]["session_id"], branch.as_str());
     let reg: Value = serde_json::from_slice(&std::fs::read(PathBuf::from(&sb.vars["NIMITZ_STATE"]).join("registry.json")).unwrap()).unwrap();
     assert_eq!(reg["identities"]["MAIN/ARGOS"]["session"], branch.as_str());

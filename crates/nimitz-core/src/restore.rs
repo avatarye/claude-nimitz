@@ -11,8 +11,9 @@
 //!
 //! Rules (restore-scenarios.md R1-R8): reuse before create; never type into a
 //! pane that runs anything but a shell; resume by exact id; leads always come
-//! back, ships from the active set unless `--parked`; one member, one tab, one
-//! job; idempotent; only the fleets asked for, never the ADMIRALTY workspace.
+//! back (but one stopped on purpose, R-24), ships from the active set unless
+//! `--parked`; one member, one tab, one job; idempotent; only the fleets asked
+//! for, never the ADMIRALTY workspace.
 use crate::env::Env;
 use crate::layout::{legacy_tab_of, tab_of, workspace_of};
 use crate::types::*;
@@ -921,7 +922,8 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
     let (env, opts) = (ctx.env, ctx.opts);
     let id = &m.id;
     let lead = m.role.lead();
-    // a lead is wanted up whenever its fleet is (a ship by the active set)
+    // a lead is wanted up whenever its fleet is, unless it was stopped on
+    // purpose (below); a ship by the active set
     let always_on = m.role.always_on();
     let active = ctx.active.and_then(|a| a.members.get(&id.0));
     let had_tab = active.map(|a| a.attached).unwrap_or(false);
@@ -968,8 +970,9 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
         (false, true, ships) => ships && m.role == Role::Ship && live(m),
         (false, false, _) => had_tab,
     };
-    // which members come back without a tab's attach: leads always; ships in
-    // the active set, or every one under --parked (R4)
+    // which members come back without a tab's attach: leads always (but one
+    // stopped on purpose); ships in the active set, or every one under
+    // --parked (R4)
     let in_set = active.is_some();
     match m.session.as_ref() {
         // live: relaunched when its worker runs an older Claude Code than the
@@ -1009,7 +1012,14 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
                 fail(rp, rep, issue("session.unreadable", Severity::Error, format!("{id}'s session file cannot be read; its process may be live"), Some(format!("nimitz status  # read it again in a moment")), Some(id.clone())));
                 return;
             }
-            let wanted = always_on || opts.parked || (in_set && m.status != Status::Stopped);
+            // a lead comes back whenever its fleet does, but one someone
+            // stopped on purpose stays down for muster and layout (R-24, #4):
+            // `nimitz stop F` keeps it off this machine's muster; `start`
+            // (and `restart`) wake it, as `--parked` does. A reboot, a crash or
+            // the daemon's retire fire no SessionEnd: those leads are parked and
+            // come back. A relaunch nimitz left half done is no stop either.
+            let held_down = lead && matches!(ctx.verb, "muster" | "layout") && crate::snapshot::stopped_on_purpose(m) && crate::sessions::pending_relaunch(env, id).is_none();
+            let wanted = (always_on && !held_down) || opts.parked || (in_set && m.status != Status::Stopped);
             if opts.shape_only && !lead {
                 found(rp, id, "not live", "no tab (a layout makes tabs for live members)");
                 rp.plan.warnings.push(issue("layout.skip", Severity::Warn, format!("{id} is not live; no tab (`nimitz start {id}` first)"), None, Some(id.clone())));
@@ -1018,9 +1028,15 @@ fn plan_member(ctx: &Ctx, m: &Member, rep: &mut FleetReport, rp: &mut RestorePla
             if !wanted {
                 if m.status == Status::Stopped {
                     rep.stopped += 1;
-                    let why = m.reasons.iter().find(|r| r.starts_with("SessionEnd")).cloned().unwrap_or_else(|| "stopped".into());
-                    found(rp, id, format!("stopped on purpose ({why})"), "left stopped (--parked wakes it)");
-                    rp.plan.warnings.push(issue("stopped", Severity::Info, format!("{id} was stopped on purpose ({why}); left alone"), Some(format!("nimitz start {id}  # wakes it; `nimitz start {}/... --parked` wakes every stopped and parked ship", id.fleet())), Some(id.clone())));
+                    let why = m.reasons.iter().find(|r| r.starts_with(crate::snapshot::SESSION_END)).cloned().unwrap_or_else(|| "stopped".into());
+                    let (action, fix) = if lead {
+                        let action = if opts.shape_only { "left stopped, no tab (`nimitz start` wakes it)" } else { "left stopped, no tab (--parked wakes it)" };
+                        (action, format!("nimitz start {id}  # wakes it; `nimitz open {id}` wakes it with its pane"))
+                    } else {
+                        ("left stopped (--parked wakes it)", format!("nimitz start {id}  # wakes it; `nimitz start {}/... --parked` wakes every stopped and parked ship", id.fleet()))
+                    };
+                    found(rp, id, format!("stopped on purpose ({why})"), action);
+                    rp.plan.warnings.push(issue("stopped", Severity::Info, format!("{id} was stopped on purpose ({why}); left alone"), Some(fix), Some(id.clone())));
                 } else {
                     rep.parked += 1;
                     found(rp, id, "parked (not active at the last look)", "left parked; it wakes on demand (--parked wakes it)");

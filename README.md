@@ -109,7 +109,9 @@ opens Claude Code's agent view instead of ending the member.
 
 **After a reboot, a Claude Code update or a Herdr restart,** run
 `nimitz muster`. It works out which of the three happened, member by member,
-and brings everything back. Running it twice is harmless.
+and brings everything back, except a member you stopped on purpose
+(`nimitz stop`): that one stays down until `nimitz start`. Running it twice is
+harmless.
 
 **When something looks wrong,** run `nimitz check` for a fleet or
 `nimitz doctor` for this machine's install. Every problem comes with the one
@@ -128,7 +130,7 @@ The commands you'll reach for most:
 | --- | --- |
 | `nimitz status [<path>]` | The members, their state and their issues |
 | `nimitz start <path>` | Bring members up |
-| `nimitz stop <path>` | Stop members, ships first |
+| `nimitz stop <path>` | Stop members, ships first; they stay down through `muster` |
 | `nimitz restart <path>` | Relaunch, keeping the conversation |
 | `nimitz muster` | Bring everything back |
 | `nimitz open <path>` | Show a member in a pane |
