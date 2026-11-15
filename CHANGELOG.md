@@ -533,7 +533,7 @@ Tested with Claude Code 2.1.288 - 2.1.318.
   member of every fleet: its full path (`MAIN/ARGOS/SIGNAL`), its name, its
   status and its topic, and stowaways by short id. fzf-style matching, with
   a term that spells a path's initials ranked first (`mas` finds
-  MAIN/ARGOS/SIGNAL, `hgn` HOME/GITHUB/NIMITZ_DEV); several words must all
+  MAIN/ARGOS/SIGNAL, `hgn` HAVEN/GALLEY/NORTH_DEV); several words must all
   match (`argos busy`). Enter puts the cursor on that row, switching fleet
   tab; Esc leaves everything as it was. At 120 columns and wider the
   selection's detail shows beside it.
@@ -618,7 +618,7 @@ Tested with Claude Code 2.1.288 - 2.1.318.
 ### Changed
 
 - **Paths everywhere a set makes sense.** `check` and `rules` take several
-  paths (`check MAIN/...`, `rules HOME/GITHUB/...`; `rules` heads each member
+  paths (`check MAIN/...`, `rules HAVEN/GALLEY/...`; `rules` heads each member
   with `== ID ==`). `check F` still covers everything under F, so an exact
   lead never reads clean while its ships have errors. `signal F/...` (or
   `F/SQ/...`) sends to every live member under it, one plan; down members are
@@ -649,8 +649,8 @@ authority checks. No old form is kept. Read **Upgrading** first.
 
 ### Changed
 
-- **A path names one member.** `HOME` is the admiral, `HOME/GITHUB` the
-  commodore, `HOME/GITHUB/SHIP` a ship. `HOME/...` is everything under HOME,
+- **A path names one member.** `HAVEN` is the admiral, `HAVEN/GALLEY` the
+  commodore, `HAVEN/GALLEY/SHIP` a ship. `HAVEN/...` is everything under HAVEN,
   the admiral included; `//...` (or `/...`) is every fleet, the ADMIRALTY
   workspace never. A command takes several paths. `...` leaves parked ships
   alone; `--parked` adds them. A member a path names, and a lead under a

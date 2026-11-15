@@ -1904,7 +1904,7 @@ pub(crate) mod tests {
         for ok in ["CONSOLE", "COM10", "NULL", "AUX_1", "LPT"] {
             assert!(valid_name(ok), "{ok}");
         }
-        assert!(valid_label("console") && valid_label("home-windows") && valid_label("box.lan"));
+        assert!(valid_label("console") && valid_label("east-pc") && valid_label("box.lan"));
     }
 
     #[test]
@@ -2152,16 +2152,16 @@ pub(crate) mod tests {
         let (_td, env) = test_env();
         make_fleet(&env);
         // no --hostname: this host already is test-mac, so a second label refuses
-        let p = plan_machine_add(&env, "MAIN", "home-server", vec![]);
+        let p = plan_machine_add(&env, "MAIN", "west-box", vec![]);
         assert!(p.refusals.iter().any(|i| i.code == "machine.host" && i.message.contains("test-mac")), "{:?}", p.refusals);
-        assert!(!plan_machine_add_on(&env, "MAIN", "home-server", Some("TEST-MAC.local"), vec![]).ok());
-        let plan = plan_machine_add_on(&env, "MAIN", "home-server", Some("u0box"), vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]);
+        assert!(!plan_machine_add_on(&env, "MAIN", "west-box", Some("TEST-MAC.local"), vec![]).ok());
+        let plan = plan_machine_add_on(&env, "MAIN", "west-box", Some("u0box"), vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]);
         apply_ok(&env, &plan);
         let f = load_fleet(&env, "MAIN").unwrap();
-        assert_eq!(f.config.machines["home-server"].hostname, "u0box");
-        assert_eq!(f.squadrons[0].1.ships[0].dirs.get("home-server").map(|s| s.as_str()), Some("managed"));
+        assert_eq!(f.config.machines["west-box"].hostname, "u0box");
+        assert_eq!(f.squadrons[0].1.ships[0].dirs.get("west-box").map(|s| s.as_str()), Some("managed"));
         assert!(validate(&env, &f).is_empty());
-        assert!(!plan_machine_add(&env, "MAIN", "home-server", vec![]).ok()); // dup label
+        assert!(!plan_machine_add(&env, "MAIN", "west-box", vec![]).ok()); // dup label
         assert!(!plan_machine_add(&env, "MAIN", "other", vec![(Id::ship("MAIN", "ARGOS", "GHOST"), "managed".into())]).ok());
     }
 
@@ -2191,14 +2191,14 @@ pub(crate) mod tests {
         assert!(!plan_squadron_set(&env, &Id::admiral("MAIN"), None, None, None).ok());
 
         // machine rm: the label leaves fleet.toml and every ship's dirs; this machine warns
-        apply_ok(&env, &plan_machine_add_on(&env, "MAIN", "home-server", Some("u0box"), vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]));
-        let plan = plan_machine_rm(&env, "MAIN", "home-server");
+        apply_ok(&env, &plan_machine_add_on(&env, "MAIN", "west-box", Some("u0box"), vec![(Id::ship("MAIN", "ARGOS", "ARGOS"), "managed".into())]));
+        let plan = plan_machine_rm(&env, "MAIN", "west-box");
         assert!(plan.warnings.is_empty(), "another machine: {:?}", plan.warnings);
         apply_ok(&env, &plan);
         let f = load_fleet(&env, "MAIN").unwrap();
-        assert!(!f.config.machines.contains_key("home-server"));
-        assert!(f.squadrons[0].1.ships[0].dirs.keys().all(|k| k != "home-server"));
-        assert!(!plan_machine_rm(&env, "MAIN", "home-server").ok());
+        assert!(!f.config.machines.contains_key("west-box"));
+        assert!(f.squadrons[0].1.ships[0].dirs.keys().all(|k| k != "west-box"));
+        assert!(!plan_machine_rm(&env, "MAIN", "west-box").ok());
         assert!(plan_machine_rm(&env, "MAIN", "test-mac").warnings.iter().any(|i| i.code == "config.pending"));
         // with live members here, the warning names them
         let mut snap = crate::check::tests::snap_for(&env, None);

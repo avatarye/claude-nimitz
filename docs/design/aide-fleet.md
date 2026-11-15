@@ -48,7 +48,7 @@ The aide's machine drains every `relay/*/out/<aide>/` into its local queue:
   it took in, with its local item id and state. The poster's machine
   removes its own outbox files once acked (or after the aide's
   `keep_done`, 7 days, whatever happened), and `inbox status` there shows
-  "queued on home-server as item 17".
+  "queued on west-box as item 17".
 - **The doorbell:** the drain rings the aide (as a local post does).
 
 ### 1.3 Who posted: trust
@@ -139,7 +139,7 @@ that a snapshot reader waits for 0.6 on every machine.
   what a machine needs to run it or post to it; fleet.toml's stamp stays
   what fleet.toml itself needs (0.5.0 while it still holds `[[aide]]`,
   none once its aides have moved to their own files).
-- **@REF:** in its own file, a reader on home-server needs 0.6.1 there
+- **@REF:** in its own file, a reader on west-box needs 0.6.1 there
   only. The 0.6.0 rule (every machine on 0.6 before the first reader) goes.
 
 ### 2.3 Older machines

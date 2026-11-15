@@ -1102,7 +1102,7 @@ pub fn layout(ctx: &Ctx) -> Result<i32, String> {
 
 /// `nimitz attach <id>`: attach to a member in this terminal. Its exact job
 /// from the snapshot (`claude attach` matches a name by part, so `DEV` could
-/// be `NIMITZ_DEV` or `MYCC_DEV`: always the job's short id). A member that
+/// be `NORTH_DEV` or `LEDGER_DEV`: always the job's short id). A member that
 /// is down (parked, stopped) is woken first by start's own plan, gated like
 /// any other (`--plan`, `--yes`); a live one attaches at once. Then this
 /// process becomes `claude attach <job>` (exec; Windows: it waits and exits

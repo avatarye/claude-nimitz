@@ -61,10 +61,10 @@ interactive dcaf69ca (commodore), 5facc508 and cf98bfd0 (admiral, twice). All st
 | N43 R1:4a/G3 | `nz start E2E1/SQ` (`claude -c`) after a **newer tender transcript** (t3, 6ce21f6f) appeared in the commodore's folder | commodore | nimitz+by-hand | `claude -c` continued **dcaf69ca (the commodore)**, not the newer tender transcript; SessionStart `resume` dcaf69ca pid 1137135 | status `idle` (by labels); registry still `None` (bound outside the window: the top-down start waited 20 s on the admiral pane first, so the commodore's SessionStart came before that step's `since`) | - | OK for `-c` (a background tender in the same folder does not hijack `-c` on 2.1.292); GAP for the bind (nimitz-G2) | `ls -t` showed 6ce21f6f.jsonl newest; events |
 | N44 | `nz ship rm E2E1/SQ/S4 --yes` (live) | ship | nimitz | `claude stop`, `claude rm`, config write | "retire: stop, remove job rows, remove from the config"; row gone; registry keeps the S4 entry (hidden) | - | OK | |
 | N45 | `nz fleet rm` / `squadron rm` while members are live | - | nimitz | - | refused `config.nonempty` + `session.live` per live member ("type /exit in its pane" for the lead) | - | OK | |
-| N46 | `nz machine rm E2E1 home-server --plan` | - | nimitz | - | plan + WARN listing 8 live members "ships lose their folder here at their next stop" | - | OK | |
+| N46 | `nz machine rm E2E1 west-box --plan` | - | nimitz | - | plan + WARN listing 8 live members "ships lose their folder here at their next stop" | - | OK | |
 | N47 | `nz start 1f3d0a1c` (a session id as target) | - | nimitz | - | usage error "not an id" | - | OK | |
 | N48 | `nz sandbox tick $SB` | - | nimitz | - | runs forever (no exit, no output in 60 s); had to `pkill` it | - | N/A (not a session path; note the hang) | |
-| N49 R1:6f | `nz status` on this NIMITZ_HOME | - | nimitz | - | every labelled session of other fleets and areas is `config.invalid` with fix `nimitz rm <sid>`: HOME/GITHUB/NIMITZ_DEV 9aacf927, MAIN/LUX/DEV 0abc1234, E2E2..E2E4; `nz doctor` also fails on a foreign job row (`jobs/c49147e6/state.json lacks name`) | - | GAP (nimitz-G7; unchanged) | status output |
+| N49 R1:6f | `nz status` on this NIMITZ_HOME | - | nimitz | - | every labelled session of other fleets and areas is `config.invalid` with fix `nimitz rm <sid>`: HAVEN/GALLEY/NORTH_DEV 3e7b5c10, MAIN/LUX/DEV 0abc1234, E2E2..E2E4; `nz doctor` also fails on a foreign job row (`jobs/c49147e6/state.json lacks name`) | - | GAP (nimitz-G7; unchanged) | status output |
 | N50 | herdr plugin, private server (`e2e_isolated.py`, patched copy) | - | plugin | - | prefix+f opens the overlay focused, label "Admiralty", renders, toggles closed, `q` closes, stale id reopens, moves between tabs: all OK; the jump check fails because the TUI opens on the first fleet tab (BETA) and the script expects `[MAIN]-ADMIRAL` in `dump` | - | GAP (nimitz-G6, test only) | `[ERROR] enter on the admiral jumps (fake herdr): []` |
 
 ## 2. NEW PATHS (not in the list)
@@ -121,7 +121,7 @@ needs a tab switch and still found no pane row. The overlay/toggle checks pass i
 `cd herdr-plugin && uv run --with pyte python tests/e2e_isolated.py`.
 
 **nimitz-G7 (GAP, med, safety; R1 6f unchanged) another NIMITZ_HOME's sessions are `config.invalid` with fix `nimitz rm <sid>`.**
-`nz status` on the test home listed the live HOME and MAIN sessions (9aacf927, 0abc1234) with that fix; `nz doctor` fails on a
+`nz status` on the test home listed the live HOME and MAIN sessions (3e7b5c10, 0abc1234) with that fix; `nz doctor` fails on a
 foreign job row. Evidence: N49. Repro: `NIMITZ_HOME=/tmp/x nimitz init --yes; nimitz status`.
 
 ## 4. CLEANUP and livediff

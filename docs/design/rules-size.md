@@ -163,7 +163,7 @@ the first 2,000 characters only, so it fails the moment the text passes
 The draft is in `docs/design/rules-v9-draft/`: `common.md`, `leads.md`,
 `admiral.md`, `commodore.md` and `ship.md`, plus `rules.diff` against today's
 `crates/nimitz-core/rules/`. Sizes are counted as rendered for `HOME`,
-`HOME/GITHUB` and `HOME/GITHUB/NIMITZ_DEV`, without the harness:
+`HAVEN/GALLEY` and `HAVEN/GALLEY/NORTH_DEV`, without the harness:
 
 | Role | Now | Draft | Cut |
 | --- | ---: | ---: | ---: |

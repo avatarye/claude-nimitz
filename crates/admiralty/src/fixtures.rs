@@ -276,7 +276,7 @@ fn fleet_forge() -> Fleet {
     let mut quench = member(quench_id.clone(), Status::NotStarted, &["no job row, no transcript"], None);
     quench.issues = vec![
         issue("folder.missing", Severity::Error, "/home/u/work/quench does not exist", Some("nimitz ship set FORGE/IRON/QUENCH --dir <folder>"), Some(&quench_id)),
-        issue("ship.elsewhere", Severity::Error, "managed folder locked by home-server", None, Some(&quench_id)),
+        issue("ship.elsewhere", Severity::Error, "managed folder locked by west-box", None, Some(&quench_id)),
     ];
     let hotfix_id = Id::ship(f, "IRON", "HOTFIX");
     let mut hotfix = member(

@@ -130,10 +130,10 @@ Field shapes (from the schema; sample output could not be captured without runni
 **Yes, two ways:**
 1. `herdr pane process-info --pane <id>` -> `foreground_processes[].argv` / `.cmdline` is the
    live foreground process group of the pane's pty, read from the OS, so `claude attach
-   9aacf927` is visible verbatim while it runs. This is live-only (gone after a server restart).
+   3e7b5c10` is visible verbatim while it runs. This is live-only (gone after a server restart).
 2. `agent_session` on PaneInfo / snapshot / persisted `session.json`: for recognised agents
    Herdr's integration reports the native session ref. Real example from the live file
-   (read-only): `{"source":"herdr:claude","agent":"claude","kind":"id","value":"f29c13aa-..."}`
+   (read-only): `{"source":"herdr:claude","agent":"claude","kind":"id","value":"8c41d0e2-..."}`
    — that is the Claude Code session id, and `[session] resume_agents_on_restore` uses it to
    relaunch the agent after a Herdr restart. The persisted `session.json` keeps per pane only
    `cwd` + `agent_session`; it does NOT persist the shell command line.

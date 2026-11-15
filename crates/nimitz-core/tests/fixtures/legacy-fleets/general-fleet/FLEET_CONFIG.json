@@ -11,16 +11,16 @@
       "os": "darwin",
       "model": "Mac15,6"
     },
-    "home-ubuntu": {
+    "north-box": {
       "hostname": "HOME-UBUNTU",
       "os": "linux"
     },
-    "home-windows": {
+    "east-pc": {
       "hostname": "Home-Desktop",
       "os": "win32"
     },
-    "home-server": {
-      "hostname": "home-server",
+    "west-box": {
+      "hostname": "west-box",
       "os": "linux"
     }
   },
@@ -31,9 +31,9 @@
       "dirs": {
         "other-ubuntu": "/home/CORP.EXAMPLE.COM/user",
         "west-mac": "/Users/user",
-        "home-ubuntu": "/home/user",
-        "home-windows": "C:\\Users\\user-",
-        "home-server": "/home/user"
+        "north-box": "/home/user",
+        "east-pc": "C:\\Users\\user-",
+        "west-box": "/home/user"
       },
       "permission_mode": {},
       "bg_isolation": {},
@@ -45,9 +45,9 @@
       "dirs": {
         "other-ubuntu": "/home/CORP.EXAMPLE.COM/user/Dropbox/SharedTools/Configs",
         "west-mac": "/Users/user/Dropbox/SharedTools/Configs",
-        "home-ubuntu": "/home/user/Dropbox/SharedTools/Configs",
-        "home-windows": "C:\\Dropbox\\SharedTools\\Configs",
-        "home-server": "/mnt/data/shared/SharedTools/Configs"
+        "north-box": "/home/user/Dropbox/SharedTools/Configs",
+        "east-pc": "C:\\Dropbox\\SharedTools\\Configs",
+        "west-box": "/mnt/data/shared/SharedTools/Configs"
       },
       "permission_mode": {},
       "bg_isolation": {},

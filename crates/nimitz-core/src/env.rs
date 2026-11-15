@@ -332,7 +332,7 @@ mod tests {
         assert!(e.matches_hostname("west-mac"));
         assert!(e.matches_hostname("WEST-MAC"));
         assert!(e.matches_hostname("west-mac.local"));
-        assert!(!e.matches_hostname("home-server"));
+        assert!(!e.matches_hostname("west-box"));
         assert!(!e.matches_hostname(""));
     }
 

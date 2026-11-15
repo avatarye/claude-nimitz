@@ -724,25 +724,25 @@ fn restore_shows_the_cli_plan_and_runs_it_through_the_cli() {
 fn the_exact_attach_is_only_claude_attach_of_that_job() {
     let mux = TestMux::default();
     let cases: &[(&[&str], bool)] = &[
-        (&["/home/u/.local/share/claude/versions/2.1.293", "attach", "f8eee8df"], true),
-        (&["/home/u/.local/share/claude/versions/2.1.300", "attach", "f8eee8df-b691-4eac-a8a7-83004ac4653a"], true),
-        (&["/home/u/.local/share/claude/versions/2.1.292", "attach", "f8eee8df"], false),
-        (&["/home/u/.local/bin/claude", "attach", "f8eee8df"], false),
+        (&["/home/u/.local/share/claude/versions/2.1.293", "attach", "6d2a9f41"], true),
+        (&["/home/u/.local/share/claude/versions/2.1.300", "attach", "6d2a9f41-b691-4eac-a8a7-83004ac4653a"], true),
+        (&["/home/u/.local/share/claude/versions/2.1.292", "attach", "6d2a9f41"], false),
+        (&["/home/u/.local/bin/claude", "attach", "6d2a9f41"], false),
         (&["/home/u/.local/bin/claude", "agents"], false),
         (&["/v/claude/versions/2.1.293", "agents"], false),
-        (&["/v/claude/versions/2.1.293", "attach", "f8eee8dfx"], false),
+        (&["/v/claude/versions/2.1.293", "attach", "6d2a9f41x"], false),
         (&["/v/claude/versions/2.1.293", "attach", "0000aaaa"], false),
-        (&["/v/claude/versions/2.1.293", "attach", "f8eee8df", "--x"], false),
+        (&["/v/claude/versions/2.1.293", "attach", "6d2a9f41", "--x"], false),
         // a versioned install, with its build component
-        (&["/opt/tools/claude-code/2.1.294.1000/claude", "attach", "f8eee8df"], true),
-        (&["/opt/tools/claude-code/2.1.288.1000/claude", "attach", "f8eee8df"], false),
+        (&["/opt/tools/claude-code/2.1.294.1000/claude", "attach", "6d2a9f41"], true),
+        (&["/opt/tools/claude-code/2.1.288.1000/claude", "attach", "6d2a9f41"], false),
         (&[], false),
     ];
     for (i, (fg, want)) in cases.iter().enumerate() {
         let pane = format!("p{i}");
         mux.with_tab("W", &format!("T{i}"), &pane, fg);
         let r = nimitz_mux::PaneRef { pane_id: pane, tab_id: None, workspace_id: None };
-        assert_eq!(nimitz_mux::runs_exact_attach(&mux, &r, "f8eee8df"), *want, "{fg:?}");
+        assert_eq!(nimitz_mux::runs_exact_attach(&mux, &r, "6d2a9f41"), *want, "{fg:?}");
     }
     // and why not, in words
     use nimitz_mux::AttachCheck;
@@ -751,13 +751,13 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
         n.set(n.get() + 1);
         let pane = format!("pc{}", n.get());
         mux.with_tab("W", &format!("TC{}", n.get()), &pane, fg);
-        nimitz_mux::attach_check(&mux, &nimitz_mux::PaneRef { pane_id: pane, tab_id: None, workspace_id: None }, "f8eee8df")
+        nimitz_mux::attach_check(&mux, &nimitz_mux::PaneRef { pane_id: pane, tab_id: None, workspace_id: None }, "6d2a9f41")
     };
-    let old = check(&["/opt/tools/claude-code/2.1.288.1000/claude", "attach", "f8eee8df"]);
+    let old = check(&["/opt/tools/claude-code/2.1.288.1000/claude", "attach", "6d2a9f41"]);
     assert_eq!(old, AttachCheck::Older("2.1.288.1000".into()));
     assert_eq!(
-        old.refusal("pc1", "f8eee8df"),
-        "its pane pc1 runs `claude attach f8eee8df` on Claude Code 2.1.288.1000, older than 2.1.293 that nimitz types into safely; reattach it (ctrl-z, then nimitz open <id>)"
+        old.refusal("pc1", "6d2a9f41"),
+        "its pane pc1 runs `claude attach 6d2a9f41` on Claude Code 2.1.288.1000, older than 2.1.293 that nimitz types into safely; reattach it (ctrl-z, then nimitz open <id>)"
     );
     // an npm install: the version in its package.json (#13)
     let npm = std::env::temp_dir().join(format!("admiralty-npm-{}", std::process::id()));
@@ -767,15 +767,15 @@ fn the_exact_attach_is_only_claude_attach_of_that_job() {
     std::fs::write(&exe, "").unwrap();
     for (v, want) in [("2.1.312", AttachCheck::Exact), ("2.1.292", AttachCheck::Older("2.1.292".into()))] {
         std::fs::write(root.join("package.json"), format!(r#"{{"name": "@anthropic-ai/claude-code", "version": "{v}"}}"#)).unwrap();
-        assert_eq!(check(&[exe.to_str().unwrap(), "attach", "f8eee8df"]), want, "{v}");
+        assert_eq!(check(&[exe.to_str().unwrap(), "attach", "6d2a9f41"]), want, "{v}");
     }
     let _ = std::fs::remove_dir_all(&npm);
-    let unknown = check(&["/opt/somewhere/claude", "attach", "f8eee8df"]);
+    let unknown = check(&["/opt/somewhere/claude", "attach", "6d2a9f41"]);
     assert_eq!(unknown, AttachCheck::Unknown);
-    assert!(unknown.refusal("pc", "f8eee8df").contains("whose version nimitz cannot read"));
+    assert!(unknown.refusal("pc", "6d2a9f41").contains("whose version nimitz cannot read"));
     let view = check(&["/v/claude/versions/2.1.293", "agents"]);
     assert_eq!(view, AttachCheck::Other);
-    assert!(view.refusal("pc", "f8eee8df").contains("no longer runs `claude attach f8eee8df`"));
+    assert!(view.refusal("pc", "6d2a9f41").contains("no longer runs `claude attach 6d2a9f41`"));
 }
 
 /// A Workflow run's agents sit under one row per run, under the member: the

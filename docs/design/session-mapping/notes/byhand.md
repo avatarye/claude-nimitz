@@ -86,7 +86,7 @@ That listing includes **interactive** sessions too (`id: null`, `kind: interacti
 - Evidence: 4a-recover, where e04181c2 became the COMMODORE.
 - Repro: commodore 14f7b4aa stops; `claude` in its folder, one prompt, `/exit`; then run nimitz's planned `claude -c --name ...COMMODORE --settings ...`.
 
-**Side finding (outside this area, worth a look).** A nimitz on a separate NIMITZ_HOME/NIMITZ_STATE reports every labelled session on the machine that it does not declare as `config.invalid`, with the fix "nimitz rm <id>", including the live NIMITZ_DEV session 9aacf927 and MAIN/LUX/DEV 0abc1234. Following it would remove another fleet's live job row. Labels evidently come from job rows (`respawnFlags` `--settings`), which carry no NIMITZ_HOME scope check.
+**Side finding (outside this area, worth a look).** A nimitz on a separate NIMITZ_HOME/NIMITZ_STATE reports every labelled session on the machine that it does not declare as `config.invalid`, with the fix "nimitz rm <id>", including the live NORTH_DEV session 3e7b5c10 and MAIN/LUX/DEV 0abc1234. Following it would remove another fleet's live job row. Labels evidently come from job rows (`respawnFlags` `--settings`), which carry no NIMITZ_HOME scope check.
 
 ## 3. Notes for the design
 

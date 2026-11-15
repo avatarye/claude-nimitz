@@ -1,6 +1,6 @@
 # P0 findings: public build 2.1.288, subscription
 
-Machine: home Ubuntu server (`home-server`). Date: 2026-10-03.
+Machine: home Ubuntu server (`west-box`). Date: 2026-10-03.
 `claude --version` on PATH and native: `2.1.288 (Claude Code)`, vanilla build at
 `~/.local/bin/claude` (no wrapper). Provider: Claude subscription login (no
 `CLAUDE_CODE_USE_*`, no `ANTHROPIC_API_KEY`). Raw data:

@@ -480,15 +480,15 @@ mod tests {
 
     #[test]
     fn each_role_gets_its_rules_filled_in() {
-        let t = text(&Id::commodore("HOME", "GITHUB"));
-        assert!(t.starts_with(&format!("# nimitz fleet rules (rules v{VERSION}) for HOME/GITHUB")), "{t}");
-        assert!(t.contains("You are [HOME.GITHUB]-COMMODORE, the commodore of squadron GITHUB in fleet HOME"));
-        assert!(t.contains("`ship new|set|rm\n  HOME/GITHUB/<SHIP>`") && t.contains("[nimitz needs-you]"), "{t}");
+        let t = text(&Id::commodore("HAVEN", "GALLEY"));
+        assert!(t.starts_with(&format!("# nimitz fleet rules (rules v{VERSION}) for HAVEN/GALLEY")), "{t}");
+        assert!(t.contains("You are [HAVEN.GALLEY]-COMMODORE, the commodore of squadron GALLEY in fleet HAVEN"));
+        assert!(t.contains("`ship new|set|rm\n  HAVEN/GALLEY/<SHIP>`") && t.contains("[nimitz needs-you]"), "{t}");
         assert!(!placeholder_left(&t), "every placeholder filled: {t}");
-        let a = text(&Id::admiral("HOME"));
-        assert!(a.contains("## Admiral of HOME") && a.contains("You run fleet HOME"));
-        let s = text(&Id::ship("HOME", "GITHUB", "DEV"));
-        assert!(s.contains("[HOME.GITHUB]-DEV, the ship in squadron GITHUB") && s.contains("no one watches your pane"));
+        let a = text(&Id::admiral("HAVEN"));
+        assert!(a.contains("## Admiral of HAVEN") && a.contains("You run fleet HAVEN"));
+        let s = text(&Id::ship("HAVEN", "GALLEY", "DEV"));
+        assert!(s.contains("[HAVEN.GALLEY]-DEV, the ship in squadron GALLEY") && s.contains("no one watches your pane"));
         assert!(!t.contains("tender") && !a.contains("tender") && !s.contains("tender"), "the role is gone");
         for id in [Id::admiral("A"), Id::commodore("A", "B"), Id::ship("A", "B", "C")] {
             assert!(text(&id).len() < 10_000, "fits SessionStart's 10,000-character context limit");
@@ -499,7 +499,7 @@ mod tests {
             assert!(r.contains("Every member may run every `nimitz` command on any member") && r.contains("`F/...`") && r.contains("`nimitz open <id>`"), "{r}");
             assert!(!r.contains("may not") && !r.contains("Never another") && !r.contains("comms") && !r.contains("-p`") && !r.contains(" -f`"), "{r}");
         }
-        assert!(s.contains("`nimitz sweep HOME/GITHUB/DEV`"), "{s}");
+        assert!(s.contains("`nimitz sweep HAVEN/GALLEY/DEV`"), "{s}");
         // v12 (issue #10): any local session or app, member or not; a claim grants nothing
         for r in [&t, &a, &s] {
             assert!(r.contains("any member may message any local session or app, member or\n  not") && r.contains("`nimitz signal session:<name> <text>`") && r.contains("Claude\n  Code may hold or refuse a message"), "{r}");
@@ -528,7 +528,7 @@ mod tests {
         for r in [&t, &a, &s] {
             assert!(r.contains("`nimitz:kb-scribe`") && r.contains("`nimitz:kb-ref`"), "{r}");
         }
-        assert!(s.contains("\"id\":\n  \"HOME/GITHUB/DEV\"") || s.contains("\"HOME/GITHUB/DEV\"}"), "{s}");
+        assert!(s.contains("\"id\":\n  \"HAVEN/GALLEY/DEV\"") || s.contains("\"HAVEN/GALLEY/DEV\"}"), "{s}");
         // 0.7: aides are gone
         assert!(!t.contains("aide") && !a.contains("aide") && !s.contains("aide"), "{a}");
     }

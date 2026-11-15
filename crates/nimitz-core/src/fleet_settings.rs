@@ -48,7 +48,7 @@ pub fn render(m: &Map<String, Value>) -> String {
     serde_json::to_string_pretty(&Value::Object(out)).unwrap_or_default() + "\n"
 }
 
-/// A dotted key's parts (`kb.dirs.home-server`): each a non-empty name.
+/// A dotted key's parts (`kb.dirs.west-box`): each a non-empty name.
 fn parts(key: &str) -> Result<Vec<&str>, String> {
     let p: Vec<&str> = key.split('.').collect();
     if key.is_empty() || p.iter().any(|s| s.is_empty()) {

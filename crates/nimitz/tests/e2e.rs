@@ -707,9 +707,9 @@ fn an_idle_retire_line_is_read_from_the_daemon_log() {
     assert_eq!(iso_secs("2026-10-11T05:35:57.500Z"), Some(1791696957.5));
     let td = tempfile::tempdir().unwrap();
     let log = td.path().join("daemon.log");
-    std::fs::write(&log, "[2026-10-11T05:35:57.616Z] [bg] bg retire 58d53965: settled, idle 77m\n[2026-10-11T05:40:00.000Z] [bg] bg retire aaaa0000: stopped\n[2026-10-11T05:41:00.000Z] [bg] bg retire bbbb0000: abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)\n").unwrap();
-    assert!(idle_retired(&log, "58d53965", 1791696950.0));
-    assert!(!idle_retired(&log, "58d53965", 1791697000.0), "before the test: no");
+    std::fs::write(&log, "[2026-10-11T05:35:57.616Z] [bg] bg retire 2a6f93b7: settled, idle 77m\n[2026-10-11T05:40:00.000Z] [bg] bg retire aaaa0000: stopped\n[2026-10-11T05:41:00.000Z] [bg] bg retire bbbb0000: abandoned-stale, idle 48h, worker 2.1.289 (daemon 2.1.292)\n").unwrap();
+    assert!(idle_retired(&log, "2a6f93b7", 1791696950.0));
+    assert!(!idle_retired(&log, "2a6f93b7", 1791697000.0), "before the test: no");
     assert!(!idle_retired(&log, "aaaa0000", 0.0), "not an idle retire");
     assert!(!idle_retired(&log, "bbbb0000", 0.0), "a stale worker's retire");
     assert!(!idle_retired(&log, "ffff0000", 0.0));

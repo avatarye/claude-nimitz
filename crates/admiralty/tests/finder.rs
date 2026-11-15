@@ -11,8 +11,8 @@ use common::*;
 use nimitz_core::{Id, Status};
 use ratatui::crossterm::event::KeyCode;
 
-/// The demo world plus MAIN/ARGOS/SIGNAL and a fleet HOME with
-/// HOME/GITHUB/NIMITZ_DEV: the names the issue ranks.
+/// The demo world plus MAIN/ARGOS/SIGNAL and a fleet HAVEN with
+/// HAVEN/GALLEY/NORTH_DEV: the names the issue ranks.
 fn world() -> Bundle {
     let mut b = fixtures::demo();
     let argos = b.snap.fleets[0].squadrons.iter_mut().find(|s| s.id.0 == "MAIN/ARGOS").unwrap();
@@ -23,14 +23,14 @@ fn world() -> Bundle {
     schema.topic = None;
     argos.ships.push(schema);
     let mut home = b.snap.fleets.iter().find(|f| f.id.0 == "LAB").unwrap().clone();
-    home.id = Id::admiral("HOME");
+    home.id = Id::admiral("HAVEN");
     home.admiral.id = home.id.clone();
     home.admiral.expected_name = home.id.name();
     let sq = &mut home.squadrons[0];
-    sq.id = Id::commodore("HOME", "GITHUB");
+    sq.id = Id::commodore("HAVEN", "GALLEY");
     sq.commodore.id = sq.id.clone();
     sq.commodore.expected_name = sq.id.name();
-    sq.ships[0].id = Id::ship("HOME", "GITHUB", "NIMITZ_DEV");
+    sq.ships[0].id = Id::ship("HAVEN", "GALLEY", "NORTH_DEV");
     sq.ships[0].expected_name = sq.ships[0].id.name();
     b.snap.fleets.push(home);
     b
@@ -78,13 +78,13 @@ fn every_member_of_every_fleet_one_line_each_in_tree_order() {
     assert!(cands.iter().all(|c| !c.text.contains('\n')));
     let bolt = cands.iter().find(|c| c.row_id == "M:MAIN/ARGOS/BOLT").unwrap();
     assert!(bolt.text.starts_with("MAIN/ARGOS/BOLT  [MAIN.ARGOS]-BOLT  busy  Fixing the layout"), "{}", bolt.text);
-    assert!(cands.iter().any(|c| c.row_id == "M:MAIN/ARGOS/SIGNAL") && cands.iter().any(|c| c.row_id == "M:HOME/GITHUB/NIMITZ_DEV"));
+    assert!(cands.iter().any(|c| c.row_id == "M:MAIN/ARGOS/SIGNAL") && cands.iter().any(|c| c.row_id == "M:HAVEN/GALLEY/NORTH_DEV"));
     let stow = cands.iter().find(|c| c.row_id.starts_with("SW:ee11ee11")).unwrap();
     assert!(stow.text.starts_with("ee11ee11  scratch-run  stowaway live"), "{}", stow.text);
 }
 
 /// Word starts score higher: `mas` ranks MAIN/ARGOS/SIGNAL first (before
-/// BOLT and BOOM, whose `s` is inside a word), `hgn` HOME/GITHUB/NIMITZ_DEV.
+/// BOLT and BOOM, whose `s` is inside a word), `hgn` HAVEN/GALLEY/NORTH_DEV.
 #[test]
 fn initials_rank_their_member_first() {
     let b = world();
@@ -94,7 +94,7 @@ fn initials_rank_their_member_first() {
     let at = |id: &str| mas.iter().position(|x| x == id);
     assert!(at("M:MAIN/ARGOS/BOLT").is_none_or(|i| i > 0), "{mas:?}");
     let hgn = ranked(&mut f, "hgn");
-    assert_eq!(hgn[0], "M:HOME/GITHUB/NIMITZ_DEV", "{hgn:?}");
+    assert_eq!(hgn[0], "M:HAVEN/GALLEY/NORTH_DEV", "{hgn:?}");
     // the matched letters are the initials
     f.clear();
     f.push("mas");
@@ -146,8 +146,8 @@ fn enter_lands_on_the_member_switching_tab() {
     let f = open(&mut t.app);
     f.push("hgn");
     press(&mut t.app, KeyCode::Enter);
-    assert_eq!(t.app.current().unwrap().node.id, "M:HOME/GITHUB/NIMITZ_DEV");
-    assert_eq!(t.app.tab.as_deref(), Some("HOME"));
+    assert_eq!(t.app.current().unwrap().node.id, "M:HAVEN/GALLEY/NORTH_DEV");
+    assert_eq!(t.app.tab.as_deref(), Some("HAVEN"));
     // a stowaway, by its short id; ctrl-n / ctrl-p and the arrows move
     let f = open(&mut t.app);
     f.push("ee11");

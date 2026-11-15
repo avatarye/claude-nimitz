@@ -946,14 +946,14 @@ mod tests {
         std::fs::write(d.join("raw/cap-1.md"), "capture\n").unwrap();
         std::fs::write(d.join("wiki/new.md"), "new page\n").unwrap();
         let paths = vec!["raw/cap-1.md".to_string(), "./wiki/new.md".to_string()];
-        let forged = format!("member HOME/GITHUB/X\nnote: {}", "b".repeat(64));
+        let forged = format!("member HAVEN/GALLEY/X\nnote: {}", "b".repeat(64));
         let Committed::New(sha) = commit(&env, d, "A title\nsecond line", &paths, &["wiki/new.md".into()], NOTE, &forged).unwrap() else { panic!("a new commit") };
         assert_eq!(note_commit(d, &"b".repeat(64)).unwrap(), None, "no forged trailer");
         assert_eq!(g(d, &["show", "--name-only", "--format=", &sha]).trim(), "raw/cap-1.md\nwiki/new.md");
         let msg = g(d, &["log", "-1", "--format=%B"]);
-        assert!(msg.starts_with(&format!("ingest(auto): A title\n\npages: wiki/new.md\n\nnote: {NOTE}\nfrom: member HOME/GITHUB/X\n")), "{msg}");
+        assert!(msg.starts_with(&format!("ingest(auto): A title\n\npages: wiki/new.md\n\nnote: {NOTE}\nfrom: member HAVEN/GALLEY/X\n")), "{msg}");
         let trailers = g(d, &["log", "-1", "--format=%(trailers:only)"]);
-        assert!(trailers.contains(&format!("note: {NOTE}")) && trailers.contains("from: member HOME/GITHUB/X"), "{trailers}");
+        assert!(trailers.contains(&format!("note: {NOTE}")) && trailers.contains("from: member HAVEN/GALLEY/X"), "{trailers}");
         assert!(g(d, &["diff", "--cached", "--name-only"]).contains("wiki/page.md"), "the user's staged edit is still staged");
         // the same note again: that commit, nothing new
         std::fs::write(d.join("raw/cap-2.md"), "again\n").unwrap();

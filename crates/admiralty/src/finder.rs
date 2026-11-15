@@ -4,7 +4,7 @@
 //! start of a word (after `/`, a space, `.` or `-`) scores higher. fzf alone
 //! scores `mas` the same on every `MAIN/ARGOS/...` (`M` + `AS` of ARGOS), so a
 //! term that spells the path's word initials in order ranks above the rest:
-//! `mas` puts `MAIN/ARGOS/SIGNAL` first, `hgn` `HOME/GITHUB/NIMITZ_DEV`.
+//! `mas` puts `MAIN/ARGOS/SIGNAL` first, `hgn` `HAVEN/GALLEY/NORTH_DEV`.
 //!
 //! Noise toggles (#14, `Toggles`, kept with the sticky state): only the
 //! rows with a live pane (on by default, the header counts what it hides),

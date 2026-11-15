@@ -79,7 +79,7 @@ agent-view docs, 2.1.292), with what I did:
   with the cursor on an arbitrary row (the live fleet is listed there). The view claims a labelled-or-not spare as
   "new session" in the member's folder while open.
 - **Cross-world hazard (NEW, med)**: `nz status` on this test NIMITZ_HOME printed `config.invalid` for the live fleet's
-  labelled sessions (`HOME/GITHUB/NIMITZ_DEV` 9aacf927, `MAIN/LUX/DEV` 0abc1234) with fix **`nimitz rm 9aacf927`**. The
+  labelled sessions (`HAVEN/GALLEY/NORTH_DEV` 3e7b5c10, `MAIN/LUX/DEV` 0abc1234) with fix **`nimitz rm 3e7b5c10`**. The
   labels carry `NIMITZ_HOME`; nimitz should scope "no config declares" to sessions whose NIMITZ_HOME label is its own.
 - Tender prompt design: a tender started with the prompt "reply ok" used SendMessage to report "ok" to its commodore
   (an extra commodore turn), and later blocked "couldn't reach commodore" once the commodore's session changed.
@@ -156,4 +156,4 @@ my parent job's own state.json); not in state.json, roster.json, the session fil
   `...-nimitz-e2e3-squadrons-sq`, `...-nimitz-e2e31-squadrons-sq`, `...-ship1`. Team/task dirs `~/.claude/tasks/session-*`
   for my ids may remain (Claude Code's own retention).
 - livediff: `[OK] live fleet unchanged` after the pin phase and at the end. The only live-fleet file touched during the
-  pin diff was `jobs/9aacf927/state.json` (my parent job's own periodic update, not an action of mine).
+  pin diff was `jobs/3e7b5c10/state.json` (my parent job's own periodic update, not an action of mine).

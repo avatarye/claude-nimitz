@@ -14,7 +14,7 @@ key>`); the ones nimitz reads are checked on a write:
 ```json
 { "format": 1,
   "kb": { "remote": "git@github.com:avatarye/nimitz-knowledge-base.git",
-          "dirs": { "home-server": "~/Github/nimitz-knowledge-base" } } }
+          "dirs": { "west-box": "~/Github/nimitz-knowledge-base" } } }
 ```
 
 - `kb.remote`: the git URL every machine clones and syncs with.

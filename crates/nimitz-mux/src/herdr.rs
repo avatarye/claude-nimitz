@@ -864,7 +864,7 @@ mod tests {
     #[test]
     fn cmd_gets_double_quotes() {
         let exe = r"C:\Program Files\Claude\claude.exe";
-        assert_eq!(shell_line(Some("cmd"), &v(&[exe, "attach", "9aacf927"])), r#""C:\Program Files\Claude\claude.exe" attach 9aacf927"#);
+        assert_eq!(shell_line(Some("cmd"), &v(&[exe, "attach", "3e7b5c10"])), r#""C:\Program Files\Claude\claude.exe" attach 3e7b5c10"#);
         // the program is quoted even with no space; the path and case of the shell do not matter
         assert_eq!(shell_line(Some(r"C:\Windows\System32\CMD.EXE"), &v(&[r"C:\x\claude.exe", "attach", "j"])), r#""C:\x\claude.exe" attach j"#);
         // `"` doubled, `\` before a `"` doubled, `%` outside the quotes as `^%`, `'` as is
@@ -879,7 +879,7 @@ mod tests {
     fn powershell_gets_the_call_operator_and_single_quotes() {
         let exe = r"C:\Program Files\Claude\claude.exe";
         for sh in ["pwsh", "powershell", r"C:\Windows\System32\WindowsPowerShell\v1.0\PowerShell.exe", "pwsh.exe"] {
-            assert_eq!(shell_line(Some(sh), &v(&[exe, "attach", "9aacf927"])), r"& 'C:\Program Files\Claude\claude.exe' attach 9aacf927", "{sh}");
+            assert_eq!(shell_line(Some(sh), &v(&[exe, "attach", "3e7b5c10"])), r"& 'C:\Program Files\Claude\claude.exe' attach 3e7b5c10", "{sh}");
         }
         assert_eq!(
             shell_line(Some("pwsh"), &v(&[r"C:\it's\claude.exe", "--name", "[LUX]-LEAD", "say \"hi\" $x", "it\u{2019}s", ""])),

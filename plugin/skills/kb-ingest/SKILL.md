@@ -19,7 +19,7 @@ A source the user hands over directly goes through the gated `agent/skills/inges
 The note, as JSON from the calling session:
 
 ```json
-{ "sender": { "kind": "member | session | user", "id": "HOME/GITHUB/NIMITZ_DEV", "session": "9aacf927-..." },
+{ "sender": { "kind": "member | session | user", "id": "HAVEN/GALLEY/NORTH_DEV", "session": "3e7b5c10-..." },
   "body": "required markdown",
   "title": "...", "kind": "decision | fact | howto | gotcha | question | preference | gap",
   "domain": "...", "tags": [], "links": [], "source": { "label": "..." } }

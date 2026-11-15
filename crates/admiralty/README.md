@@ -33,11 +33,11 @@ moves it). Actions are logged to `$NIMITZ_STATE/admiralty-actions.log`.
   mismatch)` as a warning when it is not Admiralty's own, `Nimitz: …` until
   `nimitz --version` answers, `Nimitz: ?` when it does not within 5 s),
   `Claude Code: v2.1.296 (supported)` (out of range: `(unsupported)` as an
-  error, `(newer than tested, ...)` as a warning; `Claude Code: not found`), `Machine: home-server`, and the local date and time flush right
+  error, `(newer than tested, ...)` as a warning; `Claude Code: not found`), `Machine: west-box`, and the local date and time flush right
   (`2026-10-14 15:42`). When no refresh has landed for three intervals,
   `stale 12s` (a warning) sits before the clock; otherwise the refresh is not
   shown. At 80 columns and below both shorten (`v0.7.5  CC v2.1.296
-  home-server ... 10-14 15:42`; narrower still, `15:42`).
+  west-box ... 10-14 15:42`; narrower still, `15:42`).
 - The row under the fleet tabs is blank (no column names).
 - A tab bar on the top line: one tab per fleet (`1 HOME  2 MAIN ...`, with
   `!n` where members need you), then `unassigned` when a stowaway sits under the
@@ -166,7 +166,7 @@ the topic too, `ctrl-s` hide stowaways, `ctrl-f` this fleet's tab only,
 Matching is fzf's (the `nucleo-matcher` crate, built in): space-separated terms
 must all match (`argos busy`), a letter at a word start scores higher, and a
 term that spells the path's word initials in order ranks first (`mas`:
-`MAIN/ARGOS/SIGNAL`; `hgn`: `HOME/GITHUB/NIMITZ_DEV`). `up/down` or
+`MAIN/ARGOS/SIGNAL`; `hgn`: `HAVEN/GALLEY/NORTH_DEV`). `up/down` or
 `ctrl-n/ctrl-p` move, the matched letters are lit, and on a wide screen the
 selected one's detail shows beside the list. `enter` puts the cursor on its row
 (its fleet's tab, opening folds and clearing what hides it), so `enter` again

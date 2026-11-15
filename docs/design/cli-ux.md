@@ -47,8 +47,8 @@ compatibility: old forms are removed outright. Code references are to
 
 ## 1. Paths
 
-- A path names one member: `HOME` is the admiral, `HOME/GITHUB` the
-  commodore, `HOME/GITHUB/SHIP` a ship. The same in every verb.
+- A path names one member: `HOME` is the admiral, `HAVEN/GALLEY` the
+  commodore, `HAVEN/GALLEY/SHIP` a ship. The same in every verb.
 - `HOME/...` is everything under it, the lead included; `//...` is every
   fleet. `...` is only ever the last segment of a path, never a bare word:
   oh-my-zsh makes `.....` and longer (and, without the user's override, `...`)

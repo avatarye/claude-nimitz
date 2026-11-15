@@ -2,11 +2,11 @@
   "fleet": "JULIET",
   "instructions": "FLEET.md",
   "machines": {
-    "home-server": {
-      "hostname": "home-server",
+    "west-box": {
+      "hostname": "west-box",
       "os": "linux"
     },
-    "home-windows": {
+    "east-pc": {
       "hostname": "Home-Desktop",
       "os": "win32"
     }
@@ -16,7 +16,7 @@
       "name": "VIEWER",
       "prompt": "You are VIEWER. You own one repository and nothing else.",
       "dirs": {
-        "home-server": "/home/user/Github/free-viewer"
+        "west-box": "/home/user/Github/free-viewer"
       },
       "permission_mode": {},
       "bg_isolation": {},
@@ -26,8 +26,8 @@
       "name": "LAB",
       "prompt": "You are LAB. You own one repository and nothing else.",
       "dirs": {
-        "home-server": "/home/user/Github/lab",
-        "home-windows": "C:\\Projects\\Github\\lab"
+        "west-box": "/home/user/Github/lab",
+        "east-pc": "C:\\Projects\\Github\\lab"
       },
       "permission_mode": {},
       "bg_isolation": {},

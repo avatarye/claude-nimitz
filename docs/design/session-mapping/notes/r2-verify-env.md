@@ -1,7 +1,7 @@
 # Verify `env` gaps (verifier `v-env`)
 
 Tested 2026-10-07 on Claude Code **2.1.292** (installed; `claude --version`) and nimitz **0.3.1**. I built a fresh world at
-`~/.cache/nimitz-e2e/nimitz-e2e-r2-v-env` with `nz init --yes` (machine label `home-server`, the default hostname). Fleet
+`~/.cache/nimitz-e2e/nimitz-e2e-r2-v-env` with `nz init --yes` (machine label `west-box`, the default hostname). Fleet
 **E2E10** had an admiral (never run), squadron SQ, and ships S1 and S2 in `$MAP/S1` and `$MAP/S2`, all with prompt "reply ok".
 Fleet **E2E101** was the broken second fleet for G7. I used the fake herdr only; no herdr server or herdr CLI was run. The
 commodore ran by hand in the private tmux `r2-v-env`, using the exact command the fake pane recorded.

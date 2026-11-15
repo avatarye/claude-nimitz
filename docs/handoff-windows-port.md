@@ -1,7 +1,7 @@
 # Handoff: the `windows-port` branch
 
 For the agent that reviews and merges this branch on Ubuntu. Written
-2026-10-10 on the Windows machine `home-windows` (Windows 11, Claude Code 2.1.296, Herdr 0.9.3, rustc 1.99).
+2026-10-10 on the Windows machine `east-pc` (Windows 11, Claude Code 2.1.296, Herdr 0.9.3, rustc 1.99).
 
 ## TLDR
 
@@ -185,7 +185,7 @@ cargo install --path crates/nimitz; cargo install --path crates/admiralty
 claude plugin marketplace add C:\Projects\Github\claude-nimitz
 claude plugin install nimitz@claude-nimitz
 New-Item -ItemType SymbolicLink -Path "$env:USERPROFILE\.claude-nimitz" -Target C:\Dropbox\claude-nimitz
-nimitz init --label home-windows
+nimitz init --label east-pc
 # trust the data root spelled exactly (finding 4), accept, /exit:
 powershell -NoProfile -Command "Set-Location -LiteralPath 'C:\Dropbox\claude-nimitz'; claude"
 herdr plugin link C:\Projects\Github\claude-nimitz\herdr-plugin

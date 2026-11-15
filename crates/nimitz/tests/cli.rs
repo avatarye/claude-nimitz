@@ -3897,7 +3897,7 @@ fn a_claude_code_or_claiming_caller_is_never_the_users_voice() {
     let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "x", "--from", "specto:rasel", "--plan"], &cc, None);
     assert!(r.out.contains("inbox") && !r.out.contains("type "), "{}", r.out);
     // a claim that mimics a fleet identity, nimitz or the user: refused, nothing sent
-    for bad in ["[HOME.GITHUB]-COMMODORE", "HOME/GITHUB/COMMODORE", "the user", "nimitz", "HOME\u{ff0f}GITHUB\u{ff0f}COMMODORE", "\u{41d}\u{41e}\u{41c}\u{415}/GITHUB", "specto:\nrasel", "spec\u{7}to"] {
+    for bad in ["[HAVEN.GALLEY]-COMMODORE", "HAVEN/GALLEY/COMMODORE", "the user", "nimitz", "HAVEN\u{ff0f}GALLEY\u{ff0f}COMMODORE", "\u{41d}\u{41e}\u{41c}\u{415}/GALLEY", "specto:\nrasel", "spec\u{7}to"] {
         let r = raw(&sb.vars, &["signal", "MAIN/ARGOS", "hi", "--from", bad, "--yes"], &[], None);
         assert!(r.code == 2 && (r.out.contains("may not mimic a fleet identity") || r.out.contains("a claim is printable ASCII") || r.out.contains("control character or a newline")), "{bad}: {}", r.out);
     }

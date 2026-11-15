@@ -7,7 +7,7 @@
 > --yes` drops a fleet's `[[aide]]` (README, "Aides (gone in 0.7.0)").
 
 Status: revised after the user's review (2026-10-10): the answers in section
-14 (settled), MYCC_DEV's six changes, and a second aide, `@REF`,
+14 (settled), LEDGER_DEV's six changes, and a second aide, `@REF`,
 with request and reply (sections 4.6 and 6.4). Nothing is built; S1 starts
 after the user signs off on this revision (signed off 2026-10-10; S1 is on
 `feat/aide-s1`). Branch `design/aide`, off dev 947d360.
@@ -45,7 +45,7 @@ Decisions already made by the user (from the commodore, 2026-10-10):
 | Types | An allowlist with versioned schemas; `wiki.note.v1` only for now |
 | Backpressure | A depth cap, per-sender limits, an open-inbox policy so non-member sessions (the user's mod) can post |
 | Loop | A doorbell on post (the messaging socket), the queue at session start, a fallback timer; FIFO, one at a time, until empty; dead letters raise a needs-you |
-| First aide | Notes keeper on the new repo (not the Obsidian vault), set up from Lodestar by MYCC_DEV; no human gate; provenance `[auto]` plus the source session; every ingest a git commit |
+| First aide | Notes keeper on the new repo (not the Obsidian vault), set up from Lodestar by LEDGER_DEV; no human gate; provenance `[auto]` plus the source session; every ingest a git commit |
 | Second aide | Retrieval: a read-only librarian on the same repo, Lodestar's query rules, its own `wiki.query.v1` queue |
 | Request/reply | A type that declares `reply: true` gets its answer stored with the item and delivered to the requester only; `inbox result`, `nimitz ask --wait` |
 
@@ -53,9 +53,9 @@ Decisions already made by the user (from the commodore, 2026-10-10):
 
 | | Admiral aide (phase 1) | Commodore aide (later) | Ship aide (later) |
 | --- | --- | --- | --- |
-| Id | `HOME/@KB`, `HOME/@REF` | `HOME/GITHUB/@X` | `HOME/GITHUB/NIMITZ_DEV/@X` |
-| Session name | `[HOME]-@KB` | `[HOME.GITHUB]-@X` | `[HOME.GITHUB.NIMITZ_DEV]-@X` |
-| Herdr tab | `HOME.@KB` | `HOME.GITHUB.@X` | `HOME.GITHUB.NIMITZ_DEV.@X` |
+| Id | `HOME/@KB`, `HOME/@REF` | `HAVEN/GALLEY/@X` | `HAVEN/GALLEY/NORTH_DEV/@X` |
+| Session name | `[HOME]-@KB` | `[HAVEN.GALLEY]-@X` | `[HAVEN.GALLEY.NORTH_DEV]-@X` |
+| Herdr tab | `HOME.@KB` | `HAVEN.GALLEY.@X` | `HAVEN.GALLEY.NORTH_DEV.@X` |
 | Labels | `NIMITZ_ROLE=aide`, `NIMITZ_ID`, `NIMITZ_FLEET`, `NIMITZ_PARENT=HOME` | `+ NIMITZ_SQUADRON` | `+ NIMITZ_SQUADRON` |
 
 - `Id::role()` today counts parts (1 admiral, 2 commodore, 3+ ship). A last
@@ -79,7 +79,7 @@ model = "sonnet"                 # checked against availableModels
 permission_mode = "acceptEdits"
 
 [aide.dirs]                     # one machine runs it (an aide never runs twice)
-home-server = "/mnt/data/shared/nimitz-knowledge-base"
+west-box = "/mnt/data/shared/nimitz-knowledge-base"
 
 [aide.inbox]
 types = ["wiki.note.v1"]         # the allowlist; each type is a schema nimitz ships
@@ -98,7 +98,7 @@ permission_mode = "default"      # read-only: Edit, Write and NotebookEdit denie
 snapshot = true                  # reads a detached worktree at the repo's last commit (6.4)
 
 [aide.dirs]
-home-server = "/mnt/data/shared/nimitz-knowledge-base"   # the repo; it works in the snapshot
+west-box = "/mnt/data/shared/nimitz-knowledge-base"   # the repo; it works in the snapshot
 
 [aide.inbox]
 types = ["wiki.query.v1"]
@@ -147,12 +147,12 @@ queues/HOME%2F@KB/
 {
   "id": "000000000042", "type": "wiki.note.v1", "key": "optional sender dedupe key",
   "posted_at": 1791700000.1,
-  "sender": {"kind": "member|session|process", "id": "HOME/GITHUB/NIMITZ_DEV",
-             "session": "9aacf927-...", "cwd": "/home/...", "verified": true},
+  "sender": {"kind": "member|session|process", "id": "HAVEN/GALLEY/NORTH_DEV",
+             "session": "3e7b5c10-...", "cwd": "/home/...", "verified": true},
   "payload": { ... the type's schema ... },
   "tries": 1,
-  "reply_to": {"token_sha256": "...", "member": "HOME/GITHUB/NIMITZ_DEV",
-               "session": "9aacf927-...", "job": "9aacf927", "delivered_at": null},
+  "reply_to": {"token_sha256": "...", "member": "HAVEN/GALLEY/NORTH_DEV",
+               "session": "3e7b5c10-...", "job": "3e7b5c10", "delivered_at": null},
   "claim": {"by": "<aide session id>", "at": 1791700100.0, "until": 1791701000.0},
   "history": [{"at": ..., "event": "claimed|failed|expired|retried|delivered", "note": "..."}],
   "result": {"commit": "a1b2c3d", "pages": ["wiki/..."]}
@@ -172,7 +172,7 @@ queues/HOME%2F@KB/
   - Provenance in the KB is built from this record, never from the payload.
 - **Dedupe:** a `key` that matches a pending, claimed or done item (within
   `keep_done`) is not queued again; `post` prints the existing id.
-  - **The key convention** (MYCC_DEV): a poster sets `key = sha256(body)`, so
+  - **The key convention** (LEDGER_DEV): a poster sets `key = sha256(body)`, so
     nimitz drops a repeat before it is queued. The KB's own sha256 check of a
     capture is the backstop.
 
@@ -225,9 +225,9 @@ runs next to v1 while posters move over. `reply: true` makes it a request
 ```
 
 - `kind` comes from the mod's triage; `ingest-auto` uses it to pick the page
-  type (MYCC_DEV).
+  type (LEDGER_DEV).
 - `domain` is a hint, not a list nimitz keeps: the KB's domains change at its
-  scope checkpoint (MYCC_DEV).
+  scope checkpoint (LEDGER_DEV).
 
 `wiki.query.v1` (`reply: true`):
 
@@ -347,7 +347,7 @@ reads it with `inbox result`.
    - `post` delivers one peer line to the aide session through its messaging
      socket (`inbox::send`, the transport `nimitz signal` already uses on Unix
      and, on windows-port, through the named pipe):
-     `[nimitz inbox] HOME/@KB: 1 new item (wiki.note.v1, from HOME/GITHUB/NIMITZ_DEV). Drain your inbox.`
+     `[nimitz inbox] HOME/@KB: 1 new item (wiki.note.v1, from HAVEN/GALLEY/NORTH_DEV). Drain your inbox.`
    - Idle: a new turn. Busy: it queues to the end of the turn.
    - Coalesced: no second ring while the last ring is under a minute old and
      the aide has not drained since (`ring.json`). A burst of 50 posts rings
@@ -410,7 +410,7 @@ answer and nimitz delivers it (4.6).
 
 - `/mnt/data/shared/nimitz-knowledge-base`: a new git repo, initialised from
   Lodestar (Folio v2: `raw/`, `wiki/`, `agent/`; one concept, one page).
-  MYCC_DEV sets it up.
+  LEDGER_DEV sets it up.
 - It is **not** the Obsidian vault
   (`/mnt/data/shared/Notes/knowledge-base`), which stays as it is.
 - **The gap:** Lodestar's `ingest` skill "confirms 3-7 key ideas before
@@ -419,9 +419,9 @@ answer and nimitz delivers it (4.6).
   - provenance `[auto]` plus the sender (member or session, the session name,
     the item id);
   - gaps marked, never filled.
-  This lives in the KB repo (`agent/skills/ingest-auto.md`), MYCC_DEV's part,
+  This lives in the KB repo (`agent/skills/ingest-auto.md`), LEDGER_DEV's part,
   and the aide brief points at it.
-- **Provenance through the capture file** (MYCC_DEV): `ingest-auto` writes the
+- **Provenance through the capture file** (LEDGER_DEV): `ingest-auto` writes the
   item to a capture file under `raw/` whose frontmatter carries the sender,
   the session and the item id (mapped from the envelope, 4.2, and the
   payload, 4.4); a page cites it as `[auto: <capture-file>]`. That meets the
@@ -445,7 +445,7 @@ answer and nimitz delivers it (4.6).
   set model in [[aide]]". Today's list allows it (`opus`, `sonnet`, `fable`).
 - **Permissions** (in `--settings`, so `respawnFlags` keep them):
   - `Bash(nimitz *)`, as every member has;
-  - **no git at all** (S4, agreed with MYCC_DEV, 2026-10-11): `Bash(git)` and
+  - **no git at all** (S4, agreed with LEDGER_DEV, 2026-10-11): `Bash(git)` and
     `Bash(git *)` denied, so a user's own `Bash(git *)` allow does not reach
     an aide. nimitz runs its git (`kb.rs`), with every option that could run a
     program off (no fsmonitor, pager, hooks, external diff, signing, editor):
@@ -453,7 +453,7 @@ answer and nimitz delivers it (4.6).
     400 lines at most), `nimitz aide status` (`git status --porcelain`), and
     the commit at `inbox done --commit` (6.3). `git grep -O` and `rg --pre`
     run programs, which is why the aide gets neither. The KB is never pushed
-    by its aide (a decision by NIMITZ_DEV, pending the user's word,
+    by its aide (a decision by NORTH_DEV, pending the user's word,
     2026-10-10);
   - Edit and Write within the repo (`acceptEdits` in its folder), denied (an
     `Edit(//<folder>/<path>)` rule covers every editing tool; `//c/...` on
@@ -610,10 +610,10 @@ Comms (`hook::signal_table`, and the PreToolUse deny for SendMessage):
   ships.
   ```
   HOME
-    ADMIRAL      Idle   f29c13aa  ...
+    ADMIRAL      Idle   8c41d0e2  ...
     @KB          Busy   7a1c02e9  inbox 3 pending · 1 claimed (lease 11m) · 0 dead · oldest 2m
     @REF         Idle   5e0b77c1  inbox empty · snapshot 4f2a9c1 · 2 answers waiting for pickup
-  HOME · GITHUB
+  HOME · GALLEY
     COMMODORE    ...
   ```
 - **`--json`:** a member with `role: "aide"`, `parent`, and `inbox`: the
@@ -716,10 +716,10 @@ From the port's commits (7dd6984 .. 0145dfc):
   port's `os::alive` (`OpenProcess` + `GetExitCodeProcess`, ACCESS_DENIED =
   alive), and the session file's status.
 - **The KB repo:** on Windows the aide is not started (`dirs` names
-  `home-server` only). A Windows machine can still **post**: the queue is per
+  `west-box` only). A Windows machine can still **post**: the queue is per
   machine, so a post on the Windows box queues for a Windows aide that does
   not exist. `post` refuses when this machine has no folder for the aide
-  ("HOME/@KB runs on home-server"). A cross-machine relay is out of scope
+  ("HOME/@KB runs on west-box"). A cross-machine relay is out of scope
   (the user, 2026-10-10).
 - **Request and reply:** delivery uses the same `inbox::send` (the named pipe
   and its auth line on Windows); `ask --wait` polls the item file, so it
@@ -738,9 +738,9 @@ From the port's commits (7dd6984 .. 0145dfc):
 | Phase | What | Tests |
 | --- | --- | --- |
 | S1 | `queue.rs` and the CLI: post, claim, heartbeat, done, fail, list, status, retry, drop; types registry with `wiki.note.v1` and `wiki.query.v1`; locks, leases, dead letters, depth and rate limits, sender detection; request and reply: the reply address, tokens, `inbox result`, `nimitz ask --wait`, delivery at `done`; `inbox status --json`, the structured summary Admiralty and `status` read | unit (FIFO under concurrency, lease expiry, at-least-once, caps, rate, who may read a result), sandbox CLI, the role table |
-| S2 | The aide: `@` ids, `Role::Aide`, `[[aide]]` config (edited by hand: `brief` is accepted but unused until S4; `snapshot = true` refused until S4b: a decision by NIMITZ_DEV, pending the user's word, 2026-10-10), labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (aide text and the loop); needs-you for an aide's prompts and its dead letters (from S3); **Admiralty aide rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the aide exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
+| S2 | The aide: `@` ids, `Role::Aide`, `[[aide]]` config (edited by hand: `brief` is accepted but unused until S4; `snapshot = true` refused until S4b: a decision by NORTH_DEV, pending the user's word, 2026-10-10), labels, launch with the model check, pin, `start`/`stop`/`check`/`status`/`restore` placement; authority and comms rows; rules v5 (aide text and the loop); needs-you for an aide's prompts and its dead letters (from S3); **Admiralty aide rows and the queue detail panel, `status`'s queue summary** (the user, 2026-10-10: as early as the aide exists) | sandbox (plans, top-down order, refusals), every role table test, a fake-claude e2e of the loop; Admiralty snapshots at 80 and 120 columns, images for the user before merge |
 | S3 | The doorbell (ring and coalesce; `ring.json`, drained at an empty claim), the SessionStart context (with the 15-minute cron request), the piggyback (`nimitz __ring`, at most every 30 s per machine: rings, housekeeping, late delivery, dead-letter notices), `check`'s `inbox.dead\|stuck\|full` (0.6.0) | sandbox with a socket listener (rings, coalescing, piggyback), the session start context, late delivery, a dead letter from a lapsed lease |
-| S4 | `HOME/@KB` live: the KB's `ingest-auto` (MYCC_DEV, KB 1608a8a), the brief (`[[aide]] brief`, at each session start), nimitz's git (`aide grep\|status`, `inbox done --commit`, the trailer idempotency), no git for the aide, Edit/Write denied on `.git` and the repo's rules (0.6.0) | real-CC e2e_99 on a copy of the KB: notes -> one commit each; `kill -9` mid-item -> one commit; `/clear` and a relaunch -> drains again; a hostile note -> refused, `.git/config` untouched |
+| S4 | `HOME/@KB` live: the KB's `ingest-auto` (LEDGER_DEV, KB 1608a8a), the brief (`[[aide]] brief`, at each session start), nimitz's git (`aide grep\|status`, `inbox done --commit`, the trailer idempotency), no git for the aide, Edit/Write denied on `.git` and the repo's rules (0.6.0) | real-CC e2e_99 on a copy of the KB: notes -> one commit each; `kill -9` mid-item -> one commit; `/clear` and a relaunch -> drains again; a hostile note -> refused, `.git/config` untouched |
 | S4b | `HOME/@REF` live: the snapshot worktree and its refresh at claim, read-only settings, the query brief (Lodestar's query rules) | real-CC e2e: `ask --wait` returns a cited answer; a second session cannot read it; a commit during a query does not change what it read |
 | S2.5 | `aide new\|set\|rm` (moved from S5, 0.6.0): plan and `--yes`, the trust step, the model against this machine's `availableModels`, the refused modes, the inbox flags, one machine's folder; the first aide stamps fleet.toml format 2 and is refused while a machine of the fleet has run no nimitz >= 0.5 (`aide.machines`, `--force`); the last one's `rm` takes the stamp off; `rm` stops and unpins a live aide and refuses while its inbox holds work | sandbox, the role table |
 | S5 | Other parents (`always_on`, ring-to-start) | sandbox, the role table |

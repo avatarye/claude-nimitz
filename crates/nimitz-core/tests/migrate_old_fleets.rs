@@ -76,7 +76,7 @@ fn legacy_fleets_migrate_check_clean_and_idempotent() {
 
     // One canonical label per hostname: the duplicate-label hosts collapsed.
     let labels: Vec<_> = f.config.machines.keys().cloned().collect();
-    assert_eq!(labels, ["home-server", "home-ubuntu", "home-windows", "ubuntu-box", "west-mac"]);
+    assert_eq!(labels, ["east-pc", "north-box", "ubuntu-box", "west-box", "west-mac"]);
     let hostnames: Vec<_> = f.config.machines.values().map(|m| m.hostname.clone()).collect();
     assert_eq!(hostnames.len(), hostnames.iter().collect::<std::collections::BTreeSet<_>>().len());
     // Every ship's dirs use canonical labels only.

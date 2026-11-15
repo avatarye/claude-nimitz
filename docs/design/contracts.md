@@ -66,7 +66,7 @@ depends_on = []
 effort = "xhigh"                    # optional: low|medium|high|xhigh|max (0.7.12)
 [ships.dirs]                        # machine label -> folder; "managed" = NIMITZ_HOME/<fleet>/ships/<SQ>/<SHIP>
 west-mac = "/Users/.../Project"
-home-server = "managed"
+west-box = "managed"
 [ships.permission_mode]             # optional per machine
 ```
 

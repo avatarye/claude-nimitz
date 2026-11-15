@@ -290,8 +290,8 @@ fn attach_tolerates_unfocused() {
     let mut world = w.world();
     world["agent_after"] = json!(1000);
     fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
-    let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
-    let a = nimitz_mux::attach(&w.mux(), &cmdv(&["claude", "attach", "9aacf927"]), Path::new("/dev"), place, None).expect("attached, if not focused");
+    let place = Place::Tab { workspace: "HAVEN.GALLEY".into(), label: "HAVEN.GALLEY.NORTH_DEV".into() };
+    let a = nimitz_mux::attach(&w.mux(), &cmdv(&["claude", "attach", "3e7b5c10"]), Path::new("/dev"), place, None).expect("attached, if not focused");
     assert_eq!(a, Attached::Claimed(pane_ref("w1:p2", "w1:t2", "w1")));
 }
 
@@ -502,18 +502,18 @@ fn layout_short_tab_renamed() {
     // a squadron workspace laid out by nimitz 0.3.0: its tab is plain COMMODORE
     let w = World::new(Some(json!({
         "next_ws": 2,
-        "workspaces": [{"workspace_id": "w1", "label": "HOME.GITHUB", "focused": false, "active_tab_id": "w1:t1"}],
+        "workspaces": [{"workspace_id": "w1", "label": "HAVEN.GALLEY", "focused": false, "active_tab_id": "w1:t1"}],
         "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "COMMODORE", "focused": true}],
-        "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/fleet/github", "foreground": ["claude", "attach", "9aacf927"]}]
+        "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/fleet/github", "foreground": ["claude", "attach", "3e7b5c10"]}]
     })));
     let p = LayoutPlan {
-        workspaces: vec![("HOME.GITHUB".into(), vec![("HOME.GITHUB.COMMODORE".into(), cmdv(&["claude", "attach", "9aacf927"]), PathBuf::from("/fleet/github"))])],
+        workspaces: vec![("HAVEN.GALLEY".into(), vec![("HAVEN.GALLEY.COMMODORE".into(), cmdv(&["claude", "attach", "3e7b5c10"]), PathBuf::from("/fleet/github"))])],
     };
     let refs = w.mux().layout(&p).expect("layout");
     assert_eq!(refs, vec![pane_ref("w1:p1", "w1:t1", "w1")]);
     let tabs = w.world()["tabs"].as_array().expect("tabs").clone();
     assert_eq!(tabs.len(), 1, "no second tab: {tabs:?}");
-    assert_eq!(tabs[0]["label"], "HOME.GITHUB.COMMODORE", "renamed to its full name");
+    assert_eq!(tabs[0]["label"], "HAVEN.GALLEY.COMMODORE", "renamed to its full name");
     assert!(w.pane("w1:p1").get("ran").is_none(), "a reused pane keeps its process");
 }
 
@@ -533,7 +533,7 @@ fn reuse_by_session() {
     assert!(!w.calls().iter().any(|c| c[..2] == ["pane".to_string(), "run".to_string()]), "nothing typed anywhere: {:?}", w.calls());
 }
 
-/// A world with workspace HOME.GITHUB and the tab HOME.GITHUB.NIMITZ_DEV an
+/// A world with workspace HAVEN.GALLEY and the tab HAVEN.GALLEY.NORTH_DEV an
 /// earlier `nimitz open` left; its pane runs `foreground` (none: a shell).
 fn tab_world(foreground: Option<Vec<&str>>) -> World {
     let mut pane = json!({"pane_id": "w1:p2", "tab_id": "w1:t2", "workspace_id": "w1", "cwd": "/dev"});
@@ -542,9 +542,9 @@ fn tab_world(foreground: Option<Vec<&str>>) -> World {
     }
     World::new(Some(json!({
         "next_ws": 2,
-        "workspaces": [{"workspace_id": "w1", "label": "HOME.GITHUB", "focused": false, "active_tab_id": "w1:t1"}],
-        "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "HOME.GITHUB.COMMODORE", "focused": true},
-                 {"tab_id": "w1:t2", "workspace_id": "w1", "label": "HOME.GITHUB.NIMITZ_DEV", "focused": false}],
+        "workspaces": [{"workspace_id": "w1", "label": "HAVEN.GALLEY", "focused": false, "active_tab_id": "w1:t1"}],
+        "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "HAVEN.GALLEY.COMMODORE", "focused": true},
+                 {"tab_id": "w1:t2", "workspace_id": "w1", "label": "HAVEN.GALLEY.NORTH_DEV", "focused": false}],
         "panes": [{"pane_id": "w1:p1", "tab_id": "w1:t1", "workspace_id": "w1", "cwd": "/sq"}, pane]
     })))
 }
@@ -553,18 +553,18 @@ fn reuse_by_tab_name() {
     // the tab is there and its pane is a plain shell (Herdr restored it, or the
     // attach client ended): the attach runs there, nothing opens
     let w = tab_world(None);
-    let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
-    let cmd = cmdv(&["claude", "attach", "9aacf927"]);
+    let place = Place::Tab { workspace: "HAVEN.GALLEY".into(), label: "HAVEN.GALLEY.NORTH_DEV".into() };
+    let cmd = cmdv(&["claude", "attach", "3e7b5c10"]);
     assert_eq!(nimitz_mux::tab_state(&w.mux(), &cmd, &place, Some("not-in-any-pane")).expect("state"), TabState::Shell(pane_ref("w1:p2", "w1:t2", "w1")));
     let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place.clone(), Some("not-in-any-pane")).expect("attach");
     assert_eq!(a, Attached::Claimed(pane_ref("w1:p2", "w1:t2", "w1")));
     assert_eq!(opened_tabs(&w), 2, "no new tab");
-    assert_eq!(w.pane("w1:p2")["ran"], json!([attach_line("9aacf927")]));
+    assert_eq!(w.pane("w1:p2")["ran"], json!([attach_line("3e7b5c10")]));
     // again: the pane runs that very attach now: shown, nothing typed again
     assert_eq!(nimitz_mux::tab_state(&w.mux(), &cmd, &place, Some("not-in-any-pane")).expect("state"), TabState::Shown(pane_ref("w1:p2", "w1:t2", "w1")));
     let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place, Some("not-in-any-pane")).expect("attach");
     assert_eq!(a, Attached::Focused(pane_ref("w1:p2", "w1:t2", "w1")));
-    assert_eq!(w.pane("w1:p2")["ran"], json!([attach_line("9aacf927")]), "ran once");
+    assert_eq!(w.pane("w1:p2")["ran"], json!([attach_line("3e7b5c10")]), "ran once");
 }
 
 fn taken_tab_is_never_typed_into() {
@@ -572,8 +572,8 @@ fn taken_tab_is_never_typed_into() {
     // agent, the agent view): tab.taken, no pane run, no new tab
     for fg in [vec!["yazi"], vec!["claude", "attach", "deadbeef"], vec!["claude"], vec!["/usr/bin/python3", "x.py"]] {
         let w = tab_world(Some(fg.clone()));
-        let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
-        let cmd = cmdv(&["claude", "attach", "9aacf927"]);
+        let place = Place::Tab { workspace: "HAVEN.GALLEY".into(), label: "HAVEN.GALLEY.NORTH_DEV".into() };
+        let cmd = cmdv(&["claude", "attach", "3e7b5c10"]);
         let state = nimitz_mux::tab_state(&w.mux(), &cmd, &place, Some("not-in-any-pane")).expect("state");
         assert_eq!(state, TabState::Taken { pane: pane_ref("w1:p2", "w1:t2", "w1"), running: fg.join(" ") }, "{fg:?}");
         let e = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place, Some("not-in-any-pane")).expect_err("taken");
@@ -594,8 +594,8 @@ fn a_split_running_another_program_is_not_the_attach_pane() {
     let mut world = w.world();
     world["panes"].as_array_mut().unwrap().push(json!({"pane_id": "w1:p3", "tab_id": "w1:t2", "workspace_id": "w1", "cwd": "/dev"}));
     fs::write(w.dir.join("world.json"), serde_json::to_vec_pretty(&world).unwrap()).unwrap();
-    let place = Place::Tab { workspace: "HOME.GITHUB".into(), label: "HOME.GITHUB.NIMITZ_DEV".into() };
-    let cmd = cmdv(&["claude", "attach", "9aacf927"]);
+    let place = Place::Tab { workspace: "HAVEN.GALLEY".into(), label: "HAVEN.GALLEY.NORTH_DEV".into() };
+    let cmd = cmdv(&["claude", "attach", "3e7b5c10"]);
     assert_eq!(w.mux().tab(&place), Some(pane_ref("w1:p3", "w1:t2", "w1")), "the shell pane, never the yazi split");
     let a = nimitz_mux::attach(&w.mux(), &cmd, Path::new("/dev"), place, None).expect("attach");
     assert_eq!(a, Attached::Claimed(pane_ref("w1:p3", "w1:t2", "w1")));
@@ -659,8 +659,8 @@ fn fixture_process_info() {
     assert_eq!(nimitz_mux::herdr::process_pids(&v), vec![Some(4242)]);
     assert!(nimitz_mux::herdr::process_pids(&json!({"result": {"type": "ok"}})).is_empty());
     // argv missing: cmdline, then name
-    let v = json!({"result": {"process_info": {"foreground_processes": [{"pid": 2, "name": "claude", "cmdline": "claude attach 9aacf927"}, {"pid": 3, "name": "yazi"}]}}});
-    assert_eq!(parse_process_info(&v).unwrap(), vec![cmdv(&["claude", "attach", "9aacf927"]), cmdv(&["yazi"])]);
+    let v = json!({"result": {"process_info": {"foreground_processes": [{"pid": 2, "name": "claude", "cmdline": "claude attach 3e7b5c10"}, {"pid": 3, "name": "yazi"}]}}});
+    assert_eq!(parse_process_info(&v).unwrap(), vec![cmdv(&["claude", "attach", "3e7b5c10"]), cmdv(&["yazi"])]);
     // through the adapter: the fake emits the same nesting
     let w = tab_world(Some(vec!["yazi"]));
     assert_eq!(w.mux().foreground(&pane_ref("w1:p2", "w1:t2", "w1")).unwrap(), cmdv(&["yazi"]));
@@ -713,9 +713,9 @@ fn fixture_create_replies() {
     assert!(created_workspace(&json!({"result": {"type": "workspace_created"}})).is_err());
     // through the adapter (the fake answers with those shapes): the direct path, no pane list needed
     let w = World::new(None);
-    let r = w.mux().open(&cmdv(&["claude", "attach", "9aacf927"]), Path::new("/x"), Place::Tab { workspace: "NEW".into(), label: "NEW.ADMIRAL".into() }).expect("open");
+    let r = w.mux().open(&cmdv(&["claude", "attach", "3e7b5c10"]), Path::new("/x"), Place::Tab { workspace: "NEW".into(), label: "NEW.ADMIRAL".into() }).expect("open");
     assert_eq!(r, pane_ref("w2:p1", "w2:t1", "w2"));
-    assert_eq!(w.pane("w2:p1")["ran"], json!([attach_line("9aacf927")]));
+    assert_eq!(w.pane("w2:p1")["ran"], json!([attach_line("3e7b5c10")]));
     assert!(!w.calls().iter().any(|c| c[..2] == ["pane".to_string(), "list".to_string()]), "the reply names the pane: {:?}", w.calls());
     // the fallback, apart: a reply with no tab or pane gives None, which the adapter resolves
     let bare_ws = json!({"result": {"type": "workspace_created", "workspace": {"workspace_id": "w9", "active_tab_id": "w9:t1"}}});
@@ -772,7 +772,7 @@ fn shape_through_the_adapter() {
     let w = tab_world(Some(vec!["yazi"]));
     let shape = w.mux().shape(true).expect("shape");
     assert_eq!(shape.workspaces.len(), 1);
-    assert_eq!(shape.tabs.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), ["HOME.GITHUB.COMMODORE", "HOME.GITHUB.NIMITZ_DEV"]);
+    assert_eq!(shape.tabs.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), ["HAVEN.GALLEY.COMMODORE", "HAVEN.GALLEY.NORTH_DEV"]);
     let p1 = shape.panes.iter().find(|p| p.pane.pane_id == "w1:p1").unwrap();
     let p2 = shape.panes.iter().find(|p| p.pane.pane_id == "w1:p2").unwrap();
     assert_eq!(p1.foreground, Some(vec![]), "an idle shell");
@@ -783,8 +783,8 @@ fn shape_through_the_adapter() {
     assert_eq!(n, 2, "one process-info per pane: {:?}", w.calls());
     assert!(w.calls().iter().any(|c| c[..2] == ["api".to_string(), "snapshot".to_string()]));
     // rename a tab
-    w.mux().rename_tab("w1:t2", "HOME.GITHUB.S").expect("rename");
-    assert_eq!(w.mux().shape(false).unwrap().tab("w1:t2").map(|t| t.label.clone()), Some("HOME.GITHUB.S".into()));
+    w.mux().rename_tab("w1:t2", "HAVEN.GALLEY.S").expect("rename");
+    assert_eq!(w.mux().shape(false).unwrap().tab("w1:t2").map(|t| t.label.clone()), Some("HAVEN.GALLEY.S".into()));
     assert!(w.mux().rename_tab("w9:t9", "X").is_err());
     // a named session: `--session <name>` before every call, which the fake logs and strips
     let named = Herdr { bin: w.dir.join(nimitz_core::os::exe_name("herdr")).to_string_lossy().into_owned(), session: Some("nimitz-e2e".into()), socket: None, claude_home: "/nonexistent/nimitz-claude-home".into(), focus_retry_ms: herdr::FOCUS_RETRY_MS.to_vec() };
@@ -813,7 +813,7 @@ fn shape_through_the_adapter() {
 /// held `--resume` or the foreground's session file the same way, never
 /// inferred; a backed claim stands.
 fn an_unbacked_claim_shows_what_runs_in_the_pane() {
-    let (a_sid, b_sid) = ("9aacf927-0000-4000-8000-00000000000a", "f29c13aa-0000-4000-8000-00000000000b");
+    let (a_sid, b_sid) = ("3e7b5c10-0000-4000-8000-00000000000a", "8c41d0e2-0000-4000-8000-00000000000b");
     let claim = json!({"kind": "id", "source": "herdr:claude", "value": a_sid});
     let on = |id: &str, fg: Value, pid: i64, claim: &Value| json!({"pane_id": id, "tab_id": "w1:t1", "workspace_id": "w1", "agent": "claude", "agent_status": "working", "cwd": "/home", "agent_session": claim, "foreground": fg, "pid": pid});
     let pane = |id: &str, fg: Value| on(id, fg, 777, &claim);
@@ -822,7 +822,7 @@ fn an_unbacked_claim_shows_what_runs_in_the_pane() {
         "workspaces": [{"workspace_id": "w1", "label": "HOME", "focused": true, "active_tab_id": "w1:t1"}],
         "tabs": [{"tab_id": "w1:t1", "workspace_id": "w1", "label": "HOME.ADMIRAL", "focused": true}],
         "panes": [
-            pane("w1:p1", json!(["/home/u/.local/bin/claude", "attach", "f29c13aa"])),
+            pane("w1:p1", json!(["/home/u/.local/bin/claude", "attach", "8c41d0e2"])),
             on("w1:p2", json!(["claude", "--resume", "s-held"]), 778, &claim),
             pane("w1:p3", json!(["claude"])),
             pane("w1:p4", json!(["claude", "--resume", a_sid])),
@@ -830,13 +830,13 @@ fn an_unbacked_claim_shows_what_runs_in_the_pane() {
             // an interactive resume a `/clear` moved on: its session file wins over the argv
             pane("w1:p6", json!(["claude", "--resume", "s-held"])),
             // B's own claim, backed by the attach alone: shown, inferred all the same
-            on("w1:p7", json!(["claude", "attach", "f29c13aa"]), 779, &json!({"kind": "id", "source": "herdr:claude", "value": b_sid})),
+            on("w1:p7", json!(["claude", "attach", "8c41d0e2"]), 779, &json!({"kind": "id", "source": "herdr:claude", "value": b_sid})),
         ]
     })));
     let home = w.dir.join("claude_home");
-    fs::create_dir_all(home.join("jobs").join("f29c13aa")).unwrap();
+    fs::create_dir_all(home.join("jobs").join("8c41d0e2")).unwrap();
     fs::create_dir_all(home.join("sessions")).unwrap();
-    fs::write(home.join("jobs/f29c13aa/state.json"), json!({"sessionId": b_sid}).to_string()).unwrap();
+    fs::write(home.join("jobs/8c41d0e2/state.json"), json!({"sessionId": b_sid}).to_string()).unwrap();
     fs::write(home.join("sessions/777.json"), json!({"pid": 777, "sessionId": "s-own"}).to_string()).unwrap();
     let m = Herdr { claude_home: home.clone(), ..w.mux() };
     let want = [("w1:p1", Some(b_sid), true), ("w1:p2", Some("s-held"), false), ("w1:p3", Some("s-own"), false), ("w1:p4", Some(a_sid), false), ("w1:p5", None, false), ("w1:p6", Some("s-own"), false), ("w1:p7", Some(b_sid), true)];
@@ -854,7 +854,7 @@ fn an_unbacked_claim_shows_what_runs_in_the_pane() {
         }
     }
     // the job's conversation now: a `/clear` moves it
-    fs::write(home.join("jobs/f29c13aa/state.json"), json!({"sessionId": b_sid, "resumeSessionId": "s-after-clear"}).to_string()).unwrap();
+    fs::write(home.join("jobs/8c41d0e2/state.json"), json!({"sessionId": b_sid, "resumeSessionId": "s-after-clear"}).to_string()).unwrap();
     let p1 = m.panes().into_iter().find(|p| p.pane.pane_id == "w1:p1").unwrap();
     assert_eq!((p1.session_id.as_deref(), p1.inferred), (Some("s-after-clear"), true));
     // a foreground that cannot be read backs no claim and shows nothing
