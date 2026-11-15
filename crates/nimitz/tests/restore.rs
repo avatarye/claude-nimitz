@@ -885,7 +885,7 @@ fn r_doctor_warns_when_herdr_resumes_agents_on_restore() {
     assert!(doctor(&sb).contains("resume_agents_on_restore is on (the default)"));
     std::fs::write(&cfg, "[session]\nresume_agents_on_restore = false\n").unwrap();
     let out = doctor(&sb);
-    assert!(out.contains("resume_agents_on_restore is off") && !out.contains("[WARN] Herdr"), "{out}");
+    assert!(out.contains("resume_agents_on_restore is off") && !out.contains(&format!("[WARN] Herdr {path}")), "{out}");
     std::fs::write(&cfg, "[session\n").unwrap();
     assert!(doctor(&sb).contains("does not parse"));
     assert_eq!(std::fs::read_to_string(&cfg).unwrap(), "[session\n", "nimitz never edits the Herdr config");

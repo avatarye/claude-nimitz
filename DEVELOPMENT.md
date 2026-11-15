@@ -1229,6 +1229,19 @@ sizes the terminal to the box, and the covered pane's zoom is restored afterward
 The `[[keys.command]]` block in `herdr-plugin/README.md` is test input for
 `tests/check.sh`.
 
+`doctor` checks the link (#1, `setup::herdr_plugin_check`) when
+`nimitz_mux::resolve_herdr_bin` finds a `herdr`. It runs `herdr plugin list --json`
+with a 10 s limit (Herdr 0.9 answers from its registry when no server runs).
+`herdr_plugin_state` reads the reply as Ready, NotLinked, Gone (a `manifest
+unavailable` warning, or no file at `manifest_path`), Disabled, or Version (not
+`CARGO_PKG_VERSION`). Each is a Warn at most. A reply that is not a plugin list
+is an Info. The fix links `herdr_plugin_dir()`: this build's repo
+(`CARGO_MANIFEST_DIR/../../herdr-plugin`) when it is on disk. Otherwise it is
+`herdr plugin install avatarye/claude-nimitz/herdr-plugin --ref v<version> --yes`.
+`--fix` runs `herdr plugin [unlink admiralty,] link <dir>`, and only for NotLinked
+and Gone with the repo on disk. The fake herdr has `plugin list|link|unlink` on
+the world's `plugins`.
+
 ## 17. Testing
 
 ```sh

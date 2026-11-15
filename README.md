@@ -57,13 +57,15 @@ git clone -b dev https://github.com/avatarye/claude-nimitz && cd claude-nimitz
 cargo install --path crates/nimitz       # the command
 cargo install --path crates/admiralty    # the screen
 claude plugin marketplace add "$PWD" && claude plugin install nimitz@claude-nimitz
+herdr plugin link "$PWD/herdr-plugin"    # if you use Herdr: Admiralty's overlay
 nimitz init --label laptop               # name this machine
 nimitz doctor                            # repeat until: [OK] doctor: ready
 ```
 
-To open Admiralty over whatever you're doing in Herdr, run
-`herdr plugin link <repo>/herdr-plugin` and bind a key to `admiralty.toggle`
-([how](herdr-plugin/README.md#install)).
+With Herdr, bind a key to `admiralty.toggle` to open Admiralty over whatever
+you're doing ([how](herdr-plugin/README.md#install)). `nimitz doctor` warns
+when the plugin is not linked, is gone, or is another version, and
+`nimitz doctor --fix` links it from this checkout.
 
 To upgrade, install both binaries again, run
 `claude plugin marketplace update claude-nimitz && claude plugin update nimitz@claude-nimitz`,

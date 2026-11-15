@@ -355,6 +355,160 @@ fn herdr_resume_check(ctx: &Ctx, r: &mut Report) {
     }
 }
 
+/// The Herdr plugin's id (`herdr-plugin/herdr-plugin.toml`).
+pub const HERDR_PLUGIN_ID: &str = "admiralty";
+
+/// What `herdr plugin list --json` (Herdr 0.9: `{"result": {"type":
+/// "plugin_list", "plugins": [InstalledPluginInfo]}}`) says of Admiralty's
+/// plugin, against this nimitz's `version`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HerdrPlugin {
+    /// linked, enabled, its manifest there at this version
+    Ready { root: String },
+    NotLinked,
+    /// registered, but its manifest is gone (a moved or deleted checkout:
+    /// Herdr keeps the row with a `manifest unavailable` warning)
+    Gone { manifest: String },
+    Disabled,
+    /// another version than this nimitz's; `github`: a `plugin install`
+    Version { root: String, version: String, github: bool },
+}
+
+/// `HerdrPlugin` from a `plugin list --json` reply; `None` when it is no
+/// plugin list. A manifest is gone when Herdr warns so or the file is not there.
+pub fn herdr_plugin_state(v: &Value, version: &str) -> Option<HerdrPlugin> {
+    let result = v.get("result").filter(|r| r.get("type").and_then(Value::as_str) == Some("plugin_list"))?;
+    let plugins = result.get("plugins")?.as_array()?;
+    let Some(p) = plugins.iter().find(|p| p.get("plugin_id").and_then(Value::as_str) == Some(HERDR_PLUGIN_ID)) else { return Some(HerdrPlugin::NotLinked) };
+    let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let manifest = s("manifest_path");
+    let warned = p.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).any(|w| w.starts_with("manifest unavailable"));
+    if warned || manifest.is_empty() || !Path::new(&manifest).is_file() {
+        return Some(HerdrPlugin::Gone { manifest });
+    }
+    if p.get("enabled").and_then(Value::as_bool) == Some(false) {
+        return Some(HerdrPlugin::Disabled);
+    }
+    let root = s("plugin_root");
+    let linked = s("version");
+    if linked != version {
+        let github = p.pointer("/source/kind").and_then(Value::as_str) == Some("github");
+        return Some(HerdrPlugin::Version { root, version: linked, github });
+    }
+    Some(HerdrPlugin::Ready { root })
+}
+
+/// The Herdr plugin of this build's repo when it is still on disk (the
+/// folder that holds `herdr-plugin.toml`): what `doctor` links.
+pub fn herdr_plugin_dir() -> Option<PathBuf> {
+    let dir = nimitz_core::os::canonical(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../herdr-plugin")).ok()?;
+    dir.join("herdr-plugin.toml").is_file().then_some(dir)
+}
+
+/// How to get the plugin: link this build's repo when it is on disk, else
+/// install it from GitHub at this version's tag (Herdr keeps the checkout).
+fn herdr_plugin_get(dir: Option<&Path>) -> String {
+    match dir {
+        Some(d) => format!("herdr plugin link {}", out::quote(&d.to_string_lossy())),
+        None => format!("herdr plugin install avatarye/claude-nimitz/herdr-plugin --ref v{} --yes", env!("CARGO_PKG_VERSION")),
+    }
+}
+
+/// `program args` with its output read, given up (killed) after `limit`:
+/// a Herdr server that hangs never hangs `doctor`. The env is the caller's.
+fn run_bounded(program: &str, args: &[&str], limit: std::time::Duration) -> Result<(i32, String), String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{program}: {e}"))?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    for pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)] {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = pipe {
+                let _ = p.read_to_end(&mut buf);
+            }
+            let _ = tx.send(String::from_utf8_lossy(&buf).into_owned());
+        });
+    }
+    let deadline = std::time::Instant::now() + limit;
+    let gave_up = || format!("`{program} {}` gave no answer within {} s (killed)", args.join(" "), limit.as_secs());
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(gave_up());
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(e) => return Err(format!("{program}: {e}")),
+        }
+    };
+    let mut text = String::new();
+    for _ in 0..2 {
+        match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok(t) => text.push_str(&t),
+            Err(_) => return Err(gave_up()),
+        }
+    }
+    Ok((status.code().unwrap_or(-1), text))
+}
+
+/// The Herdr plugin (#1): with `herdr` on PATH (or `NIMITZ_HERDR_BIN`),
+/// Admiralty's plugin must be linked, enabled, there, and at this nimitz's
+/// version, or the overlay key does nothing while everything else reads
+/// ready. Herdr absent, or `plugin list --json` failing (a Herdr older than
+/// 0.9): not checked, said as Info. `--fix` links this build's repo when it is
+/// on disk (unlinking a row whose manifest is gone first), and nothing else.
+fn herdr_plugin_check(ctx: &Ctx, r: &mut Report) {
+    let Some(bin) = nimitz_mux::resolve_herdr_bin(&ctx.vars) else { return };
+    let version = env!("CARGO_PKG_VERSION");
+    let state = match run_bounded(&bin, &["plugin", "list", "--json"], std::time::Duration::from_secs(10)) {
+        Ok((0, text)) => text.find('{').and_then(|at| nimitz_core::evidence::first_json(&text.as_bytes()[at..])).and_then(|v| herdr_plugin_state(&v, version)),
+        Ok(_) | Err(_) => None,
+    };
+    let Some(state) = state else {
+        r.info(&format!("Herdr: `{bin} plugin list --json` gave no plugin list, so the {HERDR_PLUGIN_ID} plugin was not checked (Herdr 0.9 lists plugins)"), None);
+        return;
+    };
+    let dir = herdr_plugin_dir();
+    let get = herdr_plugin_get(dir.as_deref());
+    let link_step = |r: &mut Report, why: &str| {
+        if let Some(d) = &dir {
+            r.fixes.steps.push(Step { id: None, cmd: vec![bin.clone(), "plugin".into(), "link".into(), d.to_string_lossy().into_owned()], cwd: None, why: why.into() });
+        }
+    };
+    match state {
+        HerdrPlugin::Ready { root } => r.ok(&format!("Herdr: plugin {HERDR_PLUGIN_ID} {version} is linked from {root}")),
+        HerdrPlugin::NotLinked => {
+            r.warn(&format!("Herdr: plugin {HERDR_PLUGIN_ID} is not linked, so the Admiralty key (admiralty.toggle) does nothing"), Some(&format!("{get}  # then bind a key: herdr-plugin/README.md#install")));
+            link_step(r, "link the Herdr plugin of this build's repo");
+        }
+        HerdrPlugin::Gone { manifest } => {
+            r.warn(&format!("Herdr: plugin {HERDR_PLUGIN_ID} is linked from {manifest}, which is gone, so the Admiralty key does nothing"), Some(&format!("herdr plugin unlink {HERDR_PLUGIN_ID} && {get}")));
+            if dir.is_some() {
+                r.fixes.steps.push(Step { id: None, cmd: vec![bin.clone(), "plugin".into(), "unlink".into(), HERDR_PLUGIN_ID.into()], cwd: None, why: format!("unlink the Herdr plugin whose manifest {manifest} is gone") });
+            }
+            link_step(r, "link the Herdr plugin of this build's repo");
+        }
+        HerdrPlugin::Disabled => r.warn(&format!("Herdr: plugin {HERDR_PLUGIN_ID} is linked but disabled, so the Admiralty key does nothing"), Some(&format!("herdr plugin enable {HERDR_PLUGIN_ID}"))),
+        HerdrPlugin::Version { root, version: linked, github } => {
+            let fix = match (&dir, github) {
+                (_, true) => herdr_plugin_get(None),
+                (Some(d), false) if Path::new(&root) != d.as_path() => format!("herdr plugin unlink {HERDR_PLUGIN_ID} && {get}"),
+                _ => format!("bring {root}'s checkout and both binaries to one version: git pull there, then cargo install --path crates/nimitz and crates/admiralty (README: upgrade)"),
+            };
+            r.warn(&format!("Herdr: plugin {HERDR_PLUGIN_ID} linked from {root} is {linked}, this nimitz is {version}"), Some(&fix));
+        }
+    }
+}
+
 /// Running nimitz and Admiralty processes older than the binaries installed
 /// now (issue #1): an Admiralty started before `cargo install` replaced it
 /// keeps the old nimitz-core in memory, and an old core reads a newer
@@ -563,6 +717,8 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
     // parked member's conversation interactively; a restore then cannot wake
     // it until that process ends (`tab.resumed`). nimitz never edits that file.
     herdr_resume_check(ctx, &mut r);
+    // Admiralty's Herdr plugin (#1): not linked, the overlay key does nothing
+    herdr_plugin_check(ctx, &mut r);
 
     // Hooks: the plugin, or nimitz hook commands in the user settings.
     let settings = read_json(&settings_path(ctx)).unwrap_or(json!({}));
@@ -729,6 +885,16 @@ fn doctor_report(ctx: &Ctx, fix: bool) -> i32 {
                                 out::ok(&format!("fixed: {} field(s) filled, {} kept file(s) archived", done.filled.len(), done.archived.len()));
                                 r.errors -= 1;
                             }
+                            Err(e) => out::error(&format!("fix failed: {e}")),
+                        }
+                        continue;
+                    }
+                    // `herdr plugin link|unlink` (a warning's fix: no error to take back)
+                    if s.cmd.get(1).map(String::as_str) == Some("plugin") {
+                        let args: Vec<&str> = s.cmd[1..].iter().map(String::as_str).collect();
+                        match run_bounded(&s.cmd[0], &args, std::time::Duration::from_secs(30)) {
+                            Ok((0, _)) => out::ok(&format!("fixed: {}", s.why)),
+                            Ok((rc, text)) => out::error(&format!("fix failed: {} (exit {rc}): {}", s.cmd.join(" "), text.trim())),
                             Err(e) => out::error(&format!("fix failed: {e}")),
                         }
                         continue;
@@ -964,5 +1130,43 @@ mod tests {
         assert_eq!(string_form_hooks(&mixed), vec!["PreToolUse".to_string(), "SessionStart".to_string()]);
         // such entries still count as registered: the fallback finds the session
         assert!(registered_hooks(&mixed).contains(&("SessionStart".to_string(), String::new())));
+    }
+
+    /// #1: Herdr 0.9's `plugin list --json`, in the shape a real 0.9.3
+    /// prints (an empty registry, a local link, a link whose manifest is
+    /// gone), read for Admiralty's plugin.
+    #[test]
+    fn the_herdr_plugin_list_reads_linked_gone_disabled_and_version() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path().join("herdr-plugin");
+        std::fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("herdr-plugin.toml");
+        std::fs::write(&manifest, "id = \"admiralty\"\n").unwrap();
+        let (m, r) = (manifest.to_string_lossy().into_owned(), root.to_string_lossy().into_owned());
+        let row = |extra: Value| {
+            let mut p = json!({"plugin_id": "admiralty", "name": "Admiralty", "version": "0.7.21", "min_herdr_version": "0.9.0", "manifest_path": m, "plugin_root": r, "enabled": true, "source": {"kind": "local"}});
+            for (k, v) in extra.as_object().unwrap() {
+                p[k] = v.clone();
+            }
+            json!({"id": "cli:plugin", "result": {"type": "plugin_list", "plugins": [{"plugin_id": "examples.other", "version": "1.0.0", "manifest_path": "/x", "plugin_root": "/x", "enabled": true}, p]}})
+        };
+        let empty = json!({"id": "cli:plugin", "result": {"plugins": [], "type": "plugin_list"}});
+        assert_eq!(herdr_plugin_state(&empty, "0.7.21"), Some(HerdrPlugin::NotLinked));
+        assert_eq!(herdr_plugin_state(&row(json!({})), "0.7.21"), Some(HerdrPlugin::Ready { root: r.clone() }));
+        assert_eq!(herdr_plugin_state(&row(json!({})), "0.7.22"), Some(HerdrPlugin::Version { root: r.clone(), version: "0.7.21".into(), github: false }));
+        assert_eq!(herdr_plugin_state(&row(json!({"source": {"kind": "github", "owner": "avatarye"}})), "0.7.22"), Some(HerdrPlugin::Version { root: r.clone(), version: "0.7.21".into(), github: true }));
+        assert_eq!(herdr_plugin_state(&row(json!({"enabled": false})), "0.7.21"), Some(HerdrPlugin::Disabled));
+        // gone: Herdr's warning, or the file not there
+        let warned = row(json!({"warnings": ["manifest unavailable: No such file or directory (os error 2)"]}));
+        assert_eq!(herdr_plugin_state(&warned, "0.7.21"), Some(HerdrPlugin::Gone { manifest: m.clone() }));
+        let moved = row(json!({"manifest_path": "/home/u/old/herdr-plugin/herdr-plugin.toml"}));
+        assert_eq!(herdr_plugin_state(&moved, "0.7.21"), Some(HerdrPlugin::Gone { manifest: "/home/u/old/herdr-plugin/herdr-plugin.toml".into() }));
+        // not a plugin list: not judged
+        assert_eq!(herdr_plugin_state(&json!({"error": {"code": "x", "message": "y"}}), "0.7.21"), None);
+        assert_eq!(herdr_plugin_state(&json!({"id": "cli:agent", "result": {"type": "agent_list", "agents": []}}), "0.7.21"), None);
+        // the fix: this build's repo when it is on disk, else GitHub at this version's tag
+        assert_eq!(herdr_plugin_get(Some(Path::new("/home/u/claude-nimitz/herdr-plugin"))), "herdr plugin link /home/u/claude-nimitz/herdr-plugin");
+        assert_eq!(herdr_plugin_get(None), format!("herdr plugin install avatarye/claude-nimitz/herdr-plugin --ref v{} --yes", env!("CARGO_PKG_VERSION")));
+        assert!(herdr_plugin_dir().is_some_and(|d| d.join("herdr-plugin.toml").is_file()), "this build's repo is on disk");
     }
 }

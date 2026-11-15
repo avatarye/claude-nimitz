@@ -1068,6 +1068,60 @@ fn a_hanging_preflight_a_relaunch_mismatch_and_a_sweep_that_did_not_run() {
     assert!(r.code != 0 && sessions.join("gone-1111.json").exists(), "a refused sweep drops nothing: {}", r.out);
 }
 
+/// #1: with Herdr there, doctor checks that Admiralty's Herdr plugin is
+/// linked, there and at this version (warnings: `doctor: ready` stays), and
+/// `--fix` links this build's repo; with no Herdr, or a `plugin list` that
+/// fails, it is not checked and nothing else changes.
+#[test]
+fn doctor_checks_the_herdr_plugin_and_fix_links_it() {
+    let sb = Sb::new(true);
+    let version = env!("CARGO_PKG_VERSION");
+    let repo_plugin = nimitz_core::os::canonical(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../herdr-plugin")).unwrap();
+    let doctor = |args: &[&str]| sb.run(args).out;
+    // not linked: a warning with the link of this build's repo
+    let d = doctor(&["doctor"]);
+    assert!(d.contains("[WARN] Herdr: plugin admiralty is not linked"), "{d}");
+    assert!(d.contains(&format!("fix: herdr plugin link {}", repo_plugin.display())), "{d}");
+    // --fix links it (through herdr itself), then it reads linked
+    let d = doctor(&["doctor", "--fix", "--yes"]);
+    assert!(d.contains("fixed: link the Herdr plugin of this build's repo"), "{d}");
+    let d = doctor(&["doctor"]);
+    assert!(d.contains(&format!("[OK] Herdr: plugin admiralty {version} is linked from {}", repo_plugin.display())), "{d}");
+    // another version
+    sb.herdr_world(|w| w["plugins"][0]["version"] = Value::from("0.1.0"));
+    let d = doctor(&["doctor"]);
+    assert!(d.contains(&format!("[WARN] Herdr: plugin admiralty linked from {} is 0.1.0, this nimitz is {version}", repo_plugin.display())), "{d}");
+    // a GitHub install at another version: reinstall at this version's tag
+    sb.herdr_world(|w| w["plugins"][0]["source"] = serde_json::json!({"kind": "github", "owner": "avatarye", "repo": "claude-nimitz", "subdir": "herdr-plugin"}));
+    let d = doctor(&["doctor"]);
+    assert!(d.contains(&format!("fix: herdr plugin install avatarye/claude-nimitz/herdr-plugin --ref v{version} --yes")), "{d}");
+    // its manifest gone: unlink, then link again (and --fix does both)
+    sb.herdr_world(|w| {
+        w["plugins"][0]["manifest_path"] = Value::from("/home/u/gone/herdr-plugin/herdr-plugin.toml");
+        w["plugins"][0]["source"] = serde_json::json!({"kind": "local"});
+    });
+    let d = doctor(&["doctor"]);
+    assert!(d.contains("[WARN] Herdr: plugin admiralty is linked from /home/u/gone/herdr-plugin/herdr-plugin.toml, which is gone"), "{d}");
+    assert!(d.contains(&format!("fix: herdr plugin unlink admiralty && herdr plugin link {}", repo_plugin.display())), "{d}");
+    let d = doctor(&["doctor", "--fix", "--yes"]);
+    assert!(d.contains("fixed: unlink the Herdr plugin whose manifest") && d.contains("fixed: link the Herdr plugin"), "{d}");
+    assert!(doctor(&["doctor"]).contains("[OK] Herdr: plugin admiralty"));
+    // disabled
+    sb.herdr_world(|w| w["plugins"][0]["enabled"] = Value::from(false));
+    assert!(doctor(&["doctor"]).contains("fix: herdr plugin enable admiralty"));
+    // a `plugin list` that fails (a Herdr before 0.9): Info, not checked
+    let calls_before = sb.calls().lines().count();
+    sb.herdr_world(|w| w["fail"] = Value::from("plugin list"));
+    let d = doctor(&["doctor"]);
+    assert!(d.contains("[INFO] Herdr: ") && d.contains("plugin list --json` gave no plugin list"), "{d}");
+    assert!(!d.contains("Herdr: plugin admiralty"), "{d}");
+    assert!(sb.calls().lines().count() > calls_before, "herdr was asked");
+    // no Herdr at all: no line about it
+    let sb2 = Sb::new(false);
+    let d = sb2.run(&["doctor"]).out;
+    assert!(!d.contains("Herdr: plugin") && !d.contains("plugin list"), "{d}");
+}
+
 /// #12: Herdr's `resume_agents_on_restore` runs `claude --resume` outside
 /// the saved flags and the forced selector: an ERROR in doctor where the
 /// machine names a provider, a warning elsewhere; nimitz never edits the file.

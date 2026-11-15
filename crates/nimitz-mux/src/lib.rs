@@ -527,7 +527,7 @@ pub fn herdr_session(vars: &std::collections::HashMap<String, String>) -> Option
 
 /// `NIMITZ_HERDR_BIN` (checked as a path when it has a `/`, else searched on
 /// PATH under that name), else `herdr` on PATH.
-fn resolve_herdr_bin(vars: &std::collections::HashMap<String, String>) -> Option<String> {
+pub fn resolve_herdr_bin(vars: &std::collections::HashMap<String, String>) -> Option<String> {
     let name = vars.get("NIMITZ_HERDR_BIN").map(String::as_str).unwrap_or("herdr");
     if name.contains('/') || name.contains(std::path::MAIN_SEPARATOR) {
         return executable(std::path::Path::new(name)).then(|| name.to_string());

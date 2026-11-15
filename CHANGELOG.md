@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- **`doctor` checks Admiralty's Herdr plugin (#1).** When `herdr` is on PATH,
+  `doctor` asks `herdr plugin list --json` about the `admiralty` plugin. It
+  warns when the plugin is not linked (the overlay key then does nothing,
+  even though everything else says ready), when its manifest is gone, when
+  it is disabled, or when its version differs from nimitz's. The fix links
+  `herdr-plugin` from the checkout nimitz was built from. With no checkout,
+  it installs the plugin from GitHub at this release's tag.
+  `doctor --fix` does the linking itself when the checkout is there. A Herdr
+  that can't list plugins is noted and skipped. The README's Setup block now
+  includes `herdr plugin link`, marked "if you use Herdr".
+
 ### Fixed
 
 - **A KB that does not answer no longer stops Admiralty.** Each fleet's KB

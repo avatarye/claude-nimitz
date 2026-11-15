@@ -18,7 +18,10 @@
 //!   "fail": "workspace create",  // optional: any call starting with this errors
 //!   "exec": true,                // optional: `pane run` really runs the line (sh -c, in the pane's cwd)
 //!   "resume_agents_on_restore": true, // optional: `__restart` runs `claude --resume <sid>` in each agent pane, as Herdr does
-//!   "agent_after": 3             // optional: a pane given a `pane run` is no agent to `agent focus` for its next 3 asks
+//!   "agent_after": 3,            // optional: a pane given a `pane run` is no agent to `agent focus` for its next 3 asks
+//!   "plugins": [{"plugin_id": "admiralty", "version": "0.7.21", "manifest_path": "/x/herdr-plugin.toml",
+//!                "plugin_root": "/x", "enabled": true, "source": {"kind": "local"}}]
+//!                                // optional: `plugin list --json` (`plugin link|unlink` change it)
 //! }
 //! ```
 //! `agent_after` is Herdr's agent detection lag: `pane run` sets the pane's
@@ -310,6 +313,50 @@ fn dispatch(world: &mut Value, a: &[&str]) -> i32 {
         ["agent", "list"] => {
             let agents: Vec<Value> = arr(world, "panes").into_iter().filter(|p| !s(p, "agent_status").is_empty()).collect();
             ok("agent:list", json!({"type": "agent_list", "agents": agents}))
+        }
+        // the plugin registry (herdr 0.9.3 `plugin list --json`: InstalledPluginInfo
+        // rows; a manifest that is gone keeps its row with a warning)
+        ["plugin", "list", ..] => {
+            let mut plugins = arr(world, "plugins");
+            for p in plugins.iter_mut() {
+                if !Path::new(&s(p, "manifest_path")).is_file() {
+                    p["warnings"] = json!(["manifest unavailable: No such file or directory (os error 2)"]);
+                }
+            }
+            println!("{}", json!({"id": "cli:plugin", "result": {"type": "plugin_list", "plugins": plugins}}));
+            0
+        }
+        ["plugin", "link", path] => {
+            let dir = Path::new(path);
+            let manifest = if dir.is_dir() { dir.join("herdr-plugin.toml") } else { dir.to_path_buf() };
+            let Ok(text) = fs::read_to_string(&manifest) else {
+                return err("plugin", "plugin_link_failed", &format!("no manifest at {}", manifest.display()));
+            };
+            // `key = "value"` at the top of the manifest (enough for the fields listed)
+            let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(str::trim_start).and_then(|r| r.strip_prefix('=')).map(|v| v.trim().trim_matches('"').to_string())).unwrap_or_default();
+            let id = field("id ");
+            let row = json!({"plugin_id": id, "name": field("name "), "version": field("version "), "min_herdr_version": field("min_herdr_version "),
+                             "manifest_path": manifest.to_string_lossy(), "plugin_root": manifest.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(),
+                             "enabled": true, "source": {"kind": "local"}});
+            if !world["plugins"].is_array() {
+                world["plugins"] = json!([]);
+            }
+            let list = world["plugins"].as_array_mut().expect("plugins");
+            list.retain(|p| s(p, "plugin_id") != id);
+            list.push(row.clone());
+            println!("{}", json!({"id": "cli:plugin", "result": {"type": "plugin_linked", "plugin": row}}));
+            0
+        }
+        ["plugin", "unlink", id] => {
+            let before = arr(world, "plugins").len();
+            if let Some(list) = world["plugins"].as_array_mut() {
+                list.retain(|p| s(p, "plugin_id") != *id);
+            }
+            if arr(world, "plugins").len() == before {
+                return err("plugin", "plugin_not_found", &format!("plugin {id} not found"));
+            }
+            println!("{}", json!({"id": "cli:plugin", "result": {"type": "plugin_unlinked", "plugin_id": id}}));
+            0
         }
         ["agent", "focus", target] => {
             let Some(p) = world["panes"].as_array_mut().expect("panes").iter_mut().find(|p| s(p, "pane_id") == *target) else {

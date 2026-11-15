@@ -81,6 +81,14 @@ the label check (`Admiralty`), so the toggle never closes a pane it did not open
     herdr plugin link <claude-nimitz repo>/herdr-plugin
     herdr plugin list          # admiralty ... enabled
 
+`nimitz doctor` checks it whenever `herdr` is on PATH: a warning when no
+`admiralty` plugin is linked, when its manifest is gone (a moved checkout),
+when it is disabled, or when its version is not the installed nimitz's.
+`nimitz doctor --fix` links (or re-links) the `herdr-plugin` of the checkout
+nimitz was built from, when that checkout is still there. Without a checkout,
+`herdr plugin install avatarye/claude-nimitz/herdr-plugin --ref v<version>
+--yes` installs it from GitHub at a release tag.
+
 Linked as `admiralty-watch` before? Unlink that first so two copies never run
 (`herdr plugin unlink admiralty-watch`), link this one, and change the
 keybinding's `command` from `admiralty.toggle` to `admiralty.toggle`.
