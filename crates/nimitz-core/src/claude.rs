@@ -77,6 +77,9 @@ pub fn scrub_child_env(c: &mut Command) {
         "CLAUDE_PID", "CLAUDECODE",
         "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
         "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_BRIDGE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+        // (2.1.328) the sessions that launched this process, and the launching
+        // session's notes folder for its children: a member is no one's child
+        "CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS", "CLAUDE_CODE_CHILD_NOTES_DIR",
         // per session too (Claude Code strips them for its own children): the
         // launching job's attended mode, tmp dir and effort level, an SDK host's flags
         "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_JOB_DIR", "CLAUDE_EFFORT",

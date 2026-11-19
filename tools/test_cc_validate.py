@@ -481,7 +481,8 @@ class Internals(Base):
            b"Ra(s,{realpath:!1,stale:Yt,retries:{retries:5,minTimeout:20},onCompromised:(g)=>t(`pins.json lock compromised (x): ${g}`)"
            b"\x00 so this started a copy as \x00 wrapped in <cross-session-message from=\"...\"> \x00"
            b'return await Ur("cli_bg_attach",k()),pX({args:["agents",...]})'
-           b"\x00function Re(){let e=fk.CLAUDE_CODE_MESSAGING_SOCKET;return e}\x00")
+           b"\x00process.env.CLAUDE_CODE_MESSAGING_SOCKET=e,fk.set(\"CLAUDE_CODE_MESSAGING_TOKEN\",b)\x00"
+           b"\x00{pid:1,messagingSocketPath:fk.CLAUDE_CODE_MESSAGING_SOCKET}\x00")
 
     def binaries(self, old, new):
         self.cfg.versions.mkdir(parents=True)
@@ -512,6 +513,26 @@ class Internals(Base):
         diff = (r.report_dir / "internals.diff").read_text()
         self.assertIn("- stale=5000", diff)
         self.assertIn("+ stale=9000", diff)
+
+    def test_a_reviewed_change_passes_and_says_why(self):
+        new = self.BIN.replace(b"messagingSocketPath:fk.CLAUDE_CODE_MESSAGING_SOCKET", b"messagingSocketPath:N")
+        r = self.binaries(self.BIN, new)
+        ok, summary = r.st_internals()[:2]
+        self.assertFalse(ok)
+        self.assertIn("session socket: changed", summary)
+        saved = dict(ccv.REVIEWED)
+        try:
+            ccv.REVIEWED[("session socket", "2.1.297")] = "read in the binary"
+            ok, summary = r.st_internals()[:2]
+            self.assertTrue(ok, summary)
+            self.assertIn("changed, reviewed: read in the binary", (r.report_dir / "internals.diff").read_text())
+            ccv.REVIEWED[("session socket", "2.1.297")], r.version = "x", "2.1.298"
+            (self.cfg.versions / "2.1.298").write_bytes(new)
+            r.report_dir.mkdir(parents=True)
+            self.assertFalse(r.st_internals()[0], "a review holds for its version only")
+        finally:
+            ccv.REVIEWED.clear()
+            ccv.REVIEWED.update(saved)
 
     def test_previous_binary_is_the_tested_max_else_the_newest_older(self):
         r = self.binaries(self.BIN, self.BIN)

@@ -1325,7 +1325,9 @@ fresh worktree from `dev`:
 3. Snapshot live fleets; create worktree `ci/cc-<v>`.
 4. Build, unit suite, full e2e.
 5. Hook-payload probe with two real jobs, and `doctor`'s pinned formats.
-6. Diff six markers of Claude Code internals against the tested binary.
+6. Diff seven markers of Claude Code internals against the tested binary. A
+   change read in the binary and found harmless goes in `REVIEWED`, by marker
+   and version, with the reason; the report prints it and the run passes.
 7. Compare live fleets again.
 8. On a pass with a newer version: bump, commit, merge into `dev`,
    **push origin dev**, install, update the plugin, run `doctor`.

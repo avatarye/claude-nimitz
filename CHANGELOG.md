@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **Members start without two new Claude Code session variables.** Claude
+  Code 2.1.328 gives every process it starts `CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS`
+  (the sessions that launched it) and `CLAUDE_CODE_CHILD_NOTES_DIR` (the
+  launching session's notes folder for its children), and strips both from
+  the sessions it starts itself. nimitz now strips them too: a ship a
+  commodore starts with `nimitz start` is not recorded as that commodore's
+  child and does not share its notes folder.
+
 ### Fixed
 
 - **A look from another Herdr session no longer switches off the `mux.other`

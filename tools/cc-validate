@@ -54,9 +54,19 @@ MARKERS = [
     ("peer frame", "the cross-session message frame", b"<cross-session-message from=", rb"<cross-session-message from=[\x20-\x7e]{0,40}"),
     ("agents re-exec", "the attach client re-execs as `claude agents`", b'"cli_bg_attach",',
      rb'"cli_bg_attach",[\x20-\x7e]{0,80}?args:\["agents"'),
-    ("messaging socket", "CLAUDE_CODE_MESSAGING_SOCKET uses", b"CLAUDE_CODE_MESSAGING_SOCKET",
-     rb"[\x20-\x7e]{0,30}CLAUDE_CODE_MESSAGING_SOCKET[\x20-\x7e]{0,30}"),
+    ("messaging socket", "the inbox socket exported to hooks (CLAUDE_CODE_MESSAGING_SOCKET)",
+     b"process.env.CLAUDE_CODE_MESSAGING_SOCKET=", rb"process\.env\.CLAUDE_CODE_MESSAGING_SOCKET=[\w$]+"),
+    ("session socket", "the inbox socket a session file names (messagingSocketPath)", b"messagingSocketPath",
+     rb"messagingSocketPath:[\w$.]{0,40}"),
 ]
+
+# Marker changes reviewed by hand, by (marker, Claude Code version): the
+# reason goes in the report and the change passes. Only for a change whose
+# effect on nimitz was read in the binary and found harmless.
+REVIEWED = {
+    ("session socket", "2.1.328"): "written only once the inbox's auth key is published (or none is used): "
+    "a session file without it names no inbox that listens; nimitz falls back to the hook's record and cc-socks",
+}
 
 # Hook payload fields nimitz reads (crates/nimitz-core/src/hook.rs), per event.
 PAYLOAD_FIELDS = {
@@ -711,7 +721,11 @@ class Run:
                 bad.append(f"{name}: missing")
                 report.append(f"  MISSING in {self.version}")
             elif om is not None and om[name] != nm[name]:
-                bad.append(f"{name}: changed")
+                why = REVIEWED.get((name, self.version))
+                if why:
+                    report.append(f"  changed, reviewed: {why}")
+                else:
+                    bad.append(f"{name}: changed")
                 report += [f"  - {x}" for x in om[name] if x not in nm[name]]
                 report += [f"  + {x}" for x in nm[name] if x not in om[name]]
             else:
