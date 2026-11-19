@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A look from another Herdr session no longer switches off the `mux.other`
+  guard (#6).** Every `status` from inside Herdr wrote the caller's Herdr
+  session into `active.json` as the fleet's. That is the record `muster`
+  compares against to refuse building tabs in the wrong session. So one
+  `status` from a second session made the next `muster` build every tab
+  there, with no `--here` asked for. Now only a command that builds the
+  fleet's tabs in this session moves the record: a `muster`, `layout` or
+  `open` the guard let through, or one run with `--here`, and never under
+  `--plan`. `status`, `close` and the jobs-only `start` and `restart`, run
+  from another session, keep the recorded session and the recorded panes.
+  They still record which members are up. `status` there prints a
+  `mux.other` warning that names the session where the fleet's tabs live (it
+  is in `status --json`'s issues too). Also fixed: a caller whose Herdr
+  identity names neither a session nor a socket no longer replaces a
+  recorded one with an empty record, which also switched off the guard.
+  `open`'s `mux.other` refusal now gives a fix it accepts (`nimitz layout
+  F/... --here`, which moves the tabs and wakes nothing) instead of an
+  `--here` that `open` refuses. When two servers share a session name, the
+  message names their sockets instead.
+
 ## 0.7.22 (2026-11-15)
 
 Tested with Claude Code 2.1.288 - 2.1.325.

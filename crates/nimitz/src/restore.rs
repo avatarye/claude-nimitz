@@ -75,7 +75,15 @@ pub fn seen_in(env: &nimitz_core::env::Env, sh: &nimitz_mux::Shape) -> active::S
 
 /// Record the active set from `snap` and the mux (`active.json`). Never
 /// fails a command; a set that did not change is not written.
-pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&nimitz_mux::Shape>) {
+///
+/// `builds`: this command built the fleet's shape in the caller's Herdr
+/// session (a pane-making restore its R-29 guard let through, or `--here`).
+/// Any other command run from another session than the recorded one (`status`,
+/// `close`, a jobs-only `start`) sees that session's panes, not the fleet's:
+/// it keeps the recorded server and the places, else it would disarm the
+/// guard for the next `muster` (issue #6). The members' liveness is still
+/// recorded.
+pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&nimitz_mux::Shape>, builds: bool) {
     let read;
     let shape = match shape {
         Some(s) => Some(s),
@@ -86,10 +94,25 @@ pub fn record_active(ctx: &Ctx, snap: &Snapshot, mux: &dyn Mux, shape: Option<&n
         }
         None => None,
     };
-    let seen = shape.map(|s| seen_in(&ctx.env, s));
+    // (loaded after the shape read, as close to the write as it can be: a
+    // hook's note in between is not lost)
     let prev = active::load(&ctx.env);
-    let set = active::from_snapshot_booted(snap, seen.as_ref(), active::herdr_identity(&ctx.vars), prev.as_ref(), ctx.env.boot_s);
+    let mut herdr = active::herdr_identity(&ctx.vars);
+    let away = !builds && active::elsewhere(prev.as_ref(), herdr.as_ref()).is_some();
+    let seen = shape.filter(|_| !away).map(|s| seen_in(&ctx.env, s));
+    if away {
+        herdr = None;
+    }
+    let set = active::from_snapshot_booted(snap, seen.as_ref(), herdr, prev.as_ref(), ctx.env.boot_s);
     let _ = active::write(&ctx.env, set);
+}
+
+/// Whether a restore run with `opts` builds the shape in the caller's session
+/// (`record_active`'s `builds`): one that makes panes got past the R-29
+/// guard (the caller's session is the recorded one, or `--here` moves it). A
+/// jobs-only run makes none, `--here` or not; a plan makes nothing.
+fn builds_here(ctx: &Ctx, opts: &rs::RestoreOpts) -> bool {
+    !opts.jobs_only && !ctx.plan_only()
 }
 
 /// `nimitz muster [<path>...] [--parked] [--force] [--here] [--rename]`
@@ -173,7 +196,7 @@ fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: 
             out::json(&Outcome { ran: vec![], verified: code == 0, issues: rp.plan.warnings.iter().filter(|i| i.severity == Severity::Error).cloned().collect() });
         }
         if let Some(r) = raw.as_ref() {
-            record_active(ctx, &snap, mux.as_ref(), Some(r));
+            record_active(ctx, &snap, mux.as_ref(), Some(r), builds_here(ctx, &opts));
         }
         return code.max(self_last(ctx, &rp, true));
     }
@@ -199,7 +222,7 @@ fn run_engine(ctx: &Ctx, paths: &[nimitz_core::paths::Path], start: bool, opts: 
         out::json(&Outcome { ran: outcome.ran.clone(), verified: code == 0, issues: outcome.issues.iter().chain(late.iter()).cloned().collect() });
     }
     let raw_after = raw.as_ref().and_then(|_| shape_of(mux.as_ref(), true).ok()).map(|(_, r)| r);
-    record_active(ctx, &after, mux.as_ref(), raw_after.as_ref());
+    record_active(ctx, &after, mux.as_ref(), raw_after.as_ref(), builds_here(ctx, &opts));
     code.max(self_last(ctx, &rp, false))
 }
 

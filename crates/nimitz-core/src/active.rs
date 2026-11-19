@@ -52,6 +52,37 @@ pub struct HerdrIdentity {
     pub socket: Option<String>,
 }
 
+impl HerdrIdentity {
+    /// Another server than `rec` (R-29): a session name or a socket that both
+    /// know and that differ. One side's unknown field never counts.
+    pub fn other_than(&self, rec: &HerdrIdentity) -> bool {
+        let differ = |a: &Option<String>, b: &Option<String>| a.is_some() && b.is_some() && a != b;
+        differ(&self.session, &rec.session) || differ(&self.socket, &rec.socket)
+    }
+
+    /// How a message names `rec` (the recorded server) and `self` (the
+    /// caller's), by what tells them apart: the session names when those
+    /// differ, else the sockets (one session name on two servers).
+    pub fn told_apart(&self, rec: &HerdrIdentity) -> (String, String) {
+        let label = |h: &HerdrIdentity, by_session: bool| match (&h.session, &h.socket) {
+            (Some(s), _) if by_session => format!("session {s}"),
+            (_, Some(k)) => format!("the server at {k}"),
+            (Some(s), None) => format!("session {s}"),
+            (None, None) => "another server".to_string(),
+        };
+        let by_session = self.session.is_some() && rec.session.is_some() && self.session != rec.session;
+        (label(rec, by_session), label(self, by_session))
+    }
+}
+
+/// The recorded Herdr server, when `now` (the caller's: `herdr_identity`) is
+/// another one: the fleet's tabs live there, not in the panes this caller
+/// sees (R-29, issue #6).
+pub fn elsewhere<'a>(set: Option<&'a ActiveSet>, now: Option<&HerdrIdentity>) -> Option<&'a HerdrIdentity> {
+    let rec = set?.herdr.as_ref()?;
+    now?.other_than(rec).then_some(rec)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ActiveSet {
     pub version: u32,
@@ -305,7 +336,13 @@ pub fn from_snapshot_booted(snap: &Snapshot, seen: Option<&Seen>, herdr: Option<
         };
         members.insert(m.id.0.clone(), ActiveMember { job: s.short_id.clone(), session: s.session_id.clone(), status: status_word(m.status).into(), waiting_for: s.waiting_for.clone(), attached, place });
     }
-    let herdr = herdr.or_else(|| prev.and_then(|p| p.herdr.clone()));
+    // an identity that names no server (`HERDR_ENV` alone) never replaces a
+    // recorded one: an empty record would disarm the R-29 guard for good
+    let rec = prev.and_then(|p| p.herdr.clone());
+    let herdr = match herdr {
+        Some(h) if h.session.is_none() && h.socket.is_none() && rec.is_some() => rec,
+        h => h.or(rec),
+    };
     let now = crate::evidence::now();
     let ended = prev
         .map(|p| {
@@ -628,5 +665,29 @@ mod tests {
         assert_eq!(from_snapshot(&snap, Some(&seen), None, None).herdr, None, "nothing recorded, nothing known");
         let other = HerdrIdentity { session: Some("nimitz-e2e".into()), socket: None };
         assert_eq!(from_snapshot(&snap, Some(&seen), Some(other.clone()), Some(&prev)).herdr.as_ref(), Some(&other), "a known identity replaces the recorded one");
+        assert_eq!(from_snapshot(&snap, Some(&seen), Some(HerdrIdentity::default()), Some(&prev)).herdr.as_ref(), Some(&recorded), "one that names nothing does not (issue #6)");
+        assert_eq!(from_snapshot(&snap, Some(&seen), Some(HerdrIdentity::default()), None).herdr, Some(HerdrIdentity::default()), "with nothing recorded it is the record");
+    }
+
+    /// Issue #6: another server is a field both sides know and that differs;
+    /// `elsewhere` names the recorded one then, and only then.
+    #[test]
+    fn another_herdr_server_is_a_known_field_that_differs() {
+        let id = |s: Option<&str>, k: Option<&str>| HerdrIdentity { session: s.map(Into::into), socket: k.map(Into::into) };
+        let rec = id(Some("NIMITZ"), Some("/s/a.sock"));
+        assert!(id(Some("work"), None).other_than(&rec));
+        assert!(id(None, Some("/s/b.sock")).other_than(&rec));
+        assert!(!id(Some("NIMITZ"), Some("/s/a.sock")).other_than(&rec));
+        assert!(!id(None, None).other_than(&rec), "an unknown field never counts");
+        assert!(!id(Some("work"), None).other_than(&id(None, Some("/s/a.sock"))), "nothing both know");
+        let set = ActiveSet { herdr: Some(rec.clone()), ..Default::default() };
+        assert_eq!(elsewhere(Some(&set), Some(&id(Some("work"), None))), Some(&rec));
+        assert_eq!(elsewhere(Some(&set), Some(&rec)), None);
+        assert_eq!(elsewhere(Some(&set), None), None, "a member's command or one outside Herdr");
+        assert_eq!(elsewhere(Some(&ActiveSet::default()), Some(&id(Some("work"), None))), None, "nothing recorded");
+        assert_eq!(elsewhere(None, Some(&id(Some("work"), None))), None);
+        // messages name what tells them apart
+        assert_eq!(id(Some("work"), Some("/s/b.sock")).told_apart(&rec), ("session NIMITZ".to_string(), "session work".to_string()));
+        assert_eq!(id(Some("NIMITZ"), Some("/s/b.sock")).told_apart(&rec), ("the server at /s/a.sock".to_string(), "the server at /s/b.sock".to_string()), "one name, two servers");
     }
 }

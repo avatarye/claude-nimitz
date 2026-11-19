@@ -1808,6 +1808,62 @@ fn r29_outside_herdr_or_in_another_session() {
     assert_eq!(sb.active().unwrap()["herdr"]["session"], "work", "re-recorded here");
 }
 
+/// Issue #6: a command that builds no tabs (`status`, `close`, a jobs-only
+/// `start`), run from another Herdr session than the recorded one, keeps the
+/// recorded server and the places, so `muster` there still refuses
+/// `mux.other`; `status` says where the fleet's tabs live. `open` there names
+/// a fix it takes (`layout F/... --here`, not its own `--here`); a plan moves
+/// nothing.
+#[test]
+fn r29b_a_look_from_another_herdr_session_keeps_the_record_and_the_guard() {
+    let sb = Sb::new(true);
+    lay(&sb);
+    let fake = json!({"workspace_id": "zz", "workspace": "MAIN", "tab_id": "zz:t9", "tab": "MAIN", "pane_id": "zz:p9"});
+    sb.write_active(|a| {
+        a["herdr"] = json!({"session": "NIMITZ", "socket": "/s/nimitz.sock"});
+        a["members"]["MAIN"]["place"] = fake.clone();
+    });
+    let work = [("HERDR_SESSION", "work"), ("HERDR_SOCKET_PATH", "/s/work.sock")];
+    let before = sb.active().unwrap();
+    let r = raw(&sb.vars, &["muster", "MAIN/...", "--plan"], &work);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(mux.other)"), "{}", r.out);
+    // the issue's repro: a status from `work`, then the same refusal
+    let r = raw(&sb.vars, &["status"], &work);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("(mux.other)") && r.out.contains("Herdr session NIMITZ; this is session work") && r.out.contains("--here"), "{}", r.out);
+    assert_eq!(r.out.matches("(mux.other)").count(), 1, "said once: {}", r.out);
+    let after = sb.active().unwrap();
+    assert_eq!(after["herdr"], before["herdr"], "the recorded server stays");
+    assert_eq!(after["members"]["MAIN"]["place"], fake, "the recorded place stays: work's panes are not the fleet's");
+    let r = raw(&sb.vars, &["status", "--json"], &work);
+    let v: Value = serde_json::from_str(&r.out[r.out.find('{').unwrap()..]).unwrap();
+    assert!(v["issues"].as_array().unwrap().iter().any(|i| i["code"] == "mux.other"), "{}", v["issues"]);
+    let r = raw(&sb.vars, &["muster", "MAIN/...", "--plan"], &work);
+    assert_eq!(r.code, 1, "still refused after the status: {}", r.out);
+    assert!(r.out.contains("(mux.other)"), "{}", r.out);
+    // a jobs-only start and a close move nothing either
+    let r = raw(&sb.vars, &["start", "MAIN/ARGOS/STOPPED", "--yes"], &work);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(sb.live("MAIN/ARGOS/STOPPED"));
+    raw(&sb.vars, &["close", "MAIN/ARGOS/STOPPED", "--yes"], &work);
+    assert_eq!(sb.active().unwrap()["herdr"], before["herdr"], "start and close leave the record");
+    // `open` names a fix it takes
+    let r = raw(&sb.vars, &["open", "MAIN/ARGOS/STOPPED"], &work);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.out.contains("(mux.other)") && r.out.contains("nimitz layout MAIN/... --here"), "{}", r.out);
+    // in the recorded session the look records as before
+    let r = raw(&sb.vars, &["status"], &[("HERDR_SESSION", "NIMITZ"), ("HERDR_SOCKET_PATH", "/s/nimitz.sock")]);
+    assert!(!r.out.contains("(mux.other)"), "{}", r.out);
+    assert_ne!(sb.active().unwrap()["members"]["MAIN"]["place"], fake, "the real pane replaces the stale place");
+    // a plan moves nothing, `--here` or not; the run does
+    raw(&sb.vars, &["muster", "MAIN/...", "--plan", "--here"], &work);
+    assert_eq!(sb.active().unwrap()["herdr"], before["herdr"], "a dry run leaves the record");
+    let r = raw(&sb.vars, &["muster", "MAIN/...", "--yes", "--here"], &work);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(sb.active().unwrap()["herdr"]["session"], "work", "re-recorded here");
+}
+
 #[test]
 fn r30_a_missing_folder_refuses_the_member_with_the_fix() {
     let sb = Sb::new(true);

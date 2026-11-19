@@ -118,7 +118,18 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
             }
         }
     }
-    crate::restore::record_active(ctx, &snap, mux.as_ref(), shape.as_ref());
+    // run from another Herdr session than the recorded one: the panes shown
+    // are this session's, and the record stays (`record_active`, issue #6)
+    let away = {
+        let now = nimitz_core::active::herdr_identity(&ctx.vars);
+        let set = nimitz_core::active::load(&ctx.env);
+        nimitz_core::active::elsewhere(set.as_ref(), now.as_ref()).map(|rec| {
+            let (there, here) = now.as_ref().map(|h| h.told_apart(rec)).unwrap_or_default();
+            let msg = format!("the fleet's tabs live in Herdr {there}; this is {here}: the panes shown are this session's, and `nimitz muster` here refuses to build tabs without `--here`");
+            Issue { code: "mux.other".into(), severity: Severity::Warn, message: msg, fix: None, id: None }
+        })
+    };
+    crate::restore::record_active(ctx, &snap, mux.as_ref(), shape.as_ref(), false);
     let shown = |id: &Id| all || nimitz_core::paths::covered(&paths, id);
     if !all {
         // (a fleet keeps its admiral, a squadron its commodore: the shape's own;
@@ -132,6 +143,7 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         }
     }
     if out::json_mode() {
+        snap.issues.extend(away);
         out::json(&snap);
         return Ok(0);
     }
@@ -144,6 +156,9 @@ pub fn status(ctx: &Ctx) -> Result<i32, String> {
         out::warn(&format!("machine {machine}; Claude Code {cc} is newer than nimitz is tested with (tested up to {}); launches go ahead", c.max));
     } else {
         out::warn(&format!("machine {machine}; Claude Code {cc} is outside the supported range: launches refuse"));
+    }
+    if let Some(i) = &away {
+        out::issue(i);
     }
     if snap.fleets.is_empty() {
         out::line("no fleets; create one with `nimitz fleet new <F>`");
@@ -1096,7 +1111,7 @@ pub fn close(ctx: &Ctx) -> Result<i32, String> {
                     }
                 }
             }
-            crate::restore::record_active(ctx, &ctx.snap(), mux.as_ref(), None);
+            crate::restore::record_active(ctx, &ctx.snap(), mux.as_ref(), None, false);
             Ok(code)
         }
     }

@@ -616,18 +616,19 @@ fn plan_inner(env: &Env, snap: &Snapshot, shape: &Shape, active: Option<&crate::
         return rp;
     }
     // the set was recorded in another Herdr session: its tabs live there (R-29)
-    if let (Some(rec), Some(now)) = (active.and_then(|a| a.herdr.as_ref()), herdr) {
-        let differs = (rec.session.is_some() && now.session.is_some() && rec.session != now.session) || (rec.socket.is_some() && now.socket.is_some() && rec.socket != now.socket);
-        if differs && !opts.here && !opts.jobs_only {
-            rp.plan.refusals.push(issue(
-                "mux.other",
-                Severity::Error,
-                format!("the fleet's tabs live in Herdr session {}; this is {}", rec.session.clone().or(rec.socket.clone()).unwrap_or_default(), now.session.clone().or(now.socket.clone()).unwrap_or_else(|| "another session".into())),
-                Some(format!("run nimitz {verb} there; or `--here` to rebuild the shape in this session")),
-                None,
-            ));
-            return rp;
-        }
+    if let Some(rec) = crate::active::elsewhere(active, herdr).filter(|_| !opts.here && !opts.jobs_only) {
+        let (there, here) = herdr.map(|h| h.told_apart(rec)).unwrap_or_default();
+        let fix = if opts.pane {
+            // (`open` takes no `--here`: `layout --here` moves the tabs, waking nothing)
+            let mut fleets: Vec<&str> = named.iter().map(|i| i.fleet()).collect();
+            fleets.dedup();
+            let at = if fleets.is_empty() { "<fleet>/...".to_string() } else { fleets.iter().map(|f| format!("{f}/...")).collect::<Vec<_>>().join(" ") };
+            format!("run nimitz {verb} there; or move the fleet's tabs to this session first: `nimitz layout {at} --here`")
+        } else {
+            format!("run nimitz {verb} there; or `--here` to rebuild the shape in this session")
+        };
+        rp.plan.refusals.push(issue("mux.other", Severity::Error, format!("the fleet's tabs live in Herdr {there}; this is {here}"), Some(fix), None));
+        return rp;
     }
     if let Some(p) = progress_load(env) {
         rp.plan.warnings.push(issue("restore.interrupted", Severity::Info, format!("an earlier restore (run {}, {} of {} steps done) was interrupted; this run converges on what it left", p.run, p.done, p.total), None, None));
