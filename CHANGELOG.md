@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.7.23 (2026-11-19)
+
+Tested with Claude Code 2.1.288 - 2.1.328.
 
 ### Changed
 
@@ -33,6 +35,12 @@
   F/... --here`, which moves the tabs and wakes nothing) instead of an
   `--here` that `open` refuses. When two servers share a session name, the
   message names their sockets instead.
+
+### Upgrading
+
+- Usually nothing to run. If a `status` from another Herdr session already moved
+  the recorded session, run `nimitz muster --here` once from the session
+  that holds the fleet's tabs; the record stays there from then on.
 
 ## 0.7.22 (2026-11-15)
 

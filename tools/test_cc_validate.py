@@ -525,6 +525,7 @@ class Internals(Base):
             ccv.REVIEWED[("session socket", "2.1.297")] = "read in the binary"
             ok, summary = r.st_internals()[:2]
             self.assertTrue(ok, summary)
+            self.assertIn("1 change(s) reviewed", summary)
             self.assertIn("changed, reviewed: read in the binary", (r.report_dir / "internals.diff").read_text())
             ccv.REVIEWED[("session socket", "2.1.297")], r.version = "x", "2.1.298"
             (self.cfg.versions / "2.1.298").write_bytes(new)

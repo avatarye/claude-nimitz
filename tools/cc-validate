@@ -714,7 +714,7 @@ class Run:
         nm = markers_of(new.read_bytes())
         prev = self.previous_binary()
         om = markers_of((self.cfg.versions / prev).read_bytes()) if prev else None
-        report, bad = [], []
+        report, bad, reviewed = [], [], 0
         for name, what, _, _ in MARKERS:
             report.append(f"## {name}: {what}")
             if not nm[name]:
@@ -723,6 +723,7 @@ class Run:
             elif om is not None and om[name] != nm[name]:
                 why = REVIEWED.get((name, self.version))
                 if why:
+                    reviewed += 1
                     report.append(f"  changed, reviewed: {why}")
                 else:
                     bad.append(f"{name}: changed")
@@ -735,6 +736,8 @@ class Run:
             return False, "; ".join(bad)[:58], "\n".join(report)
         if prev is None:
             return True, f"{len(MARKERS)} markers present (no older binary to diff)"
+        if reviewed:
+            return True, f"{len(MARKERS)} markers vs {prev}; {reviewed} change(s) reviewed"
         return True, f"{len(MARKERS)} markers same as {prev}"
 
     # ---- step 5: on a pass
